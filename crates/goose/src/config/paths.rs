@@ -1,46 +1,28 @@
-use etcetera::{choose_app_strategy, AppStrategy, AppStrategyArgs};
 use std::path::PathBuf;
 
 pub struct Paths;
 
 impl Paths {
-    fn get_dir(dir_type: DirType) -> PathBuf {
-        if let Ok(test_root) = std::env::var("GOOSE_PATH_ROOT") {
-            let base = PathBuf::from(test_root);
-            match dir_type {
-                DirType::Config => base.join("config"),
-                DirType::Data => base.join("data"),
-                DirType::State => base.join("state"),
-            }
+    fn base_dir() -> PathBuf {
+        if let Ok(test_root) = std::env::var("PERMAGENT_PATH_ROOT") {
+            PathBuf::from(test_root)
         } else {
-            // NOTE: "Block" is kept here for backwards compatibility with existing
-            // user config/data directories (e.g. ~/Library/Application Support/Block/goose/).
-            // Changing this would orphan existing installations.
-            let strategy = choose_app_strategy(AppStrategyArgs {
-                top_level_domain: "Block".to_string(),
-                author: "Block".to_string(),
-                app_name: "goose".to_string(),
-            })
-            .expect("goose requires a home dir");
-
-            match dir_type {
-                DirType::Config => strategy.config_dir(),
-                DirType::Data => strategy.data_dir(),
-                DirType::State => strategy.state_dir().unwrap_or(strategy.data_dir()),
-            }
+            dirs::home_dir()
+                .expect("permagent requires a home dir")
+                .join(".permagent")
         }
     }
 
     pub fn config_dir() -> PathBuf {
-        Self::get_dir(DirType::Config)
+        Self::base_dir()
     }
 
     pub fn data_dir() -> PathBuf {
-        Self::get_dir(DirType::Data)
+        Self::base_dir()
     }
 
     pub fn state_dir() -> PathBuf {
-        Self::get_dir(DirType::State)
+        Self::base_dir()
     }
 
     pub fn in_state_dir(subpath: &str) -> PathBuf {
@@ -54,10 +36,16 @@ impl Paths {
     pub fn in_data_dir(subpath: &str) -> PathBuf {
         Self::data_dir().join(subpath)
     }
-}
 
-enum DirType {
-    Config,
-    Data,
-    State,
+    pub fn logs_dir() -> PathBuf {
+        Self::base_dir().join("logs")
+    }
+
+    pub fn spectral_dir() -> PathBuf {
+        Self::base_dir().join("spectral")
+    }
+
+    pub fn spectral_db() -> PathBuf {
+        Self::spectral_dir().join("permagent.db")
+    }
 }

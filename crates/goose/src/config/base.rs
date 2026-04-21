@@ -34,7 +34,7 @@ fn write_secrets_file(path: &Path, content: &str) -> std::io::Result<()> {
     }
 }
 
-const KEYRING_SERVICE: &str = "goose";
+const KEYRING_SERVICE: &str = "permagent";
 const KEYRING_USERNAME: &str = "secrets";
 pub const CONFIG_YAML_NAME: &str = "config.yaml";
 
@@ -74,7 +74,7 @@ impl From<keyring::Error> for ConfigError {
     }
 }
 
-/// Configuration management for goose.
+/// Configuration management for Permagent.
 ///
 /// This module provides a flexible configuration system that supports:
 /// - Dynamic configuration keys
@@ -86,13 +86,13 @@ impl From<keyring::Error> for ConfigError {
 ///
 /// Configuration values are loaded with the following precedence:
 /// 1. Environment variables (exact key match)
-/// 2. Configuration file (~/.config/goose/config.yaml by default)
+/// 2. Configuration file (~/.permagent/config.yaml by default)
 ///
 /// Secrets are loaded with the following precedence:
 /// 1. Environment variables (exact key match)
-/// 2. System keyring (which can be disabled with GOOSE_DISABLE_KEYRING)
+/// 2. System keyring (which can be disabled with PERMAGENT_DISABLE_KEYRING)
 /// 3. If the keyring is disabled, secrets are stored in a secrets file
-///    (~/.config/goose/secrets.yaml by default)
+///    (~/.permagent/secrets.yaml by default)
 ///
 /// # Examples
 ///
@@ -119,7 +119,7 @@ impl From<keyring::Error> for ConfigError {
 /// checking for environment overrides. e.g. openai_api_key will check for an
 /// environment variable OPENAI_API_KEY
 ///
-/// For goose-specific configuration, consider prefixing with "goose_" to avoid conflicts.
+/// For permagent-specific configuration, consider prefixing with "permagent_" to avoid conflicts.
 pub struct Config {
     config_path: PathBuf,
     defaults_path: Option<PathBuf>,
@@ -152,7 +152,7 @@ impl Default for Config {
             }
         });
 
-        let secrets = if env::var("GOOSE_DISABLE_KEYRING").is_ok()
+        let secrets = if env::var("PERMAGENT_DISABLE_KEYRING").is_ok()
             || keyring_disabled_in_config(&config_path)
         {
             SecretStorage::File {
@@ -252,7 +252,7 @@ fn parse_yaml_content(content: &str) -> Result<Mapping, ConfigError> {
     serde_yaml::from_str(content).map_err(|e| e.into())
 }
 
-/// Read the GOOSE_DISABLE_KEYRING flag from the config file.
+/// Read the PERMAGENT_DISABLE_KEYRING flag from the config file.
 ///
 /// Called before Config is fully initialised, so we do a minimal raw read
 /// rather than going through `get_param`.  All errors are treated as `false`
@@ -262,7 +262,7 @@ fn keyring_disabled_in_config(config_path: &Path) -> bool {
         .ok()
         .and_then(|s| parse_yaml_content(&s).ok())
         .and_then(|m| {
-            m.get("GOOSE_DISABLE_KEYRING")
+            m.get("PERMAGENT_DISABLE_KEYRING")
                 .map(|v| v.as_bool().unwrap_or(false) || v.as_str().is_some_and(|s| s == "true"))
         })
         .unwrap_or(false)
@@ -271,7 +271,7 @@ fn keyring_disabled_in_config(config_path: &Path) -> bool {
 impl Config {
     /// Get the global configuration instance.
     ///
-    /// This will initialize the configuration with the default path (~/.config/goose/config.yaml)
+    /// This will initialize the configuration with the default path (~/.permagent/config.yaml)
     /// if it hasn't been initialized yet.
     pub fn global() -> &'static Config {
         GLOBAL_CONFIG.get_or_init(Config::default)
@@ -711,7 +711,7 @@ impl Config {
     ///
     /// This will attempt to get the value from (in order):
     /// 1. Environment variable with the uppercase key name
-    /// 2. Configuration file (~/.config/goose/config.yaml)
+    /// 2. Configuration file (~/.permagent/config.yaml)
     /// 3. Bundled defaults file (defaults.yaml in workspace root or executable directory)
     ///
     /// The value will be deserialized into the requested type. This works with
@@ -1007,7 +1007,7 @@ impl Config {
         fallback_values: Option<&HashMap<String, Value>>,
     ) -> Result<T, ConfigError> {
         if self.is_keyring_availability_error(&keyring_err.to_string()) {
-            std::env::set_var("GOOSE_DISABLE_KEYRING", "1");
+            std::env::set_var("PERMAGENT_DISABLE_KEYRING", "1");
             tracing::warn!("Keyring unavailable. Using file storage for secrets.");
 
             if let Some(values) = fallback_values {

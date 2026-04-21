@@ -535,7 +535,7 @@ fn try_store_secret(config: &Config, key_name: &str, value: String) -> anyhow::R
         Err(ConfigError::FallbackToFileStorage) => Ok(true),
         Err(e) => {
             cliclack::outro(style(format!(
-                "Failed to store {} securely: {}. Please ensure your system's secure storage is accessible. Alternatively you can run with GOOSE_DISABLE_KEYRING=true or set the key in your environment variables",
+                "Failed to store {} securely: {}. Please ensure your system's secure storage is accessible. Alternatively you can run with PERMAGENT_DISABLE_KEYRING=true or set the key in your environment variables",
                 key_name, e
             )).on_red().white())?;
             Ok(false)
@@ -1476,13 +1476,13 @@ pub fn configure_tool_output_dialog() -> anyhow::Result<()> {
 pub fn configure_keyring_dialog() -> anyhow::Result<()> {
     let config = Config::global();
 
-    if std::env::var("GOOSE_DISABLE_KEYRING").is_ok() {
+    if std::env::var("PERMAGENT_DISABLE_KEYRING").is_ok() {
         let _ = cliclack::log::info(
-            "Notice: GOOSE_DISABLE_KEYRING environment variable is set and will override the configuration here.",
+            "Notice: PERMAGENT_DISABLE_KEYRING environment variable is set and will override the configuration here.",
         );
     }
 
-    let currently_disabled = config.get_param::<String>("GOOSE_DISABLE_KEYRING").is_ok();
+    let currently_disabled = config.get_param::<String>("PERMAGENT_DISABLE_KEYRING").is_ok();
 
     let current_status = if currently_disabled {
         "Disabled (using file-based storage)"
@@ -1513,20 +1513,20 @@ pub fn configure_keyring_dialog() -> anyhow::Result<()> {
     match storage_option {
         "keyring" => {
             // Set to empty string to enable keyring (absence or empty = enabled)
-            config.set_param("GOOSE_DISABLE_KEYRING", Value::String("".to_string()))?;
+            config.set_param("PERMAGENT_DISABLE_KEYRING", Value::String("".to_string()))?;
             cliclack::outro("Secret storage set to system keyring (secure)")?;
             let _ =
-                cliclack::log::info("You may need to restart goose for this change to take effect");
+                cliclack::log::info("You may need to restart permagent for this change to take effect");
         }
         "file" => {
             // Set the disable flag to use file storage
-            config.set_param("GOOSE_DISABLE_KEYRING", Value::String("true".to_string()))?;
+            config.set_param("PERMAGENT_DISABLE_KEYRING", Value::String("true".to_string()))?;
             cliclack::outro(format!(
                 "Secret storage set to file ({}). Keep this file secure!",
                 secrets_path.display(),
             ))?;
             let _ =
-                cliclack::log::info("You may need to restart goose for this change to take effect");
+                cliclack::log::info("You may need to restart permagent for this change to take effect");
         }
         _ => unreachable!(),
     };

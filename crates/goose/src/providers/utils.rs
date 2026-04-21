@@ -528,9 +528,9 @@ mod tests {
 
     #[test]
     fn test_request_log_start_creates_logs_dir() {
-        let _guard = env_lock::lock_env([("GOOSE_PATH_ROOT", None::<&str>)]);
+        let _guard = env_lock::lock_env([("PERMAGENT_PATH_ROOT", None::<&str>)]);
         let temp_dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GOOSE_PATH_ROOT", temp_dir.path());
+        std::env::set_var("PERMAGENT_PATH_ROOT", temp_dir.path());
 
         let logs_dir = Paths::in_state_dir("logs");
         assert!(!logs_dir.exists(), "logs dir should not exist yet");
@@ -544,7 +544,7 @@ mod tests {
 
         assert!(logs_dir.is_dir(), "logs dir should have been created");
 
-        std::env::remove_var("GOOSE_PATH_ROOT");
+        std::env::remove_var("PERMAGENT_PATH_ROOT");
     }
 
     #[test]
