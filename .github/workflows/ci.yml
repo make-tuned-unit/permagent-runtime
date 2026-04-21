@@ -177,53 +177,7 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae  # v2
 
-      - name: Install Node.js Dependencies
-        run: |
-          source ./bin/activate-hermit
-          cd ui/desktop && pnpm install --frozen-lockfile
-          cd ../sdk && pnpm install --frozen-lockfile
-
       - name: Check OpenAPI Schema is Up-to-Date
         run: |
-          source ./bin/activate-hermit
-          hermit uninstall rustup
-          just check-openapi-schema
-
-      - name: Check ACP Schema is Up-to-Date
-        run: |
-          source ./bin/activate-hermit
-          just check-acp-schema
-
-  desktop-lint:
-    name: Test and Lint Electron Desktop App
-    runs-on: macos-latest
-    needs: changes
-    if: needs.changes.outputs.code == 'true' || github.event_name != 'pull_request'
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
-
-      # Temporarily disabled due to GitHub Actions bug on macOS runners
-      # https://github.com/actions/runner-images/issues/13341
-      # https://github.com/actions/runner/issues/4134
-      # - name: Cache pnpm dependencies
-      #   uses: actions/cache@8b402f58fbc84540c8b491a91e594a4576fec3d7  # v5.0.2
-      #   with:
-      #     path: |
-      #       ui/desktop/node_modules
-      #       .hermit/node/cache
-      #     key: ci-pnpm-cache-v1-${{ runner.os }}-${{ hashFiles('ui/pnpm-lock.yaml') }}
-      #     restore-keys: |
-      #       ci-pnpm-cache-v1-${{ runner.os }}-
-
-      - name: Install Dependencies
-        run: source ../../bin/activate-hermit && pnpm install --frozen-lockfile
-        working-directory: ui/desktop
-
-      - name: Run Lint
-        run: source ../../bin/activate-hermit && pnpm run lint:check
-        working-directory: ui/desktop
-
-      - name: Run Tests
-        run: source ../../bin/activate-hermit && pnpm run test:run
-        working-directory: ui/desktop
+          cargo run -p permagent-daemon --bin generate_schema > /dev/null
+          git diff --exit-code crates/goose-server/ui/desktop/openapi.json

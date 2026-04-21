@@ -101,7 +101,7 @@ env:
       - 2 verified issues are better than 10 speculative ones
 
       ## Language Note
-      These guidelines are primarily Rust-focused. For TypeScript/frontend changes (ui/desktop/),
+      These guidelines are primarily Rust-focused. For TypeScript/frontend changes,
       apply the same rigor with language-appropriate patterns (e.g., discriminated unions,
       optional chaining, React key uniqueness). Review all code equally thoroughly.
 
