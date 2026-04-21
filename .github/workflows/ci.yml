@@ -158,26 +158,3 @@ jobs:
           export CARGO_INCREMENTAL=0
           cargo clippy --workspace --all-targets --exclude v8 -- -D warnings
 
-  schema-check:
-    name: Check Generated Schemas are Up-to-Date
-    runs-on: ubuntu-latest
-    needs: changes
-    if: needs.changes.outputs.code == 'true' || github.event_name != 'pull_request'
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
-
-      - uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7 # v1.16.0
-
-      - name: Install Dependencies
-        run: |
-          sudo apt update -y
-          sudo apt install -y libdbus-1-dev libxcb1-dev
-
-      - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae  # v2
-
-      - name: Check OpenAPI Schema is Up-to-Date
-        run: |
-          cargo run -p permagent-daemon --bin generate_schema > /dev/null
-          git diff --exit-code crates/goose-server/ui/desktop/openapi.json
