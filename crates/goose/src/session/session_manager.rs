@@ -272,6 +272,11 @@ impl SessionManager {
         &self.storage
     }
 
+    /// Get a clone of the DB pool for sharing with other modules (e.g., TaskLogger).
+    pub async fn pool_clone(&self) -> Result<Pool<Sqlite>> {
+        self.storage.pool_clone().await
+    }
+
     pub async fn create_session(
         &self,
         working_dir: PathBuf,
@@ -570,6 +575,12 @@ impl SessionStorage {
             initialized: tokio::sync::OnceCell::new(),
             db_path,
         }
+    }
+
+    /// Get a clone of the underlying pool (for sharing with TaskLogger etc.)
+    pub async fn pool_clone(&self) -> Result<Pool<Sqlite>> {
+        self.pool().await?;
+        Ok(self.pool.clone())
     }
 
     pub(crate) async fn pool(&self) -> Result<&Pool<Sqlite>> {
@@ -1631,12 +1642,11 @@ mod tests {
         let pool = sm.storage().pool().await.unwrap();
 
         // Verify all Spectral tables exist
-        let tables: Vec<String> = sqlx::query_scalar(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
-        )
-        .fetch_all(pool)
-        .await
-        .unwrap();
+        let tables: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+                .fetch_all(pool)
+                .await
+                .unwrap();
 
         let expected = vec![
             "integrations",
@@ -1664,12 +1674,11 @@ mod tests {
         }
 
         // Verify default user exists
-        let user: (String, String) = sqlx::query_as(
-            "SELECT id, display_name FROM users WHERE id = 'default'",
-        )
-        .fetch_one(pool)
-        .await
-        .unwrap();
+        let user: (String, String) =
+            sqlx::query_as("SELECT id, display_name FROM users WHERE id = 'default'")
+                .fetch_one(pool)
+                .await
+                .unwrap();
         assert_eq!(user.0, "default");
         assert_eq!(user.1, "Default User");
     }

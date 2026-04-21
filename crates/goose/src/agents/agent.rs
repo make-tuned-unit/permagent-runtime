@@ -571,6 +571,24 @@ impl Agent {
         );
 
         debug!("WAITING_TOOL_START: {}", tool_call.name);
+
+        // Task logging: log_task_created before, log_task_completed/failed after
+        let tool_name_str = tool_call.name.to_string();
+        let args_value = tool_call
+            .arguments
+            .as_ref()
+            .map(|m| Value::Object(m.clone()));
+        let task_id = if let Some(logger) = crate::tasks::global() {
+            let tid = logger
+                .log_task_created(&tool_name_str, Some(&tool_name_str))
+                .await;
+            logger.log_task_started(&tid, &session.id).await;
+            Some(tid)
+        } else {
+            None
+        };
+        let task_start = std::time::Instant::now();
+
         let result: ToolCallResult = if self.is_frontend_tool(&tool_call.name).await {
             ToolCallResult::from(Err(ErrorData::new(
                 ErrorCode::INTERNAL_ERROR,
@@ -598,6 +616,26 @@ impl Agent {
                 ToolCallResult::from(Err(error_data))
             })
         };
+
+        // Task logging: completion/failure. The result is a ToolCallResult containing
+        // a boxed future, so we log at this point with best-effort output capture.
+        if let Some(ref tid) = task_id {
+            if let Some(logger) = crate::tasks::global() {
+                let duration_ms = task_start.elapsed().as_millis() as u64;
+                // We don't have the resolved result yet (it's a future), so log
+                // completion with empty output. The actual result is consumed later
+                // by the agent loop. This is a Phase 1 trade-off.
+                logger
+                    .log_task_completed(
+                        tid,
+                        Some(&tool_name_str),
+                        args_value.as_ref(),
+                        &serde_json::json!({}),
+                        duration_ms,
+                    )
+                    .await;
+            }
+        }
 
         debug!("WAITING_TOOL_END: {}", tool_call.name);
 

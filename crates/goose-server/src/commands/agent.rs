@@ -3,6 +3,7 @@ use crate::state;
 use anyhow::Result;
 use axum::middleware;
 use axum_server::Handle;
+use permagent::events;
 use permagent_daemon::auth::check_token;
 #[cfg(any(feature = "rustls-tls", feature = "native-tls"))]
 use permagent_daemon::tls::setup_tls;
@@ -75,6 +76,11 @@ pub async fn run() -> Result<()> {
         gateway_manager.check_auto_start().await;
     });
 
+    // Emit daemon_started event after binding
+    let version = env!("CARGO_PKG_VERSION");
+    let config_path = std::env::var("PERMAGENT_CONFIG").unwrap_or_default();
+    let spectral_path = std::env::var("PERMAGENT_SPECTRAL_DB").unwrap_or_default();
+
     if settings.tls {
         #[cfg(any(feature = "rustls-tls", feature = "native-tls"))]
         {
@@ -88,10 +94,16 @@ pub async fn run() -> Result<()> {
             let shutdown_handle = handle.clone();
             tokio::spawn(async move {
                 shutdown_signal().await;
+                events::emit(events::daemon_stopped("user_request"));
                 shutdown_handle.graceful_shutdown(None);
             });
 
             info!("listening on https://{}", addr);
+            events::emit(events::daemon_started(
+                version,
+                &config_path,
+                &spectral_path,
+            ));
 
             #[cfg(feature = "rustls-tls")]
             axum_server::bind_rustls(addr, tls_setup.config)
@@ -117,9 +129,19 @@ pub async fn run() -> Result<()> {
         let listener = tokio::net::TcpListener::bind(addr).await?;
 
         info!("listening on http://{}", addr);
+        events::emit(events::daemon_started(
+            version,
+            &config_path,
+            &spectral_path,
+        ));
 
         axum::serve(listener, app)
-            .with_graceful_shutdown(async { shutdown_signal().await })
+            .with_graceful_shutdown(async {
+                shutdown_signal().await;
+                events::emit(events::daemon_stopped("user_request"));
+                // Brief pause to let WebSocket clients receive the event
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            })
             .await?;
     }
 

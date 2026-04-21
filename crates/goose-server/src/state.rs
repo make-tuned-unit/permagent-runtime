@@ -40,6 +40,14 @@ impl AppState {
         let tunnel_manager = Arc::new(TunnelManager::new(tls));
         let gateway_manager = Arc::new(GatewayManager::new(agent_manager.clone())?);
 
+        // Initialize TaskLogger with the same Spectral DB pool
+        if let Ok(pool) = agent_manager.session_manager().pool_clone().await {
+            permagent::tasks::init_global(pool);
+            tracing::info!("TaskLogger initialized");
+        } else {
+            tracing::warn!("Failed to initialize TaskLogger — task logging disabled");
+        }
+
         Ok(Arc::new(Self {
             agent_manager,
             recipe_file_hash_map: Arc::new(Mutex::new(HashMap::new())),
@@ -133,7 +141,10 @@ impl AppState {
         buses.remove(session_id);
     }
 
-    pub async fn get_agent(&self, session_id: String) -> anyhow::Result<Arc<permagent::agents::Agent>> {
+    pub async fn get_agent(
+        &self,
+        session_id: String,
+    ) -> anyhow::Result<Arc<permagent::agents::Agent>> {
         self.agent_manager.get_or_create_agent(session_id).await
     }
 
