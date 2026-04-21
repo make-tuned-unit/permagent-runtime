@@ -1,0 +1,205 @@
+name: Publish to npm
+
+on:
+  workflow_call:
+    inputs:
+      release-tag:
+        description: 'Release tag to fetch binaries from (e.g. v1.0.0)'
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      release-tag:
+        description: 'Release tag to fetch binaries from (e.g. v1.0.0)'
+        required: true
+        type: string
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write  # Required for npm trusted publishing (OIDC)
+
+jobs:
+  # Build npm packages (no environment needed)
+  build:
+    name: Build npm packages
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.10.0'
+          registry-url: 'https://registry.npmjs.org'
+          always-auth: true
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fe02b34f77f8bc703788d5817da081398fad5dd2 # v4
+        with:
+          version: 10.30.3
+
+      - name: Download goose binaries from release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ inputs.release-tag }}"
+          echo "Downloading goose CLI binaries from release ${TAG}"
+
+          # Map: npm platform name -> release artifact name (target triple)
+          declare -A PLATFORM_MAP=(
+            [darwin-arm64]=aarch64-apple-darwin
+            [darwin-x64]=x86_64-apple-darwin
+            [linux-arm64]=aarch64-unknown-linux-gnu
+            [linux-x64]=x86_64-unknown-linux-gnu
+            [win32-x64]=x86_64-pc-windows-msvc
+          )
+
+          for platform in "${!PLATFORM_MAP[@]}"; do
+            target="${PLATFORM_MAP[$platform]}"
+            pkg_dir="ui/goose-binary/goose-binary-${platform}/bin"
+            mkdir -p "${pkg_dir}"
+
+            if [[ "${platform}" == "win32-x64" ]]; then
+              artifact="goose-${target}.zip"
+              gh release download "${TAG}" --pattern "${artifact}" --dir /tmp
+              unzip -o "/tmp/${artifact}" -d /tmp/goose-extract
+              cp /tmp/goose-extract/goose-package/goose.exe "${pkg_dir}/goose.exe"
+              rm -rf /tmp/goose-extract "/tmp/${artifact}"
+            else
+              artifact="goose-${target}.tar.bz2"
+              gh release download "${TAG}" --pattern "${artifact}" --dir /tmp
+              mkdir -p /tmp/goose-extract
+              tar -xjf "/tmp/${artifact}" -C /tmp/goose-extract
+              cp /tmp/goose-extract/goose "${pkg_dir}/goose"
+              chmod +x "${pkg_dir}/goose"
+              rm -rf /tmp/goose-extract "/tmp/${artifact}"
+            fi
+
+            echo "  ✅ ${platform} (${target})"
+          done
+
+      - name: List downloaded binaries (debug)
+        run: find ui/goose-binary -name 'goose*' -type f | sort
+
+      - name: Install dependencies
+        run: |
+          cd ui
+          pnpm install --frozen-lockfile
+
+      - name: Build packages
+        run: |
+          cd ui/sdk
+          pnpm run build:ts
+
+          cd ../text
+          pnpm run build
+
+      - name: Upload built packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-packages
+          path: ui/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Build summary
+        run: |
+          {
+            echo "## 📦 Build Summary"
+            echo ""
+            echo "### Release"
+            echo "Tag: \`${{ inputs.release-tag }}\`"
+            echo ""
+            echo "### Goose CLI Binaries"
+            echo "✅ Downloaded from release for all platforms:"
+            for dir in ui/goose-binary/goose-binary-*/; do
+              platform=$(basename "$dir" | sed 's/goose-binary-//')
+              echo "  - $platform"
+            done
+            echo ""
+            echo "### npm Packages"
+            cd ui
+            for pkg in sdk text goose-binary/*/; do
+              if [ -f "$pkg/package.json" ]; then
+                name=$(jq -r '.name' "$pkg/package.json")
+                version=$(jq -r '.version' "$pkg/package.json")
+                echo "- $name@$version"
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    needs: [build]
+    environment: npm-production-publishing
+    steps:
+      - name: Download built packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: npm-packages
+          path: ui/
+
+      - name: Restore executable bits on goose binaries
+        run: find ui/goose-binary -name 'goose' -type f -exec chmod +x {} +
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.10.0'
+          registry-url: 'https://registry.npmjs.org'
+          always-auth: true
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fe02b34f77f8bc703788d5817da081398fad5dd2 # v4
+        with:
+          version: 10.30.3
+
+      - name: Publish to npm
+        run: |
+          cd ui
+          # Publish each package individually so one failure doesn't abort the rest.
+          # Skips packages whose version is already published (409/403).
+          failed=0
+          for pkg in sdk goose-binary/*/ text; do
+            if [ -f "$pkg/package.json" ]; then
+              name=$(jq -r '.name' "$pkg/package.json")
+              version=$(jq -r '.version' "$pkg/package.json")
+              echo "Publishing $name@$version..."
+              if (cd "$pkg" && pnpm publish --access public --no-git-checks --provenance); then
+                echo "  ✅ $name@$version published"
+              else
+                # Check if it failed because the version already exists
+                if npm view "$name@$version" version > /dev/null 2>&1; then
+                  echo "  ⏭️  $name@$version already published, skipping"
+                else
+                  echo "  ❌ $name@$version failed to publish"
+                  failed=1
+                fi
+              fi
+            fi
+          done
+          if [ "$failed" -eq 1 ]; then
+            echo "::error::One or more packages failed to publish"
+            exit 1
+          fi
+
+      - name: Publish summary
+        if: always()
+        run: |
+          cd ui
+          {
+            echo "## 🚀 Published Packages"
+            echo ""
+            for pkg in sdk text goose-binary/*/; do
+              if [ -f "$pkg/package.json" ]; then
+                name=$(jq -r '.name' "$pkg/package.json")
+                version=$(jq -r '.version' "$pkg/package.json")
+                echo "- $name@$version"
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"

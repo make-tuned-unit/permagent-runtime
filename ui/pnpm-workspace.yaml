@@ -1,0 +1,6 @@
+packages:
+  - 'sdk'
+  - 'text'
+  - 'desktop'
+  - 'goose-binary/*'
+  - 'goose2'
