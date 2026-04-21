@@ -2,7 +2,6 @@ use anyhow::Result;
 use console::style;
 use permagent::config::paths::Paths;
 use permagent::config::Config;
-use permagent::session::session_manager::{DB_NAME, SESSIONS_FOLDER};
 use serde_yaml;
 
 fn print_aligned(label: &str, value: &str, width: usize) {
@@ -34,8 +33,7 @@ fn check_path_status(path: &Path) -> String {
 
 pub fn handle_info(verbose: bool) -> Result<()> {
     let logs_dir = Paths::in_state_dir("logs");
-    let sessions_dir = Paths::in_data_dir(SESSIONS_FOLDER);
-    let sessions_db = sessions_dir.join(DB_NAME);
+    let sessions_db = Paths::spectral_db();
     let config = Config::global();
     let config_dir = Paths::config_dir();
     let config_yaml_file = config_dir.join(CONFIG_YAML_NAME);
@@ -43,7 +41,7 @@ pub fn handle_info(verbose: bool) -> Result<()> {
     let paths = [
         ("Config dir:", &config_dir),
         ("Config yaml:", &config_yaml_file),
-        ("Sessions DB (sqlite):", &sessions_db),
+        ("Spectral DB (sqlite):", &sessions_db),
         ("Logs dir:", &logs_dir),
     ];
 

@@ -16,12 +16,11 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
-use tracing::{info, warn};
+use tracing::info;
 use utoipa::ToSchema;
 
-pub const CURRENT_SCHEMA_VERSION: i32 = 11;
-pub const SESSIONS_FOLDER: &str = "sessions";
-pub const DB_NAME: &str = "sessions.db";
+/// Default user ID for Phase 1 single-user operation (Section B.0).
+pub const DEFAULT_USER_ID: &str = "default";
 
 #[derive(
     Debug,
@@ -50,7 +49,7 @@ pub enum SessionType {
 }
 
 static SESSION_STORAGE: LazyLock<Arc<SessionStorage>> =
-    LazyLock::new(|| Arc::new(SessionStorage::new(Paths::data_dir())));
+    LazyLock::new(|| Arc::new(SessionStorage::new_spectral()));
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Session {
@@ -428,7 +427,7 @@ impl SessionManager {
 pub struct SessionStorage {
     pool: Pool<Sqlite>,
     initialized: tokio::sync::OnceCell<()>,
-    session_dir: PathBuf,
+    db_path: PathBuf,
 }
 
 pub(crate) fn role_to_string(role: &Role) -> &'static str {
@@ -541,7 +540,7 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Session {
 impl SessionStorage {
     fn create_pool(path: &Path) -> Pool<Sqlite> {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("Failed to create session database directory");
+            fs::create_dir_all(parent).expect("Failed to create Spectral database directory");
         }
 
         let options = SqliteConnectOptions::new()
@@ -553,33 +552,36 @@ impl SessionStorage {
         SqlitePoolOptions::new().connect_lazy_with(options)
     }
 
-    pub fn new(data_dir: PathBuf) -> Self {
-        let session_dir = data_dir.join(SESSIONS_FOLDER);
-        let db_path = session_dir.join(DB_NAME);
+    /// Create a SessionStorage pointing at the Spectral database.
+    pub fn new_spectral() -> Self {
+        let db_path = Paths::spectral_db();
         Self {
             pool: Self::create_pool(&db_path),
             initialized: tokio::sync::OnceCell::new(),
-            session_dir,
+            db_path,
+        }
+    }
+
+    /// Create a SessionStorage at a custom path (used by tests).
+    pub fn new(data_dir: PathBuf) -> Self {
+        let db_path = data_dir.join("permagent.db");
+        Self {
+            pool: Self::create_pool(&db_path),
+            initialized: tokio::sync::OnceCell::new(),
+            db_path,
         }
     }
 
     pub(crate) async fn pool(&self) -> Result<&Pool<Sqlite>> {
         self.initialized
             .get_or_try_init(|| async {
-                let schema_exists = sqlx::query_scalar::<_, bool>(
-                    r#"SELECT EXISTS (SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version')"#,
-                )
-                .fetch_one(&self.pool)
-                .await
-                .unwrap_or(false);
+                use super::spectral_schema;
 
-                if schema_exists {
-                    Self::run_migrations(&self.pool).await?;
+                if spectral_schema::is_schema_initialized(&self.pool).await? {
+                    spectral_schema::verify_schema_version(&self.pool).await?;
                 } else {
-                    Self::create_schema(&self.pool).await?;
-                    if let Err(e) = Self::import_legacy(&self.pool, &self.session_dir).await {
-                        warn!("Failed to import some legacy sessions: {}", e);
-                    }
+                    info!("Initializing Spectral schema at {:?}", self.db_path);
+                    spectral_schema::init_spectral_db(&self.pool).await?;
                 }
                 Ok::<(), anyhow::Error>(())
             })
@@ -587,490 +589,11 @@ impl SessionStorage {
         Ok(&self.pool)
     }
 
-    pub async fn create(session_dir: &Path) -> Result<Self> {
-        let storage = Self::new(session_dir.to_path_buf());
-        Self::create_schema(&storage.pool).await?;
+    /// Create a fresh SessionStorage with Spectral schema (used by tests).
+    pub async fn create(base_dir: &Path) -> Result<Self> {
+        let storage = Self::new(base_dir.to_path_buf());
+        super::spectral_schema::init_spectral_db(&storage.pool).await?;
         Ok(storage)
-    }
-
-    async fn create_schema(pool: &Pool<Sqlite>) -> Result<()> {
-        sqlx::query(
-            r#"
-            CREATE TABLE schema_version (
-                version INTEGER PRIMARY KEY,
-                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        "#,
-        )
-        .execute(pool)
-        .await?;
-
-        sqlx::query("INSERT INTO schema_version (version) VALUES (?)")
-            .bind(CURRENT_SCHEMA_VERSION)
-            .execute(pool)
-            .await?;
-
-        sqlx::query(
-            r#"
-            CREATE TABLE sessions (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL DEFAULT '',
-                description TEXT NOT NULL DEFAULT '',
-                user_set_name BOOLEAN DEFAULT FALSE,
-                session_type TEXT NOT NULL DEFAULT 'user',
-                working_dir TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                extension_data TEXT DEFAULT '{}',
-                total_tokens INTEGER,
-                input_tokens INTEGER,
-                output_tokens INTEGER,
-                accumulated_total_tokens INTEGER,
-                accumulated_input_tokens INTEGER,
-                accumulated_output_tokens INTEGER,
-                schedule_id TEXT,
-                recipe_json TEXT,
-                user_recipe_values_json TEXT,
-                provider_name TEXT,
-                model_config_json TEXT,
-                goose_mode TEXT NOT NULL DEFAULT 'auto',
-                thread_id TEXT
-            )
-        "#,
-        )
-        .execute(pool)
-        .await?;
-
-        sqlx::query(
-            r#"
-            CREATE TABLE messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                message_id TEXT,
-                session_id TEXT NOT NULL REFERENCES sessions(id),
-                role TEXT NOT NULL,
-                content_json TEXT NOT NULL,
-                created_timestamp INTEGER NOT NULL,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                tokens INTEGER,
-                metadata_json TEXT
-            )
-        "#,
-        )
-        .execute(pool)
-        .await?;
-
-        sqlx::query("CREATE INDEX idx_messages_session ON messages(session_id)")
-            .execute(pool)
-            .await?;
-        sqlx::query("CREATE INDEX idx_messages_timestamp ON messages(timestamp)")
-            .execute(pool)
-            .await?;
-        sqlx::query("CREATE INDEX idx_messages_message_id ON messages(message_id)")
-            .execute(pool)
-            .await?;
-        sqlx::query("CREATE INDEX idx_sessions_updated ON sessions(updated_at DESC)")
-            .execute(pool)
-            .await?;
-        sqlx::query("CREATE INDEX idx_sessions_type ON sessions(session_type)")
-            .execute(pool)
-            .await?;
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_thread ON sessions(thread_id)")
-            .execute(pool)
-            .await?;
-
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS threads (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL DEFAULT 'New Chat',
-                user_set_name BOOLEAN DEFAULT FALSE,
-                working_dir TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                archived_at TIMESTAMP,
-                metadata_json TEXT DEFAULT '{}'
-            )",
-        )
-        .execute(pool)
-        .await?;
-
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS thread_messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                thread_id TEXT NOT NULL REFERENCES threads(id),
-                session_id TEXT,
-                message_id TEXT,
-                role TEXT NOT NULL,
-                content_json TEXT NOT NULL,
-                created_timestamp INTEGER NOT NULL,
-                metadata_json TEXT DEFAULT '{}'
-            )",
-        )
-        .execute(pool)
-        .await?;
-
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_thread_messages_thread ON thread_messages(thread_id)",
-        )
-        .execute(pool)
-        .await?;
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_thread_messages_message_id ON thread_messages(message_id)")
-            .execute(pool)
-            .await?;
-
-        crate::providers::inventory::create_tables(pool).await?;
-
-        Ok(())
-    }
-
-    async fn import_legacy(pool: &Pool<Sqlite>, session_dir: &PathBuf) -> Result<()> {
-        use crate::session::legacy;
-
-        let sessions = match legacy::list_sessions(session_dir) {
-            Ok(sessions) => sessions,
-            Err(_) => {
-                warn!("No legacy sessions found to import");
-                return Ok(());
-            }
-        };
-
-        if sessions.is_empty() {
-            return Ok(());
-        }
-
-        let mut imported_count = 0;
-        let mut failed_count = 0;
-
-        for (session_name, session_path) in sessions {
-            match legacy::load_session(&session_name, &session_path) {
-                Ok(session) => match Self::import_legacy_session(pool, &session).await {
-                    Ok(_) => {
-                        imported_count += 1;
-                        info!("  ✓ Imported: {}", session_name);
-                    }
-                    Err(e) => {
-                        failed_count += 1;
-                        info!("  ✗ Failed to import {}: {}", session_name, e);
-                    }
-                },
-                Err(e) => {
-                    failed_count += 1;
-                    info!("  ✗ Failed to load {}: {}", session_name, e);
-                }
-            }
-        }
-
-        info!(
-            "Import complete: {} successful, {} failed",
-            imported_count, failed_count
-        );
-        Ok(())
-    }
-
-    async fn import_legacy_session(pool: &Pool<Sqlite>, session: &Session) -> Result<()> {
-        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-
-        let recipe_json = match &session.recipe {
-            Some(recipe) => Some(serde_json::to_string(recipe)?),
-            None => None,
-        };
-
-        let user_recipe_values_json = match &session.user_recipe_values {
-            Some(user_recipe_values) => Some(serde_json::to_string(user_recipe_values)?),
-            None => None,
-        };
-
-        let model_config_json = match &session.model_config {
-            Some(model_config) => Some(serde_json::to_string(model_config)?),
-            None => None,
-        };
-
-        sqlx::query(
-            r#"
-        INSERT INTO sessions (
-            id, name, user_set_name, session_type, working_dir, created_at, updated_at, extension_data,
-            total_tokens, input_tokens, output_tokens,
-            accumulated_total_tokens, accumulated_input_tokens, accumulated_output_tokens,
-            schedule_id, recipe_json, user_recipe_values_json,
-            provider_name, model_config_json, goose_mode
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        "#,
-        )
-        .bind(&session.id)
-        .bind(&session.name)
-        .bind(session.user_set_name)
-        .bind(session.session_type.to_string())
-        .bind(&*session.working_dir.to_string_lossy())
-        .bind(session.created_at)
-        .bind(session.updated_at)
-        .bind(serde_json::to_string(&session.extension_data)?)
-        .bind(session.total_tokens)
-        .bind(session.input_tokens)
-        .bind(session.output_tokens)
-        .bind(session.accumulated_total_tokens)
-        .bind(session.accumulated_input_tokens)
-        .bind(session.accumulated_output_tokens)
-        .bind(&session.schedule_id)
-        .bind(recipe_json)
-        .bind(user_recipe_values_json)
-        .bind(&session.provider_name)
-        .bind(model_config_json)
-        .bind(session.goose_mode.to_string())
-        .execute(&mut *tx)
-        .await?;
-
-        tx.commit().await?;
-
-        if let Some(conversation) = &session.conversation {
-            Self::replace_conversation_inner(pool, &session.id, conversation).await?;
-        }
-        Ok(())
-    }
-
-    async fn run_migrations(pool: &Pool<Sqlite>) -> Result<()> {
-        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-
-        let current_version = Self::get_schema_version(&mut tx).await?;
-
-        if current_version < CURRENT_SCHEMA_VERSION {
-            info!(
-                "Running database migrations from v{} to v{}...",
-                current_version, CURRENT_SCHEMA_VERSION
-            );
-
-            for version in (current_version + 1)..=CURRENT_SCHEMA_VERSION {
-                info!("  Applying migration v{}...", version);
-                Self::apply_migration(&mut tx, version).await?;
-                Self::update_schema_version(&mut tx, version).await?;
-                info!("  ✓ Migration v{} complete", version);
-            }
-
-            info!("All migrations complete");
-        }
-
-        tx.commit().await?;
-        Ok(())
-    }
-
-    async fn get_schema_version(tx: &mut sqlx::Transaction<'_, Sqlite>) -> Result<i32> {
-        let table_exists = sqlx::query_scalar::<_, bool>(
-            r#"
-            SELECT EXISTS (
-                SELECT name FROM sqlite_master
-                WHERE type='table' AND name='schema_version'
-            )
-        "#,
-        )
-        .fetch_one(&mut **tx)
-        .await?;
-
-        if !table_exists {
-            return Ok(0);
-        }
-
-        let version = sqlx::query_scalar::<_, i32>("SELECT MAX(version) FROM schema_version")
-            .fetch_one(&mut **tx)
-            .await?;
-
-        Ok(version)
-    }
-
-    async fn update_schema_version(
-        tx: &mut sqlx::Transaction<'_, Sqlite>,
-        version: i32,
-    ) -> Result<()> {
-        sqlx::query("INSERT INTO schema_version (version) VALUES (?)")
-            .bind(version)
-            .execute(&mut **tx)
-            .await?;
-        Ok(())
-    }
-
-    #[allow(clippy::too_many_lines)]
-    async fn apply_migration(tx: &mut sqlx::Transaction<'_, Sqlite>, version: i32) -> Result<()> {
-        match version {
-            1 => {
-                sqlx::query(
-                    r#"
-                    CREATE TABLE IF NOT EXISTS schema_version (
-                        version INTEGER PRIMARY KEY,
-                        applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                "#,
-                )
-                .execute(&mut **tx)
-                .await?;
-            }
-            2 => {
-                sqlx::query(
-                    r#"
-                    ALTER TABLE sessions ADD COLUMN user_recipe_values_json TEXT
-                "#,
-                )
-                .execute(&mut **tx)
-                .await?;
-            }
-            3 => {
-                sqlx::query(
-                    r#"
-                    ALTER TABLE messages ADD COLUMN metadata_json TEXT
-                "#,
-                )
-                .execute(&mut **tx)
-                .await?;
-            }
-            4 => {
-                sqlx::query(
-                    r#"
-                    ALTER TABLE sessions ADD COLUMN name TEXT DEFAULT ''
-                "#,
-                )
-                .execute(&mut **tx)
-                .await?;
-
-                sqlx::query(
-                    r#"
-                    ALTER TABLE sessions ADD COLUMN user_set_name BOOLEAN DEFAULT FALSE
-                "#,
-                )
-                .execute(&mut **tx)
-                .await?;
-            }
-            5 => {
-                sqlx::query(
-                    r#"
-                    ALTER TABLE sessions ADD COLUMN session_type TEXT NOT NULL DEFAULT 'user'
-                "#,
-                )
-                .execute(&mut **tx)
-                .await?;
-
-                sqlx::query("CREATE INDEX idx_sessions_type ON sessions(session_type)")
-                    .execute(&mut **tx)
-                    .await?;
-            }
-            6 => {
-                sqlx::query(
-                    r#"
-                    ALTER TABLE sessions ADD COLUMN provider_name TEXT
-                "#,
-                )
-                .execute(&mut **tx)
-                .await?;
-
-                sqlx::query(
-                    r#"
-                    ALTER TABLE sessions ADD COLUMN model_config_json TEXT
-                "#,
-                )
-                .execute(&mut **tx)
-                .await?;
-            }
-            7 => {
-                sqlx::query(
-                    r#"
-                    ALTER TABLE messages ADD COLUMN message_id TEXT
-                "#,
-                )
-                .execute(&mut **tx)
-                .await?;
-
-                sqlx::query(
-                    r#"
-                    UPDATE messages
-                    SET message_id = 'msg_' || session_id || '_' || id
-                "#,
-                )
-                .execute(&mut **tx)
-                .await?;
-
-                sqlx::query("CREATE INDEX idx_messages_message_id ON messages(message_id)")
-                    .execute(&mut **tx)
-                    .await?;
-            }
-            8 => {
-                sqlx::query(
-                    r#"
-                    ALTER TABLE sessions ADD COLUMN goose_mode TEXT NOT NULL DEFAULT 'auto'
-                "#,
-                )
-                .execute(&mut **tx)
-                .await?;
-            }
-            9 => {
-                sqlx::query(
-                    r#"
-                    UPDATE sessions
-                    SET session_type = 'acp'
-                    WHERE session_type = 'user'
-                      AND name = 'ACP Session'
-                      AND user_set_name = FALSE
-                "#,
-                )
-                .execute(&mut **tx)
-                .await?;
-            }
-            10 => {
-                // Check if thread_id column already exists (e.g. fresh schema)
-                let has_thread_id = sqlx::query_scalar::<_, i32>(
-                    "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'thread_id'",
-                )
-                .fetch_one(&mut **tx)
-                .await?
-                    > 0;
-                if !has_thread_id {
-                    sqlx::query("ALTER TABLE sessions ADD COLUMN thread_id TEXT")
-                        .execute(&mut **tx)
-                        .await?;
-                }
-                sqlx::query(
-                    "CREATE INDEX IF NOT EXISTS idx_sessions_thread ON sessions(thread_id)",
-                )
-                .execute(&mut **tx)
-                .await?;
-                sqlx::query(
-                    "CREATE TABLE IF NOT EXISTS threads (
-                        id TEXT PRIMARY KEY,
-                        name TEXT NOT NULL DEFAULT 'New Chat',
-                        user_set_name BOOLEAN DEFAULT FALSE,
-                        working_dir TEXT,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        archived_at TIMESTAMP,
-                        metadata_json TEXT DEFAULT '{}'
-                    )",
-                )
-                .execute(&mut **tx)
-                .await?;
-                sqlx::query(
-                    "CREATE TABLE IF NOT EXISTS thread_messages (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        thread_id TEXT NOT NULL REFERENCES threads(id),
-                        session_id TEXT,
-                        message_id TEXT,
-                        role TEXT NOT NULL,
-                        content_json TEXT NOT NULL,
-                        created_timestamp INTEGER NOT NULL,
-                        metadata_json TEXT DEFAULT '{}'
-                    )",
-                )
-                .execute(&mut **tx)
-                .await?;
-                sqlx::query("CREATE INDEX IF NOT EXISTS idx_thread_messages_thread ON thread_messages(thread_id)")
-                    .execute(&mut **tx)
-                    .await?;
-                sqlx::query("CREATE INDEX IF NOT EXISTS idx_thread_messages_message_id ON thread_messages(message_id)")
-                    .execute(&mut **tx)
-                    .await?;
-            }
-            11 => {
-                crate::providers::inventory::create_tables_in_tx(tx).await?;
-            }
-            _ => {
-                anyhow::bail!("Unknown migration version: {}", version);
-            }
-        }
-
-        Ok(())
     }
 
     async fn create_session(
@@ -1086,13 +609,14 @@ impl SessionStorage {
         let today = chrono::Utc::now().format("%Y%m%d").to_string();
         let session = sqlx::query_as(
             r#"
-                INSERT INTO sessions (id, name, user_set_name, session_type, working_dir, extension_data, goose_mode)
+                INSERT INTO sessions (id, user_id, name, user_set_name, session_type, working_dir, extension_data, goose_mode)
                 VALUES (
                     ? || '_' || CAST(COALESCE((
                         SELECT MAX(CAST(SUBSTR(id, 10) AS INTEGER))
                         FROM sessions
                         WHERE id LIKE ? || '_%'
                     ), 0) + 1 AS TEXT),
+                    ?,
                     ?,
                     FALSE,
                     ?,
@@ -1105,6 +629,7 @@ impl SessionStorage {
         )
             .bind(&today)
             .bind(&today)
+            .bind(DEFAULT_USER_ID)
             .bind(&name)
             .bind(session_type.to_string())
             .bind(&*working_dir.to_string_lossy())
@@ -2098,71 +1623,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_acp_session_migration() {
+    async fn test_spectral_schema_creates_all_tables() {
         let temp_dir = TempDir::new().unwrap();
-        let db_path = temp_dir.path().join(SESSIONS_FOLDER).join(DB_NAME);
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
 
-        if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent).unwrap();
+        // Trigger schema init
+        let pool = sm.storage().pool().await.unwrap();
+
+        // Verify all Spectral tables exist
+        let tables: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap();
+
+        let expected = vec![
+            "integrations",
+            "knowledge_graph",
+            "memories",
+            "messages",
+            "provider_inventory_entries",
+            "provider_inventory_models",
+            "schema_version",
+            "sessions",
+            "skill_executions",
+            "skill_triggers",
+            "skills",
+            "tasks",
+            "thread_messages",
+            "threads",
+            "users",
+        ];
+        for table in &expected {
+            assert!(
+                tables.contains(&table.to_string()),
+                "Missing table: {}",
+                table
+            );
         }
 
-        let pool = SqlitePoolOptions::new()
-            .connect_with(
-                SqliteConnectOptions::new()
-                    .filename(&db_path)
-                    .create_if_missing(true),
-            )
-            .await
-            .unwrap();
-
-        SessionStorage::create_schema(&pool).await.unwrap();
-
-        // Demote the schema back to v8 to simulate a database
-        // that has never seen migration 9.
-        sqlx::query("UPDATE schema_version SET version = 8")
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        sqlx::query(
-            "INSERT INTO sessions (id, name, user_set_name, session_type, working_dir, extension_data, goose_mode)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        // Verify default user exists
+        let user: (String, String) = sqlx::query_as(
+            "SELECT id, display_name FROM users WHERE id = 'default'",
         )
-        .bind("user_id")
-        .bind("User Session")
-        .bind(false)
-        .bind("user")
-        .bind("/tmp")
-        .bind("{}")
-        .bind("auto")
-        .execute(&pool)
+        .fetch_one(pool)
         .await
         .unwrap();
-
-        sqlx::query(
-            "INSERT INTO sessions (id, name, user_set_name, session_type, working_dir, extension_data, goose_mode)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind("acp_id")
-        .bind("ACP Session")
-        .bind(false)
-        .bind("user")
-        .bind("/tmp")
-        .bind("{}")
-        .bind("auto")
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        pool.close().await;
-
-        let sm = SessionManager::new(temp_dir.path().to_path_buf());
-        sm.storage().pool().await.unwrap(); // Triggers migration
-
-        let user_session = sm.storage().get_session("user_id", false).await.unwrap();
-        assert_eq!(user_session.session_type, SessionType::User);
-
-        let acp_session = sm.storage().get_session("acp_id", false).await.unwrap();
-        assert_eq!(acp_session.session_type, SessionType::Acp);
+        assert_eq!(user.0, "default");
+        assert_eq!(user.1, "Default User");
     }
 }

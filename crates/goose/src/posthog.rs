@@ -1,6 +1,6 @@
 use crate::config::paths::Paths;
 use crate::config::{get_enabled_extensions, Config};
-use crate::session::session_manager::CURRENT_SCHEMA_VERSION;
+use crate::session::spectral_schema::SPECTRAL_SCHEMA_VERSION;
 use crate::session::SessionManager;
 #[cfg(target_os = "windows")]
 use crate::subprocess::SubprocessExt;
@@ -438,7 +438,7 @@ async fn send_session_event(installation: &InstallationData) -> Result<(), Strin
     insert(
         &mut props,
         "db_schema_version",
-        CURRENT_SCHEMA_VERSION as u64,
+        SPECTRAL_SCHEMA_VERSION as u64,
     );
 
     let session_manager = SessionManager::instance();
