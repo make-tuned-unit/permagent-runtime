@@ -285,6 +285,19 @@ pub fn handle_logs(err: bool) -> Result<()> {
 }
 
 pub fn handle_open() -> Result<()> {
+    // Try to launch the Tauri desktop app first
+    let app_path = "/Applications/Permagent.app";
+    if std::path::Path::new(app_path).exists() {
+        println!("Launching Permagent desktop app");
+        Command::new("open")
+            .arg("-a")
+            .arg(app_path)
+            .status()
+            .context("failed to launch Permagent desktop app")?;
+        return Ok(());
+    }
+
+    // Fall back to browser
     let port = read_daemon_port();
     let url = format!("http://localhost:{port}/ui/");
 
