@@ -761,6 +761,27 @@ enum MemoryCommand {
 }
 
 #[derive(Subcommand)]
+enum IntegrationsCommand {
+    /// List connected integrations and their status
+    #[command(about = "Show connected integrations and status")]
+    List {},
+
+    /// Connect a new integration (Gmail or Slack)
+    #[command(about = "Connect an integration (opens OAuth flow or prompts for token)")]
+    Connect {
+        /// Provider name: gmail or slack
+        provider: String,
+    },
+
+    /// Disconnect an integration
+    #[command(about = "Disconnect an integration and remove tokens")]
+    Disconnect {
+        /// Provider name: gmail or slack
+        provider: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum Command {
     /// Configure goose settings
     #[command(about = "Configure goose settings")]
@@ -923,6 +944,13 @@ enum Command {
     Memory {
         #[command(subcommand)]
         command: MemoryCommand,
+    },
+
+    /// Integration management (Gmail, Slack)
+    #[command(about = "Manage integrations (Gmail, Slack)", visible_alias = "int")]
+    Integrations {
+        #[command(subcommand)]
+        command: IntegrationsCommand,
     },
 
     /// Start the Permagent daemon via launchd
@@ -1135,6 +1163,7 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::Run { .. }) => "run",
         Some(Command::Gateway { .. }) => "gateway",
         Some(Command::Memory { .. }) => "memory",
+        Some(Command::Integrations { .. }) => "integrations",
         Some(Command::Schedule { .. }) => "schedule",
         Some(Command::Start {}) => "start",
         Some(Command::Stop {}) => "stop",
@@ -1583,6 +1612,20 @@ async fn handle_memory_command(command: MemoryCommand) -> Result<()> {
     }
 }
 
+async fn handle_integrations_command(command: IntegrationsCommand) -> Result<()> {
+    use crate::commands::integrations;
+
+    match command {
+        IntegrationsCommand::List {} => integrations::handle_integrations_list().await,
+        IntegrationsCommand::Connect { provider } => {
+            integrations::handle_integrations_connect(&provider).await
+        }
+        IntegrationsCommand::Disconnect { provider } => {
+            integrations::handle_integrations_disconnect(&provider).await
+        }
+    }
+}
+
 async fn handle_gateway_command(command: GatewayCommand) -> Result<()> {
     use crate::commands::gateway;
 
@@ -1959,6 +2002,7 @@ pub async fn cli() -> anyhow::Result<()> {
         Some(Command::Open {}) => crate::commands::daemon::handle_open(),
         Some(Command::Gateway { command }) => handle_gateway_command(command).await,
         Some(Command::Memory { command }) => handle_memory_command(command).await,
+        Some(Command::Integrations { command }) => handle_integrations_command(command).await,
         Some(Command::Schedule { command }) => handle_schedule_command(command).await,
         Some(Command::Update {
             canary,
