@@ -856,6 +856,34 @@ enum Command {
         command: GatewayCommand,
     },
 
+    /// Start the Permagent daemon via launchd
+    #[command(about = "Start the Permagent daemon (launchctl load)")]
+    Start {},
+
+    /// Stop the Permagent daemon
+    #[command(about = "Stop the Permagent daemon (launchctl unload)")]
+    Stop {},
+
+    /// Restart the Permagent daemon
+    #[command(about = "Restart the Permagent daemon")]
+    Restart {},
+
+    /// Show daemon status
+    #[command(about = "Show Permagent daemon status, PID, port, and uptime")]
+    Status {},
+
+    /// Tail daemon logs
+    #[command(about = "Tail Permagent daemon logs")]
+    Logs {
+        /// Tail stderr log instead of stdout
+        #[arg(long, help = "Tail daemon.err instead of daemon.log")]
+        err: bool,
+    },
+
+    /// Open Command Center in browser
+    #[command(about = "Open Permagent Command Center in default browser")]
+    Open {},
+
     /// Update the goose CLI version
     #[command(about = "Update the goose CLI version")]
     Update {
@@ -1038,6 +1066,12 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::Run { .. }) => "run",
         Some(Command::Gateway { .. }) => "gateway",
         Some(Command::Schedule { .. }) => "schedule",
+        Some(Command::Start {}) => "start",
+        Some(Command::Stop {}) => "stop",
+        Some(Command::Restart {}) => "restart",
+        Some(Command::Status {}) => "status",
+        Some(Command::Logs { .. }) => "logs",
+        Some(Command::Open {}) => "open",
         Some(Command::Update { .. }) => "update",
         Some(Command::Recipe { .. }) => "recipe",
         Some(Command::Term { .. }) => "term",
@@ -1805,6 +1839,12 @@ pub async fn cli() -> anyhow::Result<()> {
             )
             .await
         }
+        Some(Command::Start {}) => crate::commands::daemon::handle_start(),
+        Some(Command::Stop {}) => crate::commands::daemon::handle_stop(),
+        Some(Command::Restart {}) => crate::commands::daemon::handle_restart(),
+        Some(Command::Status {}) => crate::commands::daemon::handle_status(),
+        Some(Command::Logs { err }) => crate::commands::daemon::handle_logs(err),
+        Some(Command::Open {}) => crate::commands::daemon::handle_open(),
         Some(Command::Gateway { command }) => handle_gateway_command(command).await,
         Some(Command::Schedule { command }) => handle_schedule_command(command).await,
         Some(Command::Update {

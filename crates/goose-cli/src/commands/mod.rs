@@ -1,4 +1,5 @@
 pub mod configure;
+pub mod daemon;
 pub mod doctor;
 pub mod gateway;
 pub mod info;
