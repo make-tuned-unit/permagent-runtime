@@ -1,10 +1,11 @@
-import { FiMessageSquare, FiZap, FiList, FiWifi, FiWifiOff, FiLoader } from 'react-icons/fi';
+import { FiMessageSquare, FiZap, FiList, FiSettings, FiWifi, FiWifiOff, FiLoader } from 'react-icons/fi';
 import { useCommandCenter, type ActivePanel, type ConnectionStatus } from '../../lib/store';
 
 const NAV_ITEMS: Array<{ panel: ActivePanel; icon: typeof FiMessageSquare; label: string }> = [
   { panel: 'chat', icon: FiMessageSquare, label: 'Chat' },
   { panel: 'skills', icon: FiZap, label: 'Skills' },
   { panel: 'events', icon: FiList, label: 'Event Log' },
+  { panel: 'settings', icon: FiSettings, label: 'Settings' },
 ];
 
 function ConnectionIndicator({ status }: { status: ConnectionStatus }) {
