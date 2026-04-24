@@ -124,6 +124,9 @@ export const api = {
   deleteSkill: (id: string) =>
     apiFetch<{ deleted: boolean }>(`/permagent/skills/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
+  dismissSkillProposal: () =>
+    apiFetch<{ dismissed: boolean }>('/permagent/skills/dismiss', { method: 'POST' }).catch(() => ({ dismissed: true })),
+
   // Events history
   getEvents: (params?: { type?: string; limit?: number; after?: string; task_id?: string }) =>
     apiFetch<{ events: PermagentEvent[] }>(`/events${q(params ?? {})}`).catch(() => {

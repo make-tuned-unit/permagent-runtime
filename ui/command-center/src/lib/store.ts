@@ -45,12 +45,20 @@ export interface EventRecord {
   payload: Record<string, unknown>;
 }
 
+export interface ToolCall {
+  name: string;
+  arguments: Record<string, unknown>;
+  result?: string;
+  success?: boolean;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: string;
   task_id?: string;
+  tool_calls?: ToolCall[];
 }
 
 export interface SessionState {
@@ -124,8 +132,12 @@ interface CommandCenterStore {
   loadSkills: () => Promise<void>;
   deleteSkill: (id: string) => Promise<void>;
 
+  // --- Streaming ---
+  isStreaming: boolean;
+
   // --- Skill proposals ---
   pendingSkillProposal: SkillProposal | null;
+  saveSkillProposal: () => Promise<void>;
   dismissSkillProposal: () => void;
 
   // --- Sessions state ---
@@ -212,9 +224,32 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     }
   },
 
+  // Streaming
+  isStreaming: false,
+
   // Skill proposals
   pendingSkillProposal: null,
-  dismissSkillProposal: () => set({ pendingSkillProposal: null }),
+  saveSkillProposal: async () => {
+    const proposal = get().pendingSkillProposal;
+    if (!proposal) return;
+    try {
+      await api.createSkill({
+        name: proposal.description,
+        description: proposal.description,
+        trigger_type: 'auto',
+      });
+      set({ pendingSkillProposal: null });
+    } catch (e) {
+      console.error('Failed to save skill:', e);
+    }
+  },
+  dismissSkillProposal: () => {
+    const proposal = get().pendingSkillProposal;
+    if (proposal) {
+      api.dismissSkillProposal().catch(() => {});
+    }
+    set({ pendingSkillProposal: null });
+  },
 
   // Sessions
   sessions: [],
@@ -349,6 +384,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
               };
               patch.chatMessages = [...s.chatMessages, msg];
               patch._streamingMessageId = newId;
+              patch.isStreaming = true;
             } else if (p.done) {
               // Finalize: append last chunk and clear streaming state
               if (streamId) {
@@ -359,6 +395,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
                 );
               }
               patch._streamingMessageId = null;
+              patch.isStreaming = false;
             }
           }
           break;
