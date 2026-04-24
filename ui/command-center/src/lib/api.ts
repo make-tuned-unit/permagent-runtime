@@ -1,26 +1,103 @@
 /**
  * Permagent Command Center -- API client
- * Points at permagentd on localhost:3001 (Section D.3)
+ * Aligned with the actual permagentd (goose-server) endpoints.
  */
 
 const API_BASE_URL = (
   (import.meta.env.VITE_DAEMON_URL as string | undefined) ||
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ||
-  `http://${window.location.hostname}:3001`
+  `http://localhost:3000`
 ).replace(/\/$/, '');
 
-// --- Types ---
+const SECRET_KEY = (import.meta.env.VITE_SECRET_KEY as string | undefined) || '';
 
-export interface Session {
-  id: string;
-  metadata?: Record<string, unknown>;
-  created_at?: string;
+// --- Daemon types ---
+
+/** Content block inside a Message */
+export interface TextContent {
+  type: 'text';
+  text: string;
 }
 
-export interface SessionDetail {
+export interface ToolRequestContent {
+  type: 'toolRequest';
   id: string;
-  messages: Array<{ role: string; content: string; timestamp?: string }>;
-  metadata?: Record<string, unknown>;
+  toolCall: unknown;
+}
+
+export interface ToolResponseContent {
+  type: 'toolResponse';
+  id: string;
+  toolResult: unknown;
+}
+
+export type MessageContent = TextContent | ToolRequestContent | ToolResponseContent | { type: string; [key: string]: unknown };
+
+/** Message as serialized by the daemon (camelCase via serde) */
+export interface DaemonMessage {
+  id?: string;
+  role: 'user' | 'assistant';
+  created: number;
+  content: MessageContent[];
+  metadata: { userVisible: boolean; agentVisible: boolean };
+}
+
+/** Session as returned by the daemon (snake_case, no rename_all) */
+export interface Session {
+  id: string;
+  name: string;
+  working_dir: string;
+  user_set_name: boolean;
+  session_type: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+  total_tokens?: number | null;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  accumulated_total_tokens?: number | null;
+  accumulated_input_tokens?: number | null;
+  accumulated_output_tokens?: number | null;
+  conversation?: DaemonMessage[] | null;
+  schedule_id?: string | null;
+  provider_name?: string | null;
+}
+
+export interface SessionListResponse {
+  sessions: Session[];
+}
+
+/** SSE MessageEvent types from the daemon */
+export interface SSEMessageEvent {
+  type: 'Message';
+  message: DaemonMessage;
+  token_state: TokenState;
+}
+
+export interface SSEErrorEvent {
+  type: 'Error';
+  error: string;
+}
+
+export interface SSEFinishEvent {
+  type: 'Finish';
+  reason: string;
+  token_state: TokenState;
+}
+
+export interface SSEPingEvent {
+  type: 'Ping';
+}
+
+export type SSEEvent = SSEMessageEvent | SSEErrorEvent | SSEFinishEvent | SSEPingEvent | { type: string; [key: string]: unknown };
+
+export interface TokenState {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  accumulated_input_tokens: number;
+  accumulated_output_tokens: number;
+  accumulated_total_tokens: number;
 }
 
 export interface Skill {
@@ -51,54 +128,137 @@ export interface PermagentEvent {
 
 // --- Fetch helper ---
 
+function authHeaders(): Record<string, string> {
+  const h: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (SECRET_KEY) h['x-secret-key'] = SECRET_KEY;
+  return h;
+}
+
 async function apiFetch<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const url = `${API_BASE_URL}${endpoint}`;
   const response = await fetch(url, {
     ...options,
     headers: {
-      'Content-Type': 'application/json',
+      ...authHeaders(),
       ...(options?.headers ?? {}),
     },
   });
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ error: 'Unknown error' }));
-    throw new Error(error.error || `HTTP ${response.status}`);
+    const error = await response.json().catch(() => ({ message: 'Unknown error' }));
+    throw new Error(error.message || error.error || `HTTP ${response.status}`);
   }
 
   return response.json() as Promise<T>;
 }
 
-const q = (params: Record<string, string | number | undefined | null>) => {
-  const usp = new URLSearchParams();
-  Object.entries(params).forEach(([k, v]) => {
-    if (v !== undefined && v !== null && `${v}` !== '') usp.set(k, String(v));
-  });
-  const s = usp.toString();
-  return s ? `?${s}` : '';
-};
+/** Build a user Message in the format the daemon expects */
+export function buildUserMessage(text: string): DaemonMessage {
+  return {
+    role: 'user',
+    created: Math.floor(Date.now() / 1000),
+    content: [{ type: 'text', text }],
+    metadata: { userVisible: true, agentVisible: true },
+  };
+}
 
-// --- API (Section D.3) ---
+/** Extract the first text content from a DaemonMessage */
+export function extractText(msg: DaemonMessage): string {
+  return msg.content
+    .filter((c): c is TextContent => c.type === 'text')
+    .map(c => c.text)
+    .join('');
+}
+
+/**
+ * Parse SSE events from a fetch Response body.
+ * Calls onEvent for each parsed event, onDone when stream ends.
+ */
+export async function parseSSEStream(
+  response: Response,
+  onEvent: (event: SSEEvent) => void,
+  onDone?: () => void,
+): Promise<void> {
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split('\n');
+      buffer = parts.pop() || '';
+
+      for (const line of parts) {
+        if (line.startsWith('data: ')) {
+          const json = line.slice(6);
+          try {
+            const parsed = JSON.parse(json) as SSEEvent;
+            onEvent(parsed);
+          } catch {
+            // skip malformed JSON
+          }
+        }
+        // ignore comment lines (: ping ...) and empty lines
+      }
+    }
+  } finally {
+    onDone?.();
+  }
+}
+
+// --- API ---
 
 export const api = {
   // Health
   getHealth: () => apiFetch<{ status: string }>('/status'),
 
-  // Chat / Reply
-  sendReply: (session_id: string, message: string) =>
-    apiFetch<{ reply: string; session_id: string }>('/reply', {
-      method: 'POST',
-      body: JSON.stringify({ session_id, message }),
+  // Sessions — GET /sessions returns { sessions: [...] }
+  getSessions: async (): Promise<Session[]> => {
+    const res = await apiFetch<SessionListResponse>('/sessions');
+    return res.sessions;
+  },
+
+  // Session detail — GET /sessions/{id} returns Session with conversation
+  getSession: (id: string) =>
+    apiFetch<Session>(`/sessions/${encodeURIComponent(id)}`),
+
+  // Delete session — DELETE /sessions/{id}
+  deleteSession: (id: string) =>
+    fetch(`${API_BASE_URL}/sessions/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
     }),
 
-  // Sessions
-  getSessions: () => apiFetch<Session[]>('/sessions'),
+  // Create session — POST /agent/start with working_dir
+  createSession: (workingDir?: string) =>
+    apiFetch<Session>('/agent/start', {
+      method: 'POST',
+      body: JSON.stringify({ working_dir: workingDir || '/tmp' }),
+    }),
 
-  getSession: (id: string) =>
-    apiFetch<SessionDetail>(`/sessions/${encodeURIComponent(id)}`),
-
-  createSession: () =>
-    apiFetch<Session>('/sessions', { method: 'POST', body: JSON.stringify({}) }),
+  /**
+   * Send a message via POST /reply — returns a raw Response for SSE streaming.
+   * The caller must parse the SSE stream from the response body.
+   */
+  sendReply: async (sessionId: string, text: string): Promise<Response> => {
+    const response = await fetch(`${API_BASE_URL}/reply`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({
+        session_id: sessionId,
+        user_message: buildUserMessage(text),
+      }),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ message: 'Unknown error' }));
+      throw new Error(error.message || `HTTP ${response.status}`);
+    }
+    return response;
+  },
 
   // Config
   getConfig: () => apiFetch<PermagentConfig>('/config'),
@@ -109,7 +269,7 @@ export const api = {
       body: JSON.stringify({ key, value }),
     }),
 
-  // Skills CRUD (Section D.3)
+  // Skills CRUD
   getSkills: () => apiFetch<Skill[]>('/permagent/skills').catch(() => [] as Skill[]),
 
   createSkill: (skill: {
@@ -144,13 +304,6 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ argumentShapeHash }),
     }).catch(() => {}),
-
-  // Events history
-  getEvents: (params?: { type?: string; limit?: number; after?: string; task_id?: string }) =>
-    apiFetch<{ events: PermagentEvent[] }>(`/events${q(params ?? {})}`).catch(() => {
-      console.warn('[api] GET /events not implemented yet');
-      return { events: [] as PermagentEvent[] };
-    }),
 
   // State snapshot (stubbed until daemon implements)
   getStateSnapshot: () => Promise.resolve({

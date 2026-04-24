@@ -1,5 +1,6 @@
 import { create } from 'zustand';
-import { api } from './api';
+import { api, extractText, parseSSEStream } from './api';
+import type { Session, DaemonMessage, SSEEvent } from './api';
 import { useEventBus, startEventPruning } from './eventBus';
 import type { PermagentEvent } from './eventBus';
 
@@ -63,8 +64,10 @@ export interface ChatMessage {
 
 export interface SessionState {
   id: string;
+  name: string;
   created_at?: string;
-  metadata?: Record<string, unknown>;
+  updated_at?: string;
+  message_count: number;
 }
 
 export interface SkillState {
@@ -127,6 +130,10 @@ interface CommandCenterStore {
   addChatMessage: (msg: ChatMessage) => void;
   _streamingMessageId: string | null;
 
+  // --- SSE streaming ---
+  isStreaming: boolean;
+  sendMessage: (text: string) => Promise<void>;
+
   // --- Skills state ---
   skills: SkillState[];
   skillsLoading: boolean;
@@ -135,9 +142,6 @@ interface CommandCenterStore {
   loadSkills: () => Promise<void>;
   deleteSkill: (id: string) => Promise<void>;
   updateSkill: (id: string, updates: Partial<SkillState>) => Promise<void>;
-
-  // --- Streaming ---
-  isStreaming: boolean;
 
   // --- Skill proposals ---
   pendingSkillProposal: SkillProposal | null;
@@ -155,6 +159,7 @@ interface CommandCenterStore {
   // --- Actions ---
   loadEvents: (params?: { type?: string; limit?: number }) => Promise<void>;
   loadSnapshot: () => Promise<void>;
+  loadSessionMessages: (sessionId: string) => Promise<void>;
   handleWsEvent: (event: EventRecord) => void;
   clearEvents: () => void;
 
@@ -167,12 +172,11 @@ interface CommandCenterStore {
   disconnect: () => void;
 }
 
-// WebSocket URL — permagentd events endpoint (Section C.2)
-// Prefer VITE_DAEMON_URL (full ws:// URL), fall back to VITE_WS_URL, then default
+// WebSocket URL — permagentd events endpoint
 const WS_URL = (
   (import.meta.env.VITE_DAEMON_URL as string | undefined) ||
   (import.meta.env.VITE_WS_URL as string | undefined) ||
-  `ws://${window.location.hostname}:3001/events`
+  `ws://localhost:3000/events`
 );
 
 const MAX_EVENTS_BUFFER = 1000;
@@ -180,6 +184,31 @@ const MAX_EVENTS_BUFFER = 1000;
 // Reconnect: exponential backoff 1s, 2s, 4s, 8s, ... max 30s
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
+
+/** Convert a DaemonMessage to a ChatMessage for display */
+function daemonMsgToChat(msg: DaemonMessage, index: number, sessionId: string): ChatMessage {
+  const toolCalls: ToolCall[] = [];
+  for (const c of msg.content) {
+    if (c.type === 'toolRequest') {
+      const tr = c as { type: string; id: string; toolCall?: { name?: string; arguments?: Record<string, unknown> } };
+      const call = tr.toolCall;
+      if (call) {
+        toolCalls.push({
+          name: call.name || 'unknown',
+          arguments: call.arguments || {},
+        });
+      }
+    }
+  }
+
+  return {
+    id: msg.id || `hist-${sessionId}-${index}`,
+    role: msg.role,
+    content: extractText(msg),
+    timestamp: new Date(msg.created * 1000).toISOString(),
+    tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+  };
+}
 
 export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   // Panel routing
@@ -205,6 +234,122 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   _streamingMessageId: null,
 
   addChatMessage: (msg) => set(s => ({ chatMessages: [...s.chatMessages, msg] })),
+
+  // Streaming
+  isStreaming: false,
+
+  /**
+   * Send a message to the daemon via POST /reply and process the SSE stream.
+   * Creates a session if none exists.
+   */
+  sendMessage: async (text: string) => {
+    const state = get();
+    if (state.isStreaming) return;
+
+    // Add user message to chat
+    const userMsg: ChatMessage = {
+      id: `msg-${Date.now()}`,
+      role: 'user',
+      content: text,
+      timestamp: new Date().toISOString(),
+    };
+    set(s => ({ chatMessages: [...s.chatMessages, userMsg] }));
+
+    // Ensure we have a session
+    let sessionId = state.chatSessionId;
+    if (!sessionId) {
+      try {
+        const session = await api.createSession();
+        sessionId = session.id;
+        set({ chatSessionId: sessionId });
+        try { localStorage.setItem('permagent-chat-session-id', sessionId); } catch { /* */ }
+      } catch (err) {
+        set(s => ({
+          chatMessages: [...s.chatMessages, {
+            id: `msg-${Date.now()}-err`,
+            role: 'system' as const,
+            content: `Failed to create session: ${err instanceof Error ? err.message : 'Unknown error'}`,
+            timestamp: new Date().toISOString(),
+          }],
+        }));
+        return;
+      }
+    }
+
+    set({ isStreaming: true, _streamingMessageId: null });
+
+    try {
+      const response = await api.sendReply(sessionId, text);
+
+      // Create a placeholder assistant message for streaming
+      const streamMsgId = `msg-${Date.now()}-stream`;
+      set(s => ({
+        _streamingMessageId: streamMsgId,
+        chatMessages: [...s.chatMessages, {
+          id: streamMsgId,
+          role: 'assistant' as const,
+          content: '',
+          timestamp: new Date().toISOString(),
+        }],
+      }));
+
+      let lastContent = '';
+
+      await parseSSEStream(
+        response,
+        (event: SSEEvent) => {
+          switch (event.type) {
+            case 'Message': {
+              const msg = (event as { type: string; message: DaemonMessage }).message;
+              if (msg.role === 'assistant') {
+                const text = extractText(msg);
+                if (text !== lastContent) {
+                  lastContent = text;
+                  set(s => ({
+                    chatMessages: s.chatMessages.map(m =>
+                      m.id === streamMsgId ? { ...m, content: text } : m
+                    ),
+                  }));
+                }
+              }
+              break;
+            }
+            case 'Error': {
+              const errMsg = (event as { type: string; error: string }).error;
+              set(s => ({
+                chatMessages: [...s.chatMessages, {
+                  id: `msg-${Date.now()}-err`,
+                  role: 'system' as const,
+                  content: `Error: ${errMsg}`,
+                  timestamp: new Date().toISOString(),
+                }],
+              }));
+              break;
+            }
+            case 'Finish':
+              // Stream complete
+              break;
+            case 'Ping':
+              break;
+          }
+        },
+        () => {
+          set({ isStreaming: false, _streamingMessageId: null });
+        },
+      );
+    } catch (err) {
+      set(s => ({
+        isStreaming: false,
+        _streamingMessageId: null,
+        chatMessages: [...s.chatMessages, {
+          id: `msg-${Date.now()}-err`,
+          role: 'system' as const,
+          content: `Failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
+          timestamp: new Date().toISOString(),
+        }],
+      }));
+    }
+  },
 
   // Skills
   skills: [],
@@ -244,9 +389,6 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     }
   },
 
-  // Streaming
-  isStreaming: false,
-
   // Skill proposals
   pendingSkillProposal: null,
   saveSkillProposal: async () => {
@@ -280,9 +422,30 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   loadSessions: async () => {
     try {
       const sessions = await api.getSessions();
-      set({ sessions: sessions as SessionState[] });
+      set({
+        sessions: sessions.map((s: Session) => ({
+          id: s.id,
+          name: s.name,
+          created_at: s.created_at,
+          updated_at: s.updated_at,
+          message_count: s.message_count,
+        })),
+      });
     } catch {
       set({ sessions: [] });
+    }
+  },
+
+  /** Load messages from a session's conversation history */
+  loadSessionMessages: async (sessionId: string) => {
+    try {
+      const session = await api.getSession(sessionId);
+      if (session.conversation && session.conversation.length > 0) {
+        const msgs = session.conversation.map((m, i) => daemonMsgToChat(m, i, sessionId));
+        set({ chatMessages: msgs });
+      }
+    } catch {
+      // Session may not exist on server yet
     }
   },
 
@@ -292,23 +455,9 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
   clearEvents: () => set({ events: [] }),
 
-  loadEvents: async (params) => {
-    try {
-      const res = await api.getEvents({ limit: 200, ...params });
-      const events: EventRecord[] = (res.events ?? []).map(e => ({
-        id: e.id,
-        timestamp: e.timestamp,
-        source: (e.payload?.source as string) || 'permagentd',
-        event_type: e.type,
-        severity: (e.payload?.severity as string) || 'info',
-        run_id: (e.payload?.run_id as string) || null,
-        task_id: (e.payload?.task_id as string) || null,
-        agent_id: (e.payload?.agent_id as string) || null,
-        correlation_id: (e.payload?.correlation_id as string) || null,
-        payload: e.payload,
-      }));
-      set({ events });
-    } catch { set({ events: [] }); }
+  loadEvents: async () => {
+    // Events come through WebSocket; no REST endpoint for event history
+    // Keep this as a no-op for now
   },
 
   loadSnapshot: async () => {
@@ -372,58 +521,6 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
           }
           break;
         }
-        case 'message_received': {
-          const p = event.payload as { content_preview?: string; content?: string; role?: string; session_id?: string };
-          const content = p.content_preview || p.content;
-          if (content) {
-            const msg: ChatMessage = {
-              id: event.id,
-              role: (p.role as 'user' | 'assistant') || 'assistant',
-              content,
-              timestamp: event.timestamp,
-            };
-            patch.chatMessages = [...s.chatMessages, msg];
-          }
-          break;
-        }
-        case 'stream_chunk': {
-          const p = event.payload as { session_id?: string; content?: string; done?: boolean };
-          if (p.content !== undefined) {
-            const streamId = s._streamingMessageId;
-            if (streamId && !p.done) {
-              // Append to existing streaming message
-              patch.chatMessages = s.chatMessages.map(m =>
-                m.id === streamId
-                  ? { ...m, content: m.content + (p.content || '') }
-                  : m
-              );
-            } else if (!streamId && !p.done) {
-              // Start a new streaming message
-              const newId = event.id;
-              const msg: ChatMessage = {
-                id: newId,
-                role: 'assistant',
-                content: p.content || '',
-                timestamp: event.timestamp,
-              };
-              patch.chatMessages = [...s.chatMessages, msg];
-              patch._streamingMessageId = newId;
-              patch.isStreaming = true;
-            } else if (p.done) {
-              // Finalize: append last chunk and clear streaming state
-              if (streamId) {
-                patch.chatMessages = s.chatMessages.map(m =>
-                  m.id === streamId
-                    ? { ...m, content: m.content + (p.content || '') }
-                    : m
-                );
-              }
-              patch._streamingMessageId = null;
-              patch.isStreaming = false;
-            }
-          }
-          break;
-        }
         case 'skill_proposed': {
           const p = event.payload as {
             description?: string; tool_used?: string; argument_shape_hash?: string;
@@ -442,7 +539,6 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
           break;
         }
         case 'skill_saved': {
-          // Reload skills list when a new skill is saved
           get().loadSkills();
           break;
         }
@@ -462,7 +558,6 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         case 'integration_error':
         case 'daemon_started':
         case 'daemon_stopped':
-          // These are logged in the event buffer; no additional store mutations needed
           break;
       }
 
@@ -496,7 +591,6 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       }
 
       get().loadSnapshot();
-      get().loadEvents();
       get().loadSkills();
     };
 

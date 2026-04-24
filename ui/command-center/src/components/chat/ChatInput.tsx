@@ -1,16 +1,14 @@
 import { useState, useRef, useEffect } from 'react';
 import { FiSend, FiLoader } from 'react-icons/fi';
-import { useCommandCenter, type ChatMessage } from '../../lib/store';
-import { api } from '../../lib/api';
+import { useCommandCenter } from '../../lib/store';
 
 export function ChatInput() {
-  const addChatMessage = useCommandCenter(s => s.addChatMessage);
   const isStreaming = useCommandCenter(s => s.isStreaming);
+  const sendMessage = useCommandCenter(s => s.sendMessage);
 
   const [input, setInput] = useState('');
-  const [sending, setSending] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const disabled = isStreaming || sending;
+  const disabled = isStreaming;
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -23,53 +21,8 @@ export function ChatInput() {
     const msg = input.trim();
     if (!msg || disabled) return;
 
-    const userMsg: ChatMessage = {
-      id: `msg-${Date.now()}`,
-      role: 'user',
-      content: msg,
-      timestamp: new Date().toISOString(),
-    };
-    addChatMessage(userMsg);
     setInput('');
-    setSending(true);
-
-    try {
-      let sessionId = useCommandCenter.getState().chatSessionId;
-      if (!sessionId) {
-        try {
-          const session = await api.createSession();
-          sessionId = session.id;
-          useCommandCenter.setState({ chatSessionId: sessionId });
-          try { localStorage.setItem('permagent-chat-session-id', sessionId); } catch { /* ignore */ }
-        } catch {
-          sessionId = 'default';
-        }
-      }
-
-      const res = await api.sendReply(sessionId, msg);
-
-      if (res.session_id) {
-        useCommandCenter.setState({ chatSessionId: res.session_id });
-        try { localStorage.setItem('permagent-chat-session-id', res.session_id); } catch { /* ignore */ }
-      }
-
-      addChatMessage({
-        id: `msg-${Date.now()}-reply`,
-        role: 'assistant',
-        content: res.reply,
-        timestamp: new Date().toISOString(),
-      });
-    } catch (err) {
-      setInput(msg);
-      addChatMessage({
-        id: `msg-${Date.now()}-err`,
-        role: 'system',
-        content: `Failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
-        timestamp: new Date().toISOString(),
-      });
-    } finally {
-      setSending(false);
-    }
+    await sendMessage(msg);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -98,7 +51,7 @@ export function ChatInput() {
           disabled={!input.trim() || disabled}
           className="rounded-lg bg-accent/80 px-3 py-2 text-dark-bg font-semibold transition hover:bg-accent hover:shadow-[0_0_12px_rgba(0,255,180,0.2)] disabled:opacity-30 disabled:hover:shadow-none"
         >
-          {sending ? <FiLoader size={14} className="animate-spin" /> : <FiSend size={14} />}
+          {isStreaming ? <FiLoader size={14} className="animate-spin" /> : <FiSend size={14} />}
         </button>
       </div>
     </div>

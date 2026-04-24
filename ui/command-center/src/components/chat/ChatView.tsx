@@ -1,6 +1,5 @@
 import { useEffect } from 'react';
 import { useCommandCenter } from '../../lib/store';
-import { api } from '../../lib/api';
 import { MessageList } from './MessageList';
 import { ChatInput } from './ChatInput';
 import { SkillPromptBanner } from './SkillPromptBanner';
@@ -8,8 +7,9 @@ import { SkillPromptBanner } from './SkillPromptBanner';
 export function ChatView() {
   const chatSessionId = useCommandCenter(s => s.chatSessionId);
   const loadSessions = useCommandCenter(s => s.loadSessions);
+  const loadSessionMessages = useCommandCenter(s => s.loadSessionMessages);
 
-  // On mount: fetch sessions, load active session messages, or create one
+  // On mount: fetch sessions, load active session messages
   useEffect(() => {
     (async () => {
       await loadSessions();
@@ -23,20 +23,7 @@ export function ChatView() {
       }
 
       if (sessionId) {
-        try {
-          const detail = await api.getSession(sessionId);
-          if (detail.messages && detail.messages.length > 0) {
-            const msgs = detail.messages.map((m, i) => ({
-              id: `hist-${sessionId}-${i}`,
-              role: (m.role as 'user' | 'assistant' | 'system') || 'assistant',
-              content: m.content,
-              timestamp: m.timestamp || new Date().toISOString(),
-            }));
-            useCommandCenter.setState({ chatMessages: msgs });
-          }
-        } catch {
-          // Session may not exist on server yet
-        }
+        await loadSessionMessages(sessionId);
       }
     })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
