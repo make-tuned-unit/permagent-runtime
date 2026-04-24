@@ -1,5 +1,5 @@
-import { FiMessageSquare, FiZap, FiList, FiWifi, FiWifiOff } from 'react-icons/fi';
-import { useCommandCenter, type ActivePanel } from '../../lib/store';
+import { FiMessageSquare, FiZap, FiList, FiWifi, FiWifiOff, FiLoader } from 'react-icons/fi';
+import { useCommandCenter, type ActivePanel, type ConnectionStatus } from '../../lib/store';
 
 const NAV_ITEMS: Array<{ panel: ActivePanel; icon: typeof FiMessageSquare; label: string }> = [
   { panel: 'chat', icon: FiMessageSquare, label: 'Chat' },
@@ -7,11 +7,44 @@ const NAV_ITEMS: Array<{ panel: ActivePanel; icon: typeof FiMessageSquare; label
   { panel: 'events', icon: FiList, label: 'Event Log' },
 ];
 
+function ConnectionIndicator({ status }: { status: ConnectionStatus }) {
+  switch (status) {
+    case 'connected':
+      return (
+        <>
+          <FiWifi size={12} className="text-emerald-400" />
+          <span className="text-[10px] font-mono text-emerald-400">Connected</span>
+        </>
+      );
+    case 'connecting':
+      return (
+        <>
+          <FiLoader size={12} className="text-amber-400 animate-spin" />
+          <span className="text-[10px] font-mono text-amber-400">Connecting...</span>
+        </>
+      );
+    case 'error':
+      return (
+        <>
+          <FiWifiOff size={12} className="text-red-400 animate-pulse" />
+          <span className="text-[10px] font-mono text-red-400">Error</span>
+        </>
+      );
+    case 'disconnected':
+    default:
+      return (
+        <>
+          <FiWifiOff size={12} className="text-dark-muted" />
+          <span className="text-[10px] font-mono text-dark-muted">Disconnected</span>
+        </>
+      );
+  }
+}
+
 export function Sidebar() {
   const activePanel = useCommandCenter(s => s.activePanel);
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
-  const wsConnected = useCommandCenter(s => s.wsConnected);
-  const wsReconnecting = useCommandCenter(s => s.wsReconnecting);
+  const connectionStatus = useCommandCenter(s => s.connectionStatus);
 
   return (
     <div className="flex h-full w-[200px] shrink-0 flex-col border-r border-dark-border bg-[#0B1120]">
@@ -46,22 +79,7 @@ export function Sidebar() {
       {/* Connection status */}
       <div className="border-t border-dark-border px-4 py-3">
         <div className="flex items-center gap-2">
-          {wsConnected ? (
-            <>
-              <FiWifi size={12} className="text-emerald-400" />
-              <span className="text-[10px] font-mono text-emerald-400">Connected</span>
-            </>
-          ) : wsReconnecting ? (
-            <>
-              <FiWifiOff size={12} className="text-amber-400 animate-pulse" />
-              <span className="text-[10px] font-mono text-amber-400">Reconnecting...</span>
-            </>
-          ) : (
-            <>
-              <FiWifiOff size={12} className="text-red-400" />
-              <span className="text-[10px] font-mono text-red-400">Disconnected</span>
-            </>
-          )}
+          <ConnectionIndicator status={connectionStatus} />
         </div>
       </div>
     </div>

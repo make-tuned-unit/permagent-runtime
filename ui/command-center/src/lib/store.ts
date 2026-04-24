@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 import { api } from './api';
+import { useEventBus, startEventPruning } from './eventBus';
+import type { PermagentEvent } from './eventBus';
 
 // --- Types ---
 
@@ -81,7 +83,18 @@ export type PermagentEventType =
   | 'message_received' | 'stream_chunk'
   | 'integration_connected' | 'integration_error';
 
+export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
+
 export type ActivePanel = 'chat' | 'skills' | 'events';
+
+// Skill proposal from skill_proposed events
+export interface SkillProposal {
+  description: string;
+  tool_used: string;
+  occurrence_count: number;
+  source_task_ids: string[];
+  timestamp: string;
+}
 
 interface CommandCenterStore {
   // --- Panel routing ---
@@ -89,8 +102,7 @@ interface CommandCenterStore {
   setActivePanel: (panel: ActivePanel) => void;
 
   // --- Connection state ---
-  wsConnected: boolean;
-  wsReconnecting: boolean;
+  connectionStatus: ConnectionStatus;
 
   // --- Operational state ---
   tasks: TaskState[];
@@ -104,12 +116,17 @@ interface CommandCenterStore {
   chatMessages: ChatMessage[];
   chatSessionId: string | null;
   addChatMessage: (msg: ChatMessage) => void;
+  _streamingMessageId: string | null;
 
   // --- Skills state ---
   skills: SkillState[];
   skillsLoading: boolean;
   loadSkills: () => Promise<void>;
   deleteSkill: (id: string) => Promise<void>;
+
+  // --- Skill proposals ---
+  pendingSkillProposal: SkillProposal | null;
+  dismissSkillProposal: () => void;
 
   // --- Sessions state ---
   sessions: SessionState[];
@@ -135,12 +152,18 @@ interface CommandCenterStore {
 }
 
 // WebSocket URL — permagentd events endpoint (Section C.2)
+// Prefer VITE_DAEMON_URL (full ws:// URL), fall back to VITE_WS_URL, then default
 const WS_URL = (
+  (import.meta.env.VITE_DAEMON_URL as string | undefined) ||
   (import.meta.env.VITE_WS_URL as string | undefined) ||
   `ws://${window.location.hostname}:3001/events`
 );
 
-const MAX_EVENTS_BUFFER = 500;
+const MAX_EVENTS_BUFFER = 1000;
+
+// Reconnect: exponential backoff 1s, 2s, 4s, 8s, ... max 30s
+const RECONNECT_BASE_MS = 1000;
+const RECONNECT_MAX_MS = 30000;
 
 export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   // Panel routing
@@ -148,8 +171,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   setActivePanel: (panel) => set({ activePanel: panel }),
 
   // Connection
-  wsConnected: false,
-  wsReconnecting: false,
+  connectionStatus: 'disconnected',
 
   // State
   tasks: [],
@@ -164,6 +186,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   chatSessionId: (() => {
     try { return localStorage.getItem('permagent-chat-session-id'); } catch { return null; }
   })(),
+  _streamingMessageId: null,
 
   addChatMessage: (msg) => set(s => ({ chatMessages: [...s.chatMessages, msg] })),
 
@@ -188,6 +211,10 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       console.error('Failed to delete skill:', e);
     }
   },
+
+  // Skill proposals
+  pendingSkillProposal: null,
+  dismissSkillProposal: () => set({ pendingSkillProposal: null }),
 
   // Sessions
   sessions: [],
@@ -248,16 +275,25 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   },
 
   handleWsEvent: (event) => {
+    // Push to EventBus for the event log panel
+    const busEvent: PermagentEvent = {
+      id: event.id,
+      type: event.event_type as PermagentEvent['type'],
+      timestamp: event.timestamp,
+      payload: event.payload,
+    };
+    useEventBus.getState().addEvent(busEvent);
+
     set(s => {
       const newEvents = [event, ...s.events].slice(0, MAX_EVENTS_BUFFER);
       const patch: Partial<CommandCenterStore> = { events: newEvents, _lastEventId: event.id };
 
       switch (event.event_type) {
         case 'task_created': {
-          const p = event.payload as { task_id?: string; title?: string; status?: string };
+          const p = event.payload as { task_id?: string; title?: string; description?: string; status?: string };
           if (p.task_id) {
             patch.tasks = [...s.tasks, {
-              id: p.task_id, title: p.title || null,
+              id: p.task_id, title: p.title || p.description || null,
               status: p.status || 'pending', automation_id: null,
               created_at: event.timestamp, updated_at: event.timestamp,
             }];
@@ -278,15 +314,68 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
           break;
         }
         case 'message_received': {
-          const p = event.payload as { content?: string; role?: string };
-          if (p.content) {
+          const p = event.payload as { content_preview?: string; content?: string; role?: string; session_id?: string };
+          const content = p.content_preview || p.content;
+          if (content) {
             const msg: ChatMessage = {
               id: event.id,
               role: (p.role as 'user' | 'assistant') || 'assistant',
-              content: p.content,
+              content,
               timestamp: event.timestamp,
             };
             patch.chatMessages = [...s.chatMessages, msg];
+          }
+          break;
+        }
+        case 'stream_chunk': {
+          const p = event.payload as { session_id?: string; content?: string; done?: boolean };
+          if (p.content !== undefined) {
+            const streamId = s._streamingMessageId;
+            if (streamId && !p.done) {
+              // Append to existing streaming message
+              patch.chatMessages = s.chatMessages.map(m =>
+                m.id === streamId
+                  ? { ...m, content: m.content + (p.content || '') }
+                  : m
+              );
+            } else if (!streamId && !p.done) {
+              // Start a new streaming message
+              const newId = event.id;
+              const msg: ChatMessage = {
+                id: newId,
+                role: 'assistant',
+                content: p.content || '',
+                timestamp: event.timestamp,
+              };
+              patch.chatMessages = [...s.chatMessages, msg];
+              patch._streamingMessageId = newId;
+            } else if (p.done) {
+              // Finalize: append last chunk and clear streaming state
+              if (streamId) {
+                patch.chatMessages = s.chatMessages.map(m =>
+                  m.id === streamId
+                    ? { ...m, content: m.content + (p.content || '') }
+                    : m
+                );
+              }
+              patch._streamingMessageId = null;
+            }
+          }
+          break;
+        }
+        case 'skill_proposed': {
+          const p = event.payload as {
+            description?: string; tool_used?: string;
+            occurrence_count?: number; source_task_ids?: string[];
+          };
+          if (p.description) {
+            patch.pendingSkillProposal = {
+              description: p.description,
+              tool_used: p.tool_used || '',
+              occurrence_count: p.occurrence_count || 0,
+              source_task_ids: p.source_task_ids || [],
+              timestamp: event.timestamp,
+            };
           }
           break;
         }
@@ -295,6 +384,14 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
           get().loadSkills();
           break;
         }
+        case 'memory_added':
+        case 'skill_triggered':
+        case 'integration_connected':
+        case 'integration_error':
+        case 'daemon_started':
+        case 'daemon_stopped':
+          // These are logged in the event buffer; no additional store mutations needed
+          break;
       }
 
       return patch;
@@ -311,10 +408,15 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     const state = get();
     if (state._ws && state._ws.readyState <= WebSocket.OPEN) return;
 
+    set({ connectionStatus: 'connecting' });
+
+    // Start event pruning on first connect
+    startEventPruning();
+
     const ws = new WebSocket(WS_URL);
 
     ws.onopen = () => {
-      set({ wsConnected: true, wsReconnecting: false, _reconnectAttempts: 0 });
+      set({ connectionStatus: 'connected', _reconnectAttempts: 0 });
 
       const lastId = get()._lastEventId;
       if (lastId) {
@@ -352,15 +454,17 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     };
 
     ws.onclose = () => {
-      set({ wsConnected: false, _ws: null });
+      set({ connectionStatus: 'disconnected', _ws: null });
       const attempts = get()._reconnectAttempts;
-      const delay = Math.min(1000 * Math.pow(2, attempts), 30000);
-      set({ wsReconnecting: true, _reconnectAttempts: attempts + 1 });
+      const delay = Math.min(RECONNECT_BASE_MS * Math.pow(2, attempts), RECONNECT_MAX_MS);
+      set({ _reconnectAttempts: attempts + 1 });
       const timer = setTimeout(() => get().connect(), delay);
       set({ _reconnectTimer: timer });
     };
 
-    ws.onerror = () => {};
+    ws.onerror = () => {
+      set({ connectionStatus: 'error' });
+    };
 
     set({ _ws: ws });
   },
@@ -369,6 +473,9 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     const { _ws, _reconnectTimer } = get();
     if (_reconnectTimer) clearTimeout(_reconnectTimer);
     if (_ws) _ws.close();
-    set({ _ws: null, _reconnectTimer: null, wsConnected: false, wsReconnecting: false, _reconnectAttempts: 0 });
+    set({
+      _ws: null, _reconnectTimer: null,
+      connectionStatus: 'disconnected', _reconnectAttempts: 0,
+    });
   },
 }));
