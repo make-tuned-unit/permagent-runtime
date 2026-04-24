@@ -129,8 +129,11 @@ interface CommandCenterStore {
   // --- Skills state ---
   skills: SkillState[];
   skillsLoading: boolean;
+  selectedSkillId: string | null;
+  setSelectedSkillId: (id: string | null) => void;
   loadSkills: () => Promise<void>;
   deleteSkill: (id: string) => Promise<void>;
+  updateSkill: (id: string, updates: Partial<SkillState>) => Promise<void>;
 
   // --- Streaming ---
   isStreaming: boolean;
@@ -205,6 +208,8 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   // Skills
   skills: [],
   skillsLoading: false,
+  selectedSkillId: null,
+  setSelectedSkillId: (id) => set({ selectedSkillId: id }),
   loadSkills: async () => {
     set({ skillsLoading: true });
     try {
@@ -218,9 +223,23 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   deleteSkill: async (id) => {
     try {
       await api.deleteSkill(id);
-      set(s => ({ skills: s.skills.filter(sk => sk.id !== id) }));
+      set(s => ({
+        skills: s.skills.filter(sk => sk.id !== id),
+        selectedSkillId: s.selectedSkillId === id ? null : s.selectedSkillId,
+      }));
     } catch (e) {
       console.error('Failed to delete skill:', e);
+    }
+  },
+
+  updateSkill: async (id, updates) => {
+    try {
+      const updated = await api.updateSkill(id, updates);
+      set(s => ({
+        skills: s.skills.map(sk => sk.id === id ? { ...sk, ...updated } : sk),
+      }));
+    } catch (e) {
+      console.error('Failed to update skill:', e);
     }
   },
 
@@ -233,12 +252,13 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     const proposal = get().pendingSkillProposal;
     if (!proposal) return;
     try {
-      await api.createSkill({
+      const saved = await api.createSkill({
         name: proposal.description,
         description: proposal.description,
         trigger_type: 'auto',
       });
-      set({ pendingSkillProposal: null });
+      set({ pendingSkillProposal: null, selectedSkillId: saved.id, activePanel: 'skills' });
+      get().loadSkills();
     } catch (e) {
       console.error('Failed to save skill:', e);
     }
@@ -421,8 +441,18 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
           get().loadSkills();
           break;
         }
+        case 'skill_triggered': {
+          const p = event.payload as { skill_id?: string };
+          if (p.skill_id) {
+            patch.skills = s.skills.map(sk =>
+              sk.id === p.skill_id
+                ? { ...sk, usage_count: (sk.usage_count || 0) + 1, last_run: event.timestamp }
+                : sk
+            );
+          }
+          break;
+        }
         case 'memory_added':
-        case 'skill_triggered':
         case 'integration_connected':
         case 'integration_error':
         case 'daemon_started':

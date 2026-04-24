@@ -121,6 +121,17 @@ export const api = {
       body: JSON.stringify(skill),
     }),
 
+  updateSkill: (id: string, updates: Partial<Skill>) =>
+    apiFetch<Skill>(`/permagent/skills/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(updates),
+    }),
+
+  getSkillExecutions: (skillId: string) =>
+    apiFetch<Array<{ id: string; status: string; started_at: string; completed_at?: string; error_message?: string }>>(
+      `/permagent/skills/${encodeURIComponent(skillId)}/executions`
+    ).catch(() => []),
+
   deleteSkill: (id: string) =>
     apiFetch<{ deleted: boolean }>(`/permagent/skills/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
