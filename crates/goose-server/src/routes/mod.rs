@@ -16,6 +16,7 @@ pub mod schedule;
 pub mod session;
 pub mod session_events;
 pub mod setup;
+pub mod skills;
 pub mod status;
 pub mod telemetry;
 pub mod tunnel;
@@ -44,7 +45,8 @@ pub fn configure(state: Arc<crate::state::AppState>, _secret_key: String) -> Rou
         .merge(session_events::routes(state.clone()))
         .merge(sampling::routes(state.clone()))
         .merge(features::routes())
-        .merge(events::routes(state.clone()));
+        .merge(events::routes(state.clone()))
+        .merge(skills::routes(state.clone()));
 
     #[cfg(feature = "local-inference")]
     let router = router.merge(local_inference::routes(state));

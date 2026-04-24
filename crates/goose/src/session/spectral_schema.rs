@@ -10,16 +10,14 @@ use sqlx::{Pool, Sqlite};
 use tracing::{info, warn};
 
 /// Current Spectral schema version. Bump when adding migrations.
-pub const SPECTRAL_SCHEMA_VERSION: i32 = 1;
+pub const SPECTRAL_SCHEMA_VERSION: i32 = 2;
 
 /// Initialize the Spectral database schema from scratch.
 /// Creates all tables, indexes, FTS virtual tables, triggers, and views.
 /// Inserts the default user row for Phase 1 single-user operation.
 pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // Enable WAL mode for crash safety
-    sqlx::query("PRAGMA journal_mode=WAL")
-        .execute(pool)
-        .await?;
+    sqlx::query("PRAGMA journal_mode=WAL").execute(pool).await?;
 
     let mut tx = pool.begin().await?;
 
@@ -54,11 +52,9 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     .await?;
 
     // Insert default user for Phase 1 single-user operation (Section B.0)
-    sqlx::query(
-        "INSERT INTO users (id, display_name) VALUES ('default', 'Default User')",
-    )
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query("INSERT INTO users (id, display_name) VALUES ('default', 'Default User')")
+        .execute(&mut *tx)
+        .await?;
 
     // ── SESSIONS ──
     // Preserves all columns from the original Goose sessions table,
@@ -206,9 +202,11 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query("CREATE INDEX idx_memories_hall ON memories(hall)")
         .execute(&mut *tx)
         .await?;
-    sqlx::query("CREATE INDEX idx_memories_current ON memories(valid_until) WHERE valid_until IS NULL")
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "CREATE INDEX idx_memories_current ON memories(valid_until) WHERE valid_until IS NULL",
+    )
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("CREATE INDEX idx_memories_signal ON memories(signal_score DESC)")
         .execute(&mut *tx)
         .await?;
@@ -285,9 +283,11 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query("CREATE INDEX idx_kg_subject_predicate ON knowledge_graph(subject, predicate)")
         .execute(&mut *tx)
         .await?;
-    sqlx::query("CREATE INDEX idx_kg_current ON knowledge_graph(valid_until) WHERE valid_until IS NULL")
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "CREATE INDEX idx_kg_current ON knowledge_graph(valid_until) WHERE valid_until IS NULL",
+    )
+    .execute(&mut *tx)
+    .await?;
 
     sqlx::query(
         "CREATE VIRTUAL TABLE knowledge_graph_fts USING fts5(
@@ -413,6 +413,24 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
         .execute(&mut *tx)
         .await?;
 
+    // ── SKILL DISMISSALS ──
+    sqlx::query(
+        "CREATE TABLE skill_dismissals (
+            id                  TEXT PRIMARY KEY,
+            user_id             TEXT NOT NULL REFERENCES users(id),
+            argument_shape_hash TEXT NOT NULL,
+            dismissed_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "CREATE INDEX idx_skill_dismissals_user_shape ON skill_dismissals(user_id, argument_shape_hash)",
+    )
+    .execute(&mut *tx)
+    .await?;
+
     // ── INTEGRATIONS ──
     sqlx::query(
         "CREATE TABLE integrations (
@@ -523,7 +541,10 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
 
     tx.commit().await?;
 
-    info!("Spectral schema v{} initialized successfully", SPECTRAL_SCHEMA_VERSION);
+    info!(
+        "Spectral schema v{} initialized successfully",
+        SPECTRAL_SCHEMA_VERSION
+    );
     Ok(())
 }
 

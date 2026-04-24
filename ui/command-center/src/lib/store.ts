@@ -99,6 +99,7 @@ export type ActivePanel = 'chat' | 'skills' | 'events' | 'settings';
 export interface SkillProposal {
   description: string;
   tool_used: string;
+  argument_shape_hash: string;
   occurrence_count: number;
   source_task_ids: string[];
   timestamp: string;
@@ -253,9 +254,12 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     if (!proposal) return;
     try {
       const saved = await api.createSkill({
-        name: proposal.description,
+        name: proposal.description.slice(0, 64).replace(/\s+/g, '-').toLowerCase(),
         description: proposal.description,
-        trigger_type: 'auto',
+        toolUsed: proposal.tool_used,
+        argumentShapeHash: proposal.argument_shape_hash,
+        definitionJson: { source_task_ids: proposal.source_task_ids },
+        sourceTaskId: proposal.source_task_ids[0] || null,
       });
       set({ pendingSkillProposal: null, selectedSkillId: saved.id, activePanel: 'skills' });
       get().loadSkills();
@@ -266,7 +270,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   dismissSkillProposal: () => {
     const proposal = get().pendingSkillProposal;
     if (proposal) {
-      api.dismissSkillProposal().catch(() => {});
+      api.dismissSkillProposal(proposal.argument_shape_hash).catch(() => {});
     }
     set({ pendingSkillProposal: null });
   },
@@ -422,13 +426,14 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         }
         case 'skill_proposed': {
           const p = event.payload as {
-            description?: string; tool_used?: string;
+            description?: string; tool_used?: string; argument_shape_hash?: string;
             occurrence_count?: number; source_task_ids?: string[];
           };
-          if (p.description) {
+          if (p.description && p.argument_shape_hash) {
             patch.pendingSkillProposal = {
               description: p.description,
               tool_used: p.tool_used || '',
+              argument_shape_hash: p.argument_shape_hash,
               occurrence_count: p.occurrence_count || 0,
               source_task_ids: p.source_task_ids || [],
               timestamp: event.timestamp,

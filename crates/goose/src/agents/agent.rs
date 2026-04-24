@@ -634,6 +634,10 @@ impl Agent {
                         duration_ms,
                     )
                     .await;
+
+                // Auto-skills: check for repetition patterns after completion
+                let skills_config = crate::tasks::SkillsConfig::from_config();
+                logger.check_repetition_candidates(&skills_config).await;
             }
         }
 

@@ -8,9 +8,9 @@ use crate::events;
 use chrono::Utc;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use sqlx::{Pool, Sqlite};
+use sqlx::{Pool, Row, Sqlite};
 use std::sync::OnceLock;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 /// Opaque task identifier (UUIDv7 string).
@@ -134,12 +134,153 @@ impl TaskLogger {
 
         events::emit(events::task_failed(task_id, error));
     }
+
+    /// Check for repetition candidates after a task completes.
+    /// Queries the `repetition_candidates` view for shapes that appear >= threshold
+    /// times within the configured window, then emits `SkillProposed` for new patterns.
+    pub async fn check_repetition_candidates(&self, config: &SkillsConfig) {
+        if !config.auto_detect {
+            return;
+        }
+
+        let rows = match sqlx::query(
+            "SELECT tool_used, argument_shape_hash, occurrence_count, latest_description
+             FROM repetition_candidates
+             WHERE user_id = 'default'
+               AND occurrence_count >= ?",
+        )
+        .bind(config.repetition_threshold as i64)
+        .fetch_all(&self.pool)
+        .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                warn!("Failed to query repetition_candidates: {}", e);
+                return;
+            }
+        };
+
+        for row in &rows {
+            let tool_used: String = row.get("tool_used");
+            let shape_hash: String = row.get("argument_shape_hash");
+            let count: i64 = row.get("occurrence_count");
+            let description: String = row.get("latest_description");
+
+            // Check if a skill already exists for this shape
+            let skill_exists = sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS (
+                    SELECT 1 FROM skills
+                    WHERE user_id = 'default'
+                      AND trigger_value LIKE '%' || ? || '%'
+                      AND status != 'archived'
+                )",
+            )
+            .bind(&shape_hash)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(false);
+
+            if skill_exists {
+                continue;
+            }
+
+            // Check if dismissed within the last 30 days
+            let dismissed = sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS (
+                    SELECT 1 FROM skill_dismissals
+                    WHERE user_id = 'default'
+                      AND argument_shape_hash = ?
+                      AND dismissed_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-30 days')
+                )",
+            )
+            .bind(&shape_hash)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(false);
+
+            if dismissed {
+                continue;
+            }
+
+            // Get source task IDs for this pattern
+            let task_ids: Vec<String> = sqlx::query_scalar(
+                "SELECT id FROM tasks
+                 WHERE user_id = 'default'
+                   AND tool_used = ?
+                   AND argument_shape_hash = ?
+                   AND status = 'completed'
+                 ORDER BY completed_at DESC
+                 LIMIT 5",
+            )
+            .bind(&tool_used)
+            .bind(&shape_hash)
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
+
+            info!(
+                "Skill proposed: '{}' ({} occurrences of {})",
+                description, count, tool_used
+            );
+            events::emit(events::skill_proposed(
+                &description,
+                &tool_used,
+                &shape_hash,
+                count,
+                &task_ids,
+            ));
+        }
+    }
+
+    /// Get a clone of the database pool (for use by skills routes).
+    pub fn pool(&self) -> &Pool<Sqlite> {
+        &self.pool
+    }
+}
+
+/// Configuration for the auto-skills detection engine.
+#[derive(Debug, Clone)]
+pub struct SkillsConfig {
+    pub auto_detect: bool,
+    pub repetition_threshold: u32,
+    pub repetition_window_days: u32,
+}
+
+impl Default for SkillsConfig {
+    fn default() -> Self {
+        Self {
+            auto_detect: true,
+            repetition_threshold: 2,
+            repetition_window_days: 7,
+        }
+    }
+}
+
+impl SkillsConfig {
+    /// Load skills config from the permagent config system.
+    pub fn from_config() -> Self {
+        let config = crate::config::Config::global();
+        let auto_detect = config
+            .get_param::<bool>("skills_auto_detect")
+            .unwrap_or(true);
+        let threshold = config
+            .get_param::<u32>("skills_repetition_threshold")
+            .unwrap_or(2);
+        let window = config
+            .get_param::<u32>("skills_repetition_window_days")
+            .unwrap_or(7);
+        Self {
+            auto_detect,
+            repetition_threshold: threshold,
+            repetition_window_days: window,
+        }
+    }
 }
 
 /// Compute argument_shape_hash per Section F.1:
 /// stable hash of (tool_name, sorted_arg_keys, arg_type_categories).
 /// Returns sha256 hex truncated to 16 chars, or None if inputs are missing.
-fn compute_argument_shape_hash(
+pub fn compute_argument_shape_hash(
     tool_used: Option<&str>,
     arguments: Option<&Value>,
 ) -> Option<String> {

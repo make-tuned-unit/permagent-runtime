@@ -200,6 +200,7 @@ pub fn memory_added(
 pub fn skill_proposed(
     description: &str,
     tool_used: &str,
+    argument_shape_hash: &str,
     occurrence_count: i64,
     source_task_ids: &[String],
 ) -> PermagentEvent {
@@ -208,6 +209,7 @@ pub fn skill_proposed(
         serde_json::json!({
             "description": description,
             "tool_used": tool_used,
+            "argument_shape_hash": argument_shape_hash,
             "occurrence_count": occurrence_count,
             "source_task_ids": source_task_ids,
         }),

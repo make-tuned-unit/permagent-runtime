@@ -110,13 +110,17 @@ export const api = {
     }),
 
   // Skills CRUD (Section D.3)
-  getSkills: () => apiFetch<Skill[]>('/permagent/skills').catch(() => {
-    console.warn('[api] GET /permagent/skills not implemented yet');
-    return [] as Skill[];
-  }),
+  getSkills: () => apiFetch<Skill[]>('/permagent/skills').catch(() => [] as Skill[]),
 
-  createSkill: (skill: Partial<Skill>) =>
-    apiFetch<Skill>('/permagent/skills', {
+  createSkill: (skill: {
+    name: string;
+    description: string;
+    toolUsed: string;
+    argumentShapeHash: string;
+    definitionJson: unknown;
+    sourceTaskId?: string | null;
+  }) =>
+    apiFetch<{ id: string; name: string }>('/permagent/skills', {
       method: 'POST',
       body: JSON.stringify(skill),
     }),
@@ -135,8 +139,11 @@ export const api = {
   deleteSkill: (id: string) =>
     apiFetch<{ deleted: boolean }>(`/permagent/skills/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
-  dismissSkillProposal: () =>
-    apiFetch<{ dismissed: boolean }>('/permagent/skills/dismiss', { method: 'POST' }).catch(() => ({ dismissed: true })),
+  dismissSkillProposal: (argumentShapeHash: string) =>
+    apiFetch<void>('/permagent/skills/dismiss', {
+      method: 'POST',
+      body: JSON.stringify({ argumentShapeHash }),
+    }).catch(() => {}),
 
   // Events history
   getEvents: (params?: { type?: string; limit?: number; after?: string; task_id?: string }) =>
