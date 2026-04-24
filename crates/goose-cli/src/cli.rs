@@ -699,6 +699,68 @@ enum RecipeCommand {
 }
 
 #[derive(Subcommand)]
+enum MemoryCommand {
+    /// Full-text search against memories
+    #[command(about = "Search memories via FTS")]
+    Search {
+        /// Search query
+        query: String,
+
+        /// Maximum number of results
+        #[arg(long, default_value = "20")]
+        limit: usize,
+    },
+
+    /// List memories with optional filters
+    #[command(about = "List memories with optional filters")]
+    List {
+        /// Filter by wing
+        #[arg(long)]
+        wing: Option<String>,
+
+        /// Filter by hall
+        #[arg(long)]
+        hall: Option<String>,
+
+        /// Filter by category
+        #[arg(long)]
+        category: Option<String>,
+
+        /// Maximum number of results
+        #[arg(long, default_value = "20")]
+        limit: usize,
+
+        /// Offset for pagination
+        #[arg(long, default_value = "0")]
+        offset: usize,
+    },
+
+    /// Add a new memory
+    #[command(about = "Add a new memory to the spectral database")]
+    Add {
+        /// Memory key (required)
+        #[arg(long)]
+        key: String,
+
+        /// Memory content (required)
+        #[arg(long)]
+        content: String,
+
+        /// Category (defaults to "manual")
+        #[arg(long)]
+        category: Option<String>,
+
+        /// Wing assignment
+        #[arg(long)]
+        wing: Option<String>,
+
+        /// Hall assignment
+        #[arg(long)]
+        hall: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum Command {
     /// Configure goose settings
     #[command(about = "Configure goose settings")]
@@ -854,6 +916,13 @@ enum Command {
     Gateway {
         #[command(subcommand)]
         command: GatewayCommand,
+    },
+
+    /// Memory management (search, list, add)
+    #[command(about = "Manage memories in the spectral database", visible_alias = "mem")]
+    Memory {
+        #[command(subcommand)]
+        command: MemoryCommand,
     },
 
     /// Start the Permagent daemon via launchd
@@ -1065,6 +1134,7 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::Projects) => "projects",
         Some(Command::Run { .. }) => "run",
         Some(Command::Gateway { .. }) => "gateway",
+        Some(Command::Memory { .. }) => "memory",
         Some(Command::Schedule { .. }) => "schedule",
         Some(Command::Start {}) => "start",
         Some(Command::Stop {}) => "stop",
@@ -1471,6 +1541,48 @@ async fn handle_run_command(
     }
 }
 
+async fn handle_memory_command(command: MemoryCommand) -> Result<()> {
+    use crate::commands::memory;
+
+    match command {
+        MemoryCommand::Search { query, limit } => {
+            memory::handle_memory_search(&query, limit).await
+        }
+        MemoryCommand::List {
+            wing,
+            hall,
+            category,
+            limit,
+            offset,
+        } => {
+            memory::handle_memory_list(
+                wing.as_deref(),
+                hall.as_deref(),
+                category.as_deref(),
+                limit,
+                offset,
+            )
+            .await
+        }
+        MemoryCommand::Add {
+            key,
+            content,
+            category,
+            wing,
+            hall,
+        } => {
+            memory::handle_memory_add(
+                &key,
+                &content,
+                category.as_deref(),
+                wing.as_deref(),
+                hall.as_deref(),
+            )
+            .await
+        }
+    }
+}
+
 async fn handle_gateway_command(command: GatewayCommand) -> Result<()> {
     use crate::commands::gateway;
 
@@ -1846,6 +1958,7 @@ pub async fn cli() -> anyhow::Result<()> {
         Some(Command::Logs { err }) => crate::commands::daemon::handle_logs(err),
         Some(Command::Open {}) => crate::commands::daemon::handle_open(),
         Some(Command::Gateway { command }) => handle_gateway_command(command).await,
+        Some(Command::Memory { command }) => handle_memory_command(command).await,
         Some(Command::Schedule { command }) => handle_schedule_command(command).await,
         Some(Command::Update {
             canary,
