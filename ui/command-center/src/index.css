@@ -1,0 +1,383 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: "JetBrains Mono", "SF Mono", "Fira Code", monospace;
+  background: #0a0e17;
+}
+
+.command-center-bg {
+  background:
+    radial-gradient(ellipse 800px 400px at 10% 0%, rgba(0, 255, 180, 0.06), transparent 60%),
+    radial-gradient(ellipse 600px 300px at 90% 5%, rgba(59, 130, 246, 0.05), transparent 50%),
+    #0a0e17;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
+
+/* Status dot pulse */
+@keyframes statusPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.status-pulse {
+  animation: statusPulse 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* Accent glow for active elements */
+.accent-glow {
+  box-shadow: 0 0 12px rgba(0, 255, 180, 0.25), inset 0 0 12px rgba(0, 255, 180, 0.05);
+}
+
+/* Card hover effect */
+.card-hover {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.card-hover:hover {
+  border-color: rgba(0, 255, 180, 0.3);
+  box-shadow: 0 0 20px rgba(0, 255, 180, 0.08);
+}
+
+/* Data grid lines */
+.grid-line {
+  background-image: linear-gradient(rgba(30, 41, 59, 0.5) 1px, transparent 1px);
+  background-size: 100% 2rem;
+}
+
+@keyframes ticketStatusFlash {
+  0% {
+    box-shadow: 0 0 0 0 rgba(0, 255, 180, 0.45);
+    border-color: rgba(0, 255, 180, 0.8);
+  }
+  100% {
+    box-shadow: 0 0 0 10px rgba(0, 255, 180, 0);
+    border-color: inherit;
+  }
+}
+
+.ticket-status-changed {
+  animation: ticketStatusFlash 1.8s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Mobile touch targets */
+@media (max-width: 768px) {
+  .text-xs,
+  .text-sm,
+  .text-\[10px\],
+  .text-\[11px\],
+  .text-\[12px\],
+  .text-\[13px\] {
+    font-size: 14px !important;
+    line-height: 1.4;
+  }
+
+  button, a, [role="button"], input, select, textarea {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
+@keyframes slideIn {
+  0% {
+    transform: translateX(100%);
+    opacity: 0.6;
+  }
+  60% {
+    transform: translateX(-2%);
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.animate-slide-in {
+  animation: slideIn 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* Station glow pulse for active stations */
+@keyframes stationGlowPulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 0; }
+}
+
+.station-pulse-border {
+  animation: stationGlowPulse 3s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* Asymmetric glow: 0.6s fade-out by default, 0.3s fade-in when active */
+.station-glow-transition {
+  transition: box-shadow 0.6s cubic-bezier(0.4, 0, 0.2, 1),
+              border-color 0.6s cubic-bezier(0.4, 0, 0.2, 1),
+              background-color 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.station-glow-active {
+  transition: box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+              border-color 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+              background-color 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Event strip badge slide-in from right */
+@keyframes eventBadgeSlideIn {
+  from {
+    transform: translateX(12px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.event-badge-enter {
+  animation: eventBadgeSlideIn 0.2s cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+/* View crossfade */
+@keyframes viewCrossfade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.view-crossfade {
+  animation: viewCrossfade 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ── Station prop animations (active only) ── */
+
+/* Mission Control: pulsing concentric circles */
+@keyframes propConcentricPulse {
+  0%   { transform: scale(0.6); opacity: 0.5; }
+  50%  { transform: scale(1);   opacity: 0.25; }
+  100% { transform: scale(0.6); opacity: 0.5; }
+}
+.prop-concentric-ring {
+  animation: propConcentricPulse 3s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+.prop-concentric-ring:nth-child(2) { animation-delay: -1s; }
+.prop-concentric-ring:nth-child(3) { animation-delay: -2s; }
+
+/* Research Bay: magnifying glass glow */
+@keyframes propMagGlow {
+  0%, 100% { filter: drop-shadow(0 0 2px currentColor); opacity: 0.35; }
+  50%      { filter: drop-shadow(0 0 8px currentColor); opacity: 0.6; }
+}
+.prop-mag-glow {
+  animation: propMagGlow 2.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* Build Bench: blinking cursor */
+@keyframes propCursorBlink {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0; }
+}
+.prop-cursor-blink {
+  animation: propCursorBlink 1s steps(1) infinite;
+}
+
+/* QA Chamber: progress ring fill */
+@keyframes propRingFill {
+  0%   { stroke-dashoffset: 88; }
+  80%  { stroke-dashoffset: 0; }
+  100% { stroke-dashoffset: 0; }
+}
+@keyframes propRingReset {
+  0%   { opacity: 0.6; }
+  100% { opacity: 0.6; }
+}
+.prop-ring-fill {
+  animation: propRingFill 3s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* Memory Vault: pulse from center */
+@keyframes propVaultPulse {
+  0%   { transform: scale(0.4); opacity: 0.5; }
+  100% { transform: scale(1.8); opacity: 0; }
+}
+.prop-vault-pulse {
+  animation: propVaultPulse 2.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* Comms Desk: envelope slide */
+@keyframes propEnvelopeSlide {
+  0%   { transform: translateX(-12px); opacity: 0; }
+  20%  { transform: translateX(0);     opacity: 0.5; }
+  80%  { transform: translateX(0);     opacity: 0.5; }
+  100% { transform: translateX(12px);  opacity: 0; }
+}
+.prop-envelope-slide {
+  animation: propEnvelopeSlide 3s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* Budget Console: bar height adjust */
+@keyframes propBar1 {
+  0%, 100% { height: 8px; }
+  50%      { height: 16px; }
+}
+@keyframes propBar2 {
+  0%, 100% { height: 14px; }
+  50%      { height: 6px; }
+}
+@keyframes propBar3 {
+  0%, 100% { height: 10px; }
+  50%      { height: 18px; }
+}
+@keyframes propBar4 {
+  0%, 100% { height: 18px; }
+  50%      { height: 10px; }
+}
+.prop-bar-1 { animation: propBar1 2.5s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
+.prop-bar-2 { animation: propBar2 2.5s cubic-bezier(0.4, 0, 0.2, 1) infinite 0.3s; }
+.prop-bar-3 { animation: propBar3 2.5s cubic-bezier(0.4, 0, 0.2, 1) infinite 0.6s; }
+.prop-bar-4 { animation: propBar4 2.5s cubic-bezier(0.4, 0, 0.2, 1) infinite 0.9s; }
+
+/* Approval Gate: lock unlocking */
+@keyframes propLockUnlock {
+  0%, 70% { transform: translateY(0); }
+  85%     { transform: translateY(-3px); }
+  100%    { transform: translateY(0); }
+}
+.prop-lock-shackle {
+  animation: propLockUnlock 2.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* Idle Lounge: breathing scale */
+@keyframes propIdleBreathe {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.08); }
+}
+.prop-idle-breathe {
+  animation: propIdleBreathe 4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* ── Event-driven visual effects ── */
+
+/* task_completed: subtle green flash on station (1.5s) */
+@keyframes eventGreenFlash {
+  0%   { box-shadow: inset 0 0 30px rgba(34, 197, 94, 0.5), 0 0 20px rgba(34, 197, 94, 0.3); }
+  100% { box-shadow: inset 0 0 0 transparent, 0 0 0 transparent; }
+}
+.event-task-completed {
+  animation: eventGreenFlash 1.5s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+/* task_failed: red flash on station (2s) */
+@keyframes eventRedFlash {
+  0%   { box-shadow: inset 0 0 30px rgba(239, 68, 68, 0.5), 0 0 20px rgba(239, 68, 68, 0.3); }
+  100% { box-shadow: inset 0 0 0 transparent, 0 0 0 transparent; }
+}
+.event-task-failed {
+  animation: eventRedFlash 2s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+/* approval_required: glows brighter, persists until resolved */
+@keyframes eventApprovalGlow {
+  0%, 100% { box-shadow: 0 0 20px rgba(251, 191, 36, 0.4), inset 0 0 15px rgba(251, 191, 36, 0.15); }
+  50%      { box-shadow: 0 0 30px rgba(251, 191, 36, 0.6), inset 0 0 20px rgba(251, 191, 36, 0.25); }
+}
+.event-approval-required {
+  animation: eventApprovalGlow 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* approval_granted: green pulse (1s) */
+@keyframes eventApprovalGranted {
+  0%   { box-shadow: 0 0 25px rgba(34, 197, 94, 0.6), inset 0 0 15px rgba(34, 197, 94, 0.2); }
+  100% { box-shadow: 0 0 0 transparent, inset 0 0 0 transparent; }
+}
+.event-approval-granted {
+  animation: eventApprovalGranted 1s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+/* model_switched: amber pulse on budget_console (1s) */
+@keyframes eventModelSwitched {
+  0%   { box-shadow: 0 0 20px rgba(245, 158, 11, 0.5), inset 0 0 15px rgba(245, 158, 11, 0.2); }
+  100% { box-shadow: 0 0 0 transparent, inset 0 0 0 transparent; }
+}
+.event-model-switched {
+  animation: eventModelSwitched 1s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+/* receipt_logged: budget console tick-up flash (0.5s) */
+@keyframes eventReceiptTick {
+  0%   { box-shadow: inset 0 0 15px rgba(249, 115, 22, 0.35); }
+  100% { box-shadow: inset 0 0 0 transparent; }
+}
+.event-receipt-logged {
+  animation: eventReceiptTick 0.5s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+/* service_health_changed to down: red ring pulse on health dot */
+@keyframes eventHealthDown {
+  0%   { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+  70%  { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}
+.event-health-down {
+  animation: eventHealthDown 1s cubic-bezier(0.4, 0, 0.2, 1) 3;
+  border-radius: 9999px;
+}
+
+/* Agent checkmark badge pop-in */
+@keyframes eventCheckmarkPop {
+  0%   { transform: scale(0); }
+  60%  { transform: scale(1.2); }
+  100% { transform: scale(1); }
+}
+.event-checkmark-badge {
+  animation: eventCheckmarkPop 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+/* Notification badge pulse (approval gate) */
+@keyframes eventNotifPulse {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.2); }
+}
+.event-notif-badge {
+  animation: eventNotifPulse 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* Model change badge */
+@keyframes eventModelBadgeFade {
+  0%   { opacity: 1; transform: translateY(0); }
+  80%  { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-4px); }
+}
