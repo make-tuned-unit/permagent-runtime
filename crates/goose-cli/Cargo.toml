@@ -21,7 +21,10 @@ path = "src/bin/generate_manpages.rs"
 
 [dependencies]
 clap_mangen = "0.2.31"
+dialoguer = { version = "0.11", features = ["fuzzy-select"] }
+dirs = "5.0"
 permagent = { path = "../goose", default-features = false }
+sqlx = { version = "0.8", default-features = false, features = ["sqlite"] }
 permagent-mcp = { path = "../goose-mcp" }
 rmcp = { workspace = true }
 clap = { workspace = true }

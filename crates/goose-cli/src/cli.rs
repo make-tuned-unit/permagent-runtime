@@ -13,6 +13,7 @@ use permagent_mcp::{AutoVisualiserRouter, ComputerControllerServer, MemoryServer
 use crate::commands::configure::configure_telemetry_consent_dialog;
 use crate::commands::configure::handle_configure;
 use crate::commands::info::handle_info;
+use crate::commands::setup::{handle_setup_interactive, handle_setup_non_interactive, NonInteractiveOpts};
 use crate::commands::project::{handle_project_default, handle_projects_interactive};
 use crate::commands::recipe::{handle_deeplink, handle_list, handle_open, handle_validate};
 use crate::commands::term::{
@@ -703,6 +704,38 @@ enum Command {
     #[command(about = "Configure goose settings")]
     Configure {},
 
+    /// First-time setup wizard
+    #[command(about = "Run the Permagent setup wizard")]
+    Setup {
+        /// Run in non-interactive mode (accepts defaults, requires --provider)
+        #[arg(long = "non-interactive", help = "Run setup without interactive prompts")]
+        non_interactive: bool,
+
+        /// LLM provider (required for --non-interactive)
+        #[arg(
+            long = "provider",
+            value_name = "PROVIDER",
+            help = "LLM provider name (anthropic, openai, ollama, google, openrouter)"
+        )]
+        provider: Option<String>,
+
+        /// API key (for --non-interactive mode)
+        #[arg(
+            long = "api-key",
+            value_name = "KEY",
+            help = "API key for the selected provider"
+        )]
+        api_key: Option<String>,
+
+        /// Model override (for --non-interactive mode)
+        #[arg(
+            long = "model",
+            value_name = "MODEL",
+            help = "Default model to use"
+        )]
+        model: Option<String>,
+    },
+
     /// Display goose configuration information
     #[command(about = "Display goose information")]
     Info {
@@ -995,6 +1028,7 @@ pub struct InputConfig {
 fn get_command_name(command: &Option<Command>) -> &'static str {
     match command {
         Some(Command::Configure {}) => "configure",
+        Some(Command::Setup { .. }) => "setup",
         Some(Command::Doctor {}) => "doctor",
         Some(Command::Info { .. }) => "info",
         Some(Command::Mcp { .. }) => "mcp",
@@ -1698,6 +1732,26 @@ pub async fn cli() -> anyhow::Result<()> {
             Ok(())
         }
         Some(Command::Configure {}) => handle_configure().await,
+        Some(Command::Setup {
+            non_interactive,
+            provider,
+            api_key,
+            model,
+        }) => {
+            if non_interactive {
+                let provider = provider.ok_or_else(|| {
+                    anyhow::anyhow!("--provider is required in --non-interactive mode")
+                })?;
+                handle_setup_non_interactive(NonInteractiveOpts {
+                    provider,
+                    api_key,
+                    model,
+                })
+                .await
+            } else {
+                handle_setup_interactive().await
+            }
+        }
         Some(Command::Doctor {}) => crate::commands::doctor::handle_doctor().await,
         Some(Command::Info { verbose }) => handle_info(verbose),
         Some(Command::Mcp { server }) => handle_mcp_command(server).await,
