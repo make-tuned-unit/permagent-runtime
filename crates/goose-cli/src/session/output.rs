@@ -1,6 +1,7 @@
 use anstream::println;
 use bat::WrappingMode;
 use console::{measure_text_width, style, Color, Term};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use permagent::config::Config;
 use permagent::conversation::message::{
     ActionRequiredData, Message, MessageContent, SystemNotificationContent, SystemNotificationType,
@@ -10,7 +11,6 @@ use permagent::providers::canonical::maybe_get_canonical_model;
 #[cfg(target_os = "windows")]
 use permagent::subprocess::SubprocessExt;
 use permagent::utils::safe_truncate;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rmcp::model::{CallToolRequestParams, JsonObject, PromptArgument};
 use serde_json::Value;
 use std::cell::RefCell;

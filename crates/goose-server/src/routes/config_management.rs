@@ -254,7 +254,9 @@ pub async fn read_config(
 pub async fn get_extensions() -> Result<Json<ExtensionResponse>, ErrorResponse> {
     let extensions = permagent::config::get_all_extensions()
         .into_iter()
-        .filter(|ext| !permagent::agents::extension_manager::is_hidden_extension(&ext.config.name()))
+        .filter(|ext| {
+            !permagent::agents::extension_manager::is_hidden_extension(&ext.config.name())
+        })
         .collect();
     let warnings = permagent::config::get_warnings();
     Ok(Json(ExtensionResponse {
@@ -426,9 +428,9 @@ pub async fn get_slash_commands(
     }
 
     let working_dir = query.working_dir.map(std::path::PathBuf::from);
-    for source in
-        permagent::agents::platform_extensions::skills::list_installed_skills(working_dir.as_deref())
-    {
+    for source in permagent::agents::platform_extensions::skills::list_installed_skills(
+        working_dir.as_deref(),
+    ) {
         commands.push(SlashCommand {
             command: source.name,
             help: source.description,

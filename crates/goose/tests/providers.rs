@@ -1,8 +1,13 @@
 use anyhow::Result;
 use dotenvy::dotenv;
 use futures::StreamExt;
+use goose_test_support::{
+    EnforceSessionId, ExpectedSessionId, IgnoreSessionId, McpFixture, FAKE_CODE,
+};
 use permagent::acp::ACP_CURRENT_MODEL;
-use permagent::agents::{Agent, AgentConfig, AgentEvent, GoosePlatform, PromptManager, SessionConfig};
+use permagent::agents::{
+    Agent, AgentConfig, AgentEvent, GoosePlatform, PromptManager, SessionConfig,
+};
 use permagent::config::{ExtensionConfig, GooseMode, PermissionManager};
 use permagent::conversation::message::{ActionRequiredData, Message, MessageContent};
 use permagent::permission::permission_confirmation::PrincipalType;
@@ -25,9 +30,6 @@ use permagent::providers::sagemaker_tgi::SAGEMAKER_TGI_DEFAULT_MODEL;
 use permagent::providers::snowflake::SNOWFLAKE_DEFAULT_MODEL;
 use permagent::providers::xai::XAI_DEFAULT_MODEL;
 use permagent::session::{SessionManager, SessionType};
-use goose_test_support::{
-    EnforceSessionId, ExpectedSessionId, IgnoreSessionId, McpFixture, FAKE_CODE,
-};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;

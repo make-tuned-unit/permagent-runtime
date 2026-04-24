@@ -1482,7 +1482,9 @@ pub fn configure_keyring_dialog() -> anyhow::Result<()> {
         );
     }
 
-    let currently_disabled = config.get_param::<String>("PERMAGENT_DISABLE_KEYRING").is_ok();
+    let currently_disabled = config
+        .get_param::<String>("PERMAGENT_DISABLE_KEYRING")
+        .is_ok();
 
     let current_status = if currently_disabled {
         "Disabled (using file-based storage)"
@@ -1515,18 +1517,23 @@ pub fn configure_keyring_dialog() -> anyhow::Result<()> {
             // Set to empty string to enable keyring (absence or empty = enabled)
             config.set_param("PERMAGENT_DISABLE_KEYRING", Value::String("".to_string()))?;
             cliclack::outro("Secret storage set to system keyring (secure)")?;
-            let _ =
-                cliclack::log::info("You may need to restart permagent for this change to take effect");
+            let _ = cliclack::log::info(
+                "You may need to restart permagent for this change to take effect",
+            );
         }
         "file" => {
             // Set the disable flag to use file storage
-            config.set_param("PERMAGENT_DISABLE_KEYRING", Value::String("true".to_string()))?;
+            config.set_param(
+                "PERMAGENT_DISABLE_KEYRING",
+                Value::String("true".to_string()),
+            )?;
             cliclack::outro(format!(
                 "Secret storage set to file ({}). Keep this file secure!",
                 secrets_path.display(),
             ))?;
-            let _ =
-                cliclack::log::info("You may need to restart permagent for this change to take effect");
+            let _ = cliclack::log::info(
+                "You may need to restart permagent for this change to take effect",
+            );
         }
         _ => unreachable!(),
     };
@@ -1860,7 +1867,9 @@ pub async fn handle_openrouter_auth() -> anyhow::Result<()> {
                             config: ExtensionConfig::Platform {
                                 name: "developer".to_string(),
                                 description: "Developer extension".to_string(),
-                                display_name: Some(permagent::config::DEFAULT_DISPLAY_NAME.to_string()),
+                                display_name: Some(
+                                    permagent::config::DEFAULT_DISPLAY_NAME.to_string(),
+                                ),
                                 bundled: Some(true),
                                 available_tools: Vec::new(),
                             },
@@ -1931,7 +1940,9 @@ pub async fn handle_tetrate_auth() -> anyhow::Result<()> {
                             config: ExtensionConfig::Platform {
                                 name: "developer".to_string(),
                                 description: "Developer extension".to_string(),
-                                display_name: Some(permagent::config::DEFAULT_DISPLAY_NAME.to_string()),
+                                display_name: Some(
+                                    permagent::config::DEFAULT_DISPLAY_NAME.to_string(),
+                                ),
                                 bundled: Some(true),
                                 available_tools: Vec::new(),
                             },

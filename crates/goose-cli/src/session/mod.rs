@@ -31,12 +31,12 @@ use permagent::utils::safe_truncate;
 
 use anyhow::{Context, Result};
 use completion::GooseCompleter;
+use input::InputResult;
 use permagent::agents::extension::{Envs, ExtensionConfig, PLATFORM_EXTENSIONS};
 use permagent::agents::types::RetryConfig;
 use permagent::agents::{Agent, SessionConfig, COMPACT_TRIGGERS};
 use permagent::config::extensions::name_to_key;
 use permagent::config::{Config, GooseMode};
-use input::InputResult;
 use rmcp::model::PromptMessage;
 use rmcp::model::ServerNotification;
 use rmcp::model::{ErrorCode, ErrorData};

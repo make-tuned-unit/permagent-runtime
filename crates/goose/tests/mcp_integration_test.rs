@@ -18,13 +18,13 @@ use permagent::model::ModelConfig;
 use test_case::test_case;
 
 use async_trait::async_trait;
+use once_cell::sync::Lazy;
 use permagent::conversation::message::Message;
 use permagent::providers::base::{
     stream_from_single_message, MessageStream, Provider, ProviderDef, ProviderMetadata,
     ProviderUsage, Usage,
 };
 use permagent::providers::errors::ProviderError;
-use once_cell::sync::Lazy;
 use std::process::Command;
 
 #[derive(Deserialize)]
