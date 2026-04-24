@@ -15,7 +15,7 @@ Before diving in, these contradictions exist between the three canonical specs:
 | 1 | SPEC_PHASE1_CANONICAL says "Tauri shell primitives" — **Goose uses Electron, not Tauri.** The Rust backend (`goosed`) is a standalone Axum HTTP server; Electron is the desktop shell. There are no Tauri primitives. | We excise the Electron desktop shell (`ui/desktop/`). The Rust `goosed` server is the daemon. This is actually *easier* than the specs assumed. |
 | 2 | FORK_STRATEGY says "Desktop packaging (.dmg, keep)" under §1.1 but CANONICAL says ".dmg deferred to Phase 2" | Phase 1: no .dmg. Keep the packaging infrastructure for Phase 2. |
 | 3 | FORK_STRATEGY §2.1 lists 4 detection triggers (repetition, complexity, user feedback, pattern). CANONICAL limits Phase 1 to repetition-only. GAP_FIXES agrees. | Phase 1: repetition-only (2x in 7 days). |
-| 4 | CANONICAL lists Gmail as sole integration. GAP_FIXES adds Slack (write-capable) and notes Gmail-only is insufficient for auto-skills signal. | Phase 1: Gmail (read) + Slack (write). Both as MCP extensions. |
+| 4 | CANONICAL lists Gmail as sole integration. GAP_FIXES adds Slack (write-capable) and notes Gmail-only is insufficient for auto-skills signal. | Phase 1: Gmail (read) only. Slack removed from Phase 1 scope — all chat goes through Permagent Command Center desktop app. Gmail registers as MCP extension. |
 | 5 | FORK_STRATEGY §2.2 shows skill composition (conditionals, loops, skill-to-skill). CANONICAL says Phase 1 skills are linear sequences only. | Phase 1: linear skill sequences. Composition in Phase 2. |
 | 6 | GAP_FIXES says daemon scheduling recovery is deferred but needed "before Phase 1." CANONICAL says no scheduled skills in Phase 1. | No scheduling in Phase 1. Recovery policy needed before Phase 2 ships scheduled skills. |
 
@@ -110,7 +110,7 @@ pub trait McpClientTrait: Send + Sync {
 
 **Surgery plan:**
 1. Keep `McpClientTrait`, `ExtensionManager`, and all extension infrastructure as-is
-2. Gmail and Slack integrations register as `Stdio` or `StreamableHttp` extensions
+2. Gmail integration registers as `Stdio` or `StreamableHttp` extension (Slack removed from Phase 1 scope)
 3. Replace the built-in `memory` MCP server with a Spectral-backed implementation
 4. Skills engine registers its own platform extension for skill execution
 5. Remove `computercontroller` and `autovisualiser` (not needed for Phase 1)
@@ -477,7 +477,7 @@ CREATE INDEX idx_skill_triggers_skill ON skill_triggers(skill_id);
 CREATE TABLE integrations (
     id                TEXT PRIMARY KEY,
     user_id           TEXT NOT NULL REFERENCES users(id),
-    provider          TEXT NOT NULL,     -- gmail|slack
+    provider          TEXT NOT NULL,     -- gmail (slack removed from Phase 1)
     status            TEXT NOT NULL DEFAULT 'pending',  -- pending|connected|error|revoked
     scopes_json       TEXT,              -- granted OAuth scopes
     last_sync_at      TEXT,
@@ -802,6 +802,18 @@ The following UI components are deferred until the core loop (install → chat �
 
 Phase 1 equivalents are provided as CLI commands (see Section E.4).
 
+### D.6 Desktop App (Tauri)
+
+The Command Center ships as a native macOS desktop app built with Tauri 2.x. Tauri wraps the existing Vite/React UI in a native window with:
+- Native macOS title bar and window management
+- Embedded webview for OAuth flows (Gmail, future integrations)
+- Local file system access for config and secrets
+- Auto-start with the daemon via launchd
+- System tray icon showing agent status (Phase 1: minimal, just running/stopped indicator)
+- Deep link handling for OAuth callbacks (permagent://oauth/callback)
+
+The Tauri app replaces the browser-based access pattern. Users no longer need to open localhost:3001/ui/ in Chrome. The `permagent open` command launches the native app instead.
+
 ---
 
 ## E. CLI Wizard Flow
@@ -952,8 +964,9 @@ permagent memory add --key K --content C [--category X]  # Manual memory entry
 
 # Integration management (replaces Settings UI in Phase 1)
 permagent integrations list                    # Show connected integrations and status
-permagent integrations connect <provider>      # Trigger OAuth flow (opens browser)
+permagent integrations connect <provider>      # Trigger OAuth flow (CLI fallback; primary flow is desktop app embedded webview)
 permagent integrations disconnect <provider>   # Revoke tokens
+# Phase 1 supported providers: gmail only (slack deferred)
 ```
 
 ---
@@ -1027,26 +1040,26 @@ See `tasks` table in Section B. Key fields for detection:
 
 ---
 
-## G. Gmail + Slack Integration Architecture
+## G. Gmail Integration Architecture
+
+> **Scope change (2026-04-23):** Slack integration removed from Phase 1. All chat goes through the Permagent Command Center desktop app. Slack deferred to Phase 2.
 
 ### G.1 Integration as MCP Extensions
 
-Both Gmail and Slack register as MCP extensions via the existing `ExtensionConfig::Stdio` or `ExtensionConfig::StreamableHttp` variant. They are NOT built into the Rust daemon — they run as separate processes.
+Gmail registers as an MCP extension via the existing `ExtensionConfig::Stdio` or `ExtensionConfig::StreamableHttp` variant. It is NOT built into the Rust daemon — it runs as a separate process.
 
 ```
 permagentd (daemon)
     │
     ├── ExtensionManager
     │   ├── gmail-mcp (Stdio extension)
-    │   │   └── Python/Node process implementing MCP protocol
-    │   │       Tools: gmail__search, gmail__read, gmail__list_labels
+    │   │   └── Python process implementing MCP protocol
+    │   │       Tools: gmail__search, gmail__read, gmail__list_labels, gmail__list_threads
     │   │
-    │   └── slack-mcp (Stdio extension)
-    │       └── Python/Node process implementing MCP protocol
-    │           Tools: slack__post_message, slack__list_channels,
-    │                  slack__search_messages, slack__set_reminder
+    │   └── ... other extensions
     │
-    └── ... other extensions
+    └── Tauri desktop app
+        └── Embedded webview for OAuth flows
 ```
 
 **Extension config in `~/.permagent/config.yaml`:**
@@ -1061,34 +1074,26 @@ extensions:
     enabled: true
     timeout: 30
 
-  slack:
-    type: stdio
-    cmd: permagent-slack-mcp
-    args: []
-    envs:
-      SLACK_TOKEN_PATH: ~/.permagent/secrets/slack_token.json
-    enabled: true
-    timeout: 30
+  # REMOVED: slack (deferred to Phase 2 — all chat goes through Command Center desktop app)
 ```
 
 ### G.2 OAuth Flow
 
-**Gmail (Google OAuth 2.0):**
+**Gmail (Google OAuth 2.0 via embedded Tauri webview):**
 1. User clicks "Connect Gmail" in Command Center Settings
-2. Command Center calls `POST /integrations/gmail/connect`
-3. Daemon starts local HTTP callback server on ephemeral port
-4. Opens browser to Google OAuth consent screen with scopes: `gmail.readonly`
-5. User approves → Google redirects to `http://localhost:{port}/callback?code=...`
+2. Tauri app opens an embedded webview loading Google OAuth consent screen with scopes: `gmail.readonly`
+3. User approves in the embedded webview
+4. Callback URL (`permagent://oauth/callback`) is intercepted by Tauri
+5. Tauri extracts the authorization code from the callback
 6. Daemon exchanges code for access_token + refresh_token
-7. Tokens written to secrets store (see G.3)
+7. Tokens written to `~/.permagent/secrets/gmail_token.json`
 8. `IntegrationConnected` event emitted
 9. Integration row created in Spectral `integrations` table
+10. Integration status updates in real-time in the Command Center
 
-**Slack (Slack OAuth 2.0):**
-1. Same flow as Gmail but with Slack OAuth endpoints
-2. Scopes: `chat:write`, `channels:read`, `search:read`, `reminders:write`
-3. Slack app must be registered at api.slack.com (Permagent ships a default app ID)
-4. Tokens stored in same secrets store
+**CLI fallback:** `permagent integrations connect gmail` opens a browser-based OAuth flow for headless/CLI-only environments. The primary flow is through the desktop app embedded webview.
+
+~~**Slack (Slack OAuth 2.0):**~~ **REMOVED** — Slack integration deferred to Phase 2. All chat goes through the Permagent Command Center desktop app.
 
 ### G.3 Token Storage
 
@@ -1097,15 +1102,14 @@ extensions:
 ```
 ~/.permagent/secrets/
 ├── gmail_token.json     # {access_token, refresh_token, expiry, scopes}
-├── slack_token.json     # {access_token, refresh_token, expiry, scopes}
 └── .gitignore           # "*.json" — never commit
 ```
 
 **File permissions:** `chmod 600` on all files in `secrets/`
 
-**Refresh logic:** Each MCP extension handles its own token refresh. If refresh fails, the extension emits `IntegrationError` and the Command Center shows reconnect prompt.
+**Refresh logic:** The Gmail MCP extension handles its own token refresh. If refresh fails, the extension emits `IntegrationError` and the Command Center shows reconnect prompt.
 
-**System keyring (preferred):** If available, store tokens in macOS Keychain instead of filesystem. Service name: `"permagent"`, account: `"gmail"` / `"slack"`. File-based fallback when keyring is unavailable (headless servers, CI).
+**System keyring (preferred):** If available, store tokens in macOS Keychain instead of filesystem. Service name: `"permagent"`, account: `"gmail"`. File-based fallback when keyring is unavailable (headless servers, CI).
 
 ### G.4 Gmail Tools (Phase 1 — Read Only)
 
@@ -1116,14 +1120,9 @@ extensions:
 | `gmail__list_labels` | List all labels/folders |
 | `gmail__list_threads` | List recent threads with pagination |
 
-### G.5 Slack Tools (Phase 1 — Write Capable)
+### ~~G.5 Slack Tools (Phase 1 — Write Capable)~~ REMOVED
 
-| Tool | Description |
-|------|-------------|
-| `slack__post_message` | Post message to channel or DM |
-| `slack__list_channels` | List channels the bot is in |
-| `slack__search_messages` | Search message history |
-| `slack__set_reminder` | Create a Slack reminder |
+> **REMOVED (2026-04-23):** Slack integration deferred to Phase 2. Slack tools (`slack__post_message`, `slack__list_channels`, `slack__search_messages`, `slack__set_reminder`) will be implemented when Slack is added back in scope.
 
 ---
 
@@ -1143,7 +1142,9 @@ extensions:
 | CLI wizard (`permagent setup`) | ~500 | ~300 | Rust |
 | CLI daemon management | ~200 | ~100 | Rust |
 | Gmail MCP extension | ~600 | — | Python |
-| Slack MCP extension | ~700 | — | Python |
+| ~~Slack MCP extension~~ | ~~~700~~ | — | ~~Python~~ REMOVED (deferred to Phase 2) |
+| Tauri desktop app shell | ~400 | — | Rust + TypeScript |
+| Tauri embedded OAuth webview | ~300 | — | Rust |
 | **Daemon subtotal** | **~5,000** | **~1,100** | **Rust + Python** |
 | Command Center: app shell + routing | ~400 | — | TypeScript/React |
 | Command Center: WebSocket client | ~300 | — | TypeScript |
@@ -1184,17 +1185,18 @@ extensions:
 16. Build `permagent memory` CLI commands (search, list, add)
 17. Build `permagent integrations` CLI commands (list, connect, disconnect)
 
-**Week 4: Integrations + End-to-End**
-18. Build Gmail MCP extension (Python, OAuth flow)
-19. Build Slack MCP extension (Python, OAuth flow)
-20. Wire auto-skills detection end-to-end (task → prompt → save)
-21. Integration testing: full loop from chat → task log → skill proposal → skill save
+**Week 4: Desktop App + Integrations + End-to-End**
+18. Wrap Command Center in Tauri desktop app (macOS native)
+19. Build embedded OAuth webview for integration connections
+20. Build Gmail MCP extension (Python, OAuth via embedded webview)
+21. Wire auto-skills detection end-to-end (task completion -> repetition check -> skill proposal -> save)
 
 **Week 5-6: Testing + Hardening**
-21. Test on 5+ non-developer machines
-22. Error handling, reconnect logic, edge cases
-23. Performance: Spectral query optimization, FTS tuning
-24. Documentation: README, setup guide
+22. Test on 5+ non-developer machines
+23. Tauri desktop app testing (Intel + Apple Silicon macOS)
+24. Error handling, reconnect logic, edge cases
+25. Performance: Spectral query optimization, FTS tuning
+26. Documentation: README, setup guide
 
 ---
 
@@ -1204,9 +1206,9 @@ extensions:
 
 | # | Question | Owner | Impact |
 |---|----------|-------|--------|
-| 2 | Permagent app registration for Gmail and Slack OAuth — do we register our own Google Cloud project and Slack app, or use user-provided credentials? | Jesse | Blocks Week 4 |
+| 2 | Permagent app registration for Gmail OAuth only (Slack removed from Phase 1 scope) — do we register our own Google Cloud project, or use user-provided credentials? | Jesse | Blocks Week 4 |
 
-**Caveat on #2:** Phase 1 can ship with user-provided credentials as a fallback — the user registers their own Google Cloud project and Slack app, then provides client ID/secret via `permagent integrations connect`. If Permagent-owned OAuth apps aren't ready by Week 4, this is the path.
+**Caveat on #2:** Phase 1 can ship with user-provided credentials as a fallback — the user registers their own Google Cloud project, then provides client ID/secret via `permagent integrations connect gmail`. If a Permagent-owned OAuth app isn't ready by Week 4, this is the path. Slack integration deferred. All chat goes through the Permagent Command Center desktop app.
 
 **Resolved questions (moved to spec):**
 - ~~#1 (Goose fork version):~~ Decided: block/goose. See `specs/SPEC_OPUS_GAP_FIXES.md`.
@@ -1221,7 +1223,8 @@ extensions:
 | Goose upstream breaks our fork | Medium | Minimal fork surface. Only replace session storage, config, and UI. Keep execution engine and MCP system untouched. Track upstream quarterly, cherry-pick security fixes only. |
 | Spectral migration complexity | High | Build migration runner from Day 1. Schema version table. Test with real conversation data from existing Goose sessions. |
 | Auto-skills detection is noisy | Medium | Conservative threshold (2x/7d). Dismissal cooldown (30d). Track accept/reject rates from Week 4 onward. |
-| Gmail/Slack OAuth requires app verification | High | Gmail: Google OAuth for "testing" works for up to 100 users without verification. Slack: workspace-level install doesn't need app directory listing. Both sufficient for Phase 1. |
+| Gmail OAuth requires app verification | Medium | Gmail: Google OAuth for "testing" works for up to 100 users without verification. Sufficient for Phase 1. Slack removed from Phase 1 scope. |
+| Tauri desktop app packaging | Medium | Tauri 2.x is stable on macOS. Test on Intel and Apple Silicon. Code signing deferred to post-Phase 1. |
 | CLI wizard UX is confusing | Medium | Test with 3 non-technical users in Week 5. Iterate on prompt text. Add `--non-interactive` flag for CI/automation. |
 | WebSocket reconnect reliability | Low | Exponential backoff (1s, 2s, 4s, 8s, max 30s). Event replay from last-seen event ID on reconnect. Daemon buffers last 1000 events. |
 | Spectral DB corruption on crash | Medium | SQLite WAL mode. Write-ahead logging. Periodic VACUUM in maintenance window. Backup command in CLI. |
@@ -1252,7 +1255,8 @@ The following changes are anticipated for Phase 2 (Mesh/Chitin integration). **D
 - `founding_executive` — permanent founding status registry
 
 **Secrets store additions:**
-- `~/.permagent/secrets/mesh_auth_token.json` alongside existing `gmail_token.json` and `slack_token.json`
+- `~/.permagent/secrets/mesh_auth_token.json` alongside existing `gmail_token.json`
+- `~/.permagent/secrets/slack_token.json` (when Slack integration is added in Phase 2)
 
 **CLI additions:**
 - `permagent mesh join` — join the Mesh network
