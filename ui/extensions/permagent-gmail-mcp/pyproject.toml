@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "permagent-gmail-mcp"
+version = "0.1.0"
+description = "Gmail MCP extension for Permagent — read-only Gmail tools over stdio"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.0.0",
+    "google-api-python-client>=2.100.0",
+    "google-auth>=2.23.0",
+    "google-auth-oauthlib>=1.1.0",
+]
+
+[project.scripts]
+permagent-gmail-mcp = "permagent_gmail_mcp.server:main"
+
+[tool.setuptools.packages.find]
+include = ["permagent_gmail_mcp*"]

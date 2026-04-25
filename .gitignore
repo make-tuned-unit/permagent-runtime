@@ -1,5 +1,6 @@
 __pycache__
 *.pyc
+*.egg-info/
 *.jar
 run_cli.sh
 tokenizer_files/

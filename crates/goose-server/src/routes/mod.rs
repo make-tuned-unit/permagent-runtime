@@ -20,6 +20,7 @@ pub mod skills;
 pub mod status;
 pub mod telemetry;
 pub mod tunnel;
+pub mod integrations;
 pub mod utils;
 
 use std::sync::Arc;
@@ -46,7 +47,8 @@ pub fn configure(state: Arc<crate::state::AppState>, _secret_key: String) -> Rou
         .merge(sampling::routes(state.clone()))
         .merge(features::routes())
         .merge(events::routes(state.clone()))
-        .merge(skills::routes(state.clone()));
+        .merge(skills::routes(state.clone()))
+        .merge(integrations::routes(state.clone()));
 
     #[cfg(feature = "local-inference")]
     let router = router.merge(local_inference::routes(state));
