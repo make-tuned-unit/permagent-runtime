@@ -817,6 +817,14 @@ enum Command {
             help = "Default model to use"
         )]
         model: Option<String>,
+
+        /// Agent name (for --non-interactive mode)
+        #[arg(
+            long = "agent-name",
+            value_name = "NAME",
+            help = "Name for this agent (default: permagent)"
+        )]
+        agent_name: Option<String>,
     },
 
     /// Display goose configuration information
@@ -1926,6 +1934,7 @@ pub async fn cli() -> anyhow::Result<()> {
             provider,
             api_key,
             model,
+            agent_name,
         }) => {
             if non_interactive {
                 let provider = provider.ok_or_else(|| {
@@ -1935,6 +1944,7 @@ pub async fn cli() -> anyhow::Result<()> {
                     provider,
                     api_key,
                     model,
+                    agent_name,
                 })
                 .await
             } else {

@@ -21,7 +21,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' http://localhost:3001 ws://localhost:3001 http://127.0.0.1:9844; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self'; connect-src 'self' http://localhost:3000 ws://localhost:3000 http://127.0.0.1:9844; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
     }
   },
   "plugins": {

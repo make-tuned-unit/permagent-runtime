@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use dialoguer::{Confirm, Password, Select};
+use dialoguer::{Confirm, Input, Password, Select};
 use permagent::config::paths::Paths;
 use permagent::config::Config;
 use permagent::session::spectral_schema::{init_spectral_db, is_schema_initialized};
@@ -26,7 +26,7 @@ fn models_for_provider(provider: &str) -> Vec<&'static str> {
             "claude-haiku-4-5",
         ],
         "openai" => vec!["gpt-4o", "gpt-4o-mini", "o3"],
-        "ollama" => vec!["llama3.1", "mistral", "codestral"],
+        "ollama" => vec!["qwen2.5:14b", "llama3.1", "mistral", "codestral"],
         "google" => vec!["gemini-2.0-flash", "gemini-2.5-pro"],
         _ => vec!["default"],
     }
@@ -59,11 +59,38 @@ pub struct NonInteractiveOpts {
     pub provider: String,
     pub api_key: Option<String>,
     pub model: Option<String>,
+    pub agent_name: Option<String>,
 }
 
-/// Run the 5-step setup wizard interactively.
+/// Test that Ollama is reachable at localhost:11434.
+async fn test_ollama_connection() -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()?;
+    let resp = client.get("http://localhost:11434/api/tags").send().await?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        anyhow::bail!("HTTP {}", resp.status())
+    }
+}
+
+/// Run the setup wizard interactively.
 pub async fn handle_setup_interactive() -> Result<()> {
     let permagent_dir = Paths::config_dir();
+
+    // Welcome screen
+    println!();
+    println!("Welcome to Permagent");
+    println!("{}", "=".repeat(20));
+    println!();
+    println!("Permagent is your personal AI agent that runs locally on your Mac.");
+    println!("It learns your workflows, remembers context across sessions, and");
+    println!("connects to your tools (Gmail, Slack, and more) to act on your behalf.");
+    println!();
+    println!("This wizard will configure your LLM provider, initialize the memory");
+    println!("database, and start the background daemon.");
+    println!();
 
     // Check for existing installation
     if permagent_dir.exists() {
@@ -80,8 +107,8 @@ pub async fn handle_setup_interactive() -> Result<()> {
         }
     }
 
-    // Step 1/5: LLM Provider
-    println!("\nStep 1/5: LLM Provider");
+    // Step 1/6: LLM Provider
+    println!("\nStep 1/6: LLM Provider");
     println!("{}", "-".repeat(21));
 
     let provider_labels: Vec<&str> = PROVIDERS.iter().map(|(_, label)| *label).collect();
@@ -92,12 +119,22 @@ pub async fn handle_setup_interactive() -> Result<()> {
         .interact()?;
     let provider_name = PROVIDERS[provider_idx].0;
 
-    // Step 2/5: API Key
-    println!("\nStep 2/5: API Key");
+    // Step 2/6: API Key
+    println!("\nStep 2/6: API Key");
     println!("{}", "-".repeat(17));
 
     let api_key = if provider_name == "ollama" {
         println!("Ollama runs locally - no API key needed.");
+        // Test Ollama connection
+        print!("Testing connection to Ollama at localhost:11434... ");
+        match test_ollama_connection().await {
+            Ok(()) => println!("connected."),
+            Err(e) => {
+                println!("failed.");
+                eprintln!("Warning: Could not reach Ollama ({}). Make sure it's running.", e);
+                eprintln!("Install Ollama from https://ollama.ai and run `ollama serve`.");
+            }
+        }
         None
     } else {
         let url = api_key_url(provider_name);
@@ -130,8 +167,8 @@ pub async fn handle_setup_interactive() -> Result<()> {
         }
     }
 
-    // Step 3/5: Model Selection
-    println!("\nStep 3/5: Model Selection");
+    // Step 3/6: Model Selection
+    println!("\nStep 3/6: Model Selection");
     println!("{}", "-".repeat(25));
 
     let models = models_for_provider(provider_name);
@@ -142,19 +179,28 @@ pub async fn handle_setup_interactive() -> Result<()> {
         .interact()?;
     let default_model = models[model_idx];
 
-    // Step 4/5: Initialize Spectral Memory
-    println!("\nStep 4/5: Initialize Spectral Memory");
+    // Step 4/6: Agent Name
+    println!("\nStep 4/6: Agent Name");
+    println!("{}", "-".repeat(20));
+
+    let agent_name: String = Input::new()
+        .with_prompt("What should this agent be called?")
+        .default("permagent".to_string())
+        .interact_text()?;
+
+    // Step 5/6: Initialize Spectral Memory
+    println!("\nStep 5/6: Initialize Spectral Memory");
     println!("{}", "-".repeat(37));
 
     let spectral_result = init_spectral(&permagent_dir).await?;
     println!("{}", spectral_result);
 
-    // Step 5/5: Start Daemon
-    println!("\nStep 5/5: Start Daemon");
+    // Step 6/6: Start Daemon
+    println!("\nStep 6/6: Start Daemon");
     println!("{}", "-".repeat(22));
 
     // Write config before daemon step
-    write_config(&permagent_dir, provider_name, default_model)?;
+    write_config(&permagent_dir, provider_name, default_model, &agent_name)?;
     println!("Config written to ~/.permagent/config.yaml");
 
     let register_daemon = Confirm::new()
@@ -180,8 +226,8 @@ pub async fn handle_setup_interactive() -> Result<()> {
             .interact()?;
 
         if open_browser {
-            if let Err(e) = webbrowser::open("http://localhost:3000") {
-                eprintln!("Could not open browser: {}. Visit http://localhost:3000", e);
+            if let Err(e) = webbrowser::open("http://localhost:3001/ui/") {
+                eprintln!("Could not open browser: {}. Visit http://localhost:3001/ui/", e);
             }
         }
     } else {
@@ -218,7 +264,8 @@ pub async fn handle_setup_non_interactive(opts: NonInteractiveOpts) -> Result<()
     let default_model = opts.model.as_deref().unwrap_or(fallback_model);
 
     // Write config
-    write_config(&permagent_dir, provider_name, default_model)?;
+    let agent_name = opts.agent_name.as_deref().unwrap_or("permagent");
+    write_config(&permagent_dir, provider_name, default_model, agent_name)?;
     println!("Config written to ~/.permagent/config.yaml");
 
     // Initialize Spectral
@@ -290,13 +337,21 @@ async fn init_spectral(permagent_dir: &PathBuf) -> Result<String> {
 }
 
 /// Write ~/.permagent/config.yaml per Section E.3 format.
-fn write_config(permagent_dir: &PathBuf, provider_name: &str, default_model: &str) -> Result<()> {
+fn write_config(
+    permagent_dir: &PathBuf,
+    provider_name: &str,
+    default_model: &str,
+    agent_name: &str,
+) -> Result<()> {
     fs::create_dir_all(permagent_dir)?;
     fs::create_dir_all(Paths::logs_dir())?;
 
     let config_content = format!(
         r#"# ~/.permagent/config.yaml
 version: 1
+
+agent:
+  name: {agent_name}
 
 provider:
   name: {provider}
@@ -323,6 +378,7 @@ skills:
   repetition_threshold: 2
   repetition_window_days: 7
 "#,
+        agent_name = agent_name,
         provider = provider_name,
         model = default_model,
     );
