@@ -5,6 +5,7 @@ import { ChatView } from './components/chat/ChatView';
 import { SkillsPanel } from './components/skills/SkillsPanel';
 import { EventLogView } from './components/events/EventLogView';
 import { SettingsView } from './components/settings/SettingsView';
+import { TerminalManager } from './components/terminal/TerminalManager';
 
 function MainContent() {
   const activePanel = useCommandCenter(s => s.activePanel);
@@ -14,6 +15,8 @@ function MainContent() {
       return <ChatView />;
     case 'skills':
       return <SkillsPanel />;
+    case 'terminal':
+      return <TerminalManager />;
     case 'events':
       return <EventLogView />;
     case 'settings':
