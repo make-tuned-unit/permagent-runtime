@@ -10,7 +10,7 @@ use sqlx::{Pool, Sqlite};
 use tracing::{info, warn};
 
 /// Current Spectral schema version. Bump when adding migrations.
-pub const SPECTRAL_SCHEMA_VERSION: i32 = 2;
+pub const SPECTRAL_SCHEMA_VERSION: i32 = 4;
 
 /// Initialize the Spectral database schema from scratch.
 /// Creates all tables, indexes, FTS virtual tables, triggers, and views.
@@ -418,6 +418,7 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
         "CREATE TABLE skill_dismissals (
             id                  TEXT PRIMARY KEY,
             user_id             TEXT NOT NULL REFERENCES users(id),
+            tool_used           TEXT NOT NULL DEFAULT '',
             argument_shape_hash TEXT NOT NULL,
             dismissed_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
         )",
@@ -426,7 +427,7 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     .await?;
 
     sqlx::query(
-        "CREATE INDEX idx_skill_dismissals_user_shape ON skill_dismissals(user_id, argument_shape_hash)",
+        "CREATE INDEX idx_skill_dismissals_lookup ON skill_dismissals(user_id, argument_shape_hash, dismissed_at)",
     )
     .execute(&mut *tx)
     .await?;
@@ -492,6 +493,38 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_inventory_models_key ON provider_inventory_models(inventory_key)")
         .execute(&mut *tx)
         .await?;
+
+    // ── WORKSPACES ──
+    sqlx::query(
+        "CREATE TABLE workspaces (
+            id              TEXT PRIMARY KEY,
+            user_id         TEXT NOT NULL REFERENCES users(id),
+            name            TEXT NOT NULL,
+            icon            TEXT NOT NULL DEFAULT 'layout-dashboard',
+            sort_order      INTEGER NOT NULL DEFAULT 0,
+            layout_json     TEXT NOT NULL,
+            is_default      BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query("CREATE INDEX idx_workspaces_user ON workspaces(user_id)")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("CREATE INDEX idx_workspaces_sort ON workspaces(user_id, sort_order)")
+        .execute(&mut *tx)
+        .await?;
+
+    // Add active_workspace_id to users table
+    sqlx::query(
+        "ALTER TABLE users ADD COLUMN active_workspace_id TEXT REFERENCES workspaces(id)",
+    )
+    .execute(&mut *tx)
+    .await
+    .ok(); // Ignore if column already exists
 
     // ── VIEWS ──
     sqlx::query(
@@ -563,6 +596,101 @@ pub async fn verify_schema_version(pool: &Pool<Sqlite>) -> Result<i32> {
     }
 
     Ok(version)
+}
+
+/// Migrate from schema v2 to v3: add tool_used column to skill_dismissals
+/// and replace the index with one that includes dismissed_at.
+pub async fn migrate_v2_to_v3(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v2 → v3");
+
+    // Add tool_used column (SQLite ALTER TABLE ADD COLUMN)
+    let has_col = sqlx::query_scalar::<_, i32>(
+        "SELECT COUNT(*) FROM pragma_table_info('skill_dismissals') WHERE name = 'tool_used'",
+    )
+    .fetch_one(pool)
+    .await?;
+
+    if has_col == 0 {
+        sqlx::query("ALTER TABLE skill_dismissals ADD COLUMN tool_used TEXT NOT NULL DEFAULT ''")
+            .execute(pool)
+            .await?;
+    }
+
+    // Replace index
+    sqlx::query("DROP INDEX IF EXISTS idx_skill_dismissals_user_shape")
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_skill_dismissals_lookup ON skill_dismissals(user_id, argument_shape_hash, dismissed_at)",
+    )
+    .execute(pool)
+    .await?;
+
+    // Record version
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (3)")
+        .execute(pool)
+        .await?;
+
+    info!("Spectral schema migrated to v3");
+    Ok(())
+}
+
+/// Migrate from schema v3 to v4: add workspaces table and active_workspace_id to users.
+pub async fn migrate_v3_to_v4(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v3 -> v4");
+
+    // Check if workspaces table already exists
+    let has_table = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT name FROM sqlite_master WHERE type='table' AND name='workspaces')",
+    )
+    .fetch_one(pool)
+    .await?;
+
+    if !has_table {
+        sqlx::query(
+            "CREATE TABLE workspaces (
+                id              TEXT PRIMARY KEY,
+                user_id         TEXT NOT NULL REFERENCES users(id),
+                name            TEXT NOT NULL,
+                icon            TEXT NOT NULL DEFAULT 'layout-dashboard',
+                sort_order      INTEGER NOT NULL DEFAULT 0,
+                layout_json     TEXT NOT NULL,
+                is_default      BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            )",
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query("CREATE INDEX idx_workspaces_user ON workspaces(user_id)")
+            .execute(pool)
+            .await?;
+        sqlx::query("CREATE INDEX idx_workspaces_sort ON workspaces(user_id, sort_order)")
+            .execute(pool)
+            .await?;
+    }
+
+    // Add active_workspace_id to users
+    let has_col = sqlx::query_scalar::<_, i32>(
+        "SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'active_workspace_id'",
+    )
+    .fetch_one(pool)
+    .await?;
+
+    if has_col == 0 {
+        sqlx::query("ALTER TABLE users ADD COLUMN active_workspace_id TEXT REFERENCES workspaces(id)")
+            .execute(pool)
+            .await?;
+    }
+
+    // Record version
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (4)")
+        .execute(pool)
+        .await?;
+
+    info!("Spectral schema migrated to v4");
+    Ok(())
 }
 
 /// Check whether the Spectral schema has already been initialized.

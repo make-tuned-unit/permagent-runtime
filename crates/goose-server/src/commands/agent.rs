@@ -45,6 +45,15 @@ pub async fn run() -> Result<()> {
 
     let app_state = state::AppState::new(settings.tls).await?;
 
+    // Seed preset workspaces if user has none
+    if let Ok(pool) = app_state.session_manager().pool_clone().await {
+        match permagent::workspaces::seed_presets_if_empty(&pool).await {
+            Ok(true) => info!("Seeded 3 preset workspaces (Work, World, Build)"),
+            Ok(false) => {}
+            Err(e) => tracing::warn!("Failed to seed workspaces: {}", e),
+        }
+    }
+
     // Share the server secret with the tunnel manager so it uses the same
     // key for forwarded requests, without mutating the process environment.
     app_state

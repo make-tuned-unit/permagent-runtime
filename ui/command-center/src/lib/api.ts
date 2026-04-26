@@ -305,6 +305,35 @@ export const api = {
       body: JSON.stringify({ argumentShapeHash }),
     }).catch(() => {}),
 
+  // Workspaces
+  getWorkspaces: () =>
+    apiFetch<Array<{
+      id: string; name: string; icon: string; sortOrder: number;
+      layoutJson: unknown; isDefault: boolean; createdAt: string; updatedAt: string;
+    }>>('/api/workspaces'),
+
+  getWorkspace: (id: string) =>
+    apiFetch<{
+      id: string; name: string; icon: string; sortOrder: number;
+      layoutJson: unknown; isDefault: boolean; createdAt: string; updatedAt: string;
+    }>(`/api/workspaces/${encodeURIComponent(id)}`),
+
+  getActiveWorkspace: () =>
+    apiFetch<{ workspaceId: string | null }>('/api/workspaces/active'),
+
+  setActiveWorkspace: (workspaceId: string) =>
+    apiFetch<void>('/api/workspaces/active', {
+      method: 'POST',
+      body: JSON.stringify({ workspaceId }),
+    }),
+
+  updateWorkspaceLayout: (workspaceId: string, layoutJson: unknown) =>
+    fetch(`${API_BASE_URL}/api/workspaces/${encodeURIComponent(workspaceId)}/layout`, {
+      method: 'PUT',
+      headers: authHeaders(),
+      body: JSON.stringify({ layoutJson }),
+    }),
+
   // State snapshot (stubbed until daemon implements)
   getStateSnapshot: () => Promise.resolve({
     tasks: [] as Array<{ id: string; title: string | null; status: string; automation_id: string | null; created_at: string | null; updated_at: string }>,

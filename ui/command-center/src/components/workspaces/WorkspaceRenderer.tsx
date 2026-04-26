@@ -1,0 +1,189 @@
+import { useCallback } from 'react';
+import { Panel, Group, Separator } from 'react-resizable-panels';
+import { useCommandCenter } from '../../lib/store';
+import type { LayoutNode, LayoutSplit, LayoutPanel, ToolType } from '../../lib/store';
+import { ChatView } from '../chat/ChatView';
+import { SkillsPanel } from '../skills/SkillsPanel';
+import { TerminalManager } from '../terminal/TerminalManager';
+import { Browser } from '../browser';
+import { WorldView } from '../world/WorldView';
+import { ExecutionTrace } from '../trace/ExecutionTrace';
+
+const TOOL_COMPONENTS: Record<ToolType, React.ComponentType> = {
+  chat: ChatView,
+  skills: SkillsPanel,
+  trace: ExecutionTrace,
+  world: WorldView,
+  terminal: TerminalManager,
+  browser: Browser,
+};
+
+function LayoutNodeRenderer({
+  node,
+  path,
+  onResize,
+}: {
+  node: LayoutNode;
+  path: string;
+  onResize: (path: string, sizes: number[]) => void;
+}) {
+  if (node.type === 'panel') {
+    const panel = node as LayoutPanel;
+    const Component = TOOL_COMPONENTS[panel.tool];
+    if (!Component) {
+      return (
+        <div className="flex h-full items-center justify-center text-dark-muted text-xs">
+          Unknown tool: {panel.tool}
+        </div>
+      );
+    }
+    return <Component />;
+  }
+
+  const split = node as LayoutSplit;
+  const orientation = split.direction === 'horizontal' ? 'horizontal' : 'vertical';
+
+  const handleLayoutChanged = useCallback(
+    (layout: Record<string, number>) => {
+      const values = Object.values(layout);
+      if (values.length > 0) {
+        onResize(path, values);
+      }
+    },
+    [path, onResize]
+  );
+
+  return (
+    <Group orientation={orientation} onLayoutChanged={handleLayoutChanged}>
+      {split.children.map((child, i) => {
+        const panelId = `${path}-${i}`;
+        return (
+          <LayoutChildPanel
+            key={panelId}
+            child={child}
+            index={i}
+            panelId={panelId}
+            path={path}
+            orientation={orientation}
+            defaultSize={split.sizes[i]}
+            onResize={onResize}
+          />
+        );
+      })}
+    </Group>
+  );
+}
+
+function LayoutChildPanel({
+  child,
+  index,
+  panelId,
+  path,
+  orientation,
+  defaultSize,
+  onResize,
+}: {
+  child: LayoutNode;
+  index: number;
+  panelId: string;
+  path: string;
+  orientation: 'horizontal' | 'vertical';
+  defaultSize: number;
+  onResize: (path: string, sizes: number[]) => void;
+}) {
+  return (
+    <>
+      {index > 0 && (
+        <Separator className={`group relative flex items-center justify-center ${
+          orientation === 'horizontal' ? 'w-1' : 'h-1'
+        }`}>
+          <div className={`bg-dark-border group-hover:bg-accent/50 group-active:bg-accent transition-colors ${
+            orientation === 'horizontal' ? 'w-px h-full' : 'h-px w-full'
+          }`} />
+        </Separator>
+      )}
+      <Panel id={panelId} defaultSize={defaultSize} minSize={10}>
+        <div className="h-full w-full overflow-hidden">
+          <LayoutNodeRenderer
+            node={child}
+            path={`${path}.${index}`}
+            onResize={onResize}
+          />
+        </div>
+      </Panel>
+    </>
+  );
+}
+
+export function WorkspaceRenderer({ workspaceId }: { workspaceId: string }) {
+  const workspace = useCommandCenter(s =>
+    s.workspaces.find(w => w.id === workspaceId)
+  );
+  const updateLayout = useCommandCenter(s => s.updateWorkspaceLayout);
+
+  const handleResize = useCallback(
+    (path: string, sizes: number[]) => {
+      if (!workspace) return;
+      const updated = updateSizesAtPath(workspace.layoutJson, path, sizes);
+      if (updated) {
+        updateLayout(workspaceId, updated);
+      }
+    },
+    [workspace, workspaceId, updateLayout]
+  );
+
+  if (!workspace) {
+    return (
+      <div className="flex h-full items-center justify-center text-dark-muted">
+        Workspace not found
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full w-full">
+      <LayoutNodeRenderer
+        node={workspace.layoutJson}
+        path="root"
+        onResize={handleResize}
+      />
+    </div>
+  );
+}
+
+function updateSizesAtPath(
+  node: LayoutNode,
+  path: string,
+  newSizes: number[]
+): LayoutNode | null {
+  if (path === 'root' && node.type === 'split') {
+    return { ...node, sizes: newSizes };
+  }
+
+  if (node.type !== 'split') return null;
+
+  const parts = path.split('.');
+  if (parts[0] !== 'root' || parts.length < 2) return null;
+
+  const childIndex = parseInt(parts[1], 10);
+  if (isNaN(childIndex) || childIndex >= node.children.length) return null;
+
+  if (parts.length === 2) {
+    const child = node.children[childIndex];
+    if (child.type === 'split') {
+      const newChildren = [...node.children];
+      newChildren[childIndex] = { ...child, sizes: newSizes };
+      return { ...node, children: newChildren };
+    }
+    return null;
+  }
+
+  const remainingPath = 'root.' + parts.slice(2).join('.');
+  const child = node.children[childIndex];
+  const updatedChild = updateSizesAtPath(child, remainingPath, newSizes);
+  if (!updatedChild) return null;
+
+  const newChildren = [...node.children];
+  newChildren[childIndex] = updatedChild;
+  return { ...node, children: newChildren };
+}

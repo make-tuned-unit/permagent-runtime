@@ -98,6 +98,34 @@ export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'er
 
 export type ActivePanel = 'chat' | 'skills' | 'events' | 'settings' | 'terminal' | 'browser';
 
+// ── Workspace types ──
+
+export type ToolType = 'chat' | 'skills' | 'trace' | 'world' | 'terminal' | 'browser';
+
+export interface LayoutSplit {
+  type: 'split';
+  direction: 'horizontal' | 'vertical';
+  sizes: number[];
+  children: LayoutNode[];
+}
+
+export interface LayoutPanel {
+  type: 'panel';
+  tool: ToolType;
+  config: Record<string, unknown>;
+}
+
+export type LayoutNode = LayoutSplit | LayoutPanel;
+
+export interface WorkspaceState {
+  id: string;
+  name: string;
+  icon: string;
+  sortOrder: number;
+  layoutJson: LayoutNode;
+  isDefault: boolean;
+}
+
 // Skill proposal from skill_proposed events
 export interface SkillProposal {
   description: string;
@@ -112,6 +140,14 @@ interface CommandCenterStore {
   // --- Panel routing ---
   activePanel: ActivePanel;
   setActivePanel: (panel: ActivePanel) => void;
+
+  // --- Workspace state ---
+  workspaces: WorkspaceState[];
+  activeWorkspaceId: string | null;
+  workspacesLoaded: boolean;
+  loadWorkspaces: () => Promise<void>;
+  switchWorkspace: (workspaceId: string) => void;
+  updateWorkspaceLayout: (workspaceId: string, layoutJson: LayoutNode) => void;
 
   // --- Connection state ---
   connectionStatus: ConnectionStatus;
@@ -214,6 +250,49 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   // Panel routing
   activePanel: 'chat',
   setActivePanel: (panel) => set({ activePanel: panel }),
+
+  // Workspaces
+  workspaces: [],
+  activeWorkspaceId: null,
+  workspacesLoaded: false,
+
+  loadWorkspaces: async () => {
+    try {
+      const [workspaces, active] = await Promise.all([
+        api.getWorkspaces(),
+        api.getActiveWorkspace(),
+      ]);
+      set({
+        workspaces: workspaces.map(w => ({
+          id: w.id,
+          name: w.name,
+          icon: w.icon,
+          sortOrder: w.sortOrder,
+          layoutJson: w.layoutJson as LayoutNode,
+          isDefault: w.isDefault,
+        })),
+        activeWorkspaceId: active.workspaceId || (workspaces.length > 0 ? workspaces[0].id : null),
+        workspacesLoaded: true,
+      });
+    } catch {
+      set({ workspacesLoaded: true });
+    }
+  },
+
+  switchWorkspace: (workspaceId: string) => {
+    set({ activeWorkspaceId: workspaceId });
+    api.setActiveWorkspace(workspaceId).catch(() => {});
+  },
+
+  updateWorkspaceLayout: (workspaceId: string, layoutJson: LayoutNode) => {
+    set(s => ({
+      workspaces: s.workspaces.map(w =>
+        w.id === workspaceId ? { ...w, layoutJson } : w
+      ),
+    }));
+    // Debounced save — fire and forget
+    api.updateWorkspaceLayout(workspaceId, layoutJson).catch(() => {});
+  },
 
   // Connection
   connectionStatus: 'disconnected',
@@ -592,6 +671,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
       get().loadSnapshot();
       get().loadSkills();
+      get().loadWorkspaces();
     };
 
     ws.onmessage = (ev) => {

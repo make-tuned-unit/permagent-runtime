@@ -1,40 +1,53 @@
 import { useEffect } from 'react';
 import { useCommandCenter } from './lib/store';
 import { Sidebar } from './components/sidebar/Sidebar';
-import { ChatView } from './components/chat/ChatView';
-import { SkillsPanel } from './components/skills/SkillsPanel';
-import { EventLogView } from './components/events/EventLogView';
 import { SettingsView } from './components/settings/SettingsView';
-import { TerminalManager } from './components/terminal/TerminalManager';
-import { Browser } from './components/browser';
+import { WorkspaceRenderer } from './components/workspaces/WorkspaceRenderer';
 
 function MainContent() {
   const activePanel = useCommandCenter(s => s.activePanel);
+  const activeWorkspaceId = useCommandCenter(s => s.activeWorkspaceId);
+  const workspacesLoaded = useCommandCenter(s => s.workspacesLoaded);
 
-  switch (activePanel) {
-    case 'chat':
-      return <ChatView />;
-    case 'skills':
-      return <SkillsPanel />;
-    case 'terminal':
-      return <TerminalManager />;
-    case 'events':
-      return <EventLogView />;
-    case 'settings':
-      return <SettingsView />;
-    case 'browser':
-      return <Browser />;
+  // Settings is a special panel, not a workspace
+  if (activePanel === 'settings') {
+    return <SettingsView />;
   }
+
+  if (!workspacesLoaded) {
+    return (
+      <div className="flex h-full items-center justify-center text-dark-muted text-xs font-mono">
+        Loading workspaces...
+      </div>
+    );
+  }
+
+  if (!activeWorkspaceId) {
+    return (
+      <div className="flex h-full items-center justify-center text-dark-muted text-xs font-mono">
+        No workspaces available
+      </div>
+    );
+  }
+
+  return <WorkspaceRenderer workspaceId={activeWorkspaceId} />;
 }
 
 function App() {
   const connect = useCommandCenter(s => s.connect);
   const disconnect = useCommandCenter(s => s.disconnect);
+  const setActivePanel = useCommandCenter(s => s.setActivePanel);
 
   useEffect(() => {
     connect();
     return () => disconnect();
   }, [connect, disconnect]);
+
+  // Reset activePanel from 'settings' when workspace loads
+  // so workspaces render by default
+  useEffect(() => {
+    setActivePanel('chat');
+  }, [setActivePanel]);
 
   return (
     <div className="flex h-screen bg-[#0B1120]">

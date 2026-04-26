@@ -589,7 +589,14 @@ impl SessionStorage {
                 use super::spectral_schema;
 
                 if spectral_schema::is_schema_initialized(&self.pool).await? {
-                    spectral_schema::verify_schema_version(&self.pool).await?;
+                    let version = spectral_schema::verify_schema_version(&self.pool).await?;
+                    // Run incremental migrations
+                    if version < 3 {
+                        spectral_schema::migrate_v2_to_v3(&self.pool).await?;
+                    }
+                    if version < 4 {
+                        spectral_schema::migrate_v3_to_v4(&self.pool).await?;
+                    }
                 } else {
                     info!("Initializing Spectral schema at {:?}", self.db_path);
                     spectral_schema::init_spectral_db(&self.pool).await?;

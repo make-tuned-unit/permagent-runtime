@@ -10,6 +10,7 @@ export default defineConfig({
     port: 5173,
     host: '0.0.0.0',
     proxy: {
+      '/api/workspaces': 'http://localhost:3000',
       '/sessions': 'http://localhost:3000',
       '/reply': 'http://localhost:3000',
       '/agent': 'http://localhost:3000',
