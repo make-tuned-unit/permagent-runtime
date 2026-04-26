@@ -267,3 +267,135 @@ async fn wait_for_callback(listener: &TcpListener) -> Result<String, String> {
 
     Ok(code)
 }
+
+// --- Tauri command wrappers ---
+
+#[tauri::command]
+pub fn get_integration_status(provider: String) -> Result<IntegrationStatus, String> {
+    get_status(&provider)
+}
+
+#[tauri::command]
+pub fn disconnect_integration(app: AppHandle, provider: String) -> Result<(), String> {
+    disconnect(&app, &provider)
+}
+
+#[tauri::command]
+pub async fn start_oauth(
+    app: AppHandle,
+    provider: String,
+    client_id: String,
+    client_secret: String,
+    scopes: String,
+) -> Result<String, String> {
+    start_oauth_flow(app, provider, client_id, client_secret, scopes).await
+}
+
+/// OAuth flow that uses the embedded browser panel instead of a popup window.
+/// Emits `browser_open_url` event for the React browser to handle.
+#[tauri::command]
+pub async fn start_oauth_in_browser(
+    app: AppHandle,
+    provider: String,
+    client_id: String,
+    client_secret: String,
+    scopes: String,
+) -> Result<String, String> {
+    let endpoints = endpoints_for(&provider)?;
+    let redirect_uri = format!("http://{}/callback", CALLBACK_ADDR);
+
+    let auth_url = format!(
+        "{}?client_id={}&redirect_uri={}&response_type=code&scope={}&access_type=offline&prompt=consent",
+        endpoints.auth_url,
+        urlencoding::encode(&client_id),
+        urlencoding::encode(&redirect_uri),
+        urlencoding::encode(&scopes),
+    );
+
+    // Bind callback server before telling the browser to navigate
+    let listener = TcpListener::bind(CALLBACK_ADDR)
+        .await
+        .map_err(|e| format!("Failed to bind callback server on {}: {}", CALLBACK_ADDR, e))?;
+
+    // Emit event for browser panel to open the auth URL
+    let _ = app.emit(
+        "browser_open_url",
+        serde_json::json!({
+            "url": auth_url,
+            "oauth": true,
+            "provider": &provider,
+        }),
+    );
+
+    // Wait for callback (5 minute timeout)
+    let code = match tokio::time::timeout(
+        std::time::Duration::from_secs(300),
+        wait_for_callback(&listener),
+    )
+    .await
+    {
+        Ok(Ok(code)) => code,
+        Ok(Err(e)) => return Err(format!("Callback error: {}", e)),
+        Err(_) => return Err("OAuth timed out after 5 minutes".to_string()),
+    };
+
+    // Exchange authorization code for tokens
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(endpoints.token_url)
+        .form(&[
+            ("code", code.as_str()),
+            ("client_id", client_id.as_str()),
+            ("client_secret", client_secret.as_str()),
+            ("redirect_uri", redirect_uri.as_str()),
+            ("grant_type", "authorization_code"),
+        ])
+        .send()
+        .await
+        .map_err(|e| format!("Token exchange request failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Token exchange failed: {}", body));
+    }
+
+    let tokens: TokenResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse token response: {}", e))?;
+
+    let expiry = tokens.expires_in.map(|secs| {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + secs;
+        ts.to_string()
+    });
+
+    let stored = StoredToken {
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        expiry,
+        scopes: tokens.scope.unwrap_or_else(|| scopes.clone()),
+    };
+
+    let dir = secrets_dir()?;
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create secrets dir: {}", e))?;
+
+    let path = token_path(&provider)?;
+    let json = serde_json::to_string_pretty(&stored).map_err(|e| e.to_string())?;
+    fs::write(&path, &json).map_err(|e| format!("Failed to write token file: {}", e))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("Failed to set permissions: {}", e))?;
+    }
+
+    let _ = app.emit("integration_connected", &provider);
+    let _ = app.emit("browser_oauth_complete", serde_json::json!({ "provider": &provider }));
+
+    Ok(format!("{} connected successfully", provider))
+}

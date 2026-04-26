@@ -6,6 +6,7 @@ import { SkillsPanel } from './components/skills/SkillsPanel';
 import { EventLogView } from './components/events/EventLogView';
 import { SettingsView } from './components/settings/SettingsView';
 import { TerminalManager } from './components/terminal/TerminalManager';
+import { Browser } from './components/browser';
 
 function MainContent() {
   const activePanel = useCommandCenter(s => s.activePanel);
@@ -21,6 +22,8 @@ function MainContent() {
       return <EventLogView />;
     case 'settings':
       return <SettingsView />;
+    case 'browser':
+      return <Browser />;
   }
 }
 

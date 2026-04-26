@@ -96,7 +96,7 @@ export type PermagentEventType =
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 
-export type ActivePanel = 'chat' | 'skills' | 'events' | 'settings' | 'terminal';
+export type ActivePanel = 'chat' | 'skills' | 'events' | 'settings' | 'terminal' | 'browser';
 
 // Skill proposal from skill_proposed events
 export interface SkillProposal {
