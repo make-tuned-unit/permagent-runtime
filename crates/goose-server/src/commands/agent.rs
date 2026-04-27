@@ -49,6 +49,42 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
         }
     }
 
+    // Initialize default provider from config.yaml so new sessions work immediately
+    {
+        let config = permagent::config::Config::global();
+        let provider_name: Result<String, _> = config.get_goose_provider();
+        let model_name: Result<String, _> = config.get_goose_model();
+
+        if let Ok(ref name) = provider_name {
+            let model = match &model_name {
+                Ok(m) => permagent::model::ModelConfig::new(m).ok(),
+                Err(_) => None,
+            };
+            match permagent::providers::create(
+                name,
+                model.unwrap_or_default(),
+                vec![],
+            )
+            .await
+            {
+                Ok(provider) => {
+                    app_state
+                        .agent_manager
+                        .set_default_provider(provider)
+                        .await;
+                    info!(
+                        "Default provider initialized: {} (model: {})",
+                        name,
+                        model_name.as_deref().unwrap_or("default")
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to initialize default provider '{}': {}", name, e);
+                }
+            }
+        }
+    }
+
     // Generate a random secret for the tunnel forwarding protocol.
     // The local server no longer checks this header — it is only used by the
     // tunnel proxy to authenticate forwarded requests to the remote endpoint.

@@ -362,12 +362,11 @@ fn write_config(
         r#"# ~/.permagent/config.yaml
 version: 1
 
+GOOSE_PROVIDER: {provider}
+GOOSE_MODEL: {model}
+
 agent:
   name: {agent_name}
-
-provider:
-  name: {provider}
-  default_model: {model}
 
 daemon:
   host: 127.0.0.1
