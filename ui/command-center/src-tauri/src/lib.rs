@@ -8,7 +8,7 @@ fn check_daemon(port: u16) -> bool {
 
 #[tauri::command]
 fn daemon_status() -> bool {
-    check_daemon(3000)
+    check_daemon(3001)
 }
 
 pub fn run() {
@@ -23,6 +23,7 @@ pub fn run() {
             pty::resize_pty,
             pty::kill_pty,
             webview::create_browser_webview,
+            webview::update_browser_bounds,
             webview::navigate_browser,
             webview::close_browser,
             webview::show_browser,
@@ -34,8 +35,8 @@ pub fn run() {
             oauth::start_oauth_in_browser,
         ])
         .setup(|_app| {
-            if !check_daemon(3000) {
-                eprintln!("Warning: permagentd not detected on port 3000");
+            if !check_daemon(3001) {
+                eprintln!("Warning: permagentd not detected on port 3001");
             }
             Ok(())
         })

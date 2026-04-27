@@ -51,13 +51,27 @@ function normalizeUrl(input: string): string {
   return `https://www.google.com/search?q=${encodeURIComponent(trimmed)}`;
 }
 
+// ── Module-level state persists across workspace switches (mount/unmount) ──
+let persistedTabs: BrowserTab[] | null = null;
+let persistedActiveTabId: string | null = null;
+
 export function Browser() {
-  const [tabs, setTabs] = useState<BrowserTab[]>(() => [createTab()]);
-  const [activeTabId, setActiveTabId] = useState<string>(tabs[0].id);
+  const [tabs, setTabs] = useState<BrowserTab[]>(() => {
+    if (persistedTabs) return persistedTabs;
+    return [createTab()];
+  });
+  const [activeTabId, setActiveTabId] = useState<string>(() => {
+    return persistedActiveTabId || tabs[0].id;
+  });
   const [closingTabId, setClosingTabId] = useState<string | null>(null);
   const [urlInput, setUrlInput] = useState('');
   const [isTauri, setIsTauri] = useState(false);
   const urlInputRef = useRef<HTMLInputElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Refs that always hold the latest value (for callbacks and cleanup)
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
   const activeTabIdRef = useRef(activeTabId);
   activeTabIdRef.current = activeTabId;
 
@@ -69,6 +83,70 @@ export function Browser() {
       setIsTauri(invoke !== null);
     });
   }, []);
+
+  // ── Persist state and hide webviews on unmount (workspace switch) ──
+  useEffect(() => {
+    return () => {
+      persistedTabs = tabsRef.current;
+      persistedActiveTabId = activeTabIdRef.current;
+      // Move all child webviews offscreen
+      tabsRef.current.forEach((t) => {
+        if (t.webviewId && invoke) {
+          invoke('hide_browser', { webviewId: t.webviewId }).catch(() => {});
+        }
+      });
+    };
+  }, []);
+
+  // ── Sync active webview position with the container div ──
+  const syncBounds = useCallback(() => {
+    const inv = invoke;
+    if (!containerRef.current || !inv) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+
+    const currentTabs = tabsRef.current;
+    const currentActiveId = activeTabIdRef.current;
+
+    currentTabs.forEach((t) => {
+      if (!t.webviewId) return;
+      if (t.id === currentActiveId) {
+        inv('update_browser_bounds', {
+          webviewId: t.webviewId,
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height,
+        }).catch(() => {});
+      } else {
+        inv('hide_browser', { webviewId: t.webviewId }).catch(() => {});
+      }
+    });
+  }, []);
+
+  // ── ResizeObserver keeps the webview in sync with panel resizes ──
+  useEffect(() => {
+    if (!containerRef.current || !isTauri) return;
+
+    // Restore any persisted webviews on mount
+    syncBounds();
+
+    const observer = new ResizeObserver(() => syncBounds());
+    observer.observe(containerRef.current);
+
+    // Also listen for window scroll/move which changes getBoundingClientRect
+    window.addEventListener('resize', syncBounds);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', syncBounds);
+    };
+  }, [isTauri, syncBounds]);
+
+  // ── Re-sync whenever active tab changes ──
+  useEffect(() => {
+    syncBounds();
+  }, [activeTabId, tabs, syncBounds]);
 
   // Listen for navigation events from Tauri
   useEffect(() => {
@@ -150,13 +228,21 @@ export function Browser() {
   const handleOpenUrl = useCallback(
     async (url: string, label?: string) => {
       if (!invoke) return;
+
+      const rect = containerRef.current?.getBoundingClientRect();
       const tab = createTab();
       tab.url = url;
       tab.label = label || extractTitle(url);
       tab.loading = true;
 
       try {
-        const webviewId = (await invoke('create_browser_webview', { url })) as string;
+        const webviewId = (await invoke('create_browser_webview', {
+          url,
+          x: rect?.x ?? 0,
+          y: rect?.y ?? 0,
+          width: rect?.width ?? 800,
+          height: rect?.height ?? 600,
+        })) as string;
         tab.webviewId = webviewId;
         tab.loading = false;
       } catch (err) {
@@ -199,10 +285,15 @@ export function Browser() {
           console.error('Navigate failed:', err);
         }
       } else {
-        // Create new webview for this tab
+        // Create new child webview for this tab
+        const rect = containerRef.current?.getBoundingClientRect();
         try {
           const webviewId = (await invoke('create_browser_webview', {
             url: normalized,
+            x: rect?.x ?? 0,
+            y: rect?.y ?? 0,
+            width: rect?.width ?? 800,
+            height: rect?.height ?? 600,
           })) as string;
           setTabs((prev) =>
             prev.map((t) =>
@@ -272,19 +363,8 @@ export function Browser() {
       const tab = tabs.find((t) => t.id === tabId);
       if (tab) {
         setUrlInput(tab.url);
-        // Show this tab's window, hide others
-        if (invoke) {
-          tabs.forEach((t) => {
-            if (t.webviewId) {
-              if (t.id === tabId) {
-                invoke!('show_browser', { webviewId: t.webviewId }).catch(() => {});
-              } else {
-                invoke!('hide_browser', { webviewId: t.webviewId }).catch(() => {});
-              }
-            }
-          });
-        }
       }
+      // syncBounds will fire from the activeTabId effect
     },
     [tabs],
   );
@@ -328,14 +408,6 @@ export function Browser() {
           case 'r':
             e.preventDefault();
             handleReload();
-            break;
-          case '[':
-            e.preventDefault();
-            // Back - not supported with separate windows in Phase 1
-            break;
-          case ']':
-            e.preventDefault();
-            // Forward - not supported with separate windows in Phase 1
             break;
         }
       }
@@ -410,54 +482,46 @@ export function Browser() {
         </div>
       </div>
 
-      {/* Content area */}
-      <div className="flex-1 min-h-0 flex items-center justify-center">
+      {/* Content area — the child webview overlays this div */}
+      <div ref={containerRef} className="flex-1 min-h-0 relative">
         {!isTauri ? (
-          <div className="text-center p-8">
-            <FiShield size={48} className="mx-auto mb-4 text-dark-muted" />
-            <h3 className="text-lg font-semibold text-dark-text mb-2">Desktop App Required</h3>
-            <p className="text-xs text-dark-muted max-w-md">
-              The embedded browser requires the Permagent desktop app. Run{' '}
-              <code className="bg-black/30 px-1.5 py-0.5 rounded text-accent">
-                npm run tauri:dev
-              </code>{' '}
-              to use this feature.
-            </p>
+          <div className="flex items-center justify-center h-full">
+            <div className="text-center p-8">
+              <FiShield size={48} className="mx-auto mb-4 text-dark-muted" />
+              <h3 className="text-lg font-semibold text-dark-text mb-2">Desktop App Required</h3>
+              <p className="text-xs text-dark-muted max-w-md">
+                The embedded browser requires the Permagent desktop app. Run{' '}
+                <code className="bg-black/30 px-1.5 py-0.5 rounded text-accent">
+                  npm run tauri:dev
+                </code>{' '}
+                to use this feature.
+              </p>
+            </div>
           </div>
         ) : !activeTab?.webviewId ? (
-          <div className="text-center p-8">
-            <FiGlobe size={48} className="mx-auto mb-4 text-accent/30" />
-            <h3 className="text-sm font-medium text-dark-text mb-2">Ready to Browse</h3>
-            <p className="text-xs text-dark-muted">
-              Enter a URL above or press{' '}
-              <kbd className="bg-dark-border px-1.5 py-0.5 rounded text-[10px]">Cmd+L</kbd> to
-              focus the address bar
-            </p>
-            <div className="mt-6 flex flex-wrap gap-2 justify-center">
-              {['google.com', 'github.com', 'accounts.google.com'].map((site) => (
-                <button
-                  key={site}
-                  onClick={() => handleNavigate(`https://${site}`)}
-                  className="px-3 py-1.5 rounded-md bg-white/5 text-xs text-dark-muted hover:text-accent hover:bg-accent/10 transition-colors"
-                >
-                  {site}
-                </button>
-              ))}
+          <div className="flex items-center justify-center h-full">
+            <div className="text-center p-8">
+              <FiGlobe size={48} className="mx-auto mb-4 text-accent/30" />
+              <h3 className="text-sm font-medium text-dark-text mb-2">Ready to Browse</h3>
+              <p className="text-xs text-dark-muted">
+                Enter a URL above or press{' '}
+                <kbd className="bg-dark-border px-1.5 py-0.5 rounded text-[10px]">Cmd+L</kbd> to
+                focus the address bar
+              </p>
+              <div className="mt-6 flex flex-wrap gap-2 justify-center">
+                {['google.com', 'github.com', 'accounts.google.com'].map((site) => (
+                  <button
+                    key={site}
+                    onClick={() => handleNavigate(`https://${site}`)}
+                    className="px-3 py-1.5 rounded-md bg-white/5 text-xs text-dark-muted hover:text-accent hover:bg-accent/10 transition-colors"
+                  >
+                    {site}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
-        ) : (
-          <div className="w-full h-full flex items-center justify-center text-dark-muted">
-            <div className="text-center">
-              <FiGlobe size={24} className="mx-auto mb-2 text-accent/50" />
-              <p className="text-xs">
-                Content rendering in browser window
-              </p>
-              <p className="text-[10px] text-dark-muted mt-1">
-                {activeTab.url}
-              </p>
-            </div>
-          </div>
-        )}
+        ) : null /* Child webview renders natively over this area */}
       </div>
 
       {/* Status bar */}
