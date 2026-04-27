@@ -6,7 +6,7 @@
 const API_BASE_URL = (
   (import.meta.env.VITE_DAEMON_URL as string | undefined) ||
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ||
-  `http://localhost:3000`
+  ""
 ).replace(/\/$/, '');
 
 const SECRET_KEY = (import.meta.env.VITE_SECRET_KEY as string | undefined) || '';

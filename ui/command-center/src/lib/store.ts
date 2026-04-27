@@ -212,7 +212,7 @@ interface CommandCenterStore {
 const WS_URL = (
   (import.meta.env.VITE_DAEMON_URL as string | undefined) ||
   (import.meta.env.VITE_WS_URL as string | undefined) ||
-  `ws://localhost:3000/events`
+  `ws://${location.host}/events`
 );
 
 const MAX_EVENTS_BUFFER = 1000;
