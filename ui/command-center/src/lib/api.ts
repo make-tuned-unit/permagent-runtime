@@ -233,32 +233,34 @@ export const api = {
       headers: authHeaders(),
     }),
 
-  // Create session — POST /agent/start with working_dir
+  // Create session — POST /api/sessions
   createSession: (workingDir?: string) =>
-    apiFetch<Session>('/agent/start', {
+    apiFetch<Session>('/api/sessions', {
       method: 'POST',
-      body: JSON.stringify({ working_dir: workingDir || '/tmp' }),
+      body: JSON.stringify(workingDir ? { workingDir } : {}),
     }),
 
   /**
-   * Send a message via POST /reply — returns a raw Response for SSE streaming.
-   * The caller must parse the SSE stream from the response body.
+   * Send a message via POST /sessions/{id}/reply (per-session).
+   * Returns { request_id } — events arrive on the SSE channel.
    */
-  sendReply: async (sessionId: string, text: string): Promise<Response> => {
-    const response = await fetch(`${API_BASE_URL}/reply`, {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({
-        session_id: sessionId,
-        user_message: buildUserMessage(text),
-      }),
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ message: 'Unknown error' }));
-      throw new Error(error.message || `HTTP ${response.status}`);
-    }
-    return response;
+  sendReply: async (sessionId: string, text: string): Promise<{ request_id: string }> => {
+    const requestId = crypto.randomUUID();
+    return apiFetch<{ request_id: string }>(
+      `/sessions/${encodeURIComponent(sessionId)}/reply`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          request_id: requestId,
+          user_message: buildUserMessage(text),
+        }),
+      },
+    );
   },
+
+  /** Build the SSE URL for per-session events. */
+  sessionEventsUrl: (sessionId: string): string =>
+    `${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/events`,
 
   // Config
   getConfig: () => apiFetch<PermagentConfig>('/config'),

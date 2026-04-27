@@ -1,8 +1,7 @@
 import { create } from 'zustand';
-import { api, extractText, parseSSEStream } from './api';
+import { api, extractText } from './api';
 import type { Session, DaemonMessage, SSEEvent } from './api';
-import { useEventBus, startEventPruning } from './eventBus';
-import type { PermagentEvent } from './eventBus';
+import { startEventPruning } from './eventBus';
 
 // --- Types ---
 
@@ -196,28 +195,20 @@ interface CommandCenterStore {
   loadEvents: (params?: { type?: string; limit?: number }) => Promise<void>;
   loadSnapshot: () => Promise<void>;
   loadSessionMessages: (sessionId: string) => Promise<void>;
-  handleWsEvent: (event: EventRecord) => void;
+  handleSessionEvent: (data: SSEEvent) => void;
   clearEvents: () => void;
 
-  // --- WebSocket ---
-  _ws: WebSocket | null;
+  // --- Per-session SSE ---
+  _eventSource: EventSource | null;
   _reconnectTimer: ReturnType<typeof setTimeout> | null;
   _reconnectAttempts: number;
   _lastEventId: string | null;
-  connect: () => void;
-  disconnect: () => void;
+  connectSession: (sessionId: string) => void;
+  disconnectSession: () => void;
+  ensureSession: () => Promise<string | null>;
 }
 
-// WebSocket URL — permagentd events endpoint
-const WS_URL = (
-  (import.meta.env.VITE_DAEMON_URL as string | undefined) ||
-  (import.meta.env.VITE_WS_URL as string | undefined) ||
-  `ws://${location.host}/events`
-);
-
 const MAX_EVENTS_BUFFER = 1000;
-
-// Reconnect: exponential backoff 1s, 2s, 4s, 8s, ... max 30s
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 
@@ -290,7 +281,6 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         w.id === workspaceId ? { ...w, layoutJson } : w
       ),
     }));
-    // Debounced save — fire and forget
     api.updateWorkspaceLayout(workspaceId, layoutJson).catch(() => {});
   },
 
@@ -318,12 +308,46 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   isStreaming: false,
 
   /**
-   * Send a message to the daemon via POST /reply and process the SSE stream.
-   * Creates a session if none exists.
+   * Ensure a session exists. Creates one via POST /api/sessions if needed.
+   * Returns the session ID or null on failure.
+   */
+  ensureSession: async () => {
+    let sessionId = get().chatSessionId;
+    if (sessionId) return sessionId;
+
+    try {
+      const session = await api.createSession();
+      sessionId = session.id;
+      set({ chatSessionId: sessionId });
+      try { localStorage.setItem('permagent-chat-session-id', sessionId); } catch { /* */ }
+      get().connectSession(sessionId);
+      return sessionId;
+    } catch (err) {
+      console.error('Failed to create session:', err);
+      return null;
+    }
+  },
+
+  /**
+   * Send a message via POST /sessions/{id}/reply (fire-and-forget).
+   * Events arrive on the per-session SSE channel and update chat state.
    */
   sendMessage: async (text: string, files?: File[]) => {
     const state = get();
     if (state.isStreaming) return;
+
+    const sessionId = await get().ensureSession();
+    if (!sessionId) {
+      set(s => ({
+        chatMessages: [...s.chatMessages, {
+          id: `msg-${Date.now()}-err`,
+          role: 'system' as const,
+          content: 'Failed to create session',
+          timestamp: new Date().toISOString(),
+        }],
+      }));
+      return;
+    }
 
     // Add user message to chat
     const userMsg: ChatMessage = {
@@ -334,100 +358,34 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     };
     set(s => ({ chatMessages: [...s.chatMessages, userMsg] }));
 
-    // Ensure we have a session
-    let sessionId = state.chatSessionId;
-    if (!sessionId) {
+    // Upload files if any
+    let fileNote = '';
+    if (files && files.length > 0) {
       try {
-        const session = await api.createSession();
-        sessionId = session.id;
-        set({ chatSessionId: sessionId });
-        try { localStorage.setItem('permagent-chat-session-id', sessionId); } catch { /* */ }
+        const uploaded = await api.uploadAttachments(sessionId, files);
+        const names = uploaded.attachments.map(a => a.filename).join(', ');
+        fileNote = `\n[Attached files: ${names}]`;
       } catch (err) {
-        set(s => ({
-          chatMessages: [...s.chatMessages, {
-            id: `msg-${Date.now()}-err`,
-            role: 'system' as const,
-            content: `Failed to create session: ${err instanceof Error ? err.message : 'Unknown error'}`,
-            timestamp: new Date().toISOString(),
-          }],
-        }));
-        return;
+        console.warn('File upload failed:', err);
       }
     }
 
-    set({ isStreaming: true, _streamingMessageId: null });
+    // Create streaming placeholder
+    const streamMsgId = `msg-${Date.now()}-stream`;
+    set(s => ({
+      isStreaming: true,
+      _streamingMessageId: streamMsgId,
+      chatMessages: [...s.chatMessages, {
+        id: streamMsgId,
+        role: 'assistant' as const,
+        content: '',
+        timestamp: new Date().toISOString(),
+      }],
+    }));
 
     try {
-      // Upload files if any
-      let fileNote = '';
-      if (files && files.length > 0 && sessionId) {
-        try {
-          const uploaded = await api.uploadAttachments(sessionId, files);
-          const names = uploaded.attachments.map(a => a.filename).join(', ');
-          fileNote = `\n[Attached files: ${names}]`;
-        } catch (err) {
-          console.warn('File upload failed:', err);
-        }
-      }
-
-      const response = await api.sendReply(sessionId, text + fileNote);
-
-      // Create a placeholder assistant message for streaming
-      const streamMsgId = `msg-${Date.now()}-stream`;
-      set(s => ({
-        _streamingMessageId: streamMsgId,
-        chatMessages: [...s.chatMessages, {
-          id: streamMsgId,
-          role: 'assistant' as const,
-          content: '',
-          timestamp: new Date().toISOString(),
-        }],
-      }));
-
-      let lastContent = '';
-
-      await parseSSEStream(
-        response,
-        (event: SSEEvent) => {
-          switch (event.type) {
-            case 'Message': {
-              const msg = (event as { type: string; message: DaemonMessage }).message;
-              if (msg.role === 'assistant') {
-                const text = extractText(msg);
-                if (text !== lastContent) {
-                  lastContent = text;
-                  set(s => ({
-                    chatMessages: s.chatMessages.map(m =>
-                      m.id === streamMsgId ? { ...m, content: text } : m
-                    ),
-                  }));
-                }
-              }
-              break;
-            }
-            case 'Error': {
-              const errMsg = (event as { type: string; error: string }).error;
-              set(s => ({
-                chatMessages: [...s.chatMessages, {
-                  id: `msg-${Date.now()}-err`,
-                  role: 'system' as const,
-                  content: `Error: ${errMsg}`,
-                  timestamp: new Date().toISOString(),
-                }],
-              }));
-              break;
-            }
-            case 'Finish':
-              // Stream complete
-              break;
-            case 'Ping':
-              break;
-          }
-        },
-        () => {
-          set({ isStreaming: false, _streamingMessageId: null });
-        },
-      );
+      // Fire-and-forget: events arrive on SSE channel
+      await api.sendReply(sessionId, text + fileNote);
     } catch (err) {
       set(s => ({
         isStreaming: false,
@@ -527,7 +485,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     }
   },
 
-  /** Load messages from a session's conversation history */
+  /** Load messages from a session's conversation history. Handles 404 gracefully. */
   loadSessionMessages: async (sessionId: string) => {
     try {
       const session = await api.getSession(sessionId);
@@ -536,7 +494,10 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         set({ chatMessages: msgs });
       }
     } catch {
-      // Session may not exist on server yet
+      // Session may not exist (404) — clear stale ID and start fresh
+      console.warn('Session not found, will create new on next message');
+      set({ chatMessages: [], chatSessionId: null });
+      try { localStorage.removeItem('permagent-chat-session-id'); } catch { /* */ }
     }
   },
 
@@ -547,8 +508,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   clearEvents: () => set({ events: [] }),
 
   loadEvents: async () => {
-    // Events come through WebSocket; no REST endpoint for event history
-    // Keep this as a no-op for now
+    // Events come through per-session SSE; no separate REST endpoint
   },
 
   loadSnapshot: async () => {
@@ -573,166 +533,125 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     }
   },
 
-  handleWsEvent: (event) => {
-    // Push to EventBus for the event log panel
-    const busEvent: PermagentEvent = {
-      id: event.id,
-      type: event.event_type as PermagentEvent['type'],
-      timestamp: event.timestamp,
-      payload: event.payload,
-    };
-    useEventBus.getState().addEvent(busEvent);
+  /** Handle a per-session SSE event (Message, Error, Finish from reply stream) */
+  handleSessionEvent: (data: SSEEvent) => {
+    switch (data.type) {
+      case 'Message': {
+        const msg = (data as { type: string; message: DaemonMessage }).message;
+        if (msg.role === 'assistant') {
+          const text = extractText(msg);
+          const streamMsgId = get()._streamingMessageId;
+          if (streamMsgId) {
+            set(s => ({
+              chatMessages: s.chatMessages.map(m =>
+                m.id === streamMsgId ? { ...m, content: text } : m
+              ),
+            }));
+          }
+        }
 
-    set(s => {
-      const newEvents = [event, ...s.events].slice(0, MAX_EVENTS_BUFFER);
-      const patch: Partial<CommandCenterStore> = { events: newEvents, _lastEventId: event.id };
-
-      switch (event.event_type) {
-        case 'task_created': {
-          const p = event.payload as { task_id?: string; title?: string; description?: string; status?: string };
-          if (p.task_id) {
-            patch.tasks = [...s.tasks, {
-              id: p.task_id, title: p.title || p.description || null,
-              status: p.status || 'pending', automation_id: null,
-              created_at: event.timestamp, updated_at: event.timestamp,
-            }];
-          }
-          break;
-        }
-        case 'task_started':
-        case 'task_completed':
-        case 'task_failed': {
-          const p = event.payload as { task_id?: string; status?: string };
-          if (p.task_id) {
-            patch.tasks = s.tasks.map(t =>
-              t.id === p.task_id
-                ? { ...t, status: p.status || event.event_type.replace('task_', ''), updated_at: event.timestamp }
-                : t
-            );
-          }
-          break;
-        }
-        case 'skill_proposed': {
-          const p = event.payload as {
-            description?: string; tool_used?: string; argument_shape_hash?: string;
-            occurrence_count?: number; source_task_ids?: string[];
-          };
-          if (p.description && p.argument_shape_hash) {
-            patch.pendingSkillProposal = {
-              description: p.description,
-              tool_used: p.tool_used || '',
-              argument_shape_hash: p.argument_shape_hash,
-              occurrence_count: p.occurrence_count || 0,
-              source_task_ids: p.source_task_ids || [],
-              timestamp: event.timestamp,
-            };
-          }
-          break;
-        }
-        case 'skill_saved': {
-          get().loadSkills();
-          break;
-        }
-        case 'skill_triggered': {
-          const p = event.payload as { skill_id?: string };
-          if (p.skill_id) {
-            patch.skills = s.skills.map(sk =>
-              sk.id === p.skill_id
-                ? { ...sk, usage_count: (sk.usage_count || 0) + 1, last_run: event.timestamp }
-                : sk
-            );
-          }
-          break;
-        }
-        case 'memory_added':
-        case 'integration_connected':
-        case 'integration_error':
-        case 'daemon_started':
-        case 'daemon_stopped':
-          break;
+        // Also push to trace events
+        const record: EventRecord = {
+          id: `sse-${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          source: 'permagentd',
+          event_type: 'Message',
+          severity: 'info',
+          run_id: null,
+          task_id: null,
+          agent_id: null,
+          correlation_id: null,
+          payload: data as unknown as Record<string, unknown>,
+        };
+        set(s => ({ events: [record, ...s.events].slice(0, MAX_EVENTS_BUFFER) }));
+        break;
       }
-
-      return patch;
-    });
+      case 'Error': {
+        const errMsg = (data as { type: string; error: string }).error;
+        set(s => ({
+          isStreaming: false,
+          _streamingMessageId: null,
+          chatMessages: [...s.chatMessages, {
+            id: `msg-${Date.now()}-err`,
+            role: 'system' as const,
+            content: `Error: ${errMsg}`,
+            timestamp: new Date().toISOString(),
+          }],
+        }));
+        break;
+      }
+      case 'Finish': {
+        set({ isStreaming: false, _streamingMessageId: null });
+        break;
+      }
+    }
   },
 
-  // WebSocket
-  _ws: null,
+  // ── Per-session SSE (replaces WebSocket) ──
+  _eventSource: null,
   _reconnectTimer: null,
   _reconnectAttempts: 0,
   _lastEventId: null,
 
-  connect: () => {
+  connectSession: (sessionId: string) => {
     const state = get();
-    if (state._ws && state._ws.readyState <= WebSocket.OPEN) return;
+    // Close existing connection
+    if (state._eventSource) {
+      state._eventSource.close();
+    }
+    if (state._reconnectTimer) {
+      clearTimeout(state._reconnectTimer);
+    }
 
     set({ connectionStatus: 'connecting' });
-
-    // Start event pruning on first connect
     startEventPruning();
 
-    const ws = new WebSocket(WS_URL);
+    const url = api.sessionEventsUrl(sessionId);
+    const es = new EventSource(url);
 
-    ws.onopen = () => {
+    es.onopen = () => {
       set({ connectionStatus: 'connected', _reconnectAttempts: 0 });
-
-      const lastId = get()._lastEventId;
-      if (lastId) {
-        ws.send(JSON.stringify({ resume_from: lastId }));
-      }
-
       get().loadSnapshot();
       get().loadSkills();
       get().loadWorkspaces();
     };
 
-    ws.onmessage = (ev) => {
+    es.onmessage = (ev) => {
+      // Store Last-Event-ID for reconnection
+      if (ev.lastEventId) {
+        set({ _lastEventId: ev.lastEventId });
+      }
+
       try {
-        const data = JSON.parse(ev.data);
-        if (data.id && data.type) {
-          const record: EventRecord = {
-            id: data.id,
-            timestamp: data.timestamp,
-            source: data.payload?.source || 'permagentd',
-            event_type: data.type,
-            severity: data.payload?.severity || 'info',
-            run_id: data.payload?.run_id || null,
-            task_id: data.payload?.task_id || null,
-            agent_id: data.payload?.agent_id || null,
-            correlation_id: data.payload?.correlation_id || null,
-            payload: data.payload || {},
-          };
-          get().handleWsEvent(record);
-        } else if (data.id && data.event_type) {
-          get().handleWsEvent(data as EventRecord);
-        }
+        const data = JSON.parse(ev.data) as SSEEvent;
+        get().handleSessionEvent(data);
       } catch {
-        // Ignore non-JSON messages
+        // Ignore malformed events
       }
     };
 
-    ws.onclose = () => {
-      set({ connectionStatus: 'disconnected', _ws: null });
+    es.onerror = () => {
+      es.close();
+      set({ connectionStatus: 'disconnected', _eventSource: null });
       const attempts = get()._reconnectAttempts;
       const delay = Math.min(RECONNECT_BASE_MS * Math.pow(2, attempts), RECONNECT_MAX_MS);
       set({ _reconnectAttempts: attempts + 1 });
-      const timer = setTimeout(() => get().connect(), delay);
+      const timer = setTimeout(() => {
+        const sid = get().chatSessionId;
+        if (sid) get().connectSession(sid);
+      }, delay);
       set({ _reconnectTimer: timer });
     };
 
-    ws.onerror = () => {
-      set({ connectionStatus: 'error' });
-    };
-
-    set({ _ws: ws });
+    set({ _eventSource: es });
   },
 
-  disconnect: () => {
-    const { _ws, _reconnectTimer } = get();
+  disconnectSession: () => {
+    const { _eventSource, _reconnectTimer } = get();
     if (_reconnectTimer) clearTimeout(_reconnectTimer);
-    if (_ws) _ws.close();
+    if (_eventSource) _eventSource.close();
     set({
-      _ws: null, _reconnectTimer: null,
+      _eventSource: null, _reconnectTimer: null,
       connectionStatus: 'disconnected', _reconnectAttempts: 0,
     });
   },

@@ -8,27 +8,24 @@ import { DropZone } from './DropZone';
 
 export function ChatView() {
   const chatSessionId = useCommandCenter(s => s.chatSessionId);
-  const loadSessions = useCommandCenter(s => s.loadSessions);
   const loadSessionMessages = useCommandCenter(s => s.loadSessionMessages);
+  const ensureSession = useCommandCenter(s => s.ensureSession);
+  const connectSession = useCommandCenter(s => s.connectSession);
   const chatInputRef = useRef<ChatInputHandle>(null);
 
-  // On mount: fetch sessions, load active session messages
+  // On mount: ensure a session exists and connect SSE
   useEffect(() => {
     (async () => {
-      await loadSessions();
-      const state = useCommandCenter.getState();
-
-      let sessionId = state.chatSessionId;
-      if (!sessionId && state.sessions.length > 0) {
-        sessionId = state.sessions[0].id;
-        useCommandCenter.setState({ chatSessionId: sessionId });
-        try { localStorage.setItem('permagent-chat-session-id', sessionId); } catch { /* ignore */ }
-      }
-
+      const sessionId = await ensureSession();
       if (sessionId) {
         await loadSessionMessages(sessionId);
+        connectSession(sessionId);
       }
     })();
+
+    return () => {
+      useCommandCenter.getState().disconnectSession();
+    };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleDrop = useCallback((files: File[]) => {

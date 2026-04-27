@@ -498,10 +498,42 @@ async fn get_session_extensions(
     Ok(Json(SessionExtensionsResponse { extensions }))
 }
 
+/// POST /api/sessions — Create a new empty session.
+async fn create_session(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<Option<CreateSessionRequest>>,
+) -> Result<Json<Session>, StatusCode> {
+    let working_dir = payload
+        .and_then(|p| p.working_dir)
+        .unwrap_or_else(|| "/tmp".to_string());
+
+    let config = permagent::config::Config::global();
+    let mode = config.get_goose_mode().unwrap_or_default();
+
+    let session = state
+        .session_manager()
+        .create_session(
+            std::path::PathBuf::from(&working_dir),
+            "New Chat".to_string(),
+            SessionType::User,
+            mode,
+        )
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(session))
+}
+
+#[derive(Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateSessionRequest {
+    working_dir: Option<String>,
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         // Canonical /api/ paths (matches /api/workspaces pattern)
-        .route("/api/sessions", get(list_sessions))
+        .route("/api/sessions", get(list_sessions).post(create_session))
         .route("/api/sessions/search", get(search_sessions))
         .route("/api/sessions/{session_id}", get(get_session))
         .route("/api/sessions/{session_id}", delete(delete_session))

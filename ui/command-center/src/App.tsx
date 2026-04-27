@@ -34,14 +34,14 @@ function MainContent() {
 }
 
 function App() {
-  const connect = useCommandCenter(s => s.connect);
-  const disconnect = useCommandCenter(s => s.disconnect);
+  const loadWorkspaces = useCommandCenter(s => s.loadWorkspaces);
+  const loadSkills = useCommandCenter(s => s.loadSkills);
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
 
   useEffect(() => {
-    connect();
-    return () => disconnect();
-  }, [connect, disconnect]);
+    loadWorkspaces();
+    loadSkills();
+  }, [loadWorkspaces, loadSkills]);
 
   // Reset activePanel from 'settings' when workspace loads
   // so workspaces render by default
