@@ -60,6 +60,14 @@ fn build_layout() -> serde_json::Value {
     })
 }
 
+fn brain_layout() -> serde_json::Value {
+    serde_json::json!({
+        "type": "panel",
+        "tool": "memory",
+        "config": {}
+    })
+}
+
 // ── Operations ─────────────────────────────────────────────────────────────
 
 /// Seed the three preset workspaces if the user has none.
@@ -86,6 +94,7 @@ pub async fn seed_presets_if_empty(pool: &Pool<Sqlite>) -> Result<bool, String> 
         ("Work", "layout-dashboard", 0, work_layout(), true),
         ("World", "globe", 1, world_layout(), false),
         ("Build", "code", 2, build_layout(), false),
+        ("Brain", "brain", 3, brain_layout(), false),
     ];
 
     let mut first_id = String::new();

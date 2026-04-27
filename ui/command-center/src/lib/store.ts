@@ -100,7 +100,7 @@ export type ActivePanel = 'chat' | 'skills' | 'events' | 'settings' | 'terminal'
 
 // ── Workspace types ──
 
-export type ToolType = 'chat' | 'skills' | 'trace' | 'world' | 'terminal' | 'browser';
+export type ToolType = 'chat' | 'skills' | 'trace' | 'world' | 'terminal' | 'browser' | 'memory';
 
 export interface LayoutSplit {
   type: 'split';

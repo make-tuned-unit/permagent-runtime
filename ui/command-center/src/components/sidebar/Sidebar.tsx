@@ -1,11 +1,12 @@
 import { useEffect, useCallback } from 'react';
-import { LayoutDashboard, Globe, Code, Settings, Wifi, WifiOff, Loader } from 'lucide-react';
+import { LayoutDashboard, Globe, Code, Brain, Settings, Wifi, WifiOff, Loader } from 'lucide-react';
 import { useCommandCenter, type ConnectionStatus } from '../../lib/store';
 
 const WORKSPACE_ICONS: Record<string, typeof LayoutDashboard> = {
   'layout-dashboard': LayoutDashboard,
   'globe': Globe,
   'code': Code,
+  'brain': Brain,
 };
 
 function ConnectionIndicator({ status }: { status: ConnectionStatus }) {

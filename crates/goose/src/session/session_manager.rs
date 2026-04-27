@@ -603,6 +603,9 @@ impl SessionStorage {
                     if version < 4 {
                         spectral_schema::migrate_v3_to_v4(&self.pool).await?;
                     }
+                    if version < 5 {
+                        spectral_schema::migrate_v4_to_v5(&self.pool).await?;
+                    }
                 } else {
                     info!("Initializing Spectral schema at {:?}", self.db_path);
                     spectral_schema::init_spectral_db(&self.pool).await?;

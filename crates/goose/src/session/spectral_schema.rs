@@ -10,7 +10,7 @@ use sqlx::{Pool, Sqlite};
 use tracing::{info, warn};
 
 /// Current Spectral schema version. Bump when adding migrations.
-pub const SPECTRAL_SCHEMA_VERSION: i32 = 4;
+pub const SPECTRAL_SCHEMA_VERSION: i32 = 5;
 
 /// Initialize the Spectral database schema from scratch.
 /// Creates all tables, indexes, FTS virtual tables, triggers, and views.
@@ -690,6 +690,44 @@ pub async fn migrate_v3_to_v4(pool: &Pool<Sqlite>) -> Result<()> {
         .await?;
 
     info!("Spectral schema migrated to v4");
+    Ok(())
+}
+
+/// Migrate from schema v4 to v5: add Brain as fourth workspace preset.
+/// Only appends if the user already has the three default workspaces.
+pub async fn migrate_v4_to_v5(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v4 -> v5");
+
+    // Check if user already has a Brain workspace
+    let has_brain = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT 1 FROM workspaces WHERE user_id = 'default' AND name = 'Brain')",
+    )
+    .fetch_one(pool)
+    .await?;
+
+    if !has_brain {
+        let brain_id = uuid::Uuid::now_v7().to_string();
+        let layout = serde_json::json!({"type": "panel", "tool": "memory", "config": {}});
+        let layout_str = serde_json::to_string(&layout)?;
+
+        sqlx::query(
+            "INSERT INTO workspaces (id, user_id, name, icon, sort_order, layout_json, is_default)
+             VALUES (?, 'default', 'Brain', 'brain', 3, ?, 0)",
+        )
+        .bind(&brain_id)
+        .bind(&layout_str)
+        .execute(pool)
+        .await?;
+
+        info!("Added Brain workspace preset");
+    }
+
+    // Record version
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (5)")
+        .execute(pool)
+        .await?;
+
+    info!("Spectral schema migrated to v5");
     Ok(())
 }
 
