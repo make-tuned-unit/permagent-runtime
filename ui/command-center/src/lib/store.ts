@@ -168,7 +168,7 @@ interface CommandCenterStore {
 
   // --- SSE streaming ---
   isStreaming: boolean;
-  sendMessage: (text: string) => Promise<void>;
+  sendMessage: (text: string, files?: File[]) => Promise<void>;
 
   // --- Skills state ---
   skills: SkillState[];
@@ -321,7 +321,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
    * Send a message to the daemon via POST /reply and process the SSE stream.
    * Creates a session if none exists.
    */
-  sendMessage: async (text: string) => {
+  sendMessage: async (text: string, files?: File[]) => {
     const state = get();
     if (state.isStreaming) return;
 
@@ -358,7 +358,19 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     set({ isStreaming: true, _streamingMessageId: null });
 
     try {
-      const response = await api.sendReply(sessionId, text);
+      // Upload files if any
+      let fileNote = '';
+      if (files && files.length > 0 && sessionId) {
+        try {
+          const uploaded = await api.uploadAttachments(sessionId, files);
+          const names = uploaded.attachments.map(a => a.filename).join(', ');
+          fileNote = `\n[Attached files: ${names}]`;
+        } catch (err) {
+          console.warn('File upload failed:', err);
+        }
+      }
+
+      const response = await api.sendReply(sessionId, text + fileNote);
 
       // Create a placeholder assistant message for streaming
       const streamMsgId = `msg-${Date.now()}-stream`;

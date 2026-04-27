@@ -1,0 +1,16 @@
+{
+  "identifier": "default",
+  "description": "Default capabilities for Permagent Command Center",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:event:allow-listen",
+    "core:event:allow-emit",
+    "core:event:allow-unlisten",
+    "core:window:default",
+    "core:window:allow-close",
+    "core:window:allow-set-title",
+    "core:webview:default"
+  ]
+}

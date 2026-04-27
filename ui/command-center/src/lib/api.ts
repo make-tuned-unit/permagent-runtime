@@ -216,19 +216,19 @@ export const api = {
   // Health
   getHealth: () => apiFetch<{ status: string }>('/status'),
 
-  // Sessions — GET /sessions returns { sessions: [...] }
+  // Sessions — GET /api/sessions returns { sessions: [...] }
   getSessions: async (): Promise<Session[]> => {
-    const res = await apiFetch<SessionListResponse>('/sessions');
+    const res = await apiFetch<SessionListResponse>('/api/sessions');
     return res.sessions;
   },
 
-  // Session detail — GET /sessions/{id} returns Session with conversation
+  // Session detail — GET /api/sessions/{id} returns Session with conversation
   getSession: (id: string) =>
-    apiFetch<Session>(`/sessions/${encodeURIComponent(id)}`),
+    apiFetch<Session>(`/api/sessions/${encodeURIComponent(id)}`),
 
-  // Delete session — DELETE /sessions/{id}
+  // Delete session — DELETE /api/sessions/{id}
   deleteSession: (id: string) =>
-    fetch(`${API_BASE_URL}/sessions/${encodeURIComponent(id)}`, {
+    fetch(`${API_BASE_URL}/api/sessions/${encodeURIComponent(id)}`, {
       method: 'DELETE',
       headers: authHeaders(),
     }),
@@ -333,6 +333,37 @@ export const api = {
       headers: authHeaders(),
       body: JSON.stringify({ layoutJson }),
     }),
+
+  // Attachments
+  uploadAttachments: async (sessionId: string, files: File[]): Promise<{
+    attachments: Array<{ id: string; filename: string; mime_type: string; size_bytes: number; created_at: string }>;
+  }> => {
+    const form = new FormData();
+    for (const file of files) {
+      form.append('files', file, file.name);
+    }
+    const headers: Record<string, string> = {};
+    if (SECRET_KEY) headers['x-secret-key'] = SECRET_KEY;
+
+    const response = await fetch(
+      `${API_BASE_URL}/api/sessions/${encodeURIComponent(sessionId)}/upload`,
+      { method: 'POST', headers, body: form },
+    );
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ message: 'Upload failed' }));
+      throw new Error(err.message || `HTTP ${response.status}`);
+    }
+    return response.json();
+  },
+
+  getAttachmentUrl: (sessionId: string, attachmentId: string): string =>
+    `${API_BASE_URL}/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`,
+
+  deleteAttachment: (sessionId: string, attachmentId: string) =>
+    fetch(
+      `${API_BASE_URL}/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`,
+      { method: 'DELETE', headers: authHeaders() },
+    ),
 
   // State snapshot (stubbed until daemon implements)
   getStateSnapshot: () => Promise.resolve({
