@@ -231,3 +231,97 @@ Generated 2026-04-27 for Phase 2 planning.
 9. **Local model manager.** Effort: L. The local-inference subsystem can download, manage, and run models via llama.cpp with Metal acceleration. A model browser with download progress, size info, and a selector in Settings would fulfill the "runs locally on your Mac" promise for users without API keys.
 
 10. **Dictation / voice input.** Effort: M. Whisper inference via Candle is fully implemented with tokenizer data. Audio decoding via symphonia supports all major formats. Adding a microphone button to the chat input that captures audio and transcribes locally would be a strong differentiator for hands-free use.
+
+---
+
+## Goose UI references for Phase 2 gaps
+
+Upstream: `block/goose` fetched as `upstream/main`. Goose uses Electron + React + react-router-dom + shadcn/ui components + react-intl i18n. Permagent uses Tauri + React (no router, no i18n). Below: what Goose built, what ports, and what doesn't.
+
+### Gap 1: Session history browser
+
+**Goose source files:**
+- `ui/desktop/src/components/sessions/SessionsView.tsx` — Top-level view with list/detail toggle
+- `ui/desktop/src/components/sessions/SessionListView.tsx` — Session list with search, grouped by date (Today/Yesterday/This Week/Older), edit name, delete, export JSON, import, fork (duplicate), inline rename. Uses `SearchView` component for FTS. Pagination via scroll.
+- `ui/desktop/src/components/sessions/SessionHistoryView.tsx` — Single-session detail view: full conversation replay with `ProgressiveMessageList`, search within session, resume button, share link, metadata header (date, working dir, tokens, extensions used).
+- `ui/desktop/src/components/sessions/SessionItem.tsx` — Individual session card: name, message count, date, working dir, extensions, actions dropdown (edit/delete/export/duplicate/open in new window).
+- `ui/desktop/src/components/sessions/SessionsInsights.tsx` — Token usage summary (total sessions, total tokens).
+
+**Data flow:** `listSessions()` → REST GET `/sessions` (already called by Permagent UI). `searchSessions(query)` → GET `/sessions/search`. `exportSession(id)` → GET `/sessions/{id}/export`. `forkSession(id)` → POST `/sessions/{id}/fork`. `importSession(json)` → POST `/sessions/import`. All of these REST endpoints exist in permagentd.
+
+**Portable?** Yes. The React components use shadcn/ui (Card, Button, ScrollArea, Dialog) and lucide icons — close matches to Permagent's Tailwind stack. The main differences: (1) react-intl i18n wrappers — strip these, use plain strings. (2) react-router-dom `useLocation`/`useNavigation` — replace with Zustand store `activePanel` state. (3) Electron `window.electron` calls — not present in session components.
+
+**Effort:** S. The API is done. The UI is 5 files totaling ~800 lines. Strip i18n, replace routing with store navigation, restyle to dark theme. The date grouping util (`groupSessionsByDate`) and search highlighting (`SearchHighlighter`) can be copied directly.
+
+### Gap 2: Memory inspector
+
+**Goose source files:** None found. Goose has no memory UI. The memory MCP server (`remember_memory`, `retrieve_memories`, `remove_memory_category`, `remove_specific_memory`) operates agent-side only. The Spectral tables (memories, knowledge_graph, FTS indexes) are a Permagent addition.
+
+**Portable?** N/A — this is greenfield.
+
+**Effort:** L. Need to: (1) add REST endpoints for reading/searching memories and knowledge_graph (none exist in the server routes today — the agent writes to these tables but there's no HTTP API to read them), (2) build a panel UI with search, category/wing/hall/room filters, memory cards, and an edit/delete flow. The `WorldView` placeholder is the natural home for this.
+
+### Gap 3: Scheduled jobs
+
+**Goose source files:**
+- `ui/desktop/src/components/schedule/SchedulesView.tsx` — Full scheduler UI: list of ScheduleCards showing job ID, human-readable cron (via `cronstrue` library), running/paused status badges, last run timestamp. Actions: create, edit cron, pause/unpause, kill running, inspect, delete. Uses `ScheduleModal` for create/edit.
+- `ui/desktop/src/components/schedule/ScheduleModal.tsx` — Create/edit dialog with recipe selector and `CronPicker`.
+- `ui/desktop/src/components/schedule/CronPicker.tsx` — Visual cron expression builder: period dropdown (minute/hour/day/week/month/year), conditional inputs for day-of-week, hour, minute, etc. Converts human selections to cron string. Validates with `cronstrue`.
+- `ui/desktop/src/components/schedule/ScheduleDetailView.tsx` — Single schedule detail: past sessions list with tokens/duration, recipe source.
+- `ui/desktop/src/schedule.ts` — API client wrapping the 10 schedule REST endpoints.
+
+**Data flow:** `listSchedules()` → GET `/schedule/list`. `createSchedule({id, recipe, cron})` → POST `/schedule/create`. `pauseSchedule(id)` → POST `/schedule/{id}/pause`. `killRunningJob(id)` → POST `/schedule/{id}/kill`. All endpoints exist in permagentd.
+
+**Portable?** Yes, with caveats. The ScheduleModal depends on the Recipes system (selecting a recipe to schedule), so it pulls in recipe components. The CronPicker is self-contained and directly portable. The SchedulesView uses shadcn Card/Button/ScrollArea — easy restyle.
+
+**Effort:** M. The CronPicker (~200 lines) ports cleanly. The SchedulesView (~300 lines) needs i18n stripping and routing replacement. The ScheduleModal requires the recipe selector, which pulls in the recipe system (Gap 4 from the inventory). For a minimal version: port SchedulesView + CronPicker + a text-input-for-recipe-ID stub, then upgrade to full recipe selector later. Add `cronstrue` npm dependency.
+
+### Gap 4: Provider/model settings
+
+**Goose source files:**
+- `ui/desktop/src/components/settings/models/ModelsSection.tsx` — Current model display card with provider name, model name, and "Switch Model" / "Reset Provider" buttons.
+- `ui/desktop/src/components/settings/models/subcomponents/SwitchModelModal.tsx` — Modal dialog: provider dropdown (fetched from `/config/providers`), model dropdown (fetched from `/config/providers/{name}/models`), thinking-level/effort selector for Claude/OpenAI reasoning models, custom model ID text input, API key entry for new providers. Full model switching flow.
+- `ui/desktop/src/components/settings/models/modelInterface.ts` — Model type definitions, provider metadata (display names, icons), model fetching utilities.
+- `ui/desktop/src/components/settings/models/predefinedModelsUtils.ts` — Predefined model list from environment, display logic.
+- `ui/desktop/src/components/onboarding/ProviderSelector.tsx` — First-run provider picker: "Use Free/Local" vs "Connect to Provider" cards, provider dropdown, custom provider dialog. Calls `/config/providers` and `/config/set_provider`.
+- `ui/desktop/src/components/onboarding/ProviderConfigForm.tsx` — API key entry + validation per provider.
+- `ui/desktop/src/components/settings/extensions/ExtensionsSection.tsx` — Extension toggle list with add/edit/remove modals. Uses `ConfigContext` for extension CRUD.
+
+**Data flow:** `providers()` → GET `/config/providers`. `setProvider(name)` → POST `/config/set_provider`. Model list → GET `/config/providers/{name}/models`. API key → POST `/config/upsert`. All endpoints exist.
+
+**Portable?** Partially. The model switching modal is ~300 lines and uses `ConfigContext` and `ModelAndProviderContext` — Goose-specific React contexts that wrap config read/write. These would need to be replaced with direct `api.getConfig()` / `api.upsertConfig()` calls. The ProviderSelector onboarding flow is ~200 lines and mostly self-contained. The ExtensionsSection depends on a complex `extension-manager.ts` layer.
+
+**Effort:** S-M. For a minimal "switch model" panel: port SwitchModelModal (~300 lines), replace context calls with direct API, add to SettingsView. For full extension management: M-L, as the extension modal system is ~800 lines across 6 files. Recommended: start with model switching only (S), add extensions later (M).
+
+### Gap 5: Visualization rendering
+
+**Goose source files:**
+- `ui/desktop/src/components/McpApps/McpAppRenderer.tsx` — The core rendering component. Uses `@mcp-ui/client` SDK's `AppRenderer` class to render MCP app content (including autovisualiser chart output) inside sandboxed iframes. Handles resource fetching, sandbox proxy, CSP, display modes (inline/fullscreen/pip), tool calling from within the app, and bidirectional message passing.
+- `ui/desktop/src/components/MCPUIResourceRenderer.tsx` — Renders `EmbeddedResource` content returned by MCP tool calls. Uses `@mcp-ui/client`'s `UIResourceRenderer` for rendering resources with action handling (links, notifications, prompts, tool calls).
+- `ui/desktop/src/components/McpApps/toolsCache.ts` — Caches tool definitions for MCP apps.
+- `ui/desktop/src/components/McpApps/useDisplayMode.ts` — Display mode state management (inline → fullscreen → PiP transitions).
+
+**How autovisualiser charts render:** The autovisualiser MCP server returns HTML/CSS/JS content as an `EmbeddedResource` in the tool result. `MCPUIResourceRenderer` detects the resource type and creates a sandboxed iframe via `@mcp-ui/client`'s `UIResourceRenderer`. The chart library (embedded in the HTML) renders client-side inside the iframe. There's no Vega-Lite dependency on the host side — the chart is self-contained HTML.
+
+**Data flow:** Agent calls `show_chart` → MCP server returns `CallToolResult` with embedded resource → conversation renderer detects `resource` type in content → `MCPUIResourceRenderer` renders sandboxed iframe → chart displays inline in chat.
+
+**Portable?** Partially. The `@mcp-ui/client` SDK (v6.1.0) is framework-agnostic — it works with any DOM environment. The `McpAppRenderer` uses Electron-specific APIs for standalone mode but the inline/fullscreen modes are pure React+DOM. The `MCPUIResourceRenderer` is simpler and more portable. The main adaptation: Goose's conversation renderer checks for `resource` content type in tool results and delegates to `MCPUIResourceRenderer` — Permagent's `ToolCallCard` would need the same check.
+
+**Effort:** S-M. Minimal path: (1) add `@mcp-ui/client` dependency, (2) create a `ResourceRenderer` component that wraps `UIResourceRenderer`, (3) modify `ToolCallCard.tsx` to detect `resource` content in tool results and render via `ResourceRenderer` instead of raw JSON. This gets charts rendering inline in chat. Full MCP app support (display modes, tool calling from apps, PiP) is M-L.
+
+### Portability summary
+
+| Gap | Goose files | Lines (approx) | Key deps to add | Electron-specific? | Port effort |
+|-----|------------|----------------|-----------------|-------------------|-------------|
+| 1. Sessions | 5 files | ~800 | none | No | S |
+| 2. Memory | 0 files | greenfield | none | N/A | L |
+| 3. Schedules | 4 files + API client | ~700 | `cronstrue` | No | M |
+| 4. Settings | 6 files (models only) | ~600 | none | No (uses contexts) | S-M |
+| 5. Visualization | 2 key files | ~400 (core) | `@mcp-ui/client` | Partially (strip standalone mode) | S-M |
+
+**Common porting work across all gaps:**
+- Strip `react-intl` `defineMessages`/`useIntl`/`intl.formatMessage` → plain strings
+- Replace `react-router-dom` navigation → Zustand store `activePanel` / `setActivePanel`
+- Replace shadcn `import { Card } from '../ui/card'` → Tailwind utility classes (Permagent doesn't use shadcn)
+- Replace `useConfig()` context → direct `api.getConfig()` / `api.upsertConfig()` calls
+- Replace Electron `window.electron.*` → Tauri `invoke()` where needed (rare in these components)
