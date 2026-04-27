@@ -5,7 +5,7 @@
   "identifier": "ai.permagent.commandcenter",
   "build": {
     "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:5173",
+    "devUrl": "http://localhost:5273",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
