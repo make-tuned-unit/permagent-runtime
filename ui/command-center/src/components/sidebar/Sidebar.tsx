@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useCallback } from 'react';
 import { LayoutDashboard, Globe, Code, Settings, Wifi, WifiOff, Loader } from 'lucide-react';
 import { useCommandCenter, type ConnectionStatus } from '../../lib/store';
 
@@ -45,9 +45,20 @@ function ConnectionIndicator({ status }: { status: ConnectionStatus }) {
 export function Sidebar() {
   const workspaces = useCommandCenter(s => s.workspaces);
   const activeWorkspaceId = useCommandCenter(s => s.activeWorkspaceId);
+  const activePanel = useCommandCenter(s => s.activePanel);
   const switchWorkspace = useCommandCenter(s => s.switchWorkspace);
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
   const connectionStatus = useCommandCenter(s => s.connectionStatus);
+
+  const isSettingsOpen = activePanel === 'settings';
+
+  // Switch to a workspace AND leave settings if we're in it
+  const goToWorkspace = useCallback((workspaceId: string) => {
+    switchWorkspace(workspaceId);
+    if (isSettingsOpen) {
+      setActivePanel('chat');
+    }
+  }, [switchWorkspace, setActivePanel, isSettingsOpen]);
 
   // Keyboard shortcuts: Cmd+1, Cmd+2, Cmd+3
   useEffect(() => {
@@ -57,12 +68,12 @@ export function Sidebar() {
       if (num >= 1 && num <= workspaces.length) {
         e.preventDefault();
         const ws = workspaces[num - 1];
-        if (ws) switchWorkspace(ws.id);
+        if (ws) goToWorkspace(ws.id);
       }
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [workspaces, switchWorkspace]);
+  }, [workspaces, goToWorkspace]);
 
   return (
     <div className="flex h-full w-[200px] shrink-0 flex-col border-r border-dark-border bg-[#0B1120]">
@@ -81,12 +92,12 @@ export function Sidebar() {
           </span>
         </div>
         {workspaces.map((ws, i) => {
-          const isActive = activeWorkspaceId === ws.id;
+          const isActive = activeWorkspaceId === ws.id && !isSettingsOpen;
           const IconComponent = WORKSPACE_ICONS[ws.icon] || LayoutDashboard;
           return (
             <button
               key={ws.id}
-              onClick={() => switchWorkspace(ws.id)}
+              onClick={() => goToWorkspace(ws.id)}
               className={`flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-xs font-medium transition ${
                 isActive
                   ? 'bg-accent/10 text-accent'
@@ -107,8 +118,12 @@ export function Sidebar() {
       {/* Bottom: Settings + Connection */}
       <div className="border-t border-dark-border px-2 py-2 space-y-1">
         <button
-          onClick={() => setActivePanel('settings')}
-          className="flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-xs font-medium text-dark-muted hover:bg-white/5 hover:text-dark-text transition"
+          onClick={() => setActivePanel(isSettingsOpen ? 'chat' : 'settings')}
+          className={`flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-xs font-medium transition ${
+            isSettingsOpen
+              ? 'bg-accent/10 text-accent'
+              : 'text-dark-muted hover:bg-white/5 hover:text-dark-text'
+          }`}
         >
           <Settings size={14} />
           Settings

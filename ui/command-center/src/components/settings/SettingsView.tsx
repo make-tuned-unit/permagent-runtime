@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
+import { ArrowLeft } from 'lucide-react';
+import { useCommandCenter } from '../../lib/store';
 
 interface IntegrationStatus {
   provider: string;
@@ -19,6 +21,22 @@ function isTauriEnv(): boolean {
 }
 
 export function SettingsView() {
+  const setActivePanel = useCommandCenter(s => s.setActivePanel);
+
+  const dismiss = useCallback(() => setActivePanel('chat'), [setActivePanel]);
+
+  // Esc key dismisses Settings
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        dismiss();
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [dismiss]);
+
   const [gmailStatus, setGmailStatus] = useState<IntegrationStatus | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [clientId, setClientId] = useState(() => localStorage.getItem('permagent_gmail_client_id') || '');
@@ -84,9 +102,18 @@ export function SettingsView() {
 
   return (
     <div className="flex flex-col h-full bg-[#0B1120] text-dark-text overflow-y-auto">
-      <div className="border-b border-dark-border px-6 py-4">
-        <h1 className="text-lg font-semibold">Settings</h1>
-        <p className="text-xs text-dark-muted mt-1">Manage integrations and connections</p>
+      <div className="border-b border-dark-border px-6 py-4 flex items-center gap-3">
+        <button
+          onClick={dismiss}
+          className="p-1.5 rounded hover:bg-white/5 text-dark-muted hover:text-dark-text transition-colors"
+          title="Back to workspace (Esc)"
+        >
+          <ArrowLeft size={16} />
+        </button>
+        <div>
+          <h1 className="text-lg font-semibold">Settings</h1>
+          <p className="text-xs text-dark-muted mt-0.5">Manage integrations and connections</p>
+        </div>
       </div>
 
       <div className="p-6 max-w-2xl space-y-6">
