@@ -1,8 +1,39 @@
 # Permagent Phase 1 — Architecture Specification
 
 **Date:** 2026-04-16
-**Status:** Seam audit complete, ready for implementation
-**Based on:** Goose @ `/Users/henry/projects/goose/` (block/goose clone)
+**Status:** COMPLETE — shipped 2026-04-27
+**Based on:** Goose @ `block/goose` (upstream remote)
+
+---
+
+## Phase 1 Shipped
+
+All Phase 1 deliverables are merged to `main`:
+
+| Deliverable | Commit | Date |
+|-------------|--------|------|
+| Goose fork + Electron excision, crate renames | `727dca2` | 2026-04-21 |
+| Config replacement, ~/.permagent/, keyring service | `e1a0730` | 2026-04-21 |
+| Spectral schema, session storage, 17 tables, FTS | `7ded9f9` | 2026-04-22 |
+| WebSocket event bus, /events, task logging | `3293caa` | 2026-04-22 |
+| Command Center UI imported and pruned | `e53f33e`, `bce83380` | 2026-04-23 |
+| Auto-skills detection (repetition_candidates view) | `5b2fe4b` | 2026-04-23 |
+| CLI setup wizard, daemon lifecycle commands | `03edcbb` | 2026-04-24 |
+| Gmail MCP extension with OAuth | `db7b30f` | 2026-04-24 |
+| Embedded terminal (xterm.js + WebGL + portable-pty) | `c8d359e` | 2026-04-25 |
+| Embedded browser (Tauri child webview) | `3780174` | 2026-04-25 |
+| Workspaces system, three presets, schema v4 | `d5f3b02` | 2026-04-25 |
+| Daemon hardening: config-driven port, plain HTTP, pool fixes | `77f1f23` | 2026-04-26 |
+| Setup wizard: non-interactive daemon launch, plist fix | `38d792d` | 2026-04-26 |
+| Browser embed, nav fix, terminal race fix | `62734d8`–`57fc6da` | 2026-04-27 |
+| Capability inventory for Phase 2 planning | `44b088b98` | 2026-04-27 |
+
+### Phase 1.5 punch list (known polish bugs, not blockers)
+
+- **Keychain service name mismatch:** setup wizard stores keys under `"permagent"` but some provider code reads from `"goose"` service name. Needs audit of `keyring` callsites.
+- **Browser focus stealing:** child webview can capture keyboard focus away from the chat input. Needs z-order or focus management fix.
+- **World View sprite restoration:** WorldView is a placeholder. The `/api/agents` endpoint exists but returns empty. Data-driven agent sprites deferred to Phase 2.
+- **Vite dev server port:** hardcoded to 5273 in tauri.conf.json, should match .env or be configurable.
 
 ---
 
