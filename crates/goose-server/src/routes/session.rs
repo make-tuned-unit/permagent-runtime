@@ -500,6 +500,28 @@ async fn get_session_extensions(
 
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
+        // Canonical /api/ paths (matches /api/workspaces pattern)
+        .route("/api/sessions", get(list_sessions))
+        .route("/api/sessions/search", get(search_sessions))
+        .route("/api/sessions/{session_id}", get(get_session))
+        .route("/api/sessions/{session_id}", delete(delete_session))
+        .route("/api/sessions/{session_id}/export", get(export_session))
+        .route(
+            "/api/sessions/import",
+            post(import_session).layer(DefaultBodyLimit::max(25 * 1024 * 1024)),
+        )
+        .route("/api/sessions/insights", get(get_session_insights))
+        .route("/api/sessions/{session_id}/name", put(update_session_name))
+        .route(
+            "/api/sessions/{session_id}/user_recipe_values",
+            put(update_session_user_recipe_values),
+        )
+        .route("/api/sessions/{session_id}/fork", post(fork_session))
+        .route(
+            "/api/sessions/{session_id}/extensions",
+            get(get_session_extensions),
+        )
+        // Legacy paths without /api/ prefix (backwards compat)
         .route("/sessions", get(list_sessions))
         .route("/sessions/search", get(search_sessions))
         .route("/sessions/{session_id}", get(get_session))

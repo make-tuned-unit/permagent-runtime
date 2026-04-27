@@ -1,15 +1,3 @@
-use axum::{
-    extract::{Request, State},
-    http::StatusCode,
-    middleware::Next,
-    response::Response,
-};
-
-pub async fn check_token(
-    State(_state): State<String>,
-    request: Request,
-    next: Next,
-) -> Result<Response, StatusCode> {
-    // Phase 1: localhost-only, no auth required
-    Ok(next.run(request).await)
-}
+// Phase 1: localhost-only daemon, no auth required.
+// This module is intentionally empty. Auth will be re-added in Phase 2
+// when remote/multi-user access is supported.

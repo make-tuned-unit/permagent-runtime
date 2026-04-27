@@ -554,7 +554,13 @@ impl SessionStorage {
             .busy_timeout(std::time::Duration::from_secs(30))
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
 
-        SqlitePoolOptions::new().connect_lazy_with(options)
+        // SQLite is single-writer; 5 connections is sufficient for concurrent
+        // reads while serialising writes.  A short acquire timeout prevents
+        // requests from queueing indefinitely if all connections are busy.
+        SqlitePoolOptions::new()
+            .max_connections(5)
+            .acquire_timeout(std::time::Duration::from_secs(5))
+            .connect_lazy_with(options)
     }
 
     /// Create a SessionStorage pointing at the Spectral database.

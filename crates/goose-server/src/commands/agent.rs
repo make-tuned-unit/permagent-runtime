@@ -1,10 +1,8 @@
 use crate::configuration;
 use crate::state;
 use anyhow::Result;
-use axum::middleware;
 use axum_server::Handle;
 use permagent::events;
-use permagent_daemon::auth::check_token;
 #[cfg(any(feature = "rustls-tls", feature = "native-tls"))]
 use permagent_daemon::tls::setup_tls;
 use tower_http::cors::{Any, CorsLayer};
@@ -28,7 +26,7 @@ async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
-pub async fn run() -> Result<()> {
+pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
     // Install the rustls crypto provider early, before any spawned tasks (tunnel,
     // gateways, etc.) try to open TLS connections. Both `ring` and `aws-lc-rs`
     // features are enabled on rustls (via different transitive deps), so rustls
@@ -38,10 +36,7 @@ pub async fn run() -> Result<()> {
 
     crate::logging::setup_logging(Some("permagentd"))?;
 
-    let settings = configuration::Settings::new()?;
-
-    let secret_key = std::env::var("GOOSE_SERVER__SECRET_KEY")
-        .unwrap_or_else(|_| hex::encode(rand::random::<[u8; 32]>()));
+    let settings = configuration::Settings::new()?.with_overrides(host, port);
 
     let app_state = state::AppState::new(settings.tls).await?;
 
@@ -54,11 +49,13 @@ pub async fn run() -> Result<()> {
         }
     }
 
-    // Share the server secret with the tunnel manager so it uses the same
-    // key for forwarded requests, without mutating the process environment.
+    // Generate a random secret for the tunnel forwarding protocol.
+    // The local server no longer checks this header — it is only used by the
+    // tunnel proxy to authenticate forwarded requests to the remote endpoint.
+    let tunnel_secret = hex::encode(rand::random::<[u8; 32]>());
     app_state
         .tunnel_manager
-        .set_server_secret(secret_key.clone())
+        .set_server_secret(tunnel_secret)
         .await;
 
     let cors = CorsLayer::new()
@@ -66,12 +63,7 @@ pub async fn run() -> Result<()> {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let app = crate::routes::configure(app_state.clone(), secret_key.clone())
-        .layer(middleware::from_fn_with_state(
-            secret_key.clone(),
-            check_token,
-        ))
-        .layer(cors);
+    let app = crate::routes::configure(app_state.clone()).layer(cors);
 
     let addr = settings.socket_addr();
 

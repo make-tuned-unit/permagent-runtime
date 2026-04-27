@@ -27,10 +27,11 @@ pub mod workspaces;
 use std::sync::Arc;
 
 use axum::Router;
+use tower_http::services::{ServeDir, ServeFile};
 
 // Function to configure all routes
-pub fn configure(state: Arc<crate::state::AppState>, _secret_key: String) -> Router {
-    let router = Router::new()
+pub fn configure(state: Arc<crate::state::AppState>) -> Router {
+    let mut router = Router::new()
         .merge(status::routes(state.clone()))
         .merge(reply::routes(state.clone()))
         .merge(action_required::routes(state.clone()))
@@ -53,7 +54,47 @@ pub fn configure(state: Arc<crate::state::AppState>, _secret_key: String) -> Rou
         .merge(workspaces::routes(state.clone()));
 
     #[cfg(feature = "local-inference")]
-    let router = router.merge(local_inference::routes(state));
+    {
+        router = router.merge(local_inference::routes(state));
+    }
+
+    // Serve Command Center UI from ui/command-center/dist/ if available.
+    // Check relative to the binary location first, then fall back to the
+    // PERMAGENT_UI_DIR env var or the repo-relative path.
+    let ui_dir = ui_dist_path();
+    if let Some(dir) = ui_dir {
+        let index = dir.join("index.html");
+        router = router.nest_service(
+            "/ui",
+            ServeDir::new(&dir).fallback(ServeFile::new(index)),
+        );
+    }
 
     router
+}
+
+/// Locate the Command Center dist directory.
+fn ui_dist_path() -> Option<std::path::PathBuf> {
+    // 1. Explicit env var
+    if let Ok(dir) = std::env::var("PERMAGENT_UI_DIR") {
+        let p = std::path::PathBuf::from(dir);
+        if p.join("index.html").exists() {
+            return Some(p);
+        }
+    }
+
+    // 2. Relative to current exe (../share/permagent/ui or sibling)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            // Development: repo root / ui/command-center/dist
+            for ancestor in parent.ancestors().take(5) {
+                let candidate = ancestor.join("ui/command-center/dist");
+                if candidate.join("index.html").exists() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+
+    None
 }

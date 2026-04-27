@@ -5,7 +5,7 @@ pub enum ConfigError {
     #[error("Missing required environment variable: {env_var}")]
     MissingEnvVar { env_var: String },
     #[error("Configuration error: {0}")]
-    Other(#[from] config::ConfigError),
+    Other(String),
 }
 
 // Helper function to format environment variable names

@@ -28,7 +28,14 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Run the agent server
-    Agent,
+    Agent {
+        /// Bind address (overrides config.yaml and env vars)
+        #[arg(long)]
+        host: Option<String>,
+        /// Listen port (overrides config.yaml and env vars)
+        #[arg(long)]
+        port: Option<u16>,
+    },
     /// Run the MCP server
     Mcp {
         #[arg(value_parser = clap::value_parser!(McpCommand))]
@@ -47,8 +54,8 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Agent => {
-            commands::agent::run().await?;
+        Commands::Agent { host, port } => {
+            commands::agent::run(host, port).await?;
         }
         Commands::Mcp { server } => {
             logging::setup_logging(Some(&format!("mcp-{}", server.name())))?;

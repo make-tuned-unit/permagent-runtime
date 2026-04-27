@@ -65,12 +65,20 @@ fn build_layout() -> serde_json::Value {
 /// Seed the three preset workspaces if the user has none.
 /// Returns true if workspaces were seeded.
 pub async fn seed_presets_if_empty(pool: &Pool<Sqlite>) -> Result<bool, String> {
-    let count: i32 = sqlx::query_scalar("SELECT COUNT(*) FROM workspaces WHERE user_id = 'default'")
-        .fetch_one(pool)
+    // Use BEGIN IMMEDIATE to avoid lock-upgrade contention with concurrent readers.
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|e| e.to_string())?;
 
+    let count: i32 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM workspaces WHERE user_id = 'default'")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+
     if count > 0 {
+        // Nothing to do — drop the transaction (implicit rollback, no writes).
         return Ok(false);
     }
 
@@ -98,7 +106,7 @@ pub async fn seed_presets_if_empty(pool: &Pool<Sqlite>) -> Result<bool, String> 
         .bind(sort_order)
         .bind(&layout_str)
         .bind(is_default)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
     }
@@ -106,10 +114,11 @@ pub async fn seed_presets_if_empty(pool: &Pool<Sqlite>) -> Result<bool, String> 
     // Set active workspace to Work (first preset)
     sqlx::query("UPDATE users SET active_workspace_id = ? WHERE id = 'default'")
         .bind(&first_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
 
+    tx.commit().await.map_err(|e| e.to_string())?;
     Ok(true)
 }
 
