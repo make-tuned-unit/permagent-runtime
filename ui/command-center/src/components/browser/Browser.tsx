@@ -10,18 +10,31 @@ import {
 } from 'react-icons/fi';
 import { BrowserTabs, type BrowserTab } from './BrowserTabs';
 
-let invoke: ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | null = null;
-let listen: ((event: string, handler: (e: { payload: unknown }) => void) => Promise<() => void>) | null = null;
+// ── Tauri API loader (cached, no module-level mutation) ──
 
-async function loadTauriApi() {
-  try {
-    const core = await import('@tauri-apps/api/core');
-    const event = await import('@tauri-apps/api/event');
-    invoke = core.invoke;
-    listen = event.listen;
-  } catch {
-    // Running in browser (not Tauri)
+interface TauriApi {
+  invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+  listen: (event: string, handler: (e: { payload: unknown }) => void) => Promise<() => void>;
+}
+
+let cachedApi: TauriApi | null = null;
+let apiPromise: Promise<TauriApi | null> | null = null;
+
+function getTauriApi(): Promise<TauriApi | null> {
+  if (cachedApi) return Promise.resolve(cachedApi);
+  if (!apiPromise) {
+    apiPromise = (async () => {
+      try {
+        const core = await import('@tauri-apps/api/core');
+        const event = await import('@tauri-apps/api/event');
+        cachedApi = { invoke: core.invoke, listen: event.listen };
+        return cachedApi;
+      } catch {
+        return null;
+      }
+    })();
   }
+  return apiPromise;
 }
 
 let tabCounter = 0;
@@ -65,7 +78,7 @@ export function Browser() {
   });
   const [closingTabId, setClosingTabId] = useState<string | null>(null);
   const [urlInput, setUrlInput] = useState('');
-  const [isTauri, setIsTauri] = useState(false);
+  const [api, setApi] = useState<TauriApi | null>(null);
   const urlInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -74,13 +87,15 @@ export function Browser() {
   tabsRef.current = tabs;
   const activeTabIdRef = useRef(activeTabId);
   activeTabIdRef.current = activeTabId;
+  const apiRef = useRef(api);
+  apiRef.current = api;
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
 
   // Initialize Tauri API
   useEffect(() => {
-    loadTauriApi().then(() => {
-      setIsTauri(invoke !== null);
+    getTauriApi().then((resolved) => {
+      setApi(resolved);
     });
   }, []);
 
@@ -90,9 +105,10 @@ export function Browser() {
       persistedTabs = tabsRef.current;
       persistedActiveTabId = activeTabIdRef.current;
       // Move all child webviews offscreen
+      const inv = apiRef.current;
       tabsRef.current.forEach((t) => {
-        if (t.webviewId && invoke) {
-          invoke('hide_browser', { webviewId: t.webviewId }).catch(() => {});
+        if (t.webviewId && inv) {
+          inv.invoke('hide_browser', { webviewId: t.webviewId }).catch(() => {});
         }
       });
     };
@@ -100,7 +116,7 @@ export function Browser() {
 
   // ── Sync active webview position with the container div ──
   const syncBounds = useCallback(() => {
-    const inv = invoke;
+    const inv = apiRef.current;
     if (!containerRef.current || !inv) return;
     const rect = containerRef.current.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return;
@@ -111,7 +127,7 @@ export function Browser() {
     currentTabs.forEach((t) => {
       if (!t.webviewId) return;
       if (t.id === currentActiveId) {
-        inv('update_browser_bounds', {
+        inv.invoke('update_browser_bounds', {
           webviewId: t.webviewId,
           x: rect.x,
           y: rect.y,
@@ -119,14 +135,14 @@ export function Browser() {
           height: rect.height,
         }).catch(() => {});
       } else {
-        inv('hide_browser', { webviewId: t.webviewId }).catch(() => {});
+        inv.invoke('hide_browser', { webviewId: t.webviewId }).catch(() => {});
       }
     });
   }, []);
 
   // ── ResizeObserver keeps the webview in sync with panel resizes ──
   useEffect(() => {
-    if (!containerRef.current || !isTauri) return;
+    if (!containerRef.current || !api) return;
 
     // Restore any persisted webviews on mount
     syncBounds();
@@ -141,7 +157,7 @@ export function Browser() {
       observer.disconnect();
       window.removeEventListener('resize', syncBounds);
     };
-  }, [isTauri, syncBounds]);
+  }, [api, syncBounds]);
 
   // ── Re-sync whenever active tab changes ──
   useEffect(() => {
@@ -150,11 +166,11 @@ export function Browser() {
 
   // Listen for navigation events from Tauri
   useEffect(() => {
-    if (!listen) return;
+    if (!api) return;
 
     let unlisten: (() => void) | null = null;
 
-    listen('browser_navigated', (e) => {
+    api.listen('browser_navigated', (e) => {
       const payload = e.payload as { webview_id: string; url: string };
       setTabs((prev) =>
         prev.map((t) =>
@@ -177,7 +193,7 @@ export function Browser() {
 
     // Listen for OAuth URL open events
     let unlistenOAuth: (() => void) | null = null;
-    listen('browser_open_url', (e) => {
+    api.listen('browser_open_url', (e) => {
       const payload = e.payload as { url: string; oauth?: boolean; provider?: string };
       handleOpenUrl(payload.url, payload.oauth ? `OAuth: ${payload.provider || ''}` : undefined);
     }).then((fn) => {
@@ -186,14 +202,14 @@ export function Browser() {
 
     // Listen for OAuth completion to close the OAuth tab
     let unlistenOAuthComplete: (() => void) | null = null;
-    listen('browser_oauth_complete', () => {
+    api.listen('browser_oauth_complete', () => {
       // Find and close any tab with an OAuth URL
       setTabs((prev) => {
         const oauthTab = prev.find(
           (t) => t.url.includes('accounts.google.com') || t.label.startsWith('OAuth:'),
         );
-        if (oauthTab?.webviewId && invoke) {
-          invoke('close_browser', { webviewId: oauthTab.webviewId }).catch(() => {});
+        if (oauthTab?.webviewId && apiRef.current) {
+          apiRef.current.invoke('close_browser', { webviewId: oauthTab.webviewId }).catch(() => {});
         }
         const remaining = prev.filter(
           (t) => !t.url.includes('accounts.google.com') && !t.label.startsWith('OAuth:'),
@@ -214,7 +230,7 @@ export function Browser() {
       unlistenOAuth?.();
       unlistenOAuthComplete?.();
     };
-  }, []);
+  }, [api]);
 
   function extractTitle(url: string): string {
     try {
@@ -227,7 +243,7 @@ export function Browser() {
 
   const handleOpenUrl = useCallback(
     async (url: string, label?: string) => {
-      if (!invoke) return;
+      if (!apiRef.current) return;
 
       const rect = containerRef.current?.getBoundingClientRect();
       const tab = createTab();
@@ -236,7 +252,7 @@ export function Browser() {
       tab.loading = true;
 
       try {
-        const webviewId = (await invoke('create_browser_webview', {
+        const webviewId = (await apiRef.current.invoke('create_browser_webview', {
           url,
           x: rect?.x ?? 0,
           y: rect?.y ?? 0,
@@ -260,7 +276,7 @@ export function Browser() {
   const handleNavigate = useCallback(
     async (url: string) => {
       const normalized = normalizeUrl(url);
-      if (!normalized || !invoke) return;
+      if (!normalized || !apiRef.current) return;
 
       const tab = tabs.find((t) => t.id === activeTabId);
       if (!tab) return;
@@ -270,7 +286,7 @@ export function Browser() {
       if (tab.webviewId) {
         // Navigate existing webview
         try {
-          await invoke('navigate_browser', {
+          await apiRef.current.invoke('navigate_browser', {
             webviewId: tab.webviewId,
             url: normalized,
           });
@@ -288,7 +304,7 @@ export function Browser() {
         // Create new child webview for this tab
         const rect = containerRef.current?.getBoundingClientRect();
         try {
-          const webviewId = (await invoke('create_browser_webview', {
+          const webviewId = (await apiRef.current.invoke('create_browser_webview', {
             url: normalized,
             x: rect?.x ?? 0,
             y: rect?.y ?? 0,
@@ -332,8 +348,8 @@ export function Browser() {
         // Double-click to confirm close
         setTabs((prevTabs) => {
           const tab = prevTabs.find((t) => t.id === tabId);
-          if (tab?.webviewId && invoke) {
-            invoke('close_browser', { webviewId: tab.webviewId }).catch(() => {});
+          if (tab?.webviewId && apiRef.current) {
+            apiRef.current.invoke('close_browser', { webviewId: tab.webviewId }).catch(() => {});
           }
           const next = prevTabs.filter((t) => t.id !== tabId);
           if (next.length === 0) {
@@ -370,8 +386,8 @@ export function Browser() {
   );
 
   const handleReload = useCallback(() => {
-    if (!activeTab?.webviewId || !invoke) return;
-    invoke('navigate_browser', {
+    if (!activeTab?.webviewId || !apiRef.current) return;
+    apiRef.current.invoke('navigate_browser', {
       webviewId: activeTab.webviewId,
       url: activeTab.url,
     }).catch(() => {});
@@ -484,7 +500,7 @@ export function Browser() {
 
       {/* Content area — the child webview overlays this div */}
       <div ref={containerRef} className="flex-1 min-h-0 relative">
-        {!isTauri ? (
+        {!api ? (
           <div className="flex items-center justify-center h-full">
             <div className="text-center p-8">
               <FiShield size={48} className="mx-auto mb-4 text-dark-muted" />
