@@ -10,7 +10,7 @@ use sqlx::{Pool, Sqlite};
 use tracing::{info, warn};
 
 /// Current Spectral schema version. Bump when adding migrations.
-pub const SPECTRAL_SCHEMA_VERSION: i32 = 5;
+pub const SPECTRAL_SCHEMA_VERSION: i32 = 6;
 
 /// Initialize the Spectral database schema from scratch.
 /// Creates all tables, indexes, FTS virtual tables, triggers, and views.
@@ -526,6 +526,29 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .ok(); // Ignore if column already exists
 
+    // ── ATTACHMENTS ──
+    sqlx::query(
+        "CREATE TABLE attachments (
+            id              TEXT PRIMARY KEY,
+            session_id      TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            message_id      TEXT,
+            filename        TEXT NOT NULL,
+            mime_type       TEXT NOT NULL,
+            size_bytes      INTEGER NOT NULL,
+            path            TEXT NOT NULL,
+            created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query("CREATE INDEX idx_attachments_session ON attachments(session_id)")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("CREATE INDEX idx_attachments_message ON attachments(message_id)")
+        .execute(&mut *tx)
+        .await?;
+
     // ── VIEWS ──
     sqlx::query(
         "CREATE VIEW current_memories AS
@@ -728,6 +751,49 @@ pub async fn migrate_v4_to_v5(pool: &Pool<Sqlite>) -> Result<()> {
         .await?;
 
     info!("Spectral schema migrated to v5");
+    Ok(())
+}
+
+/// Migrate from schema v5 to v6: add attachments table for file uploads.
+pub async fn migrate_v5_to_v6(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v5 -> v6");
+
+    let has_table = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT name FROM sqlite_master WHERE type='table' AND name='attachments')",
+    )
+    .fetch_one(pool)
+    .await?;
+
+    if !has_table {
+        sqlx::query(
+            "CREATE TABLE attachments (
+                id              TEXT PRIMARY KEY,
+                session_id      TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                message_id      TEXT,
+                filename        TEXT NOT NULL,
+                mime_type       TEXT NOT NULL,
+                size_bytes      INTEGER NOT NULL,
+                path            TEXT NOT NULL,
+                created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            )",
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query("CREATE INDEX idx_attachments_session ON attachments(session_id)")
+            .execute(pool)
+            .await?;
+        sqlx::query("CREATE INDEX idx_attachments_message ON attachments(message_id)")
+            .execute(pool)
+            .await?;
+    }
+
+    // Record version
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (6)")
+        .execute(pool)
+        .await?;
+
+    info!("Spectral schema migrated to v6");
     Ok(())
 }
 

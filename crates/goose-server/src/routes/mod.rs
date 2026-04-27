@@ -1,5 +1,6 @@
 pub mod action_required;
 pub mod agent;
+pub mod attachments;
 pub mod config_management;
 pub mod errors;
 pub mod events;
@@ -51,7 +52,8 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(events::routes(state.clone()))
         .merge(skills::routes(state.clone()))
         .merge(integrations::routes(state.clone()))
-        .merge(workspaces::routes(state.clone()));
+        .merge(workspaces::routes(state.clone()))
+        .merge(attachments::routes(state.clone()));
 
     #[cfg(feature = "local-inference")]
     {
