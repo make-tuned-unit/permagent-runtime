@@ -275,6 +275,18 @@ pub async fn handle_setup_non_interactive(opts: NonInteractiveOpts) -> Result<()
     // Create logs dir
     fs::create_dir_all(Paths::logs_dir())?;
 
+    // Register and start the daemon (same as interactive path)
+    match register_launchd_daemon() {
+        Ok(()) => {
+            println!("Daemon registered: ai.permagent.daemon");
+            println!("Daemon started on localhost:3001");
+        }
+        Err(e) => {
+            eprintln!("Warning: Could not register daemon: {}", e);
+            eprintln!("Start manually: permagent start");
+        }
+    }
+
     println!("Setup complete (non-interactive).");
     Ok(())
 }
@@ -445,10 +457,6 @@ fn register_launchd_daemon() -> Result<()> {
     <array>
         <string>{binary}</string>
         <string>agent</string>
-        <string>--host</string>
-        <string>127.0.0.1</string>
-        <string>--port</string>
-        <string>3001</string>
     </array>
 
     <key>RunAtLoad</key>
@@ -485,7 +493,13 @@ fn register_launchd_daemon() -> Result<()> {
 
     fs::write(&plist_path, &plist_content)?;
 
-    // Load the plist via launchctl
+    // Unload any stale plist first (ignore errors — may not be loaded)
+    let _ = std::process::Command::new("launchctl")
+        .args(["unload"])
+        .arg(&plist_path)
+        .status();
+
+    // Load the freshly-written plist
     let status = std::process::Command::new("launchctl")
         .args(["load", "-w"])
         .arg(&plist_path)
