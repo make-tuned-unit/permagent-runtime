@@ -290,11 +290,18 @@ export const api = {
   getProviderModels: (name: string) =>
     apiFetch<string[]>(`/config/providers/${encodeURIComponent(name)}/models`).catch(() => []),
 
-  setProvider: (provider: string, model: string) =>
-    apiFetch<void>('/config/set_provider', {
+  setProvider: async (provider: string, model: string): Promise<void> => {
+    const url = `${API_BASE_URL}/config/set_provider`;
+    const response = await fetch(url, {
       method: 'POST',
+      headers: authHeaders(),
       body: JSON.stringify({ provider, model }),
-    }),
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ message: 'Unknown error' }));
+      throw new Error(err.message || `HTTP ${response.status}`);
+    }
+  },
 
   // Skills CRUD
   getSkills: () => apiFetch<Skill[]>('/permagent/skills').catch(() => [] as Skill[]),
