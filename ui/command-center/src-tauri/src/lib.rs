@@ -17,6 +17,7 @@ fn daemon_status() -> bool {
 /// Used by the native drag-drop bridge to convert file paths into File-like data.
 #[tauri::command]
 fn read_dropped_file(path: String) -> Result<(String, String, String), String> {
+    eprintln!("[read_dropped_file] path={}", path);
     let file_path = std::path::Path::new(&path);
     let filename = file_path
         .file_name()
@@ -40,9 +41,13 @@ fn read_dropped_file(path: String) -> Result<(String, String, String), String> {
     }
     .to_string();
 
-    let bytes = std::fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let bytes = std::fs::read(&path).map_err(|e| {
+        eprintln!("[read_dropped_file] FAILED path={} err={}", path, e);
+        format!("Failed to read file: {}", e)
+    })?;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
 
+    eprintln!("[read_dropped_file] success: file={} mime={} bytes={} b64_len={}", filename, mime_type, bytes.len(), b64.len());
     Ok((filename, mime_type, b64))
 }
 

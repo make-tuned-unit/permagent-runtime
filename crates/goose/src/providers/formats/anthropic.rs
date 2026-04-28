@@ -111,6 +111,20 @@ const EVENT_CONTENT_BLOCK_STOP: &str = "content_block_stop";
 pub fn format_messages(messages: &[Message]) -> Vec<Value> {
     let mut anthropic_messages = Vec::new();
 
+    // Diagnostic: count image blocks across all messages
+    let total_image_blocks: usize = messages
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .filter(|c| matches!(c, MessageContent::Image(_)))
+        .count();
+    if total_image_blocks > 0 {
+        tracing::info!(
+            image_blocks = total_image_blocks,
+            total_messages = messages.len(),
+            "[anthropic::format_messages] image content blocks present in payload"
+        );
+    }
+
     for message in messages {
         let role = match message.role {
             Role::User => USER_ROLE,

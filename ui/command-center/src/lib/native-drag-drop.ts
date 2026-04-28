@@ -5,6 +5,10 @@
  * Tauri intercepts them at the native window level and exposes them via
  * onDragDropEvent on the webview window. This module listens for those events
  * and converts native file paths into File objects the React layer can consume.
+ *
+ * Uses a singleton listener pattern: the native event listener is registered
+ * once and never unregistered. React components swap handlers synchronously
+ * via setDropHandlers(), avoiding Strict Mode race conditions.
  */
 
 export interface DropHandlers {
@@ -14,7 +18,7 @@ export interface DropHandlers {
 }
 
 let currentHandlers: DropHandlers | null = null;
-let cleanupFn: (() => void) | null = null;
+let listenerInitialized = false;
 
 function isTauri(): boolean {
   return '__TAURI_INTERNALS__' in window;
@@ -28,42 +32,42 @@ async function readDroppedFile(path: string): Promise<File | null> {
       { path },
     );
     const bytes = Uint8Array.from(atob(b64Data), c => c.charCodeAt(0));
+    console.log(`[drag-drop] file read success: ${filename}, mime=${mimeType}, bytes=${bytes.length}`);
     return new File([bytes], filename, { type: mimeType });
   } catch (e) {
-    console.warn('Failed to read dropped file:', path, e);
+    console.error('[drag-drop] file read failure:', path, e);
     return null;
   }
 }
 
-export async function registerDropHandler(handlers: DropHandlers): Promise<() => void> {
-  // Always store handlers (DropZone will call these)
-  currentHandlers = handlers;
-
-  // Only set up native listener in Tauri context
-  if (!isTauri()) {
-    return () => { currentHandlers = null; };
-  }
-
-  // Clean up previous listener
-  if (cleanupFn) {
-    cleanupFn();
-    cleanupFn = null;
-  }
+/** Initialize the singleton native drag-drop listener. Called once, idempotent. */
+async function ensureNativeListener(): Promise<void> {
+  if (listenerInitialized || !isTauri()) return;
+  listenerInitialized = true;
 
   try {
     const { getCurrentWebviewWindow } = await import('@tauri-apps/api/webviewWindow');
     const webview = getCurrentWebviewWindow();
 
-    const unlisten = await webview.onDragDropEvent(async (event) => {
-      if (!currentHandlers) return;
+    await webview.onDragDropEvent(async (event) => {
+      const handlers = currentHandlers;
+      if (!handlers) {
+        console.log('[drag-drop] event received but no handlers registered, type:', event.payload.type);
+        return;
+      }
 
       if (event.payload.type === 'enter') {
-        currentHandlers.onEnter();
+        const paths: string[] = (event.payload as { type: string; paths: string[] }).paths;
+        console.log('[drag-drop] enter, paths:', paths);
+        handlers.onEnter();
       } else if (event.payload.type === 'leave') {
-        currentHandlers.onLeave();
+        console.log('[drag-drop] leave');
+        handlers.onLeave();
       } else if (event.payload.type === 'drop') {
-        currentHandlers.onLeave(); // Hide overlay immediately
-        const paths: string[] = event.payload.paths;
+        const paths: string[] = (event.payload as { type: string; paths: string[] }).paths;
+        console.log('[drag-drop] drop, paths:', paths, 'count:', paths.length);
+        handlers.onLeave(); // Hide overlay immediately
+
         if (paths.length === 0) return;
 
         const files: File[] = [];
@@ -71,20 +75,39 @@ export async function registerDropHandler(handlers: DropHandlers): Promise<() =>
           const file = await readDroppedFile(path);
           if (file) files.push(file);
         }
+        console.log('[drag-drop] files ready:', files.length, files.map(f => `${f.name}(${f.type})`));
         if (files.length > 0) {
-          currentHandlers.onDrop(files);
+          handlers.onDrop(files);
         }
+      } else if (event.payload.type === 'over') {
+        // Position update — ignore silently
+      } else {
+        console.log('[drag-drop] unknown event type:', (event.payload as { type: string }).type);
       }
     });
 
-    cleanupFn = unlisten;
-    return () => {
-      unlisten();
-      cleanupFn = null;
-      currentHandlers = null;
-    };
+    console.log('[drag-drop] native listener registered successfully');
   } catch (e) {
-    console.warn('Failed to register Tauri drag-drop listener:', e);
-    return () => { currentHandlers = null; };
+    console.error('[drag-drop] failed to register native listener:', e);
+    listenerInitialized = false;
   }
+}
+
+/**
+ * Set (or clear) the current drop handlers. Synchronous — no race conditions.
+ * Call with `null` to unregister.
+ */
+export function setDropHandlers(handlers: DropHandlers | null): void {
+  currentHandlers = handlers;
+  if (handlers && isTauri()) {
+    ensureNativeListener();
+  }
+}
+
+/**
+ * @deprecated Use setDropHandlers() instead. Kept for backward compatibility.
+ */
+export async function registerDropHandler(handlers: DropHandlers): Promise<() => void> {
+  setDropHandlers(handlers);
+  return () => setDropHandlers(null);
 }

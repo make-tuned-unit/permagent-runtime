@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { FiUpload } from 'react-icons/fi';
-import { registerDropHandler } from '../../lib/native-drag-drop';
+import { setDropHandlers } from '../../lib/native-drag-drop';
 
 interface DropZoneProps {
   onDrop: (files: File[]) => void;
@@ -13,25 +13,33 @@ export function DropZone({ onDrop, children }: DropZoneProps) {
   const [dragging, setDragging] = useState(false);
   const counter = useRef(0);
 
-  // Tauri native drag-drop bridge
+  useEffect(() => {
+    console.log(`[dropzone] mounted, isTauri=${isTauri}`);
+  }, []);
+
+  // Tauri native drag-drop bridge — synchronous handler swap, no race conditions
   useEffect(() => {
     if (!isTauri) return;
 
-    let cancelled = false;
-    let cleanup: (() => void) | null = null;
-
-    registerDropHandler({
-      onEnter: () => { if (!cancelled) setDragging(true); },
-      onLeave: () => { if (!cancelled) setDragging(false); },
-      onDrop: (files) => { if (!cancelled) onDrop(files); },
-    }).then(fn => {
-      if (cancelled) fn();
-      else cleanup = fn;
+    console.log('[dropzone] registering native drop handlers');
+    setDropHandlers({
+      onEnter: () => {
+        console.log('[dropzone] native onEnter → show overlay');
+        setDragging(true);
+      },
+      onLeave: () => {
+        console.log('[dropzone] native onLeave → hide overlay');
+        setDragging(false);
+      },
+      onDrop: (files) => {
+        console.log('[dropzone] native onDrop, file count:', files.length);
+        onDrop(files);
+      },
     });
 
     return () => {
-      cancelled = true;
-      cleanup?.();
+      console.log('[dropzone] clearing native drop handlers');
+      setDropHandlers(null);
     };
   }, [onDrop]);
 
@@ -41,6 +49,7 @@ export function DropZone({ onDrop, children }: DropZoneProps) {
     e.preventDefault();
     counter.current++;
     if (e.dataTransfer.types.includes('Files')) {
+      console.log('[dropzone] HTML5 dragenter, files detected');
       setDragging(true);
     }
   }, []);
@@ -63,6 +72,7 @@ export function DropZone({ onDrop, children }: DropZoneProps) {
     counter.current = 0;
     setDragging(false);
     const files = Array.from(e.dataTransfer.files);
+    console.log('[dropzone] HTML5 onDrop, file count:', files.length);
     if (files.length > 0) onDrop(files);
   }, [onDrop]);
 

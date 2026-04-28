@@ -27,14 +27,19 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
   }, [input]);
 
   const addFiles = useCallback((files: File[]) => {
+    console.log('[addfiles] called with', files.length, 'files:', files.map(f => `${f.name}(type=${f.type},size=${f.size})`));
     const valid = files.filter(f => {
       if (f.size > MAX_FILE_SIZE) {
-        console.warn(`File too large: ${f.name} (${f.size} bytes)`);
+        console.warn(`[addfiles] File too large: ${f.name} (${f.size} bytes)`);
         return false;
       }
       return true;
     });
-    setPendingFiles(prev => [...prev, ...valid]);
+    setPendingFiles(prev => {
+      const next = [...prev, ...valid];
+      console.log('[addfiles] pendingFiles count:', next.length);
+      return next;
+    });
   }, []);
 
   useImperativeHandle(ref, () => ({ addFiles }), [addFiles]);

@@ -323,6 +323,28 @@ pub async fn session_reply(
         })?;
 
     let user_message = request.user_message;
+
+    // Diagnostic: log incoming content block types
+    {
+        let mut text_count = 0u32;
+        let mut image_count = 0u32;
+        let mut other_count = 0u32;
+        for content in &user_message.content {
+            match content {
+                permagent::conversation::message::MessageContent::Text(_) => text_count += 1,
+                permagent::conversation::message::MessageContent::Image(_) => image_count += 1,
+                _ => other_count += 1,
+            }
+        }
+        tracing::info!(
+            text_blocks = text_count,
+            image_blocks = image_count,
+            other_blocks = other_count,
+            total_blocks = user_message.content.len(),
+            "[session_reply] user_message content blocks"
+        );
+    }
+
     let override_conversation = request.override_conversation;
 
     let task_state = state.clone();
