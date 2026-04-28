@@ -1,41 +1,80 @@
 # Permagent v1.0 Ontology
 #
-# Defines known entities and predicates for Permagent's memory layer.
-# v1.0 scope is chat memory only; v1.1 will add activity-capture concepts
-# (chat_session, skill entity types + associated predicates).
+# Defines the schema of memory: what kinds of entities can exist and what
+# typed relationships connect them. Specific entities (the user's name,
+# their projects, people they discuss) are created at runtime as the user
+# interacts with Permagent — they are NOT pre-declared in this file.
 #
-# [[entity]] entries define known entities the canonicalizer can resolve.
-# [[predicate]] entries define valid (domain, range) relationships.
-# Spectral validates that all domain/range types have at least one entity.
+# This file ships in every Permagent binary as an embedded asset and is
+# written to ~/.permagent/ontology.toml on first run. Spectral validates
+# all graph writes against the (domain, range) constraints declared here.
+#
+# v1.1 will add activity-capture entity types (activity) and predicates
+# (occurred_in_project, started_at, involves_person).
 
 version = 1
 
-# ── Entities ─────────────────────────────────────────────────────────
+# ── Entity types ─────────────────────────────────────────────────────
+# Each type describes a kind of thing Permagent reasons about. Specific
+# entities of these types are created at runtime when first referenced
+# (pending Spectral's AutoCreateWithCanonicalizer support — Phase 2 Track A).
 
-[[entity]]
-type = "person"
-canonical = "jesse-sharratt"
-aliases = ["Jesse", "Jesse Sharratt", "jesse"]
-visibility = "private"
+[[entity_types]]
+name = "person"
+aliases = ["user", "human"]
 
-[[entity]]
-type = "project"
-canonical = "permagent"
-aliases = ["Permagent", "permagent-runtime"]
-visibility = "public"
+[[entity_types]]
+name = "project"
+aliases = ["repo", "codebase", "product"]
 
-[[entity]]
-type = "project"
-canonical = "spectral"
-aliases = ["Spectral"]
-visibility = "public"
+[[entity_types]]
+name = "chat_session"
+aliases = ["conversation", "session"]
+
+[[entity_types]]
+name = "skill"
+aliases = ["capability", "tool", "extension"]
+
+[[entity_types]]
+name = "topic"
+aliases = ["subject", "theme"]
 
 # ── Predicates ───────────────────────────────────────────────────────
-# v1.0: person ↔ project relationships only.
-# v1.1 will add: discussed_in, uses_skill, mentions_person, mentions_project
-# once chat_session and skill entity types are populated at runtime.
+# Each predicate describes a typed relationship. domain = subject type,
+# range = object type. Spectral validates these at write time when
+# brain.assert() is called.
 
-[[predicate]]
+[[predicates]]
 name = "worked_on"
-domain = ["person"]
-range = ["project"]
+domain = "person"
+range = "project"
+
+[[predicates]]
+name = "discussed_in"
+domain = "topic"
+range = "chat_session"
+
+[[predicates]]
+name = "uses_skill"
+domain = "chat_session"
+range = "skill"
+
+[[predicates]]
+name = "mentions_person"
+domain = "chat_session"
+range = "person"
+
+[[predicates]]
+name = "mentions_project"
+domain = "chat_session"
+range = "project"
+
+[[predicates]]
+name = "mentions_topic"
+domain = "chat_session"
+range = "topic"
+
+[[predicates]]
+name = "related_to"
+domain = "topic"
+range = "topic"
