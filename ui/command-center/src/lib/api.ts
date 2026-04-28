@@ -152,12 +152,36 @@ async function apiFetch<T>(endpoint: string, options?: RequestInit): Promise<T> 
   return response.json() as Promise<T>;
 }
 
+/** Read a File as base64 data string (no data-URI prefix). */
+export function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      // Strip "data:image/png;base64," prefix
+      resolve(result.split(',')[1] || result);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 /** Build a user Message in the format the daemon expects */
-export function buildUserMessage(text: string): DaemonMessage {
+export function buildUserMessage(
+  text: string,
+  images?: Array<{ data: string; mime_type: string }>,
+): DaemonMessage {
+  const content: MessageContent[] = [];
+  if (images) {
+    for (const img of images) {
+      content.push({ type: 'image', data: img.data, mimeType: img.mime_type } as unknown as MessageContent);
+    }
+  }
+  content.push({ type: 'text', text });
   return {
     role: 'user',
     created: Math.floor(Date.now() / 1000),
-    content: [{ type: 'text', text }],
+    content,
     metadata: { userVisible: true, agentVisible: true },
   };
 }
@@ -244,7 +268,11 @@ export const api = {
    * Send a message via POST /sessions/{id}/reply (per-session).
    * Returns { request_id } — events arrive on the SSE channel.
    */
-  sendReply: async (sessionId: string, text: string): Promise<{ request_id: string }> => {
+  sendReply: async (
+    sessionId: string,
+    text: string,
+    images?: Array<{ data: string; mime_type: string }>,
+  ): Promise<{ request_id: string }> => {
     const requestId = crypto.randomUUID();
     return apiFetch<{ request_id: string }>(
       `/sessions/${encodeURIComponent(sessionId)}/reply`,
@@ -252,7 +280,7 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({
           request_id: requestId,
-          user_message: buildUserMessage(text),
+          user_message: buildUserMessage(text, images),
         }),
       },
     );

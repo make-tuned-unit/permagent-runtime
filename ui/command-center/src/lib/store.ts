@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { api, extractText } from './api';
+import { api, extractText, fileToBase64 } from './api';
 import type { Session, DaemonMessage, SSEEvent } from './api';
 import { startEventPruning } from './eventBus';
 
@@ -417,15 +417,21 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     };
     set(s => ({ chatMessages: [...s.chatMessages, userMsg] }));
 
-    // Upload files if any
-    let fileNote = '';
+    // Read image files as base64 for vision
+    let images: Array<{ data: string; mime_type: string }> | undefined;
     if (files && files.length > 0) {
-      try {
-        const uploaded = await api.uploadAttachments(sessionId, files);
-        const names = uploaded.attachments.map(a => a.filename).join(', ');
-        fileNote = `\n[Attached files: ${names}]`;
-      } catch (err) {
-        console.warn('File upload failed:', err);
+      const imageFiles = files.filter(f => f.type.startsWith('image/'));
+      if (imageFiles.length > 0) {
+        try {
+          images = await Promise.all(
+            imageFiles.map(async f => ({
+              data: await fileToBase64(f),
+              mime_type: f.type || 'image/png',
+            })),
+          );
+        } catch (err) {
+          console.warn('Failed to read image files:', err);
+        }
       }
     }
 
@@ -444,7 +450,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
     try {
       // Fire-and-forget: events arrive on SSE channel
-      await api.sendReply(sessionId, text + fileNote);
+      await api.sendReply(sessionId, text, images);
     } catch (err) {
       set(s => ({
         isStreaming: false,
