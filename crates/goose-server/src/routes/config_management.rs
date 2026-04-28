@@ -67,6 +67,7 @@ pub struct ProviderDetails {
     pub name: String,
     pub metadata: ProviderMetadata,
     pub is_configured: bool,
+    pub is_default: bool,
     pub provider_type: ProviderType,
 }
 
@@ -334,16 +335,21 @@ pub async fn read_all_config() -> Result<Json<ConfigResponse>, ErrorResponse> {
     )
 )]
 pub async fn providers() -> Result<Json<Vec<ProviderDetails>>, ErrorResponse> {
+    let config = Config::global();
+    let default_provider_name = config.get_goose_provider().ok();
+
     let providers = get_providers().await;
     let providers_response: Vec<ProviderDetails> = providers
         .into_iter()
         .map(|(metadata, provider_type)| {
             let is_configured = check_provider_configured(&metadata, provider_type);
+            let is_default = default_provider_name.as_deref() == Some(metadata.name.as_str());
 
             ProviderDetails {
                 name: metadata.name.clone(),
                 metadata,
                 is_configured,
+                is_default,
                 provider_type,
             }
         })
@@ -776,24 +782,43 @@ pub async fn check_provider(
     request_body = SetProviderRequest,
 )]
 pub async fn set_config_provider(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     Json(SetProviderRequest { provider, model }): Json<SetProviderRequest>,
 ) -> Result<(), ErrorResponse> {
-    // Provider validation does not use extensions.
-    create_with_default_model(&provider, Vec::new())
+    // Create and validate the provider (also used for runtime state update)
+    let provider_arc = create_with_default_model(&provider, Vec::new())
         .await
-        .and_then(|_| {
-            let config = Config::global();
-            config
-                .set_goose_provider(provider.clone())
-                .and_then(|_| config.set_goose_model(model.clone()))
-                .map_err(|e| anyhow::anyhow!(e))
-        })
         .map_err(|err| {
             ErrorResponse::bad_request(format!(
                 "Failed to set provider to '{}' with model '{}': {}",
                 provider, model, err
             ))
         })?;
+
+    // Persist to config.yaml (source of truth)
+    let config = Config::global();
+    config
+        .set_goose_provider(provider.clone())
+        .and_then(|_| config.set_goose_model(model.clone()))
+        .map_err(|e| {
+            ErrorResponse::bad_request(format!(
+                "Failed to persist provider config: {}",
+                e
+            ))
+        })?;
+
+    // Update in-memory runtime state so new sessions use the new provider immediately
+    state
+        .agent_manager
+        .set_default_provider(provider_arc)
+        .await;
+
+    tracing::info!(
+        provider = %provider,
+        model = %model,
+        "Default provider updated (config.yaml + runtime)"
+    );
+
     Ok(())
 }
 

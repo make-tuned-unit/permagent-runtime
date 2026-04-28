@@ -201,6 +201,13 @@ pub async fn handle_setup_interactive() -> Result<()> {
 
     // Write config before daemon step
     write_config(&permagent_dir, provider_name, default_model, &agent_name)?;
+
+    // Belt-and-suspenders: also write through Config API
+    {
+        let config = Config::global();
+        let _ = config.set_goose_provider(provider_name);
+        let _ = config.set_goose_model(default_model);
+    }
     println!("Config written to ~/.permagent/config.yaml");
 
     let register_daemon = Confirm::new()
@@ -268,9 +275,21 @@ pub async fn handle_setup_non_interactive(opts: NonInteractiveOpts) -> Result<()
     let fallback_model = models.first().copied().unwrap_or("default");
     let default_model = opts.model.as_deref().unwrap_or(fallback_model);
 
-    // Write config
+    // Write config template (creates full YAML structure)
     let agent_name = opts.agent_name.as_deref().unwrap_or("permagent");
     write_config(&permagent_dir, provider_name, default_model, agent_name)?;
+
+    // Belt-and-suspenders: also write through Config API to ensure the values
+    // survive any YAML round-trip (migration, set_param on other keys, etc.)
+    {
+        let config = Config::global();
+        if let Err(e) = config.set_goose_provider(provider_name) {
+            eprintln!("Warning: Failed to persist GOOSE_PROVIDER via Config API: {}", e);
+        }
+        if let Err(e) = config.set_goose_model(default_model) {
+            eprintln!("Warning: Failed to persist GOOSE_MODEL via Config API: {}", e);
+        }
+    }
     println!("Config written to ~/.permagent/config.yaml");
 
     // Initialize Spectral

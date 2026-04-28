@@ -314,7 +314,6 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     try {
       const configResp = await api.getConfig();
       const cfgMap = ((configResp as Record<string, unknown>)['config'] ?? configResp) as Record<string, unknown>;
-      const currentProvider = cfgMap['GOOSE_PROVIDER'] as string | undefined;
       const currentModel = cfgMap['GOOSE_MODEL'] as string | undefined;
 
       const raw = await api.getProviders();
@@ -328,7 +327,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
           knownModels: p.metadata.known_models.map(m => m.name),
           configKeys: p.metadata.config_keys,
           isConfigured: p.is_configured,
-          isDefault: p.name === currentProvider,
+          isDefault: p.is_default ?? false,
         })),
       });
     } catch {
@@ -392,6 +391,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
    * Events arrive on the per-session SSE channel and update chat state.
    */
   sendMessage: async (text: string, files?: File[]) => {
+    console.log('[send] entry — files:', files?.length ?? 0, 'text length:', text.length);
     const state = get();
     if (state.isStreaming) return;
 
@@ -421,19 +421,28 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     let images: Array<{ data: string; mime_type: string }> | undefined;
     if (files && files.length > 0) {
       const imageFiles = files.filter(f => f.type.startsWith('image/'));
+      console.log('[send] total files:', files.length, 'image files after filter:', imageFiles.length,
+        'all types:', files.map(f => `${f.name}(type="${f.type}")`));
       if (imageFiles.length > 0) {
         try {
           images = await Promise.all(
-            imageFiles.map(async f => ({
-              data: await fileToBase64(f),
-              mime_type: f.type || 'image/png',
-            })),
+            imageFiles.map(async f => {
+              console.log('[send] fileToBase64 start:', f.name, 'size:', f.size);
+              const data = await fileToBase64(f);
+              console.log('[send] fileToBase64 done:', f.name, 'base64 length:', data.length);
+              return {
+                data,
+                mime_type: f.type || 'image/png',
+              };
+            }),
           );
         } catch (err) {
-          console.warn('Failed to read image files:', err);
+          console.error('[send] fileToBase64 FAILED:', err);
         }
       }
     }
+
+    console.log('[send] before api.sendReply — text length:', text.length, 'images count:', images?.length ?? 0);
 
     // Create streaming placeholder
     const streamMsgId = `msg-${Date.now()}-stream`;
@@ -452,6 +461,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       // Fire-and-forget: events arrive on SSE channel
       await api.sendReply(sessionId, text, images);
     } catch (err) {
+      console.error('[send] api.sendReply FAILED:', err);
       set(s => ({
         isStreaming: false,
         _streamingMessageId: null,

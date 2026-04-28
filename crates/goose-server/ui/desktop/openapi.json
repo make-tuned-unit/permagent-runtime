@@ -1752,10 +1752,14 @@
         "required": [
           "name",
           "metadata",
-          "is_configured"
+          "is_configured",
+          "is_default"
         ],
         "properties": {
           "is_configured": {
+            "type": "boolean"
+          },
+          "is_default": {
             "type": "boolean"
           },
           "metadata": {

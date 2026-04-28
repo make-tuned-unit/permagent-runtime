@@ -274,16 +274,24 @@ export const api = {
     images?: Array<{ data: string; mime_type: string }>,
   ): Promise<{ request_id: string }> => {
     const requestId = crypto.randomUUID();
-    return apiFetch<{ request_id: string }>(
+    const userMessage = buildUserMessage(text, images);
+    const contentTypes = userMessage.content.map(c => (c as { type: string }).type);
+    console.log('[api-reply] POST /sessions/' + sessionId + '/reply',
+      '— content blocks:', contentTypes,
+      'images:', images?.length ?? 0,
+      'text length:', text.length);
+    const result = await apiFetch<{ request_id: string }>(
       `/sessions/${encodeURIComponent(sessionId)}/reply`,
       {
         method: 'POST',
         body: JSON.stringify({
           request_id: requestId,
-          user_message: buildUserMessage(text, images),
+          user_message: userMessage,
         }),
       },
     );
+    console.log('[api-reply] response:', result);
+    return result;
   },
 
   /** Build the SSE URL for per-session events. */
@@ -312,6 +320,7 @@ export const api = {
         config_keys: Array<{ name: string; required: boolean; secret: boolean; description?: string }>;
       };
       is_configured: boolean;
+      is_default?: boolean;
       provider_type: string;
     }>>('/config/providers'),
 
