@@ -1,5 +1,5 @@
 import { useEffect, useCallback } from 'react';
-import { LayoutDashboard, Globe, Code, Brain, Settings, Wifi, WifiOff, Loader } from 'lucide-react';
+import { LayoutDashboard, Globe, Code, Brain, Settings, Wifi, WifiOff, Loader, MessageSquare } from 'lucide-react';
 import { useCommandCenter, type ConnectionStatus } from '../../lib/store';
 
 const WORKSPACE_ICONS: Record<string, typeof LayoutDashboard> = {
@@ -52,14 +52,15 @@ export function Sidebar() {
   const connectionStatus = useCommandCenter(s => s.connectionStatus);
 
   const isSettingsOpen = activePanel === 'settings';
+  const isSessionsOpen = activePanel === 'sessions';
 
   // Switch to a workspace AND leave settings if we're in it
   const goToWorkspace = useCallback((workspaceId: string) => {
     switchWorkspace(workspaceId);
-    if (isSettingsOpen) {
+    if (isSettingsOpen || isSessionsOpen) {
       setActivePanel('chat');
     }
-  }, [switchWorkspace, setActivePanel, isSettingsOpen]);
+  }, [switchWorkspace, setActivePanel, isSettingsOpen, isSessionsOpen]);
 
   // Keyboard shortcuts: Cmd+1, Cmd+2, Cmd+3
   useEffect(() => {
@@ -93,7 +94,7 @@ export function Sidebar() {
           </span>
         </div>
         {workspaces.map((ws, i) => {
-          const isActive = activeWorkspaceId === ws.id && !isSettingsOpen;
+          const isActive = activeWorkspaceId === ws.id && !isSettingsOpen && !isSessionsOpen;
           const IconComponent = WORKSPACE_ICONS[ws.icon] || LayoutDashboard;
           return (
             <button
@@ -116,8 +117,19 @@ export function Sidebar() {
         })}
       </nav>
 
-      {/* Bottom: Settings + Connection */}
+      {/* Bottom: Sessions + Settings + Connection */}
       <div className="border-t border-dark-border px-2 py-2 space-y-1">
+        <button
+          onClick={() => setActivePanel(isSessionsOpen ? 'chat' : 'sessions')}
+          className={`flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-xs font-medium transition ${
+            isSessionsOpen
+              ? 'bg-accent/10 text-accent'
+              : 'text-dark-muted hover:bg-white/5 hover:text-dark-text'
+          }`}
+        >
+          <MessageSquare size={14} />
+          Sessions
+        </button>
         <button
           onClick={() => setActivePanel(isSettingsOpen ? 'chat' : 'settings')}
           className={`flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-xs font-medium transition ${

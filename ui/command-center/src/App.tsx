@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useCommandCenter } from './lib/store';
 import { Sidebar } from './components/sidebar/Sidebar';
 import { SettingsView } from './components/settings/SettingsView';
+import { SessionsList } from './components/sessions/SessionsList';
 import { WorkspaceRenderer } from './components/workspaces/WorkspaceRenderer';
 
 function MainContent() {
@@ -9,9 +10,12 @@ function MainContent() {
   const activeWorkspaceId = useCommandCenter(s => s.activeWorkspaceId);
   const workspacesLoaded = useCommandCenter(s => s.workspacesLoaded);
 
-  // Settings is a special panel, not a workspace
   if (activePanel === 'settings') {
     return <SettingsView />;
+  }
+
+  if (activePanel === 'sessions') {
+    return <SessionsList />;
   }
 
   if (!workspacesLoaded) {

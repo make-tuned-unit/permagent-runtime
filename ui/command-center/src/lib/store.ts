@@ -95,7 +95,7 @@ export type PermagentEventType =
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 
-export type ActivePanel = 'chat' | 'skills' | 'events' | 'settings' | 'terminal' | 'browser';
+export type ActivePanel = 'chat' | 'skills' | 'events' | 'settings' | 'sessions' | 'terminal' | 'browser';
 
 // ── Workspace types ──
 
@@ -185,6 +185,9 @@ interface CommandCenterStore {
   // --- SSE streaming ---
   isStreaming: boolean;
   sendMessage: (text: string, files?: File[]) => Promise<void>;
+  switchToSession: (sessionId: string) => Promise<void>;
+  deleteSession: (sessionId: string) => Promise<void>;
+  renameSession: (sessionId: string, name: string) => Promise<void>;
 
   // --- Skills state ---
   skills: SkillState[];
@@ -309,8 +312,8 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   currentModel: null,
   loadProviders: async () => {
     try {
-      const config = await api.getConfig();
-      const cfgMap = config as Record<string, unknown>;
+      const configResp = await api.getConfig();
+      const cfgMap = ((configResp as Record<string, unknown>)['config'] ?? configResp) as Record<string, unknown>;
       const currentProvider = cfgMap['GOOSE_PROVIDER'] as string | undefined;
       const currentModel = cfgMap['GOOSE_MODEL'] as string | undefined;
 
@@ -453,6 +456,41 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
           timestamp: new Date().toISOString(),
         }],
       }));
+    }
+  },
+
+  switchToSession: async (sessionId: string) => {
+    get().disconnectSession();
+    set({ chatSessionId: sessionId, chatMessages: [], isStreaming: false, _streamingMessageId: null });
+    try { localStorage.setItem('permagent-chat-session-id', sessionId); } catch { /* */ }
+    await get().loadSessionMessages(sessionId);
+    get().connectSession(sessionId);
+  },
+
+  deleteSession: async (sessionId: string) => {
+    try {
+      await api.deleteSession(sessionId);
+      const state = get();
+      if (state.chatSessionId === sessionId) {
+        set({ chatSessionId: null, chatMessages: [] });
+        try { localStorage.removeItem('permagent-chat-session-id'); } catch { /* */ }
+      }
+      await get().loadSessions();
+    } catch (e) {
+      console.error('Failed to delete session:', e);
+    }
+  },
+
+  renameSession: async (sessionId: string, name: string) => {
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      await fetch(
+        `${(import.meta.env.VITE_DAEMON_URL as string | undefined) || ''}/api/sessions/${encodeURIComponent(sessionId)}/name`,
+        { method: 'PUT', headers, body: JSON.stringify({ name }) },
+      );
+      await get().loadSessions();
+    } catch (e) {
+      console.error('Failed to rename session:', e);
     }
   },
 
