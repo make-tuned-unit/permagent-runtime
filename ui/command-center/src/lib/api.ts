@@ -265,10 +265,35 @@ export const api = {
   // Config
   getConfig: () => apiFetch<PermagentConfig>('/config'),
 
-  upsertConfig: (key: string, value: unknown) =>
-    apiFetch<PermagentConfig>('/config/upsert', {
+  upsertConfig: (key: string, value: unknown, isSecret?: boolean) =>
+    apiFetch<unknown>('/config/upsert', {
       method: 'POST',
-      body: JSON.stringify({ key, value }),
+      body: JSON.stringify({ key, value, is_secret: isSecret ?? false }),
+    }),
+
+  // Providers
+  getProviders: () =>
+    apiFetch<Array<{
+      name: string;
+      metadata: {
+        name: string;
+        display_name: string;
+        description: string;
+        default_model: string;
+        known_models: Array<{ name: string }>;
+        config_keys: Array<{ name: string; required: boolean; secret: boolean; description?: string }>;
+      };
+      is_configured: boolean;
+      provider_type: string;
+    }>>('/config/providers'),
+
+  getProviderModels: (name: string) =>
+    apiFetch<string[]>(`/config/providers/${encodeURIComponent(name)}/models`).catch(() => []),
+
+  setProvider: (provider: string, model: string) =>
+    apiFetch<void>('/config/set_provider', {
+      method: 'POST',
+      body: JSON.stringify({ provider, model }),
     }),
 
   // Skills CRUD

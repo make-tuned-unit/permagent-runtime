@@ -135,6 +135,17 @@ export interface SkillProposal {
   timestamp: string;
 }
 
+export interface ProviderInfo {
+  name: string;
+  displayName: string;
+  description: string;
+  defaultModel: string;
+  knownModels: string[];
+  configKeys: Array<{ name: string; required: boolean; secret: boolean; description?: string }>;
+  isConfigured: boolean;
+  isDefault: boolean;
+}
+
 interface CommandCenterStore {
   // --- Panel routing ---
   activePanel: ActivePanel;
@@ -150,6 +161,11 @@ interface CommandCenterStore {
 
   // --- Connection state ---
   connectionStatus: ConnectionStatus;
+
+  // --- Provider state ---
+  providers: ProviderInfo[];
+  loadProviders: () => Promise<void>;
+  setDefaultProvider: (name: string, model: string) => Promise<void>;
 
   // --- Operational state ---
   tasks: TaskState[];
@@ -286,6 +302,40 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
   // Connection
   connectionStatus: 'disconnected',
+
+  // Providers
+  providers: [],
+  loadProviders: async () => {
+    try {
+      const config = await api.getConfig();
+      const currentProvider = (config as Record<string, unknown>)['GOOSE_PROVIDER'] as string | undefined;
+
+      const raw = await api.getProviders();
+      set({
+        providers: raw.map(p => ({
+          name: p.name,
+          displayName: p.metadata.display_name,
+          description: p.metadata.description,
+          defaultModel: p.metadata.default_model,
+          knownModels: p.metadata.known_models.map(m => m.name),
+          configKeys: p.metadata.config_keys,
+          isConfigured: p.is_configured,
+          isDefault: p.name === currentProvider,
+        })),
+      });
+    } catch {
+      set({ providers: [] });
+    }
+  },
+
+  setDefaultProvider: async (name: string, model: string) => {
+    try {
+      await api.setProvider(name, model);
+      await get().loadProviders();
+    } catch (e) {
+      console.error('Failed to set default provider:', e);
+    }
+  },
 
   // State
   tasks: [],

@@ -38,6 +38,8 @@ function App() {
   const loadSkills = useCommandCenter(s => s.loadSkills);
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
 
+  const activePanel = useCommandCenter(s => s.activePanel);
+
   useEffect(() => {
     loadWorkspaces();
     loadSkills();
@@ -48,6 +50,18 @@ function App() {
   useEffect(() => {
     setActivePanel('chat');
   }, [setActivePanel]);
+
+  // Cmd+, opens settings (macOS convention)
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === ',') {
+        e.preventDefault();
+        setActivePanel(activePanel === 'settings' ? 'chat' : 'settings');
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [setActivePanel, activePanel]);
 
   return (
     <div className="flex h-screen bg-[#0B1120]">

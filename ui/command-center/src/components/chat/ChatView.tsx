@@ -5,9 +5,9 @@ import { ChatInput } from './ChatInput';
 import type { ChatInputHandle } from './ChatInput';
 import { SkillPromptBanner } from './SkillPromptBanner';
 import { DropZone } from './DropZone';
+import { ModelPicker } from './ModelPicker';
 
 export function ChatView() {
-  const chatSessionId = useCommandCenter(s => s.chatSessionId);
   const loadSessionMessages = useCommandCenter(s => s.loadSessionMessages);
   const ensureSession = useCommandCenter(s => s.ensureSession);
   const connectSession = useCommandCenter(s => s.connectSession);
@@ -38,11 +38,7 @@ export function ChatView() {
         {/* Header */}
         <div className="flex items-center justify-between border-b border-dark-border px-4 py-2.5">
           <span className="text-[11px] font-mono uppercase tracking-wider text-dark-muted">Chat</span>
-          {chatSessionId && (
-            <span className="text-[9px] font-mono text-dark-muted/50 truncate max-w-[200px]">
-              {chatSessionId.slice(0, 12)}
-            </span>
-          )}
+          <ModelPicker />
         </div>
 
         {/* Message list */}
