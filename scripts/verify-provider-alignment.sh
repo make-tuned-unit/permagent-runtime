@@ -1,6 +1,23 @@
 #!/bin/bash
 set -e
 
+# Find repo root regardless of where script is invoked from
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR/.."
+
+# Validate prerequisites
+if [ -z "$ANTHROPIC_API_KEY" ]; then
+  echo "FAIL: ANTHROPIC_API_KEY not set in environment"
+  echo "  export ANTHROPIC_API_KEY=sk-ant-... and re-run"
+  exit 1
+fi
+
+if [ ! -x "target/release/permagent" ]; then
+  echo "FAIL: target/release/permagent not found"
+  echo "  cargo build --release -p permagent-cli -p permagent-daemon"
+  exit 1
+fi
+
 echo "=== Cleanup ==="
 pkill -f permagentd 2>/dev/null || true
 rm -rf ~/.permagent
@@ -40,13 +57,15 @@ echo "=== Test 5: launchctl reload preserves state ==="
 launchctl unload ~/Library/LaunchAgents/ai.permagent.daemon.plist
 sleep 2
 launchctl load ~/Library/LaunchAgents/ai.permagent.daemon.plist
-sleep 5
+sleep 8
 
 DEFAULT_AFTER_RELOAD=$(curl -s http://localhost:3001/config/providers | python3 -c "import sys,json; data=json.load(sys.stdin); print(','.join(p['name'] for p in data if p.get('is_default')))")
 echo "after launchctl reload, default=$DEFAULT_AFTER_RELOAD"
 [ "$DEFAULT_AFTER_RELOAD" = "anthropic" ] || { echo "FAIL: launchctl reload didn't restore default provider"; exit 1; }
 
 echo "=== Test 6: End-to-end chat works ==="
+set +e
+
 SID=$(curl -s -X POST http://localhost:3001/api/sessions -H "Content-Type: application/json" -d '{}' | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')
 RID=$(python3 -c "import uuid; print(uuid.uuid4())")
 echo "Session: $SID, Request: $RID"
@@ -61,15 +80,35 @@ if ! echo "$REPLY_RESPONSE" | grep -q "request_id"; then
   exit 1
 fi
 
-sleep 2
-EVENTS=$(timeout 12 curl -N "http://localhost:3001/sessions/$SID/events" 2>&1)
-MESSAGE_COUNT=$(echo "$EVENTS" | grep -c '"type":"Message"')
-echo "Test 6: received $MESSAGE_COUNT Message events"
-[ "$MESSAGE_COUNT" -gt 0 ] || { echo "FAIL: no Message events received from chat — daemon accepted request but Anthropic call did not produce streaming events"; exit 1; }
+# Capture SSE for 15 seconds via background curl + kill (portable, no `timeout` dep)
+sleep 3
+EVENTS_FILE=$(mktemp)
+curl -N -s "http://localhost:3001/sessions/$SID/events" > "$EVENTS_FILE" 2>&1 &
+CURL_PID=$!
+sleep 15
+kill $CURL_PID 2>/dev/null || true
+wait $CURL_PID 2>/dev/null || true
 
-# Show first event content as proof
-FIRST_TEXT=$(echo "$EVENTS" | grep '"type":"Message"' | head -1 | python3 -c "import sys,json; data=json.loads(sys.stdin.read().split('data: ')[1]); print(data['message']['content'][0].get('text','(no text)'))" 2>/dev/null)
+EVENTS=$(cat "$EVENTS_FILE")
+rm -f "$EVENTS_FILE"
+
+MESSAGE_COUNT=$(echo "$EVENTS" | grep -c '"type":"Message"')
+MESSAGE_COUNT=${MESSAGE_COUNT//[^0-9]/}
+MESSAGE_COUNT=${MESSAGE_COUNT:-0}
+echo "Test 6: received $MESSAGE_COUNT Message events"
+
+if [ "$MESSAGE_COUNT" -lt 1 ]; then
+  echo "FAIL: no Message events received from chat"
+  echo "First 30 lines of SSE stream:"
+  echo "$EVENTS" | head -30
+  exit 1
+fi
+
+# Show first message content as proof
+FIRST_TEXT=$(echo "$EVENTS" | grep '"type":"Message"' | head -1 | python3 -c "import sys,json,re; line=sys.stdin.read(); match=re.search(r'data: (.*)', line); data=json.loads(match.group(1)); print(data['message']['content'][0].get('text','(no text)'))" 2>/dev/null || echo "(parse failed)")
 echo "First message content: $FIRST_TEXT"
+
+set -e
 
 echo ""
 echo "=== ALL TESTS PASSED ==="
