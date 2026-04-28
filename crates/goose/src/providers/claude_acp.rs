@@ -26,7 +26,7 @@ impl ProviderDef for ClaudeAcpProvider {
         ProviderMetadata::new(
             CLAUDE_ACP_PROVIDER_NAME,
             "Claude Code",
-            "Use goose with your Claude Code subscription via the claude-agent-acp adapter.",
+            "Use Permagent with your Claude Code subscription via the claude-agent-acp adapter.",
             ACP_CURRENT_MODEL,
             vec![],
             CLAUDE_ACP_DOC_URL,

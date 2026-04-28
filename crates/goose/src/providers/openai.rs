@@ -175,7 +175,7 @@ impl OpenAiProvider {
                 use crate::config::ConfigError;
                 match e {
                     ConfigError::NotFound(_) => anyhow::anyhow!(
-                        "Required API key {} is not set. Configure it via `goose configure` or set the {} environment variable.",
+                        "Required API key {} is not set. Configure it via Settings or set the {} environment variable.",
                         config.api_key_env,
                         config.api_key_env
                     ),

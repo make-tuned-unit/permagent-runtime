@@ -164,6 +164,7 @@ interface CommandCenterStore {
 
   // --- Provider state ---
   providers: ProviderInfo[];
+  currentModel: string | null;
   loadProviders: () => Promise<void>;
   setDefaultProvider: (name: string, model: string) => Promise<void>;
 
@@ -305,13 +306,17 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
   // Providers
   providers: [],
+  currentModel: null,
   loadProviders: async () => {
     try {
       const config = await api.getConfig();
-      const currentProvider = (config as Record<string, unknown>)['GOOSE_PROVIDER'] as string | undefined;
+      const cfgMap = config as Record<string, unknown>;
+      const currentProvider = cfgMap['GOOSE_PROVIDER'] as string | undefined;
+      const currentModel = cfgMap['GOOSE_MODEL'] as string | undefined;
 
       const raw = await api.getProviders();
       set({
+        currentModel: currentModel || null,
         providers: raw.map(p => ({
           name: p.name,
           displayName: p.metadata.display_name,
@@ -331,6 +336,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   setDefaultProvider: async (name: string, model: string) => {
     try {
       await api.setProvider(name, model);
+      set({ currentModel: model });
       await get().loadProviders();
     } catch (e) {
       console.error('Failed to set default provider:', e);

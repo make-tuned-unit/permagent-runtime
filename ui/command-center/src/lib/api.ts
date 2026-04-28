@@ -1,6 +1,6 @@
 /**
  * Permagent Command Center -- API client
- * Aligned with the actual permagentd (goose-server) endpoints.
+ * Aligned with the actual permagentd endpoints.
  */
 
 const API_BASE_URL = (

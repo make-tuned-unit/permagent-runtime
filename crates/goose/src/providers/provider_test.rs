@@ -32,7 +32,7 @@ pub async fn test_provider_configuration(
         .stream(
             &provider_model_config,
             "test-session-id",
-            "You are an AI agent called goose. You use tools of connected extensions to solve problems.",
+            "You are an AI agent called Permagent. You use tools of connected extensions to solve problems.",
             &messages,
             &tools.into_iter().collect::<Vec<_>>(),
         )

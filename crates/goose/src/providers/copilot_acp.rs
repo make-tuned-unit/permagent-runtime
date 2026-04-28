@@ -29,7 +29,7 @@ impl ProviderDef for CopilotAcpProvider {
         ProviderMetadata::new(
             COPILOT_ACP_PROVIDER_NAME,
             "GitHub Copilot CLI (ACP)",
-            "Use goose with your GitHub Copilot subscription via the Copilot CLI.",
+            "Use Permagent with your GitHub Copilot subscription via the Copilot CLI.",
             ACP_CURRENT_MODEL,
             vec![],
             COPILOT_ACP_DOC_URL,

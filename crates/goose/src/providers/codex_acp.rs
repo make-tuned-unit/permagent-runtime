@@ -25,7 +25,7 @@ impl ProviderDef for CodexAcpProvider {
         ProviderMetadata::new(
             CODEX_ACP_PROVIDER_NAME,
             "Codex CLI",
-            "Use goose with your ChatGPT Plus/Pro subscription via the codex-acp adapter.",
+            "Use Permagent with your ChatGPT Plus/Pro subscription via the codex-acp adapter.",
             ACP_CURRENT_MODEL,
             vec![],
             CODEX_ACP_DOC_URL,

@@ -4,6 +4,7 @@ import { useCommandCenter } from '../../lib/store';
 
 export function ModelPicker() {
   const providers = useCommandCenter(s => s.providers);
+  const storeModel = useCommandCenter(s => s.currentModel);
   const loadProviders = useCommandCenter(s => s.loadProviders);
   const setDefaultProvider = useCommandCenter(s => s.setDefaultProvider);
   const [open, setOpen] = useState(false);
@@ -24,7 +25,7 @@ export function ModelPicker() {
 
   const defaultProvider = providers.find(p => p.isDefault);
   const configured = providers.filter(p => p.isConfigured);
-  const currentModel = defaultProvider?.defaultModel || 'no model';
+  const displayModel = storeModel || defaultProvider?.defaultModel || 'no model';
 
   const handleSelect = async (providerName: string, model: string) => {
     setOpen(false);
@@ -37,7 +38,7 @@ export function ModelPicker() {
         onClick={() => setOpen(!open)}
         className="flex items-center gap-1 text-[10px] font-mono text-dark-muted hover:text-dark-text transition px-2 py-1 rounded hover:bg-white/5"
       >
-        <span className="truncate max-w-[140px]">{currentModel}</span>
+        <span className="truncate max-w-[160px]">{displayModel}</span>
         <FiChevronDown size={10} className={`transition ${open ? 'rotate-180' : ''}`} />
       </button>
 
@@ -53,7 +54,7 @@ export function ModelPicker() {
                   {p.displayName}
                 </div>
                 {p.knownModels.map(model => {
-                  const isActive = p.isDefault && model === currentModel;
+                  const isActive = p.isDefault && model === displayModel;
                   return (
                     <button
                       key={`${p.name}-${model}`}

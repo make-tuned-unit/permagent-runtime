@@ -356,9 +356,9 @@ impl ProviderDef for KimiCodeProvider {
             )],
         )
         .with_setup_steps(vec![
-            "Run `goose configure` and select 'Kimi Code'",
+            "Configure via Settings or run `permagent setup`",
             "A browser window will open — log in to kimi.com and enter the displayed code",
-            "Once authorized, Goose will save your token automatically",
+            "Once authorized, Permagent will save your token automatically",
         ])
     }
 
