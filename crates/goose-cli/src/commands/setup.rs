@@ -245,15 +245,20 @@ pub async fn handle_setup_non_interactive(opts: NonInteractiveOpts) -> Result<()
 
     let provider_name = &opts.provider;
 
-    // Store API key if provided
+    // Store API key if provided and non-empty
     if let Some(ref key) = opts.api_key {
-        let key_name = api_key_name(provider_name);
-        let config = Config::global();
-        match config.set_secret(key_name, key) {
-            Ok(()) => println!("API key stored in system keyring"),
-            Err(_) => {
-                write_secrets_fallback(&permagent_dir, key_name, key)?;
-                println!("API key stored in secrets.yaml (keyring unavailable)");
+        if key.trim().is_empty() {
+            eprintln!("Warning: Empty API key provided, skipping key storage.");
+            eprintln!("Set the key later with: permagent provider key <key>");
+        } else {
+            let key_name = api_key_name(provider_name);
+            let config = Config::global();
+            match config.set_secret(key_name, key) {
+                Ok(()) => println!("API key stored in system keyring"),
+                Err(_) => {
+                    write_secrets_fallback(&permagent_dir, key_name, key)?;
+                    println!("API key stored in secrets.yaml (keyring unavailable)");
+                }
             }
         }
     }
