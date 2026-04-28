@@ -1,0 +1,41 @@
+# Permagent v1.0 Ontology
+#
+# Defines known entities and predicates for Permagent's memory layer.
+# v1.0 scope is chat memory only; v1.1 will add activity-capture concepts
+# (chat_session, skill entity types + associated predicates).
+#
+# [[entity]] entries define known entities the canonicalizer can resolve.
+# [[predicate]] entries define valid (domain, range) relationships.
+# Spectral validates that all domain/range types have at least one entity.
+
+version = 1
+
+# ── Entities ─────────────────────────────────────────────────────────
+
+[[entity]]
+type = "person"
+canonical = "jesse-sharratt"
+aliases = ["Jesse", "Jesse Sharratt", "jesse"]
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "permagent"
+aliases = ["Permagent", "permagent-runtime"]
+visibility = "public"
+
+[[entity]]
+type = "project"
+canonical = "spectral"
+aliases = ["Spectral"]
+visibility = "public"
+
+# ── Predicates ───────────────────────────────────────────────────────
+# v1.0: person ↔ project relationships only.
+# v1.1 will add: discussed_in, uses_skill, mentions_person, mentions_project
+# once chat_session and skill entity types are populated at runtime.
+
+[[predicate]]
+name = "worked_on"
+domain = ["person"]
+range = ["project"]

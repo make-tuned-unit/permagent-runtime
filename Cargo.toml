@@ -84,6 +84,7 @@ opentelemetry-stdout = { version = "0.31", features = ["trace", "metrics", "logs
 tracing-futures = { version = "0.2", features = ["futures-03"] }
 tracing-opentelemetry = "0.32"
 
+spectral = { git = "https://github.com/make-tuned-unit/spectral", branch = "main" }
 rayon = "1.10"
 tree-sitter = "0.26"
 tree-sitter-go = "0.25"
@@ -108,3 +109,18 @@ opentelemetry_sdk = { git = "https://github.com/open-telemetry/opentelemetry-rus
 opentelemetry-appender-tracing = { git = "https://github.com/open-telemetry/opentelemetry-rust", rev = "345cd74a" }
 opentelemetry-otlp = { git = "https://github.com/open-telemetry/opentelemetry-rust", rev = "345cd74a" }
 opentelemetry-stdout = { git = "https://github.com/open-telemetry/opentelemetry-rust", rev = "345cd74a" }
+
+# ============================================================
+# Local Spectral development (uncomment when iterating on Spectral)
+#
+# When working on Spectral's API surface in tandem with Permagent,
+# uncomment the patch below to use a local checkout of Spectral
+# instead of fetching from GitHub. Comment it back out before
+# committing so CI uses the public version.
+#
+# The path must point to crates/spectral within the Spectral
+# workspace, not the Spectral repo root, because cargo patch
+# resolves to the specific package directory.
+# ============================================================
+# [patch."https://github.com/make-tuned-unit/spectral"]
+# spectral = { path = "/Users/jessesharratt/dev/spectral/crates/spectral" }
