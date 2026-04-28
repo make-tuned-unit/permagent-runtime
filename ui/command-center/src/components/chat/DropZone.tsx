@@ -1,16 +1,43 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { FiUpload } from 'react-icons/fi';
+import { registerDropHandler } from '../../lib/native-drag-drop';
 
 interface DropZoneProps {
   onDrop: (files: File[]) => void;
   children: React.ReactNode;
 }
 
+const isTauri = '__TAURI_INTERNALS__' in window;
+
 export function DropZone({ onDrop, children }: DropZoneProps) {
   const [dragging, setDragging] = useState(false);
   const counter = useRef(0);
 
+  // Tauri native drag-drop bridge
+  useEffect(() => {
+    if (!isTauri) return;
+
+    let cancelled = false;
+    let cleanup: (() => void) | null = null;
+
+    registerDropHandler({
+      onEnter: () => { if (!cancelled) setDragging(true); },
+      onLeave: () => { if (!cancelled) setDragging(false); },
+      onDrop: (files) => { if (!cancelled) onDrop(files); },
+    }).then(fn => {
+      if (cancelled) fn();
+      else cleanup = fn;
+    });
+
+    return () => {
+      cancelled = true;
+      cleanup?.();
+    };
+  }, [onDrop]);
+
+  // HTML5 drag-drop handlers (browser fallback)
   const handleDragEnter = useCallback((e: React.DragEvent) => {
+    if (isTauri) return;
     e.preventDefault();
     counter.current++;
     if (e.dataTransfer.types.includes('Files')) {
@@ -19,16 +46,19 @@ export function DropZone({ onDrop, children }: DropZoneProps) {
   }, []);
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
+    if (isTauri) return;
     e.preventDefault();
     counter.current--;
     if (counter.current === 0) setDragging(false);
   }, []);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
+    if (isTauri) return;
     e.preventDefault();
   }, []);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
+    if (isTauri) return;
     e.preventDefault();
     counter.current = 0;
     setDragging(false);

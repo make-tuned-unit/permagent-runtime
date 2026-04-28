@@ -17,6 +17,7 @@ uuid = { version = "1", features = ["v4"] }
 url = "2"
 urlencoding = "2"
 dirs = "5"
+base64 = "0.22"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
