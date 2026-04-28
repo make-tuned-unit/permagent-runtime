@@ -78,3 +78,11 @@ result
 # Goose self-test artifacts
 gooseselftest/
 .tasks/
+
+# Never commit brain data — Spectral brains contain private memory
+.permagent/
+**/.permagent/
+*.db
+memory.db*
+brain.db*
+graph.kz

@@ -114,3 +114,45 @@ fn ontology_loads_without_specific_entities() {
         )
         .expect("memory write should succeed without entities");
 }
+
+#[test]
+#[ignore] // Run explicitly with: cargo test -p permagent --test spectral_smoke -- --ignored --nocapture
+fn opens_migrated_brain_and_recalls() {
+    let brain_path = std::env::var("HOME")
+        .map(|h| std::path::PathBuf::from(h).join(".permagent/brain"))
+        .expect("HOME");
+
+    if !brain_path.exists() {
+        eprintln!("skipping: {} does not exist", brain_path.display());
+        return;
+    }
+
+    let ontology_path = brain_path.join("ontology.toml");
+
+    let brain = Brain::builder()
+        .data_dir(&brain_path)
+        .ontology_path(&ontology_path)
+        .device_id(DeviceId::from_descriptor("permagent-live-brain-test"))
+        .build()
+        .expect("open migrated brain");
+
+    let recall = brain
+        .recall("permagent runtime", Visibility::Private)
+        .expect("recall");
+
+    eprintln!("Recall hits: {}", recall.memory_hits.len());
+    for (i, hit) in recall.memory_hits.iter().take(3).enumerate() {
+        let preview: String = hit
+            .content
+            .chars()
+            .take(80)
+            .collect::<String>()
+            .replace('\n', " ");
+        eprintln!("  {}. score={:.2} {}", i + 1, hit.signal_score, preview);
+    }
+
+    assert!(
+        !recall.memory_hits.is_empty(),
+        "migrated brain returned zero recall hits — schema or version mismatch?"
+    );
+}
