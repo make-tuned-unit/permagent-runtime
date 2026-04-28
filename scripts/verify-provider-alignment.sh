@@ -1,11 +1,9 @@
 #!/bin/bash
 set -e
 
-# Find repo root regardless of where script is invoked from
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR/.."
 
-# Validate prerequisites
 if [ -z "$ANTHROPIC_API_KEY" ]; then
   echo "FAIL: ANTHROPIC_API_KEY not set in environment"
   echo "  export ANTHROPIC_API_KEY=sk-ant-... and re-run"
@@ -18,6 +16,20 @@ if [ ! -x "target/release/permagent" ]; then
   exit 1
 fi
 
+# Helper: wait for daemon /status endpoint to respond
+wait_for_daemon() {
+  local max_attempts=${1:-20}
+  for i in $(seq 1 $max_attempts); do
+    if curl -sf http://localhost:3001/status >/dev/null 2>&1; then
+      echo "daemon ready after ${i}s"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "FAIL: daemon did not become ready after ${max_attempts}s"
+  return 1
+}
+
 echo "=== Cleanup ==="
 pkill -f permagentd 2>/dev/null || true
 rm -rf ~/.permagent
@@ -26,7 +38,7 @@ rm -f ~/Library/LaunchAgents/ai.permagent.daemon.plist
 
 echo "=== Test 1: Setup wizard writes config.yaml correctly ==="
 target/release/permagent setup --non-interactive --provider anthropic --api-key "$ANTHROPIC_API_KEY" --agent-name test
-sleep 5
+wait_for_daemon 20 || exit 1
 
 GOOSE_PROVIDER_VAL=$(grep "^GOOSE_PROVIDER:" ~/.permagent/config.yaml | awk '{print $2}')
 GOOSE_MODEL_VAL=$(grep "^GOOSE_MODEL:" ~/.permagent/config.yaml | awk '{print $2}')
@@ -57,7 +69,7 @@ echo "=== Test 5: launchctl reload preserves state ==="
 launchctl unload ~/Library/LaunchAgents/ai.permagent.daemon.plist
 sleep 2
 launchctl load ~/Library/LaunchAgents/ai.permagent.daemon.plist
-sleep 8
+wait_for_daemon 20 || exit 1
 
 DEFAULT_AFTER_RELOAD=$(curl -s http://localhost:3001/config/providers | python3 -c "import sys,json; data=json.load(sys.stdin); print(','.join(p['name'] for p in data if p.get('is_default')))")
 echo "after launchctl reload, default=$DEFAULT_AFTER_RELOAD"
@@ -80,7 +92,6 @@ if ! echo "$REPLY_RESPONSE" | grep -q "request_id"; then
   exit 1
 fi
 
-# Capture SSE for 15 seconds via background curl + kill (portable, no `timeout` dep)
 sleep 3
 EVENTS_FILE=$(mktemp)
 curl -N -s "http://localhost:3001/sessions/$SID/events" > "$EVENTS_FILE" 2>&1 &
@@ -104,7 +115,6 @@ if [ "$MESSAGE_COUNT" -lt 1 ]; then
   exit 1
 fi
 
-# Show first message content as proof
 FIRST_TEXT=$(echo "$EVENTS" | grep '"type":"Message"' | head -1 | python3 -c "import sys,json,re; line=sys.stdin.read(); match=re.search(r'data: (.*)', line); data=json.loads(match.group(1)); print(data['message']['content'][0].get('text','(no text)'))" 2>/dev/null || echo "(parse failed)")
 echo "First message content: $FIRST_TEXT"
 

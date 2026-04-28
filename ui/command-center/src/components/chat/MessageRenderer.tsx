@@ -26,6 +26,21 @@ export function MessageRenderer({ message, attachments, allImages }: MessageRend
 
   return (
     <>
+      {/* Inline images (base64 from user's attached files) */}
+      {message.images && message.images.length > 0 && (
+        <div className="flex flex-wrap gap-2 mb-2">
+          {message.images.map((img, i) => (
+            <img
+              key={`${message.id}-img-${i}`}
+              src={`data:${img.mimeType};base64,${img.data}`}
+              alt="Attached image"
+              className="rounded-lg shadow-sm border border-slate-700/40 object-contain"
+              style={{ maxWidth: 300, maxHeight: 300 }}
+            />
+          ))}
+        </div>
+      )}
+
       {/* Text content */}
       {message.content && (
         isUser ? (

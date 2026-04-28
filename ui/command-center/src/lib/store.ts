@@ -52,6 +52,11 @@ export interface ToolCall {
   success?: boolean;
 }
 
+export interface ChatMessageImage {
+  data: string;
+  mimeType: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -59,6 +64,7 @@ export interface ChatMessage {
   timestamp: string;
   task_id?: string;
   tool_calls?: ToolCall[];
+  images?: ChatMessageImage[];
 }
 
 export interface SessionState {
@@ -235,6 +241,7 @@ const RECONNECT_MAX_MS = 30000;
 /** Convert a DaemonMessage to a ChatMessage for display */
 function daemonMsgToChat(msg: DaemonMessage, index: number, sessionId: string): ChatMessage {
   const toolCalls: ToolCall[] = [];
+  const images: ChatMessageImage[] = [];
   for (const c of msg.content) {
     if (c.type === 'toolRequest') {
       const tr = c as { type: string; id: string; toolCall?: { name?: string; arguments?: Record<string, unknown> } };
@@ -245,6 +252,11 @@ function daemonMsgToChat(msg: DaemonMessage, index: number, sessionId: string): 
           arguments: call.arguments || {},
         });
       }
+    } else if (c.type === 'image') {
+      const img = c as { type: string; data: string; mimeType: string };
+      if (img.data && img.mimeType) {
+        images.push({ data: img.data, mimeType: img.mimeType });
+      }
     }
   }
 
@@ -254,6 +266,7 @@ function daemonMsgToChat(msg: DaemonMessage, index: number, sessionId: string): 
     content: extractText(msg),
     timestamp: new Date(msg.created * 1000).toISOString(),
     tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+    images: images.length > 0 ? images : undefined,
   };
 }
 
@@ -408,16 +421,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       return;
     }
 
-    // Add user message to chat
-    const userMsg: ChatMessage = {
-      id: `msg-${Date.now()}`,
-      role: 'user',
-      content: text,
-      timestamp: new Date().toISOString(),
-    };
-    set(s => ({ chatMessages: [...s.chatMessages, userMsg] }));
-
-    // Read image files as base64 for vision
+    // Read image files as base64 for vision (before adding user message so we can include thumbnails)
     let images: Array<{ data: string; mime_type: string }> | undefined;
     if (files && files.length > 0) {
       const imageFiles = files.filter(f => f.type.startsWith('image/'));
@@ -441,6 +445,16 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         }
       }
     }
+
+    // Add user message to chat — includes inline images for rendering in the bubble
+    const userMsg: ChatMessage = {
+      id: `msg-${Date.now()}`,
+      role: 'user',
+      content: text,
+      timestamp: new Date().toISOString(),
+      images: images?.map(img => ({ data: img.data, mimeType: img.mime_type })),
+    };
+    set(s => ({ chatMessages: [...s.chatMessages, userMsg] }));
 
     console.log('[send] before api.sendReply — text length:', text.length, 'images count:', images?.length ?? 0);
 
