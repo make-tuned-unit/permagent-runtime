@@ -53,10 +53,10 @@
     "@aaif/goose-binary-win32-x64": "workspace:*"
   },
   "devDependencies": {
-    "@agentclientprotocol/sdk": "^0.14.1",
-    "@hey-api/openapi-ts": "^0.92.3",
+    "@agentclientprotocol/sdk": "^0.20.0",
+    "@hey-api/openapi-ts": "^0.96.1",
     "@types/node": "^20.0.0",
-    "prettier": "^3.8.1",
+    "prettier": "^3.8.3",
     "tsx": "^4.21.0",
     "typescript": "~5.9.3"
   }
