@@ -539,12 +539,12 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       case 'Message': {
         const msg = (data as { type: string; message: DaemonMessage }).message;
         if (msg.role === 'assistant') {
-          const text = extractText(msg);
+          const delta = extractText(msg);
           const streamMsgId = get()._streamingMessageId;
-          if (streamMsgId) {
+          if (streamMsgId && delta) {
             set(s => ({
               chatMessages: s.chatMessages.map(m =>
-                m.id === streamMsgId ? { ...m, content: text } : m
+                m.id === streamMsgId ? { ...m, content: m.content + delta } : m
               ),
             }));
           }
