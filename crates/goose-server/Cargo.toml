@@ -40,6 +40,7 @@ native-tls = [
 [dependencies]
 permagent = { path = "../goose", default-features = false }
 permagent-mcp = { path = "../goose-mcp" }
+spectral = { workspace = true }
 rmcp = { workspace = true }
 axum = { workspace = true, features = ["ws", "macros", "multipart"] }
 tokio = { workspace = true }

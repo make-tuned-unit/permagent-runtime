@@ -30,6 +30,8 @@ pub struct AppState {
     #[cfg(feature = "local-inference")]
     pub inference_runtime: Arc<InferenceRuntime>,
     session_buses: Arc<Mutex<HashMap<String, Arc<SessionEventBus>>>>,
+    /// Spectral Brain handle for long-term memory (recall + remember).
+    pub brain: Option<Arc<spectral::Brain>>,
 }
 
 impl AppState {
@@ -48,6 +50,80 @@ impl AppState {
             tracing::warn!("Failed to initialize TaskLogger — task logging disabled");
         }
 
+        // Mount Spectral Brain for long-term memory.
+        // Brain::builder().build() creates its own tokio runtime internally,
+        // so we must run it off the async executor via spawn_blocking.
+        let brain: Option<Arc<spectral::Brain>> = tokio::task::spawn_blocking(|| {
+            let brain_dir = permagent::config::paths::Paths::brain_dir();
+            let ontology_path = permagent::config::paths::Paths::brain_ontology();
+
+            if !brain_dir.exists() || !ontology_path.exists() {
+                tracing::info!(
+                    target: "permagentd::brain",
+                    "No brain directory at {} — running without long-term memory",
+                    brain_dir.display()
+                );
+                return None;
+            }
+
+            let device_id_str = std::env::var("HOSTNAME")
+                .unwrap_or_else(|_| "permagent-host".into());
+
+            let brain = match spectral::Brain::builder()
+                .data_dir(&brain_dir)
+                .ontology_path(&ontology_path)
+                .device_id(spectral::DeviceId::from_descriptor(&device_id_str))
+                .build()
+            {
+                Ok(b) => {
+                    tracing::info!(
+                        target: "permagentd::brain",
+                        "Brain mounted at {}",
+                        brain_dir.display()
+                    );
+                    Arc::new(b)
+                }
+                Err(e) => {
+                    tracing::error!(
+                        target: "permagentd::brain",
+                        "Brain failed to open at {}: {}",
+                        brain_dir.display(),
+                        e
+                    );
+                    return None;
+                }
+            };
+
+            // Startup health check: verify brain is queryable
+            match brain.recall("permagent", spectral::Visibility::Private) {
+                Ok(result) => {
+                    tracing::info!(
+                        target: "permagentd::brain",
+                        "Brain healthy — recall('permagent') returned {} hits",
+                        result.memory_hits.len()
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "permagentd::brain",
+                        "Brain recall test failed: {}",
+                        e
+                    );
+                }
+            }
+
+            Some(brain)
+        })
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!(
+                target: "permagentd::brain",
+                "Brain spawn_blocking task panicked: {}",
+                e
+            );
+            None
+        });
+
         Ok(Arc::new(Self {
             agent_manager,
             recipe_file_hash_map: Arc::new(Mutex::new(HashMap::new())),
@@ -58,6 +134,7 @@ impl AppState {
             #[cfg(feature = "local-inference")]
             inference_runtime: InferenceRuntime::get_or_init(),
             session_buses: Arc::new(Mutex::new(HashMap::new())),
+            brain,
         }))
     }
 

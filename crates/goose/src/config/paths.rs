@@ -48,4 +48,14 @@ impl Paths {
     pub fn spectral_db() -> PathBuf {
         Self::spectral_dir().join("permagent.db")
     }
+
+    /// Directory for the Spectral Brain (knowledge graph + fingerprint store).
+    pub fn brain_dir() -> PathBuf {
+        Self::base_dir().join("brain")
+    }
+
+    /// Ontology file used by the Spectral Brain.
+    pub fn brain_ontology() -> PathBuf {
+        Self::brain_dir().join("ontology.toml")
+    }
 }

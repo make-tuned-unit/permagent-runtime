@@ -38,6 +38,7 @@ pub fn setup_logging(name: Option<&str>) -> Result<()> {
             .add_directive("mcp_client=info".parse().unwrap())
             .add_directive("goose=info".parse().unwrap())
             .add_directive("goose_server=info".parse().unwrap())
+            .add_directive("permagentd=info".parse().unwrap())
             .add_directive("tower_http=info".parse().unwrap())
             .add_directive(LevelFilter::WARN.into())
     });
