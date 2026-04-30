@@ -25,8 +25,6 @@ pub struct Thread {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ThreadMetadata {
     #[serde(default)]
-    pub persona_id: Option<String>,
-    #[serde(default)]
     pub project_id: Option<String>,
     #[serde(default)]
     pub provider_id: Option<String>,

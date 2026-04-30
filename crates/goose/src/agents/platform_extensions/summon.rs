@@ -65,6 +65,10 @@ pub struct DelegateParams {
     pub max_turns: Option<usize>,
     #[serde(default)]
     pub r#async: bool,
+    /// Optional worker persona key from agent.yaml workers section.
+    /// If set and resolvable, the subagent identifies as this worker.
+    #[serde(default)]
+    pub worker_persona: Option<String>,
 }
 
 pub struct BackgroundTask {
@@ -442,6 +446,10 @@ impl SummonClient {
                     "type": "boolean",
                     "default": false,
                     "description": "Run in background (default: false)."
+                },
+                "worker_persona": {
+                    "type": "string",
+                    "description": "Worker persona key from agent.yaml. If set and found, the subagent identifies as this worker."
                 }
             }
         });
@@ -956,6 +964,14 @@ impl SummonClient {
             .await
             .map_err(|e| format!("Failed to build task config: {}", e))?;
 
+        let persona_override =
+            Self::resolve_worker_persona(params.worker_persona.as_deref());
+        info!(
+            target: "permagentd::brain",
+            "Subagent spawned with worker persona: {}",
+            params.worker_persona.as_deref().unwrap_or("(primary)")
+        );
+
         // Subagents must use Auto until get_agent_messages forwards
         // ActionRequired messages to the parent. Until then, any mode
         // that requires approval will hang on the subagent's confirmation_rx.
@@ -998,6 +1014,7 @@ impl SummonClient {
             cancellation_token: Some(cancellation_token),
             on_message: None,
             notification_tx: Some(notif_tx),
+            persona_override,
         })
         .await;
 
@@ -1016,6 +1033,26 @@ impl SummonClient {
                 e
             ))])
             .with_meta(Some(meta))),
+        }
+    }
+
+    /// Resolve worker_persona key to a (block, display_name) tuple.
+    /// Returns None only when worker_persona is None (no persona injection needed).
+    fn resolve_worker_persona(
+        worker_persona: Option<&str>,
+    ) -> Option<(String, String)> {
+        let worker_key = worker_persona?;
+        let config = crate::config::agent_identity::load_agent_config();
+        if let Some(worker) = config.workers.get(worker_key) {
+            Some((worker.system_prompt_block(), worker.display_name()))
+        } else {
+            tracing::warn!(
+                target: "permagentd::brain",
+                "Worker persona '{}' not found, falling back to primary",
+                worker_key
+            );
+            let primary = &config.primary;
+            Some((primary.system_prompt_block(), primary.display_name()))
         }
     }
 
@@ -1431,6 +1468,14 @@ impl SummonClient {
 
         let description = truncate(&Self::get_task_description(&params), 40);
 
+        let persona_override =
+            Self::resolve_worker_persona(params.worker_persona.as_deref());
+        info!(
+            target: "permagentd::brain",
+            "Subagent spawned with worker persona: {}",
+            params.worker_persona.as_deref().unwrap_or("(primary)")
+        );
+
         // Subagents must use Auto until get_agent_messages forwards
         // ActionRequired messages to the parent. Until then, any mode
         // that requires approval will hang on the subagent's confirmation_rx.
@@ -1490,6 +1535,7 @@ impl SummonClient {
                 cancellation_token: Some(task_token_clone),
                 on_message: Some(on_message),
                 notification_tx: Some(notif_tx),
+                persona_override,
             })
             .await
         });

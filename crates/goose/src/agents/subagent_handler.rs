@@ -43,6 +43,9 @@ pub struct SubagentRunParams {
     pub cancellation_token: Option<CancellationToken>,
     pub on_message: Option<OnMessageCallback>,
     pub notification_tx: Option<tokio::sync::mpsc::UnboundedSender<ServerNotification>>,
+    /// Resolved persona block and display name for the subagent.
+    /// When set, prepended to the subagent's system instructions.
+    pub persona_override: Option<(String, String)>,
 }
 
 pub async fn run_subagent_task(params: SubagentRunParams) -> Result<String, anyhow::Error> {
@@ -129,10 +132,14 @@ fn get_agent_messages(params: SubagentRunParams) -> AgentMessagesFuture {
             cancellation_token,
             on_message,
             notification_tx,
+            persona_override,
             ..
         } = params;
 
-        let system_instructions = recipe.instructions.clone().unwrap_or_default();
+        let mut system_instructions = recipe.instructions.clone().unwrap_or_default();
+        if let Some((ref persona_block, _)) = persona_override {
+            system_instructions = format!("{}\n\n{}", persona_block, system_instructions);
+        }
         let user_task = recipe
             .prompt
             .clone()
