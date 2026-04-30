@@ -137,6 +137,7 @@ pub struct Scheduler {
     storage_path: PathBuf,
     running_tasks: Arc<Mutex<RunningTasksMap>>,
     session_manager: Arc<SessionManager>,
+    brain: Arc<tokio::sync::RwLock<Option<Arc<spectral::Brain>>>>,
 }
 
 impl Scheduler {
@@ -157,6 +158,7 @@ impl Scheduler {
             storage_path,
             running_tasks,
             session_manager,
+            brain: Arc::new(tokio::sync::RwLock::new(None)),
         });
 
         arc_self.load_jobs_from_storage().await;
@@ -174,6 +176,7 @@ impl Scheduler {
         let jobs_arc = self.jobs.clone();
         let storage_path = self.storage_path.clone();
         let running_tasks_arc = self.running_tasks.clone();
+        let brain_arc = self.brain.clone();
 
         let cron_parts: Vec<&str> = job.cron.split_whitespace().collect();
         let cron = match cron_parts.len() {
@@ -204,6 +207,7 @@ impl Scheduler {
             let local_storage_path = storage_path.clone();
             let job_to_execute = job_for_task.clone();
             let running_tasks = running_tasks_arc.clone();
+            let brain_for_task = brain_arc.clone();
 
             Box::pin(async move {
                 let should_execute = {
@@ -238,11 +242,13 @@ impl Scheduler {
                     tasks.insert(task_job_id.clone(), cancel_token.clone());
                 }
 
+                let brain_snapshot = brain_for_task.read().await.clone();
                 let result = execute_job(
                     job_to_execute,
                     current_jobs_arc.clone(),
                     task_job_id.clone(),
                     cancel_token.clone(),
+                    brain_snapshot,
                 )
                 .await;
 
@@ -622,11 +628,13 @@ impl Scheduler {
             tasks.insert(sched_id.to_string(), cancel_token.clone());
         }
 
+        let brain_snapshot = self.brain.read().await.clone();
         let result = execute_job(
             job_to_run,
             self.jobs.clone(),
             sched_id.to_string(),
             cancel_token.clone(),
+            brain_snapshot,
         )
         .await;
 
@@ -785,6 +793,7 @@ async fn execute_job(
     jobs: Arc<Mutex<JobsMap>>,
     job_id: String,
     cancel_token: CancellationToken,
+    brain: Option<Arc<spectral::Brain>>,
 ) -> Result<String> {
     if job.source.is_empty() {
         return Ok(job.id.to_string());
@@ -893,6 +902,71 @@ async fn execute_job(
     let user_message = Message::user().with_text(prompt_text);
     let mut conversation = Conversation::new_unvalidated(vec![user_message.clone()]);
 
+    // ── Phase 3: Recall from brain before scheduled agent invocation ──
+    const RECALL_SCORE_FLOOR: f64 = 0.7;
+    const RECALL_TOP_K: usize = 3;
+
+    if let Some(ref brain_handle) = brain {
+        let brain_clone = brain_handle.clone();
+        let query = prompt_text.to_string();
+        let recall_result = tokio::task::spawn_blocking(move || {
+            brain_clone.recall(&query, spectral::Visibility::Private)
+        })
+        .await;
+
+        match recall_result {
+            Ok(Ok(result)) => {
+                let top_hits: Vec<_> = result
+                    .memory_hits
+                    .iter()
+                    .filter(|hit| hit.signal_score >= RECALL_SCORE_FLOOR)
+                    .take(RECALL_TOP_K)
+                    .collect();
+
+                if !top_hits.is_empty() {
+                    let mut prefix = String::from("Relevant memories from past context:\n");
+                    for hit in &top_hits {
+                        prefix.push_str(&format!("- {}\n", hit.content));
+                    }
+
+                    tracing::info!(
+                        target: "permagentd::brain",
+                        "Recall injected {} memories into system prompt for scheduled job: {}",
+                        top_hits.len(),
+                        job_id
+                    );
+
+                    agent
+                        .extend_system_prompt("memory_recall".to_string(), prefix)
+                        .await;
+                } else {
+                    tracing::debug!(
+                        target: "permagentd::brain",
+                        "Recall returned no hits above {} threshold for scheduled job: {}",
+                        RECALL_SCORE_FLOOR,
+                        job_id
+                    );
+                }
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    "Brain recall failed for scheduled job {}: {}",
+                    job_id,
+                    e
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    "Brain recall spawn_blocking panicked for scheduled job {}: {}",
+                    job_id,
+                    e
+                );
+            }
+        }
+    }
+
     let session_config = SessionConfig {
         id: session.id.clone(),
         schedule_id: Some(job.id.clone()),
@@ -924,6 +998,71 @@ async fn execute_job(
                 stream_error = true;
                 break;
             }
+        }
+    }
+
+    // ── Phase 4: Remember scheduled turn after response completes ──
+    if let Some(ref brain_handle) = brain {
+        let user_text = prompt_text.to_string();
+        let assistant_text = conversation
+            .messages()
+            .iter()
+            .rev()
+            .find(|m| m.role == rmcp::model::Role::Assistant)
+            .map(|m| m.as_concat_text())
+            .unwrap_or_default();
+        let turn_idx = conversation.len();
+
+        if !user_text.is_empty() && !assistant_text.is_empty() {
+            let brain_clone = brain_handle.clone();
+            let remember_job_id = job_id.clone();
+
+            tokio::spawn(async move {
+                let key = format!("scheduled-{}-{}", remember_job_id, turn_idx);
+                let content = format!("User: {}\nAssistant: {}", user_text, assistant_text);
+                let device_id = brain_clone.device_id().clone();
+                let key_for_log = key.clone();
+
+                let result = tokio::task::spawn_blocking(move || {
+                    brain_clone.remember_with(
+                        &key,
+                        &content,
+                        spectral::RememberOpts {
+                            source: Some("scheduled".into()),
+                            device_id: Some(device_id),
+                            confidence: Some(1.0),
+                            visibility: spectral::Visibility::Private,
+                        },
+                    )
+                })
+                .await;
+
+                match result {
+                    Ok(Ok(_)) => {
+                        tracing::info!(
+                            target: "permagentd::brain",
+                            "Remembered scheduled turn: {}",
+                            key_for_log
+                        );
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!(
+                            target: "permagentd::brain",
+                            "Failed to remember scheduled turn {}: {}",
+                            key_for_log,
+                            e
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "permagentd::brain",
+                            "spawn_blocking panicked for scheduled turn {}: {}",
+                            key_for_log,
+                            e
+                        );
+                    }
+                }
+            });
         }
     }
 
@@ -1003,6 +1142,11 @@ async fn execute_job(
 
 #[async_trait]
 impl SchedulerTrait for Scheduler {
+    async fn set_brain(&self, brain: Option<Arc<spectral::Brain>>) {
+        let mut guard = self.brain.write().await;
+        *guard = brain;
+    }
+
     async fn add_scheduled_job(
         &self,
         job: ScheduledJob,

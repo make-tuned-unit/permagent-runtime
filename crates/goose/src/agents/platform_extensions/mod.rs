@@ -226,9 +226,9 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 display_name: "Orchestrator",
                 description:
                     "Manage agent sessions: list, view, start, send messages, interrupt, and stop agents",
-                default_enabled: false,
+                default_enabled: true,
                 unprefixed_tools: false,
-                hidden: true,
+                hidden: false,
                 client_factory: |ctx| Box::new(orchestrator::OrchestratorClient::new(ctx).unwrap()),
             },
         );

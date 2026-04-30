@@ -62,6 +62,7 @@ native-tls = [
 workspace = true
 
 [dependencies]
+spectral = { workspace = true }
 lru = { workspace = true }
 rmcp = { workspace = true, features = [
     "client",

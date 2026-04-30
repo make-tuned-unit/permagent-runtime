@@ -124,6 +124,9 @@ impl AppState {
             None
         });
 
+        // Wire Brain into scheduler so scheduled jobs get recall/remember.
+        agent_manager.scheduler().set_brain(brain.clone()).await;
+
         Ok(Arc::new(Self {
             agent_manager,
             recipe_file_hash_map: Arc::new(Mutex::new(HashMap::new())),
