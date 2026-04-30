@@ -159,6 +159,7 @@ impl Agent {
             paused: false,
             current_session_id: None,
             process_start_time: None,
+            worker_persona: None,
         };
 
         match scheduler.add_scheduled_job(job, true).await {

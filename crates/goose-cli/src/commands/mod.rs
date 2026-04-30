@@ -13,3 +13,4 @@ pub mod session;
 pub mod setup;
 pub mod term;
 pub mod update;
+pub mod worker;

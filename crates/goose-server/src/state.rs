@@ -34,6 +34,8 @@ pub struct AppState {
     pub brain: Option<Arc<spectral::Brain>>,
     /// Shared agent persona (hot-reloaded via RwLock).
     pub persona: permagent::config::agent_identity::SharedPersona,
+    /// Shared full agent config (primary + workers) for worker resolution.
+    pub agent_config: permagent::config::agent_identity::SharedAgentConfig,
 }
 
 impl AppState {
@@ -129,19 +131,25 @@ impl AppState {
         // Wire Brain into scheduler so scheduled jobs get recall/remember.
         agent_manager.scheduler().set_brain(brain.clone()).await;
 
-        // Load agent persona from ~/.permagent/agent.yaml
-        let persona = permagent::config::agent_identity::load_shared_persona();
-        {
-            let p = persona.read().await;
+        // Load agent config (primary + workers) from ~/.permagent/agent.yaml
+        let agent_config = permagent::config::agent_identity::load_shared_agent_config();
+        let persona = {
+            let ac = agent_config.read().await;
             tracing::info!(
                 target: "permagentd::agent",
-                "Agent identity loaded: {}",
-                p.display_name()
+                "Agent identity loaded: {} ({} workers)",
+                ac.primary.display_name(),
+                ac.workers.len()
             );
-        }
+            Arc::new(tokio::sync::RwLock::new(ac.primary.clone()))
+        };
 
-        // Wire persona into scheduler and agent manager for system prompts.
+        // Wire persona and agent config into scheduler and agent manager.
         agent_manager.scheduler().set_persona(persona.clone()).await;
+        agent_manager
+            .scheduler()
+            .set_agent_config(agent_config.clone())
+            .await;
         agent_manager.set_persona(persona.clone()).await;
 
         Ok(Arc::new(Self {
@@ -156,6 +164,7 @@ impl AppState {
             session_buses: Arc::new(Mutex::new(HashMap::new())),
             brain,
             persona,
+            agent_config,
         }))
     }
 

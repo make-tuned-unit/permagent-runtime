@@ -115,6 +115,10 @@ pub struct ScheduledJob {
     pub current_session_id: Option<String>,
     #[serde(default)]
     pub process_start_time: Option<DateTime<Utc>>,
+    /// Worker persona key from agent.yaml workers map.
+    /// When set, the scheduled run uses the worker's identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_persona: Option<String>,
 }
 
 async fn persist_jobs(
@@ -139,6 +143,7 @@ pub struct Scheduler {
     session_manager: Arc<SessionManager>,
     brain: Arc<tokio::sync::RwLock<Option<Arc<spectral::Brain>>>>,
     persona: Arc<tokio::sync::RwLock<Option<crate::config::agent_identity::SharedPersona>>>,
+    agent_config: Arc<tokio::sync::RwLock<Option<crate::config::agent_identity::SharedAgentConfig>>>,
 }
 
 impl Scheduler {
@@ -161,6 +166,7 @@ impl Scheduler {
             session_manager,
             brain: Arc::new(tokio::sync::RwLock::new(None)),
             persona: Arc::new(tokio::sync::RwLock::new(None)),
+            agent_config: Arc::new(tokio::sync::RwLock::new(None)),
         });
 
         arc_self.load_jobs_from_storage().await;
@@ -180,6 +186,7 @@ impl Scheduler {
         let running_tasks_arc = self.running_tasks.clone();
         let brain_arc = self.brain.clone();
         let persona_arc = self.persona.clone();
+        let agent_config_arc = self.agent_config.clone();
 
         let cron_parts: Vec<&str> = job.cron.split_whitespace().collect();
         let cron = match cron_parts.len() {
@@ -212,6 +219,7 @@ impl Scheduler {
             let running_tasks = running_tasks_arc.clone();
             let brain_for_task = brain_arc.clone();
             let persona_for_task = persona_arc.clone();
+            let agent_config_for_task = agent_config_arc.clone();
 
             Box::pin(async move {
                 let should_execute = {
@@ -248,6 +256,7 @@ impl Scheduler {
 
                 let brain_snapshot = brain_for_task.read().await.clone();
                 let persona_snapshot = persona_for_task.read().await.clone();
+                let ac_snapshot = agent_config_for_task.read().await.clone();
                 let result = execute_job(
                     job_to_execute,
                     current_jobs_arc.clone(),
@@ -255,6 +264,7 @@ impl Scheduler {
                     cancel_token.clone(),
                     brain_snapshot,
                     persona_snapshot,
+                    ac_snapshot,
                 )
                 .await;
 
@@ -373,6 +383,7 @@ impl Scheduler {
                         paused: false,
                         current_session_id: None,
                         process_start_time: None,
+                        worker_persona: None,
                     };
                     self.add_scheduled_job(job, false).await
                 }
@@ -636,6 +647,7 @@ impl Scheduler {
 
         let brain_snapshot = self.brain.read().await.clone();
         let persona_snapshot = self.persona.read().await.clone();
+        let ac_snapshot = self.agent_config.read().await.clone();
         let result = execute_job(
             job_to_run,
             self.jobs.clone(),
@@ -643,6 +655,7 @@ impl Scheduler {
             cancel_token.clone(),
             brain_snapshot,
             persona_snapshot,
+            ac_snapshot,
         )
         .await;
 
@@ -803,6 +816,7 @@ async fn execute_job(
     cancel_token: CancellationToken,
     brain: Option<Arc<spectral::Brain>>,
     persona: Option<crate::config::agent_identity::SharedPersona>,
+    agent_config: Option<crate::config::agent_identity::SharedAgentConfig>,
 ) -> Result<String> {
     if job.source.is_empty() {
         return Ok(job.id.to_string());
@@ -826,8 +840,39 @@ async fn execute_job(
 
     let agent = Agent::new();
 
-    // Wire persona into agent's prompt manager for system prompt identity.
-    if let Some(ref p) = persona {
+    // Wire persona into agent: worker persona if specified, else primary.
+    if let Some(ref worker_key) = job.worker_persona {
+        let mut resolved = false;
+        if let Some(ref ac) = agent_config {
+            let guard = ac.read().await;
+            if let Some(worker) = guard.workers.get(worker_key) {
+                agent
+                    .set_persona_block_override(
+                        worker.system_prompt_block(),
+                        worker.display_name(),
+                    )
+                    .await;
+                resolved = true;
+                tracing::info!(
+                    target: "permagentd::brain",
+                    "Scheduled job {} using worker persona: {}",
+                    job_id,
+                    worker_key
+                );
+            }
+        }
+        if !resolved {
+            tracing::warn!(
+                target: "permagentd::brain",
+                "Worker persona '{}' not found for scheduled job {}, falling back to primary",
+                worker_key,
+                job_id
+            );
+            if let Some(ref p) = persona {
+                agent.set_persona(p.clone()).await;
+            }
+        }
+    } else if let Some(ref p) = persona {
         agent.set_persona(p.clone()).await;
     }
 
@@ -1166,6 +1211,11 @@ impl SchedulerTrait for Scheduler {
         *guard = Some(persona);
     }
 
+    async fn set_agent_config(&self, config: crate::config::agent_identity::SharedAgentConfig) {
+        let mut guard = self.agent_config.write().await;
+        *guard = Some(config);
+    }
+
     async fn add_scheduled_job(
         &self,
         job: ScheduledJob,
@@ -1269,6 +1319,7 @@ mod tests {
             paused: false,
             current_session_id: None,
             process_start_time: None,
+            worker_persona: None,
         };
 
         scheduler.add_scheduled_job(job, true).await.unwrap();
@@ -1301,6 +1352,7 @@ mod tests {
             paused: false,
             current_session_id: None,
             process_start_time: None,
+            worker_persona: None,
         };
 
         scheduler.add_scheduled_job(job, true).await.unwrap();
@@ -1340,6 +1392,7 @@ mod tests {
             paused: false,
             current_session_id: None,
             process_start_time: None,
+            worker_persona: None,
         };
 
         // Schedule the job and let it run — should not panic

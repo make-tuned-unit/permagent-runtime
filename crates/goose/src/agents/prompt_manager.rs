@@ -25,6 +25,8 @@ pub struct PromptManager {
     current_date_timestamp: String,
     subdirectory_hint_tracker: SubdirectoryHintTracker,
     persona: Option<crate::config::agent_identity::SharedPersona>,
+    /// Override persona block and display name (used for worker personas).
+    persona_block_override: Option<(String, String)>,
 }
 
 impl Default for PromptManager {
@@ -145,18 +147,24 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
             .extension_tool_count
             .filter(|(extensions, tools)| *extensions > MAX_EXTENSIONS || *tools > MAX_TOOLS);
 
-        // Read persona for system prompt (blocking read — prompt build is sync)
-        let persona = self
-            .manager
-            .persona
-            .as_ref()
-            .and_then(|p| p.try_read().ok())
-            .map(|p| p.clone())
-            .unwrap_or_default();
+        // Read persona for system prompt. Worker override takes precedence.
+        let (persona_block, display_name) =
+            if let Some((ref block, ref name)) = self.manager.persona_block_override {
+                (block.clone(), name.clone())
+            } else {
+                let persona = self
+                    .manager
+                    .persona
+                    .as_ref()
+                    .and_then(|p| p.try_read().ok())
+                    .map(|p| p.clone())
+                    .unwrap_or_default();
+                (persona.system_prompt_block(), persona.display_name())
+            };
 
         let context = SystemPromptContext {
-            agent_persona_block: persona.system_prompt_block(),
-            agent_display_name: persona.display_name(),
+            agent_persona_block: persona_block.clone(),
+            agent_display_name: display_name,
             extensions: sanitized_extensions_info,
             current_date_time: self.manager.current_date_timestamp.clone(),
             extension_tool_limits,
@@ -174,7 +182,7 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
         } else {
             prompt_template::render_template("system.md", &context)
         }
-        .unwrap_or_else(|_| persona.system_prompt_block());
+        .unwrap_or_else(|_| persona_block);
 
         let mut system_prompt_extras = self.manager.system_prompt_extras.clone();
 
@@ -216,6 +224,7 @@ impl PromptManager {
             current_date_timestamp: Utc::now().format("%Y-%m-%d %H:00").to_string(),
             subdirectory_hint_tracker: SubdirectoryHintTracker::new(),
             persona: None,
+            persona_block_override: None,
         }
     }
 
@@ -227,11 +236,16 @@ impl PromptManager {
             current_date_timestamp: dt.format("%Y-%m-%d %H:%M:%S").to_string(),
             subdirectory_hint_tracker: SubdirectoryHintTracker::new(),
             persona: None,
+            persona_block_override: None,
         }
     }
 
     pub fn set_persona(&mut self, persona: crate::config::agent_identity::SharedPersona) {
         self.persona = Some(persona);
+    }
+
+    pub fn set_persona_block_override(&mut self, block: String, display_name: String) {
+        self.persona_block_override = Some((block, display_name));
     }
 
     /// Add an additional instruction to the system prompt with a key

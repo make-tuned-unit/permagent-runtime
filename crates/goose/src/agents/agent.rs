@@ -1858,6 +1858,11 @@ impl Agent {
         prompt_manager.set_persona(persona);
     }
 
+    pub async fn set_persona_block_override(&self, block: String, display_name: String) {
+        let mut prompt_manager = self.prompt_manager.lock().await;
+        prompt_manager.set_persona_block_override(block, display_name);
+    }
+
     pub async fn update_provider(
         &self,
         provider: Arc<dyn Provider>,

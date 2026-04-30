@@ -13,6 +13,8 @@ pub trait SchedulerTrait: Send + Sync {
     async fn set_brain(&self, _brain: Option<Arc<spectral::Brain>>) {}
     /// Set the shared persona for scheduled job system prompts.
     async fn set_persona(&self, _persona: crate::config::agent_identity::SharedPersona) {}
+    /// Set the shared agent config (primary + workers) for worker persona resolution.
+    async fn set_agent_config(&self, _config: crate::config::agent_identity::SharedAgentConfig) {}
     async fn add_scheduled_job(
         &self,
         job: ScheduledJob,

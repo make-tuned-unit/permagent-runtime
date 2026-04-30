@@ -35,6 +35,8 @@ pub struct CreateScheduleRequest {
     id: String,
     recipe: Recipe,
     cron: String,
+    #[serde(default)]
+    worker_persona: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
@@ -143,6 +145,7 @@ async fn create_schedule(
         paused: false,
         current_session_id: None,
         process_start_time: None,
+        worker_persona: req.worker_persona,
     };
 
     let scheduler = state.scheduler();

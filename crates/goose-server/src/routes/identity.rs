@@ -63,9 +63,14 @@ async fn put_identity(
         voice_id: update.voice_id,
     };
 
-    // Persist to disk
+    // Persist to disk (preserve workers from agent_config)
+    let workers = {
+        let ac = state.agent_config.read().await;
+        ac.workers.clone()
+    };
     let config = agent_identity::AgentConfig {
         primary: new_persona.clone(),
+        workers,
     };
     agent_identity::save_agent_config(&config)
         .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -74,7 +79,11 @@ async fn put_identity(
     let response = IdentityResponse::from(&new_persona);
     {
         let mut guard = state.persona.write().await;
-        *guard = new_persona;
+        *guard = new_persona.clone();
+    }
+    {
+        let mut ac = state.agent_config.write().await;
+        ac.primary = new_persona;
     }
 
     tracing::info!(

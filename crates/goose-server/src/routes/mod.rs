@@ -7,6 +7,7 @@ pub mod events;
 pub mod features;
 pub mod gateway;
 pub mod identity;
+pub mod workers;
 #[cfg(feature = "local-inference")]
 pub mod local_inference;
 pub mod prompts;
@@ -55,7 +56,8 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(integrations::routes(state.clone()))
         .merge(workspaces::routes(state.clone()))
         .merge(attachments::routes(state.clone()))
-        .merge(identity::routes(state.clone()));
+        .merge(identity::routes(state.clone()))
+        .merge(workers::routes(state.clone()));
 
     #[cfg(feature = "local-inference")]
     {

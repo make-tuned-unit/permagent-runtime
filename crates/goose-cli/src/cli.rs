@@ -790,6 +790,13 @@ enum Command {
         command: crate::commands::agent::AgentCommand,
     },
 
+    /// Manage worker personas
+    #[command(about = "Manage worker personas", visible_alias = "w")]
+    Worker {
+        #[command(subcommand)]
+        command: crate::commands::worker::WorkerCommand,
+    },
+
     /// Configure goose settings
     #[command(about = "Configure goose settings")]
     Configure {},
@@ -1168,6 +1175,7 @@ pub struct InputConfig {
 fn get_command_name(command: &Option<Command>) -> &'static str {
     match command {
         Some(Command::Agent { .. }) => "agent",
+        Some(Command::Worker { .. }) => "worker",
         Some(Command::Configure {}) => "configure",
         Some(Command::Setup { .. }) => "setup",
         Some(Command::Doctor {}) => "doctor",
@@ -1938,6 +1946,9 @@ pub async fn cli() -> anyhow::Result<()> {
         }
         Some(Command::Agent { command }) => {
             crate::commands::agent::handle_agent_command(command).await
+        }
+        Some(Command::Worker { command }) => {
+            crate::commands::worker::handle_worker_command(command).await
         }
         Some(Command::Configure {}) => handle_configure().await,
         Some(Command::Setup {
