@@ -1,7 +1,6 @@
 mod chat_history_search;
 mod diagnostics;
 pub mod extension_data;
-mod legacy;
 pub mod session_manager;
 pub mod spectral_schema;
 pub mod thread_manager;

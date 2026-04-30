@@ -1,4 +1,4 @@
-use crate::agents::{Agent, AgentConfig, GoosePlatform};
+use crate::agents::{Agent, AgentRunnerConfig, GoosePlatform};
 use crate::config::paths::Paths;
 use crate::config::permission::PermissionManager;
 use crate::config::{Config, GooseMode};
@@ -110,7 +110,7 @@ impl AgentManager {
             info!(goose_mode = %mode, session_id = %session_id, "Session loaded");
         }
 
-        let config = AgentConfig::new(
+        let config = AgentRunnerConfig::new(
             Arc::clone(&self.session_manager),
             permission_manager,
             Some(Arc::clone(&self.scheduler)),

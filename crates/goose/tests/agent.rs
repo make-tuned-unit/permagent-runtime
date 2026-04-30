@@ -15,7 +15,7 @@ mod tests {
         use async_trait::async_trait;
         use chrono::{DateTime, Utc};
         use permagent::agents::platform_tools::PLATFORM_MANAGE_SCHEDULE_TOOL_NAME;
-        use permagent::agents::AgentConfig;
+        use permagent::agents::AgentRunnerConfig;
         use permagent::config::permission::PermissionManager;
         use permagent::config::GooseMode;
         use permagent::scheduler::{ScheduledJob, SchedulerError};
@@ -123,7 +123,7 @@ mod tests {
             let session_manager = Arc::new(SessionManager::new(data_dir.clone()));
             let permission_manager = Arc::new(PermissionManager::new(data_dir));
             let mock_scheduler = Arc::new(MockScheduler::new());
-            let config = AgentConfig::new(
+            let config = AgentRunnerConfig::new(
                 session_manager,
                 permission_manager,
                 Some(mock_scheduler),
@@ -165,7 +165,7 @@ mod tests {
             let session_manager = Arc::new(SessionManager::new(data_dir.clone()));
             let permission_manager = Arc::new(PermissionManager::new(data_dir));
             let mock_scheduler = Arc::new(MockScheduler::new());
-            let config = AgentConfig::new(
+            let config = AgentRunnerConfig::new(
                 session_manager,
                 permission_manager,
                 Some(mock_scheduler),
@@ -220,7 +220,7 @@ mod tests {
             let session_manager = Arc::new(SessionManager::new(data_dir.clone()));
             let permission_manager = Arc::new(PermissionManager::new(data_dir));
             let mock_scheduler = Arc::new(MockScheduler::new());
-            let config = AgentConfig::new(
+            let config = AgentRunnerConfig::new(
                 session_manager,
                 permission_manager,
                 Some(mock_scheduler),
@@ -731,7 +731,7 @@ mod tests {
         use permagent::agents::platform_extensions::{
             MANAGE_EXTENSIONS_TOOL_NAME, SEARCH_AVAILABLE_EXTENSIONS_TOOL_NAME,
         };
-        use permagent::agents::AgentConfig;
+        use permagent::agents::AgentRunnerConfig;
         use permagent::config::permission::PermissionManager;
         use permagent::config::GooseMode;
         use permagent::session::SessionManager;
@@ -758,7 +758,7 @@ mod tests {
             // Create agent with session_id from the start
             let temp_dir = tempfile::tempdir().unwrap();
             let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
-            let config = AgentConfig::new(
+            let config = AgentRunnerConfig::new(
                 session_manager.clone(),
                 PermissionManager::instance(),
                 None,
@@ -825,7 +825,7 @@ mod tests {
     mod streaming_persistence_tests {
         use super::*;
         use async_trait::async_trait;
-        use permagent::agents::{AgentConfig, SessionConfig};
+        use permagent::agents::{AgentRunnerConfig, SessionConfig};
         use permagent::config::permission::PermissionManager;
         use permagent::config::GooseMode;
         use permagent::conversation::message::Message;
@@ -956,7 +956,7 @@ mod tests {
             let cancel_token = CancellationToken::new();
             let temp_dir = tempfile::tempdir()?;
             let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
-            let config = AgentConfig::new(
+            let config = AgentRunnerConfig::new(
                 session_manager.clone(),
                 PermissionManager::instance(),
                 None,

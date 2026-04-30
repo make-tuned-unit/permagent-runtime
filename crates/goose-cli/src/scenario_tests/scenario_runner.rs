@@ -6,7 +6,7 @@ use crate::scenario_tests::mock_client::weather_client;
 use crate::scenario_tests::provider_configs::{get_provider_configs, ProviderConfig};
 use crate::session::CliSession;
 use anyhow::Result;
-use permagent::agents::{Agent, AgentConfig, GoosePlatform};
+use permagent::agents::{Agent, AgentRunnerConfig, GoosePlatform};
 use permagent::config::permission::PermissionManager;
 use permagent::config::GooseMode;
 use permagent::model::ModelConfig;
@@ -208,7 +208,7 @@ where
     let temp_dir = TempDir::new()?;
     let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
     let permission_manager = Arc::new(PermissionManager::new(temp_dir.path().to_path_buf()));
-    let agent_config = AgentConfig::new(
+    let agent_config = AgentRunnerConfig::new(
         session_manager,
         permission_manager,
         None,

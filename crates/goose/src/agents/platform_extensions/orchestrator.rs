@@ -83,9 +83,10 @@ struct StartAgentParams {
     working_dir: String,
     /// Human-readable name for the session
     name: Option<String>,
-    // TODO: add a "model_tier" parameter (e.g. "fast" vs "normal") to let the orchestrator
-    // choose between a fast/cheap model and the default one. For now we inherit the
-    // orchestrator's own provider and model.
+    /// Optional worker persona key from agent.yaml workers section.
+    /// If set and found, the orchestrated agent identifies as this worker.
+    #[serde(default)]
+    worker_persona: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -367,6 +368,10 @@ impl OrchestratorClient {
             .and_then(|v| v.as_str())
             .unwrap_or("Orchestrated Agent")
             .to_string();
+        let worker_persona = args
+            .get("worker_persona")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         let raw_path = PathBuf::from(&working_dir);
         let path = if raw_path.is_absolute() {
@@ -417,6 +422,30 @@ impl OrchestratorClient {
             .update_provider(provider, &session.id)
             .await
             .map_err(|e| format!("Failed to set provider on new agent: {}", e))?;
+
+        // Wire worker persona if specified
+        if let Some(ref worker_key) = worker_persona {
+            let config = crate::config::agent_identity::load_agent_config();
+            if let Some(worker) = config.workers.get(worker_key) {
+                agent
+                    .set_persona_block_override(
+                        worker.system_prompt_block(),
+                        worker.display_name(),
+                    )
+                    .await;
+            } else {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    "Worker persona '{}' not found for orchestrator agent, using primary",
+                    worker_key
+                );
+            }
+        }
+        tracing::info!(
+            target: "permagentd::brain",
+            "Orchestrator agent spawned with worker persona: {}",
+            worker_persona.as_deref().unwrap_or("(primary)")
+        );
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Started agent session '{}' with ID: {}\n\nUse send_message with this session_id to interact with it.",

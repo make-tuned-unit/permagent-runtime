@@ -106,7 +106,7 @@ impl fmt::Display for GoosePlatform {
 }
 
 #[derive(Clone)]
-pub struct AgentConfig {
+pub struct AgentRunnerConfig {
     pub session_manager: Arc<SessionManager>,
     pub permission_manager: Arc<PermissionManager>,
     pub scheduler_service: Option<Arc<dyn SchedulerTrait>>,
@@ -115,7 +115,7 @@ pub struct AgentConfig {
     pub goose_platform: GoosePlatform,
 }
 
-impl AgentConfig {
+impl AgentRunnerConfig {
     pub fn new(
         session_manager: Arc<SessionManager>,
         permission_manager: Arc<PermissionManager>,
@@ -138,7 +138,7 @@ impl AgentConfig {
 /// The main goose Agent
 pub struct Agent {
     pub(super) provider: SharedProvider,
-    pub config: AgentConfig,
+    pub config: AgentRunnerConfig,
     pub(super) current_goose_mode: Mutex<GooseMode>,
 
     pub extension_manager: Arc<ExtensionManager>,
@@ -206,7 +206,7 @@ where
 impl Agent {
     pub fn new() -> Self {
         let config = Config::global();
-        Self::with_config(AgentConfig::new(
+        Self::with_config(AgentRunnerConfig::new(
             Arc::new(SessionManager::instance()),
             PermissionManager::instance(),
             None,
@@ -216,7 +216,7 @@ impl Agent {
         ))
     }
 
-    pub fn with_config(config: AgentConfig) -> Self {
+    pub fn with_config(config: AgentRunnerConfig) -> Self {
         let (tool_tx, tool_rx) = mpsc::channel(32);
         let provider = Arc::new(Mutex::new(None));
 

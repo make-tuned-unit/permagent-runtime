@@ -4,7 +4,7 @@ use crate::agents::mcp_client::{Error, McpClientTrait};
 use crate::agents::subagent_handler::{run_subagent_task, OnMessageCallback, SubagentRunParams};
 use crate::agents::subagent_task_config::{TaskConfig, DEFAULT_SUBAGENT_MAX_TURNS};
 use crate::agents::tool_execution::ToolCallContext;
-use crate::agents::AgentConfig;
+use crate::agents::AgentRunnerConfig;
 use crate::config::paths::Paths;
 use crate::config::{Config, GooseMode};
 use crate::providers;
@@ -975,7 +975,7 @@ impl SummonClient {
         // Subagents must use Auto until get_agent_messages forwards
         // ActionRequired messages to the parent. Until then, any mode
         // that requires approval will hang on the subagent's confirmation_rx.
-        let agent_config = AgentConfig::new(
+        let agent_config = AgentRunnerConfig::new(
             self.context.session_manager.clone(),
             crate::config::permission::PermissionManager::instance(),
             None,
@@ -1479,7 +1479,7 @@ impl SummonClient {
         // Subagents must use Auto until get_agent_messages forwards
         // ActionRequired messages to the parent. Until then, any mode
         // that requires approval will hang on the subagent's confirmation_rx.
-        let agent_config = AgentConfig::new(
+        let agent_config = AgentRunnerConfig::new(
             self.context.session_manager.clone(),
             crate::config::permission::PermissionManager::instance(),
             None,

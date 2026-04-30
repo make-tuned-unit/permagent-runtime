@@ -1,5 +1,5 @@
 use crate::{
-    agents::{subagent_task_config::TaskConfig, Agent, AgentConfig, AgentEvent, SessionConfig},
+    agents::{subagent_task_config::TaskConfig, Agent, AgentRunnerConfig, AgentEvent, SessionConfig},
     conversation::{
         message::{Message, MessageContent},
         Conversation,
@@ -35,7 +35,7 @@ type AgentMessagesFuture =
     Pin<Box<dyn Future<Output = Result<(Conversation, Option<String>)>> + Send>>;
 
 pub struct SubagentRunParams {
-    pub config: AgentConfig,
+    pub config: AgentRunnerConfig,
     pub recipe: Recipe,
     pub task_config: TaskConfig,
     pub return_last_only: bool,
