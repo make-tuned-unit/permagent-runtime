@@ -1,6 +1,7 @@
 pub mod action_required;
 pub mod agent;
 pub mod attachments;
+pub mod brain;
 pub mod config_management;
 pub mod errors;
 pub mod events;
@@ -56,6 +57,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(integrations::routes(state.clone()))
         .merge(workspaces::routes(state.clone()))
         .merge(attachments::routes(state.clone()))
+        .merge(brain::routes(state.clone()))
         .merge(identity::routes(state.clone()))
         .merge(workers::routes(state.clone()));
 
