@@ -25,6 +25,7 @@ pub struct AgentManager {
     default_provider: Arc<RwLock<Option<Arc<dyn crate::providers::base::Provider>>>>,
     default_mode: GooseMode,
     cancel_tokens: Arc<RwLock<HashMap<String, CancellationToken>>>,
+    persona: tokio::sync::RwLock<Option<crate::config::agent_identity::SharedPersona>>,
 }
 
 impl AgentManager {
@@ -46,6 +47,7 @@ impl AgentManager {
             default_provider: Arc::new(RwLock::new(None)),
             default_mode,
             cancel_tokens: Arc::new(RwLock::new(HashMap::new())),
+            persona: tokio::sync::RwLock::new(None),
         };
 
         Ok(manager)
@@ -83,6 +85,10 @@ impl AgentManager {
         &self.session_manager
     }
 
+    pub async fn set_persona(&self, persona: crate::config::agent_identity::SharedPersona) {
+        *self.persona.write().await = Some(persona);
+    }
+
     pub async fn set_default_provider(&self, provider: Arc<dyn crate::providers::base::Provider>) {
         debug!("Setting default provider on AgentManager");
         *self.default_provider.write().await = Some(provider);
@@ -115,6 +121,11 @@ impl AgentManager {
             GoosePlatform::GooseDesktop,
         );
         let agent = Arc::new(Agent::with_config(config));
+
+        // Wire persona into agent's prompt manager.
+        if let Some(ref p) = *self.persona.read().await {
+            agent.set_persona(p.clone()).await;
+        }
 
         if let Ok(session) = self.session_manager.get_session(&session_id, false).await {
             if session.provider_name.is_some() {

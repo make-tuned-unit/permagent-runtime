@@ -1853,6 +1853,11 @@ impl Agent {
         prompt_manager.add_system_prompt_extra(key, instruction);
     }
 
+    pub async fn set_persona(&self, persona: crate::config::agent_identity::SharedPersona) {
+        let mut prompt_manager = self.prompt_manager.lock().await;
+        prompt_manager.set_persona(persona);
+    }
+
     pub async fn update_provider(
         &self,
         provider: Arc<dyn Provider>,

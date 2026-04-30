@@ -32,6 +32,8 @@ pub struct AppState {
     session_buses: Arc<Mutex<HashMap<String, Arc<SessionEventBus>>>>,
     /// Spectral Brain handle for long-term memory (recall + remember).
     pub brain: Option<Arc<spectral::Brain>>,
+    /// Shared agent persona (hot-reloaded via RwLock).
+    pub persona: permagent::config::agent_identity::SharedPersona,
 }
 
 impl AppState {
@@ -127,6 +129,21 @@ impl AppState {
         // Wire Brain into scheduler so scheduled jobs get recall/remember.
         agent_manager.scheduler().set_brain(brain.clone()).await;
 
+        // Load agent persona from ~/.permagent/agent.yaml
+        let persona = permagent::config::agent_identity::load_shared_persona();
+        {
+            let p = persona.read().await;
+            tracing::info!(
+                target: "permagentd::agent",
+                "Agent identity loaded: {}",
+                p.display_name()
+            );
+        }
+
+        // Wire persona into scheduler and agent manager for system prompts.
+        agent_manager.scheduler().set_persona(persona.clone()).await;
+        agent_manager.set_persona(persona.clone()).await;
+
         Ok(Arc::new(Self {
             agent_manager,
             recipe_file_hash_map: Arc::new(Mutex::new(HashMap::new())),
@@ -138,6 +155,7 @@ impl AppState {
             inference_runtime: InferenceRuntime::get_or_init(),
             session_buses: Arc::new(Mutex::new(HashMap::new())),
             brain,
+            persona,
         }))
     }
 

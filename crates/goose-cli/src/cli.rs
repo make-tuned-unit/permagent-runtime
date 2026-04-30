@@ -783,6 +783,13 @@ enum IntegrationsCommand {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Manage agent identity (name, tone, traits)
+    #[command(about = "Manage agent identity", visible_alias = "a")]
+    Agent {
+        #[command(subcommand)]
+        command: crate::commands::agent::AgentCommand,
+    },
+
     /// Configure goose settings
     #[command(about = "Configure goose settings")]
     Configure {},
@@ -1160,6 +1167,7 @@ pub struct InputConfig {
 
 fn get_command_name(command: &Option<Command>) -> &'static str {
     match command {
+        Some(Command::Agent { .. }) => "agent",
         Some(Command::Configure {}) => "configure",
         Some(Command::Setup { .. }) => "setup",
         Some(Command::Doctor {}) => "doctor",
@@ -1927,6 +1935,9 @@ pub async fn cli() -> anyhow::Result<()> {
             let mut cmd = Cli::command();
             generate(shell, &mut cmd, bin_name, &mut std::io::stdout());
             Ok(())
+        }
+        Some(Command::Agent { command }) => {
+            crate::commands::agent::handle_agent_command(command).await
         }
         Some(Command::Configure {}) => handle_configure().await,
         Some(Command::Setup {

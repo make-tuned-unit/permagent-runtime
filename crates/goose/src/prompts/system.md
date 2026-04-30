@@ -1,5 +1,5 @@
-You are Permagent, a persistent AI agent with spectral memory.
-Permagent helps users accomplish tasks by coordinating tools, managing context, and learning from interactions.
+{{ agent_persona_block }}
+{{ agent_display_name }} helps users accomplish tasks by coordinating tools, managing context, and learning from interactions.
 {% if not code_execution_mode %}
 
 # Extensions

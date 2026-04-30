@@ -1,3 +1,4 @@
+pub mod agent_identity;
 pub mod base;
 pub mod declarative_providers;
 mod experiments;

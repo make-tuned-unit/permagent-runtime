@@ -11,6 +11,8 @@ pub trait SchedulerTrait: Send + Sync {
     /// Set the Spectral Brain handle for recall/remember in scheduled jobs.
     /// Default no-op; overridden by Scheduler.
     async fn set_brain(&self, _brain: Option<Arc<spectral::Brain>>) {}
+    /// Set the shared persona for scheduled job system prompts.
+    async fn set_persona(&self, _persona: crate::config::agent_identity::SharedPersona) {}
     async fn add_scheduled_job(
         &self,
         job: ScheduledJob,

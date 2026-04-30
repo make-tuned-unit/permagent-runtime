@@ -24,6 +24,7 @@ pub struct PromptManager {
     system_prompt_extras: IndexMap<String, String>,
     current_date_timestamp: String,
     subdirectory_hint_tracker: SubdirectoryHintTracker,
+    persona: Option<crate::config::agent_identity::SharedPersona>,
 }
 
 impl Default for PromptManager {
@@ -34,6 +35,8 @@ impl Default for PromptManager {
 
 #[derive(Serialize)]
 struct SystemPromptContext {
+    agent_persona_block: String,
+    agent_display_name: String,
     extensions: Vec<ExtensionInfo>,
     current_date_time: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -142,7 +145,18 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
             .extension_tool_count
             .filter(|(extensions, tools)| *extensions > MAX_EXTENSIONS || *tools > MAX_TOOLS);
 
+        // Read persona for system prompt (blocking read — prompt build is sync)
+        let persona = self
+            .manager
+            .persona
+            .as_ref()
+            .and_then(|p| p.try_read().ok())
+            .map(|p| p.clone())
+            .unwrap_or_default();
+
         let context = SystemPromptContext {
+            agent_persona_block: persona.system_prompt_block(),
+            agent_display_name: persona.display_name(),
             extensions: sanitized_extensions_info,
             current_date_time: self.manager.current_date_timestamp.clone(),
             extension_tool_limits,
@@ -160,9 +174,7 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
         } else {
             prompt_template::render_template("system.md", &context)
         }
-        .unwrap_or_else(|_| {
-            "You are Permagent, a persistent AI agent with spectral memory.".to_string()
-        });
+        .unwrap_or_else(|_| persona.system_prompt_block());
 
         let mut system_prompt_extras = self.manager.system_prompt_extras.clone();
 
@@ -201,10 +213,9 @@ impl PromptManager {
         PromptManager {
             system_prompt_override: None,
             system_prompt_extras: IndexMap::new(),
-            // Use the fixed current date time so that prompt cache can be used.
-            // Filtering to an hour to balance user time accuracy and multi session prompt cache hits.
             current_date_timestamp: Utc::now().format("%Y-%m-%d %H:00").to_string(),
             subdirectory_hint_tracker: SubdirectoryHintTracker::new(),
+            persona: None,
         }
     }
 
@@ -215,7 +226,12 @@ impl PromptManager {
             system_prompt_extras: IndexMap::new(),
             current_date_timestamp: dt.format("%Y-%m-%d %H:%M:%S").to_string(),
             subdirectory_hint_tracker: SubdirectoryHintTracker::new(),
+            persona: None,
         }
+    }
+
+    pub fn set_persona(&mut self, persona: crate::config::agent_identity::SharedPersona) {
+        self.persona = Some(persona);
     }
 
     /// Add an additional instruction to the system prompt with a key

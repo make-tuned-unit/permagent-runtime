@@ -138,6 +138,7 @@ pub struct Scheduler {
     running_tasks: Arc<Mutex<RunningTasksMap>>,
     session_manager: Arc<SessionManager>,
     brain: Arc<tokio::sync::RwLock<Option<Arc<spectral::Brain>>>>,
+    persona: Arc<tokio::sync::RwLock<Option<crate::config::agent_identity::SharedPersona>>>,
 }
 
 impl Scheduler {
@@ -159,6 +160,7 @@ impl Scheduler {
             running_tasks,
             session_manager,
             brain: Arc::new(tokio::sync::RwLock::new(None)),
+            persona: Arc::new(tokio::sync::RwLock::new(None)),
         });
 
         arc_self.load_jobs_from_storage().await;
@@ -177,6 +179,7 @@ impl Scheduler {
         let storage_path = self.storage_path.clone();
         let running_tasks_arc = self.running_tasks.clone();
         let brain_arc = self.brain.clone();
+        let persona_arc = self.persona.clone();
 
         let cron_parts: Vec<&str> = job.cron.split_whitespace().collect();
         let cron = match cron_parts.len() {
@@ -208,6 +211,7 @@ impl Scheduler {
             let job_to_execute = job_for_task.clone();
             let running_tasks = running_tasks_arc.clone();
             let brain_for_task = brain_arc.clone();
+            let persona_for_task = persona_arc.clone();
 
             Box::pin(async move {
                 let should_execute = {
@@ -243,12 +247,14 @@ impl Scheduler {
                 }
 
                 let brain_snapshot = brain_for_task.read().await.clone();
+                let persona_snapshot = persona_for_task.read().await.clone();
                 let result = execute_job(
                     job_to_execute,
                     current_jobs_arc.clone(),
                     task_job_id.clone(),
                     cancel_token.clone(),
                     brain_snapshot,
+                    persona_snapshot,
                 )
                 .await;
 
@@ -629,12 +635,14 @@ impl Scheduler {
         }
 
         let brain_snapshot = self.brain.read().await.clone();
+        let persona_snapshot = self.persona.read().await.clone();
         let result = execute_job(
             job_to_run,
             self.jobs.clone(),
             sched_id.to_string(),
             cancel_token.clone(),
             brain_snapshot,
+            persona_snapshot,
         )
         .await;
 
@@ -794,6 +802,7 @@ async fn execute_job(
     job_id: String,
     cancel_token: CancellationToken,
     brain: Option<Arc<spectral::Brain>>,
+    persona: Option<crate::config::agent_identity::SharedPersona>,
 ) -> Result<String> {
     if job.source.is_empty() {
         return Ok(job.id.to_string());
@@ -816,6 +825,11 @@ async fn execute_job(
     };
 
     let agent = Agent::new();
+
+    // Wire persona into agent's prompt manager for system prompt identity.
+    if let Some(ref p) = persona {
+        agent.set_persona(p.clone()).await;
+    }
 
     let config = Config::global();
     let provider_name = config.get_goose_provider()?;
@@ -1145,6 +1159,11 @@ impl SchedulerTrait for Scheduler {
     async fn set_brain(&self, brain: Option<Arc<spectral::Brain>>) {
         let mut guard = self.brain.write().await;
         *guard = brain;
+    }
+
+    async fn set_persona(&self, persona: crate::config::agent_identity::SharedPersona) {
+        let mut guard = self.persona.write().await;
+        *guard = Some(persona);
     }
 
     async fn add_scheduled_job(
