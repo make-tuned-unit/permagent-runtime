@@ -10,6 +10,8 @@ const API_BASE_URL = (
   (isTauri ? 'http://127.0.0.1:3001' : '')
 ).replace(/\/$/, '');
 
+export function getApiBaseUrl(): string { return API_BASE_URL; }
+
 const SECRET_KEY = (import.meta.env.VITE_SECRET_KEY as string | undefined) || '';
 
 // --- Daemon types ---

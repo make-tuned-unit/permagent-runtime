@@ -1,9 +1,11 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useCommandCenter } from './lib/store';
 import { Sidebar } from './components/sidebar/Sidebar';
 import { SettingsView } from './components/settings/SettingsView';
 import { SessionsList } from './components/sessions/SessionsList';
 import { WorkspaceRenderer } from './components/workspaces/WorkspaceRenderer';
+import { WizardShell } from './components/wizard/WizardShell';
+import { api } from './lib/api';
 
 function MainContent() {
   const activePanel = useCommandCenter(s => s.activePanel);
@@ -41,13 +43,25 @@ function App() {
   const loadWorkspaces = useCommandCenter(s => s.loadWorkspaces);
   const loadSkills = useCommandCenter(s => s.loadSkills);
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
-
   const activePanel = useCommandCenter(s => s.activePanel);
 
+  const [wizardCheck, setWizardCheck] = useState<'loading' | 'wizard' | 'app'>('loading');
+
   useEffect(() => {
-    loadWorkspaces();
-    loadSkills();
-  }, [loadWorkspaces, loadSkills]);
+    api.getConfig()
+      .then((config: any) => {
+        const wizardDone = config?.config?.wizard_complete === true;
+        setWizardCheck(wizardDone ? 'app' : 'wizard');
+      })
+      .catch(() => setWizardCheck('wizard'));
+  }, []);
+
+  useEffect(() => {
+    if (wizardCheck === 'app') {
+      loadWorkspaces();
+      loadSkills();
+    }
+  }, [wizardCheck, loadWorkspaces, loadSkills]);
 
   // Reset activePanel from 'settings' when workspace loads
   // so workspaces render by default
@@ -66,6 +80,14 @@ function App() {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [setActivePanel, activePanel]);
+
+  if (wizardCheck === 'loading') {
+    return <div style={{ background: '#0B1220', width: '100vw', height: '100vh' }} />;
+  }
+
+  if (wizardCheck === 'wizard') {
+    return <WizardShell onComplete={() => { setWizardCheck('app'); loadWorkspaces(); loadSkills(); }} />;
+  }
 
   return (
     <div className="flex h-screen bg-[#0B1120]">
