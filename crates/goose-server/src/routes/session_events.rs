@@ -291,6 +291,45 @@ pub async fn session_reply(
         .await
         .map_err(|_| ErrorResponse::not_found(format!("Session {} not found", session_id)))?;
 
+    // Sync session provider/model with current global config so stale
+    // sessions (created under a previous provider) pick up the user's
+    // latest Settings choice.
+    {
+        let config = permagent::config::Config::global();
+        let current_provider = config.get_goose_provider().ok();
+        let current_model = config.get_goose_model().ok();
+
+        let provider_stale =
+            current_provider.is_some() && current_provider.as_deref() != session_data.provider_name.as_deref();
+        let model_stale = current_model.is_some()
+            && current_model.as_deref()
+                != session_data.model_config.as_ref().map(|m| m.model_name.as_str());
+
+        if provider_stale || model_stale {
+            let mut update = state.session_manager().update(&session_id);
+            if let Some(ref provider) = current_provider {
+                update = update.provider_name(provider.clone());
+            }
+            if let Some(ref model_name) = current_model {
+                if let Ok(mc) = permagent::model::ModelConfig::new(model_name) {
+                    update = update.model_config(mc);
+                }
+            }
+            if let Err(e) = update.apply().await {
+                tracing::warn!("Failed to sync session provider: {}", e);
+            } else {
+                tracing::info!(
+                    "Synced session {} provider {:?} -> {:?}",
+                    session_id,
+                    session_data.provider_name,
+                    current_provider
+                );
+                // Evict cached agent so it gets recreated with the new provider
+                let _ = state.agent_manager.remove_session(&session_id).await;
+            }
+        }
+    }
+
     let session_start = std::time::Instant::now();
 
     tracing::info!(
