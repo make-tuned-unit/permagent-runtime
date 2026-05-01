@@ -3,10 +3,11 @@
  * Aligned with the actual permagentd endpoints.
  */
 
+const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 const API_BASE_URL = (
   (import.meta.env.VITE_DAEMON_URL as string | undefined) ||
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ||
-  ""
+  (isTauri ? 'http://127.0.0.1:3001' : '')
 ).replace(/\/$/, '');
 
 const SECRET_KEY = (import.meta.env.VITE_SECRET_KEY as string | undefined) || '';
