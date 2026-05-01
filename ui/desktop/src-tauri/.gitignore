@@ -1,0 +1,8 @@
+# Build artifacts
+target/
+
+# Sidecar binaries (built, not committed — 200MB+)
+binaries/permagentd-*
+
+# Node
+node_modules/

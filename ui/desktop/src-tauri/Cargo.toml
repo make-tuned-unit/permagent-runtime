@@ -1,0 +1,24 @@
+[package]
+name = "permagent-app"
+version = "1.31.0"
+edition = "2021"
+description = "Permagent desktop application"
+authors = ["Jesse Sharratt"]
+license = "Apache-2.0"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json"], default-features = false, optional = true }
+tokio = { version = "1", features = ["time"], optional = true }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+sidecar = ["reqwest", "tokio"]
