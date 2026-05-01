@@ -273,7 +273,7 @@ pub fn load_hint_files(
 
     let mut hints = String::new();
     if !global_hints_contents.is_empty() {
-        hints.push_str("\n### Global Hints\nThese are my global goose hints.\n");
+        hints.push_str("\n### Global Hints\nThese are my global hints.\n");
         hints.push_str(&global_hints_contents.join("\n"));
     }
 

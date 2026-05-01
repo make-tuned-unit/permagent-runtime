@@ -229,7 +229,7 @@ async fn try_other_providers(skip: &str, log: &mut Vec<String>) -> Option<Arc<dy
 fn describe_error(e: &ProviderError) -> String {
     match e {
         ProviderError::Authentication(_) => {
-            "Authentication failed — check your API key. Run `goose configure` to update it."
+            "Authentication failed — check your API key in Settings > Integrations."
                 .to_string()
         }
         ProviderError::CreditsExhausted { top_up_url, .. } => {

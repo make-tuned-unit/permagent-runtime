@@ -92,8 +92,8 @@ impl MemoryServer {
              This extension stores and retrieves categorized information with tagging support.
 
              Storage:
-             - Local: .goose/memory/ (project-specific)
-             - Global: ~/.config/goose/memory/ (user-wide)
+             - Local: .permagent/memory/ (project-specific)
+             - Global: ~/.config/permagent/memory/ (user-wide)
 
              Save proactively when users share preferences, project configurations, workflow patterns,
              or recurring commands. Always confirm with the user before saving. Suggest relevant
@@ -457,7 +457,7 @@ impl ServerHandler for MemoryServer {
     fn get_info(&self) -> ServerInfo {
         InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new(
-                "goose-memory",
+                "permagent-memory",
                 env!("CARGO_PKG_VERSION"),
             ))
             .with_instructions(self.instructions.clone())

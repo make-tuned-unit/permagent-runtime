@@ -643,7 +643,7 @@ impl ServerHandler for AutoVisualiserRouter {
                 .build(),
         )
         .with_server_info(Implementation::new(
-            "goose-autovisualiser",
+            "permagent-autovisualiser",
             env!("CARGO_PKG_VERSION"),
         ))
         .with_instructions(self.instructions.clone())

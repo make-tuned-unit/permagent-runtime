@@ -40,7 +40,7 @@ impl TutorialServer {
         let available_tutorials = Self::get_available_tutorials();
 
         let instructions = formatdoc! {r#"
-            Because the tutorial extension is enabled, be aware that the user may be new to using goose
+            Because the tutorial extension is enabled, be aware that the user may be new to using Permagent
             or looking for help with specific features. Proactively offer relevant tutorials when appropriate.
 
             Available tutorials:
@@ -111,7 +111,7 @@ impl ServerHandler for TutorialServer {
     fn get_info(&self) -> ServerInfo {
         InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new(
-                "goose-tutorial",
+                "permagent-tutorial",
                 env!("CARGO_PKG_VERSION"),
             ))
             .with_instructions(self.instructions.clone())
@@ -134,7 +134,7 @@ mod tests {
         let server = TutorialServer::new();
         let info = server.get_info();
 
-        assert_eq!(info.server_info.name, "goose-tutorial");
+        assert_eq!(info.server_info.name, "permagent-tutorial");
         assert!(info.instructions.is_some());
         assert!(info
             .instructions

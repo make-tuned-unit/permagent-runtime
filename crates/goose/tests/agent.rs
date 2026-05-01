@@ -746,7 +746,7 @@ mod tests {
                 config: ExtensionConfig::Platform {
                     name: "todo".to_string(),
                     description:
-                        "Enable a todo list for goose so it can keep track of what it is doing"
+                        "Enable a todo list for the agent so it can keep track of what it is doing"
                             .to_string(),
                     display_name: Some("Todo".to_string()),
                     bundled: Some(true),
