@@ -56,7 +56,7 @@ export function MomentWelcome({ onAdvance }: Props) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', position: 'relative' }}>
       <Particles density={24} />
-      <Mobius size={220} state="idle" />
+      <Mobius size={160} state="idle" />
 
       <h1 style={{ fontFamily: font.display, fontSize: 32, fontWeight: 700, color: color.text, margin: '32px 0 10px', letterSpacing: '-0.02em' }}>
         Welcome to Permagent

@@ -23,7 +23,7 @@ export function MomentCalibration({ onAdvance }: Props) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', position: 'relative' }}>
       <Particles density={16} />
-      <Mobius size={180} state={selected ? 'idle' : 'calibrating'} />
+      <Mobius size={140} state={selected ? 'idle' : 'calibrating'} />
 
       <h1 style={{ fontFamily: font.display, fontSize: 28, fontWeight: 700, color: color.text, margin: '28px 0 8px', letterSpacing: '-0.02em' }}>
         How should your agent think?

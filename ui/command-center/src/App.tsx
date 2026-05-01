@@ -5,6 +5,7 @@ import { SettingsView } from './components/settings/SettingsView';
 import { SessionsList } from './components/sessions/SessionsList';
 import { WorkspaceRenderer } from './components/workspaces/WorkspaceRenderer';
 import { WizardShell } from './components/wizard/WizardShell';
+import { Splash } from './components/splash/Splash';
 import { api } from './lib/api';
 
 function MainContent() {
@@ -45,23 +46,24 @@ function App() {
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
   const activePanel = useCommandCenter(s => s.activePanel);
 
-  const [wizardCheck, setWizardCheck] = useState<'loading' | 'wizard' | 'app'>('loading');
+  const [phase, setPhase] = useState<'splash' | 'loading' | 'wizard' | 'app'>('splash');
 
   useEffect(() => {
+    if (phase !== 'loading') return;
     api.getConfig()
       .then((config: any) => {
         const wizardDone = config?.config?.wizard_complete === true;
-        setWizardCheck(wizardDone ? 'app' : 'wizard');
+        setPhase(wizardDone ? 'app' : 'wizard');
       })
-      .catch(() => setWizardCheck('wizard'));
-  }, []);
+      .catch(() => setPhase('wizard'));
+  }, [phase]);
 
   useEffect(() => {
-    if (wizardCheck === 'app') {
+    if (phase === 'app') {
       loadWorkspaces();
       loadSkills();
     }
-  }, [wizardCheck, loadWorkspaces, loadSkills]);
+  }, [phase, loadWorkspaces, loadSkills]);
 
   // Reset activePanel from 'settings' when workspace loads
   // so workspaces render by default
@@ -81,12 +83,16 @@ function App() {
     return () => window.removeEventListener('keydown', handler);
   }, [setActivePanel, activePanel]);
 
-  if (wizardCheck === 'loading') {
+  if (phase === 'splash') {
+    return <Splash onDone={() => setPhase('loading')} />;
+  }
+
+  if (phase === 'loading') {
     return <div style={{ background: '#0B1220', width: '100vw', height: '100vh' }} />;
   }
 
-  if (wizardCheck === 'wizard') {
-    return <WizardShell onComplete={() => { setWizardCheck('app'); loadWorkspaces(); loadSkills(); }} />;
+  if (phase === 'wizard') {
+    return <WizardShell onComplete={() => { setPhase('app'); loadWorkspaces(); loadSkills(); }} />;
   }
 
   return (
