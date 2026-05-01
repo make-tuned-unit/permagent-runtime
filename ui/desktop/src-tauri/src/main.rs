@@ -2,8 +2,10 @@
 
 use tauri::Manager;
 
+mod browser;
 mod daemon;
 mod menu;
+mod terminal;
 
 fn main() {
     let builder = tauri::Builder::default()
@@ -14,6 +16,19 @@ fn main() {
                 let _ = w.set_focus();
             }
         }))
+        .manage(terminal::PtySessions::new())
+        .manage(browser::BrowserSessions::new())
+        .invoke_handler(tauri::generate_handler![
+            terminal::spawn_pty_session,
+            terminal::write_to_pty,
+            terminal::resize_pty,
+            terminal::kill_pty,
+            browser::create_browser_webview,
+            browser::navigate_browser,
+            browser::update_browser_bounds,
+            browser::hide_browser,
+            browser::close_browser,
+        ])
         .setup(|app| {
             daemon::start_daemon(app.handle())?;
             Ok(())

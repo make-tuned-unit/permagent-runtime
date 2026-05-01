@@ -26,7 +26,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' http://localhost:3001 http://127.0.0.1:3001 ws://localhost:3001 ws://127.0.0.1:3001; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://rsms.me https://api.fontshare.com; font-src 'self' https://rsms.me https://api.fontshare.com; img-src 'self' data: blob: http://localhost:3001 http://127.0.0.1:3001"
+      "csp": "default-src 'self'; connect-src 'self' http://localhost:3001 http://127.0.0.1:3001 ws://localhost:3001 ws://127.0.0.1:3001; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://rsms.me https://api.fontshare.com; font-src 'self' https://rsms.me https://api.fontshare.com; img-src 'self' data: blob: http://localhost:3001 http://127.0.0.1:3001; frame-src 'self' https: http:"
     }
   },
   "bundle": {
