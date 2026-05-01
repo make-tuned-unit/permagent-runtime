@@ -52,7 +52,7 @@ export function Splash({ onDone }: Props) {
         textTransform: 'uppercase', marginTop: 28,
         opacity: 0.7,
       }}>
-        Persistent Intelligence
+        Built to grow with you. Forever.
       </p>
 
       <style>{`
