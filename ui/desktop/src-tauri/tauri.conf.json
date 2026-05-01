@@ -2,12 +2,12 @@
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-config-schema/schema.json",
   "productName": "Permagent",
   "version": "1.31.0",
-  "identifier": "ai.permagent.app",
+  "identifier": "ai.permagent.desktop",
   "build": {
     "frontendDist": "../../command-center/dist",
     "devUrl": "http://localhost:5273",
-    "beforeBuildCommand": "",
-    "beforeDevCommand": "cd ../../command-center && npm run dev"
+    "beforeBuildCommand": "cd ../command-center && npm run build",
+    "beforeDevCommand": "cd ../command-center && npm run dev"
   },
   "app": {
     "withGlobalTauri": true,
