@@ -47,7 +47,7 @@ export function MomentChat({ persona, onComplete }: Props) {
         display: 'flex', alignItems: 'center', gap: 14, padding: '18px 24px',
         borderBottom: '1px solid rgba(255,255,255,0.06)',
       }}>
-        <Mobius size={36} state={isSpeaking ? 'speaking' : 'idle'} logoMode />
+        <Mobius size={29} state={isSpeaking ? 'speaking' : 'idle'} logoMode />
         <div>
           <div style={{ fontFamily: font.display, fontSize: 16, fontWeight: 700, color: color.text }}>
             {persona.name}

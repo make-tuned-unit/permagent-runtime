@@ -46,12 +46,13 @@ export function Mobius({
     }
   }, []);
 
-  // rAF-driven frame cycling
+  // rAF-driven frame cycling — always start from frame 0
   useEffect(() => {
     if (!isAnimated || fps === 0) {
       setFrame(0);
       return;
     }
+    setFrame(0); // reset to start on every state change
     const interval = 1000 / fps;
     const tick = (now: number) => {
       if (now - lastTime.current >= interval) {

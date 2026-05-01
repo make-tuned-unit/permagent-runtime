@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { color, font, ease } from '../../styles/tokens';
+import { Mobius } from '../mobius/Mobius';
 
 interface Props {
   onDone: () => void;
@@ -33,19 +34,8 @@ export function Splash({ onDone }: Props) {
         transition: `opacity 400ms ${ease.out}`,
       }}
     >
-      {/* Logo */}
-      <img
-        src="/mobius/logo.webp"
-        alt="Permagent"
-        draggable={false}
-        style={{
-          width: 420, height: 'auto',
-          filter: 'drop-shadow(0 0 24px rgba(0,213,255,0.35))',
-          animation: 'splash-pulse 2.4s ease-in-out infinite',
-        }}
-      />
+      <Mobius size={200} state="thinking" glow={1} />
 
-      {/* Tagline */}
       <p style={{
         fontFamily: font.display, fontSize: 15, fontWeight: 600,
         color: color.textMuted, letterSpacing: '0.08em',
@@ -54,13 +44,6 @@ export function Splash({ onDone }: Props) {
       }}>
         Built to grow with you. Forever.
       </p>
-
-      <style>{`
-        @keyframes splash-pulse {
-          0%, 100% { filter: drop-shadow(0 0 24px rgba(0,213,255,0.35)); }
-          50% { filter: drop-shadow(0 0 40px rgba(0,213,255,0.55)); }
-        }
-      `}</style>
     </div>
   );
 }
