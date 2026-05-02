@@ -8,10 +8,14 @@ interface Props {
 
 export function Splash({ onDone }: Props) {
   const [phase, setPhase] = useState<'in' | 'out'>('in');
+  const [showLine1, setShowLine1] = useState(false);
+  const [showLine2, setShowLine2] = useState(false);
 
   useEffect(() => {
-    const timer = setTimeout(() => setPhase('out'), 1800);
-    return () => clearTimeout(timer);
+    const t1 = setTimeout(() => setShowLine1(true), 600);
+    const t2 = setTimeout(() => setShowLine2(true), 2400);
+    const t3 = setTimeout(() => setPhase('out'), 5000);
+    return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
   }, []);
 
   useEffect(() => {
@@ -42,7 +46,24 @@ export function Splash({ onDone }: Props) {
         textTransform: 'uppercase', marginTop: 28,
         opacity: 0.7,
       }}>
-        Built to grow with you. Forever.
+        <span style={{
+          opacity: showLine1 ? 1 : 0,
+          transform: showLine1 ? 'translateY(0)' : 'translateY(8px)',
+          transition: `opacity 800ms ${ease.out}, transform 800ms ${ease.out}`,
+          display: 'inline-block',
+        }}>
+          Built to grow with you
+        </span>
+        {' '}
+        <span style={{
+          opacity: showLine2 ? 1 : 0,
+          transform: showLine2 ? 'translateY(0)' : 'translateY(8px)',
+          transition: `opacity 800ms ${ease.spring}, transform 800ms ${ease.spring}`,
+          display: 'inline-block',
+          textShadow: showLine2 ? '0 0 20px rgba(0,213,255,0.3)' : 'none',
+        }}>
+          Forever.
+        </span>
       </p>
     </div>
   );
