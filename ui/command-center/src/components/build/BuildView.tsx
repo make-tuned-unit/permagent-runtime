@@ -6,6 +6,8 @@ import { useCommandCenter } from '../../lib/store';
 import { MessageList } from '../chat/MessageList';
 import { ChatInput } from '../chat/ChatInput';
 import type { ChatInputHandle } from '../chat/ChatInput';
+import { TerminalManager } from '../terminal/TerminalManager';
+import { Browser } from '../browser';
 
 // ── Atoms ────────────────────────────────────────────────────────────
 
@@ -23,125 +25,6 @@ const primaryBtn: React.CSSProperties = {
   fontFamily: font.body, fontSize: 12, fontWeight: 600,
   cursor: 'pointer', boxShadow: `0 0 14px ${color.cyanGlow}`,
 };
-
-// ── Terminal mock ────────────────────────────────────────────────────
-
-function BuildTerminal() {
-  const lines: Array<{ p?: string; c?: string; t: string; muted?: boolean; sp?: boolean; tone?: string }> = [
-    { p: '~/permagent', c: '$ ', t: 'cargo run --bin server', muted: false },
-    { t: '   Compiling permagent v0.4.2', muted: true },
-    { t: '    Finished `dev` profile', muted: true },
-    { t: '     Running `target/debug/server`', muted: true },
-    { t: '', sp: true },
-    { t: '[09:14:02] server listening on :7878', tone: '#5BD17F' },
-    { t: '[09:14:02] memory store: 218 nodes', muted: true },
-    { t: '[09:14:03] mcp/notion connected', tone: color.cyan },
-    { t: '[09:14:03] mcp/stripe connected', tone: color.cyan },
-    { t: '[09:14:04] mcp/github connected', tone: color.cyan },
-  ];
-
-  return (
-    <div style={{
-      height: '100%', display: 'flex', flexDirection: 'column',
-      background: '#070B14', borderRadius: radius.md, overflow: 'hidden',
-      border: `1px solid ${color.border}`,
-    }}>
-      <div style={{
-        height: 32, display: 'flex', alignItems: 'flex-end',
-        background: 'rgba(11,18,32,0.7)', paddingLeft: 8, paddingRight: 8,
-        borderBottom: `1px solid ${color.border}`,
-      }}>
-        {['zsh — server', 'logs'].map((l, i) => (
-          <div key={l} style={{
-            height: 28, display: 'flex', alignItems: 'center', gap: 8,
-            padding: '0 12px', borderRadius: '6px 6px 0 0',
-            background: i === 0 ? '#070B14' : 'transparent',
-            borderTop: i === 0 ? `1px solid ${color.border}` : 'none',
-            borderLeft: i === 0 ? `1px solid ${color.border}` : 'none',
-            borderRight: i === 0 ? `1px solid ${color.border}` : 'none',
-            fontSize: 11, color: i === 0 ? color.text : color.textMuted,
-            cursor: 'pointer', position: 'relative', top: 1,
-          }}>
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round">
-              <path d="M5 8l4 4-4 4M11 16h7" /></svg>
-            {l}
-          </div>
-        ))}
-        <div style={{ flex: 1 }} />
-        <div style={{ alignSelf: 'center', padding: '0 8px', fontSize: 10, color: color.textDim, fontFamily: font.mono }}>~/permagent</div>
-      </div>
-      <div style={{
-        flex: 1, padding: '12px 14px',
-        fontFamily: font.mono, fontSize: 11.5, lineHeight: 1.7,
-        overflow: 'auto', color: 'rgba(255,255,255,0.85)',
-      }}>
-        {lines.map((ln, i) => (
-          <div key={i} style={{
-            color: ln.muted ? color.textMuted : ('tone' in ln && ln.tone) || 'inherit',
-            minHeight: ('sp' in ln && ln.sp) ? 8 : 'auto',
-          }}>
-            {'p' in ln && ln.p && (<>
-              <span style={{ color: '#5BD17F' }}>{ln.p}</span>
-              <span style={{ color: color.textMuted }}>{'c' in ln && ln.c}</span>
-            </>)}
-            {ln.t}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ── Browser mock ─────────────────────────────────────────────────────
-
-function BuildBrowser() {
-  return (
-    <div style={{
-      height: '100%', display: 'flex', flexDirection: 'column',
-      background: '#1A1F2E', borderRadius: radius.md, overflow: 'hidden',
-      border: `1px solid ${color.border}`,
-    }}>
-      <div style={{
-        height: 38, display: 'flex', alignItems: 'center', gap: 10,
-        padding: '0 12px', background: 'rgba(11,18,32,0.7)',
-        borderBottom: `1px solid ${color.border}`,
-      }}>
-        <div style={{ display: 'flex', gap: 6 }}>
-          {['M15 18l-6-6 6-6', 'M9 6l6 6-6 6'].map((d, i) => (
-            <button key={i} style={{
-              width: 22, height: 22, display: 'grid', placeItems: 'center',
-              border: 'none', borderRadius: 5, background: 'transparent',
-              color: color.text, cursor: 'pointer',
-            }}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-                <path d={d} /></svg>
-            </button>
-          ))}
-        </div>
-        <div style={{
-          flex: 1, height: 24, padding: '0 10px',
-          display: 'flex', alignItems: 'center', gap: 8,
-          background: 'rgba(7,11,20,0.6)', borderRadius: 6,
-          border: `1px solid ${color.border}`,
-          fontFamily: font.mono, fontSize: 11, color: color.textMuted,
-        }}>
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={color.cyan} strokeWidth={2} strokeLinecap="round">
-            <path d="M12 2a10 10 0 100 20 10 10 0 000-20zM2 12h20" /></svg>
-          <span style={{ color: color.textDim }}>No page loaded</span>
-        </div>
-      </div>
-      <div style={{
-        flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
-        background: 'linear-gradient(180deg, #181E2C, #0F1421)',
-      }}>
-        <div style={{ textAlign: 'center' }}>
-          <div style={{ fontSize: 12, color: color.textDim }}>Browser ready</div>
-          <div style={{ fontSize: 11, color: color.textDim, marginTop: 4 }}>Agent will open pages here when browsing</div>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 // ── Build View ───────────────────────────────────────────────────────
 
@@ -234,8 +117,12 @@ export function BuildView() {
         display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14,
         height: 360, flexShrink: 0,
       }}>
-        <BuildTerminal />
-        <BuildBrowser />
+        <div style={{ borderRadius: radius.md, overflow: 'hidden', border: `1px solid ${color.border}` }}>
+          <TerminalManager />
+        </div>
+        <div style={{ borderRadius: radius.md, overflow: 'hidden', border: `1px solid ${color.border}` }}>
+          <Browser />
+        </div>
       </div>
 
       {/* Chat row */}
