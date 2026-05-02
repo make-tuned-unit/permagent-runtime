@@ -142,26 +142,28 @@ export function BuildView() {
 
           {/* Bottom: chat */}
           <Panel id="build-chat" defaultSize={45} minSize={15}>
-            <div style={{
-              height: '100%', margin: '6px 18px 12px',
-              borderRadius: radius.md,
-              background: 'rgba(20,28,48,0.45)',
-              border: `1px solid ${color.border}`,
-              display: 'flex', flexDirection: 'column',
-              backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)',
-              overflow: 'hidden',
-            }}>
+            <div style={{ height: '100%', padding: '6px 18px 12px', display: 'flex', flexDirection: 'column' }}>
               <div style={{
-                padding: '10px 18px', display: 'flex', alignItems: 'center', gap: 10,
-                borderBottom: `1px solid ${color.border}`, flexShrink: 0,
+                flex: 1, minHeight: 0,
+                borderRadius: radius.md,
+                background: 'rgba(20,28,48,0.45)',
+                border: `1px solid ${color.border}`,
+                display: 'flex', flexDirection: 'column',
+                backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)',
+                overflow: 'hidden',
               }}>
-                <div style={{ fontSize: 12, fontWeight: 600 }}>Conversation</div>
-                <div style={{ flex: 1 }} />
+                <div style={{
+                  padding: '10px 18px', display: 'flex', alignItems: 'center', gap: 10,
+                  borderBottom: `1px solid ${color.border}`, flexShrink: 0,
+                }}>
+                  <div style={{ fontSize: 12, fontWeight: 600 }}>Conversation</div>
+                  <div style={{ flex: 1 }} />
+                </div>
+                <div style={{ flex: 1, minHeight: 0 }}>
+                  <MessageList />
+                </div>
+                <ChatInput ref={chatInputRef} />
               </div>
-              <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-                <MessageList />
-              </div>
-              <ChatInput ref={chatInputRef} />
             </div>
           </Panel>
         </Group>
