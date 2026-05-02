@@ -79,6 +79,7 @@ export function Browser() {
   const [closingTabId, setClosingTabId] = useState<string | null>(null);
   const [urlInput, setUrlInput] = useState('');
   const [api, setApi] = useState<TauriApi | null>(null);
+  const [zoomLevel, setZoomLevel] = useState(1.0);
   const urlInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -393,6 +394,16 @@ export function Browser() {
     }).catch(() => {});
   }, [activeTab]);
 
+  const handleZoom = useCallback((delta: number) => {
+    if (!activeTab?.webviewId || !apiRef.current) return;
+    const newZoom = Math.max(0.25, Math.min(3.0, zoomLevel + delta));
+    setZoomLevel(newZoom);
+    apiRef.current.invoke('zoom_browser', {
+      webviewId: activeTab.webviewId,
+      zoomLevel: newZoom,
+    }).catch(() => {});
+  }, [activeTab, zoomLevel]);
+
   const handleUrlKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
       handleNavigate(urlInput);
@@ -425,12 +436,31 @@ export function Browser() {
             e.preventDefault();
             handleReload();
             break;
+          case '=':
+          case '+':
+            e.preventDefault();
+            handleZoom(0.1);
+            break;
+          case '-':
+            e.preventDefault();
+            handleZoom(-0.1);
+            break;
+          case '0':
+            e.preventDefault();
+            setZoomLevel(1.0);
+            if (activeTabIdRef.current) {
+              const tab = tabsRef.current.find(t => t.id === activeTabIdRef.current);
+              if (tab?.webviewId && apiRef.current) {
+                apiRef.current.invoke('zoom_browser', { webviewId: tab.webviewId, zoomLevel: 1.0 }).catch(() => {});
+              }
+            }
+            break;
         }
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [handleNewTab, handleCloseTab, handleReload]);
+  }, [handleNewTab, handleCloseTab, handleReload, handleZoom]);
 
   const protocol = activeTab?.url ? getUrlProtocol(activeTab.url) : 'other';
 
@@ -541,14 +571,21 @@ export function Browser() {
       </div>
 
       {/* Status bar */}
-      <div className="flex items-center justify-between border-t border-dark-border bg-[#0B1120] px-3 py-1">
-        <span className="text-[10px] font-mono text-dark-muted">
+      <div className="flex items-center gap-3 border-t border-dark-border bg-[#0B1120] px-3 py-1">
+        <span className="text-[10px] font-mono text-dark-muted flex-1 truncate">
           {activeTab?.loading
             ? 'Loading...'
             : activeTab?.webviewId
               ? activeTab.url
               : 'Ready'}
         </span>
+        {activeTab?.webviewId && (
+          <span className="flex items-center gap-1 text-[10px] font-mono text-dark-muted">
+            <button onClick={() => handleZoom(-0.1)} className="hover:text-accent transition-colors px-0.5">−</button>
+            <span className="w-8 text-center">{Math.round(zoomLevel * 100)}%</span>
+            <button onClick={() => handleZoom(0.1)} className="hover:text-accent transition-colors px-0.5">+</button>
+          </span>
+        )}
         <span className="text-[10px] font-mono text-dark-muted">
           {tabs.length} tab{tabs.length !== 1 ? 's' : ''}
         </span>

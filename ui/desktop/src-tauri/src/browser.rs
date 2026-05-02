@@ -138,3 +138,19 @@ pub async fn close_browser(app: AppHandle, webview_id: String) -> Result<(), Str
     }
     Ok(())
 }
+
+#[tauri::command]
+pub async fn zoom_browser(
+    app: AppHandle,
+    webview_id: String,
+    zoom_level: f64,
+) -> Result<(), String> {
+    let webview = app
+        .get_webview(&webview_id)
+        .ok_or_else(|| "Webview not found".to_string())?;
+    let js = format!("document.body.style.zoom = '{:.0}%'", zoom_level * 100.0);
+    webview
+        .eval(&js)
+        .map_err(|e| format!("Zoom failed: {e}"))?;
+    Ok(())
+}

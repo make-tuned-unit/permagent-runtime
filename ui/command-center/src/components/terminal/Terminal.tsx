@@ -95,7 +95,7 @@ export function Terminal({ sessionId, onSessionSpawned, cwd, isVisible }: Termin
         theme: THEME,
         fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", monospace',
         fontSize: 13,
-        lineHeight: 1.3,
+        lineHeight: 1.0,
         cursorBlink: true,
         cursorStyle: 'bar',
         allowProposedApi: true,

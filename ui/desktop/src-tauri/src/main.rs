@@ -28,6 +28,7 @@ fn main() {
             browser::update_browser_bounds,
             browser::hide_browser,
             browser::close_browser,
+            browser::zoom_browser,
         ])
         .setup(|app| {
             daemon::start_daemon(app.handle())?;
