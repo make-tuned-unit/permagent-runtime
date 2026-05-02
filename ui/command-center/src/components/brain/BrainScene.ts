@@ -543,10 +543,14 @@ export class BrainScene {
     );
     this.camera.lookAt(0, 0, 0);
 
-    // Self rotation
+    // Self rotation + breathing pulse
     if (this.selfMesh) {
       this.selfMesh.rotation.y += dt * 0.3;
       this.selfMesh.rotation.x += dt * 0.1;
+      const pulse = 1.0 + 0.04 * Math.sin((now / 1000) * (Math.PI * 2 / 2.5));
+      this.selfMesh.scale.setScalar(pulse);
+      const selfMat = this.selfMesh.material as THREE.MeshPhysicalMaterial;
+      selfMat.emissiveIntensity = 1.2 + 0.12 * Math.sin((now / 1000) * (Math.PI * 2 / 2.5));
     }
 
     // Distance-aware emissive boost — nodes brighten when pulled back

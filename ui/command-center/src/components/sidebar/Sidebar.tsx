@@ -97,14 +97,7 @@ export function Sidebar() {
         padding: open ? '0 14px 14px' : '0 0 14px',
         justifyContent: open ? 'space-between' : 'center',
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <Mobius size={32} state="idle" glow={0.7} />
-          {open && (
-            <div style={{ fontFamily: font.display, fontSize: 14, fontWeight: 700,
-              letterSpacing: '-0.01em', color: color.text,
-              whiteSpace: 'nowrap' }}>Permagent</div>
-          )}
-        </div>
+        <Mobius size={24} state="idle" glow={0.7} />
         {open && (
           <button onClick={() => setOpen(false)} title="Collapse" style={{
             width: 26, height: 26, borderRadius: 6, background: 'transparent',

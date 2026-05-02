@@ -74,7 +74,7 @@ export function Dashboard() {
               </div>
             </div>
             <div style={{ flex: '0 0 auto' }}>
-              <Mobius size={120} state={mobiusState} glow={1} />
+              <Mobius size={96} state={mobiusState} glow={1} />
             </div>
           </div>
 
