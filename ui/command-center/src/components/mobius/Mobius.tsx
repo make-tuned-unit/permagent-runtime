@@ -11,9 +11,10 @@ interface MobiusProps {
 }
 
 const FRAME_COUNT = 151;
+const IDLE_START = 110; // frames 110-150 are the central-node pulse
 const ASPECT = 1024 / 485; // source logo.webp dimensions
 const FPS: Record<MobiusState, number> = {
-  idle: 4,        // slow pulse — cycles frames to animate central node
+  idle: 30,       // 30fps over frames 110-150 — central node pulse only
   thinking: 30,
   speaking: 24,
   calibrating: 20,
@@ -36,6 +37,7 @@ export function Mobius({
   const lastTime = useRef(0);
 
   const isAnimated = state !== 'sleeping';
+  const isIdle = state === 'idle';
   const fps = FPS[state] || 0;
 
   // Preload frames once
@@ -46,17 +48,25 @@ export function Mobius({
     }
   }, []);
 
-  // rAF-driven frame cycling — always start from frame 0
+  // rAF-driven frame cycling
+  // idle: loops frames 110-150 (central node pulse)
+  // other active states: loops all 0-150
   useEffect(() => {
     if (!isAnimated || fps === 0) {
       setFrame(0);
       return;
     }
-    setFrame(0); // reset to start on every state change
+    setFrame(isIdle ? IDLE_START : 0);
     const interval = 1000 / fps;
     const tick = (now: number) => {
       if (now - lastTime.current >= interval) {
-        setFrame(f => (f + 1) % FRAME_COUNT);
+        setFrame(f => {
+          if (isIdle) {
+            const next = f + 1;
+            return next >= FRAME_COUNT ? IDLE_START : next;
+          }
+          return (f + 1) % FRAME_COUNT;
+        });
         lastTime.current = now;
       }
       rafRef.current = requestAnimationFrame(tick);
@@ -64,9 +74,9 @@ export function Mobius({
     lastTime.current = performance.now();
     rafRef.current = requestAnimationFrame(tick);
     return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
-  }, [isAnimated, fps]);
+  }, [isAnimated, isIdle, fps]);
 
-  const src = isAnimated ? frameSrc(frame) : '/mobius/logo.webp'; // sleeping uses static
+  const src = isAnimated ? frameSrc(frame) : '/mobius/logo.webp';
 
   // size = height; width derives from natural aspect ratio of source asset
   const height = size;
