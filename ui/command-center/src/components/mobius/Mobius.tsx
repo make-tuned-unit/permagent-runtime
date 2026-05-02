@@ -11,7 +11,8 @@ interface MobiusProps {
 }
 
 const FRAME_COUNT = 151;
-const IDLE_START = 110; // frames 110-150 are the central-node pulse
+const IDLE_START = 109; // frames 109-123 forward then back = ping-pong pulse
+const IDLE_END = 123;
 const ASPECT = 1024 / 485; // source logo.webp dimensions
 const FPS: Record<MobiusState, number> = {
   idle: 30,       // 30fps over frames 110-150 — central node pulse only
@@ -49,21 +50,25 @@ export function Mobius({
   }, []);
 
   // rAF-driven frame cycling
-  // idle: loops frames 110-150 (central node pulse)
+  // idle: ping-pong frames 109→123→109 (central node pulse)
   // other active states: loops all 0-150
+  const idleDirRef = useRef(1); // 1 = forward, -1 = backward
   useEffect(() => {
     if (!isAnimated || fps === 0) {
       setFrame(0);
       return;
     }
     setFrame(isIdle ? IDLE_START : 0);
+    idleDirRef.current = 1;
     const interval = 1000 / fps;
     const tick = (now: number) => {
       if (now - lastTime.current >= interval) {
         setFrame(f => {
           if (isIdle) {
-            const next = f + 1;
-            return next >= FRAME_COUNT ? IDLE_START : next;
+            const next = f + idleDirRef.current;
+            if (next > IDLE_END) { idleDirRef.current = -1; return IDLE_END - 1; }
+            if (next < IDLE_START) { idleDirRef.current = 1; return IDLE_START + 1; }
+            return next;
           }
           return (f + 1) % FRAME_COUNT;
         });
