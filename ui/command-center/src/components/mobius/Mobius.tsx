@@ -11,11 +11,14 @@ interface MobiusProps {
 }
 
 const FRAME_COUNT = 151;
-const IDLE_START = 109; // frames 109-123 forward then back = ping-pong pulse
-const IDLE_END = 123;
 const ASPECT = 1024 / 485; // source logo.webp dimensions
+
+// Idle pulse: frames 109-123, each tripled for slow breathing (45 frames at 30fps = 1.5s)
+const IDLE_FRAMES: number[] = [];
+for (let f = 109; f <= 123; f++) { IDLE_FRAMES.push(f, f, f); }
+
 const FPS: Record<MobiusState, number> = {
-  idle: 30,       // 30fps over frames 110-150 — central node pulse only
+  idle: 30,
   thinking: 30,
   speaking: 24,
   calibrating: 20,
@@ -50,24 +53,25 @@ export function Mobius({
   }, []);
 
   // rAF-driven frame cycling
-  // idle: loops 109→123, restarts at 109
+  // idle: steps through IDLE_FRAMES sequence (triplicated 109-123)
   // other active states: loops all 0-150
+  const idleIdxRef = useRef(0);
   useEffect(() => {
     if (!isAnimated || fps === 0) {
       setFrame(0);
       return;
     }
-    setFrame(isIdle ? IDLE_START : 0);
+    idleIdxRef.current = 0;
+    setFrame(isIdle ? IDLE_FRAMES[0] : 0);
     const interval = 1000 / fps;
     const tick = (now: number) => {
       if (now - lastTime.current >= interval) {
-        setFrame(f => {
-          if (isIdle) {
-            const next = f + 1;
-            return next > IDLE_END ? IDLE_START : next;
-          }
-          return (f + 1) % FRAME_COUNT;
-        });
+        if (isIdle) {
+          idleIdxRef.current = (idleIdxRef.current + 1) % IDLE_FRAMES.length;
+          setFrame(IDLE_FRAMES[idleIdxRef.current]);
+        } else {
+          setFrame(f => (f + 1) % FRAME_COUNT);
+        }
         lastTime.current = now;
       }
       rafRef.current = requestAnimationFrame(tick);
