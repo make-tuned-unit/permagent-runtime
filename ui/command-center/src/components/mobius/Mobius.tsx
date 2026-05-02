@@ -11,6 +11,7 @@ interface MobiusProps {
 }
 
 const FRAME_COUNT = 151;
+const ASPECT = 1024 / 485; // source logo.webp dimensions
 const FPS: Record<MobiusState, number> = {
   idle: 0,        // static logo
   thinking: 30,
@@ -67,8 +68,10 @@ export function Mobius({
 
   const src = isAnimated ? frameSrc(frame) : '/mobius/logo.webp';
 
-  // size = bounding square; objectFit: 'cover' crops horizontal padding
-  // from the landscape source frames, keeping the centered Möbius mark.
+  // size = height; width derives from natural aspect ratio of source asset
+  const height = size;
+  const width = Math.round(size * ASPECT);
+
   const glowPx = size * 0.12;
   const glowOpacity = state === 'sleeping' ? 0 : glow * 0.45;
   const filter = glowOpacity > 0
@@ -78,11 +81,12 @@ export function Mobius({
   return (
     <img
       src={src}
+      width={width}
+      height={height}
       className={className}
       style={{
-        width: size,
-        height: size,
-        objectFit: 'cover',
+        display: 'block',
+        objectFit: 'contain',
         flexShrink: 0,
         filter,
         opacity: state === 'sleeping' ? 0.35 : 1,
