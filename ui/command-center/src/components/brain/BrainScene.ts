@@ -1,4 +1,7 @@
 import * as THREE from 'three';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import type { BrainGraph, GraphEntity, GraphMemory } from './useBrainData';
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -109,6 +112,7 @@ export class BrainScene {
   private edgeLines: THREE.LineSegments | null = null;
   private pulsePoints: THREE.Points | null = null;
   private dustPoints: THREE.Points | null = null;
+  private composer: EffectComposer | null = null;
   private selfMesh: THREE.Mesh | null = null;
 
   private orbitYaw = 0;
@@ -145,7 +149,7 @@ export class BrainScene {
 
     this.camera = new THREE.PerspectiveCamera(50, w / h, 0.1, 200);
     this.scene = new THREE.Scene();
-    this.scene.fog = new THREE.FogExp2(0x070b14, 0.018);
+    this.scene.fog = new THREE.FogExp2(0x070b14, 0.008);
 
     // Lights
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.45));
@@ -161,6 +165,17 @@ export class BrainScene {
 
     // Dust
     this.createDust();
+
+    // Post-processing: bloom for glowing globe at distance
+    try {
+      const composer = new EffectComposer(this.renderer);
+      composer.addPass(new RenderPass(this.scene, this.camera));
+      const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.4, 0.6, 0.85);
+      composer.addPass(bloom);
+      this.composer = composer;
+    } catch {
+      // Bloom not available — render directly
+    }
 
     // Events
     const canvas = this.renderer.domElement;
@@ -386,7 +401,7 @@ export class BrainScene {
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    const mat = new THREE.PointsMaterial({ color: 0x6080a0, size: 0.05, transparent: true, opacity: 0.45 });
+    const mat = new THREE.PointsMaterial({ color: 0x6080a0, size: 0.07, transparent: true, opacity: 0.65 });
     this.dustPoints = new THREE.Points(geo, mat);
     this.scene.add(this.dustPoints);
   }
@@ -534,9 +549,23 @@ export class BrainScene {
       this.selfMesh.rotation.x += dt * 0.1;
     }
 
+    // Distance-aware emissive boost — nodes brighten when pulled back
+    const zoomFactor = Math.max(1.0, this.orbitRadius / 32);
+    const distanceBoost = Math.min(2.5, zoomFactor);
+    for (const n of this.nodes) {
+      if (n.kind === 'self' || !n.mesh.visible) continue;
+      const mat = n.mesh.material as THREE.MeshPhysicalMaterial;
+      const base = n.kind === 'memory' ? 1.5 : 1.6;
+      mat.emissiveIntensity = base * (n.kind === 'memory' ? distanceBoost : 1.0 + (distanceBoost - 1) * 0.5);
+    }
+
     this.step(dt);
     this.updatePulses(dt);
-    this.renderer.render(this.scene, this.camera);
+    if (this.composer) {
+      this.composer.render();
+    } else {
+      this.renderer.render(this.scene, this.camera);
+    }
   };
 
   // ── Resize ───────────────────────────────────────────────────────────
@@ -546,6 +575,7 @@ export class BrainScene {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
+    if (this.composer) this.composer.setSize(w, h);
   }
 
   // ── Dispose ──────────────────────────────────────────────────────────
