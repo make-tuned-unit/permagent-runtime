@@ -170,7 +170,7 @@ export class BrainScene {
     try {
       const composer = new EffectComposer(this.renderer);
       composer.addPass(new RenderPass(this.scene, this.camera));
-      const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.4, 0.6, 0.85);
+      const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.25, 0.6, 0.92);
       composer.addPass(bloom);
       this.composer = composer;
     } catch {
@@ -401,7 +401,7 @@ export class BrainScene {
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    const mat = new THREE.PointsMaterial({ color: 0x6080a0, size: 0.07, transparent: true, opacity: 0.65 });
+    const mat = new THREE.PointsMaterial({ color: 0x6080a0, size: 0.06, transparent: true, opacity: 0.50 });
     this.dustPoints = new THREE.Points(geo, mat);
     this.scene.add(this.dustPoints);
   }
@@ -551,7 +551,7 @@ export class BrainScene {
 
     // Distance-aware emissive boost — nodes brighten when pulled back
     const zoomFactor = Math.max(1.0, this.orbitRadius / 32);
-    const distanceBoost = Math.min(2.5, zoomFactor);
+    const distanceBoost = Math.min(1.6, zoomFactor);
     for (const n of this.nodes) {
       if (n.kind === 'self' || !n.mesh.visible) continue;
       const mat = n.mesh.material as THREE.MeshPhysicalMaterial;

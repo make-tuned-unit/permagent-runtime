@@ -38,7 +38,7 @@ export function Splash({ onDone }: Props) {
         transition: `opacity 400ms ${ease.out}`,
       }}
     >
-      <Mobius size={200} state="thinking" glow={1} />
+      <Mobius size={180} state="thinking" glow={1} />
 
       <p style={{
         fontFamily: font.display, fontSize: 15, fontWeight: 600,
@@ -52,7 +52,7 @@ export function Splash({ onDone }: Props) {
           transition: `opacity 800ms ${ease.out}, transform 800ms ${ease.out}`,
           display: 'inline-block',
         }}>
-          Built to grow with you
+          Built to grow with you.
         </span>
         {' '}
         <span style={{
