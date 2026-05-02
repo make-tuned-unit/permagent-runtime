@@ -83,28 +83,41 @@ export function Mobius({
   const height = size;
   const width = Math.round(size * ASPECT);
 
-  const glowPx = size * 0.12;
   const glowOpacity = state === 'sleeping' ? 0 : glow * 0.45;
-  const filter = glowOpacity > 0
-    ? `drop-shadow(0 0 ${glowPx}px rgba(0,213,255,${glowOpacity}))`
-    : undefined;
+  const glowSize = Math.round(size * 0.4);
 
   return (
-    <img
-      src={src}
-      width={width}
-      height={height}
-      className={className}
-      style={{
-        display: 'block',
-        objectFit: 'contain',
-        flexShrink: 0,
-        filter,
-        opacity: state === 'sleeping' ? 0.35 : 1,
-        willChange: isAnimated ? 'contents' : undefined,
-      }}
-      alt="Permagent"
-      draggable={false}
-    />
+    <div className={className} style={{
+      position: 'relative', width, height,
+      flexShrink: 0, display: 'inline-block',
+    }}>
+      {/* Glow: radial gradient behind the image, no rectangular edges */}
+      {glowOpacity > 0 && (
+        <div style={{
+          position: 'absolute',
+          top: '50%', left: '50%',
+          width: size, height: size,
+          transform: 'translate(-50%, -50%)',
+          borderRadius: '50%',
+          background: `radial-gradient(circle, rgba(0,213,255,${glowOpacity}) 0%, transparent 70%)`,
+          filter: `blur(${glowSize}px)`,
+          pointerEvents: 'none',
+        }} />
+      )}
+      <img
+        src={src}
+        width={width}
+        height={height}
+        style={{
+          position: 'relative',
+          display: 'block',
+          objectFit: 'contain',
+          opacity: state === 'sleeping' ? 0.35 : 1,
+          willChange: isAnimated ? 'contents' : undefined,
+        }}
+        alt="Permagent"
+        draggable={false}
+      />
+    </div>
   );
 }
