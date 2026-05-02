@@ -91,40 +91,14 @@ export function Sidebar() {
       transition: `width 220ms ${ease.out}`,
       overflow: 'hidden',
     }}>
-      {/* Brand row + toggle */}
+      {/* Brand row */}
       <div style={{
-        display: 'flex', alignItems: 'center', gap: 8,
+        display: 'flex', alignItems: 'center',
         padding: open ? '0 14px 14px' : '0 0 14px',
-        justifyContent: open ? 'space-between' : 'center',
+        justifyContent: 'center',
       }}>
-        <Mobius size={24} state="idle" glow={0.7} />
-        {open && (
-          <button onClick={() => setOpen(false)} title="Collapse" style={{
-            width: 26, height: 26, borderRadius: 6, background: 'transparent',
-            border: 'none', color: color.textMuted, cursor: 'pointer',
-            display: 'grid', placeItems: 'center',
-          }}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
-              <path d="M15 6l-6 6 6 6" />
-              <path d="M21 4v16" opacity={0.4} />
-            </svg>
-          </button>
-        )}
+        <Mobius size={14} state="idle" glow={0.7} />
       </div>
-
-      {!open && (
-        <button onClick={() => setOpen(true)} title="Expand" style={{
-          width: 40, height: 28, margin: '0 auto 6px',
-          borderRadius: 6, background: 'transparent',
-          border: 'none', color: color.textDim, cursor: 'pointer',
-          display: 'grid', placeItems: 'center',
-        }}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
-            <path d="M9 6l6 6-6 6" />
-            <path d="M3 4v16" opacity={0.4} />
-          </svg>
-        </button>
-      )}
 
       {/* Workspace items */}
       {workspaces.map((ws, i) => {
@@ -163,6 +137,36 @@ export function Sidebar() {
         open={open}
         onClick={() => setActivePanel(isSettingsOpen ? 'chat' : 'settings')}
       />
+
+      {/* Collapse / Expand toggle */}
+      {open ? (
+        <button onClick={() => setOpen(false)} title="Collapse" style={{
+          width: 'calc(100% - 16px)', height: 32, borderRadius: 8,
+          margin: '4px 8px 0', background: 'transparent',
+          border: 'none', color: color.textDim, cursor: 'pointer',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+          fontFamily: font.body, fontSize: 11, fontWeight: 500,
+          transition: `all 200ms ${ease.out}`,
+        }}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+            <path d="M15 6l-6 6 6 6" />
+            <path d="M21 4v16" opacity={0.4} />
+          </svg>
+          Collapse
+        </button>
+      ) : (
+        <button onClick={() => setOpen(true)} title="Expand" style={{
+          width: 40, height: 32, margin: '4px auto 0',
+          borderRadius: 8, background: 'transparent',
+          border: 'none', color: color.textDim, cursor: 'pointer',
+          display: 'grid', placeItems: 'center',
+        }}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+            <path d="M9 6l6 6-6 6" />
+            <path d="M3 4v16" opacity={0.4} />
+          </svg>
+        </button>
+      )}
     </div>
   );
 }

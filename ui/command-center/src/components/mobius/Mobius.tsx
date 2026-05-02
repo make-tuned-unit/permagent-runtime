@@ -1,6 +1,16 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useMemo } from 'react';
 
 export type MobiusState = 'idle' | 'thinking' | 'speaking' | 'calibrating' | 'sleeping';
+
+// Idle breathing pulse — injected once into <head>
+let pulseStyleInjected = false;
+function ensurePulseStyle() {
+  if (pulseStyleInjected) return;
+  pulseStyleInjected = true;
+  const style = document.createElement('style');
+  style.textContent = `@keyframes mobius-pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}`;
+  document.head.appendChild(style);
+}
 
 interface MobiusProps {
   size?: number;
@@ -36,7 +46,11 @@ export function Mobius({
   const lastTime = useRef(0);
 
   const isAnimated = state !== 'idle' && state !== 'sleeping';
+  const isIdle = state === 'idle';
   const fps = FPS[state] || 0;
+
+  // Inject pulse keyframes for idle breathing
+  useMemo(() => { if (isIdle) ensurePulseStyle(); }, [isIdle]);
 
   // Preload frames once
   useEffect(() => {
@@ -91,6 +105,7 @@ export function Mobius({
         filter,
         opacity: state === 'sleeping' ? 0.35 : 1,
         willChange: isAnimated ? 'contents' : undefined,
+        animation: isIdle ? 'mobius-pulse 3s ease-in-out infinite' : undefined,
       }}
       alt="Permagent"
       draggable={false}
