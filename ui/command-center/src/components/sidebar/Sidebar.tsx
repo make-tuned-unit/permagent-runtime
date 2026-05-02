@@ -1,5 +1,5 @@
 import { useEffect, useCallback } from 'react';
-import { Home, LayoutDashboard, Globe, Code, Brain, Settings, Wifi, WifiOff, Loader, MessageSquare } from 'lucide-react';
+import { Home, LayoutDashboard, Globe, Code, Brain, Settings, WifiOff, Loader, MessageSquare } from 'lucide-react';
 import { useCommandCenter, type ConnectionStatus } from '../../lib/store';
 
 const WORKSPACE_ICONS: Record<string, typeof LayoutDashboard> = {
@@ -11,37 +11,26 @@ const WORKSPACE_ICONS: Record<string, typeof LayoutDashboard> = {
 };
 
 function ConnectionIndicator({ status }: { status: ConnectionStatus }) {
-  switch (status) {
-    case 'connected':
-      return (
-        <div className="flex items-center gap-2">
-          <Wifi size={12} className="text-emerald-400" />
-          <span className="text-[10px] font-mono text-emerald-400">Connected</span>
-        </div>
-      );
-    case 'connecting':
-      return (
-        <div className="flex items-center gap-2">
-          <Loader size={12} className="text-amber-400 animate-spin" />
-          <span className="text-[10px] font-mono text-amber-400">Connecting...</span>
-        </div>
-      );
-    case 'error':
-      return (
-        <div className="flex items-center gap-2">
-          <WifiOff size={12} className="text-red-400 animate-pulse" />
-          <span className="text-[10px] font-mono text-red-400">Error</span>
-        </div>
-      );
-    case 'disconnected':
-    default:
-      return (
-        <div className="flex items-center gap-2">
-          <WifiOff size={12} className="text-dark-muted" />
-          <span className="text-[10px] font-mono text-dark-muted">Disconnected</span>
-        </div>
-      );
+  // Only show indicator for non-normal states (connecting, error).
+  // Connected and disconnected/idle are silent — no alarming labels.
+  if (status === 'connecting') {
+    return (
+      <div className="flex items-center gap-2">
+        <Loader size={12} className="text-amber-400 animate-spin" />
+        <span className="text-[10px] font-mono text-amber-400">Connecting...</span>
+      </div>
+    );
   }
+  if (status === 'error') {
+    return (
+      <div className="flex items-center gap-2">
+        <WifiOff size={12} className="text-red-400 animate-pulse" />
+        <span className="text-[10px] font-mono text-red-400">Connection error</span>
+      </div>
+    );
+  }
+  // connected / disconnected / idle: show nothing
+  return null;
 }
 
 export function Sidebar() {

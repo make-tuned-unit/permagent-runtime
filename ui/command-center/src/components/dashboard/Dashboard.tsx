@@ -34,7 +34,7 @@ export function Dashboard() {
       padding: '28px 32px 40px',
     }}>
       {/* Hero + Stats row */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 1fr', gap: 24, marginBottom: 24 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 24, marginBottom: 24 }}>
         {/* Hero card */}
         <div style={{
           padding: 24, borderRadius: 14, minHeight: 220,
@@ -49,7 +49,7 @@ export function Dashboard() {
             }}>
               Status — {agent.state}
             </div>
-            <div style={{ fontFamily: font.display, fontSize: 28, fontWeight: 600, color: color.text, lineHeight: 1.3, marginBottom: 12 }}>
+            <div style={{ fontFamily: font.display, fontSize: 24, fontWeight: 600, color: color.text, lineHeight: 1.2, marginBottom: 12 }}>
               {agent.active_count > 0 ? (
                 <>{agent.name} is working on<br /><span style={{ color: color.cyan }}>{agent.active_count} {agent.active_count === 1 ? 'thing' : 'things'}</span> for you</>
               ) : (
@@ -62,7 +62,7 @@ export function Dashboard() {
                 : 'Ready when you are'}
             </div>
           </div>
-          <Mobius size={200} state={mobiusState} glow={1} />
+          <Mobius size={160} state={mobiusState} glow={1} />
         </div>
 
         {/* Stats grid */}

@@ -43,7 +43,9 @@ export function Splash({ onDone }: Props) {
       <p style={{
         fontFamily: font.display, fontSize: 15, fontWeight: 600,
         color: color.textMuted, letterSpacing: '0.08em',
-        textTransform: 'uppercase', marginTop: 28,
+        marginTop: 28,
+        // TAGLINE TEXT IS LOCKED — sentence case, two periods, no uppercase
+        // transforms. Do not change without explicit instruction.
         opacity: 0.7,
       }}>
         <span style={{
