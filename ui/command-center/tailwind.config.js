@@ -17,9 +17,9 @@ export default {
           muted: '#64748b',    // secondary text
         },
         accent: {
-          DEFAULT: '#00ffb4',  // primary accent - terminal green
-          dim: '#00cc90',      // dimmed accent
-          glow: 'rgba(0, 255, 180, 0.15)', // glow effect
+          DEFAULT: '#00D5FF',  // primary accent - cyan (matches design tokens)
+          dim: '#00B0D4',      // dimmed accent
+          glow: 'rgba(0, 213, 255, 0.15)', // glow effect
         },
         status: {
           ok: '#22c55e',
@@ -29,8 +29,9 @@ export default {
         },
       },
       fontFamily: {
-        sans: ['-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'Roboto', '"Helvetica Neue"', 'Arial', 'sans-serif'],
-        mono: ['"JetBrains Mono"', '"SF Mono"', '"Fira Code"', 'monospace'],
+        sans: ['"Inter"', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
+        display: ['"Manrope"', '"Satoshi"', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
+        mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
       },
       animation: {
         'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.2, 1) infinite',
@@ -38,8 +39,8 @@ export default {
       },
       keyframes: {
         glow: {
-          '0%': { boxShadow: '0 0 5px rgba(0, 255, 180, 0.2)' },
-          '100%': { boxShadow: '0 0 20px rgba(0, 255, 180, 0.4)' },
+          '0%': { boxShadow: '0 0 5px rgba(0, 213, 255, 0.2)' },
+          '100%': { boxShadow: '0 0 20px rgba(0, 213, 255, 0.4)' },
         },
       },
     },

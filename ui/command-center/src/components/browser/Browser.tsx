@@ -478,7 +478,7 @@ export function Browser() {
         <div className="flex-1 flex items-center bg-[#0A0E17] rounded-md border border-dark-border focus-within:border-accent transition-colors">
           <span className="pl-2.5 pr-1">
             {protocol === 'https' ? (
-              <FiLock size={12} className="text-emerald-400" />
+              <FiLock size={12} className="text-accent" />
             ) : protocol === 'http' ? (
               <FiAlertTriangle size={12} className="text-amber-400" />
             ) : (
