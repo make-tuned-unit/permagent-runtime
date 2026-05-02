@@ -141,15 +141,15 @@ export class BrainScene {
     const w = container.clientWidth;
     const h = container.clientHeight;
 
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setSize(w, h);
-    this.renderer.setClearColor(0x070b14);
+    this.renderer.setClearColor(0x000000, 0);
     container.appendChild(this.renderer.domElement);
 
     this.camera = new THREE.PerspectiveCamera(50, w / h, 0.1, 200);
     this.scene = new THREE.Scene();
-    this.scene.fog = new THREE.FogExp2(0x070b14, 0.008);
+    this.scene.fog = new THREE.FogExp2(0x0b1220, 0.006);
 
     // Lights
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.45));

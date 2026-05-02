@@ -10,6 +10,7 @@ import { WorldView } from '../world/WorldView';
 import { ExecutionTrace } from '../trace/ExecutionTrace';
 import { BrainView } from '../brain/BrainView';
 import { Dashboard } from '../dashboard/Dashboard';
+import { BuildView } from '../build/BuildView';
 
 const TOOL_COMPONENTS: Record<ToolType, React.ComponentType> = {
   chat: ChatView,
@@ -20,6 +21,7 @@ const TOOL_COMPONENTS: Record<ToolType, React.ComponentType> = {
   browser: Browser,
   memory: BrainView,
   dashboard: Dashboard,
+  build: BuildView,
 };
 
 function LayoutNodeRenderer({

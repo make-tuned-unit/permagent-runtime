@@ -65,7 +65,7 @@ export function BrainView() {
     age < 0.2 ? 'this week' : age < 0.5 ? 'this month' : age < 0.8 ? '~3 months' : '~year';
 
   return (
-    <div style={{ position: 'relative', width: '100%', height: '100%', background: '#070B14', overflow: 'hidden' }}>
+    <div style={{ position: 'relative', width: '100%', height: '100%', background: 'radial-gradient(120% 80% at 50% 0%, #142035 0%, #0B1220 50%, #050810 100%)', overflow: 'hidden' }}>
       {/* Three.js canvas container */}
       <div ref={containerRef} style={{ position: 'absolute', inset: 0 }} />
 

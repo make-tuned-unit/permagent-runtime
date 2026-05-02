@@ -42,21 +42,9 @@ fn world_layout() -> serde_json::Value {
 
 fn build_layout() -> serde_json::Value {
     serde_json::json!({
-        "type": "split",
-        "direction": "horizontal",
-        "sizes": [50, 50],
-        "children": [
-            {
-                "type": "split",
-                "direction": "vertical",
-                "sizes": [60, 40],
-                "children": [
-                    { "type": "panel", "tool": "terminal", "config": {} },
-                    { "type": "panel", "tool": "browser", "config": {} }
-                ]
-            },
-            { "type": "panel", "tool": "chat", "config": {} }
-        ]
+        "type": "panel",
+        "tool": "build",
+        "config": {}
     })
 }
 
