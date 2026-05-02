@@ -218,8 +218,126 @@ async fn brain_search(
     }))
 }
 
+// ── GET /api/brain/graph — force-directed graph data for Brain View ──
+
+#[derive(Debug, Serialize)]
+struct GraphSelf {
+    name: String,
+    id: String,
+}
+
+#[derive(Debug, Serialize)]
+struct GraphEntity {
+    id: String,
+    #[serde(rename = "type")]
+    entity_type: String,
+    name: String,
+    note: String,
+}
+
+#[derive(Debug, Serialize)]
+struct GraphMemory {
+    id: String,
+    text: String,
+    ent: Vec<String>,
+    age: f64,
+    weight: f64,
+    timestamp: String,
+}
+
+#[derive(Debug, Serialize)]
+struct GraphResponse {
+    #[serde(rename = "self")]
+    self_node: GraphSelf,
+    entities: Vec<GraphEntity>,
+    memories: Vec<GraphMemory>,
+}
+
+async fn brain_graph(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<GraphResponse>, crate::routes::errors::ErrorResponse> {
+    let persona = state.persona.read().await;
+    let self_node = GraphSelf {
+        name: persona.first_name.clone(),
+        id: "self".to_string(),
+    };
+
+    let brain = match state.brain.as_ref() {
+        Some(b) => b.clone(),
+        None => {
+            return Ok(Json(GraphResponse {
+                self_node,
+                entities: Vec::new(),
+                memories: Vec::new(),
+            }));
+        }
+    };
+
+    // Use persona name as seed query to pull related memories + graph
+    let query = self_node.name.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        brain.recall(&query, spectral::Visibility::Private)
+    })
+    .await
+    .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?
+    .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?;
+
+    let now = Utc::now();
+
+    // Build entities from graph neighborhood
+    let mut entities: Vec<GraphEntity> = Vec::new();
+    let mut entity_id_set = std::collections::HashSet::new();
+    for ent in &result.graph.neighborhood.entities {
+        let id_hex = format!("e:{}", hex::encode(ent.id.as_bytes()));
+        if entity_id_set.insert(id_hex.clone()) {
+            entities.push(GraphEntity {
+                id: id_hex,
+                entity_type: ent.entity_type.clone(),
+                name: ent.canonical.clone(),
+                note: String::new(),
+            });
+        }
+    }
+
+    // Cap entities to avoid overwhelming the force simulation
+    entities.truncate(80);
+
+    // Build memories, capped at 100
+    let max_age_secs: f64 = 90.0 * 24.0 * 3600.0; // 90 days
+    let mut memories: Vec<GraphMemory> = Vec::new();
+    for (i, hit) in result.memory_hits.iter().enumerate().take(100) {
+        let age = 0.5; // Spectral MemoryHit lacks timestamp; use score as proxy
+        let weight = hit.signal_score.clamp(0.0, 1.0);
+
+        // Find connected entities from triples that mention related entity IDs
+        let ent_ids: Vec<String> = Vec::new(); // v1: no direct memory→entity mapping
+
+        memories.push(GraphMemory {
+            id: format!("m:{}", i),
+            text: truncate_preview(&hit.content, 200),
+            ent: ent_ids,
+            age,
+            weight,
+            timestamp: now.to_rfc3339(),
+        });
+    }
+
+    // Cap total nodes at 100
+    if entities.len() + memories.len() > 100 {
+        let mem_budget = 100usize.saturating_sub(entities.len());
+        memories.truncate(mem_budget);
+    }
+
+    Ok(Json(GraphResponse {
+        self_node,
+        entities,
+        memories,
+    }))
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/brain/search", get(brain_search))
+        .route("/api/brain/graph", get(brain_graph))
         .with_state(state)
 }
