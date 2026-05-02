@@ -9,23 +9,23 @@ export function SectionTitle({ title, right }: { title: string; right?: string }
   );
 }
 
-export function Stat({ label, value, suffix, delta }: {
-  label: string; value: string | number; suffix?: string; delta?: string;
+export function Stat({ label, value, suffix, delta, cyan }: {
+  label: string; value: string | number; suffix?: string; delta?: string; cyan?: boolean;
 }) {
   return (
     <div>
-      <div style={{ fontFamily: font.mono, fontSize: 11, fontWeight: 600, color: color.textDim, textTransform: 'uppercase', letterSpacing: '0.10em', marginBottom: 6 }}>
-        {label}
-      </div>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
-        <span style={{ fontFamily: font.display, fontSize: 32, fontWeight: 600, color: color.text }}>{value}</span>
-        {suffix && <span style={{ fontFamily: font.display, fontSize: 18, color: color.textMuted }}>{suffix}</span>}
-      </div>
-      {delta && (
-        <div style={{ fontFamily: font.mono, fontSize: 11, color: '#5BD17F', marginTop: 4 }}>
-          {delta}
+      <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.10em',
+        textTransform: 'uppercase', color: color.textDim, marginBottom: 6 }}>{label}</div>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+        <div style={{ fontFamily: font.display, fontSize: 32, fontWeight: 600,
+          letterSpacing: '-0.02em',
+          color: cyan ? color.cyan : color.text }}>
+          {value}<span style={{ fontSize: 18, color: color.textMuted, marginLeft: 2 }}>{suffix || ''}</span>
         </div>
-      )}
+        {delta && (
+          <div style={{ fontSize: 11, fontWeight: 600, color: '#5BD17F' }}>{delta}</div>
+        )}
+      </div>
     </div>
   );
 }

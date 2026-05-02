@@ -1,50 +1,64 @@
-import { useEffect, useCallback } from 'react';
-import { Home, LayoutDashboard, Globe, Code, Brain, Settings, WifiOff, Loader, MessageSquare } from 'lucide-react';
-import { useCommandCenter, type ConnectionStatus } from '../../lib/store';
+import { useState, useEffect, useCallback } from 'react';
+import { useCommandCenter } from '../../lib/store';
+import { color, font, ease } from '../../styles/tokens';
+import { Mobius } from '../mobius/Mobius';
 
-const WORKSPACE_ICONS: Record<string, typeof LayoutDashboard> = {
-  'home': Home,
-  'layout-dashboard': LayoutDashboard,
-  'globe': Globe,
-  'code': Code,
-  'brain': Brain,
+/** SVG icon paths from design handoff (view-dashboard.jsx lines 17-20, 107) */
+const ICON_PATHS: Record<string, string> = {
+  home: 'M3 11l9-8 9 8v9a2 2 0 01-2 2h-4v-7h-6v7H5a2 2 0 01-2-2v-9z',
+  'layout-dashboard': 'M4 7h16M4 12h16M4 17h10',
+  globe: 'M12 2a10 10 0 100 20 10 10 0 000-20zM2 12h20M12 2a15 15 0 014 10 15 15 0 01-4 10M12 2a15 15 0 00-4 10 15 15 0 004 10',
+  code: 'M4 4h7v7H4zM13 4h7v4h-7zM13 10h7v10h-7zM4 13h7v7H4z',
+  brain: 'M9 4a4 4 0 00-4 4 3 3 0 00-1 5.5A3 3 0 005 18a4 4 0 004 3M15 4a4 4 0 014 4 3 3 0 011 5.5A3 3 0 0119 18a4 4 0 01-4 3M9 4a3 3 0 013 3v14M15 4a3 3 0 00-3 3',
 };
 
-function ConnectionIndicator({ status }: { status: ConnectionStatus }) {
-  // Only show indicator for non-normal states (connecting, error).
-  // Connected and disconnected/idle are silent — no alarming labels.
-  if (status === 'connecting') {
-    return (
-      <div className="flex items-center gap-2">
-        <Loader size={12} className="text-amber-400 animate-spin" />
-        <span className="text-[10px] font-mono text-amber-400">Connecting...</span>
-      </div>
-    );
-  }
-  if (status === 'error') {
-    return (
-      <div className="flex items-center gap-2">
-        <WifiOff size={12} className="text-red-400 animate-pulse" />
-        <span className="text-[10px] font-mono text-red-400">Connection error</span>
-      </div>
-    );
-  }
-  // connected / disconnected / idle: show nothing
-  return null;
+const SESSIONS_ICON = 'M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2v10z';
+const SETTINGS_ICON = 'M12 9a3 3 0 100 6 3 3 0 000-6zM19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 008 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 004.6 15a1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 4.6a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0019.4 9c.16.55.62.96 1.18 1H21a2 2 0 110 4h-.09c-.6.04-1.06.45-1.51 1z';
+
+function SidebarRow({
+  icon, label, active, open, onClick, title,
+}: {
+  icon: string; label: string; active: boolean; open: boolean;
+  onClick: () => void; title?: string;
+}) {
+  return (
+    <button onClick={onClick} title={open ? title : label} style={{
+      width: open ? 'calc(100% - 16px)' : 40,
+      height: 40, borderRadius: 10,
+      display: 'flex', alignItems: 'center', gap: 12,
+      padding: open ? '0 12px' : 0,
+      justifyContent: open ? 'flex-start' : 'center',
+      margin: open ? '0 8px' : '0 auto',
+      background: active ? 'rgba(0,213,255,0.10)' : 'transparent',
+      border: active ? `1px solid ${color.borderHi}` : '1px solid transparent',
+      color: active ? color.cyan : color.textMuted,
+      cursor: 'pointer', transition: `all 200ms ${ease.out}`,
+      fontFamily: font.body, fontSize: 13, fontWeight: active ? 600 : 500,
+      textAlign: 'left',
+    }}>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0 }}
+        stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+        <path d={icon} />
+      </svg>
+      {open && <span style={{
+        opacity: 1, transition: 'opacity 160ms', whiteSpace: 'nowrap',
+      }}>{label}</span>}
+    </button>
+  );
 }
 
 export function Sidebar() {
+  const [open, setOpen] = useState(true);
   const workspaces = useCommandCenter(s => s.workspaces);
   const activeWorkspaceId = useCommandCenter(s => s.activeWorkspaceId);
   const activePanel = useCommandCenter(s => s.activePanel);
   const switchWorkspace = useCommandCenter(s => s.switchWorkspace);
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
-  const connectionStatus = useCommandCenter(s => s.connectionStatus);
 
   const isSettingsOpen = activePanel === 'settings';
   const isSessionsOpen = activePanel === 'sessions';
+  const W = open ? 208 : 64;
 
-  // Switch to a workspace AND leave settings if we're in it
   const goToWorkspace = useCallback((workspaceId: string) => {
     switchWorkspace(workspaceId);
     if (isSettingsOpen || isSessionsOpen) {
@@ -52,7 +66,7 @@ export function Sidebar() {
     }
   }, [switchWorkspace, setActivePanel, isSettingsOpen, isSessionsOpen]);
 
-  // Keyboard shortcuts: Cmd+1, Cmd+2, Cmd+3
+  // Keyboard shortcuts: Cmd+1..5
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if (!e.metaKey && !e.ctrlKey) return;
@@ -68,73 +82,94 @@ export function Sidebar() {
   }, [workspaces, goToWorkspace]);
 
   return (
-    <div className="flex h-full w-[200px] shrink-0 flex-col border-r border-dark-border bg-[#0B1120]">
-      {/* Brand */}
-      <div className="border-b border-dark-border px-4 py-3">
-        <span className="text-[11px] font-mono font-semibold tracking-wider text-accent">
-          PERMAGENT
-        </span>
+    <div style={{
+      width: W, height: '100%', flexShrink: 0,
+      borderRight: `1px solid ${color.border}`,
+      background: 'rgba(7,11,20,0.6)',
+      display: 'flex', flexDirection: 'column',
+      padding: '14px 0', gap: 4,
+      transition: `width 220ms ${ease.out}`,
+      overflow: 'hidden',
+    }}>
+      {/* Brand row + toggle */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 8,
+        padding: open ? '0 14px 14px' : '0 0 14px',
+        justifyContent: open ? 'space-between' : 'center',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <Mobius size={32} state="idle" glow={0.7} />
+          {open && (
+            <div style={{ fontFamily: font.display, fontSize: 14, fontWeight: 700,
+              letterSpacing: '-0.01em', color: color.text,
+              whiteSpace: 'nowrap' }}>Permagent</div>
+          )}
+        </div>
+        {open && (
+          <button onClick={() => setOpen(false)} title="Collapse" style={{
+            width: 26, height: 26, borderRadius: 6, background: 'transparent',
+            border: 'none', color: color.textMuted, cursor: 'pointer',
+            display: 'grid', placeItems: 'center',
+          }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+              <path d="M15 6l-6 6 6 6" />
+              <path d="M21 4v16" opacity={0.4} />
+            </svg>
+          </button>
+        )}
       </div>
 
-      {/* Workspace navigation */}
-      <nav className="flex-1 px-2 py-3 space-y-1">
-        <div className="px-3 pb-2">
-          <span className="text-[9px] font-mono font-semibold tracking-widest text-dark-muted/60 uppercase">
-            Workspaces
-          </span>
-        </div>
-        {workspaces.map((ws, i) => {
-          const isActive = activeWorkspaceId === ws.id && !isSettingsOpen && !isSessionsOpen;
-          const IconComponent = WORKSPACE_ICONS[ws.icon] || LayoutDashboard;
-          return (
-            <button
-              key={ws.id}
-              onClick={() => goToWorkspace(ws.id)}
-              className={`flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-xs font-medium transition ${
-                isActive
-                  ? 'bg-accent/10 text-accent'
-                  : 'text-dark-muted hover:bg-white/5 hover:text-dark-text'
-              }`}
-              title={`${ws.name} (${navigator.platform.includes('Mac') ? '\u2318' : 'Ctrl+'}${i + 1})`}
-            >
-              <IconComponent size={14} />
-              <span className="flex-1 text-left">{ws.name}</span>
-              <kbd className="text-[9px] font-mono text-dark-muted/40">
-                {navigator.platform.includes('Mac') ? '\u2318' : '^'}{i + 1}
-              </kbd>
-            </button>
-          );
-        })}
-      </nav>
+      {!open && (
+        <button onClick={() => setOpen(true)} title="Expand" style={{
+          width: 40, height: 28, margin: '0 auto 6px',
+          borderRadius: 6, background: 'transparent',
+          border: 'none', color: color.textDim, cursor: 'pointer',
+          display: 'grid', placeItems: 'center',
+        }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+            <path d="M9 6l6 6-6 6" />
+            <path d="M3 4v16" opacity={0.4} />
+          </svg>
+        </button>
+      )}
 
-      {/* Bottom: Sessions + Settings + Connection */}
-      <div className="border-t border-dark-border px-2 py-2 space-y-1">
-        <button
-          onClick={() => setActivePanel(isSessionsOpen ? 'chat' : 'sessions')}
-          className={`flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-xs font-medium transition ${
-            isSessionsOpen
-              ? 'bg-accent/10 text-accent'
-              : 'text-dark-muted hover:bg-white/5 hover:text-dark-text'
-          }`}
-        >
-          <MessageSquare size={14} />
-          Sessions
-        </button>
-        <button
-          onClick={() => setActivePanel(isSettingsOpen ? 'chat' : 'settings')}
-          className={`flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-xs font-medium transition ${
-            isSettingsOpen
-              ? 'bg-accent/10 text-accent'
-              : 'text-dark-muted hover:bg-white/5 hover:text-dark-text'
-          }`}
-        >
-          <Settings size={14} />
-          Settings
-        </button>
-        <div className="px-3 py-1">
-          <ConnectionIndicator status={connectionStatus} />
-        </div>
-      </div>
+      {/* Workspace items */}
+      {workspaces.map((ws, i) => {
+        const isActive = activeWorkspaceId === ws.id && !isSettingsOpen && !isSessionsOpen;
+        const iconPath = ICON_PATHS[ws.icon] || ICON_PATHS.home;
+        const shortcut = navigator.platform.includes('Mac') ? `⌘${i + 1}` : `Ctrl+${i + 1}`;
+        return (
+          <SidebarRow
+            key={ws.id}
+            icon={iconPath}
+            label={ws.name}
+            active={isActive}
+            open={open}
+            onClick={() => goToWorkspace(ws.id)}
+            title={`${ws.name} (${shortcut})`}
+          />
+        );
+      })}
+
+      <div style={{ flex: 1 }} />
+
+      {/* Sessions */}
+      <SidebarRow
+        icon={SESSIONS_ICON}
+        label="Sessions"
+        active={isSessionsOpen}
+        open={open}
+        onClick={() => setActivePanel(isSessionsOpen ? 'chat' : 'sessions')}
+      />
+
+      {/* Settings */}
+      <SidebarRow
+        icon={SETTINGS_ICON}
+        label="Settings"
+        active={isSettingsOpen}
+        open={open}
+        onClick={() => setActivePanel(isSettingsOpen ? 'chat' : 'settings')}
+      />
     </div>
   );
 }

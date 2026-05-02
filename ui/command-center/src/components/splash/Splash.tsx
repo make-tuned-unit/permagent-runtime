@@ -40,12 +40,19 @@ export function Splash({ onDone }: Props) {
     >
       <Mobius size={180} state="thinking" glow={1} />
 
+      {/* ===== TAGLINE LOCKED =====
+        * Format: "Built to grow with you. Forever."
+        * - Sentence case (capital B and F only)
+        * - Two periods (after "you" and after "Forever")
+        * - text-transform: 'none' — NEVER 'uppercase'
+        * - This has regressed three times. Do not modify the case or
+        *   capitalization without explicit user instruction.
+        * ========================= */}
       <p style={{
         fontFamily: font.display, fontSize: 15, fontWeight: 600,
         color: color.textMuted, letterSpacing: '0.08em',
+        textTransform: 'none',
         marginTop: 28,
-        // TAGLINE TEXT IS LOCKED — sentence case, two periods, no uppercase
-        // transforms. Do not change without explicit instruction.
         opacity: 0.7,
       }}>
         <span style={{
