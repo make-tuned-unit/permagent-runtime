@@ -170,7 +170,7 @@ export class BrainScene {
     try {
       const composer = new EffectComposer(this.renderer);
       composer.addPass(new RenderPass(this.scene, this.camera));
-      const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.25, 0.6, 0.92);
+      const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.15, 0.6, 0.92);
       composer.addPass(bloom);
       this.composer = composer;
     } catch {
@@ -201,7 +201,7 @@ export class BrainScene {
     // Self node
     const selfGeo = new THREE.IcosahedronGeometry(0.95, 1);
     const selfMat = new THREE.MeshPhysicalMaterial({
-      color: 0xb8e8ff, emissive: 0x00d5ff, emissiveIntensity: 2.4,
+      color: 0xb8e8ff, emissive: 0x00d5ff, emissiveIntensity: 1.2,
       roughness: 0.15, metalness: 0.2, clearcoat: 1.0, clearcoatRoughness: 0.05,
       transparent: true, opacity: 0.95,
     });
@@ -226,7 +226,7 @@ export class BrainScene {
       const color = nodeColor;
 
       const mat = new THREE.MeshPhysicalMaterial({
-        color, emissive: color, emissiveIntensity: 1.6,
+        color, emissive: color, emissiveIntensity: 0.8,
         roughness: 0.15, transparent: true, opacity: 0.95,
       });
       const mesh = new THREE.Mesh(geo, mat);
@@ -249,7 +249,7 @@ export class BrainScene {
       const col = MEM_FRESH.clone().lerp(MEM_STALE, mem.age);
       const geo = new THREE.SphereGeometry(radius, 14, 12);
       const mat = new THREE.MeshPhysicalMaterial({
-        color: col, emissive: col, emissiveIntensity: 1.5,
+        color: col, emissive: col, emissiveIntensity: 0.7,
         roughness: 0.25, transparent: true, opacity: 0.92,
       });
       const mesh = new THREE.Mesh(geo, mat);
@@ -307,10 +307,10 @@ export class BrainScene {
       if (this.search && visible) {
         const matches = n.label.toLowerCase().includes(this.search) || n.note.toLowerCase().includes(this.search);
         mat.opacity = matches ? 0.95 : 0.18;
-        mat.emissiveIntensity = matches ? (n.kind === 'memory' ? 0.6 : 0.75) : 0.1;
+        mat.emissiveIntensity = matches ? (n.kind === 'memory' ? 0.5 : 0.6) : 0.05;
       } else if (visible) {
         mat.opacity = n.kind === 'memory' ? 0.92 : 0.95;
-        mat.emissiveIntensity = n.kind === 'memory' ? 1.5 : 1.6;
+        mat.emissiveIntensity = n.kind === 'memory' ? 0.7 : 0.8;
       }
     }
     this.rebuildEdges();
@@ -401,7 +401,7 @@ export class BrainScene {
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    const mat = new THREE.PointsMaterial({ color: 0x6080a0, size: 0.06, transparent: true, opacity: 0.50 });
+    const mat = new THREE.PointsMaterial({ color: 0x6080a0, size: 0.06, transparent: true, opacity: 0.20 });
     this.dustPoints = new THREE.Points(geo, mat);
     this.scene.add(this.dustPoints);
   }
@@ -551,11 +551,11 @@ export class BrainScene {
 
     // Distance-aware emissive boost — nodes brighten when pulled back
     const zoomFactor = Math.max(1.0, this.orbitRadius / 32);
-    const distanceBoost = Math.min(1.6, zoomFactor);
+    const distanceBoost = Math.min(1.3, zoomFactor);
     for (const n of this.nodes) {
       if (n.kind === 'self' || !n.mesh.visible) continue;
       const mat = n.mesh.material as THREE.MeshPhysicalMaterial;
-      const base = n.kind === 'memory' ? 1.5 : 1.6;
+      const base = n.kind === 'memory' ? 0.7 : 0.8;
       mat.emissiveIntensity = base * (n.kind === 'memory' ? distanceBoost : 1.0 + (distanceBoost - 1) * 0.5);
     }
 

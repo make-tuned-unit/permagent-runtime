@@ -137,14 +137,10 @@ async fn get_dashboard(
         })
         .take(4)
         .map(|s| {
-            let age_hours = (now - s.updated_at).num_hours();
-            let state = if age_hours < 1 {
-                "completed"
-            } else if age_hours < 24 {
-                "paused"
-            } else {
-                "completed"
-            };
+            // Non-active sessions (updated_at > 2 min ago) are completed.
+            // We have no explicit pause/stop events so all recent sessions
+            // are treated as completed to avoid false "paused" labels.
+            let state = "completed";
             RecentSession {
                 id: s.id.clone(),
                 title: if s.name.is_empty() || s.name == "New Chat" {
