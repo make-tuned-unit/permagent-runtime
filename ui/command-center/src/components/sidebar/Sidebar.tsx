@@ -1,8 +1,9 @@
 import { useEffect, useCallback } from 'react';
-import { LayoutDashboard, Globe, Code, Brain, Settings, Wifi, WifiOff, Loader, MessageSquare } from 'lucide-react';
+import { Home, LayoutDashboard, Globe, Code, Brain, Settings, Wifi, WifiOff, Loader, MessageSquare } from 'lucide-react';
 import { useCommandCenter, type ConnectionStatus } from '../../lib/store';
 
 const WORKSPACE_ICONS: Record<string, typeof LayoutDashboard> = {
+  'home': Home,
   'layout-dashboard': LayoutDashboard,
   'globe': Globe,
   'code': Code,
