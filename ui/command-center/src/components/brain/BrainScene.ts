@@ -4,7 +4,7 @@ import type { BrainGraph, GraphEntity, GraphMemory } from './useBrainData';
 // ── Types ──────────────────────────────────────────────────────────────
 interface SimNode {
   id: string;
-  kind: 'self' | 'person' | 'project' | 'topic' | 'memory';
+  kind: string;
   label: string;
   note: string;
   mass: number;
@@ -53,6 +53,7 @@ const MIN_ALPHA = 0.05;
 
 const NODE_COLORS: Record<string, number> = {
   person: 0xc8e0ff, project: 0xa855f7, topic: 0x7bb7ff,
+  tool: 0xa855f7, concept: 0x7bb7ff, location: 0x7bb7ff,
 };
 const MEM_FRESH = new THREE.Color(0x00d5ff);
 const MEM_STALE = new THREE.Color(0x4a5468);
@@ -201,12 +202,13 @@ export class BrainScene {
 
     // Entities
     for (const ent of data.entities) {
-      const kind = ent.type as 'person' | 'project' | 'topic';
-      const color = NODE_COLORS[kind] || 0x7bb7ff;
+      const kind = ent.type as string;
+      const nodeColor = NODE_COLORS[kind] || 0x7bb7ff;
       let geo: THREE.BufferGeometry;
-      if (kind === 'project') geo = new THREE.BoxGeometry(0.85, 0.85, 0.85);
-      else if (kind === 'topic') geo = new THREE.OctahedronGeometry(0.7, 0);
+      if (kind === 'project' || kind === 'tool') geo = new THREE.BoxGeometry(0.85, 0.85, 0.85);
+      else if (kind === 'topic' || kind === 'concept' || kind === 'location') geo = new THREE.OctahedronGeometry(0.7, 0);
       else geo = new THREE.SphereGeometry(0.55, 24, 18);
+      const color = nodeColor;
 
       const mat = new THREE.MeshPhysicalMaterial({
         color, emissive: color, emissiveIntensity: 1.6,
@@ -273,7 +275,11 @@ export class BrainScene {
     for (const n of this.nodes) {
       if (n.kind === 'self') { n.mesh.visible = true; continue; }
       let visible = true;
-      if (n.kind !== 'memory' && !this.typeFilter[n.kind as keyof TypeFilters]) visible = false;
+      if (n.kind !== 'memory') {
+        // Map extended types to filter groups
+        const filterKey = (n.kind === 'tool' ? 'project' : n.kind === 'concept' || n.kind === 'location' ? 'topic' : n.kind) as keyof TypeFilters;
+        if (!this.typeFilter[filterKey]) visible = false;
+      }
       if (n.kind === 'memory' && !this.typeFilter.memory) visible = false;
       if (n.kind === 'memory' && n.data) {
         const mem = n.data as GraphMemory;
@@ -496,7 +502,8 @@ export class BrainScene {
 
   private onWheel = (e: WheelEvent) => {
     e.preventDefault();
-    this.orbitRadius = Math.max(10, Math.min(70, this.orbitRadius + e.deltaY * 0.04));
+    const zoomDelta = e.deltaY * 0.04 * (this.orbitRadius / 32);
+    this.orbitRadius = Math.max(8, Math.min(180, this.orbitRadius + zoomDelta));
   };
 
   // ── Animation Loop ───────────────────────────────────────────────────

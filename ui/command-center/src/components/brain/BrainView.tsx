@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { color, font, ease } from '../../styles/tokens';
 import { Mobius } from '../mobius/Mobius';
 import { BrainScene, type TypeFilters } from './BrainScene';
-import { useBrainData, type GraphMemory } from './useBrainData';
+import { useBrainData, type GraphMemory, type GraphEntity } from './useBrainData';
 
 const FILTERS: { key: keyof TypeFilters; label: string; shape: string }[] = [
   { key: 'person', label: 'people', shape: '●' },
@@ -155,68 +155,80 @@ export function BrainView() {
         </div>
       )}
 
-      {/* Side panel */}
-      {selected && (
+      {/* Side panel — glass card with 16px inset */}
+      <div style={{
+        position: 'absolute', top: 0, right: 0, bottom: 0, width: 360, zIndex: 15,
+        padding: 16, pointerEvents: selected ? 'auto' : 'none',
+        transform: selected ? 'translateX(0)' : 'translateX(105%)',
+        transition: `transform 320ms ${ease.out}`,
+      }}>
         <div style={{
-          position: 'absolute', top: 0, right: 0, bottom: 0, width: 360, zIndex: 15,
-          background: 'rgba(20,28,48,0.85)', backdropFilter: 'blur(24px)',
-          borderLeft: '1px solid rgba(0,213,255,0.12)',
-          transform: 'translateX(0)', transition: `transform 320ms ${ease.out}`,
-          display: 'flex', flexDirection: 'column', padding: 24,
-          overflowY: 'auto',
+          height: '100%', overflowY: 'auto',
+          background: 'rgba(20,28,48,0.78)',
+          backdropFilter: 'blur(24px) saturate(140%)',
+          WebkitBackdropFilter: 'blur(24px) saturate(140%)',
+          border: '1px solid rgba(0,213,255,0.16)',
+          borderRadius: 16, padding: 24,
+          boxShadow: '0 24px 60px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.06)',
+          display: 'flex', flexDirection: 'column',
         }}>
-          {/* Close */}
-          <button onClick={() => setSelected(null)} style={{
-            position: 'absolute', top: 16, right: 16,
-            background: 'transparent', border: 'none', color: color.textMuted,
-            fontSize: 18, cursor: 'pointer',
-          }}>×</button>
+          {selected && (<>
+            {/* Close */}
+            <button onClick={() => setSelected(null)} style={{
+              position: 'absolute', top: 28, right: 28,
+              background: 'transparent', border: 'none', color: color.textMuted,
+              fontSize: 18, cursor: 'pointer',
+            }}>×</button>
 
-          {/* Type label */}
-          <span style={{
-            fontFamily: font.mono, fontSize: 10, fontWeight: 600,
-            color: color.cyan, textTransform: 'uppercase', letterSpacing: '0.1em',
-          }}>
-            {selected.kind}
-          </span>
+            {/* Type label */}
+            <span style={{
+              fontFamily: font.mono, fontSize: 10, fontWeight: 600,
+              color: color.cyan, textTransform: 'uppercase', letterSpacing: '0.1em',
+            }}>
+              {selected.kind === 'memory' ? 'MEMORY' : (selected.data as GraphEntity)?.type?.toUpperCase() || selected.kind.toUpperCase()}
+            </span>
 
-          {/* Name */}
-          <h3 style={{ fontFamily: font.display, fontSize: 20, fontWeight: 700, color: color.text, margin: '8px 0 12px' }}>
-            {selected.label}
-          </h3>
+            {/* Name / title */}
+            <h3 style={{ fontFamily: font.display, fontSize: 20, fontWeight: 700, color: color.text, margin: '8px 0 12px' }}>
+              {selected.label}
+            </h3>
 
-          {/* Note / text */}
-          {selected.note && (
-            <p style={{ fontFamily: font.body, fontSize: 13, color: color.textMuted, lineHeight: 1.6, margin: '0 0 16px' }}>
-              {selected.note}
-            </p>
-          )}
+            {/* Entity: note or fallback */}
+            {selected.kind !== 'memory' && (
+              <p style={{ fontFamily: font.body, fontSize: 13, color: color.textMuted, lineHeight: 1.6, margin: '0 0 16px' }}>
+                {selected.note || 'No description yet.'}
+              </p>
+            )}
 
-          {/* Memory stats */}
-          {selected.kind === 'memory' && selected.data && (() => {
-            const mem = selected.data as GraphMemory;
-            return (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 8 }}>
-                {mem.ent.length > 0 && (
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                    {mem.ent.map(id => (
-                      <span key={id} style={{
-                        fontFamily: font.mono, fontSize: 10, color: color.cyan,
-                        border: `1px solid ${color.borderHi}`, borderRadius: 999, padding: '3px 8px',
-                      }}>{id}</span>
-                    ))}
+            {/* Memory: full text + chips + stats */}
+            {selected.kind === 'memory' && selected.data && (() => {
+              const mem = selected.data as GraphMemory;
+              return (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                  <p style={{ fontFamily: font.body, fontSize: 13, color: color.text, lineHeight: 1.7, margin: 0 }}>
+                    {mem.text}
+                  </p>
+                  {mem.ent.length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                      {mem.ent.map(id => (
+                        <span key={id} style={{
+                          fontFamily: font.mono, fontSize: 10, color: color.cyan,
+                          border: `1px solid ${color.borderHi}`, borderRadius: 999, padding: '4px 10px',
+                        }}>{id}</span>
+                      ))}
+                    </div>
+                  )}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+                    <Stat label="reinforcement" value={`${Math.round(mem.weight * 100)}%`} />
+                    <Stat label="recency" value={recencyLabel(mem.age)} />
+                    <Stat label="last recalled" value={mem.age < 0.1 ? 'today' : mem.age < 0.3 ? '3 days ago' : '2 weeks ago'} />
                   </div>
-                )}
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
-                  <Stat label="reinforcement" value={`${Math.round(mem.weight * 100)}%`} />
-                  <Stat label="recency" value={recencyLabel(mem.age)} />
-                  <Stat label="last recalled" value={mem.age < 0.1 ? 'today' : mem.age < 0.3 ? '3 days ago' : '2 weeks ago'} />
                 </div>
-              </div>
-            );
-          })()}
+              );
+            })()}
+          </>)}
         </div>
-      )}
+      </div>
 
       {/* Time slider */}
       <div style={{
