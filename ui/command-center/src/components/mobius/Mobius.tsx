@@ -50,25 +50,21 @@ export function Mobius({
   }, []);
 
   // rAF-driven frame cycling
-  // idle: ping-pong frames 109→123→109 (central node pulse)
+  // idle: loops 109→123, restarts at 109
   // other active states: loops all 0-150
-  const idleDirRef = useRef(1); // 1 = forward, -1 = backward
   useEffect(() => {
     if (!isAnimated || fps === 0) {
       setFrame(0);
       return;
     }
     setFrame(isIdle ? IDLE_START : 0);
-    idleDirRef.current = 1;
     const interval = 1000 / fps;
     const tick = (now: number) => {
       if (now - lastTime.current >= interval) {
         setFrame(f => {
           if (isIdle) {
-            const next = f + idleDirRef.current;
-            if (next > IDLE_END) { idleDirRef.current = -1; return IDLE_END - 1; }
-            if (next < IDLE_START) { idleDirRef.current = 1; return IDLE_START + 1; }
-            return next;
+            const next = f + 1;
+            return next > IDLE_END ? IDLE_START : next;
           }
           return (f + 1) % FRAME_COUNT;
         });

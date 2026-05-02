@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { Panel, Group, Separator } from 'react-resizable-panels';
 import { color, font, radius } from '../../styles/tokens';
 import { Mobius } from '../mobius/Mobius';
 import { useDashboard } from '../dashboard/useDashboard';
@@ -111,46 +112,59 @@ export function BuildView() {
         )}
       </div>
 
-      {/* Top row: terminal + browser */}
-      <div style={{
-        padding: '18px 24px 12px',
-        display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14,
-        height: 360, flexShrink: 0,
-      }}>
-        <div style={{ borderRadius: radius.md, overflow: 'hidden', border: `1px solid ${color.border}` }}>
-          <TerminalManager />
-        </div>
-        <div style={{ borderRadius: radius.md, overflow: 'hidden', border: `1px solid ${color.border}` }}>
-          <Browser />
-        </div>
-      </div>
+      {/* Resizable body: top row (terminal | browser) / bottom (chat) */}
+      <div style={{ flex: 1, minHeight: 0, padding: '0 6px 6px' }}>
+        <Group orientation="vertical">
+          {/* Top row: terminal + browser side by side */}
+          <Panel id="build-top" defaultSize={55} minSize={20}>
+            <div style={{ height: '100%', padding: '12px 18px 6px' }}>
+              <Group orientation="horizontal">
+                <Panel id="build-terminal" defaultSize={50} minSize={20}>
+                  <div style={{ height: '100%', borderRadius: radius.md, overflow: 'hidden', border: `1px solid ${color.border}` }}>
+                    <TerminalManager />
+                  </div>
+                </Panel>
+                <Separator className="group relative flex items-center justify-center w-1">
+                  <div className="bg-dark-border group-hover:bg-accent/50 group-active:bg-accent transition-colors w-px h-full" />
+                </Separator>
+                <Panel id="build-browser" defaultSize={50} minSize={20}>
+                  <div style={{ height: '100%', borderRadius: radius.md, overflow: 'hidden', border: `1px solid ${color.border}` }}>
+                    <Browser />
+                  </div>
+                </Panel>
+              </Group>
+            </div>
+          </Panel>
 
-      {/* Chat row */}
-      <div style={{
-        flex: 1, margin: '6px 24px 18px',
-        borderRadius: radius.md,
-        background: 'rgba(20,28,48,0.45)',
-        border: `1px solid ${color.border}`,
-        display: 'flex', flexDirection: 'column', minHeight: 0,
-        backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)',
-        overflow: 'hidden',
-      }}>
-        {/* Chat header */}
-        <div style={{
-          padding: '10px 18px', display: 'flex', alignItems: 'center', gap: 10,
-          borderBottom: `1px solid ${color.border}`, flexShrink: 0,
-        }}>
-          <div style={{ fontSize: 12, fontWeight: 600 }}>Conversation</div>
-          <div style={{ flex: 1 }} />
-        </div>
+          <Separator className="group relative flex items-center justify-center h-1">
+            <div className="bg-dark-border group-hover:bg-accent/50 group-active:bg-accent transition-colors h-px w-full" />
+          </Separator>
 
-        {/* Messages */}
-        <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-          <MessageList />
-        </div>
-
-        {/* Composer */}
-        <ChatInput ref={chatInputRef} />
+          {/* Bottom: chat */}
+          <Panel id="build-chat" defaultSize={45} minSize={15}>
+            <div style={{
+              height: '100%', margin: '6px 18px 12px',
+              borderRadius: radius.md,
+              background: 'rgba(20,28,48,0.45)',
+              border: `1px solid ${color.border}`,
+              display: 'flex', flexDirection: 'column',
+              backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)',
+              overflow: 'hidden',
+            }}>
+              <div style={{
+                padding: '10px 18px', display: 'flex', alignItems: 'center', gap: 10,
+                borderBottom: `1px solid ${color.border}`, flexShrink: 0,
+              }}>
+                <div style={{ fontSize: 12, fontWeight: 600 }}>Conversation</div>
+                <div style={{ flex: 1 }} />
+              </div>
+              <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+                <MessageList />
+              </div>
+              <ChatInput ref={chatInputRef} />
+            </div>
+          </Panel>
+        </Group>
       </div>
     </div>
   );
