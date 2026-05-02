@@ -301,6 +301,20 @@ export const api = {
   sessionEventsUrl: (sessionId: string): string =>
     `${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/events`,
 
+  // Identity
+  getIdentity: () => apiFetch<{
+    first_name: string; last_name: string | null; nickname: string | null;
+    display_name: string; traits: string[]; tone: string;
+    opening_greeting: string; voice_id: string | null;
+  }>('/agent/identity'),
+
+  putIdentity: (update: {
+    first_name: string; last_name?: string | null; nickname?: string | null;
+    traits: string[]; tone: string; opening_greeting: string; voice_id?: string | null;
+  }) => apiFetch<{ first_name: string; display_name: string }>('/agent/identity', {
+    method: 'PUT', body: JSON.stringify(update),
+  }),
+
   // Config
   getConfig: () => apiFetch<PermagentConfig>('/config'),
 
