@@ -1,16 +1,6 @@
-import { useEffect, useRef, useState, useMemo } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export type MobiusState = 'idle' | 'thinking' | 'speaking' | 'calibrating' | 'sleeping';
-
-// Idle breathing pulse — injected once into <head>
-let pulseStyleInjected = false;
-function ensurePulseStyle() {
-  if (pulseStyleInjected) return;
-  pulseStyleInjected = true;
-  const style = document.createElement('style');
-  style.textContent = `@keyframes mobius-pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}`;
-  document.head.appendChild(style);
-}
 
 interface MobiusProps {
   size?: number;
@@ -23,7 +13,7 @@ interface MobiusProps {
 const FRAME_COUNT = 151;
 const ASPECT = 1024 / 485; // source logo.webp dimensions
 const FPS: Record<MobiusState, number> = {
-  idle: 0,        // static logo
+  idle: 4,        // slow pulse — cycles frames to animate central node
   thinking: 30,
   speaking: 24,
   calibrating: 20,
@@ -45,12 +35,8 @@ export function Mobius({
   const rafRef = useRef<number>();
   const lastTime = useRef(0);
 
-  const isAnimated = state !== 'idle' && state !== 'sleeping';
-  const isIdle = state === 'idle';
+  const isAnimated = state !== 'sleeping';
   const fps = FPS[state] || 0;
-
-  // Inject pulse keyframes for idle breathing
-  useMemo(() => { if (isIdle) ensurePulseStyle(); }, [isIdle]);
 
   // Preload frames once
   useEffect(() => {
@@ -80,7 +66,7 @@ export function Mobius({
     return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
   }, [isAnimated, fps]);
 
-  const src = isAnimated ? frameSrc(frame) : '/mobius/logo.webp';
+  const src = isAnimated ? frameSrc(frame) : '/mobius/logo.webp'; // sleeping uses static
 
   // size = height; width derives from natural aspect ratio of source asset
   const height = size;
@@ -105,7 +91,6 @@ export function Mobius({
         filter,
         opacity: state === 'sleeping' ? 0.35 : 1,
         willChange: isAnimated ? 'contents' : undefined,
-        animation: isIdle ? 'mobius-pulse 3s ease-in-out infinite' : undefined,
       }}
       alt="Permagent"
       draggable={false}

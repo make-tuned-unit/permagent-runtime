@@ -94,8 +94,8 @@ export function Sidebar() {
       {/* Brand row */}
       <div style={{
         display: 'flex', alignItems: 'center',
-        padding: open ? '0 14px 14px' : '0 0 14px',
-        justifyContent: 'center',
+        padding: open ? '0 14px 14px' : '0 12px 14px',
+        justifyContent: 'flex-start',
       }}>
         <Mobius size={14} state="idle" glow={0.7} />
       </div>
