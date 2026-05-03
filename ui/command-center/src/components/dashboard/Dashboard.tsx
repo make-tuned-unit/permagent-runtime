@@ -1,13 +1,7 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
 import { color, font, ease, radius } from '../../styles/tokens';
 import { Mobius, type MobiusState } from '../mobius/Mobius';
 import { useDashboard, type InFlightSession, type RecentSession } from './useDashboard';
 import { Stat, SectionTitle, StatusIcon } from './atoms';
-import { useCommandCenter } from '../../lib/store';
-import { MessageList } from '../chat/MessageList';
-import { ChatInput } from '../chat/ChatInput';
-import type { ChatInputHandle } from '../chat/ChatInput';
-import { DropZone } from '../chat/DropZone';
 
 function timeAgo(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
@@ -119,8 +113,6 @@ export function Dashboard() {
         )}
       </div>
 
-      {/* Floating chat widget */}
-      <HomeChat agentName={agent.name} />
     </div>
   );
 }
@@ -188,100 +180,5 @@ function ActivityItem({ item, isLast }: { item: RecentSession; isLast: boolean }
         color: statusColor[item.state] || color.textMuted,
       }}>{item.state.replace('_', ' ')}</span>
     </div>
-  );
-}
-
-function HomeChat({ agentName }: { agentName: string }) {
-  const [open, setOpen] = useState(false);
-  const ensureSession = useCommandCenter(s => s.ensureSession);
-  const connectSession = useCommandCenter(s => s.connectSession);
-  const loadSessionMessages = useCommandCenter(s => s.loadSessionMessages);
-  const chatInputRef = useRef<ChatInputHandle>(null);
-  const connectedRef = useRef(false);
-
-  const handleDrop = useCallback((files: File[]) => {
-    chatInputRef.current?.addFiles(files);
-  }, []);
-
-  // Connect session lazily when widget opens
-  useEffect(() => {
-    if (!open || connectedRef.current) return;
-    connectedRef.current = true;
-    (async () => {
-      const sessionId = await ensureSession();
-      if (sessionId) {
-        await loadSessionMessages(sessionId);
-        connectSession(sessionId);
-      }
-    })();
-    return () => {
-      useCommandCenter.getState().disconnectSession();
-      connectedRef.current = false;
-    };
-  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Collapsed: floating button
-  if (!open) {
-    return (
-      <button onClick={() => setOpen(true)} style={{
-        position: 'absolute', bottom: 20, right: 20, zIndex: 20,
-        display: 'flex', alignItems: 'center', gap: 10,
-        padding: '12px 20px', borderRadius: 999,
-        background: 'rgba(20,28,48,0.85)', backdropFilter: 'blur(16px)',
-        border: `1px solid ${color.borderHi}`,
-        color: color.cyan, cursor: 'pointer',
-        fontFamily: font.body, fontSize: 13, fontWeight: 600,
-        boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
-        transition: `all 200ms ${ease.out}`,
-      }}>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
-          <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2v10z" />
-        </svg>
-        Chat with {agentName}
-      </button>
-    );
-  }
-
-  // Expanded: floating chat panel
-  return (
-    <DropZone onDrop={handleDrop}>
-      <div style={{
-        position: 'absolute', bottom: 20, right: 20, zIndex: 20,
-        width: 380, height: 520,
-        borderRadius: radius.lg,
-        background: 'rgba(11,18,32,0.95)', backdropFilter: 'blur(24px)',
-        border: `1px solid ${color.borderHi}`,
-        boxShadow: '0 16px 48px rgba(0,0,0,0.6), 0 0 0 1px rgba(0,213,255,0.08)',
-        display: 'flex', flexDirection: 'column',
-        overflow: 'hidden',
-      }}>
-        {/* Header */}
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 10,
-          padding: '12px 16px',
-          borderBottom: `1px solid ${color.border}`,
-          flexShrink: 0,
-        }}>
-          <Mobius size={22} state="idle" glow={0.5} />
-          <span style={{ fontFamily: font.display, fontSize: 13, fontWeight: 600, color: color.text, flex: 1 }}>
-            Chat with {agentName}
-          </span>
-          <button onClick={() => setOpen(false)} style={{
-            width: 24, height: 24, borderRadius: 6,
-            background: 'transparent', border: 'none',
-            color: color.textMuted, cursor: 'pointer',
-            display: 'grid', placeItems: 'center', fontSize: 16,
-          }}>×</button>
-        </div>
-
-        {/* Messages */}
-        <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-          <MessageList />
-        </div>
-
-        {/* Input */}
-        <ChatInput ref={chatInputRef} />
-      </div>
-    </DropZone>
   );
 }

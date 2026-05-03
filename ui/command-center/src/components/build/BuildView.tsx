@@ -1,17 +1,9 @@
-import { useEffect, useRef, useCallback } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import { color, font, radius } from '../../styles/tokens';
 import { Mobius } from '../mobius/Mobius';
 import { useDashboard } from '../dashboard/useDashboard';
-import { useCommandCenter } from '../../lib/store';
-import { MessageList } from '../chat/MessageList';
-import { ChatInput } from '../chat/ChatInput';
-import type { ChatInputHandle } from '../chat/ChatInput';
-import { DropZone } from '../chat/DropZone';
 import { TerminalManager } from '../terminal/TerminalManager';
 import { Browser } from '../browser';
-
-// ── Atoms ────────────────────────────────────────────────────────────
 
 const ghostBtn: React.CSSProperties = {
   height: 30, padding: '0 12px', borderRadius: 8,
@@ -28,41 +20,13 @@ const primaryBtn: React.CSSProperties = {
   cursor: 'pointer', boxShadow: `0 0 14px ${color.cyanGlow}`,
 };
 
-// ── Build View ───────────────────────────────────────────────────────
-
 export function BuildView() {
   const { data } = useDashboard();
-  const ensureSession = useCommandCenter(s => s.ensureSession);
-  const connectSession = useCommandCenter(s => s.connectSession);
-  const loadSessionMessages = useCommandCenter(s => s.loadSessionMessages);
-  const chatInputRef = useRef<ChatInputHandle>(null);
-  const connectedRef = useRef(false);
-
-  const handleDrop = useCallback((files: File[]) => {
-    chatInputRef.current?.addFiles(files);
-  }, []);
 
   const agentName = data?.agent.name ?? 'Agent';
   const hasActive = (data?.in_flight.length ?? 0) > 0;
   const activeTask = hasActive ? data!.in_flight[0] : null;
   const mobiusState = hasActive ? 'thinking' : 'idle';
-
-  // Connect session for chat
-  useEffect(() => {
-    if (connectedRef.current) return;
-    connectedRef.current = true;
-    (async () => {
-      const sid = await ensureSession();
-      if (sid) {
-        await loadSessionMessages(sid);
-        connectSession(sid);
-      }
-    })();
-    return () => {
-      useCommandCenter.getState().disconnectSession();
-      connectedRef.current = false;
-    };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div style={{
@@ -117,61 +81,21 @@ export function BuildView() {
         )}
       </div>
 
-      {/* Resizable body: top row (terminal | browser) / bottom (chat) */}
-      <div style={{ flex: 1, minHeight: 0, padding: '0 6px 6px' }}>
-        <Group orientation="vertical">
-          {/* Top row: terminal + browser side by side */}
-          <Panel id="build-top" defaultSize={55} minSize={20}>
-            <div style={{ height: '100%', padding: '12px 18px 6px' }}>
-              <Group orientation="horizontal">
-                <Panel id="build-terminal" defaultSize={50} minSize={20}>
-                  <div style={{ height: '100%', borderRadius: radius.md, overflow: 'hidden', border: `1px solid ${color.border}` }}>
-                    <TerminalManager />
-                  </div>
-                </Panel>
-                <Separator className="group relative flex items-center justify-center w-1">
-                  <div className="bg-dark-border group-hover:bg-accent/50 group-active:bg-accent transition-colors w-px h-full" />
-                </Separator>
-                <Panel id="build-browser" defaultSize={50} minSize={20}>
-                  <div style={{ height: '100%', borderRadius: radius.md, overflow: 'hidden', border: `1px solid ${color.border}` }}>
-                    <Browser />
-                  </div>
-                </Panel>
-              </Group>
+      {/* Terminal + Browser side by side, resizable */}
+      <div style={{ flex: 1, minHeight: 0, padding: '12px 18px' }}>
+        <Group orientation="horizontal">
+          <Panel id="build-terminal" defaultSize={50} minSize={20}>
+            <div style={{ height: '100%', borderRadius: radius.md, overflow: 'hidden', border: `1px solid ${color.border}` }}>
+              <TerminalManager />
             </div>
           </Panel>
-
-          <Separator className="group relative flex items-center justify-center h-1">
-            <div className="bg-dark-border group-hover:bg-accent/50 group-active:bg-accent transition-colors h-px w-full" />
+          <Separator className="group relative flex items-center justify-center w-1">
+            <div className="bg-dark-border group-hover:bg-accent/50 group-active:bg-accent transition-colors w-px h-full" />
           </Separator>
-
-          {/* Bottom: chat */}
-          <Panel id="build-chat" defaultSize={45} minSize={15}>
-            <DropZone onDrop={handleDrop}>
-              <div style={{ height: '100%', padding: '6px 18px 12px', display: 'flex', flexDirection: 'column' }}>
-                <div style={{
-                  flex: 1, minHeight: 0,
-                  borderRadius: radius.md,
-                  background: 'rgba(20,28,48,0.45)',
-                  border: `1px solid ${color.border}`,
-                  display: 'flex', flexDirection: 'column',
-                  backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)',
-                  overflow: 'hidden',
-                }}>
-                  <div style={{
-                    padding: '10px 18px', display: 'flex', alignItems: 'center', gap: 10,
-                    borderBottom: `1px solid ${color.border}`, flexShrink: 0,
-                  }}>
-                    <div style={{ fontSize: 12, fontWeight: 600 }}>Conversation</div>
-                    <div style={{ flex: 1 }} />
-                  </div>
-                  <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                    <MessageList />
-                  </div>
-                  <ChatInput ref={chatInputRef} />
-                </div>
-              </div>
-            </DropZone>
+          <Panel id="build-browser" defaultSize={50} minSize={20}>
+            <div style={{ height: '100%', borderRadius: radius.md, overflow: 'hidden', border: `1px solid ${color.border}` }}>
+              <Browser />
+            </div>
           </Panel>
         </Group>
       </div>
