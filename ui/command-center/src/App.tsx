@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { useCommandCenter } from './lib/store';
 import { Sidebar } from './components/sidebar/Sidebar';
 import { SettingsView } from './components/settings/SettingsView';
-import { SessionsList } from './components/sessions/SessionsList';
 import { WorkspaceRenderer } from './components/workspaces/WorkspaceRenderer';
 import { WizardShell } from './components/wizard/WizardShell';
 import { Splash } from './components/splash/Splash';
@@ -16,10 +15,6 @@ function MainContent() {
 
   if (activePanel === 'settings') {
     return <SettingsView />;
-  }
-
-  if (activePanel === 'sessions') {
-    return <SessionsList />;
   }
 
   if (!workspacesLoaded) {

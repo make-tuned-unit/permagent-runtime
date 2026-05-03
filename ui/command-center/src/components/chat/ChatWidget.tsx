@@ -15,23 +15,39 @@ const DEFAULT_W = 400;
 const DEFAULT_H = 520;
 const EDGE = 6;
 
+function timeAgo(dateStr: string): string {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+
 export function ChatWidget() {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState({ x: -1, y: -1 });
   const [size, setSize] = useState({ w: DEFAULT_W, h: DEFAULT_H });
   const [agentName, setAgentName] = useState('Agent');
+  const [sessionsOpen, setSessionsOpen] = useState(false);
 
   const ensureSession = useCommandCenter(s => s.ensureSession);
   const connectSession = useCommandCenter(s => s.connectSession);
   const loadSessionMessages = useCommandCenter(s => s.loadSessionMessages);
+  const sessions = useCommandCenter(s => s.sessions);
+  const loadSessions = useCommandCenter(s => s.loadSessions);
+  const switchToSession = useCommandCenter(s => s.switchToSession);
+  const chatSessionId = useCommandCenter(s => s.chatSessionId);
+
   const chatInputRef = useRef<ChatInputHandle>(null);
   const connectedRef = useRef(false);
+  const sessionsRef = useRef<HTMLDivElement>(null);
 
   const handleDrop = useCallback((files: File[]) => {
     chatInputRef.current?.addFiles(files);
   }, []);
 
-  // Fetch agent name once
   useEffect(() => {
     api.getIdentity().then(id => setAgentName(id.first_name)).catch(() => {});
   }, []);
@@ -47,6 +63,34 @@ export function ChatWidget() {
       }
     })();
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load sessions when dropdown opens
+  useEffect(() => {
+    if (sessionsOpen) loadSessions();
+  }, [sessionsOpen, loadSessions]);
+
+  // Close sessions dropdown on outside click
+  useEffect(() => {
+    if (!sessionsOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (sessionsRef.current && !sessionsRef.current.contains(e.target as Node)) setSessionsOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [sessionsOpen]);
+
+  const handleSelectSession = async (sessionId: string) => {
+    setSessionsOpen(false);
+    await switchToSession(sessionId);
+  };
+
+  const handleNewSession = async () => {
+    setSessionsOpen(false);
+    try {
+      const session = await api.createSession();
+      await switchToSession(session.id);
+    } catch { /* ignore */ }
+  };
 
   const getPos = () => ({
     x: pos.x === -1 ? window.innerWidth - size.w - 24 : pos.x,
@@ -137,12 +181,102 @@ export function ChatWidget() {
           padding: '10px 12px 10px 16px',
           borderBottom: `1px solid ${color.border}`,
           flexShrink: 0, cursor: 'grab', userSelect: 'none',
+          position: 'relative',
         }}
       >
-        <Mobius size={20} state="idle" glow={0.5} />
-        <span style={{ fontFamily: font.display, fontSize: 13, fontWeight: 600, color: color.text, flex: 1 }}>
-          {agentName}
-        </span>
+        {/* Möbius + name — click toggles sessions */}
+        <div
+          ref={sessionsRef}
+          onMouseDown={e => e.stopPropagation()}
+          style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', flex: 1 }}
+          onClick={() => setSessionsOpen(!sessionsOpen)}
+        >
+          <Mobius size={20} state="idle" glow={0.5} />
+          <span style={{ fontFamily: font.display, fontSize: 13, fontWeight: 600, color: color.text }}>
+            {agentName}
+          </span>
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={color.textMuted} strokeWidth={2.5} strokeLinecap="round"
+            style={{ transition: `transform 150ms ${ease.out}`, transform: sessionsOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>
+            <path d="M6 9l6 6 6-6" />
+          </svg>
+
+          {/* Sessions dropdown */}
+          {sessionsOpen && (
+            <div
+              onClick={e => e.stopPropagation()}
+              style={{
+                position: 'absolute', top: '100%', left: 0, right: 60, zIndex: 50,
+                maxHeight: 320, overflowY: 'auto',
+                background: 'rgba(11,18,32,0.98)', backdropFilter: 'blur(16px)',
+                border: `1px solid ${color.borderHi}`,
+                borderRadius: radius.md,
+                boxShadow: '0 12px 40px rgba(0,0,0,0.5)',
+              }}
+            >
+              {/* New session button */}
+              <button onClick={handleNewSession} style={{
+                width: '100%', display: 'flex', alignItems: 'center', gap: 8,
+                padding: '10px 14px',
+                borderBottom: `1px solid ${color.border}`,
+                background: 'transparent', border: 'none', borderBottomStyle: 'solid',
+                color: color.cyan, cursor: 'pointer',
+                fontFamily: font.body, fontSize: 12, fontWeight: 600,
+              }}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
+                New session
+              </button>
+
+              {sessions.length === 0 && (
+                <div style={{ padding: '16px 14px', fontSize: 11, color: color.textDim, textAlign: 'center', fontFamily: font.mono }}>
+                  No sessions yet
+                </div>
+              )}
+
+              {sessions.map(s => {
+                const isActive = s.id === chatSessionId;
+                return (
+                  <button
+                    key={s.id}
+                    onClick={() => handleSelectSession(s.id)}
+                    style={{
+                      width: '100%', display: 'flex', alignItems: 'center', gap: 10,
+                      padding: '10px 14px', textAlign: 'left',
+                      background: isActive ? 'rgba(0,213,255,0.06)' : 'transparent',
+                      borderLeft: isActive ? `2px solid ${color.cyan}` : '2px solid transparent',
+                      border: 'none', borderBottom: `1px solid ${color.border}`,
+                      borderLeftWidth: 2, borderLeftStyle: 'solid',
+                      borderLeftColor: isActive ? color.cyan : 'transparent',
+                      cursor: 'pointer',
+                      transition: `background 100ms ${ease.out}`,
+                    }}
+                    onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'rgba(255,255,255,0.03)'; }}
+                    onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}
+                  >
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{
+                        fontFamily: font.body, fontSize: 12, fontWeight: 500,
+                        color: isActive ? color.text : color.textMuted,
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      }}>
+                        {s.name || s.id.slice(0, 12)}
+                      </div>
+                      <div style={{ fontFamily: font.mono, fontSize: 10, color: color.textDim, marginTop: 2 }}>
+                        {s.message_count} msg{s.message_count !== 1 ? 's' : ''}
+                        {s.updated_at && ` · ${timeAgo(s.updated_at)}`}
+                      </div>
+                    </div>
+                    {isActive && (
+                      <div style={{ width: 5, height: 5, borderRadius: '50%', background: color.cyan, flexShrink: 0 }} />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
         {/* Model picker */}
         <div onMouseDown={e => e.stopPropagation()}>
           <ModelPicker />
