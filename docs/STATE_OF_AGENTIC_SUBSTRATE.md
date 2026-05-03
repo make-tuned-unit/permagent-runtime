@@ -643,3 +643,28 @@ Based on the corrected audit findings:
 5. **Provider inventory**: `provider_inventory_entries` and `provider_inventory_models` tables exist but are empty. Is there a provider discovery mechanism that should populate these?
 
 6. **Skill execution tracking**: The `skill_executions` table exists but nothing writes to it. Skills are injected as context, not tracked as executions. Is execution tracking planned?
+
+---
+
+## Addendum: Tool-Session Test (2026-05-03)
+
+Ran two shell tool calls in a session to verify the auto-skills pipeline.
+
+**Confirmed working:**
+- TaskLogger writes rows to `tasks` table on tool execution
+- Argument shape hashing produces stable hashes (`5695ba7155275385` for shell)
+- `repetition_candidates` view correctly identifies repeats (occurrence_count: 2)
+- `SkillProposed` event emitted at `tasks/mod.rs:225`
+
+**Pipeline gap discovered:**
+- No event handler subscribes to `SkillProposed`
+- No automatic skill creation
+- `skill_executions` never written
+- Skills exist as proposals, not actionable patterns
+
+**Bugs surfaced:**
+- `agent.rs:539-548`: platform tools (manage_schedule, FINAL_OUTPUT) bypass TaskLogger via early return. Status of these tool types in the skills system is undefined.
+- `agent.rs:714-722`: API-created sessions with empty `extension_data {}` warn-and-bail instead of falling back to global config via `extensions_or_default()`. Sessions started from the chat UI may not load extensions.
+
+**Corrected status:**
+The skills subsystem is **PARTIALLY WIRED**, not WORKING. The detection half (tool → task → hash → repetition → proposal event) is complete. The action half (event → handler → skill creation → execution tracking) is missing. Closing this loop is the substrate priority for activating skills.
