@@ -1,255 +1,221 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useCommandCenter } from '../../lib/store';
-import { color, font, ease, radius } from '../../styles/tokens';
+import { color, font, ease } from '../../styles/tokens';
+import { Mobius } from '../mobius/Mobius';
 import { ProvidersSection } from './ProvidersSection';
 import { usePersona } from './useSettings';
+import { H1, Section, Row, TextInput, Chip, SaveButton } from './atoms';
 
-// ── Shared atoms ─────────────────────────────────────────────────────
+// ── Nav rail categories (per design lines 12-32) ─────────────────────
 
-function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div style={{
-      padding: 24, borderRadius: radius.lg,
-      background: 'rgba(20,28,48,0.5)',
-      border: `1px solid ${color.border}`,
-    }}>
-      <div style={{
-        fontSize: 11, fontWeight: 600, letterSpacing: '0.10em',
-        textTransform: 'uppercase', color: color.textDim, marginBottom: 20,
-      }}>{title}</div>
-      {children}
-    </div>
-  );
-}
+const CATEGORIES = [
+  { group: 'You', items: [
+    { key: 'profile',     label: 'Profile',          icon: 'M12 12a4 4 0 100-8 4 4 0 000 8zM4 21a8 8 0 0116 0' },
+    { key: 'preferences', label: 'Preferences',      icon: 'M3 6h18M6 12h12M10 18h4' },
+  ]},
+  { group: 'Agent', items: [
+    { key: 'agent',       label: 'Persona',          icon: 'M12 2a4 4 0 014 4v3a4 4 0 11-8 0V6a4 4 0 014-4zM4 21v-2a6 6 0 016-6h4a6 6 0 016 6v2' },
+    { key: 'memory',      label: 'Memory',           icon: 'M9 4a4 4 0 00-4 4 3 3 0 00-1 5.5A3 3 0 005 18a4 4 0 004 3M15 4a4 4 0 014 4 3 3 0 011 5.5A3 3 0 0119 18a4 4 0 01-4 3' },
+    { key: 'autonomy',    label: 'Autonomy & guardrails', icon: 'M12 2l9 4v6c0 5-4 9-9 10-5-1-9-5-9-10V6l9-4z' },
+  ]},
+  { group: 'Connections', items: [
+    { key: 'tools',       label: 'Tools & MCPs',     icon: 'M14.7 6.3a1 1 0 011.4 0l1.6 1.6a1 1 0 010 1.4l-9 9-3 .6.6-3 9-9.6zM3 21h18' },
+    { key: 'models',      label: 'Models',           icon: 'M3 12h4l3-9 4 18 3-9h4' },
+    { key: 'keys',        label: 'API keys',         icon: 'M14 8a4 4 0 100 8 4 4 0 000-8zm0 4l-9 9m4-4l3 3' },
+  ]},
+  { group: 'System', items: [
+    { key: 'appearance',  label: 'Appearance',       icon: 'M12 3a9 9 0 100 18 9 9 0 000-18zM12 3v18M3 12h18' },
+    { key: 'shortcuts',   label: 'Shortcuts',        icon: 'M4 6h16v12H4zM8 10h.01M12 10h.01M16 10h.01M7 14h10' },
+    { key: 'data',        label: 'Data & privacy',   icon: 'M12 2l9 4v6c0 5-4 9-9 10-5-1-9-5-9-10V6l9-4zM9 12l2 2 4-4' },
+  ]},
+];
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div style={{ marginBottom: 16 }}>
-      <div style={{
-        fontSize: 11, fontWeight: 600, letterSpacing: '0.10em',
-        textTransform: 'uppercase', color: color.textMuted, marginBottom: 6,
-      }}>{label}</div>
-      {children}
-    </div>
-  );
-}
+// ── Persona Panel ────────────────────────────────────────────────────
 
-const inputStyle: React.CSSProperties = {
-  width: '100%', fontFamily: font.body, fontSize: 14, color: color.text,
-  background: 'rgba(20,28,48,0.4)',
-  border: `1px solid ${color.border}`, borderRadius: radius.md,
-  padding: '10px 12px', outline: 'none',
-  transition: `border-color 200ms ${ease.out}`,
-};
-
-function SaveButton({ onClick, disabled, saving }: {
-  onClick: () => void; disabled: boolean; saving: boolean;
-}) {
-  return (
-    <button onClick={onClick} disabled={disabled} style={{
-      fontFamily: font.body, fontSize: 13, fontWeight: 600,
-      padding: '8px 20px', borderRadius: radius.md,
-      background: disabled ? 'rgba(0,213,255,0.08)' : color.cyan,
-      color: disabled ? color.textDim : '#000',
-      border: 'none', cursor: disabled ? 'default' : 'pointer',
-      transition: `all 200ms ${ease.out}`,
-      opacity: disabled ? 0.5 : 1,
-    }}>
-      {saving ? 'Saving...' : 'Save'}
-    </button>
-  );
-}
-
-// ── Persona Section ──────────────────────────────────────────────────
-
-function SectionPersona() {
+function PersonaPanel() {
   const { data, loading, saving, error, save } = usePersona();
   const [name, setName] = useState('');
+  const [greeting, setGreeting] = useState('');
   const [tone, setTone] = useState('');
+  const [traits, setTraits] = useState<string[]>([]);
   const [dirty, setDirty] = useState(false);
+
+  const TRAIT_OPTIONS = ['curious', 'direct', 'patient', 'playful', 'formal', 'concise', 'thorough', 'opinionated'];
 
   useEffect(() => {
     if (data) {
       setName(data.first_name);
+      setGreeting(data.opening_greeting);
       setTone(data.tone);
+      setTraits(data.traits);
       setDirty(false);
     }
   }, [data]);
 
-  const handleNameChange = (v: string) => { setName(v); setDirty(true); };
-  const handleToneChange = (v: string) => { setTone(v); setDirty(true); };
+  const edit = <T,>(setter: (v: T) => void) => (v: T) => { setter(v); setDirty(true); };
+
+  const toggleTrait = (t: string) => {
+    setTraits(prev => prev.includes(t) ? prev.filter(x => x !== t) : [...prev, t]);
+    setDirty(true);
+  };
 
   const handleSave = () => {
     if (!dirty) return;
-    save({ first_name: name, tone });
+    save({ first_name: name, opening_greeting: greeting, tone, traits });
     setDirty(false);
   };
 
-  if (loading) return <SectionCard title="Persona"><div style={{ color: color.textDim, fontSize: 13 }}>Loading...</div></SectionCard>;
+  if (loading) return <div style={{ color: color.textDim, fontSize: 13 }}>Loading persona...</div>;
 
   return (
-    <SectionCard title="Persona">
-      <Field label="Agent name">
-        <input
-          value={name}
-          onChange={e => handleNameChange(e.target.value)}
-          style={inputStyle}
-          placeholder="e.g. Henry"
-          onFocus={e => e.target.style.borderColor = color.borderHi}
-          onBlur={e => e.target.style.borderColor = color.border}
-        />
-      </Field>
+    <div>
+      <H1 sub="Shape how your agent thinks, talks, and decides. Changes take effect at the start of the next conversation.">Persona</H1>
 
-      <Field label="Persona tone">
-        <textarea
-          value={tone}
-          onChange={e => handleToneChange(e.target.value)}
-          rows={3}
-          style={{ ...inputStyle, resize: 'vertical', minHeight: 80 }}
-          placeholder="Describe how you want your agent to operate. This shapes its tone and behavior."
-          onFocus={e => (e.target as HTMLTextAreaElement).style.borderColor = color.borderHi}
-          onBlur={e => (e.target as HTMLTextAreaElement).style.borderColor = color.border}
-        />
-        <div style={{ fontSize: 11, color: color.textDim, marginTop: 4 }}>
-          Shapes how the agent communicates. Changes apply to new sessions.
+      <Section title="Identity">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 24, marginBottom: 8 }}>
+          <Mobius size={140} state="idle" glow={1} />
+          <div style={{ flex: 1 }}>
+            <Row label="Name" hint="What you'll call them.">
+              <TextInput value={name} onChange={edit(setName)} />
+            </Row>
+            <Row label="Greeting" hint="The first line they'll say each session.">
+              <TextInput multi value={greeting} onChange={edit(setGreeting)} />
+            </Row>
+          </div>
         </div>
-      </Field>
+      </Section>
 
-      {data && data.traits.length > 0 && (
-        <Field label="Traits">
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {data.traits.map(t => (
-              <span key={t} style={{
-                fontSize: 11, fontFamily: font.mono, padding: '4px 10px',
-                borderRadius: radius.pill, color: color.cyan,
-                background: 'rgba(0,213,255,0.08)',
-                border: `1px solid ${color.borderHi}`,
-              }}>{t}</span>
+      <Section title="Tone">
+        <Row label="Voice" hint="How they describe their own voice.">
+          <TextInput multi value={tone} onChange={edit(setTone)} />
+        </Row>
+        <Row label="Traits" hint="Pick 3-5. The agent will lean into these.">
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {TRAIT_OPTIONS.map(t => (
+              <Chip key={t} on={traits.includes(t)} onClick={() => toggleTrait(t)}>{t}</Chip>
             ))}
           </div>
-        </Field>
-      )}
+        </Row>
+      </Section>
 
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12, marginTop: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12 }}>
         {error && <span style={{ fontSize: 12, color: color.danger }}>{error}</span>}
         <SaveButton onClick={handleSave} disabled={!dirty || saving} saving={saving} />
       </div>
-    </SectionCard>
+    </div>
   );
 }
 
-// ── Providers Section (wrapped) ──────────────────────────────────────
+// ── Models Panel (wraps existing ProvidersSection) ───────────────────
 
-function SectionProviders() {
+function ModelsPanel() {
   return (
-    <SectionCard title="Providers &amp; Models">
-      <ProvidersSection />
-    </SectionCard>
+    <div>
+      <H1 sub="Pick the brains behind the agent. Configure providers, manage API keys, and set defaults.">Models</H1>
+      <Section title="Providers">
+        <ProvidersSection />
+      </Section>
+    </div>
   );
 }
 
-// ── About Section ────────────────────────────────────────────────────
+// ── Stub Panels ──────────────────────────────────────────────────────
 
-function SectionAbout() {
+function StubPanel({ title, sub }: { title: string; sub: string }) {
   return (
-    <SectionCard title="About">
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
-        <div>
-          <div style={{ fontSize: 11, color: color.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>App</div>
-          <div style={{ fontSize: 14, fontFamily: font.display, fontWeight: 600, color: color.text }}>Permagent</div>
-          <div style={{ fontSize: 12, color: color.textMuted, marginTop: 2 }}>v1.31.0</div>
+    <div>
+      <H1 sub={sub}>{title}</H1>
+      <Section title="Coming soon">
+        <div style={{ color: color.textMuted, fontSize: 13, lineHeight: 1.6 }}>
+          This panel is on the way. Check back soon.
         </div>
-        <div>
-          <div style={{ fontSize: 11, color: color.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>Runtime</div>
-          <div style={{ fontSize: 14, fontFamily: font.display, fontWeight: 600, color: color.text }}>permagentd</div>
-          <div style={{ fontSize: 12, color: color.textMuted, marginTop: 2 }}>Rust + Tauri</div>
-        </div>
-      </div>
-
-      <div style={{ fontSize: 12, color: color.textMuted, lineHeight: 1.6, marginBottom: 16 }}>
-        Persistent AI agent runtime with spectral memory. Built to grow with you.
-      </div>
-
-      <div style={{ display: 'flex', gap: 12 }}>
-        <a
-          href="https://github.com/make-tuned-unit/permagent-runtime"
-          target="_blank"
-          rel="noreferrer"
-          style={{
-            fontSize: 12, fontWeight: 500, color: color.cyan,
-            textDecoration: 'none', padding: '6px 14px',
-            borderRadius: radius.md, border: `1px solid ${color.borderHi}`,
-            transition: `background 200ms ${ease.out}`,
-          }}
-          onMouseEnter={e => (e.currentTarget.style.background = 'rgba(0,213,255,0.08)')}
-          onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-        >
-          View source
-        </a>
-      </div>
-
-      <div style={{ marginTop: 20, padding: '12px 0 0', borderTop: `1px solid ${color.border}` }}>
-        <div style={{ fontSize: 11, color: color.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>System</div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 12, color: color.textMuted }}>
-          <div>Memory store: <span style={{ fontFamily: font.mono, fontSize: 11, color: color.textDim }}>~/.permagent/spectral/</span></div>
-          <div>Config: <span style={{ fontFamily: font.mono, fontSize: 11, color: color.textDim }}>~/.permagent/config.yaml</span></div>
-        </div>
-      </div>
-    </SectionCard>
+      </Section>
+    </div>
   );
 }
+
+const STUBS: Record<string, { title: string; sub: string }> = {
+  profile:     { title: 'Profile',     sub: 'Your account, profile photo, and personal details.' },
+  preferences: { title: 'Preferences', sub: 'Defaults, locale, and how the app feels by default.' },
+  memory:      { title: 'Memory',      sub: 'How long things stick. What gets forgotten. What never does.' },
+  autonomy:    { title: 'Autonomy & guardrails', sub: 'How far the agent can go without asking. Spending caps. Approval boundaries.' },
+  tools:       { title: 'Tools & MCPs', sub: 'External services your agent can call. Permissions per session.' },
+  keys:        { title: 'API keys',    sub: 'Bring-your-own keys for OpenAI, Anthropic, and others.' },
+  appearance:  { title: 'Appearance',  sub: 'Theme, accent color, density.' },
+  shortcuts:   { title: 'Shortcuts',   sub: 'Keyboard shortcuts you can customize.' },
+  data:        { title: 'Data & privacy', sub: 'Where your data lives. How to export or wipe it.' },
+};
 
 // ── Main Settings View ───────────────────────────────────────────────
 
 export function SettingsView() {
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
+  const [section, setSection] = useState('agent');
 
   const dismiss = useCallback(() => setActivePanel('chat'), [setActivePanel]);
 
   useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') { e.preventDefault(); dismiss(); }
-    }
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); dismiss(); } };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
   }, [dismiss]);
+
+  const renderPanel = () => {
+    if (section === 'agent') return <PersonaPanel />;
+    if (section === 'models') return <ModelsPanel />;
+    const stub = STUBS[section];
+    if (stub) return <StubPanel title={stub.title} sub={stub.sub} />;
+    return null;
+  };
 
   return (
     <div style={{
-      width: '100%', height: '100%', overflowY: 'auto',
-      background: 'radial-gradient(120% 80% at 50% 0%, #142035 0%, #0B1220 50%, #050810 100%)',
-      padding: '28px 32px 40px',
-      fontFamily: font.body, color: color.text,
+      width: '100%', height: '100%', display: 'flex',
+      background: '#0B1220', color: color.text, fontFamily: font.body,
     }}>
-      <div style={{ maxWidth: 720 }}>
-        {/* Header */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 28 }}>
-          <button onClick={dismiss} style={{
-            width: 32, height: 32, borderRadius: radius.md,
-            background: 'transparent', border: `1px solid ${color.border}`,
-            color: color.textMuted, cursor: 'pointer',
-            display: 'grid', placeItems: 'center',
-            transition: `all 200ms ${ease.out}`,
-          }}
-            onMouseEnter={e => { e.currentTarget.style.borderColor = color.borderHi; e.currentTarget.style.color = color.text; }}
-            onMouseLeave={e => { e.currentTarget.style.borderColor = color.border; e.currentTarget.style.color = color.textMuted; }}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
-              <path d="M15 6l-6 6 6 6" />
-            </svg>
-          </button>
-          <div>
-            <div style={{ fontFamily: font.display, fontSize: 20, fontWeight: 600 }}>Settings</div>
-            <div style={{ fontSize: 12, color: color.textMuted, marginTop: 2 }}>Manage your agent, providers, and preferences</div>
-          </div>
-        </div>
+      {/* Nav rail */}
+      <div style={{
+        width: 240, borderRight: `1px solid ${color.border}`,
+        background: 'rgba(7,11,20,0.4)',
+        padding: '24px 14px', overflow: 'auto', flexShrink: 0,
+      }}>
+        <div style={{ fontFamily: font.display, fontSize: 18, fontWeight: 700,
+          letterSpacing: '-0.01em', padding: '0 10px 18px' }}>Settings</div>
 
-        {/* Section cards */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-          <SectionPersona />
-          <SectionProviders />
-          <SectionAbout />
-        </div>
+        {CATEGORIES.map(cat => (
+          <div key={cat.group} style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.10em',
+              textTransform: 'uppercase', color: color.textDim,
+              padding: '0 10px 6px' }}>{cat.group}</div>
+            {cat.items.map(it => {
+              const on = section === it.key;
+              return (
+                <button key={it.key} onClick={() => setSection(it.key)} style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  width: '100%', padding: '8px 10px', borderRadius: 8,
+                  background: on ? 'rgba(0,213,255,0.08)' : 'transparent',
+                  border: on ? `1px solid ${color.borderHi}` : '1px solid transparent',
+                  color: on ? color.cyan : color.textMuted,
+                  cursor: 'pointer', textAlign: 'left',
+                  fontFamily: font.body, fontSize: 13,
+                  fontWeight: on ? 600 : 500,
+                  transition: `all 140ms ${ease.out}`,
+                }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+                    <path d={it.icon} />
+                  </svg>
+                  {it.label}
+                </button>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+
+      {/* Content panel */}
+      <div style={{ flex: 1, overflow: 'auto', padding: '32px 40px 60px' }}>
+        {renderPanel()}
       </div>
     </div>
   );
