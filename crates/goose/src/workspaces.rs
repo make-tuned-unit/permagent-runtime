@@ -19,16 +19,11 @@ pub struct Workspace {
 
 // ── Preset layouts ─────────────────────────────────────────────────────────
 
-fn work_layout() -> serde_json::Value {
+fn automate_layout() -> serde_json::Value {
     serde_json::json!({
-        "type": "split",
-        "direction": "horizontal",
-        "sizes": [20, 60, 20],
-        "children": [
-            { "type": "panel", "tool": "skills", "config": {} },
-            { "type": "panel", "tool": "chat", "config": {} },
-            { "type": "panel", "tool": "trace", "config": {} }
-        ]
+        "type": "panel",
+        "tool": "automate",
+        "config": {}
     })
 }
 
@@ -88,7 +83,7 @@ pub async fn seed_presets_if_empty(pool: &Pool<Sqlite>) -> Result<bool, String> 
 
     let presets = [
         ("Home", "home", 0, home_layout(), true),
-        ("Work", "layout-dashboard", 1, work_layout(), false),
+        ("Automate", "layout-dashboard", 1, automate_layout(), false),
         ("World", "globe", 2, world_layout(), false),
         ("Build", "code", 3, build_layout(), false),
         ("Brain", "brain", 4, brain_layout(), false),

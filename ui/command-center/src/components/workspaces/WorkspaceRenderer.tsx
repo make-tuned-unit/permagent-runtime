@@ -11,6 +11,7 @@ import { ExecutionTrace } from '../trace/ExecutionTrace';
 import { BrainView } from '../brain/BrainView';
 import { Dashboard } from '../dashboard/Dashboard';
 import { BuildView } from '../build/BuildView';
+import { AutomateView } from '../automate/AutomateView';
 
 const TOOL_COMPONENTS: Record<ToolType, React.ComponentType> = {
   chat: ChatView,
@@ -22,6 +23,7 @@ const TOOL_COMPONENTS: Record<ToolType, React.ComponentType> = {
   memory: BrainView,
   dashboard: Dashboard,
   build: BuildView,
+  automate: AutomateView,
 };
 
 function LayoutNodeRenderer({
