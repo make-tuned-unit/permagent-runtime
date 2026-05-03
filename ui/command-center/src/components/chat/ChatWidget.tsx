@@ -2,21 +2,24 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { color, font, ease, radius } from '../../styles/tokens';
 import { Mobius } from '../mobius/Mobius';
 import { useCommandCenter } from '../../lib/store';
+import { api } from '../../lib/api';
 import { MessageList } from './MessageList';
 import { ChatInput } from './ChatInput';
 import type { ChatInputHandle } from './ChatInput';
 import { DropZone } from './DropZone';
+import { ModelPicker } from './ModelPicker';
 
 const MIN_W = 320;
 const MIN_H = 280;
 const DEFAULT_W = 400;
 const DEFAULT_H = 520;
-const EDGE = 6; // resize handle thickness
+const EDGE = 6;
 
 export function ChatWidget() {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState({ x: -1, y: -1 });
   const [size, setSize] = useState({ w: DEFAULT_W, h: DEFAULT_H });
+  const [agentName, setAgentName] = useState('Agent');
 
   const ensureSession = useCommandCenter(s => s.ensureSession);
   const connectSession = useCommandCenter(s => s.connectSession);
@@ -26,6 +29,11 @@ export function ChatWidget() {
 
   const handleDrop = useCallback((files: File[]) => {
     chatInputRef.current?.addFiles(files);
+  }, []);
+
+  // Fetch agent name once
+  useEffect(() => {
+    api.getIdentity().then(id => setAgentName(id.first_name)).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -45,7 +53,6 @@ export function ChatWidget() {
     y: pos.y === -1 ? window.innerHeight - size.h - 24 : pos.y,
   });
 
-  // ── Drag (header) ──
   const onDragStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     const p = getPos();
@@ -59,7 +66,6 @@ export function ChatWidget() {
     window.addEventListener('mouseup', onUp);
   }, [pos, size]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Resize (edges) ──
   const onEdgeStart = useCallback((e: React.MouseEvent, edges: { top?: boolean; bottom?: boolean; left?: boolean; right?: boolean }) => {
     e.preventDefault();
     e.stopPropagation();
@@ -96,7 +102,7 @@ export function ChatWidget() {
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
           <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2v10z" />
         </svg>
-        Chat
+        Chat with {agentName}
       </button>
     );
   }
@@ -113,12 +119,11 @@ export function ChatWidget() {
       boxShadow: '0 16px 48px rgba(0,0,0,0.6), 0 0 0 1px rgba(0,213,255,0.08)',
       display: 'flex', flexDirection: 'column',
     }}>
-      {/* Resize handles — edges */}
+      {/* Resize handles */}
       <div onMouseDown={e => onEdgeStart(e, { top: true })} style={{ position: 'absolute', top: -EDGE/2, left: EDGE, right: EDGE, height: EDGE, cursor: 'ns-resize', zIndex: 3 }} />
       <div onMouseDown={e => onEdgeStart(e, { bottom: true })} style={{ position: 'absolute', bottom: -EDGE/2, left: EDGE, right: EDGE, height: EDGE, cursor: 'ns-resize', zIndex: 3 }} />
       <div onMouseDown={e => onEdgeStart(e, { left: true })} style={{ position: 'absolute', top: EDGE, bottom: EDGE, left: -EDGE/2, width: EDGE, cursor: 'ew-resize', zIndex: 3 }} />
       <div onMouseDown={e => onEdgeStart(e, { right: true })} style={{ position: 'absolute', top: EDGE, bottom: EDGE, right: -EDGE/2, width: EDGE, cursor: 'ew-resize', zIndex: 3 }} />
-      {/* Corners */}
       <div onMouseDown={e => onEdgeStart(e, { top: true, left: true })} style={{ position: 'absolute', top: -EDGE/2, left: -EDGE/2, width: EDGE*2, height: EDGE*2, cursor: 'nwse-resize', zIndex: 4 }} />
       <div onMouseDown={e => onEdgeStart(e, { top: true, right: true })} style={{ position: 'absolute', top: -EDGE/2, right: -EDGE/2, width: EDGE*2, height: EDGE*2, cursor: 'nesw-resize', zIndex: 4 }} />
       <div onMouseDown={e => onEdgeStart(e, { bottom: true, left: true })} style={{ position: 'absolute', bottom: -EDGE/2, left: -EDGE/2, width: EDGE*2, height: EDGE*2, cursor: 'nesw-resize', zIndex: 4 }} />
@@ -128,16 +133,21 @@ export function ChatWidget() {
       <div
         onMouseDown={onDragStart}
         style={{
-          display: 'flex', alignItems: 'center', gap: 10,
-          padding: '10px 16px',
+          display: 'flex', alignItems: 'center', gap: 8,
+          padding: '10px 12px 10px 16px',
           borderBottom: `1px solid ${color.border}`,
           flexShrink: 0, cursor: 'grab', userSelect: 'none',
         }}
       >
         <Mobius size={20} state="idle" glow={0.5} />
         <span style={{ fontFamily: font.display, fontSize: 13, fontWeight: 600, color: color.text, flex: 1 }}>
-          Chat
+          {agentName}
         </span>
+        {/* Model picker */}
+        <div onMouseDown={e => e.stopPropagation()}>
+          <ModelPicker />
+        </div>
+        {/* Close */}
         <button
           onClick={() => setOpen(false)}
           onMouseDown={e => e.stopPropagation()}

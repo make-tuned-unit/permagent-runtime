@@ -1,8 +1,10 @@
 import { useEffect, useState, useMemo } from 'react';
-import { color, font, radius } from '../../styles/tokens';
+import { color, font, ease, radius } from '../../styles/tokens';
 import { useCommandCenter } from '../../lib/store';
 import type { SkillState } from '../../lib/store';
 import { SkillDetailPanel } from '../skills/SkillDetailPanel';
+
+type Tab = 'skills' | 'builder';
 
 export function AutomateView() {
   const skills = useCommandCenter(s => s.skills);
@@ -12,6 +14,7 @@ export function AutomateView() {
   const setSelectedSkillId = useCommandCenter(s => s.setSelectedSkillId);
 
   const [search, setSearch] = useState('');
+  const [tab, setTab] = useState<Tab>('skills');
 
   useEffect(() => { loadSkills(); }, [loadSkills]);
 
@@ -39,11 +42,24 @@ export function AutomateView() {
       }}>
         <div style={{ fontFamily: font.display, fontSize: 20, fontWeight: 600 }}>Automate</div>
         <div style={{ fontSize: 12, color: color.textMuted, marginTop: 4 }}>
-          Skills your agent has learned. These are reusable patterns detected from repeated actions.
+          Skills and automations that extend your agent's capabilities.
         </div>
 
-        {/* Search + stats bar */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 16 }}>
+        {/* Tabs */}
+        <div style={{ display: 'flex', gap: 0, marginTop: 16, borderBottom: `1px solid ${color.border}`, marginBottom: -1 }}>
+          {([['skills', 'Skills Library'], ['builder', 'Automation Builder']] as const).map(([id, label]) => (
+            <button key={id} onClick={() => setTab(id)} style={{
+              padding: '8px 16px', fontFamily: font.body, fontSize: 12, fontWeight: 600,
+              color: tab === id ? color.cyan : color.textMuted,
+              background: 'transparent', border: 'none', cursor: 'pointer',
+              borderBottom: tab === id ? `2px solid ${color.cyan}` : '2px solid transparent',
+              transition: `all 150ms ${ease.out}`,
+            }}>{label}</button>
+          ))}
+        </div>
+
+        {/* Search (skills tab only) */}
+        {tab === 'skills' && <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 16 }}>
           <div style={{ position: 'relative', flex: 1, maxWidth: 360 }}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={color.textDim} strokeWidth={2} strokeLinecap="round"
               style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)' }}>
@@ -69,11 +85,12 @@ export function AutomateView() {
           }}>
             {filtered.length} skill{filtered.length !== 1 ? 's' : ''}
           </div>
-        </div>
+        </div>}
       </div>
 
       {/* Content */}
-      <div style={{ flex: 1, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
+      {tab === 'builder' && <BuilderPlaceholder />}
+      {tab === 'skills' && <div style={{ flex: 1, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
         {/* Skills list */}
         <div style={{
           flex: selectedSkill ? '0 0 50%' : '1',
@@ -106,6 +123,42 @@ export function AutomateView() {
             <SkillDetailPanel skill={selectedSkill} />
           </div>
         )}
+      </div>}
+    </div>
+  );
+}
+
+function BuilderPlaceholder() {
+  return (
+    <div style={{
+      flex: 1, display: 'flex', flexDirection: 'column',
+      alignItems: 'center', justifyContent: 'center',
+      gap: 16, padding: 32, textAlign: 'center',
+    }}>
+      <div style={{
+        width: 64, height: 64, borderRadius: 16,
+        background: 'rgba(141,68,174,0.08)',
+        border: `1px solid rgba(141,68,174,0.20)`,
+        display: 'grid', placeItems: 'center',
+      }}>
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={color.purple} strokeWidth={1.5} strokeLinecap="round" strokeOpacity={0.6}>
+          <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
+        </svg>
+      </div>
+      <div style={{ fontFamily: font.display, fontSize: 18, fontWeight: 600, color: color.text }}>
+        Automation Builder
+      </div>
+      <div style={{ fontSize: 13, color: color.textMuted, maxWidth: 400, lineHeight: 1.6 }}>
+        Create custom automations by chaining tools, triggers, and conditions.
+        Define workflows that your agent executes autonomously.
+      </div>
+      <div style={{
+        fontSize: 11, color: color.textDim, fontFamily: font.mono,
+        padding: '6px 14px', borderRadius: radius.pill,
+        background: 'rgba(141,68,174,0.06)',
+        border: `1px solid rgba(141,68,174,0.15)`,
+      }}>
+        Coming soon
       </div>
     </div>
   );
