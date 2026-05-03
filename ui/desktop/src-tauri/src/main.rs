@@ -4,6 +4,7 @@ use tauri::Manager;
 
 mod browser;
 mod daemon;
+mod files;
 mod menu;
 mod terminal;
 
@@ -29,6 +30,7 @@ fn main() {
             browser::hide_browser,
             browser::close_browser,
             browser::zoom_browser,
+            files::read_dropped_file,
         ])
         .setup(|app| {
             daemon::start_daemon(app.handle())?;
