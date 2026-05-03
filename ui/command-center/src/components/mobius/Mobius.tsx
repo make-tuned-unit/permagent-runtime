@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useTheme } from '../../styles/useTheme';
 
 export type MobiusState = 'idle' | 'thinking' | 'speaking' | 'calibrating' | 'sleeping';
 
@@ -36,13 +37,17 @@ export function Mobius({
   glow = 1,
   className,
 }: MobiusProps) {
+  const { mobiusGlow, idleAnim, reduceMotion } = useTheme();
   const [frame, setFrame] = useState(0);
   const rafRef = useRef<number>();
   const lastTime = useRef(0);
 
-  const isAnimated = state !== 'sleeping';
+  // Apply appearance prefs
+  const effectiveGlow = glow * (mobiusGlow / 100);
   const isIdle = state === 'idle';
-  const fps = FPS[state] || 0;
+  const idleDisabled = isIdle && (idleAnim === 'still' || reduceMotion);
+  const isAnimated = state !== 'sleeping' && !idleDisabled;
+  const fps = idleDisabled ? 0 : (FPS[state] || 0);
 
   // Preload frames once
   useEffect(() => {
@@ -87,7 +92,7 @@ export function Mobius({
   const height = size;
   const width = Math.round(size * ASPECT);
 
-  const glowOpacity = state === 'sleeping' ? 0 : glow * 0.45;
+  const glowOpacity = state === 'sleeping' ? 0 : effectiveGlow * 0.45;
   const glowSize = Math.round(size * 0.4);
 
   return (

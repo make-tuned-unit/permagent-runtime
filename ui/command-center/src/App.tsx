@@ -42,7 +42,7 @@ function App() {
   const loadSkills = useCommandCenter(s => s.loadSkills);
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
   const activePanel = useCommandCenter(s => s.activePanel);
-  const { gradient } = useTheme();
+  const { gradient, density } = useTheme();
 
   const [phase, setPhase] = useState<'splash' | 'loading' | 'wizard' | 'app'>('splash');
 
@@ -94,7 +94,7 @@ function App() {
   }
 
   return (
-    <div className="flex h-screen" style={{ background: gradient.shell }}>
+    <div className={`flex h-screen density-${density}`} style={{ background: gradient.shell }}>
       <Sidebar />
       <main className="flex-1 min-w-0 overflow-hidden">
         <MainContent />

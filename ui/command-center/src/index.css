@@ -381,3 +381,17 @@ body {
   80%  { opacity: 1; transform: translateY(0); }
   100% { opacity: 0; transform: translateY(-4px); }
 }
+
+/* ── UI Density ── */
+.density-comfortable { font-size: 14px; }
+.density-comfortable .p-4 { padding: 1.25rem; }
+.density-comfortable .py-2\.5 { padding-top: 0.75rem; padding-bottom: 0.75rem; }
+.density-comfortable .gap-2 { gap: 0.625rem; }
+
+.density-default { /* no overrides — base sizing */ }
+
+.density-compact { font-size: 12px; }
+.density-compact .p-4 { padding: 0.625rem; }
+.density-compact .py-2\.5 { padding-top: 0.375rem; padding-bottom: 0.375rem; }
+.density-compact .gap-3 { gap: 0.375rem; }
+.density-compact .space-y-3 > * + * { margin-top: 0.375rem; }

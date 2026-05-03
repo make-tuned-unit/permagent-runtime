@@ -15,7 +15,7 @@ function timeAgo(iso: string): string {
 }
 
 export function Dashboard() {
-  const { gradient } = useTheme();
+  const { gradient, showHeroMobius } = useTheme();
   const { data, loading } = useDashboard();
 
   if (loading || !data) {
@@ -70,9 +70,11 @@ export function Dashboard() {
                   : 'Ready when you are.'}
               </div>
             </div>
-            <div style={{ flex: '0 0 auto' }}>
-              <Mobius size={96} state={mobiusState} glow={1} />
-            </div>
+            {showHeroMobius && (
+              <div style={{ flex: '0 0 auto' }}>
+                <Mobius size={96} state={mobiusState} glow={1} />
+              </div>
+            )}
           </div>
 
           {/* Stats grid */}

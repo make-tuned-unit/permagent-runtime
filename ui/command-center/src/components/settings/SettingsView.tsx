@@ -1,7 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useCommandCenter } from '../../lib/store';
 import { api } from '../../lib/api';
-import { color, font, ease, setTheme as setThemeFn, type ThemeId } from '../../styles/tokens';
+import {
+  color, font, ease,
+  setTheme as setThemeFn, setMobiusGlow, setIdleAnim, setShowHeroMobius,
+  setDensity as setDensityFn, setReduceMotion as setReduceMotionFn,
+  type ThemeId, type IdleAnim, type UIDensity,
+} from '../../styles/tokens';
 import { useTheme as useThemeHook } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import { ProvidersSection } from './ProvidersSection';
@@ -348,24 +353,23 @@ function KeysPanel() {
 }
 
 function AppearancePanel() {
-  const { theme: activeTheme } = useThemeHook();
-  const [glow, setGlow] = useState(70);
-  const [anim, setAnim] = useState(1);
-  const [density, setDensity] = useState(1);
-  const [showHero, setShowHero] = useState(true);
-  const [reduceMotion, setReduceMotion] = useState(false);
+  const prefs = useThemeHook();
   const themes: Array<{ id: ThemeId; l: string; g: string }> = [
     { id: 'dark', l: 'Permagent dark', g: 'linear-gradient(135deg, #0B1220, #1E2433)' },
     { id: 'aurora', l: 'Aurora', g: 'linear-gradient(135deg, #0B1220 30%, #8D44AE)' },
     { id: 'slate', l: 'Slate', g: 'linear-gradient(135deg, #161B26, #2A3040)' },
   ];
+  const animOptions: IdleAnim[] = ['still', 'breathing', 'drifting'];
+  const animLabels = ['Still', 'Breathing', 'Drifting'];
+  const densityOptions: UIDensity[] = ['comfortable', 'default', 'compact'];
+  const densityLabels = ['Comfortable', 'Default', 'Compact'];
   return (
     <div>
       <H1 sub="How Permagent looks while it runs alongside you.">Appearance</H1>
       <Section title="Theme">
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
           {themes.map(th => {
-            const on = activeTheme === th.id;
+            const on = prefs.theme === th.id;
             return (
               <div key={th.id} onClick={() => setThemeFn(th.id)} style={{
                 padding: 4, borderRadius: 12, cursor: 'pointer',
@@ -380,15 +384,15 @@ function AppearancePanel() {
         </div>
       </Section>
       <Section title="Möbius">
-        <Row label="Glow intensity"><Slider value={glow} onChange={setGlow} suffix="%" /></Row>
+        <Row label="Glow intensity"><Slider value={prefs.mobiusGlow} onChange={v => setMobiusGlow(v)} suffix="%" /></Row>
         <Row label="Animation when idle">
-          <div style={{ display: 'flex', gap: 8 }}>{['Still', 'Breathing', 'Drifting'].map((s, i) => <Chip key={s} on={anim === i} onClick={() => setAnim(i)}>{s}</Chip>)}</div>
+          <div style={{ display: 'flex', gap: 8 }}>{animOptions.map((a, i) => <Chip key={a} on={prefs.idleAnim === a} onClick={() => setIdleAnim(a)}>{animLabels[i]}</Chip>)}</div>
         </Row>
-        <Row label="Show in dashboard hero"><Toggle on={showHero} onChange={setShowHero} /></Row>
+        <Row label="Show in dashboard hero"><Toggle on={prefs.showHeroMobius} onChange={v => setShowHeroMobius(v)} /></Row>
       </Section>
       <Section title="Density">
-        <Row label="UI density"><div style={{ display: 'flex', gap: 8 }}>{['Comfortable', 'Default', 'Compact'].map((s, i) => <Chip key={s} on={density === i} onClick={() => setDensity(i)}>{s}</Chip>)}</div></Row>
-        <Row label="Reduce motion" hint="Honors system preference by default."><Toggle on={reduceMotion} onChange={setReduceMotion} /></Row>
+        <Row label="UI density"><div style={{ display: 'flex', gap: 8 }}>{densityOptions.map((d, i) => <Chip key={d} on={prefs.density === d} onClick={() => setDensityFn(d)}>{densityLabels[i]}</Chip>)}</div></Row>
+        <Row label="Reduce motion" hint="Honors system preference by default."><Toggle on={prefs.reduceMotion} onChange={v => setReduceMotionFn(v)} /></Row>
       </Section>
     </div>
   );

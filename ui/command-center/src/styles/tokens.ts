@@ -76,15 +76,45 @@ export const THEME_GRADIENTS: Record<ThemeId, {
   },
 };
 
-// Reactive theme — read by components, set by Appearance panel
-let _activeTheme: ThemeId = (typeof localStorage !== 'undefined' ? localStorage.getItem('permagent-theme') as ThemeId : null) || 'dark';
-const _listeners: Set<() => void> = new Set();
+// ── Reactive appearance prefs ────────────────────────────────────────
+// Persisted to localStorage, reactive via listener set.
 
+const _listeners: Set<() => void> = new Set();
+function _notify() { _listeners.forEach(fn => fn()); }
+function _get(key: string, fallback: string): string {
+  try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; }
+}
+function _set(key: string, value: string) {
+  try { localStorage.setItem(key, value); } catch { /* */ }
+  _notify();
+}
+
+// Theme
+let _activeTheme: ThemeId = _get('permagent-theme', 'dark') as ThemeId;
 export function getTheme(): ThemeId { return _activeTheme; }
 export function getThemeGradient() { return THEME_GRADIENTS[_activeTheme]; }
-export function setTheme(id: ThemeId) {
-  _activeTheme = id;
-  try { localStorage.setItem('permagent-theme', id); } catch { /* */ }
-  _listeners.forEach(fn => fn());
-}
+export function setTheme(id: ThemeId) { _activeTheme = id; _set('permagent-theme', id); }
+
+// Möbius glow (0-100)
+export function getMobiusGlow(): number { return parseInt(_get('permagent-mobius-glow', '70'), 10); }
+export function setMobiusGlow(v: number) { _set('permagent-mobius-glow', String(v)); }
+
+// Möbius idle animation: 'still' | 'breathing' | 'drifting'
+export type IdleAnim = 'still' | 'breathing' | 'drifting';
+export function getIdleAnim(): IdleAnim { return _get('permagent-idle-anim', 'breathing') as IdleAnim; }
+export function setIdleAnim(v: IdleAnim) { _set('permagent-idle-anim', v); }
+
+// Show Möbius in dashboard hero
+export function getShowHeroMobius(): boolean { return _get('permagent-show-hero-mobius', 'true') === 'true'; }
+export function setShowHeroMobius(v: boolean) { _set('permagent-show-hero-mobius', String(v)); }
+
+// UI density: 'comfortable' | 'default' | 'compact'
+export type UIDensity = 'comfortable' | 'default' | 'compact';
+export function getDensity(): UIDensity { return _get('permagent-density', 'default') as UIDensity; }
+export function setDensity(v: UIDensity) { _set('permagent-density', v); }
+
+// Reduce motion
+export function getReduceMotion(): boolean { return _get('permagent-reduce-motion', 'false') === 'true'; }
+export function setReduceMotion(v: boolean) { _set('permagent-reduce-motion', String(v)); }
+
 export function onThemeChange(fn: () => void) { _listeners.add(fn); return () => { _listeners.delete(fn); }; }
