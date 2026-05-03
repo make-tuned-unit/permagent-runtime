@@ -84,25 +84,33 @@ export function TerminalManager() {
   }, []);
 
   const handleTitleChange = useCallback((tabId: string, title: string) => {
-    // Extract meaningful label from terminal title.
-    // Common formats:
-    //   "user@host: ~/dev/Canon"  → "Canon"
-    //   "~/dev/Canon"             → "Canon"
-    //   "* Claude Code"           → keep as-is (process name)
-    //   "zsh"                     → "Terminal"
-    let label = title.trim();
+    // Only use title if tab has no CWD-based label yet
+    setTabs(prev => {
+      const tab = prev.find(t => t.id === tabId);
+      // If we already have a CWD-derived label, don't overwrite with process name
+      if (tab && tab.cwd) return prev;
 
-    // If title contains a path (has / or ~), extract last segment
-    const pathMatch = label.match(/[~\/]([^:]+)$/);
-    if (pathMatch) {
-      const segments = pathMatch[1].split('/').filter(Boolean);
-      label = segments[segments.length - 1] || label;
-    } else if (label === 'zsh' || label === 'bash' || label === 'sh' || !label) {
-      label = 'Terminal';
-    }
+      let label = title.trim();
+      const pathMatch = label.match(/[~\/]([^:]+)$/);
+      if (pathMatch) {
+        const segments = pathMatch[1].split('/').filter(Boolean);
+        label = segments[segments.length - 1] || label;
+      } else if (label === 'zsh' || label === 'bash' || label === 'sh' || !label) {
+        label = 'Terminal';
+      } else {
+        // Process names like "Claude Code" — don't use, keep current
+        return prev;
+      }
+      return prev.map(t => t.id === tabId ? { ...t, label } : t);
+    });
+  }, []);
 
+  const handleCwdChange = useCallback((tabId: string, cwdPath: string) => {
+    // cwdPath is like "/Users/jesse/dev/Canon" — extract last segment
+    const segments = cwdPath.split('/').filter(Boolean);
+    const folder = segments[segments.length - 1] || 'Terminal';
     setTabs(prev =>
-      prev.map(t => t.id === tabId ? { ...t, label } : t)
+      prev.map(t => t.id === tabId ? { ...t, label: folder, cwd: cwdPath } : t)
     );
   }, []);
 
@@ -171,6 +179,7 @@ export function TerminalManager() {
               sessionId={tab.sessionId}
               onSessionSpawned={(sid) => handleSessionSpawned(tab.id, sid)}
               onTitleChange={(title) => handleTitleChange(tab.id, title)}
+              onCwdChange={(cwd) => handleCwdChange(tab.id, cwd)}
               cwd={tab.cwd}
               isVisible={tab.id === activeTabId}
             />

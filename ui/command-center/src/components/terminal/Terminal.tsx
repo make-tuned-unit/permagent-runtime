@@ -61,11 +61,12 @@ interface TerminalProps {
   sessionId: string | null;
   onSessionSpawned?: (sessionId: string) => void;
   onTitleChange?: (title: string) => void;
+  onCwdChange?: (cwd: string) => void;
   cwd?: string;
   isVisible: boolean;
 }
 
-export function Terminal({ sessionId, onSessionSpawned, onTitleChange, cwd, isVisible }: TerminalProps) {
+export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChange, cwd, isVisible }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -74,12 +75,14 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, cwd, isVi
   // Stable refs for values that change but shouldn't re-trigger the effect
   const onSessionSpawnedRef = useRef(onSessionSpawned);
   const onTitleChangeRef = useRef(onTitleChange);
+  const onCwdChangeRef = useRef(onCwdChange);
   const cwdRef = useRef(cwd);
   const isVisibleRef = useRef(isVisible);
 
   sessionIdRef.current = sessionId;
   onSessionSpawnedRef.current = onSessionSpawned;
   onTitleChangeRef.current = onTitleChange;
+  onCwdChangeRef.current = onCwdChange;
   cwdRef.current = cwd;
   isVisibleRef.current = isVisible;
 
@@ -149,6 +152,14 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, cwd, isVi
             const payload = e.payload as { session_id: string; data: string };
             if (payload.session_id === sessionIdRef.current) {
               term.write(payload.data);
+              // Parse OSC 7 (CWD reporting): \e]7;file://host/path\a or \e]7;file://host/path\e\\
+              const osc7 = payload.data.match(/\x1b\]7;file:\/\/[^/]*([^\x07\x1b]+)/);
+              if (osc7) {
+                try {
+                  const decoded = decodeURIComponent(osc7[1]);
+                  onCwdChangeRef.current?.(decoded);
+                } catch { /* ignore decode errors */ }
+              }
             }
           })) ?? null;
 
