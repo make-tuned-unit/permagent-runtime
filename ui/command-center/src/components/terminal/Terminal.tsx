@@ -105,6 +105,8 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         cursorStyle: 'bar',
         allowProposedApi: true,
         scrollback: 10000,
+        customGlyphs: true,
+        drawBoldTextInBrightColors: false,
       });
 
       const fitAddon = new FitAddon();
