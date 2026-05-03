@@ -8,13 +8,14 @@ import type { ChatInputHandle } from './ChatInput';
 import { DropZone } from './DropZone';
 
 const MIN_W = 320;
-const MIN_H = 300;
+const MIN_H = 280;
 const DEFAULT_W = 400;
 const DEFAULT_H = 520;
+const EDGE = 6; // resize handle thickness
 
 export function ChatWidget() {
   const [open, setOpen] = useState(false);
-  const [pos, setPos] = useState({ x: -1, y: -1 }); // -1 = use default
+  const [pos, setPos] = useState({ x: -1, y: -1 });
   const [size, setSize] = useState({ w: DEFAULT_W, h: DEFAULT_H });
 
   const ensureSession = useCommandCenter(s => s.ensureSession);
@@ -22,76 +23,63 @@ export function ChatWidget() {
   const loadSessionMessages = useCommandCenter(s => s.loadSessionMessages);
   const chatInputRef = useRef<ChatInputHandle>(null);
   const connectedRef = useRef(false);
-  const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
-  const resizeRef = useRef<{ startX: number; startY: number; origW: number; origH: number; origX: number; origY: number } | null>(null);
 
   const handleDrop = useCallback((files: File[]) => {
     chatInputRef.current?.addFiles(files);
   }, []);
 
-  // Connect session lazily when widget opens
   useEffect(() => {
     if (!open || connectedRef.current) return;
     connectedRef.current = true;
     (async () => {
-      const sessionId = await ensureSession();
-      if (sessionId) {
-        await loadSessionMessages(sessionId);
-        connectSession(sessionId);
+      const sid = await ensureSession();
+      if (sid) {
+        await loadSessionMessages(sid);
+        connectSession(sid);
       }
     })();
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Default position: bottom-right
-  const actualX = pos.x === -1 ? window.innerWidth - size.w - 24 : pos.x;
-  const actualY = pos.y === -1 ? window.innerHeight - size.h - 24 : pos.y;
+  const getPos = () => ({
+    x: pos.x === -1 ? window.innerWidth - size.w - 24 : pos.x,
+    y: pos.y === -1 ? window.innerHeight - size.h - 24 : pos.y,
+  });
 
-  // Drag handling
+  // ── Drag (header) ──
   const onDragStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
-    dragRef.current = { startX: e.clientX, startY: e.clientY, origX: actualX, origY: actualY };
+    const p = getPos();
+    const startX = e.clientX, startY = e.clientY;
+    const origX = p.x, origY = p.y;
     const onMove = (ev: MouseEvent) => {
-      if (!dragRef.current) return;
-      const dx = ev.clientX - dragRef.current.startX;
-      const dy = ev.clientY - dragRef.current.startY;
-      setPos({ x: dragRef.current.origX + dx, y: dragRef.current.origY + dy });
+      setPos({ x: origX + ev.clientX - startX, y: origY + ev.clientY - startY });
     };
-    const onUp = () => {
-      dragRef.current = null;
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    };
+    const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
-  }, [actualX, actualY]);
+  }, [pos, size]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Resize handling (from top-left corner)
-  const onResizeStart = useCallback((e: React.MouseEvent) => {
+  // ── Resize (edges) ──
+  const onEdgeStart = useCallback((e: React.MouseEvent, edges: { top?: boolean; bottom?: boolean; left?: boolean; right?: boolean }) => {
     e.preventDefault();
     e.stopPropagation();
-    resizeRef.current = { startX: e.clientX, startY: e.clientY, origW: size.w, origH: size.h, origX: actualX, origY: actualY };
+    const p = getPos();
+    const startX = e.clientX, startY = e.clientY;
+    const origW = size.w, origH = size.h, origX = p.x, origY = p.y;
     const onMove = (ev: MouseEvent) => {
-      if (!resizeRef.current) return;
-      const dx = ev.clientX - resizeRef.current.startX;
-      const dy = ev.clientY - resizeRef.current.startY;
-      const newW = Math.max(MIN_W, resizeRef.current.origW - dx);
-      const newH = Math.max(MIN_H, resizeRef.current.origH - dy);
-      setSize({ w: newW, h: newH });
-      setPos({
-        x: resizeRef.current.origX + (resizeRef.current.origW - newW),
-        y: resizeRef.current.origY + (resizeRef.current.origH - newH),
-      });
+      let w = origW, h = origH, x = origX, y = origY;
+      if (edges.right) w = Math.max(MIN_W, origW + ev.clientX - startX);
+      if (edges.bottom) h = Math.max(MIN_H, origH + ev.clientY - startY);
+      if (edges.left) { w = Math.max(MIN_W, origW - (ev.clientX - startX)); x = origX + origW - w; }
+      if (edges.top) { h = Math.max(MIN_H, origH - (ev.clientY - startY)); y = origY + origH - h; }
+      setSize({ w, h });
+      setPos({ x, y });
     };
-    const onUp = () => {
-      resizeRef.current = null;
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    };
+    const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
-  }, [size, actualX, actualY]);
+  }, [pos, size]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Collapsed: floating pill button
   if (!open) {
     return (
       <button onClick={() => setOpen(true)} style={{
@@ -113,26 +101,28 @@ export function ChatWidget() {
     );
   }
 
-  // Expanded: draggable + resizable chat panel
+  const p = getPos();
+
   return (
     <div style={{
-      position: 'fixed', left: actualX, top: actualY, zIndex: 9999,
+      position: 'fixed', left: p.x, top: p.y, zIndex: 9999,
       width: size.w, height: size.h,
       borderRadius: radius.lg,
       background: 'rgba(11,18,32,0.95)', backdropFilter: 'blur(24px)',
       border: `1px solid ${color.borderHi}`,
       boxShadow: '0 16px 48px rgba(0,0,0,0.6), 0 0 0 1px rgba(0,213,255,0.08)',
       display: 'flex', flexDirection: 'column',
-      overflow: 'hidden',
     }}>
-      {/* Resize handle — top-left corner */}
-      <div
-        onMouseDown={onResizeStart}
-        style={{
-          position: 'absolute', top: 0, left: 0, width: 14, height: 14,
-          cursor: 'nwse-resize', zIndex: 2,
-        }}
-      />
+      {/* Resize handles — edges */}
+      <div onMouseDown={e => onEdgeStart(e, { top: true })} style={{ position: 'absolute', top: -EDGE/2, left: EDGE, right: EDGE, height: EDGE, cursor: 'ns-resize', zIndex: 3 }} />
+      <div onMouseDown={e => onEdgeStart(e, { bottom: true })} style={{ position: 'absolute', bottom: -EDGE/2, left: EDGE, right: EDGE, height: EDGE, cursor: 'ns-resize', zIndex: 3 }} />
+      <div onMouseDown={e => onEdgeStart(e, { left: true })} style={{ position: 'absolute', top: EDGE, bottom: EDGE, left: -EDGE/2, width: EDGE, cursor: 'ew-resize', zIndex: 3 }} />
+      <div onMouseDown={e => onEdgeStart(e, { right: true })} style={{ position: 'absolute', top: EDGE, bottom: EDGE, right: -EDGE/2, width: EDGE, cursor: 'ew-resize', zIndex: 3 }} />
+      {/* Corners */}
+      <div onMouseDown={e => onEdgeStart(e, { top: true, left: true })} style={{ position: 'absolute', top: -EDGE/2, left: -EDGE/2, width: EDGE*2, height: EDGE*2, cursor: 'nwse-resize', zIndex: 4 }} />
+      <div onMouseDown={e => onEdgeStart(e, { top: true, right: true })} style={{ position: 'absolute', top: -EDGE/2, right: -EDGE/2, width: EDGE*2, height: EDGE*2, cursor: 'nesw-resize', zIndex: 4 }} />
+      <div onMouseDown={e => onEdgeStart(e, { bottom: true, left: true })} style={{ position: 'absolute', bottom: -EDGE/2, left: -EDGE/2, width: EDGE*2, height: EDGE*2, cursor: 'nesw-resize', zIndex: 4 }} />
+      <div onMouseDown={e => onEdgeStart(e, { bottom: true, right: true })} style={{ position: 'absolute', bottom: -EDGE/2, right: -EDGE/2, width: EDGE*2, height: EDGE*2, cursor: 'nwse-resize', zIndex: 4 }} />
 
       {/* Draggable header */}
       <div
@@ -152,23 +142,32 @@ export function ChatWidget() {
           onClick={() => setOpen(false)}
           onMouseDown={e => e.stopPropagation()}
           style={{
-            width: 24, height: 24, borderRadius: 6,
-            background: 'transparent', border: 'none',
+            width: 28, height: 28, borderRadius: 6,
+            background: 'rgba(255,255,255,0.04)', border: `1px solid ${color.border}`,
             color: color.textMuted, cursor: 'pointer',
-            display: 'grid', placeItems: 'center', fontSize: 16,
+            display: 'grid', placeItems: 'center',
+            transition: `all 150ms ${ease.out}`,
           }}
-        >×</button>
+          onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; e.currentTarget.style.color = color.text; }}
+          onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; e.currentTarget.style.color = color.textMuted; }}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round">
+            <path d="M18 6L6 18M6 6l12 12" />
+          </svg>
+        </button>
       </div>
 
-      {/* Messages + Input with drop zone */}
-      <DropZone onDrop={handleDrop}>
-        <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-            <MessageList />
+      {/* Chat body */}
+      <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <DropZone onDrop={handleDrop}>
+          <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+            <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+              <MessageList />
+            </div>
+            <ChatInput ref={chatInputRef} />
           </div>
-          <ChatInput ref={chatInputRef} />
-        </div>
-      </DropZone>
+        </DropZone>
+      </div>
     </div>
   );
 }
