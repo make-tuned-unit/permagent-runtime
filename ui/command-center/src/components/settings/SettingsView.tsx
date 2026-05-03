@@ -79,9 +79,15 @@ function PersonaPanel() {
     if (data) { setName(data.first_name); setGreeting(data.opening_greeting); setTone(data.tone); setTraits(data.traits); setDirty(false); }
   }, [data]);
 
-  const ed = <T,>(s: (v: T) => void) => (v: T) => { s(v); setDirty(true); };
+  const changeName = (v: string) => { setName(v); setDirty(true); };
+  const changeGreeting = (v: string) => { setGreeting(v); setDirty(true); };
+  const changeTone = (v: string) => { setTone(v); setDirty(true); };
   const toggleTrait = (t: string) => { setTraits(p => p.includes(t) ? p.filter(x => x !== t) : [...p, t]); setDirty(true); };
-  const handleSave = () => { if (dirty) { save({ first_name: name, opening_greeting: greeting, tone, traits }); setDirty(false); } };
+  const handleSave = async () => {
+    if (!dirty) return;
+    await save({ first_name: name, opening_greeting: greeting, tone, traits });
+    setDirty(false);
+  };
 
   if (loading) return <div style={{ color: color.textDim, fontSize: 13 }}>Loading persona...</div>;
   return (
@@ -91,13 +97,13 @@ function PersonaPanel() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 24, marginBottom: 8 }}>
           <Mobius size={140} state="idle" glow={1} />
           <div style={{ flex: 1 }}>
-            <Row label="Name" hint="What you'll call them."><TextInput value={name} onChange={ed(setName)} /></Row>
-            <Row label="Greeting" hint="The first line they'll say each session."><TextInput multi value={greeting} onChange={ed(setGreeting)} /></Row>
+            <Row label="Name" hint="What you'll call them."><TextInput value={name} onChange={changeName} /></Row>
+            <Row label="Greeting" hint="The first line they'll say each session."><TextInput multi value={greeting} onChange={changeGreeting} /></Row>
           </div>
         </div>
       </Section>
       <Section title="Tone">
-        <Row label="Voice" hint="How they describe their own voice."><TextInput multi value={tone} onChange={ed(setTone)} /></Row>
+        <Row label="Voice" hint="How they describe their own voice."><TextInput multi value={tone} onChange={changeTone} /></Row>
         <Row label="Traits" hint="Pick 3-5. The agent will lean into these.">
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
             {TRAIT_OPTIONS.map(t => <Chip key={t} on={traits.includes(t)} onClick={() => toggleTrait(t)}>{t}</Chip>)}
