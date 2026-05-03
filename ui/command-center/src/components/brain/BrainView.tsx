@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { color, font, ease } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import { BrainScene, type TypeFilters } from './BrainScene';
 import { useBrainData, type GraphMemory, type GraphEntity } from './useBrainData';
@@ -15,6 +16,7 @@ interface HoverInfo { id: string; kind: string; label: string; note: string; x: 
 interface SelectedInfo { id: string; kind: string; label: string; note: string; data: any }
 
 export function BrainView() {
+  const { gradient } = useTheme();
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<BrainScene | null>(null);
   const { data, loading } = useBrainData();
@@ -65,7 +67,7 @@ export function BrainView() {
     age < 0.2 ? 'this week' : age < 0.5 ? 'this month' : age < 0.8 ? '~3 months' : '~year';
 
   return (
-    <div style={{ position: 'relative', width: '100%', height: '100%', background: 'radial-gradient(120% 80% at 50% 0%, #142035 0%, #0B1220 50%, #050810 100%)', overflow: 'hidden' }}>
+    <div style={{ position: 'relative', width: '100%', height: '100%', background: gradient.workspace, overflow: 'hidden' }}>
       {/* Three.js canvas container */}
       <div ref={containerRef} style={{ position: 'absolute', inset: 0 }} />
 

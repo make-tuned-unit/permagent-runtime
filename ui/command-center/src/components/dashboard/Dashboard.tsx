@@ -1,4 +1,5 @@
 import { color, font, ease, radius } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
 import { Mobius, type MobiusState } from '../mobius/Mobius';
 import { useDashboard, type InFlightSession, type RecentSession } from './useDashboard';
 import { Stat, SectionTitle, StatusIcon } from './atoms';
@@ -14,6 +15,7 @@ function timeAgo(iso: string): string {
 }
 
 export function Dashboard() {
+  const { gradient } = useTheme();
   const { data, loading } = useDashboard();
 
   if (loading || !data) {
@@ -31,7 +33,7 @@ export function Dashboard() {
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
       <div style={{
         width: '100%', height: '100%', overflowY: 'auto',
-        background: 'radial-gradient(120% 80% at 50% 0%, #142035 0%, #0B1220 50%, #050810 100%)',
+        background: gradient.workspace,
         padding: '28px 32px 40px',
       }}>
         {/* Hero + Stats row */}

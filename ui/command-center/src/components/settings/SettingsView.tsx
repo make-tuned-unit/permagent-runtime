@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useCommandCenter } from '../../lib/store';
 import { api } from '../../lib/api';
-import { color, font, ease } from '../../styles/tokens';
+import { color, font, ease, setTheme as setThemeFn, type ThemeId } from '../../styles/tokens';
+import { useTheme as useThemeHook } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import { ProvidersSection } from './ProvidersSection';
 import { usePersona } from './useSettings';
@@ -347,32 +348,35 @@ function KeysPanel() {
 }
 
 function AppearancePanel() {
-  const [theme, setTheme] = useState(0);
+  const { theme: activeTheme } = useThemeHook();
   const [glow, setGlow] = useState(70);
   const [anim, setAnim] = useState(1);
   const [density, setDensity] = useState(1);
   const [showHero, setShowHero] = useState(true);
   const [reduceMotion, setReduceMotion] = useState(false);
-  const themes = [
-    { l: 'Permagent dark', g: 'linear-gradient(135deg, #0B1220, #1E2433)' },
-    { l: 'Aurora', g: 'linear-gradient(135deg, #0B1220 30%, #8D44AE)' },
-    { l: 'Slate', g: 'linear-gradient(135deg, #161B26, #2A3040)' },
+  const themes: Array<{ id: ThemeId; l: string; g: string }> = [
+    { id: 'dark', l: 'Permagent dark', g: 'linear-gradient(135deg, #0B1220, #1E2433)' },
+    { id: 'aurora', l: 'Aurora', g: 'linear-gradient(135deg, #0B1220 30%, #8D44AE)' },
+    { id: 'slate', l: 'Slate', g: 'linear-gradient(135deg, #161B26, #2A3040)' },
   ];
   return (
     <div>
-      <H1 sub="How Permagent looks while it runs alongside you."><>Appearance<PreviewBadge /></></H1>
+      <H1 sub="How Permagent looks while it runs alongside you.">Appearance</H1>
       <Section title="Theme">
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
-          {themes.map((th, i) => (
-            <div key={th.l} onClick={() => setTheme(i)} style={{
-              padding: 4, borderRadius: 12, cursor: 'pointer',
-              border: theme === i ? `2px solid ${color.cyan}` : '2px solid transparent',
-              boxShadow: theme === i ? `0 0 14px ${color.cyanGlow}` : 'none',
-            }}>
-              <div style={{ height: 96, borderRadius: 8, background: th.g, border: `1px solid ${color.border}` }} />
-              <div style={{ fontSize: 12, padding: '8px 4px', textAlign: 'center', color: theme === i ? color.cyan : color.text }}>{th.l}</div>
-            </div>
-          ))}
+          {themes.map(th => {
+            const on = activeTheme === th.id;
+            return (
+              <div key={th.id} onClick={() => setThemeFn(th.id)} style={{
+                padding: 4, borderRadius: 12, cursor: 'pointer',
+                border: on ? `2px solid ${color.cyan}` : '2px solid transparent',
+                boxShadow: on ? `0 0 14px ${color.cyanGlow}` : 'none',
+              }}>
+                <div style={{ height: 96, borderRadius: 8, background: th.g, border: `1px solid ${color.border}` }} />
+                <div style={{ fontSize: 12, padding: '8px 4px', textAlign: 'center', color: on ? color.cyan : color.text }}>{th.l}</div>
+              </div>
+            );
+          })}
         </div>
       </Section>
       <Section title="Möbius">

@@ -42,3 +42,37 @@ export const shadow = {
 
 export const tokens = { color, font, ease, radius, shadow } as const;
 export type DesignTokens = typeof tokens;
+
+// ── Theme gradients ─────────────────────────────────────────────────
+export type ThemeId = 'dark' | 'aurora' | 'slate';
+
+export const THEME_GRADIENTS: Record<ThemeId, { workspace: string; card: string; label: string }> = {
+  dark: {
+    workspace: 'radial-gradient(120% 80% at 50% 0%, #142035 0%, #0B1220 50%, #050810 100%)',
+    card: 'linear-gradient(180deg, rgba(20,28,48,0.7), rgba(11,18,32,0.7))',
+    label: 'Permagent dark',
+  },
+  aurora: {
+    workspace: 'radial-gradient(120% 80% at 50% 0%, #1a1040 0%, #0B1220 40%, #2d1050 100%)',
+    card: 'linear-gradient(180deg, rgba(45,16,80,0.5), rgba(11,18,32,0.7))',
+    label: 'Aurora',
+  },
+  slate: {
+    workspace: 'radial-gradient(120% 80% at 50% 0%, #1e2430 0%, #161B26 50%, #0f1318 100%)',
+    card: 'linear-gradient(180deg, rgba(30,36,48,0.7), rgba(22,27,38,0.7))',
+    label: 'Slate',
+  },
+};
+
+// Reactive theme — read by components, set by Appearance panel
+let _activeTheme: ThemeId = (typeof localStorage !== 'undefined' ? localStorage.getItem('permagent-theme') as ThemeId : null) || 'dark';
+const _listeners: Set<() => void> = new Set();
+
+export function getTheme(): ThemeId { return _activeTheme; }
+export function getThemeGradient() { return THEME_GRADIENTS[_activeTheme]; }
+export function setTheme(id: ThemeId) {
+  _activeTheme = id;
+  try { localStorage.setItem('permagent-theme', id); } catch { /* */ }
+  _listeners.forEach(fn => fn());
+}
+export function onThemeChange(fn: () => void) { _listeners.add(fn); return () => { _listeners.delete(fn); }; }

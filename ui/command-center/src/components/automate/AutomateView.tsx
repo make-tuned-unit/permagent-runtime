@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo } from 'react';
 import { color, font, ease, radius } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
 import { useCommandCenter } from '../../lib/store';
 import type { SkillState } from '../../lib/store';
 import { SkillDetailPanel } from '../skills/SkillDetailPanel';
@@ -28,11 +29,12 @@ export function AutomateView() {
   }, [skills, search]);
 
   const selectedSkill = selectedSkillId ? skills.find(s => s.id === selectedSkillId) ?? null : null;
+  const { gradient } = useTheme();
 
   return (
     <div style={{
       width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
-      background: 'radial-gradient(120% 80% at 50% 0%, #142035 0%, #0B1220 50%, #050810 100%)',
+      background: gradient.workspace,
       color: color.text, fontFamily: font.body,
     }}>
       {/* Header */}

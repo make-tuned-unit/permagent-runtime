@@ -1,5 +1,6 @@
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import { color, font, radius } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import { useDashboard } from '../dashboard/useDashboard';
 import { TerminalManager } from '../terminal/TerminalManager';
@@ -21,6 +22,7 @@ const primaryBtn: React.CSSProperties = {
 };
 
 export function BuildView() {
+  const { gradient } = useTheme();
   const { data } = useDashboard();
 
   const agentName = data?.agent.name ?? 'Agent';
@@ -31,7 +33,7 @@ export function BuildView() {
   return (
     <div style={{
       width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
-      background: 'radial-gradient(120% 80% at 50% 0%, #142035 0%, #0B1220 60%)',
+      background: gradient.workspace,
       color: color.text, fontFamily: font.body,
     }}>
       {/* Title strip */}
