@@ -318,6 +318,20 @@ export const api = {
   // Config
   getConfig: () => apiFetch<PermagentConfig>('/config'),
 
+  readConfig: (key: string, isSecret?: boolean) =>
+    apiFetch<{ value?: unknown; masked_value?: string }>('/config/read', {
+      method: 'POST', body: JSON.stringify({ key, is_secret: isSecret ?? false }),
+    }),
+
+  // Extensions / MCP tools
+  getExtensions: () => apiFetch<{
+    extensions: Array<{
+      enabled: boolean; type: string; name: string;
+      description: string; display_name: string;
+      bundled: boolean; available_tools: string[];
+    }>; warnings: string[];
+  }>('/config/extensions'),
+
   upsertConfig: (key: string, value: unknown, isSecret?: boolean) =>
     apiFetch<unknown>('/config/upsert', {
       method: 'POST',

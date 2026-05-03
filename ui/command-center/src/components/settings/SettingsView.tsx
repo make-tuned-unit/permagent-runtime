@@ -1,10 +1,22 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useCommandCenter } from '../../lib/store';
+import { api } from '../../lib/api';
 import { color, font, ease } from '../../styles/tokens';
 import { Mobius } from '../mobius/Mobius';
 import { ProvidersSection } from './ProvidersSection';
 import { usePersona } from './useSettings';
 import { H1, Section, Row, TextInput, Chip, Toggle, Slider, Kbd, SaveButton } from './atoms';
+
+function PreviewBadge() {
+  return (
+    <span style={{
+      fontSize: 10, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase',
+      padding: '3px 8px', borderRadius: 999, marginLeft: 10,
+      background: 'rgba(141,68,174,0.12)', color: '#C893E0',
+      border: '1px solid rgba(141,68,174,0.25)',
+    }}>preview</span>
+  );
+}
 
 // ── Shared button styles ─────────────────────────────────────────────
 
@@ -14,13 +26,6 @@ const ghost: React.CSSProperties = {
   color: color.text, cursor: 'pointer',
   fontFamily: font.body, fontSize: 12, fontWeight: 500,
   display: 'inline-flex', alignItems: 'center', gap: 6,
-};
-const primary: React.CSSProperties = {
-  height: 32, padding: '0 14px', borderRadius: 8,
-  background: color.cyan, color: '#0B1220', border: 'none',
-  cursor: 'pointer', fontFamily: font.body, fontSize: 12, fontWeight: 600,
-  display: 'inline-flex', alignItems: 'center', gap: 6,
-  boxShadow: `0 0 14px ${color.cyanGlow}`,
 };
 const selectStyle: React.CSSProperties = {
   height: 34, padding: '0 12px', borderRadius: 8,
@@ -104,7 +109,7 @@ function PersonaPanel() {
 function ProfilePanel() {
   return (
     <div>
-      <H1 sub="Your account — visible to your agent and to anyone you share a workspace with.">Profile</H1>
+      <H1 sub="Your account — visible to your agent and to anyone you share a workspace with."><>Profile<PreviewBadge /></></H1>
       <Section title="Account">
         <Row label="Display name"><TextInput value="Jesse Sharratt" /></Row>
         <Row label="Email" hint="Used for sign-in and notifications."><TextInput value="" placeholder="email@example.com" /></Row>
@@ -123,7 +128,7 @@ function PreferencesPanel() {
   const [prefs, setPrefs] = useState([false, true, true, true]);
   return (
     <div>
-      <H1 sub="Defaults that follow you across sessions.">Preferences</H1>
+      <H1 sub="Defaults that follow you across sessions. Changes saved locally."><>Preferences<PreviewBadge /></></H1>
       <Section title="Defaults">
         <Row label="Open on launch" hint="Where Permagent lands when you open the app.">
           <select style={selectStyle}><option>Mission control</option><option>Last open task</option><option>Build</option><option>Brain</option></select>
@@ -154,7 +159,7 @@ function MemoryPanel() {
   const rememberItems = ['Names of people I\'ve introduced', 'Project goals and deadlines', 'Code style preferences from feedback', 'Things I dismissed or pushed back on', 'Sensitive context (medical, financial)'];
   return (
     <div>
-      <H1 sub="What your agent remembers about you, your projects, and the people in your world.">Memory</H1>
+      <H1 sub="What your agent remembers about you, your projects, and the people in your world."><>Memory<PreviewBadge /></></H1>
       <Section title="Memory budget" sub="When the brain gets too full, the agent will compress or forget the lowest-signal items first.">
         <Row label="Max memory" hint="Soft cap. The agent prefers to keep things small."><Slider value={maxMem} onChange={setMaxMem} min={200} max={5000} suffix=" nodes" /></Row>
         <Row label="Forget threshold" hint="Items not touched in this many days become candidates for compression."><Slider value={forget} onChange={setForget} min={7} max={365} suffix="d" /></Row>
@@ -192,7 +197,7 @@ function AutonomyPanel() {
   const confirmItems = ['Sending email or messages', 'Spending money', 'Deleting files or records', 'Pushing to main / production', 'Reading sensitive memory'];
   return (
     <div>
-      <H1 sub="How much your agent can do without checking in. Higher autonomy = faster, but more rope.">Autonomy &amp; guardrails</H1>
+      <H1 sub="How much your agent can do without checking in. Higher autonomy = faster, but more rope."><>Autonomy &amp; guardrails<PreviewBadge /></></H1>
       <Section title="Default autonomy">
         <Row label="Trust level" hint="Applies when no project-specific level is set.">
           <div style={{ display: 'flex', gap: 6 }}>
@@ -227,45 +232,40 @@ function AutonomyPanel() {
 }
 
 function ToolsPanel() {
-  const tools = [
-    { name: 'GitHub', cat: 'Code', status: 'connected', c: '#fff' },
-    { name: 'Notion', cat: 'Docs', status: 'connected', c: '#fff' },
-    { name: 'Stripe', cat: 'Finance', status: 'connected', c: '#A855CC' },
-    { name: 'Linear', cat: 'Project', status: 'connected', c: '#5BD17F' },
-    { name: 'Vercel', cat: 'Deploy', status: 'connected', c: '#fff' },
-    { name: 'Gmail', cat: 'Inbox', status: 'connected', c: color.danger },
-    { name: 'Calendar', cat: 'Time', status: 'connected', c: color.cyan },
-    { name: 'Slack', cat: 'Comms', status: 'available', c: '#A855CC' },
-    { name: 'Figma', cat: 'Design', status: 'available', c: color.cyan },
-    { name: 'Posthog', cat: 'Analytics', status: 'available', c: '#FFB4A2' },
-    { name: 'Browser', cat: 'Web', status: 'connected', c: color.cyan },
-    { name: 'Filesystem', cat: 'Local', status: 'connected', c: '#fff' },
-  ];
-  const [states, setStates] = useState(() => tools.map(t => t.status === 'connected'));
+  const [extensions, setExtensions] = useState<Array<{ enabled: boolean; type: string; name: string; description: string; display_name: string; bundled: boolean; available_tools: string[] }>>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api.getExtensions().then(r => { setExtensions(r.extensions); setLoading(false); }).catch(() => setLoading(false));
+  }, []);
+
+  const enabledCount = extensions.filter(e => e.enabled).length;
+
   return (
     <div>
       <H1 sub="Tools your agent can use. These follow the Model Context Protocol — connect a server and the agent can call into it.">Tools &amp; MCPs</H1>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-        <button style={primary}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
-          Add MCP server
-        </button>
-        <button style={ghost}>Browse registry</button>
         <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 12, color: color.textMuted }}>{states.filter(Boolean).length} of {tools.length} connected</span>
+        <span style={{ fontSize: 12, color: color.textMuted }}>{enabledCount} of {extensions.length} enabled</span>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
-        {tools.map((t, i) => (
-          <div key={t.name} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: 14, borderRadius: 10, background: 'rgba(20,28,48,0.4)', border: `1px solid ${color.border}` }}>
-            <div style={{ width: 32, height: 32, borderRadius: 8, background: 'rgba(255,255,255,0.04)', border: `1px solid ${color.border}`, display: 'grid', placeItems: 'center', fontFamily: font.display, fontSize: 13, fontWeight: 700, color: t.c }}>{t.name[0]}</div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 13, fontWeight: 600 }}>{t.name}</div>
-              <div style={{ fontSize: 11, color: color.textMuted, marginTop: 2 }}>{t.cat}</div>
+      {loading ? (
+        <div style={{ color: color.textDim, fontSize: 13 }}>Loading extensions...</div>
+      ) : extensions.length === 0 ? (
+        <Section title="No extensions"><div style={{ color: color.textMuted, fontSize: 13 }}>No MCP tools or extensions configured.</div></Section>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
+          {extensions.map(ext => (
+            <div key={ext.name} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: 14, borderRadius: 10, background: 'rgba(20,28,48,0.4)', border: `1px solid ${color.border}` }}>
+              <div style={{ width: 32, height: 32, borderRadius: 8, background: ext.enabled ? 'rgba(0,213,255,0.08)' : 'rgba(255,255,255,0.04)', border: `1px solid ${ext.enabled ? color.borderHi : color.border}`, display: 'grid', placeItems: 'center', fontFamily: font.display, fontSize: 13, fontWeight: 700, color: ext.enabled ? color.cyan : color.textMuted }}>{ext.display_name[0]?.toUpperCase()}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>{ext.display_name}</div>
+                <div style={{ fontSize: 11, color: color.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ext.type}{ext.bundled ? ' · bundled' : ''} · {ext.available_tools.length} tools</div>
+              </div>
+              <div style={{ width: 8, height: 8, borderRadius: '50%', background: ext.enabled ? '#5BD17F' : color.textDim, flexShrink: 0 }} />
             </div>
-            <Toggle on={states[i]} onChange={v => setStates(p => { const n = [...p]; n[i] = v; return n; })} />
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -291,22 +291,53 @@ function ModelsPanel() {
 }
 
 function KeysPanel() {
-  const keys = [
-    { p: 'Anthropic', v: 'sk-ant-•••••••••••••3kFp', on: true },
-    { p: 'OpenAI', v: 'sk-•••••••••••••••••W2t', on: true },
-    { p: 'Google AI', v: 'AI•••••••••••••••••8Hq', on: true },
-    { p: 'OpenRouter', v: '', on: false },
-    { p: 'Replicate', v: '', on: false },
-  ];
+  const providers = useCommandCenter(s => s.providers);
+  const loadProviders = useCommandCenter(s => s.loadProviders);
+  const [maskedKeys, setMaskedKeys] = useState<Record<string, string>>({});
+
+  useEffect(() => { loadProviders(); }, [loadProviders]);
+
+  // Load masked values for configured providers' secret keys
+  useEffect(() => {
+    const loadMasked = async () => {
+      const masked: Record<string, string> = {};
+      for (const p of providers) {
+        if (!p.isConfigured) continue;
+        for (const ck of p.configKeys || []) {
+          if (ck.secret) {
+            try {
+              const res = await api.readConfig(ck.name, true);
+              if (res.masked_value) masked[ck.name] = res.masked_value;
+            } catch { /* ignore */ }
+          }
+        }
+      }
+      setMaskedKeys(masked);
+    };
+    if (providers.length > 0) loadMasked();
+  }, [providers]);
+
+  // Show providers that have secret config keys
+  const providersWithKeys = providers.filter(p => p.configKeys?.some(k => k.secret));
+
   return (
     <div>
       <H1 sub="Bring your own keys for the providers you use. Keys are encrypted and never leave your device.">API keys</H1>
       <Section title="Providers">
-        {keys.map(k => (
-          <Row key={k.p} label={k.p}>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <TextInput mono value={k.v} placeholder={k.on ? '' : 'paste key…'} />
-              <button style={ghost}>{k.on ? 'Rotate' : 'Save'}</button>
+        {providersWithKeys.length === 0 && providers.length === 0 && (
+          <div style={{ color: color.textDim, fontSize: 13 }}>Loading providers...</div>
+        )}
+        {providersWithKeys.length === 0 && providers.length > 0 && (
+          <div style={{ color: color.textMuted, fontSize: 13 }}>Configure providers in the Models panel to manage API keys.</div>
+        )}
+        {providersWithKeys.map(p => (
+          <Row key={p.name} label={p.displayName}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <TextInput mono value={maskedKeys[`${p.name.toUpperCase()}_API_KEY`] || (p.isConfigured ? '••••••••' : '')} placeholder={p.isConfigured ? '' : 'paste key…'} />
+              <span style={{
+                fontSize: 10, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase',
+                color: p.isConfigured ? '#5BD17F' : color.textDim,
+              }}>{p.isConfigured ? 'set' : 'missing'}</span>
             </div>
           </Row>
         ))}
@@ -329,7 +360,7 @@ function AppearancePanel() {
   ];
   return (
     <div>
-      <H1 sub="How Permagent looks while it runs alongside you.">Appearance</H1>
+      <H1 sub="How Permagent looks while it runs alongside you."><>Appearance<PreviewBadge /></></H1>
       <Section title="Theme">
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
           {themes.map((th, i) => (
@@ -367,7 +398,7 @@ function ShortcutsPanel() {
   ];
   return (
     <div>
-      <H1 sub="Click any shortcut to rebind. Reset to defaults at the bottom.">Shortcuts</H1>
+      <H1 sub="Click any shortcut to rebind. Reset to defaults at the bottom."><>Shortcuts<PreviewBadge /></></H1>
       {groups.map(grp => (
         <Section key={grp.g} title={grp.g}>
           {grp.items.map(([l, keys]) => (
@@ -389,7 +420,7 @@ function DataPanel() {
   const [sharePrompts, setSharePrompts] = useState(false);
   return (
     <div>
-      <H1 sub="Your data is yours. These controls govern what we keep and what we use.">Data &amp; privacy</H1>
+      <H1 sub="Your data is yours. These controls govern what we keep and what we use."><>Data &amp; privacy<PreviewBadge /></></H1>
       <Section title="Local-first">
         <Row label="Keep everything on this device" hint="Memory and traces never leave your machine. Cloud sync turns off."><Toggle on={localFirst} onChange={setLocalFirst} /></Row>
         <Row label="End-to-end encryption" hint="Required when you have external collaborators."><Toggle on={e2e} onChange={setE2e} /></Row>
