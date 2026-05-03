@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useCallback } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import { color, font, radius } from '../../styles/tokens';
 import { Mobius } from '../mobius/Mobius';
@@ -7,6 +7,7 @@ import { useCommandCenter } from '../../lib/store';
 import { MessageList } from '../chat/MessageList';
 import { ChatInput } from '../chat/ChatInput';
 import type { ChatInputHandle } from '../chat/ChatInput';
+import { DropZone } from '../chat/DropZone';
 import { TerminalManager } from '../terminal/TerminalManager';
 import { Browser } from '../browser';
 
@@ -36,6 +37,10 @@ export function BuildView() {
   const loadSessionMessages = useCommandCenter(s => s.loadSessionMessages);
   const chatInputRef = useRef<ChatInputHandle>(null);
   const connectedRef = useRef(false);
+
+  const handleDrop = useCallback((files: File[]) => {
+    chatInputRef.current?.addFiles(files);
+  }, []);
 
   const agentName = data?.agent.name ?? 'Agent';
   const hasActive = (data?.in_flight.length ?? 0) > 0;
@@ -142,29 +147,31 @@ export function BuildView() {
 
           {/* Bottom: chat */}
           <Panel id="build-chat" defaultSize={45} minSize={15}>
-            <div style={{ height: '100%', padding: '6px 18px 12px', display: 'flex', flexDirection: 'column' }}>
-              <div style={{
-                flex: 1, minHeight: 0,
-                borderRadius: radius.md,
-                background: 'rgba(20,28,48,0.45)',
-                border: `1px solid ${color.border}`,
-                display: 'flex', flexDirection: 'column',
-                backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)',
-                overflow: 'hidden',
-              }}>
+            <DropZone onDrop={handleDrop}>
+              <div style={{ height: '100%', padding: '6px 18px 12px', display: 'flex', flexDirection: 'column' }}>
                 <div style={{
-                  padding: '10px 18px', display: 'flex', alignItems: 'center', gap: 10,
-                  borderBottom: `1px solid ${color.border}`, flexShrink: 0,
+                  flex: 1, minHeight: 0,
+                  borderRadius: radius.md,
+                  background: 'rgba(20,28,48,0.45)',
+                  border: `1px solid ${color.border}`,
+                  display: 'flex', flexDirection: 'column',
+                  backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)',
+                  overflow: 'hidden',
                 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600 }}>Conversation</div>
-                  <div style={{ flex: 1 }} />
+                  <div style={{
+                    padding: '10px 18px', display: 'flex', alignItems: 'center', gap: 10,
+                    borderBottom: `1px solid ${color.border}`, flexShrink: 0,
+                  }}>
+                    <div style={{ fontSize: 12, fontWeight: 600 }}>Conversation</div>
+                    <div style={{ flex: 1 }} />
+                  </div>
+                  <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                    <MessageList />
+                  </div>
+                  <ChatInput ref={chatInputRef} />
                 </div>
-                <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                  <MessageList />
-                </div>
-                <ChatInput ref={chatInputRef} />
               </div>
-            </div>
+            </DropZone>
           </Panel>
         </Group>
       </div>

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { color, font, ease, radius } from '../../styles/tokens';
 import { Mobius, type MobiusState } from '../mobius/Mobius';
 import { useDashboard, type InFlightSession, type RecentSession } from './useDashboard';
@@ -7,6 +7,7 @@ import { useCommandCenter } from '../../lib/store';
 import { MessageList } from '../chat/MessageList';
 import { ChatInput } from '../chat/ChatInput';
 import type { ChatInputHandle } from '../chat/ChatInput';
+import { DropZone } from '../chat/DropZone';
 
 function timeAgo(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
@@ -198,6 +199,10 @@ function HomeChat({ agentName }: { agentName: string }) {
   const chatInputRef = useRef<ChatInputHandle>(null);
   const connectedRef = useRef(false);
 
+  const handleDrop = useCallback((files: File[]) => {
+    chatInputRef.current?.addFiles(files);
+  }, []);
+
   // Connect session lazily when widget opens
   useEffect(() => {
     if (!open || connectedRef.current) return;
@@ -239,42 +244,44 @@ function HomeChat({ agentName }: { agentName: string }) {
 
   // Expanded: floating chat panel
   return (
-    <div style={{
-      position: 'absolute', bottom: 20, right: 20, zIndex: 20,
-      width: 380, height: 520,
-      borderRadius: radius.lg,
-      background: 'rgba(11,18,32,0.95)', backdropFilter: 'blur(24px)',
-      border: `1px solid ${color.borderHi}`,
-      boxShadow: '0 16px 48px rgba(0,0,0,0.6), 0 0 0 1px rgba(0,213,255,0.08)',
-      display: 'flex', flexDirection: 'column',
-      overflow: 'hidden',
-    }}>
-      {/* Header */}
+    <DropZone onDrop={handleDrop}>
       <div style={{
-        display: 'flex', alignItems: 'center', gap: 10,
-        padding: '12px 16px',
-        borderBottom: `1px solid ${color.border}`,
-        flexShrink: 0,
+        position: 'absolute', bottom: 20, right: 20, zIndex: 20,
+        width: 380, height: 520,
+        borderRadius: radius.lg,
+        background: 'rgba(11,18,32,0.95)', backdropFilter: 'blur(24px)',
+        border: `1px solid ${color.borderHi}`,
+        boxShadow: '0 16px 48px rgba(0,0,0,0.6), 0 0 0 1px rgba(0,213,255,0.08)',
+        display: 'flex', flexDirection: 'column',
+        overflow: 'hidden',
       }}>
-        <Mobius size={22} state="idle" glow={0.5} />
-        <span style={{ fontFamily: font.display, fontSize: 13, fontWeight: 600, color: color.text, flex: 1 }}>
-          Chat with {agentName}
-        </span>
-        <button onClick={() => setOpen(false)} style={{
-          width: 24, height: 24, borderRadius: 6,
-          background: 'transparent', border: 'none',
-          color: color.textMuted, cursor: 'pointer',
-          display: 'grid', placeItems: 'center', fontSize: 16,
-        }}>×</button>
-      </div>
+        {/* Header */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          padding: '12px 16px',
+          borderBottom: `1px solid ${color.border}`,
+          flexShrink: 0,
+        }}>
+          <Mobius size={22} state="idle" glow={0.5} />
+          <span style={{ fontFamily: font.display, fontSize: 13, fontWeight: 600, color: color.text, flex: 1 }}>
+            Chat with {agentName}
+          </span>
+          <button onClick={() => setOpen(false)} style={{
+            width: 24, height: 24, borderRadius: 6,
+            background: 'transparent', border: 'none',
+            color: color.textMuted, cursor: 'pointer',
+            display: 'grid', placeItems: 'center', fontSize: 16,
+          }}>×</button>
+        </div>
 
-      {/* Messages */}
-      <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-        <MessageList />
-      </div>
+        {/* Messages */}
+        <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+          <MessageList />
+        </div>
 
-      {/* Input */}
-      <ChatInput ref={chatInputRef} />
-    </div>
+        {/* Input */}
+        <ChatInput ref={chatInputRef} />
+      </div>
+    </DropZone>
   );
 }
