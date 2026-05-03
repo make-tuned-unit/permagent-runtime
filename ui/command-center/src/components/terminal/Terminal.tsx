@@ -1,6 +1,5 @@
 import { useEffect, useRef } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
-import { WebglAddon } from '@xterm/addon-webgl';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
@@ -98,7 +97,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, cwd, isVi
         theme: THEME,
         fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, "DejaVu Sans Mono", monospace',
         fontSize: 13,
-        lineHeight: 1.15,
+        lineHeight: 1.0,
         cursorBlink: true,
         cursorStyle: 'bar',
         allowProposedApi: true,
@@ -111,11 +110,9 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, cwd, isVi
 
       term.open(containerRef.current!);
 
-      try {
-        term.loadAddon(new WebglAddon());
-      } catch {
-        // WebGL not available
-      }
+      // Use default DOM renderer — WebGL addon causes banding and Unicode
+      // rendering issues (box-drawing chars show as ??). DOM renderer
+      // handles Unicode, 256-color, and true-color correctly.
 
       fitAddon.fit();
 

@@ -84,9 +84,23 @@ export function TerminalManager() {
   }, []);
 
   const handleTitleChange = useCallback((tabId: string, title: string) => {
-    // Extract folder name from shell title (e.g. "user@host: ~/dev/project" → "project")
-    const cleaned = title.replace(/.*[:/]/, '').trim();
-    const label = cleaned || 'Terminal';
+    // Extract meaningful label from terminal title.
+    // Common formats:
+    //   "user@host: ~/dev/Canon"  → "Canon"
+    //   "~/dev/Canon"             → "Canon"
+    //   "* Claude Code"           → keep as-is (process name)
+    //   "zsh"                     → "Terminal"
+    let label = title.trim();
+
+    // If title contains a path (has / or ~), extract last segment
+    const pathMatch = label.match(/[~\/]([^:]+)$/);
+    if (pathMatch) {
+      const segments = pathMatch[1].split('/').filter(Boolean);
+      label = segments[segments.length - 1] || label;
+    } else if (label === 'zsh' || label === 'bash' || label === 'sh' || !label) {
+      label = 'Terminal';
+    }
+
     setTabs(prev =>
       prev.map(t => t.id === tabId ? { ...t, label } : t)
     );
