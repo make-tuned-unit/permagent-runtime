@@ -46,20 +46,32 @@ export type DesignTokens = typeof tokens;
 // ── Theme gradients ─────────────────────────────────────────────────
 export type ThemeId = 'dark' | 'aurora' | 'slate';
 
-export const THEME_GRADIENTS: Record<ThemeId, { workspace: string; card: string; label: string }> = {
+export const THEME_GRADIENTS: Record<ThemeId, {
+  workspace: string; card: string; label: string;
+  shell: string; sidebar: string; navRail: string;
+}> = {
   dark: {
     workspace: 'radial-gradient(120% 80% at 50% 0%, #142035 0%, #0B1220 50%, #050810 100%)',
     card: 'linear-gradient(180deg, rgba(20,28,48,0.7), rgba(11,18,32,0.7))',
+    shell: '#0B1220',
+    sidebar: 'rgba(7,11,20,0.6)',
+    navRail: 'rgba(7,11,20,0.4)',
     label: 'Permagent dark',
   },
   aurora: {
     workspace: 'radial-gradient(120% 80% at 50% 0%, #1a1040 0%, #0B1220 40%, #2d1050 100%)',
     card: 'linear-gradient(180deg, rgba(45,16,80,0.5), rgba(11,18,32,0.7))',
+    shell: '#0e0a1e',
+    sidebar: 'rgba(14,10,30,0.7)',
+    navRail: 'rgba(14,10,30,0.5)',
     label: 'Aurora',
   },
   slate: {
     workspace: 'radial-gradient(120% 80% at 50% 0%, #1e2430 0%, #161B26 50%, #0f1318 100%)',
     card: 'linear-gradient(180deg, rgba(30,36,48,0.7), rgba(22,27,38,0.7))',
+    shell: '#13161e',
+    sidebar: 'rgba(19,22,30,0.7)',
+    navRail: 'rgba(19,22,30,0.5)',
     label: 'Slate',
   },
 };

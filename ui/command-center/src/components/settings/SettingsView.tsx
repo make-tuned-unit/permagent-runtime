@@ -467,10 +467,11 @@ export function SettingsView() {
   }, [dismiss]);
 
   const Panel = PANELS[section];
+  const { gradient } = useThemeHook();
 
   return (
-    <div style={{ width: '100%', height: '100%', display: 'flex', background: '#0B1220', color: color.text, fontFamily: font.body }}>
-      <div style={{ width: 240, borderRight: `1px solid ${color.border}`, background: 'rgba(7,11,20,0.4)', padding: '24px 14px', overflow: 'auto', flexShrink: 0 }}>
+    <div style={{ width: '100%', height: '100%', display: 'flex', background: gradient.shell, color: color.text, fontFamily: font.body }}>
+      <div style={{ width: 240, borderRight: `1px solid ${color.border}`, background: gradient.navRail, padding: '24px 14px', overflow: 'auto', flexShrink: 0 }}>
         <div style={{ fontFamily: font.display, fontSize: 18, fontWeight: 700, letterSpacing: '-0.01em', padding: '0 10px 18px' }}>Settings</div>
         {CATEGORIES.map(cat => (
           <div key={cat.group} style={{ marginBottom: 16 }}>

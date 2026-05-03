@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useCommandCenter } from '../../lib/store';
 import { color, font, ease } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 
 /** SVG icon paths from design handoff (view-dashboard.jsx lines 17-20, 107) */
@@ -47,6 +48,7 @@ function SidebarRow({
 }
 
 export function Sidebar() {
+  const { gradient } = useTheme();
   const [open, setOpen] = useState(true);
   const workspaces = useCommandCenter(s => s.workspaces);
   const activeWorkspaceId = useCommandCenter(s => s.activeWorkspaceId);
@@ -83,7 +85,7 @@ export function Sidebar() {
     <div style={{
       width: W, height: '100%', flexShrink: 0,
       borderRight: `1px solid ${color.border}`,
-      background: 'rgba(7,11,20,0.6)',
+      background: gradient.sidebar,
       display: 'flex', flexDirection: 'column',
       padding: '14px 0', gap: 4,
       transition: `width 220ms ${ease.out}`,
