@@ -83,6 +83,15 @@ export function TerminalManager() {
     );
   }, []);
 
+  const handleTitleChange = useCallback((tabId: string, title: string) => {
+    // Extract folder name from shell title (e.g. "user@host: ~/dev/project" → "project")
+    const cleaned = title.replace(/.*[:/]/, '').trim();
+    const label = cleaned || 'Terminal';
+    setTabs(prev =>
+      prev.map(t => t.id === tabId ? { ...t, label } : t)
+    );
+  }, []);
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey) {
@@ -114,7 +123,7 @@ export function TerminalManager() {
               }`}
             >
               <FiTerminal size={11} />
-              <span className="truncate max-w-[100px]">{tab.label}</span>
+              <span className="truncate max-w-[140px]">{tab.label}</span>
               <span
                 onClick={(e) => handleCloseTab(tab.id, e)}
                 className={`ml-1 rounded p-0.5 transition-colors ${
@@ -147,6 +156,7 @@ export function TerminalManager() {
             <Terminal
               sessionId={tab.sessionId}
               onSessionSpawned={(sid) => handleSessionSpawned(tab.id, sid)}
+              onTitleChange={(title) => handleTitleChange(tab.id, title)}
               cwd={tab.cwd}
               isVisible={tab.id === activeTabId}
             />

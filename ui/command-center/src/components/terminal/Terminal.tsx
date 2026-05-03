@@ -61,11 +61,12 @@ const THEME = {
 interface TerminalProps {
   sessionId: string | null;
   onSessionSpawned?: (sessionId: string) => void;
+  onTitleChange?: (title: string) => void;
   cwd?: string;
   isVisible: boolean;
 }
 
-export function Terminal({ sessionId, onSessionSpawned, cwd, isVisible }: TerminalProps) {
+export function Terminal({ sessionId, onSessionSpawned, onTitleChange, cwd, isVisible }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -73,11 +74,13 @@ export function Terminal({ sessionId, onSessionSpawned, cwd, isVisible }: Termin
   const sessionIdRef = useRef<string | null>(sessionId);
   // Stable refs for values that change but shouldn't re-trigger the effect
   const onSessionSpawnedRef = useRef(onSessionSpawned);
+  const onTitleChangeRef = useRef(onTitleChange);
   const cwdRef = useRef(cwd);
   const isVisibleRef = useRef(isVisible);
 
   sessionIdRef.current = sessionId;
   onSessionSpawnedRef.current = onSessionSpawned;
+  onTitleChangeRef.current = onTitleChange;
   cwdRef.current = cwd;
   isVisibleRef.current = isVisible;
 
@@ -195,6 +198,10 @@ export function Terminal({ sessionId, onSessionSpawned, cwd, isVisible }: Termin
         }
       });
 
+      const onTitleDisposable = term.onTitleChange((title) => {
+        onTitleChangeRef.current?.(title);
+      });
+
       const onResizeDisposable = term.onResize(({ cols, rows }) => {
         if (api && sessionIdRef.current) {
           api.invoke('resize_pty', {
@@ -218,6 +225,7 @@ export function Terminal({ sessionId, onSessionSpawned, cwd, isVisible }: Termin
 
       cleanupRef.current = () => {
         onDataDisposable.dispose();
+        onTitleDisposable.dispose();
         onResizeDisposable.dispose();
         unlistenData?.();
         unlistenExit?.();
