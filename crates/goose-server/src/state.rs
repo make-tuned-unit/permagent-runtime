@@ -40,6 +40,10 @@ pub struct AppState {
     /// Loaded from ~/.permagent/secrets/daemon_token.json on startup.
     /// The Tauri shell reads the same file to include the token in requests.
     pub daemon_token: Option<String>,
+    /// Activity event ingester — writes Always/Aggregated events to Brain.
+    pub activity_ingester: Option<Arc<permagent::activity::ingestion::ActivityIngester>>,
+    /// Activity context builder — maintains live state for per-turn digests.
+    pub context_builder: Option<Arc<permagent::activity::context_builder::ContextBuilder>>,
 }
 
 impl AppState {
@@ -159,6 +163,79 @@ impl AppState {
         // Load or generate daemon token for /activity/emit auth.
         let daemon_token = load_or_create_daemon_token();
 
+        // Activity awareness layer: create Ingester + ContextBuilder if Brain is available.
+        // Both subscribe to the global event bus via a long-lived tokio task spawned below.
+        let (activity_ingester, context_builder) = if let Some(ref brain) = brain {
+            let device_id = sanitize_device_id(&std::env::var("HOSTNAME")
+                .unwrap_or_else(|_| "permagent-host".into()));
+            let ingester = Arc::new(
+                permagent::activity::ingestion::ActivityIngester::new(
+                    brain.clone(),
+                    device_id.clone(),
+                ),
+            );
+            let cb = Arc::new(
+                permagent::activity::context_builder::ContextBuilder::new(brain.clone()),
+            );
+            tracing::info!(
+                target: "permagentd::activity",
+                "ActivityIngester subscribed to event bus, device_id={}",
+                device_id
+            );
+            tracing::info!(
+                target: "permagentd::activity",
+                "ContextBuilder subscribed to event bus"
+            );
+
+            // Spawn a long-lived task that subscribes to the activity event bus
+            // and forwards events to both the Ingester and ContextBuilder.
+            let ingester_ref = ingester.clone();
+            let cb_ref = cb.clone();
+            tokio::spawn(async move {
+                let mut rx = permagent::events::subscribe();
+                loop {
+                    match rx.recv().await {
+                        Ok(event) => {
+                            if event.event_type == permagent::events::PermagentEventType::Activity {
+                                // Extract the ActivityEvent from the PermagentEvent payload
+                                if let Some(inner) = event.payload.get("event") {
+                                    if let Ok(activity_event) = serde_json::from_value::<
+                                        permagent::events::activity::ActivityEvent,
+                                    >(inner.clone()) {
+                                        // ContextBuilder is non-blocking (in-memory state)
+                                        cb_ref.handle_event(&activity_event);
+                                        // Ingester calls brain.remember_with() which blocks,
+                                        // so run it on the blocking thread pool.
+                                        let ingester = ingester_ref.clone();
+                                        let event = activity_event;
+                                        tokio::task::spawn_blocking(move || {
+                                            ingester.handle_event(&event);
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!(
+                                target: "permagentd::activity",
+                                "Activity ingestion lagged, missed {} events",
+                                n
+                            );
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            });
+
+            (Some(ingester), Some(cb))
+        } else {
+            tracing::info!(
+                target: "permagentd::activity",
+                "No Brain available — activity ingestion disabled"
+            );
+            (None, None)
+        };
+
         Ok(Arc::new(Self {
             agent_manager,
             recipe_file_hash_map: Arc::new(Mutex::new(HashMap::new())),
@@ -173,6 +250,8 @@ impl AppState {
             persona,
             agent_config,
             daemon_token,
+            activity_ingester,
+            context_builder,
         }))
     }
 
@@ -272,6 +351,32 @@ impl AppState {
             StatusCode::INTERNAL_SERVER_ERROR
         })
     }
+}
+
+/// Sanitize hostname for use as device_id: lowercase, replace dots/whitespace
+/// with hyphens, strip non-alphanumeric except hyphens.
+fn sanitize_device_id(hostname: &str) -> String {
+    let sanitized: String = hostname
+        .to_lowercase()
+        .chars()
+        .map(|c| if c == '.' || c.is_ascii_whitespace() { '-' } else { c })
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect();
+    // Collapse repeated hyphens
+    let mut result = String::with_capacity(sanitized.len());
+    let mut last_was_hyphen = true;
+    for c in sanitized.chars() {
+        if c == '-' {
+            if !last_was_hyphen {
+                result.push('-');
+                last_was_hyphen = true;
+            }
+        } else {
+            result.push(c);
+            last_was_hyphen = false;
+        }
+    }
+    result.trim_end_matches('-').to_string()
 }
 
 /// Load daemon token from ~/.permagent/secrets/daemon_token.json.

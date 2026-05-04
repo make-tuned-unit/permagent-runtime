@@ -21,9 +21,20 @@ function createTab(cwd?: string): TerminalTab {
   };
 }
 
+// ── Module-level state persists across workspace switches (mount/unmount) ──
+// Same pattern as Browser.tsx — keeps PTY sessions alive when user
+// navigates away from the Build page and back.
+let persistedTabs: TerminalTab[] | null = null;
+let persistedActiveTabId: string | null = null;
+
 export function TerminalManager() {
-  const [tabs, setTabs] = useState<TerminalTab[]>(() => [createTab()]);
-  const [activeTabId, setActiveTabId] = useState<string>(tabs[0].id);
+  const [tabs, setTabs] = useState<TerminalTab[]>(() => {
+    if (persistedTabs) return persistedTabs;
+    return [createTab()];
+  });
+  const [activeTabId, setActiveTabId] = useState<string>(() => {
+    return persistedActiveTabId || tabs[0].id;
+  });
   const [closingTabId, setClosingTabId] = useState<string | null>(null);
   const killPtyRef = useRef<(sessionId: string) => Promise<void>>();
 
@@ -40,6 +51,16 @@ export function TerminalManager() {
 
   const activeTabIdRef = useRef(activeTabId);
   activeTabIdRef.current = activeTabId;
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+
+  // Persist state on unmount so terminal survives workspace switches
+  useEffect(() => {
+    return () => {
+      persistedTabs = tabsRef.current;
+      persistedActiveTabId = activeTabIdRef.current;
+    };
+  }, []);
 
   const handleNewTab = useCallback(() => {
     const tab = createTab();

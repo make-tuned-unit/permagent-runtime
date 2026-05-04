@@ -1091,6 +1091,9 @@ async fn execute_job(
                             device_id: Some(device_id),
                             confidence: Some(1.0),
                             visibility: spectral::Visibility::Private,
+                            created_at: None,
+                            episode_id: None,
+                            compaction_tier: None,
                         },
                     )
                 })

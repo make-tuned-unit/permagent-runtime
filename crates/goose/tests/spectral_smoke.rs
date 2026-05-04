@@ -45,6 +45,9 @@ fn spectral_round_trips_chat_memory_with_provenance() {
                 device_id: Some(brain.device_id().clone()),
                 confidence: Some(1.0),
                 visibility: Visibility::Private,
+                created_at: None,
+                episode_id: None,
+                compaction_tier: None,
             },
         )
         .expect("remember_with");
@@ -110,6 +113,9 @@ fn ontology_loads_without_specific_entities() {
                 device_id: Some(brain.device_id().clone()),
                 confidence: Some(1.0),
                 visibility: Visibility::Private,
+                created_at: None,
+                episode_id: None,
+                compaction_tier: None,
             },
         )
         .expect("memory write should succeed without entities");

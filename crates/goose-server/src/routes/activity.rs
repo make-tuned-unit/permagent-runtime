@@ -192,11 +192,68 @@ fn check_rate_limit() -> bool {
     true
 }
 
+// ── GET /activity/ingest-status ─────────────────────────────────────────
+
+async fn ingest_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    // Auth-gated with daemon token
+    let token = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+
+    if let Some(expected) = state.daemon_token.as_deref() {
+        if token != Some(expected) {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorBody {
+                    error: "unauthorized".into(),
+                }),
+            ));
+        }
+    }
+
+    let mut result = serde_json::json!({
+        "events_ingested": { "always": 0, "aggregated": 0 },
+        "events_observed": { "ephemeral": 0 },
+        "ingestion_failures": 0,
+        "aggregation_queue_size": 0,
+        "last_ingested_at": null,
+        "context_builder": {
+            "recent_events_buffered": 0,
+            "live_state": {}
+        }
+    });
+
+    if let Some(ref ingester) = state.activity_ingester {
+        result["events_ingested"]["always"] = serde_json::json!(ingester.always_count());
+        result["events_ingested"]["aggregated"] = serde_json::json!(ingester.aggregated_count());
+        result["events_observed"]["ephemeral"] = serde_json::json!(ingester.ephemeral_count());
+        result["ingestion_failures"] = serde_json::json!(ingester.failure_count());
+        result["aggregation_queue_size"] = serde_json::json!(ingester.aggregation_queue_size());
+        if let Some(ts) = ingester.last_ingested_at() {
+            result["last_ingested_at"] = serde_json::json!(ts.to_rfc3339());
+        }
+    }
+
+    if let Some(ref cb) = state.context_builder {
+        result["context_builder"]["recent_events_buffered"] =
+            serde_json::json!(cb.buffered_count());
+        result["context_builder"]["live_state"] =
+            serde_json::to_value(cb.live_state_snapshot()).unwrap_or_default();
+    }
+
+    Ok(Json(result))
+}
+
 // ── Routes ─────────────────────────────────────────────────────────────
 
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/activity/recent", get(get_recent))
         .route("/activity/emit", post(emit_event))
+        .route("/activity/ingest-status", get(ingest_status))
         .with_state(state)
 }
