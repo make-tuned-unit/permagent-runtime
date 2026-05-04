@@ -57,10 +57,20 @@ HTTP: 400
 Sent `chat_turn_started` with `tier: "always"`. Server returned 200.
 Stored event has `tier: "ephemeral"` (canonical tier enforced server-side).
 
-### Test 7 — Rate limiting (200 sequential events)
-200 responses: 200, 429 responses: 0.
-Sequential curl calls (~10ms each) spread over ~2s, well under the
-100/s threshold. Rate limiter correctly allows all events within budget.
+### Test 7 — Rate limiting (200 parallel events)
+Burst 1 (200 parallel curl via background subshells):
+```
+ 154 200
+  46 429
+```
+Burst 2 (200 parallel, 2s after burst 1):
+```
+ 121 200
+  79 429
+```
+Both the per-second limit (100/s) and the 60-second window (1000/60s)
+engage correctly. Burst 2 accepted fewer because the 60s window still
+contained events from burst 1.
 
 ### Test 8 — Recent events visible
 ```json
