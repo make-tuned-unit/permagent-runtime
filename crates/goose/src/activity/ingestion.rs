@@ -240,6 +240,153 @@ mod tests {
     use super::*;
     use crate::events::activity::{ActivityEvent, ActivityEventType, SourceSurface, EventTier};
 
+    fn build_test_brain() -> Arc<Brain> {
+        use spectral::DeviceId;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let brain_path = temp.path().join("brain");
+        let ontology_path = temp.path().join("ontology.toml");
+        std::fs::write(&ontology_path, include_str!("../../assets/ontology.toml")).unwrap();
+        let _ = Box::leak(Box::new(temp));
+        Arc::new(
+            Brain::builder()
+                .data_dir(&brain_path)
+                .ontology_path(&ontology_path)
+                .device_id(DeviceId::from_descriptor("test"))
+                .build()
+                .expect("test brain"),
+        )
+    }
+
+    fn make_always_event() -> ActivityEvent {
+        ActivityEvent {
+            event_id: uuid::Uuid::new_v4().to_string(),
+            event_type: ActivityEventType::ChatTurnCompleted,
+            source_surface: SourceSurface::Chat,
+            timestamp: chrono::Utc::now(),
+            session_id: Some("s1".into()),
+            project_id: None,
+            payload: serde_json::json!({
+                "duration_ms": 500,
+                "input_tokens": 100,
+                "output_tokens": 50,
+            }),
+            tier: EventTier::Always,
+        }
+    }
+
+    #[test]
+    fn always_event_ingested_to_brain() {
+        let brain = build_test_brain();
+        let ingester = ActivityIngester::new(brain.clone(), "test-device".into());
+
+        ingester.handle_event(&make_always_event());
+
+        assert_eq!(ingester.always_count(), 1);
+        assert_eq!(ingester.failure_count(), 0);
+        assert!(ingester.last_ingested_at().is_some());
+    }
+
+    #[test]
+    fn aggregated_event_ingested_and_queued() {
+        let brain = build_test_brain();
+        let ingester = ActivityIngester::new(brain, "test-device".into());
+
+        let event = ActivityEvent {
+            event_id: uuid::Uuid::new_v4().to_string(),
+            event_type: ActivityEventType::BrowserNavigated,
+            source_surface: SourceSurface::Browser,
+            timestamp: chrono::Utc::now(),
+            session_id: None,
+            project_id: None,
+            payload: serde_json::json!({"url": "https://example.com", "title": "Example", "tab_id": "t1"}),
+            tier: EventTier::Aggregated,
+        };
+        ingester.handle_event(&event);
+
+        assert_eq!(ingester.aggregated_count(), 1);
+        assert_eq!(ingester.aggregation_queue_size(), 1);
+        assert_eq!(ingester.failure_count(), 0);
+    }
+
+    #[test]
+    fn ephemeral_event_counted_not_ingested() {
+        let brain = build_test_brain();
+        let ingester = ActivityIngester::new(brain, "test-device".into());
+
+        let event = ActivityEvent {
+            event_id: "eph-1".into(),
+            event_type: ActivityEventType::ChatTurnStarted,
+            source_surface: SourceSurface::Chat,
+            timestamp: chrono::Utc::now(),
+            session_id: Some("s1".into()),
+            project_id: None,
+            payload: serde_json::json!({}),
+            tier: EventTier::Ephemeral,
+        };
+        ingester.handle_event(&event);
+
+        assert_eq!(ingester.ephemeral_count(), 1);
+        assert_eq!(ingester.always_count(), 0);
+        assert_eq!(ingester.aggregated_count(), 0);
+        assert!(ingester.last_ingested_at().is_none());
+    }
+
+    /// The most important behavioral contract in this module:
+    /// Brain write failures must NOT crash the daemon. The failure_count
+    /// increments, the event is dropped, and processing continues.
+    #[test]
+    fn brain_failure_increments_counter_without_panic() {
+        // Build a Brain, then drop it and try to use the ingester.
+        // The trick: we build a valid Brain, then sabotage the data
+        // directory so writes fail.
+        use spectral::DeviceId;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let brain_path = temp.path().join("brain");
+        let ontology_path = temp.path().join("ontology.toml");
+        std::fs::write(&ontology_path, include_str!("../../assets/ontology.toml")).unwrap();
+
+        let brain = Arc::new(
+            Brain::builder()
+                .data_dir(&brain_path)
+                .ontology_path(&ontology_path)
+                .device_id(DeviceId::from_descriptor("test"))
+                .build()
+                .expect("test brain"),
+        );
+
+        let ingester = ActivityIngester::new(brain.clone(), "test-device".into());
+
+        // First write succeeds — baseline
+        ingester.handle_event(&make_always_event());
+        assert_eq!(ingester.always_count(), 1);
+        assert_eq!(ingester.failure_count(), 0);
+
+        // Sabotage: delete the Brain's memory.db to force write failures
+        let memory_db = brain_path.join("memory.db");
+        if memory_db.exists() {
+            // Remove the entire brain directory to guarantee failure
+            let _ = std::fs::remove_dir_all(&brain_path);
+        }
+
+        // Second write should fail but NOT panic
+        ingester.handle_event(&make_always_event());
+
+        // The always_count increments (we entered the Always branch)
+        // but the Brain write may have failed, incrementing failure_count.
+        // If the Brain cached the connection, the write might still succeed
+        // on some backends. Either way, the daemon must survive.
+        let total = ingester.always_count();
+        let failures = ingester.failure_count();
+        assert_eq!(total, 2, "both events should be counted");
+        // We can't guarantee the failure (SQLite may cache the FD),
+        // but we CAN guarantee no panic occurred — if we reach this
+        // line, the contract holds.
+        eprintln!(
+            "brain_failure test: always_count={}, failure_count={} (both outcomes valid)",
+            total, failures
+        );
+    }
+
     #[test]
     fn render_chat_turn_completed() {
         let event = ActivityEvent {

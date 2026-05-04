@@ -22,8 +22,17 @@ function createTab(cwd?: string): TerminalTab {
 }
 
 // ── Module-level state persists across workspace switches (mount/unmount) ──
-// Same pattern as Browser.tsx — keeps PTY sessions alive when user
-// navigates away from the Build page and back.
+//
+// WHY THIS IS MODULE-LEVEL (do not refactor into React state):
+// When the user switches workspaces (e.g., Build → Home → Build), React
+// unmounts TerminalManager entirely. If tab state lived only in React
+// state, every workspace switch would kill all terminal tabs and spawn
+// new PTY sessions — losing scrollback, working directory, running
+// processes, and shell history. Module-level vars survive the unmount
+// and restore the exact tab state on remount, reconnecting to the
+// still-alive PTY sessions on the Tauri backend.
+//
+// Same pattern used by Browser.tsx for the same reason.
 let persistedTabs: TerminalTab[] | null = null;
 let persistedActiveTabId: string | null = null;
 
