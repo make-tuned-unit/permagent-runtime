@@ -26,6 +26,7 @@ import {
 } from "@/features/chat/hooks/replayBuffer";
 import { resolveSessionCwd } from "@/features/projects/lib/sessionCwdSelection";
 import { perfLog } from "@/shared/lib/perfLog";
+import { invoke } from "@tauri-apps/api/core";
 
 export type AppView =
   | "home"
@@ -334,6 +335,14 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
 
   const handleStartChatFromProject = useCallback(
     (project: ProjectInfo) => {
+      // Activity: project selected — user initiated a chat within a project
+      invoke("emit_activity", {
+        event_type: "project_selected",
+        source_surface: "project_picker",
+        payload: { project_id: project.id, project_name: project.name },
+        session_id: null,
+        project_id: project.id,
+      }).catch(() => {});
       void createNewTab(DEFAULT_CHAT_TITLE, project);
     },
     [createNewTab],
@@ -343,6 +352,14 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     (projectId: string) => {
       const project = projectStore.projects.find((p) => p.id === projectId);
       if (project) {
+        // Activity: project selected — new chat within an existing project
+        invoke("emit_activity", {
+          event_type: "project_selected",
+          source_surface: "project_picker",
+          payload: { project_id: project.id, project_name: project.name },
+          session_id: null,
+          project_id: project.id,
+        }).catch(() => {});
         void createNewTab(DEFAULT_CHAT_TITLE, project);
       }
     },

@@ -10,6 +10,7 @@
 | Chat (SSE /sessions/{id}/reply) | ChatTurnStarted, ChatTurnCompleted | `crates/goose-server/src/routes/session_events.rs` | 337, 762 | Direct emit_activity() |
 | Browser | BrowserSessionStarted, BrowserNavigated, BrowserSessionEnded | `ui/command-center/src/components/browser/Browser.tsx` | 52, 186, 325, 366 | Tauri invoke → POST /activity/emit |
 | Terminal | TerminalCommandStarted | `ui/command-center/src/components/terminal/Terminal.tsx` | 199 | Tauri invoke → POST /activity/emit |
+| Project Picker | ProjectSelected | `ui/goose2/src/app/AppShell.tsx` | 339, 354 | Tauri invoke → POST /activity/emit |
 
 ## Phase 2 Surfaces Deferred
 
@@ -17,7 +18,7 @@
 |---------|--------|
 | TerminalCommandCompleted | PTY exit is detected (`pty_exit` event at Terminal.tsx:169) but does not carry exit_code, stdout_summary, or duration_ms. The PTY streaming model needs redesign to capture command boundaries and output (Phase 2.5). Currently only TerminalCommandStarted fires on Enter. |
 | BrowserFormSubmitted | Requires injecting a JS shim into web pages to intercept form submissions. Fragile and browser-dependent. Deferred to Phase 2.5 when Rust-owned browser surfaces are built. |
-| ProjectSelected / ProjectOpened | No project selection lifecycle event exists. Projects.rs is CRUD-only. The frontend manages project state in React. A `select_project` Tauri command could be added, but the UI has no clear "select" action — projects are implicit via workspace/session context. |
+| ProjectOpened | ProjectSelected fires on user action. ProjectOpened (workspace context loaded) has no distinct event — context loading is part of createNewTab and happens synchronously. Deferred until project workspace lifecycle is separated from session creation. |
 | FileOpened / FileEdited | No file viewer surface exists in the command-center UI. File operations happen through the agent's developer extension (tracked via TaskLogger). |
 | SkillExecuted | skill_executions table exists but no execution code path. Skill execution code path must be built before SkillExecuted events can fire. Phase 3+ dependency. |
 | IntegrationTokenRefreshed | OAuth token refresh happens inside the Gmail MCP extension (Python) or via provider-side opaque refresh. No daemon-side hook point for "token was refreshed." The integrations.rs route handles OAuth connect/callback but not token refresh lifecycle. |
