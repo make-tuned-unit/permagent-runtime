@@ -4,6 +4,8 @@
 //! WebSocket handlers and other consumers call [`subscribe()`] to receive a
 //! live stream plus access to the replay buffer (last 1000 events).
 
+pub mod activity;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -116,6 +118,8 @@ pub enum PermagentEventType {
     // Integration
     IntegrationConnected,
     IntegrationError,
+    // Activity awareness layer (Phase 1)
+    Activity,
 }
 
 // ── Convenience constructors ────────────────────────────────────────────────

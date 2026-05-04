@@ -221,6 +221,11 @@ pub async fn reply(
 
     let session_id = request.session_id.clone();
 
+    // Activity: chat turn started
+    permagent::events::activity::emit_activity(
+        permagent::events::activity::chat_turn_started(&session_id),
+    );
+
     if let Some(recipe_name) = request.recipe_name.clone() {
         if state.mark_recipe_run_if_absent(&session_id).await {
             let recipe_version = request
@@ -579,6 +584,16 @@ pub async fn reply(
         }
 
         let final_token_state = get_token_state(state.session_manager(), &session_id).await;
+
+        // Activity: chat turn completed
+        permagent::events::activity::emit_activity(
+            permagent::events::activity::chat_turn_completed(
+                &session_id,
+                session_start.elapsed().as_millis() as u64,
+                final_token_state.input_tokens,
+                final_token_state.output_tokens,
+            ),
+        );
 
         let _ = stream_event(
             MessageEvent::Finish {

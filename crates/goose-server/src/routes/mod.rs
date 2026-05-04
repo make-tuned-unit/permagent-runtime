@@ -1,4 +1,5 @@
 pub mod action_required;
+pub mod activity;
 pub mod agent;
 pub mod attachments;
 pub mod brain;
@@ -39,6 +40,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
     let mut router = Router::new()
         .merge(status::routes(state.clone()))
         .merge(reply::routes(state.clone()))
+        .merge(activity::routes(state.clone()))
         .merge(action_required::routes(state.clone()))
         .merge(agent::routes(state.clone()))
         .merge(config_management::routes(state.clone()))

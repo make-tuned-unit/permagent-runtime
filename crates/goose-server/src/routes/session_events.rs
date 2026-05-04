@@ -332,6 +332,11 @@ pub async fn session_reply(
 
     let session_start = std::time::Instant::now();
 
+    // Activity: chat turn started
+    permagent::events::activity::emit_activity(
+        permagent::events::activity::chat_turn_started(&session_id),
+    );
+
     tracing::info!(
         monotonic_counter.goose.session_starts = 1,
         session_type = "app",
@@ -748,6 +753,16 @@ pub async fn session_reply(
 
         let final_token_state =
             get_token_state(task_state.session_manager(), &task_session_id).await;
+
+        // Activity: chat turn completed
+        permagent::events::activity::emit_activity(
+            permagent::events::activity::chat_turn_completed(
+                &task_session_id,
+                session_start.elapsed().as_millis() as u64,
+                final_token_state.input_tokens,
+                final_token_state.output_tokens,
+            ),
+        );
 
         publish(
             Some(task_request_id.clone()),
