@@ -113,6 +113,18 @@ fn ontology_loads_without_specific_entities() {
             },
         )
         .expect("memory write should succeed without entities");
+
+    // Regression guard: the shipped ontology must NOT contain user-specific
+    // entity declarations. These belong in runtime data, not the binary.
+    let ontology_text = ontology_toml();
+    assert!(
+        !ontology_text.contains("jesse-sharratt"),
+        "ontology.toml must not contain user-specific entity 'jesse-sharratt'"
+    );
+    assert!(
+        !ontology_text.contains("[[entity]]"),
+        "ontology.toml must not contain pre-declared [[entity]] instances — only [[entity_types]]"
+    );
 }
 
 #[test]

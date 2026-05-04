@@ -1,4 +1,4 @@
-# Permagent v1.0 Ontology
+# Permagent v1.0 Ontology — Schema Only
 #
 # Defines the schema of memory: what kinds of entities can exist and what
 # typed relationships connect them. Specific entities (the user's name,
@@ -6,38 +6,51 @@
 # interacts with Permagent — they are NOT pre-declared in this file.
 #
 # This file ships in every Permagent binary as an embedded asset and is
-# written to ~/.permagent/ontology.toml on first run. Spectral validates
-# all graph writes against the (domain, range) constraints declared here.
+# written to ~/.permagent/brain/ontology.toml on first run. Spectral
+# validates all graph writes against the (domain, range) constraints
+# declared here.
 #
-# v1.1 will add activity-capture entity types (activity) and predicates
-# (occurred_in_project, started_at, involves_person).
+# Runtime entity creation is gated on Spectral's AutoCreateWithCanonicalizer
+# support (Phase 2 Track A). Until then, entities are inferred by the
+# constellation fingerprint layer without explicit graph nodes.
 
 version = 1
 
 # ── Entity types ─────────────────────────────────────────────────────
 # Each type describes a kind of thing Permagent reasons about. Specific
-# entities of these types are created at runtime when first referenced
-# (pending Spectral's AutoCreateWithCanonicalizer support — Phase 2 Track A).
+# entities of these types are created at runtime when first referenced.
 
 [[entity_types]]
 name = "person"
-aliases = ["user", "human"]
+aliases = ["user", "human", "contact"]
 
 [[entity_types]]
 name = "project"
 aliases = ["repo", "codebase", "product"]
 
 [[entity_types]]
-name = "chat_session"
-aliases = ["conversation", "session"]
+name = "organization"
+aliases = ["company", "team", "org"]
 
 [[entity_types]]
-name = "skill"
-aliases = ["capability", "tool", "extension"]
+name = "document"
+aliases = ["file", "page", "note"]
 
 [[entity_types]]
-name = "topic"
-aliases = ["subject", "theme"]
+name = "concept"
+aliases = ["idea", "topic", "subject", "theme"]
+
+[[entity_types]]
+name = "event"
+aliases = ["meeting", "milestone", "incident"]
+
+[[entity_types]]
+name = "location"
+aliases = ["place", "region", "city"]
+
+[[entity_types]]
+name = "tool"
+aliases = ["extension", "service", "api", "skill"]
 
 # ── Predicates ───────────────────────────────────────────────────────
 # Each predicate describes a typed relationship. domain = subject type,
@@ -50,31 +63,41 @@ domain = "person"
 range = "project"
 
 [[predicates]]
-name = "discussed_in"
-domain = "topic"
-range = "chat_session"
+name = "created"
+domain = "person"
+range = "document"
 
 [[predicates]]
-name = "uses_skill"
-domain = "chat_session"
-range = "skill"
-
-[[predicates]]
-name = "mentions_person"
-domain = "chat_session"
-range = "person"
-
-[[predicates]]
-name = "mentions_project"
-domain = "chat_session"
-range = "project"
-
-[[predicates]]
-name = "mentions_topic"
-domain = "chat_session"
-range = "topic"
+name = "mentioned"
+domain = "document"
+range = "concept"
 
 [[predicates]]
 name = "related_to"
-domain = "topic"
-range = "topic"
+domain = "concept"
+range = "concept"
+
+[[predicates]]
+name = "located_in"
+domain = "organization"
+range = "location"
+
+[[predicates]]
+name = "occurred_at"
+domain = "event"
+range = "location"
+
+[[predicates]]
+name = "authored"
+domain = "person"
+range = "document"
+
+[[predicates]]
+name = "depends_on"
+domain = "project"
+range = "project"
+
+[[predicates]]
+name = "part_of"
+domain = "project"
+range = "organization"
