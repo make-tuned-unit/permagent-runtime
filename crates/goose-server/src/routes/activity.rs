@@ -1,13 +1,28 @@
-//! Debug endpoint for the activity event ring buffer.
+//! Activity event endpoints for the Permagent awareness layer.
 //!
-//! GET /activity/recent?limit=N — returns the last N activity events.
-//! In-memory only; lost on daemon restart. Phase 2 replaces this with
-//! Brain queries.
+//! - GET  /activity/recent?limit=N — debug endpoint, returns last N events
+//!   from in-memory ring buffer. TODO: auth-gate in Phase 3 when the
+//!   inspection panel becomes the canonical reader.
+//!
+//! - POST /activity/emit — authenticated endpoint for frontend surfaces
+//!   to push activity events onto the daemon bus. Bearer token auth,
+//!   rate-limited.
 
-use axum::{extract::Query, routing::get, Json, Router};
+use axum::{
+    extract::{Json, Query, State},
+    http::{HeaderMap, StatusCode},
+    routing::{get, post},
+    Router,
+};
+use chrono::Utc;
 use permagent::events::activity::{self, ActivityEvent};
-use serde::Deserialize;
-use std::sync::Arc;
+use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
+use std::sync::{Arc, LazyLock, Mutex};
+
+use crate::state::AppState;
+
+// ── GET /activity/recent ───────────────────────────────────────────────
 
 #[derive(Deserialize)]
 pub struct RecentQuery {
@@ -24,6 +39,164 @@ async fn get_recent(Query(params): Query<RecentQuery>) -> Json<Vec<ActivityEvent
     Json(activity::recent_activity(limit))
 }
 
-pub fn routes(_state: Arc<crate::state::AppState>) -> Router {
-    Router::new().route("/activity/recent", get(get_recent))
+// ── POST /activity/emit ────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct EmitResponse {
+    accepted: bool,
+    event_id: String,
+}
+
+#[derive(Serialize)]
+struct ErrorBody {
+    error: String,
+}
+
+async fn emit_event(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(mut event): Json<ActivityEvent>,
+) -> Result<Json<EmitResponse>, (StatusCode, Json<ErrorBody>)> {
+    // ── Auth ──
+    let token = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+
+    let expected = state.daemon_token.as_deref();
+    match (token, expected) {
+        (_, None) => {
+            // No daemon token configured — reject all external emit calls
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorBody {
+                    error: "daemon token not configured".into(),
+                }),
+            ));
+        }
+        (None, Some(_)) => {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorBody {
+                    error: "missing Authorization: Bearer <token> header".into(),
+                }),
+            ));
+        }
+        (Some(provided), Some(expected)) if provided != expected => {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorBody {
+                    error: "invalid token".into(),
+                }),
+            ));
+        }
+        _ => {} // Auth OK
+    }
+
+    // ── Rate limit ──
+    if !check_rate_limit() {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ErrorBody {
+                error: "rate limit exceeded (100/s or 1000/60s)".into(),
+            }),
+        ));
+    }
+
+    // ── Validate timestamp (within last 60 seconds) ──
+    let age = Utc::now()
+        .signed_duration_since(event.timestamp)
+        .num_seconds();
+    if age > 60 || age < -5 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: format!("timestamp out of range (age={}s, max=60s)", age),
+            }),
+        ));
+    }
+
+    // ── Validate event_id is valid UUID ──
+    if uuid::Uuid::parse_str(&event.event_id).is_err() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "event_id must be a valid UUID".into(),
+            }),
+        ));
+    }
+
+    // ── Enforce canonical tier (server-side override) ──
+    event.tier = activity::canonical_tier(&event.event_type);
+
+    let event_id = event.event_id.clone();
+    activity::emit_activity(event);
+
+    Ok(Json(EmitResponse {
+        accepted: true,
+        event_id,
+    }))
+}
+
+// ── Rate limiter ───────────────────────────────────────────────────────
+//
+// Simple sliding-window: 100 events/second, 1000 events/60 seconds.
+// Intentionally generous — foot-gun guard, not a quota. Limits are
+// global (not per-token) since there's only one token in Phase 2.
+
+struct RateLimiter {
+    timestamps: VecDeque<i64>, // unix millis
+}
+
+static RATE_LIMITER: LazyLock<Mutex<RateLimiter>> = LazyLock::new(|| {
+    Mutex::new(RateLimiter {
+        timestamps: VecDeque::with_capacity(1100),
+    })
+});
+
+fn check_rate_limit() -> bool {
+    let now_ms = Utc::now().timestamp_millis();
+    let mut limiter = match RATE_LIMITER.lock() {
+        Ok(l) => l,
+        Err(_) => return true, // Poisoned — allow
+    };
+
+    // Prune entries older than 60 seconds
+    let cutoff_60s = now_ms - 60_000;
+    while limiter
+        .timestamps
+        .front()
+        .map_or(false, |&t| t < cutoff_60s)
+    {
+        limiter.timestamps.pop_front();
+    }
+
+    // Check 60-second window (1000 max)
+    if limiter.timestamps.len() >= 1000 {
+        return false;
+    }
+
+    // Check 1-second window (100 max)
+    let cutoff_1s = now_ms - 1_000;
+    let count_1s = limiter
+        .timestamps
+        .iter()
+        .rev()
+        .take_while(|&&t| t >= cutoff_1s)
+        .count();
+    if count_1s >= 100 {
+        return false;
+    }
+
+    limiter.timestamps.push_back(now_ms);
+    true
+}
+
+// ── Routes ─────────────────────────────────────────────────────────────
+
+pub fn routes(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/activity/recent", get(get_recent))
+        .route("/activity/emit", post(emit_event))
+        .with_state(state)
 }

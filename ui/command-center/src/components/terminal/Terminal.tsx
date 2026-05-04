@@ -186,6 +186,8 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         }
 
         // Detect Enter to emit terminal_command event
+        // TODO: Frontend-driven emission is transitional. Lifecycle hooks should move
+        // to Rust-owned surfaces in Phase 2.5 (see docs/architecture/PHASE_2_5_TAURI_REFACTOR.md).
         if (data === '\r' || data === '\n') {
           const command = inputBuffer.trim();
           if (command.length > 0) {
@@ -199,6 +201,16 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
                 session_id: sessionIdRef.current,
               },
             });
+            // Activity: terminal command started
+            if (api) {
+              api.invoke('emit_activity', {
+                event_type: 'terminal_command_started',
+                source_surface: 'terminal',
+                payload: { command, working_directory: cwdRef.current || null },
+                session_id: null,
+                project_id: null,
+              }).catch(() => {});
+            }
           }
           inputBuffer = '';
         } else if (data === '\x7f') {

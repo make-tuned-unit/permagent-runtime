@@ -36,6 +36,10 @@ pub struct AppState {
     pub persona: permagent::config::agent_identity::SharedPersona,
     /// Shared full agent config (primary + workers) for worker resolution.
     pub agent_config: permagent::config::agent_identity::SharedAgentConfig,
+    /// Bearer token for authenticating /activity/emit requests.
+    /// Loaded from ~/.permagent/secrets/daemon_token.json on startup.
+    /// The Tauri shell reads the same file to include the token in requests.
+    pub daemon_token: Option<String>,
 }
 
 impl AppState {
@@ -152,6 +156,9 @@ impl AppState {
             .await;
         agent_manager.set_persona(persona.clone()).await;
 
+        // Load or generate daemon token for /activity/emit auth.
+        let daemon_token = load_or_create_daemon_token();
+
         Ok(Arc::new(Self {
             agent_manager,
             recipe_file_hash_map: Arc::new(Mutex::new(HashMap::new())),
@@ -165,6 +172,7 @@ impl AppState {
             brain,
             persona,
             agent_config,
+            daemon_token,
         }))
     }
 
@@ -263,5 +271,86 @@ impl AppState {
             tracing::error!("Failed to get agent: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         })
+    }
+}
+
+/// Load daemon token from ~/.permagent/secrets/daemon_token.json.
+/// If the file does not exist, generate a new 32-byte random token,
+/// persist it with mode 0600, and return it.
+fn load_or_create_daemon_token() -> Option<String> {
+    let secrets_dir = permagent::config::paths::Paths::data_dir().join("secrets");
+    let token_path = secrets_dir.join("daemon_token.json");
+
+    // Try to read existing token
+    if token_path.exists() {
+        match std::fs::read_to_string(&token_path) {
+            Ok(content) => {
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(token) = parsed.get("token").and_then(|v| v.as_str()) {
+                        tracing::info!(
+                            target: "permagentd::auth",
+                            "Daemon token loaded from {}",
+                            token_path.display()
+                        );
+                        return Some(token.to_string());
+                    }
+                }
+                tracing::warn!(
+                    target: "permagentd::auth",
+                    "daemon_token.json exists but is malformed; regenerating"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "permagentd::auth",
+                    "Failed to read daemon_token.json: {}; regenerating",
+                    e
+                );
+            }
+        }
+    }
+
+    // Generate new token
+    let token_bytes: [u8; 32] = rand::random();
+    let token = hex::encode(token_bytes);
+
+    if let Err(e) = std::fs::create_dir_all(&secrets_dir) {
+        tracing::error!(
+            target: "permagentd::auth",
+            "Failed to create secrets dir: {}",
+            e
+        );
+        return None;
+    }
+
+    let content = serde_json::json!({ "token": token });
+    let json_str = serde_json::to_string_pretty(&content).unwrap();
+
+    match std::fs::write(&token_path, &json_str) {
+        Ok(_) => {
+            // Set file permissions to 0600 on Unix
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(
+                    &token_path,
+                    std::fs::Permissions::from_mode(0o600),
+                );
+            }
+            tracing::info!(
+                target: "permagentd::auth",
+                "Daemon token generated and saved to {}",
+                token_path.display()
+            );
+            Some(token)
+        }
+        Err(e) => {
+            tracing::error!(
+                target: "permagentd::auth",
+                "Failed to write daemon_token.json: {}",
+                e
+            );
+            None
+        }
     }
 }

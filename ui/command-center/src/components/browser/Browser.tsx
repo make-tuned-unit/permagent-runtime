@@ -37,6 +37,19 @@ function getTauriApi(): Promise<TauriApi | null> {
   return apiPromise;
 }
 
+// TODO: Frontend-driven emission is transitional. Lifecycle hooks should move
+// to Rust-owned surfaces in Phase 2.5 (see docs/architecture/PHASE_2_5_TAURI_REFACTOR.md).
+function emitActivity(api: TauriApi | null, eventType: string, payload: Record<string, unknown>) {
+  if (!api) return;
+  api.invoke('emit_activity', {
+    event_type: eventType,
+    source_surface: 'browser',
+    payload,
+    session_id: null,
+    project_id: null,
+  }).catch((err: unknown) => console.debug('[activity] emit failed:', err));
+}
+
 let tabCounter = 0;
 
 function createTab(): BrowserTab {
@@ -173,6 +186,14 @@ export function Browser() {
 
     api.listen('browser_navigated', (e) => {
       const payload = e.payload as { webview_id: string; url: string };
+      // Activity: browser navigated
+      const navTab = tabsRef.current.find((t) => t.webviewId === payload.webview_id);
+      emitActivity(api, 'browser_navigated', {
+        url: payload.url,
+        title: extractTitle(payload.url),
+        referrer: navTab?.url || '',
+        tab_id: navTab?.id || payload.webview_id,
+      });
       setTabs((prev) =>
         prev.map((t) =>
           t.webviewId === payload.webview_id
@@ -312,6 +333,8 @@ export function Browser() {
             width: rect?.width ?? 800,
             height: rect?.height ?? 600,
           })) as string;
+          // Activity: browser session started
+          emitActivity(apiRef.current, 'browser_session_started', { tab_id: tab.id });
           setTabs((prev) =>
             prev.map((t) =>
               t.id === activeTabId
@@ -350,6 +373,8 @@ export function Browser() {
         setTabs((prevTabs) => {
           const tab = prevTabs.find((t) => t.id === tabId);
           if (tab?.webviewId && apiRef.current) {
+            // Activity: browser session ended
+            emitActivity(apiRef.current, 'browser_session_ended', { tab_id: tab.id });
             apiRef.current.invoke('close_browser', { webviewId: tab.webviewId }).catch(() => {});
           }
           const next = prevTabs.filter((t) => t.id !== tabId);

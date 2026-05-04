@@ -109,6 +109,12 @@ impl ActivityEvent {
     }
 }
 
+/// Returns the canonical tier for an event type. Used server-side to
+/// enforce correct tier regardless of what the frontend sends.
+pub fn canonical_tier(event_type: &ActivityEventType) -> EventTier {
+    default_tier(event_type)
+}
+
 fn default_tier(event_type: &ActivityEventType) -> EventTier {
     match event_type {
         ActivityEventType::ChatTurnCompleted

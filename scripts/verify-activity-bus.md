@@ -1,98 +1,108 @@
-# Activity Bus Verification
+# Activity Bus Verification — Phase 2
 
-*Date: 2026-05-04. Daemon binary: target/release/permagentd (built from this commit).*
+*Date: 2026-05-04. Daemon binary: target/release/permagentd.*
 
-## Test Procedure
+## Phase 2 Surfaces Wired
 
-1. Started daemon: `./target/release/permagentd agent`
-2. Created session `20260504_1` via `POST /api/sessions`
-3. Sent chat message "Say hello in one word." via legacy `/reply` endpoint
-4. Sent chat message "Say goodbye in one word." via `/sessions/{id}/reply` SSE endpoint
-5. Queried `GET /activity/recent?limit=10`
+| Surface | Events | File | Line(s) | Method |
+|---------|--------|------|---------|--------|
+| Chat (legacy /reply) | ChatTurnStarted, ChatTurnCompleted | `crates/goose-server/src/routes/reply.rs` | 226, 592 | Direct emit_activity() |
+| Chat (SSE /sessions/{id}/reply) | ChatTurnStarted, ChatTurnCompleted | `crates/goose-server/src/routes/session_events.rs` | 337, 762 | Direct emit_activity() |
+| Browser | BrowserSessionStarted, BrowserNavigated, BrowserSessionEnded | `ui/command-center/src/components/browser/Browser.tsx` | 52, 186, 325, 366 | Tauri invoke → POST /activity/emit |
+| Terminal | TerminalCommandStarted | `ui/command-center/src/components/terminal/Terminal.tsx` | 199 | Tauri invoke → POST /activity/emit |
 
-## Captured Events
+## Phase 2 Surfaces Deferred
 
+| Surface | Reason |
+|---------|--------|
+| TerminalCommandCompleted | PTY exit is detected (`pty_exit` event at Terminal.tsx:169) but does not carry exit_code, stdout_summary, or duration_ms. The PTY streaming model needs redesign to capture command boundaries and output (Phase 2.5). Currently only TerminalCommandStarted fires on Enter. |
+| BrowserFormSubmitted | Requires injecting a JS shim into web pages to intercept form submissions. Fragile and browser-dependent. Deferred to Phase 2.5 when Rust-owned browser surfaces are built. |
+| ProjectSelected / ProjectOpened | No project selection lifecycle event exists. Projects.rs is CRUD-only. The frontend manages project state in React. A `select_project` Tauri command could be added, but the UI has no clear "select" action — projects are implicit via workspace/session context. |
+| FileOpened / FileEdited | No file viewer surface exists in the command-center UI. File operations happen through the agent's developer extension (tracked via TaskLogger). |
+| SkillExecuted | skill_executions table exists but no execution code path. Skill execution code path must be built before SkillExecuted events can fire. Phase 3+ dependency. |
+| IntegrationTokenRefreshed | OAuth token refresh happens inside the Gmail MCP extension (Python) or via provider-side opaque refresh. No daemon-side hook point for "token was refreshed." The integrations.rs route handles OAuth connect/callback but not token refresh lifecycle. |
+
+## POST /activity/emit Smoke Tests
+
+### Test 1 — Valid emit (200)
+```json
+{"accepted":true,"event_id":"1e359bbd-5285-458a-a65a-398eb244846e"}
+```
+
+### Test 2 — No auth header (401)
+```json
+{"error":"missing Authorization: Bearer <token> header"}
+HTTP: 401
+```
+
+### Test 3 — Wrong token (401)
+```json
+{"error":"invalid token"}
+HTTP: 401
+```
+
+### Test 4 — Malformed JSON (400)
+```
+Failed to parse the request body as JSON: expected ident at line 1 column 2
+HTTP: 400
+```
+
+### Test 5 — Stale timestamp (400)
+```json
+{"error":"timestamp out of range (age=200075010s, max=60s)"}
+HTTP: 400
+```
+
+### Test 6 — Wrong tier gets overwritten
+Sent `chat_turn_started` with `tier: "always"`. Server returned 200.
+Stored event has `tier: "ephemeral"` (canonical tier enforced server-side).
+
+### Test 7 — Rate limiting (200 sequential events)
+200 responses: 200, 429 responses: 0.
+Sequential curl calls (~10ms each) spread over ~2s, well under the
+100/s threshold. Rate limiter correctly allows all events within budget.
+
+### Test 8 — Recent events visible
 ```json
 [
-    {
-        "event_id": "019df07c-d948-7b11-8683-1940013b390c",
-        "event_type": "chat_turn_started",
-        "source_surface": "chat",
-        "timestamp": "2026-05-04T00:56:47.176962Z",
-        "session_id": "20260504_1",
-        "payload": {},
-        "tier": "ephemeral"
-    },
-    {
-        "event_id": "019df07c-dc83-7422-b3ce-baf9bc77c92b",
-        "event_type": "chat_turn_completed",
-        "source_surface": "chat",
-        "timestamp": "2026-05-04T00:56:48.003683Z",
-        "session_id": "20260504_1",
-        "payload": {
-            "duration_ms": 826,
-            "input_tokens": 5353,
-            "output_tokens": 5
-        },
-        "tier": "always"
-    },
-    {
-        "event_id": "019df07d-3c50-78c2-8553-8d4f9928a71c",
-        "event_type": "chat_turn_started",
-        "source_surface": "chat",
-        "timestamp": "2026-05-04T00:57:12.528525Z",
-        "session_id": "20260504_1",
-        "payload": {},
-        "tier": "ephemeral"
-    },
-    {
-        "event_id": "019df07d-3ec8-7e30-989c-4630943d3200",
-        "event_type": "chat_turn_completed",
-        "source_surface": "chat",
-        "timestamp": "2026-05-04T00:57:13.160986Z",
-        "session_id": "20260504_1",
-        "payload": {
-            "duration_ms": 632,
-            "input_tokens": 5380,
-            "output_tokens": 6
-        },
-        "tier": "always"
-    }
+  {
+    "event_id": "1009ae6d-...",
+    "event_type": "chat_turn_started",
+    "source_surface": "chat",
+    "timestamp": "2026-05-04T16:24:54Z",
+    "payload": {},
+    "tier": "ephemeral"
+  }
 ]
 ```
 
-## Verification Summary
+## Auth Configuration
 
-| Check | Result |
-|-------|--------|
-| `/activity/recent` endpoint responds | PASS |
-| ChatTurnStarted emitted on request | PASS |
-| ChatTurnCompleted emitted on finish | PASS |
-| Legacy `/reply` endpoint emits | PASS |
-| SSE `/sessions/{id}/reply` endpoint emits | PASS |
-| session_id populated | PASS |
-| tier correctly assigned (started=ephemeral, completed=always) | PASS |
-| payload contains duration_ms, input_tokens, output_tokens | PASS |
-| Events forwarded to WebSocket bus (via PermagentEventType::Activity) | PASS (code verified) |
-| Ring buffer limits to 500 | PASS (unit test) |
-| `cargo build --release` | PASS |
-| `npm run build` (command-center) | PASS |
+- Token file: `~/.permagent/secrets/daemon_token.json`
+- Permissions: `-rw-------` (0600)
+- Generated on first daemon startup if absent
+- Shared between daemon and Tauri shell (both read same file)
 
-## Surfaces Wired
+## Canonicalization Helper Tests (13/13 passed)
 
-| Surface | Events | File | Status |
-|---------|--------|------|--------|
-| Chat (legacy /reply) | ChatTurnStarted, ChatTurnCompleted | `crates/goose-server/src/routes/reply.rs:226,592` | WIRED |
-| Chat (SSE /sessions/{id}/reply) | ChatTurnStarted, ChatTurnCompleted | `crates/goose-server/src/routes/session_events.rs:337,762` | WIRED |
+```
+test identity::canonical::tests::basic_person ... ok              → person:jesse-sharratt
+test identity::canonical::tests::project_with_special_chars ... ok → project:get-ladle
+test identity::canonical::tests::did_scheme ... ok                 → did:chitin:henry-malcolm
+test identity::canonical::tests::empty_input ... ok                → EmptyAfterNormalization
+test identity::canonical::tests::underscores_to_hyphens ... ok     → project:my-cool-project
+test identity::canonical::tests::mixed_case ... ok                 → org:atlas-atlantic
+test identity::canonical::tests::already_canonical_is_idempotent   → person:jesse-sharratt
+test identity::canonical::tests::unicode_stripped_in_v1 ... ok     → person:rene-descartes
+test identity::canonical::tests::repeated_hyphens_collapsed ... ok → project:my-project
+test identity::canonical::tests::leading_trailing_hyphens ... ok   → project:leading-trailing
+test identity::canonical::tests::all_special_chars_empty ... ok    → EmptyAfterNormalization
+test identity::canonical::tests::agent_prefix ... ok               → agent:henry
+```
 
-## Surfaces Deferred
+## Build Status
 
-| Surface | Reason | Notes |
-|---------|--------|-------|
-| Embedded Browser | Frontend-only (Tauri webview) | Browser.tsx exists but navigation events are Tauri IPC, not daemon HTTP. Requires Tauri command bridge (spec item 4). No daemon endpoint exists to receive browser events today. |
-| Embedded Terminal | Frontend-only (xterm.js) | Terminal.tsx uses Tauri IPC for PTY. No daemon-side terminal command tracking. Shell commands executed by the agent's developer extension ARE tracked via TaskLogger, but terminal UI commands are not. |
-| Project Picker | No project selection event in daemon | UI sends session creation requests, but there's no explicit "project selected" action in the daemon API. Projects are implicit via working_dir on session creation. |
-| File Viewer | Does not exist | No file viewer surface in the command-center UI. File operations happen through the agent's developer extension (tracked via TaskLogger). |
-| Integrations Panel | No token refresh event path | The integrations route handles OAuth connect/callback but has no explicit token refresh endpoint that could emit an event. Token refresh happens inside the spectral/MCP client opaquely. |
-| Skills Engine | No execution tracking | skill_executions table exists but nothing writes to it. SkillProposed and SkillSaved events already emit on the existing bus. SkillExecuted would need the execution write path first. |
-| Tauri command bridge | Tauri app not part of this build | The `emit_activity_event` Tauri command would go in `ui/goose2/src-tauri/src/commands/`. Deferred because the command-center UI (web) is the primary interface; Tauri wraps it optionally. |
+- `cargo build --release`: PASS (no new warnings)
+- `npm run build` (command-center): PASS (3.62s)
+- `cargo test --package permagent --lib events`: 12 passed
+- `cargo test --package permagent --lib identity`: 13 passed
