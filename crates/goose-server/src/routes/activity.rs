@@ -236,6 +236,10 @@ async fn ingest_status(
         if let Some(ts) = ingester.last_ingested_at() {
             result["last_ingested_at"] = serde_json::json!(ts.to_rfc3339());
         }
+        result["active_project"] = match ingester.active_project() {
+            Some(ap) => serde_json::to_value(ap).unwrap_or_default(),
+            None => serde_json::Value::Null,
+        };
     }
 
     if let Some(ref cb) = state.context_builder {

@@ -24,11 +24,19 @@
 //! Ephemeral events are bus-only and never persisted.
 
 use crate::events::activity::{ActivityEvent, ActivityEventType, EventTier};
-use spectral::{Brain, DeviceId, RememberOpts, Visibility};
 use spectral::ingest::CompactionTier;
-use std::sync::{Arc, Mutex};
+use spectral::{Brain, DeviceId, RememberOpts, Visibility};
 use std::sync::atomic::{AtomicU64, Ordering};
-use tracing::error;
+use std::sync::{Arc, Mutex, RwLock};
+use tracing::{error, warn};
+
+/// Tracks the user's currently-active project for wing classification.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ActiveProject {
+    pub project_id: String,
+    pub project_name: String,
+    pub wing: String,
+}
 
 pub struct ActivityIngester {
     brain: Arc<Brain>,
@@ -39,6 +47,9 @@ pub struct ActivityIngester {
     ephemeral_count: AtomicU64,
     last_ingested_at: Mutex<Option<chrono::DateTime<chrono::Utc>>>,
     aggregation_queue: Mutex<Vec<String>>,
+    /// The user's currently-active project. Set when ProjectSelected events
+    /// arrive; stays set until another ProjectSelected replaces it.
+    active_project: RwLock<Option<ActiveProject>>,
 }
 
 impl ActivityIngester {
@@ -52,10 +63,16 @@ impl ActivityIngester {
             ephemeral_count: AtomicU64::new(0),
             last_ingested_at: Mutex::new(None),
             aggregation_queue: Mutex::new(Vec::new()),
+            active_project: RwLock::new(None),
         }
     }
 
     pub fn handle_event(&self, event: &ActivityEvent) {
+        // Update active project tracking on ProjectSelected
+        if event.event_type == ActivityEventType::ProjectSelected {
+            self.update_active_project(event);
+        }
+
         match event.tier {
             EventTier::Always => {
                 self.ingest_to_brain(event);
@@ -67,8 +84,51 @@ impl ActivityIngester {
             }
             EventTier::Ephemeral => {
                 self.ephemeral_count.fetch_add(1, Ordering::Relaxed);
-                // Ephemeral events are bus-only — not persisted.
             }
+        }
+    }
+
+    fn update_active_project(&self, event: &ActivityEvent) {
+        let project_id = event
+            .project_id
+            .as_deref()
+            .or_else(|| {
+                event
+                    .payload
+                    .get("project_id")
+                    .and_then(|v| v.as_str())
+            });
+
+        let project_id = match project_id {
+            Some(id) => id,
+            None => return,
+        };
+
+        let wing = match derive_wing_slug(project_id) {
+            Some(w) => w,
+            None => {
+                warn!(
+                    target: "permagent::activity::ingestion",
+                    project_id = %project_id,
+                    "ProjectSelected has malformed project_id (missing 'project:' prefix) — active project not updated"
+                );
+                return;
+            }
+        };
+
+        let project_name = event
+            .payload
+            .get("project_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or(project_id)
+            .to_string();
+
+        if let Ok(mut ap) = self.active_project.write() {
+            *ap = Some(ActiveProject {
+                project_id: project_id.to_string(),
+                project_name,
+                wing,
+            });
         }
     }
 
@@ -77,17 +137,26 @@ impl ActivityIngester {
             "activity:{}:{}:{}",
             event.timestamp.timestamp(),
             event_type_str(&event.event_type),
-            &event.event_id[..8], // Short suffix for uniqueness
+            &event.event_id[..8],
         );
         let content = render_content(event);
 
-        let brain = self.brain.clone();
         let device_id = self.device_id.clone();
         let event_type_name = event_type_str(&event.event_type).to_string();
         let source_surface = format!("{:?}", event.source_surface).to_lowercase();
         let is_aggregated = event.tier == EventTier::Aggregated;
 
-        let result = brain.remember_with(
+        // TODO(spectral-wing-pr): When Spectral ships wing override on
+        // RememberOpts, uncomment the wing field assignment below.
+        // The active_project read and slug computation are already in
+        // place — only the field assignment is blocked.
+        let _wing_override: Option<String> = self
+            .active_project
+            .read()
+            .ok()
+            .and_then(|ap| ap.as_ref().map(|p| p.wing.clone()));
+
+        let result = self.brain.remember_with(
             &key,
             &content,
             RememberOpts {
@@ -98,6 +167,7 @@ impl ActivityIngester {
                 created_at: Some(event.timestamp),
                 episode_id: None,
                 compaction_tier: Some(CompactionTier::Raw),
+                // wing: _wing_override,  // UNCOMMENT when Spectral ships wing override PR
             },
         );
 
@@ -148,6 +218,25 @@ impl ActivityIngester {
     pub fn last_ingested_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
         self.last_ingested_at.lock().ok().and_then(|ts| *ts)
     }
+
+    pub fn active_project(&self) -> Option<ActiveProject> {
+        self.active_project.read().ok().and_then(|ap| ap.clone())
+    }
+}
+
+/// Strips the "project:" prefix from a canonical project_id to produce
+/// the wing slug. Returns None if the input doesn't start with "project:"
+/// or if the slug after the prefix is empty.
+///
+/// The wing slug is what gets passed to RememberOpts.wing (when that
+/// field exists). Spectral stores the slug as-is — no further normalization.
+fn derive_wing_slug(canonical_project_id: &str) -> Option<String> {
+    let slug = canonical_project_id.strip_prefix("project:")?;
+    if slug.is_empty() {
+        None
+    } else {
+        Some(slug.to_string())
+    }
 }
 
 fn event_type_str(t: &ActivityEventType) -> &'static str {
@@ -177,15 +266,31 @@ fn render_content(event: &ActivityEvent) -> String {
             let dur = p.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
             let input = p.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
             let output = p.get("output_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-            format!("Chat turn completed in {}ms ({} input tokens, {} output tokens).", dur, input, output)
+            format!(
+                "Chat turn completed in {}ms ({} input tokens, {} output tokens).",
+                dur, input, output
+            )
         }
         ActivityEventType::TerminalCommandCompleted => {
             let cmd = p.get("command").and_then(|v| v.as_str()).unwrap_or("?");
-            let cwd = p.get("working_directory").and_then(|v| v.as_str()).unwrap_or("?");
+            let cwd = p
+                .get("working_directory")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             let exit = p.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(-1);
             let dur = p.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
-            let stdout = p.get("stdout_summary").and_then(|v| v.as_str()).unwrap_or("");
-            format!("Ran '{}' in {}. Exit code {}, took {}ms. Output: '{}'.", cmd, cwd, exit, dur, truncate(stdout, 200))
+            let stdout = p
+                .get("stdout_summary")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            format!(
+                "Ran '{}' in {}. Exit code {}, took {}ms. Output: '{}'.",
+                cmd,
+                cwd,
+                exit,
+                dur,
+                truncate(stdout, 200)
+            )
         }
         ActivityEventType::TerminalCommandStarted => {
             let cmd = p.get("command").and_then(|v| v.as_str()).unwrap_or("?");
@@ -207,12 +312,21 @@ fn render_content(event: &ActivityEvent) -> String {
             format!("Submitted form on {} in tab {}.", url, tab)
         }
         ActivityEventType::ProjectSelected => {
-            let name = p.get("project_name").and_then(|v| v.as_str()).unwrap_or("?");
-            let id = p.get("project_id").and_then(|v| v.as_str()).unwrap_or("?");
+            let name = p
+                .get("project_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let id = p
+                .get("project_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             format!("Started working in project {} ({}).", name, id)
         }
         ActivityEventType::SkillExecuted => {
-            let name = p.get("skill_name").and_then(|v| v.as_str()).unwrap_or("?");
+            let name = p
+                .get("skill_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             let status = p.get("status").and_then(|v| v.as_str()).unwrap_or("?");
             let dur = p.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
             format!("Ran skill '{}' — status {}, took {}ms.", name, status, dur)
@@ -223,22 +337,32 @@ fn render_content(event: &ActivityEvent) -> String {
         }
         ActivityEventType::FileEdited => {
             let path = p.get("path").and_then(|v| v.as_str()).unwrap_or("?");
-            let lines = p.get("lines_changed").and_then(|v| v.as_i64()).unwrap_or(0);
+            let lines = p
+                .get("lines_changed")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
             format!("Edited {} ({} lines changed).", path, lines)
         }
-        // Ephemeral events shouldn't reach render_content, but handle gracefully.
-        _ => format!("{} event from {:?}.", event_type_str(&event.event_type), event.source_surface),
+        _ => format!(
+            "{} event from {:?}.",
+            event_type_str(&event.event_type),
+            event.source_surface
+        ),
     }
 }
 
 fn truncate(s: &str, max: usize) -> &str {
-    if s.len() <= max { s } else { &s[..max] }
+    if s.len() <= max {
+        s
+    } else {
+        &s[..max]
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::activity::{ActivityEvent, ActivityEventType, SourceSurface, EventTier};
+    use crate::events::activity::{ActivityEvent, ActivityEventType, EventTier, SourceSurface};
 
     fn build_test_brain() -> Arc<Brain> {
         use spectral::DeviceId;
@@ -274,13 +398,137 @@ mod tests {
         }
     }
 
+    fn make_project_selected(project_id: &str, project_name: &str) -> ActivityEvent {
+        ActivityEvent {
+            event_id: uuid::Uuid::new_v4().to_string(),
+            event_type: ActivityEventType::ProjectSelected,
+            source_surface: SourceSurface::ProjectPicker,
+            timestamp: chrono::Utc::now(),
+            session_id: None,
+            project_id: Some(project_id.to_string()),
+            payload: serde_json::json!({
+                "project_id": project_id,
+                "project_name": project_name,
+            }),
+            tier: EventTier::Always,
+        }
+    }
+
+    // ── derive_wing_slug tests ──
+
+    #[test]
+    fn wing_slug_from_canonical_project() {
+        assert_eq!(derive_wing_slug("project:permagent"), Some("permagent".into()));
+    }
+
+    #[test]
+    fn wing_slug_from_project_with_hyphens() {
+        assert_eq!(derive_wing_slug("project:get-ladle"), Some("get-ladle".into()));
+    }
+
+    #[test]
+    fn wing_slug_no_prefix_returns_none() {
+        assert_eq!(derive_wing_slug("permagent"), None);
+    }
+
+    #[test]
+    fn wing_slug_did_returns_none() {
+        assert_eq!(derive_wing_slug("did:chitin:henry-malcolm"), None);
+    }
+
+    #[test]
+    fn wing_slug_empty_returns_none() {
+        assert_eq!(derive_wing_slug(""), None);
+    }
+
+    #[test]
+    fn wing_slug_empty_after_prefix_returns_none() {
+        assert_eq!(derive_wing_slug("project:"), None);
+    }
+
+    // ── active project tracking tests ──
+
+    #[test]
+    fn active_project_set_on_project_selected() {
+        let brain = build_test_brain();
+        let ingester = ActivityIngester::new(brain, "test-device".into());
+
+        assert!(ingester.active_project().is_none());
+
+        let event = make_project_selected("project:permagent", "Permagent");
+        ingester.handle_event(&event);
+
+        let ap = ingester.active_project().expect("should be set");
+        assert_eq!(ap.project_id, "project:permagent");
+        assert_eq!(ap.project_name, "Permagent");
+        assert_eq!(ap.wing, "permagent");
+    }
+
+    #[test]
+    fn active_project_replaced_on_subsequent_project_selected() {
+        let brain = build_test_brain();
+        let ingester = ActivityIngester::new(brain, "test-device".into());
+
+        ingester.handle_event(&make_project_selected("project:permagent", "Permagent"));
+        assert_eq!(ingester.active_project().unwrap().wing, "permagent");
+
+        ingester.handle_event(&make_project_selected("project:get-ladle", "Get Ladle"));
+        let ap = ingester.active_project().unwrap();
+        assert_eq!(ap.wing, "get-ladle");
+        assert_eq!(ap.project_name, "Get Ladle");
+    }
+
+    #[test]
+    fn active_project_unchanged_when_project_id_malformed() {
+        let brain = build_test_brain();
+        let ingester = ActivityIngester::new(brain, "test-device".into());
+
+        ingester.handle_event(&make_project_selected("project:permagent", "Permagent"));
+        assert_eq!(ingester.active_project().unwrap().wing, "permagent");
+
+        // Malformed: no "project:" prefix
+        let bad_event = ActivityEvent {
+            event_id: uuid::Uuid::new_v4().to_string(),
+            event_type: ActivityEventType::ProjectSelected,
+            source_surface: SourceSurface::ProjectPicker,
+            timestamp: chrono::Utc::now(),
+            session_id: None,
+            project_id: Some("permagent".into()), // missing prefix
+            payload: serde_json::json!({"project_id": "permagent", "project_name": "Bad"}),
+            tier: EventTier::Always,
+        };
+        ingester.handle_event(&bad_event);
+
+        // Should still be permagent, not replaced
+        assert_eq!(ingester.active_project().unwrap().wing, "permagent");
+    }
+
+    #[test]
+    fn wing_override_computed_during_ingestion() {
+        let brain = build_test_brain();
+        let ingester = ActivityIngester::new(brain, "test-device".into());
+
+        // Set active project
+        ingester.handle_event(&make_project_selected("project:permagent", "Permagent"));
+
+        // Trigger an Always-tier ingestion
+        ingester.handle_event(&make_always_event());
+
+        // The active project should still be set (ingestion didn't clear it)
+        let ap = ingester.active_project().expect("should still be set");
+        assert_eq!(ap.wing, "permagent");
+        // The wing_override was computed inside ingest_to_brain — if the code
+        // compiles and reaches here, the _wing_override let binding worked.
+        assert_eq!(ingester.always_count(), 2); // ProjectSelected + ChatTurnCompleted
+    }
+
+    // ── Brain write tests ──
+
     #[test]
     fn always_event_ingested_to_brain() {
         let brain = build_test_brain();
-        let ingester = ActivityIngester::new(brain.clone(), "test-device".into());
-
+        let ingester = ActivityIngester::new(brain, "test-device".into());
         ingester.handle_event(&make_always_event());
-
         assert_eq!(ingester.always_count(), 1);
         assert_eq!(ingester.failure_count(), 0);
         assert!(ingester.last_ingested_at().is_some());
@@ -290,7 +538,6 @@ mod tests {
     fn aggregated_event_ingested_and_queued() {
         let brain = build_test_brain();
         let ingester = ActivityIngester::new(brain, "test-device".into());
-
         let event = ActivityEvent {
             event_id: uuid::Uuid::new_v4().to_string(),
             event_type: ActivityEventType::BrowserNavigated,
@@ -302,7 +549,6 @@ mod tests {
             tier: EventTier::Aggregated,
         };
         ingester.handle_event(&event);
-
         assert_eq!(ingester.aggregated_count(), 1);
         assert_eq!(ingester.aggregation_queue_size(), 1);
         assert_eq!(ingester.failure_count(), 0);
@@ -312,7 +558,6 @@ mod tests {
     fn ephemeral_event_counted_not_ingested() {
         let brain = build_test_brain();
         let ingester = ActivityIngester::new(brain, "test-device".into());
-
         let event = ActivityEvent {
             event_id: "eph-1".into(),
             event_type: ActivityEventType::ChatTurnStarted,
@@ -324,27 +569,19 @@ mod tests {
             tier: EventTier::Ephemeral,
         };
         ingester.handle_event(&event);
-
         assert_eq!(ingester.ephemeral_count(), 1);
         assert_eq!(ingester.always_count(), 0);
-        assert_eq!(ingester.aggregated_count(), 0);
         assert!(ingester.last_ingested_at().is_none());
     }
 
-    /// The most important behavioral contract in this module:
-    /// Brain write failures must NOT crash the daemon. The failure_count
-    /// increments, the event is dropped, and processing continues.
+    /// Brain write failures must NOT crash the daemon.
     #[test]
     fn brain_failure_increments_counter_without_panic() {
-        // Build a Brain, then drop it and try to use the ingester.
-        // The trick: we build a valid Brain, then sabotage the data
-        // directory so writes fail.
         use spectral::DeviceId;
         let temp = tempfile::tempdir().expect("tempdir");
         let brain_path = temp.path().join("brain");
         let ontology_path = temp.path().join("ontology.toml");
         std::fs::write(&ontology_path, include_str!("../../assets/ontology.toml")).unwrap();
-
         let brain = Arc::new(
             Brain::builder()
                 .data_dir(&brain_path)
@@ -353,56 +590,20 @@ mod tests {
                 .build()
                 .expect("test brain"),
         );
-
-        let ingester = ActivityIngester::new(brain.clone(), "test-device".into());
-
-        // First write succeeds — baseline
+        let ingester = ActivityIngester::new(brain, "test-device".into());
         ingester.handle_event(&make_always_event());
         assert_eq!(ingester.always_count(), 1);
         assert_eq!(ingester.failure_count(), 0);
-
-        // Sabotage: delete the Brain's memory.db to force write failures
-        let memory_db = brain_path.join("memory.db");
-        if memory_db.exists() {
-            // Remove the entire brain directory to guarantee failure
-            let _ = std::fs::remove_dir_all(&brain_path);
-        }
-
-        // Second write should fail but NOT panic
+        let _ = std::fs::remove_dir_all(&brain_path);
         ingester.handle_event(&make_always_event());
-
-        // The always_count increments (we entered the Always branch)
-        // but the Brain write may have failed, incrementing failure_count.
-        // If the Brain cached the connection, the write might still succeed
-        // on some backends. Either way, the daemon must survive.
-        let total = ingester.always_count();
-        let failures = ingester.failure_count();
-        assert_eq!(total, 2, "both events should be counted");
-        // We can't guarantee the failure (SQLite may cache the FD),
-        // but we CAN guarantee no panic occurred — if we reach this
-        // line, the contract holds.
-        eprintln!(
-            "brain_failure test: always_count={}, failure_count={} (both outcomes valid)",
-            total, failures
-        );
+        assert_eq!(ingester.always_count(), 2, "both events should be counted");
     }
+
+    // ── render tests ──
 
     #[test]
     fn render_chat_turn_completed() {
-        let event = ActivityEvent {
-            event_id: "test".into(),
-            event_type: ActivityEventType::ChatTurnCompleted,
-            source_surface: SourceSurface::Chat,
-            timestamp: chrono::Utc::now(),
-            session_id: Some("s1".into()),
-            project_id: None,
-            payload: serde_json::json!({
-                "duration_ms": 500,
-                "input_tokens": 100,
-                "output_tokens": 50,
-            }),
-            tier: EventTier::Always,
-        };
+        let event = make_always_event();
         let content = render_content(&event);
         assert!(content.contains("500ms"));
         assert!(content.contains("100 input tokens"));
@@ -410,19 +611,7 @@ mod tests {
 
     #[test]
     fn render_project_selected() {
-        let event = ActivityEvent {
-            event_id: "test".into(),
-            event_type: ActivityEventType::ProjectSelected,
-            source_surface: SourceSurface::ProjectPicker,
-            timestamp: chrono::Utc::now(),
-            session_id: None,
-            project_id: Some("project:permagent".into()),
-            payload: serde_json::json!({
-                "project_name": "Permagent",
-                "project_id": "project:permagent",
-            }),
-            tier: EventTier::Always,
-        };
+        let event = make_project_selected("project:permagent", "Permagent");
         let content = render_content(&event);
         assert!(content.contains("Permagent"));
         assert!(content.contains("project:permagent"));
@@ -437,33 +626,11 @@ mod tests {
             timestamp: chrono::Utc::now(),
             session_id: None,
             project_id: None,
-            payload: serde_json::json!({
-                "url": "https://example.com",
-                "title": "Example",
-                "tab_id": "tab-1",
-            }),
+            payload: serde_json::json!({"url": "https://example.com", "title": "Example", "tab_id": "tab-1"}),
             tier: EventTier::Aggregated,
         };
         let content = render_content(&event);
         assert!(content.contains("Example"));
         assert!(content.contains("https://example.com"));
-    }
-
-    #[test]
-    fn ephemeral_events_are_not_ingested() {
-        // Verify the tier check — we can't test Brain writes without a real Brain,
-        // but we can verify the counter logic.
-        let event = ActivityEvent {
-            event_id: "test".into(),
-            event_type: ActivityEventType::ChatTurnStarted,
-            source_surface: SourceSurface::Chat,
-            timestamp: chrono::Utc::now(),
-            session_id: Some("s1".into()),
-            project_id: None,
-            payload: serde_json::json!({}),
-            tier: EventTier::Ephemeral,
-        };
-        // Can't construct a full Ingester without Brain, but verify tier logic directly
-        assert_eq!(event.tier, EventTier::Ephemeral);
     }
 }

@@ -95,3 +95,67 @@ Tauri backend. When the user returns to the Build page, terminals
 reconnect to existing PTY sessions.
 
 File: `ui/command-center/src/components/terminal/TerminalManager.tsx`
+
+## Phase 3a Follow-up — Active Project Tracking + Wing Override Pre-staging
+
+*Date: 2026-05-05.*
+
+### Active Project Tracking via ingest-status
+
+Before ProjectSelected:
+```json
+"active_project": null
+```
+
+After emitting ProjectSelected for "project:permagent":
+```json
+"active_project": {
+  "project_id": "project:permagent",
+  "project_name": "Permagent",
+  "wing": "permagent"
+}
+```
+
+After switching to "project:get-ladle":
+```json
+"active_project": {
+  "project_id": "project:get-ladle",
+  "project_name": "Get Ladle",
+  "wing": "get-ladle"
+}
+```
+
+### Brain Rows — Wing Still Spectral-Assigned (Override Stubbed)
+
+```
+key                                              | source             | wing    | compaction_tier
+activity:1777941342:project_selected:d3d10dea    | permagent.activity | general | raw
+activity:1777941340:project_selected:3c673891    | permagent.activity | general | raw
+```
+
+Wing shows "general" (Spectral TACT classifier). The `_wing_override`
+variable is computed as `Some("permagent")` / `Some("get-ladle")` at
+the call site but not yet passed to RememberOpts. When Spectral ships
+their wing override PR, uncomment one line:
+
+File: `crates/goose/src/activity/ingestion.rs`
+Line: the `// wing: _wing_override,` comment inside the RememberOpts block
+Change: remove `//` prefix and rename `_wing_override` to `wing_override`
+
+### Unit Tests (17/17 passed)
+
+```
+derive_wing_slug tests:
+  wing_slug_from_canonical_project ........... ok  -> Some("permagent")
+  wing_slug_from_project_with_hyphens ....... ok  -> Some("get-ladle")
+  wing_slug_no_prefix_returns_none .......... ok  -> None
+  wing_slug_did_returns_none ................ ok  -> None
+  wing_slug_empty_returns_none .............. ok  -> None
+  wing_slug_empty_after_prefix_returns_none . ok  -> None
+
+active project tracking tests:
+  active_project_set_on_project_selected ............. ok
+  active_project_replaced_on_subsequent_project_selected ok
+  active_project_unchanged_when_project_id_malformed . ok
+  wing_override_computed_during_ingestion ............ ok
+```
