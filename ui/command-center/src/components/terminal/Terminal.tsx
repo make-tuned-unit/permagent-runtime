@@ -129,15 +129,19 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         try {
           const cols = term.cols;
           const rows = term.rows;
-          const sid = (await api.invoke('spawn_pty_session', {
+          const result = (await api.invoke('spawn_pty_session', {
             shell: null,
             cwd: cwdRef.current || null,
             cols,
             rows,
-          })) as string;
+          })) as { session_id: string; cwd: string };
           if (cancelled) return;
-          sessionIdRef.current = sid;
-          onSessionSpawnedRef.current?.(sid);
+          sessionIdRef.current = result.session_id;
+          onSessionSpawnedRef.current?.(result.session_id);
+          // Report resolved CWD so the tab label shows the folder name immediately
+          if (result.cwd) {
+            onCwdChangeRef.current?.(result.cwd);
+          }
         } catch (err) {
           term.writeln('\r\n\x1b[31mFailed to spawn terminal: ' + err + '\x1b[0m\r\n');
           return;

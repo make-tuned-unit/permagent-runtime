@@ -29,6 +29,12 @@ struct PtyExitEvent {
     code: Option<u32>,
 }
 
+#[derive(Clone, Serialize)]
+pub struct SpawnResult {
+    pub session_id: String,
+    pub cwd: String,
+}
+
 #[tauri::command]
 pub fn spawn_pty_session(
     app: AppHandle,
@@ -37,7 +43,7 @@ pub fn spawn_pty_session(
     cwd: Option<String>,
     cols: Option<u16>,
     rows: Option<u16>,
-) -> Result<String, String> {
+) -> Result<SpawnResult, String> {
     let session_id = uuid::Uuid::new_v4().to_string();
     let pty_system = native_pty_system();
 
@@ -59,11 +65,16 @@ pub fn spawn_pty_session(
     let mut cmd = CommandBuilder::new(&shell_cmd);
     cmd.arg("-l"); // login shell
 
-    if let Some(ref dir) = cwd {
+    let resolved_cwd = if let Some(ref dir) = cwd {
         cmd.cwd(dir);
+        dir.clone()
     } else if let Some(home) = dirs::home_dir() {
-        cmd.cwd(home);
-    }
+        let home_str = home.to_string_lossy().to_string();
+        cmd.cwd(&home);
+        home_str
+    } else {
+        String::from("/")
+    };
 
     // Inherit environment
     for (key, val) in std::env::vars() {
@@ -128,7 +139,10 @@ pub fn spawn_pty_session(
         .map_err(|e| format!("Lock error: {}", e))?
         .insert(session_id.clone(), session);
 
-    Ok(session_id)
+    Ok(SpawnResult {
+        session_id,
+        cwd: resolved_cwd,
+    })
 }
 
 #[tauri::command]
