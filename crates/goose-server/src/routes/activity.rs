@@ -1,12 +1,12 @@
 //! Activity event endpoints for the Permagent awareness layer.
 //!
-//! - GET  /activity/recent?limit=N — debug endpoint, returns last N events
-//!   from in-memory ring buffer. TODO: auth-gate in Phase 3 when the
-//!   inspection panel becomes the canonical reader.
-//!
+//! - GET  /activity/recent?limit=N — auth-gated, returns last N events from ring buffer
 //! - POST /activity/emit — authenticated endpoint for frontend surfaces
-//!   to push activity events onto the daemon bus. Bearer token auth,
-//!   rate-limited.
+//! - GET  /activity/ingest-status — auth-gated ingestion stats
+//! - GET  /activity/recent-memories — auth-gated, last N ambient memories from Brain
+//! - GET  /activity/current-digest — auth-gated, current ContextBuilder digest as JSON
+//! - POST /activity/pause — auth-gated, pause Brain writes
+//! - POST /activity/resume — auth-gated, resume Brain writes
 
 use axum::{
     extract::{Json, Query, State},
@@ -15,12 +15,34 @@ use axum::{
     Router,
 };
 use chrono::Utc;
+use permagent::activity::context_builder::DigestOpts;
 use permagent::events::activity::{self, ActivityEvent};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use crate::state::AppState;
+
+// ── Auth helper ─────────────────────────────────────────────��────────
+
+fn check_bearer_token(headers: &HeaderMap, state: &AppState) -> Result<(), (StatusCode, Json<ErrorBody>)> {
+    let token = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+
+    if let Some(expected) = state.daemon_token.as_deref() {
+        if token != Some(expected) {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorBody {
+                    error: "unauthorized".into(),
+                }),
+            ));
+        }
+    }
+    Ok(())
+}
 
 // ── GET /activity/recent ───────────────────────────────────────────────
 
@@ -34,9 +56,14 @@ fn default_limit() -> usize {
     50
 }
 
-async fn get_recent(Query(params): Query<RecentQuery>) -> Json<Vec<ActivityEvent>> {
+async fn get_recent(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(params): Query<RecentQuery>,
+) -> Result<Json<Vec<ActivityEvent>>, (StatusCode, Json<ErrorBody>)> {
+    check_bearer_token(&headers, &state)?;
     let limit = params.limit.min(500);
-    Json(activity::recent_activity(limit))
+    Ok(Json(activity::recent_activity(limit)))
 }
 
 // ── POST /activity/emit ────────────────────────────────────────────────
@@ -66,7 +93,6 @@ async fn emit_event(
     let expected = state.daemon_token.as_deref();
     match (token, expected) {
         (_, None) => {
-            // No daemon token configured — reject all external emit calls
             return Err((
                 StatusCode::UNAUTHORIZED,
                 Json(ErrorBody {
@@ -198,22 +224,7 @@ async fn ingest_status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
-    // Auth-gated with daemon token
-    let token = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-
-    if let Some(expected) = state.daemon_token.as_deref() {
-        if token != Some(expected) {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                Json(ErrorBody {
-                    error: "unauthorized".into(),
-                }),
-            ));
-        }
-    }
+    check_bearer_token(&headers, &state)?;
 
     let mut result = serde_json::json!({
         "events_ingested": { "always": 0, "aggregated": 0 },
@@ -221,6 +232,7 @@ async fn ingest_status(
         "ingestion_failures": 0,
         "aggregation_queue_size": 0,
         "last_ingested_at": null,
+        "paused": false,
         "context_builder": {
             "recent_events_buffered": 0,
             "live_state": {}
@@ -233,6 +245,7 @@ async fn ingest_status(
         result["events_observed"]["ephemeral"] = serde_json::json!(ingester.ephemeral_count());
         result["ingestion_failures"] = serde_json::json!(ingester.failure_count());
         result["aggregation_queue_size"] = serde_json::json!(ingester.aggregation_queue_size());
+        result["paused"] = serde_json::json!(ingester.is_paused());
         if let Some(ts) = ingester.last_ingested_at() {
             result["last_ingested_at"] = serde_json::json!(ts.to_rfc3339());
         }
@@ -252,6 +265,163 @@ async fn ingest_status(
     Ok(Json(result))
 }
 
+// ── GET /activity/recent-memories ──────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct RecentMemoriesQuery {
+    #[serde(default = "default_memories_limit")]
+    limit: usize,
+}
+
+fn default_memories_limit() -> usize {
+    20
+}
+
+async fn get_recent_memories(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(params): Query<RecentMemoriesQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    check_bearer_token(&headers, &state)?;
+
+    let limit = params.limit.min(100);
+
+    let brain = state.brain.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorBody {
+                error: "brain not available".into(),
+            }),
+        )
+    })?;
+
+    let brain = brain.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        // Use recall with a broad activity query to find recent activity memories.
+        // Filter by source="permagent.activity" to only return ambient captures.
+        brain.recall("activity recent events", spectral::Visibility::Private)
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorBody {
+                error: format!("spawn_blocking failed: {}", e),
+            }),
+        )
+    })?;
+
+    match result {
+        Ok(result) => {
+            let items: Vec<serde_json::Value> = result
+                .memory_hits
+                .into_iter()
+                .filter(|m| m.source.as_deref() == Some("permagent.activity"))
+                .take(limit)
+                .map(|m| {
+                    serde_json::json!({
+                        "id": m.id,
+                        "key": m.key,
+                        "content": m.content,
+                        "wing": m.wing,
+                        "compaction_tier": "raw",
+                        "created_at": m.created_at,
+                    })
+                })
+                .collect();
+            Ok(Json(serde_json::json!({ "memories": items })))
+        }
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorBody {
+                error: format!("brain recall failed: {}", e),
+            }),
+        )),
+    }
+}
+
+// ── GET /activity/current-digest ───────────────────────────────────────
+
+async fn get_current_digest(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    check_bearer_token(&headers, &state)?;
+
+    let context_builder = state.context_builder.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorBody {
+                error: "context_builder not available".into(),
+            }),
+        )
+    })?;
+
+    let focus_wing = state
+        .activity_ingester
+        .as_ref()
+        .and_then(|ing| ing.active_project())
+        .map(|ap| ap.wing);
+
+    let opts = DigestOpts {
+        include_probe: true,
+        focus_wing,
+        ..Default::default()
+    };
+
+    match context_builder.current_digest(opts) {
+        Ok(digest) => Ok(Json(serde_json::to_value(&digest).unwrap_or_default())),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorBody {
+                error: format!("digest failed: {}", e),
+            }),
+        )),
+    }
+}
+
+// ── POST /activity/pause ───────────────────────────────────────────────
+
+async fn pause_ingestion(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    check_bearer_token(&headers, &state)?;
+
+    if let Some(ref ingester) = state.activity_ingester {
+        ingester.pause();
+        Ok(Json(serde_json::json!({ "paused": true })))
+    } else {
+        Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorBody {
+                error: "activity ingester not available".into(),
+            }),
+        ))
+    }
+}
+
+// ── POST /activity/resume ──────────────────────────────────────────────
+
+async fn resume_ingestion(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    check_bearer_token(&headers, &state)?;
+
+    if let Some(ref ingester) = state.activity_ingester {
+        ingester.resume();
+        Ok(Json(serde_json::json!({ "paused": false })))
+    } else {
+        Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorBody {
+                error: "activity ingester not available".into(),
+            }),
+        ))
+    }
+}
+
 // ── Routes ─────────────────────────────────────────────────────────────
 
 pub fn routes(state: Arc<AppState>) -> Router {
@@ -259,5 +429,9 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/activity/recent", get(get_recent))
         .route("/activity/emit", post(emit_event))
         .route("/activity/ingest-status", get(ingest_status))
+        .route("/activity/recent-memories", get(get_recent_memories))
+        .route("/activity/current-digest", get(get_current_digest))
+        .route("/activity/pause", post(pause_ingestion))
+        .route("/activity/resume", post(resume_ingestion))
         .with_state(state)
 }

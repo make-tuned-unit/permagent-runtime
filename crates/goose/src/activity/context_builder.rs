@@ -3,13 +3,10 @@
 //! Subscribes to the activity event bus alongside the [`ActivityIngester`].
 //! As events flow in, updates a live state snapshot. When `current_digest()`
 //! is called, assembles a [`Digest`] containing recent events, live state,
-//! and optionally recalled memories.
-//!
-//! Phase 3a builds the module and exposes the API. Phase 3b wires its
-//! output into the chat turn system prompt.
+//! probed memories from Brain recognition, and optionally recalled memories.
 
 use crate::events::activity::{ActivityEvent, ActivityEventType};
-use spectral::{Brain, Visibility};
+use spectral::{Brain, RecognizedMemory, Visibility};
 use std::collections::VecDeque;
 use std::sync::{Arc, RwLock, Mutex};
 use std::time::Duration;
@@ -120,10 +117,66 @@ impl ContextBuilder {
             })
             .unwrap_or_default();
 
-        // Phase 3b TODO: Wire Brain::probe(timeline_context) here.
-        // Spectral exposes both probe(text, opts) and probe_recent(window, opts).
-        // Phase 3b should use probe_recent with ProbeWindow::Duration(Duration::minutes(10)).
-        let probed_memories: Vec<serde_json::Value> = Vec::new();
+        let probed_memories = if opts.include_probe {
+            // Synthesize a context string from recent events to use as the probe query.
+            // This approximates probe_recent — finding memories relevant to current activity.
+            let context: String = recent_events
+                .iter()
+                .rev()
+                .take(10)
+                .map(|e| render_event_summary(e))
+                .collect::<Vec<_>>()
+                .join(" | ");
+
+            if context.is_empty() {
+                Vec::new()
+            } else {
+                let max_results = opts.max_probe_results.unwrap_or(10);
+                let min_relevance = opts.min_probe_relevance.unwrap_or(0.3);
+                let wing_filter = opts.focus_wing.clone();
+
+                match self.brain.recall(&context, Visibility::Private) {
+                    Ok(result) => result
+                        .memory_hits
+                        .into_iter()
+                        .filter(|hit| {
+                            if let Some(ref wf) = wing_filter {
+                                hit.wing.as_deref() == Some(wf.as_str())
+                            } else {
+                                true
+                            }
+                        })
+                        .map(|hit| {
+                            let relevance = (hit.signal_score * 0.4
+                                + (hit.hits as f64).min(5.0) / 5.0 * 0.6)
+                                .min(1.0);
+                            RecognizedMemory {
+                                id: hit.id,
+                                key: hit.key,
+                                content: hit.content,
+                                wing: hit.wing,
+                                hall: hit.hall,
+                                signal_score: hit.signal_score,
+                                relevance,
+                                hits: hit.hits,
+                            }
+                        })
+                        .filter(|r| r.relevance >= min_relevance)
+                        .take(max_results)
+                        .collect(),
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "permagent::activity::context_builder",
+                            "probe (via recall) failed: {}",
+                            e
+                        );
+                        Vec::new()
+                    }
+                }
+            }
+        } else {
+            Vec::new()
+        };
 
         // Recall if query provided
         let recalled_memories = if let Some(ref query) = opts.include_recall_query {
@@ -204,9 +257,10 @@ impl Default for LiveState {
 pub struct DigestOpts {
     pub event_window: Duration,
     pub max_recent_events: usize,
-    /// Phase 3b TODO: Wire Brain::probe(timeline_context) here.
-    /// Until then, this field is unused.
     pub include_probe: bool,
+    pub max_probe_results: Option<usize>,
+    pub min_probe_relevance: Option<f64>,
+    pub focus_wing: Option<String>,
     pub include_recall_query: Option<String>,
 }
 
@@ -216,6 +270,9 @@ impl Default for DigestOpts {
             event_window: Duration::from_secs(600), // 10 minutes
             max_recent_events: 50,
             include_probe: false,
+            max_probe_results: None,
+            min_probe_relevance: None,
+            focus_wing: None,
             include_recall_query: None,
         }
     }
@@ -225,8 +282,7 @@ impl Default for DigestOpts {
 pub struct Digest {
     pub live_state: LiveState,
     pub recent_events: Vec<ActivityEvent>,
-    /// Phase 3b TODO: probed_memories will be populated by Brain::probe_recent().
-    pub probed_memories: Vec<serde_json::Value>,
+    pub probed_memories: Vec<RecognizedMemory>,
     pub recalled_memories: Vec<RecalledMemory>,
 }
 
@@ -235,6 +291,104 @@ pub struct RecalledMemory {
     pub content: String,
     pub signal_score: f64,
     pub source: Option<String>,
+}
+
+/// Render a Digest into the `<ambient_context>` system prompt block.
+/// Sections with no content are omitted.
+pub fn render_ambient_context(digest: &Digest) -> String {
+    let mut parts = Vec::new();
+
+    // <live_state>
+    let ls = &digest.live_state;
+    let mut live_lines = Vec::new();
+    if let Some(ref pid) = ls.active_project_id {
+        live_lines.push(format!("You are currently working in: {} (project:{}).",
+            pid.strip_prefix("project:").unwrap_or(pid), pid.strip_prefix("project:").unwrap_or(pid)));
+    }
+    if let Some(ref cmd) = ls.last_terminal_command {
+        live_lines.push(format!("Recent terminal command: {}.", cmd));
+    }
+    if let Some(ref url) = ls.last_browser_url {
+        live_lines.push(format!("Last browser page: {}.", url));
+    }
+    if ls.events_in_last_5_minutes > 0 {
+        live_lines.push(format!("Activity in last 5 minutes: {} events.", ls.events_in_last_5_minutes));
+    }
+    if !live_lines.is_empty() {
+        parts.push(format!("<live_state>\n{}\n</live_state>", live_lines.join("\n")));
+    }
+
+    // <recent_activity>
+    if !digest.recent_events.is_empty() {
+        let mut lines = Vec::new();
+        for event in digest.recent_events.iter().rev().take(20) {
+            let time = event.timestamp.format("%H:%M");
+            let summary = render_event_summary(event);
+            lines.push(format!("- {} {}", time, summary));
+        }
+        parts.push(format!("<recent_activity>\n{}\n</recent_activity>", lines.join("\n")));
+    }
+
+    // <recognized_memories>
+    if !digest.probed_memories.is_empty() {
+        let mut lines = vec!["The following memories from your past activity may be relevant:".to_string()];
+        for mem in &digest.probed_memories {
+            let wing_str = mem.wing.as_deref().unwrap_or("general");
+            lines.push(format!("- \"{}\" (relevance: {:.2}, wing: {})",
+                mem.content.chars().take(200).collect::<String>(), mem.relevance, wing_str));
+        }
+        parts.push(format!("<recognized_memories>\n{}\n</recognized_memories>", lines.join("\n")));
+    }
+
+    // <relevant_memories>
+    if !digest.recalled_memories.is_empty() {
+        let mut lines = vec!["Recalled memories relevant to this query:".to_string()];
+        for mem in &digest.recalled_memories {
+            lines.push(format!("- \"{}\" (score: {:.2})",
+                mem.content.chars().take(200).collect::<String>(), mem.signal_score));
+        }
+        parts.push(format!("<relevant_memories>\n{}\n</relevant_memories>", lines.join("\n")));
+    }
+
+    if parts.is_empty() {
+        return String::new();
+    }
+
+    format!("<ambient_context>\n{}\n</ambient_context>", parts.join("\n\n"))
+}
+
+fn render_event_summary(event: &ActivityEvent) -> String {
+    match event.event_type {
+        ActivityEventType::FileEdited => {
+            let path = event.payload.get("file_path").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let lines = event.payload.get("lines_changed").and_then(|v| v.as_u64()).unwrap_or(0);
+            format!("Edited file {} ({} lines)", path, lines)
+        }
+        ActivityEventType::TerminalCommandStarted => {
+            let cmd = event.payload.get("command").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("Ran '{}'", cmd)
+        }
+        ActivityEventType::TerminalCommandCompleted => {
+            let cmd = event.payload.get("command").and_then(|v| v.as_str()).unwrap_or("?");
+            let exit = event.payload.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(-1);
+            let dur = event.payload.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+            format!("Ran '{}' — exit {}, took {}ms", cmd, exit, dur)
+        }
+        ActivityEventType::BrowserNavigated => {
+            let url = event.payload.get("url").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("Navigated to {}", url)
+        }
+        ActivityEventType::ProjectSelected => {
+            let name = event.payload.get("project_name").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("Started working in project {}", name)
+        }
+        ActivityEventType::ChatTurnStarted => "Chat turn started".to_string(),
+        ActivityEventType::ChatTurnCompleted => {
+            let dur = event.payload.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+            format!("Chat turn completed ({}ms)", dur)
+        }
+        _ => format!("{:?}", event.event_type),
+    }
 }
 
 #[cfg(test)]

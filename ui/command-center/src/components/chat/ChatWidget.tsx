@@ -8,6 +8,7 @@ import { ChatInput } from './ChatInput';
 import type { ChatInputHandle } from './ChatInput';
 import { DropZone } from './DropZone';
 import { ModelPicker } from './ModelPicker';
+import { InspectionPanel } from '../inspection/InspectionPanel';
 
 const MIN_W = 320;
 const MIN_H = 280;
@@ -31,6 +32,7 @@ export function ChatWidget() {
   const [size, setSize] = useState({ w: DEFAULT_W, h: DEFAULT_H });
   const [agentName, setAgentName] = useState('Agent');
   const [sessionsOpen, setSessionsOpen] = useState(false);
+  const [inspectionOpen, setInspectionOpen] = useState(false);
 
   const ensureSession = useCommandCenter(s => s.ensureSession);
   const connectSession = useCommandCenter(s => s.connectSession);
@@ -281,6 +283,25 @@ export function ChatWidget() {
         <div onMouseDown={e => e.stopPropagation()}>
           <ModelPicker />
         </div>
+        {/* Inspection panel toggle */}
+        <button
+          onClick={() => setInspectionOpen(!inspectionOpen)}
+          onMouseDown={e => e.stopPropagation()}
+          title="What your agent sees"
+          style={{
+            width: 28, height: 28, borderRadius: 6,
+            background: inspectionOpen ? 'rgba(0,213,255,0.1)' : 'rgba(255,255,255,0.04)',
+            border: `1px solid ${inspectionOpen ? 'rgba(0,213,255,0.3)' : color.border}`,
+            color: inspectionOpen ? color.cyan : color.textMuted, cursor: 'pointer',
+            display: 'grid', placeItems: 'center',
+            transition: `all 150ms ${ease.out}`,
+          }}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+        </button>
         {/* Close */}
         <button
           onClick={() => setOpen(false)}
@@ -312,6 +333,9 @@ export function ChatWidget() {
           </div>
         </DropZone>
       </div>
+
+      {/* Inspection panel slide-over */}
+      {inspectionOpen && <InspectionPanel onClose={() => setInspectionOpen(false)} />}
     </div>
   );
 }

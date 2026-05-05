@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod agent;
 pub mod configure;
 pub mod daemon;

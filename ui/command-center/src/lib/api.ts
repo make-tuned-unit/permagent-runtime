@@ -474,4 +474,14 @@ export const api = {
     receipts: [] as Array<{ id: string; run_id: string; step_id: string | null; model: string; input_tokens: number; output_tokens: number; cost_usd: number; recorded_at: string }>,
     spend: { today_usd: 0, month_usd: 0 },
   }),
+
+  /** Fetch with daemon Bearer token auth (for /activity/* endpoints). */
+  fetchAuthed: (endpoint: string, options?: RequestInit): Promise<Response> => {
+    const url = `${API_BASE_URL}${endpoint}`;
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...(SECRET_KEY ? { Authorization: `Bearer ${SECRET_KEY}` } : {}),
+    };
+    return fetch(url, { ...options, headers: { ...headers, ...(options?.headers as Record<string, string> ?? {}) } });
+  },
 };

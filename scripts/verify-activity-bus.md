@@ -172,3 +172,93 @@ active project tracking tests:
   active_project_unchanged_when_project_id_malformed . ok
   wing_override_computed_during_ingestion ............ ok
 ```
+
+## Phase 3b — Ambient Awareness Loop Closed
+
+*Date: 2026-05-04. Spectral pin: daabbda (unchanged).*
+
+### Probe Integration into Chat Turn
+
+On every chat reply:
+1. ContextBuilder.current_digest called with include_probe: true
+2. Recent events synthesized into context string
+3. Brain.recall used with wing_filter from active project
+4. Results rendered as `<ambient_context>` system prompt block
+5. Recall query included when user message > 20 chars
+
+System prompt structure:
+```
+<ambient_context>
+<live_state>
+You are currently working in: permagent (project:permagent).
+Recent terminal command: cargo test --release.
+Activity in last 5 minutes: 12 events.
+</live_state>
+
+<recent_activity>
+- 14:32 Ran 'cargo test --release' -- exit 0, took 4200ms
+- 14:28 Started working in project Permagent
+</recent_activity>
+
+<recognized_memories>
+The following memories from your past activity may be relevant:
+- "Started working in project Permagent..." (relevance: 0.84, wing: permagent)
+</recognized_memories>
+</ambient_context>
+```
+
+### Inspection Panel
+
+- Eye icon button added to chat widget header
+- Slide-over panel (400px, right-aligned) shows:
+  - Active project with wing badge
+  - Per-source filter pills (chat, browser, terminal, project, skills, integrations)
+  - Live event tail (click to expand payload JSON)
+  - Collapsible recent ambient memories section
+  - Collapsible current digest section (refreshes every 10s)
+  - Pause/Resume toggle (gates Brain writes, not event emission)
+  - "Open Brain" link (deferred to Phase 3.5)
+
+### CLI: permagent activity tail
+
+```
+$ permagent activity tail
+Connected to daemon activity stream. Press Ctrl-C to exit.
+14:32:18 [Chat] ChatTurnStarted session=abc-1234
+14:32:19 [Chat] ChatTurnCompleted (1200ms)
+14:32:25 [Browser] BrowserNavigated docs.rs/spectral
+14:32:40 [Terminal] TerminalCommandStarted "cargo test"
+
+$ permagent activity tail --json
+{"event_id":"...","event_type":"ChatTurnStarted",...}
+
+$ permagent activity tail --filter terminal
+14:32:40 [Terminal] TerminalCommandStarted "cargo test"
+```
+
+### New Daemon Endpoints
+
+| Method | Route | Auth | Purpose |
+|--------|-------|------|---------|
+| GET | /activity/recent | Bearer | Auth-gated (was unauthenticated) |
+| GET | /activity/recent-memories | Bearer | Last N activity-source memories |
+| GET | /activity/current-digest | Bearer | Full ContextBuilder digest as JSON |
+| POST | /activity/pause | Bearer | Pause Brain writes |
+| POST | /activity/resume | Bearer | Resume Brain writes |
+
+### Pause/Resume Verification
+
+- POST /activity/pause → `{"paused": true}`
+- Events still flow on WebSocket bus while paused
+- Brain writes skipped (verified via ingest-status counts)
+- POST /activity/resume → `{"paused": false}`
+- Brain writes resume normally
+
+### Build Status
+
+- `cargo check`: PASS (warnings only)
+- `cargo test --package permagent --lib activity`: 25 passed
+- `cargo test --package permagent --lib events`: 13 passed (1 race-condition flake when run with other tests)
+- `cargo test --package permagent --lib identity`: 13 passed
+- `npx tsc --noEmit` (command-center): PASS
+- `npm run build` (command-center): PASS

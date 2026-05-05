@@ -782,6 +782,25 @@ enum IntegrationsCommand {
 }
 
 #[derive(Subcommand)]
+enum ActivityCommand {
+    /// Stream live activity events from the daemon
+    #[command(about = "Stream live activity events from the daemon WebSocket")]
+    Tail {
+        /// Output as JSON (one object per line)
+        #[arg(long, help = "Output events as newline-delimited JSON")]
+        json: bool,
+
+        /// Filter to a specific source surface (chat, browser, terminal, project)
+        #[arg(long, help = "Filter events to a specific source surface")]
+        filter: Option<String>,
+
+        /// Start streaming from a specific timestamp (ISO-8601)
+        #[arg(long, help = "Only show events after this timestamp (ISO-8601)")]
+        since: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum Command {
     /// Manage agent identity (name, tone, traits)
     #[command(about = "Manage agent identity", visible_alias = "a")]
@@ -973,6 +992,13 @@ enum Command {
     Integrations {
         #[command(subcommand)]
         command: IntegrationsCommand,
+    },
+
+    /// Activity awareness (tail live events)
+    #[command(about = "Activity awareness commands")]
+    Activity {
+        #[command(subcommand)]
+        command: ActivityCommand,
     },
 
     /// Start the Permagent daemon via launchd
@@ -1188,6 +1214,7 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::Gateway { .. }) => "gateway",
         Some(Command::Memory { .. }) => "memory",
         Some(Command::Integrations { .. }) => "integrations",
+        Some(Command::Activity { .. }) => "activity",
         Some(Command::Schedule { .. }) => "schedule",
         Some(Command::Start {}) => "start",
         Some(Command::Stop {}) => "stop",
@@ -1650,6 +1677,14 @@ async fn handle_integrations_command(command: IntegrationsCommand) -> Result<()>
     }
 }
 
+async fn handle_activity_command(command: ActivityCommand) -> Result<()> {
+    match command {
+        ActivityCommand::Tail { json, filter, since } => {
+            crate::commands::activity::handle_tail(json, filter, since).await
+        }
+    }
+}
+
 async fn handle_gateway_command(command: GatewayCommand) -> Result<()> {
     use crate::commands::gateway;
 
@@ -2035,6 +2070,7 @@ pub async fn cli() -> anyhow::Result<()> {
         Some(Command::Gateway { command }) => handle_gateway_command(command).await,
         Some(Command::Memory { command }) => handle_memory_command(command).await,
         Some(Command::Integrations { command }) => handle_integrations_command(command).await,
+        Some(Command::Activity { command }) => handle_activity_command(command).await,
         Some(Command::Schedule { command }) => handle_schedule_command(command).await,
         Some(Command::Update {
             canary,

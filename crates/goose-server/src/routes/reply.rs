@@ -314,6 +314,57 @@ pub async fn reply(
         };
         all_messages.push(user_message.clone());
 
+        // ── Phase 3b: Ambient context from ContextBuilder ──
+        if let Some(ref context_builder) = state.context_builder {
+            let user_text = user_message.as_concat_text();
+            let focus_wing = state
+                .activity_ingester
+                .as_ref()
+                .and_then(|ing| ing.active_project())
+                .map(|ap| ap.wing.clone());
+
+            let recall_query = if user_text.len() > 20 {
+                Some(user_text.clone())
+            } else {
+                None
+            };
+
+            let digest_opts = permagent::activity::context_builder::DigestOpts {
+                include_probe: true,
+                focus_wing,
+                include_recall_query: recall_query,
+                ..Default::default()
+            };
+
+            match context_builder.current_digest(digest_opts) {
+                Ok(digest) => {
+                    let ambient_block =
+                        permagent::activity::context_builder::render_ambient_context(&digest);
+                    if !ambient_block.is_empty() {
+                        tracing::debug!(
+                            target: "permagentd::activity",
+                            probed = digest.probed_memories.len(),
+                            recalled = digest.recalled_memories.len(),
+                            "Injecting ambient context into system prompt"
+                        );
+                        agent
+                            .extend_system_prompt(
+                                "ambient_context".to_string(),
+                                ambient_block,
+                            )
+                            .await;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "permagentd::activity",
+                        "ContextBuilder digest failed, proceeding without ambient context: {}",
+                        e
+                    );
+                }
+            }
+        }
+
         // ── Phase 3: Recall from brain before model invocation ──
         const RECALL_SCORE_FLOOR: f64 = 0.7;
         const RECALL_TOP_K: usize = 3;

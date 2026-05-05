@@ -26,7 +26,7 @@
 use crate::events::activity::{ActivityEvent, ActivityEventType, EventTier};
 use spectral::ingest::CompactionTier;
 use spectral::{Brain, DeviceId, RememberOpts, Visibility};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use tracing::{error, warn};
 
@@ -50,6 +50,10 @@ pub struct ActivityIngester {
     /// The user's currently-active project. Set when ProjectSelected events
     /// arrive; stays set until another ProjectSelected replaces it.
     active_project: RwLock<Option<ActiveProject>>,
+    /// Pause skips Brain writes but does not stop event emission.
+    /// Live awareness continues; only persistence stops.
+    /// Useful when working on sensitive content the user doesn't want recorded.
+    paused: AtomicBool,
 }
 
 impl ActivityIngester {
@@ -64,6 +68,7 @@ impl ActivityIngester {
             last_ingested_at: Mutex::new(None),
             aggregation_queue: Mutex::new(Vec::new()),
             active_project: RwLock::new(None),
+            paused: AtomicBool::new(false),
         }
     }
 
@@ -75,11 +80,15 @@ impl ActivityIngester {
 
         match event.tier {
             EventTier::Always => {
-                self.ingest_to_brain(event);
+                if !self.paused.load(Ordering::Relaxed) {
+                    self.ingest_to_brain(event);
+                }
                 self.always_count.fetch_add(1, Ordering::Relaxed);
             }
             EventTier::Aggregated => {
-                self.ingest_to_brain(event);
+                if !self.paused.load(Ordering::Relaxed) {
+                    self.ingest_to_brain(event);
+                }
                 self.aggregated_count.fetch_add(1, Ordering::Relaxed);
             }
             EventTier::Ephemeral => {
@@ -216,6 +225,18 @@ impl ActivityIngester {
 
     pub fn active_project(&self) -> Option<ActiveProject> {
         self.active_project.read().ok().and_then(|ap| ap.clone())
+    }
+
+    pub fn pause(&self) {
+        self.paused.store(true, Ordering::Relaxed);
+    }
+
+    pub fn resume(&self) {
+        self.paused.store(false, Ordering::Relaxed);
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::Relaxed)
     }
 }
 

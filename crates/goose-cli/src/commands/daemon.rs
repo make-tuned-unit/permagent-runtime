@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use serde_json;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -20,7 +21,7 @@ fn config_path() -> PathBuf {
     home.join(".permagent/config.yaml")
 }
 
-fn read_daemon_port() -> u16 {
+pub fn read_daemon_port() -> u16 {
     let path = config_path();
     if let Ok(contents) = std::fs::read_to_string(&path) {
         if let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(&contents) {
@@ -34,6 +35,27 @@ fn read_daemon_port() -> u16 {
         }
     }
     DEFAULT_PORT
+}
+
+/// Returns the daemon WebSocket URL (ws://127.0.0.1:<port>).
+pub fn daemon_ws_url() -> Result<String> {
+    let port = read_daemon_port();
+    Ok(format!("ws://127.0.0.1:{}", port))
+}
+
+/// Loads the daemon token from ~/.permagent/secrets/daemon_token.json.
+pub fn load_daemon_token() -> Result<String> {
+    let home = dirs::home_dir().context("could not determine home directory")?;
+    let path = home.join(".permagent/secrets/daemon_token.json");
+    let contents = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read daemon token from {}", path.display()))?;
+    let parsed: serde_json::Value = serde_json::from_str(&contents)
+        .context("failed to parse daemon_token.json")?;
+    parsed
+        .get("token")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .context("daemon_token.json missing 'token' field")
 }
 
 fn find_permagentd_binary() -> Result<String> {

@@ -7094,6 +7094,7 @@ dependencies = [
  "tempfile",
  "test-case",
  "tokio",
+ "tokio-tungstenite",
  "tokio-util",
  "tracing",
  "tracing-appender",
