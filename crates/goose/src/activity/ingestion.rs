@@ -146,11 +146,7 @@ impl ActivityIngester {
         let source_surface = format!("{:?}", event.source_surface).to_lowercase();
         let is_aggregated = event.tier == EventTier::Aggregated;
 
-        // TODO(spectral-wing-pr): When Spectral ships wing override on
-        // RememberOpts, uncomment the wing field assignment below.
-        // The active_project read and slug computation are already in
-        // place — only the field assignment is blocked.
-        let _wing_override: Option<String> = self
+        let wing_override: Option<String> = self
             .active_project
             .read()
             .ok()
@@ -164,10 +160,9 @@ impl ActivityIngester {
                 device_id: Some(device_id),
                 confidence: None,
                 visibility: Visibility::Private,
-                created_at: Some(event.timestamp),
-                episode_id: None,
                 compaction_tier: Some(CompactionTier::Raw),
-                // wing: _wing_override,  // UNCOMMENT when Spectral ships wing override PR
+                wing: wing_override,
+                ..Default::default()
             },
         );
 
@@ -228,8 +223,8 @@ impl ActivityIngester {
 /// the wing slug. Returns None if the input doesn't start with "project:"
 /// or if the slug after the prefix is empty.
 ///
-/// The wing slug is what gets passed to RememberOpts.wing (when that
-/// field exists). Spectral stores the slug as-is — no further normalization.
+/// The wing slug is passed to RememberOpts.wing at write time. When set,
+/// Spectral bypasses its TACT classifier and stores the slug as-is.
 fn derive_wing_slug(canonical_project_id: &str) -> Option<String> {
     let slug = canonical_project_id.strip_prefix("project:")?;
     if slug.is_empty() {
@@ -517,8 +512,8 @@ mod tests {
         // The active project should still be set (ingestion didn't clear it)
         let ap = ingester.active_project().expect("should still be set");
         assert_eq!(ap.wing, "permagent");
-        // The wing_override was computed inside ingest_to_brain — if the code
-        // compiles and reaches here, the _wing_override let binding worked.
+        // wing_override is computed and passed to RememberOpts.wing inside
+        // ingest_to_brain — Brain writes get wing: Some("permagent").
         assert_eq!(ingester.always_count(), 2); // ProjectSelected + ChatTurnCompleted
     }
 

@@ -133,14 +133,27 @@ activity:1777941342:project_selected:d3d10dea    | permagent.activity | general 
 activity:1777941340:project_selected:3c673891    | permagent.activity | general | raw
 ```
 
-Wing shows "general" (Spectral TACT classifier). The `_wing_override`
-variable is computed as `Some("permagent")` / `Some("get-ladle")` at
-the call site but not yet passed to RememberOpts. When Spectral ships
-their wing override PR, uncomment one line:
+Pre-activation rows show `wing: general` (Spectral TACT classifier).
 
-File: `crates/goose/src/activity/ingestion.rs`
-Line: the `// wing: _wing_override,` comment inside the RememberOpts block
-Change: remove `//` prefix and rename `_wing_override` to `wing_override`
+### Wing Override Activation — Spectral PR #56 (rev daabbda)
+
+*Date: 2026-05-05. Pin updated from 795c4c7 to daabbda.*
+
+Wing override is now live. Brain rows after activation:
+
+```
+key                                                    | wing       | content
+activity:1777944216:project_selected:06773b7b          | permagent  | Started working in project Permagent (project:permagent).
+activity:1777944216:chat_turn_completed:b323b19d       | permagent  | Chat turn completed in 700ms (200 input tokens, 30 output tokens).
+activity:1777944216:browser_navigated:f4137065         | permagent  | Navigated to Permagent Repo (https://github.com/permagent) in tab t1.
+activity:1777944216:project_selected:236ad05a          | get-ladle  | Started working in project Get Ladle (project:get-ladle).
+activity:1777944216:browser_navigated:c8a656dd         | get-ladle  | Navigated to Get Ladle (https://getladle.com) in tab t2.
+```
+
+Wing tracks the active project correctly:
+- Events after selecting Permagent → wing: permagent
+- Events after switching to Get Ladle → wing: get-ladle
+- Classifier is bypassed when wing is set (no "general" fallback)
 
 ### Unit Tests (17/17 passed)
 
