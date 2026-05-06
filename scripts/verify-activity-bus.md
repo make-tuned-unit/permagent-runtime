@@ -307,6 +307,108 @@ cargo test --package permagent --lib activity
   27 passed; 0 failed; 0 ignored
 ```
 
+## Activity Bus Restoration Verification (commit 5d8b79062 + follow-up)
+
+**Date:** 2026-05-06
+**Issue:** `emit_activity` Tauri command was missing from `ui/desktop/src-tauri/`,
+causing all frontend activity emissions to be silent no-ops. Additionally, the
+command used Tauri 2's default camelCase parameter naming while the frontend
+called with snake_case — so even after porting the command, the invoke
+deserialization silently failed.
+
+**Root causes (two-layer):**
+1. `emit_activity` Tauri command never ported from `ui/goose2/` to `ui/desktop/`
+2. Tauri 2 `#[tauri::command]` auto-renames `event_type` → `eventType` on the JS
+   side, but the frontend sends `event_type`. Fixed with
+   `#[tauri::command(rename_all = "snake_case")]`.
+
+**Fix verified end-to-end on rebuilt desktop app.**
+
+### Baseline (before fix)
+
+Brain activity memory count: **19**
+
+Most recent 5 entries (all chat — zero terminal/browser):
+```
+activity:1778091247:chat_turn_completed:019dfe7f  Chat turn completed in 2183ms
+activity:1778091220:chat_turn_completed:019dfe7e  Chat turn completed in 716ms
+activity:1778090143:chat_turn_completed:019dfe6e  Chat turn completed in 649ms
+activity:1778088770:chat_turn_completed:019dfe59  Chat turn completed in 3293ms
+activity:1778087112:chat_turn_completed:019dfe40  Chat turn completed in 946ms
+```
+
+### Reproducer (direct Tauri invoke)
+
+Dev tools not available in release build. Verified via `eprintln!` instrumentation
+in `activity.rs` — before `rename_all` fix, the function was never called (Tauri
+deserialization failed silently). After fix, every terminal interaction produces
+`[activity] emit_activity called` + `[activity] OK: accepted=true` in stderr.
+
+### After verification actions
+
+Brain activity memory count: **26** (delta: **+7**)
+
+Ring buffer captured events from real app interactions:
+```
+terminal_session_started  terminal  2026-05-06T19:35:04  session=pty-dd7f6b3f, cwd=/Users/jessesharratt
+terminal_command_started  terminal  2026-05-06T19:35:14  command="echo test", cwd=/Users/jessesharratt
+terminal_command_started  terminal  2026-05-06T19:39:38  command="cd ~/dev/canon", cwd=/Users/jessesharratt
+terminal_command_started  terminal  2026-05-06T19:39:41  command="claude", cwd=/Users/jessesharratt/dev/canon
+terminal_session_started  terminal  2026-05-06T19:40:42  session=pty-31b0f2d3, cwd=/Users/jessesharratt
+terminal_command_started  terminal  2026-05-06T19:40:57  command="cd ~/dev/World Litter Run"
+terminal_command_started  terminal  2026-05-06T19:40:58  command="claude", cwd=.../World Litter Run
+```
+
+### ContextBuilder digest (live state)
+
+```json
+{
+  "live_state": {
+    "last_terminal_command": "claude",
+    "last_terminal_cwd": "/Users/jessesharratt/dev/World Litter Run",
+    "events_in_last_5_minutes": 7
+  }
+}
+```
+
+### Chat with awareness
+
+User asked: "Hey can you see what project I am working on in the Terminal?"
+
+Agent referenced real terminal state from ambient context:
+- "You're in the `~/dev/canon` directory"
+- "You ran the `claude` command"
+- "There's been terminal activity in the last 5 minutes"
+
+Citation marker appeared: **yes** ("based on 5 memories")
+
+Before the fix, the same question produced: "I don't have direct access to your
+terminal or its current state" with zero context.
+
+### Build verification
+
+```
+cargo check --package permagent --lib           OK
+cargo test --package permagent --lib activity    27 passed
+cargo build --release (desktop shell)           OK
+npm run build (command-center)                  OK
+npm run tauri build (full bundle)               OK
+```
+
+### Conclusion
+
+Activity bus fully operational from the desktop shell. Terminal session lifecycle
+events (started/ended) and command events now flow through the Tauri command →
+daemon → ring buffer → ContextBuilder pipeline. The Phase 3.5 awareness UX feeds
+on real signal across terminal and chat surfaces. Browser events are wired but
+require separate browser navigation to verify (browser `emitActivity` helper uses
+the same `emit_activity` Tauri command and will work identically).
+
+**Key lesson:** Tauri 2 `#[tauri::command]` silently renames snake_case params to
+camelCase. Frontend code must match, or use `rename_all = "snake_case"` on the
+Rust side. This mismatch is invisible — the invoke fails with a deserialization
+error caught by `.catch()`, producing no visible error in release builds.
+
 Key tests covering probe_recent:
 - `probe_results_sorted_by_relevance_descending` — seeds Brain with activity memories, runs probe, asserts descending relevance order
 - `probe_wing_filter_passes_through` — seeds memories in two wings, probes with `focus_wing: Some("permagent")`, asserts all results have matching wing

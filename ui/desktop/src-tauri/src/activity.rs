@@ -38,7 +38,7 @@ pub struct EmitResult {
     pub error: Option<String>,
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn emit_activity(
     event_type: String,
     source_surface: String,
