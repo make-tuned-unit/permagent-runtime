@@ -29,7 +29,8 @@ function timeAgo(dateStr: string): string {
 }
 
 export function ChatWidget() {
-  const [open, setOpen] = useState(false);
+  const open = useCommandCenter(s => s.chatOpen);
+  const setChatOpen = useCommandCenter(s => s.setChatOpen);
   const [pos, setPos] = useState({ x: -1, y: -1 });
   const [size, setSize] = useState({ w: DEFAULT_W, h: DEFAULT_H });
   const [agentName, setAgentName] = useState('Agent');
@@ -137,7 +138,7 @@ export function ChatWidget() {
 
   if (!open) {
     return (
-      <button onClick={() => setOpen(true)} style={{
+      <button onClick={() => setChatOpen(true)} style={{
         position: 'fixed', bottom: 20, right: 20, zIndex: 9999,
         display: 'flex', alignItems: 'center', gap: 10,
         padding: '12px 20px', borderRadius: 999,
@@ -307,7 +308,7 @@ export function ChatWidget() {
         </button>
         {/* Close */}
         <button
-          onClick={() => setOpen(false)}
+          onClick={() => setChatOpen(false)}
           onMouseDown={e => e.stopPropagation()}
           style={{
             width: 28, height: 28, borderRadius: 6,

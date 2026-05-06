@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
+import { useCommandCenter } from '../../lib/store';
 import {
   FiArrowLeft,
   FiArrowRight,
@@ -82,6 +83,10 @@ let persistedTabs: BrowserTab[] | null = null;
 let persistedActiveTabId: string | null = null;
 
 export function Browser() {
+  const chatOpen = useCommandCenter(s => s.chatOpen);
+  const chatOpenRef = useRef(false);
+  chatOpenRef.current = chatOpen;
+
   const [tabs, setTabs] = useState<BrowserTab[]>(() => {
     if (persistedTabs) return persistedTabs;
     return [createTab()];
@@ -137,7 +142,7 @@ export function Browser() {
     const currentTabs = tabsRef.current;
     const currentActiveId = activeTabIdRef.current;
 
-    // When the container is hidden (workspace switch), hide all webviews
+    // Hide webviews when container is hidden (workspace switch)
     if (rect.width === 0 || rect.height === 0) {
       currentTabs.forEach((t) => {
         if (t.webviewId) inv.invoke('hide_browser', { webviewId: t.webviewId }).catch(() => {});

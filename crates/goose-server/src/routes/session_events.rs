@@ -490,7 +490,11 @@ pub async fn session_reply(
                 ..Default::default()
             };
 
-            match context_builder.current_digest(digest_opts) {
+            let cb = context_builder.clone();
+            let digest_result = tokio::task::spawn_blocking(move || cb.current_digest(digest_opts))
+                .await
+                .unwrap_or_else(|e| Err(anyhow::anyhow!("spawn_blocking: {}", e)));
+            match digest_result {
                 Ok(digest) => {
                     let ambient_block =
                         permagent::activity::context_builder::render_ambient_context(&digest);
