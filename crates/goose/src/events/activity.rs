@@ -16,7 +16,7 @@
 //! **Ephemeral** (live-only, never persisted):
 //!   ChatTurnStarted, BrowserSessionStarted, BrowserSessionEnded,
 //!   FileOpened, ProjectOpened, TerminalCommandStarted,
-//!   AgentContextProbed
+//!   TerminalSessionStarted, TerminalSessionEnded, AgentContextProbed
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -37,6 +37,8 @@ pub enum ActivityEventType {
     BrowserSessionEnded,
     TerminalCommandStarted,
     TerminalCommandCompleted,
+    TerminalSessionStarted,
+    TerminalSessionEnded,
     ProjectSelected,
     ProjectOpened,
     FileOpened,
@@ -133,6 +135,8 @@ fn default_tier(event_type: &ActivityEventType) -> EventTier {
         | ActivityEventType::FileOpened
         | ActivityEventType::ProjectOpened
         | ActivityEventType::TerminalCommandStarted
+        | ActivityEventType::TerminalSessionStarted
+        | ActivityEventType::TerminalSessionEnded
         | ActivityEventType::AgentContextProbed => EventTier::Ephemeral,
     }
 }

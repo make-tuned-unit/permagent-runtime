@@ -2,6 +2,7 @@
 
 use tauri::Manager;
 
+mod activity;
 mod browser;
 mod daemon;
 mod files;
@@ -32,6 +33,7 @@ fn main() {
             browser::zoom_browser,
             files::read_dropped_file,
             daemon::get_daemon_token,
+            activity::emit_activity,
         ])
         .setup(|app| {
             daemon::start_daemon(app.handle())?;

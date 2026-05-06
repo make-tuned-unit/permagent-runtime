@@ -272,6 +272,8 @@ fn event_type_str(t: &ActivityEventType) -> &'static str {
         ActivityEventType::SkillExecuted => "skill_executed",
         ActivityEventType::IntegrationTokenRefreshed => "integration_token_refreshed",
         ActivityEventType::AgentContextProbed => "agent_context_probed",
+        ActivityEventType::TerminalSessionStarted => "terminal_session_started",
+        ActivityEventType::TerminalSessionEnded => "terminal_session_ended",
     }
 }
 

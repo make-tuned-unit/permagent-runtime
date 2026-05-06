@@ -145,6 +145,14 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
           if (result.cwd) {
             onCwdChangeRef.current?.(result.cwd);
           }
+          // Activity: terminal session started
+          api.invoke('emit_activity', {
+            event_type: 'terminal_session_started',
+            source_surface: 'terminal',
+            payload: { session_id: result.session_id, working_directory: result.cwd || null },
+            session_id: null,
+            project_id: null,
+          }).catch((err: unknown) => console.debug('[activity] terminal_session_started emission failed:', err));
         } catch (err) {
           term.writeln('\r\n\x1b[31mFailed to spawn terminal: ' + err + '\x1b[0m\r\n');
           return;
@@ -216,7 +224,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
                 payload: { command, working_directory: cwdRef.current || null },
                 session_id: null,
                 project_id: null,
-              }).catch(() => {});
+              }).catch((err: unknown) => console.debug('[activity] terminal_command_started emission failed:', err));
             }
           }
           inputBuffer = '';
@@ -253,6 +261,16 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
       resizeObserver.observe(containerRef.current!);
 
       cleanupRef.current = () => {
+        // Activity: terminal session ended
+        if (api && sessionIdRef.current) {
+          api.invoke('emit_activity', {
+            event_type: 'terminal_session_ended',
+            source_surface: 'terminal',
+            payload: { session_id: sessionIdRef.current },
+            session_id: null,
+            project_id: null,
+          }).catch((err: unknown) => console.debug('[activity] terminal_session_ended emission failed:', err));
+        }
         onDataDisposable.dispose();
         onTitleDisposable.dispose();
         onResizeDisposable.dispose();
