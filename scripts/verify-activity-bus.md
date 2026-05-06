@@ -262,3 +262,123 @@ $ permagent activity tail --filter terminal
 - `cargo test --package permagent --lib identity`: 13 passed
 - `npx tsc --noEmit` (command-center): PASS
 - `npm run build` (command-center): PASS
+
+## probe_recent Activation Verification
+
+*Date: 2026-05-05. Spectral pin: ee2931a.*
+
+### Implementation Status
+
+All probe_recent wiring was completed in Phase 3b (commit 6d97b8a29).
+The Spectral pin was already updated to ee2931a which exports
+`probe_recent`, `ProbeOpts`, `ProbeWindow`, and `RecognizedMemory`
+through the public `spectral::Brain` wrapper.
+
+**Code path (chat turn):**
+1. `reply.rs` / `session_events.rs` call `context_builder.current_digest(DigestOpts { include_probe: true, focus_wing, .. })`
+2. `ContextBuilder::current_digest()` calls `brain.probe_recent(window, ProbeOpts { wing_filter, max_results, min_relevance })`
+3. Results sorted by `relevance` descending
+4. `render_ambient_context()` renders `<recognized_memories>` block with `{:.2}` relevance formatting
+
+**Code path (REST endpoint):**
+`GET /activity/current-digest` → same `current_digest(include_probe: true)` → serialized via `serde_json::to_value(&digest)`
+
+### Endpoint Verification
+
+```
+# current-digest returns successfully (no panic — spawn_blocking fix applied)
+$ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:3001/activity/current-digest
+{
+  "live_state": { "events_in_last_5_minutes": 6, ... },
+  "recent_events": [ ... 6 events ... ],
+  "probed_memories": [],
+  "recalled_memories": []
+}
+```
+
+`probed_memories: []` — expected on fresh Brain with no pre-existing activity
+memories. The probe fires cleanly (no tokio runtime panic after
+spawn_blocking fix).
+
+### Test Results
+
+```
+cargo test --package permagent --lib activity
+  27 passed; 0 failed; 0 ignored
+```
+
+Key tests covering probe_recent:
+- `probe_results_sorted_by_relevance_descending` — seeds Brain with activity memories, runs probe, asserts descending relevance order
+- `probe_wing_filter_passes_through` — seeds memories in two wings, probes with `focus_wing: Some("permagent")`, asserts all results have matching wing
+- `current_digest_returns_recent_events` — verifies `include_probe: false` default returns empty probed_memories
+
+### Notes
+
+- The `/activity/current-digest` endpoint previously panicked with
+  "Cannot start a runtime from within a runtime" because
+  `Brain::probe_recent()` calls `block_on()` internally. Fixed by
+  wrapping in `tokio::task::spawn_blocking()` (same pattern as
+  `get_recent_memories` handler).
+- Real relevance scores will appear once the Brain accumulates
+  activity-tagged memories over multiple chat sessions. The probe
+  synthesizes a query from recent events and searches for semantically
+  matching memories — requires a populated Brain to produce non-empty results.
+
+## Phase 3.5 — Visible Awareness UX
+
+*Date: 2026-05-06.*
+
+### New SSE Event: ContextAttached
+
+Added `ContextAttached` variant to `MessageEvent` enum in `reply.rs:148-152`:
+```rust
+ContextAttached {
+    probed_memories: Vec<ProbedMemoryRef>,
+    recalled_memories: Vec<RecalledMemoryRef>,
+}
+```
+
+Emitted from:
+- `reply.rs` (after digest success, before extend_system_prompt) via `stream_event()`
+- `session_events.rs` (same location) via `publish()`
+
+Only emitted when at least one probed or recalled memory exists — no-op on empty digests.
+
+### New Frontend Components
+
+1. **AwarenessIndicator** — `ui/command-center/src/components/awareness/AwarenessIndicator.tsx`
+   - Persistent row above chat input, polls /activity/current-digest every 5s
+   - Shows "Aware of {project} · {N} events · {M} memories" with time-decay suffix
+   - Clicking opens inspection panel
+
+2. **PreTurnPreview** — `ui/command-center/src/components/awareness/PreTurnPreview.tsx`
+   - Appears on input focus, describes what the agent will consider
+   - Fades out on blur
+
+3. **CitationMarker** — `ui/command-center/src/components/awareness/CitationMarker.tsx`
+   - Small "based on N memories" pill on agent responses
+   - Click expands popover showing probed memories with relevance scores and wing badges
+
+### ChatWidget Integration
+
+Layout (top to bottom):
+- Chat header with eye icon (unchanged)
+- Message list (unchanged, now with CitationMarker on assistant bubbles)
+- AwarenessIndicator (new, persistent)
+- PreTurnPreview (new, focus-triggered)
+- Chat input (unchanged)
+
+### Store Updates
+
+- `ChatMessage` extended with optional `context_attached` field
+- SSE handler processes `ContextAttached` events, attaches to streaming message
+- Pending context mechanism for race conditions (event arrives before message placeholder)
+
+### Build Status
+
+- `cargo check --package permagent-daemon`: PASS (pre-existing warnings only)
+- `cargo test --package permagent --lib activity`: 27 passed
+- `npx tsc --noEmit`: PASS
+- `npm run build`: PASS
+- `vitest run time-decay.test.ts`: 7 passed
+- Tauri bundle: PASS

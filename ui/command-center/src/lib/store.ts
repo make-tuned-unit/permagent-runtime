@@ -57,6 +57,20 @@ export interface ChatMessageImage {
   mimeType: string;
 }
 
+export interface ProbedMemoryRef {
+  id: string;
+  key: string;
+  content_summary: string;
+  relevance: number;
+  wing: string | null;
+}
+
+export interface RecalledMemoryRef {
+  id: string;
+  signal_score: number;
+  content_summary: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -65,6 +79,10 @@ export interface ChatMessage {
   task_id?: string;
   tool_calls?: ToolCall[];
   images?: ChatMessageImage[];
+  context_attached?: {
+    probed_memories: ProbedMemoryRef[];
+    recalled_memories: RecalledMemoryRef[];
+  };
 }
 
 export interface SessionState {
@@ -187,6 +205,7 @@ interface CommandCenterStore {
   chatSessionId: string | null;
   addChatMessage: (msg: ChatMessage) => void;
   _streamingMessageId: string | null;
+  _pendingContext: { probed_memories: ProbedMemoryRef[]; recalled_memories: RecalledMemoryRef[] } | null;
 
   // --- SSE streaming ---
   isStreaming: boolean;
@@ -372,6 +391,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     try { return localStorage.getItem('permagent-chat-session-id'); } catch { return null; }
   })(),
   _streamingMessageId: null,
+  _pendingContext: null,
 
   addChatMessage: (msg) => set(s => ({ chatMessages: [...s.chatMessages, msg] })),
 
@@ -666,9 +686,13 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
           const delta = extractText(msg);
           const streamMsgId = get()._streamingMessageId;
           if (streamMsgId && delta) {
+            const pending = get()._pendingContext;
             set(s => ({
+              _pendingContext: null,
               chatMessages: s.chatMessages.map(m =>
-                m.id === streamMsgId ? { ...m, content: m.content + delta } : m
+                m.id === streamMsgId
+                  ? { ...m, content: m.content + delta, ...(pending && !m.context_attached ? { context_attached: pending } : {}) }
+                  : m
               ),
             }));
           }
@@ -706,6 +730,22 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       }
       case 'Finish': {
         set({ isStreaming: false, _streamingMessageId: null });
+        break;
+      }
+      case 'ContextAttached': {
+        // Associate probed/recalled memories with the currently streaming message
+        const ctx = data as { type: string; probed_memories: ProbedMemoryRef[]; recalled_memories: RecalledMemoryRef[] };
+        const streamId = get()._streamingMessageId;
+        if (streamId) {
+          set(s => ({
+            chatMessages: s.chatMessages.map(m =>
+              m.id === streamId ? { ...m, context_attached: { probed_memories: ctx.probed_memories, recalled_memories: ctx.recalled_memories } } : m
+            ),
+          }));
+        } else {
+          // Store pending context for the next assistant message
+          set({ _pendingContext: { probed_memories: ctx.probed_memories, recalled_memories: ctx.recalled_memories } });
+        }
         break;
       }
     }

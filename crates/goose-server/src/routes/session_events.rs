@@ -508,6 +508,31 @@ pub async fn session_reply(
                             )
                             .await;
                     }
+
+                    // Emit ContextAttached so the frontend can show citation markers
+                    if !digest.probed_memories.is_empty() || !digest.recalled_memories.is_empty() {
+                        use crate::routes::reply::{ProbedMemoryRef, RecalledMemoryRef};
+                        let probed: Vec<ProbedMemoryRef> = digest.probed_memories.iter().map(|m| {
+                            ProbedMemoryRef {
+                                id: m.id.clone(),
+                                key: m.key.clone(),
+                                content_summary: m.content.chars().take(200).collect(),
+                                relevance: m.relevance,
+                                wing: m.wing.clone(),
+                            }
+                        }).collect();
+                        let recalled: Vec<RecalledMemoryRef> = digest.recalled_memories.iter().map(|m| {
+                            RecalledMemoryRef {
+                                id: m.source.clone().unwrap_or_default(),
+                                signal_score: m.signal_score,
+                                content_summary: m.content.chars().take(200).collect(),
+                            }
+                        }).collect();
+                        publish(
+                            Some(task_request_id.clone()),
+                            MessageEvent::ContextAttached { probed_memories: probed, recalled_memories: recalled },
+                        ).await;
+                    }
                 }
                 Err(e) => {
                     tracing::warn!(

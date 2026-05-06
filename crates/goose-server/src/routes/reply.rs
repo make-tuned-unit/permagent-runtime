@@ -150,7 +150,29 @@ pub enum MessageEvent {
     ActiveRequests {
         request_ids: Vec<String>,
     },
+    /// Sent before the model generates a response, carrying references
+    /// to the probed/recalled memories that fed the system prompt.
+    ContextAttached {
+        probed_memories: Vec<ProbedMemoryRef>,
+        recalled_memories: Vec<RecalledMemoryRef>,
+    },
     Ping,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct ProbedMemoryRef {
+    pub id: String,
+    pub key: String,
+    pub content_summary: String,
+    pub relevance: f64,
+    pub wing: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct RecalledMemoryRef {
+    pub id: String,
+    pub signal_score: f64,
+    pub content_summary: String,
 }
 
 pub async fn get_token_state(session_manager: &SessionManager, session_id: &str) -> TokenState {
@@ -353,6 +375,30 @@ pub async fn reply(
                                 ambient_block,
                             )
                             .await;
+                    }
+
+                    // Emit ContextAttached so the frontend can show citation markers
+                    if !digest.probed_memories.is_empty() || !digest.recalled_memories.is_empty() {
+                        let probed: Vec<ProbedMemoryRef> = digest.probed_memories.iter().map(|m| {
+                            ProbedMemoryRef {
+                                id: m.id.clone(),
+                                key: m.key.clone(),
+                                content_summary: m.content.chars().take(200).collect(),
+                                relevance: m.relevance,
+                                wing: m.wing.clone(),
+                            }
+                        }).collect();
+                        let recalled: Vec<RecalledMemoryRef> = digest.recalled_memories.iter().map(|m| {
+                            RecalledMemoryRef {
+                                id: m.source.clone().unwrap_or_default(),
+                                signal_score: m.signal_score,
+                                content_summary: m.content.chars().take(200).collect(),
+                            }
+                        }).collect();
+                        stream_event(
+                            MessageEvent::ContextAttached { probed_memories: probed, recalled_memories: recalled },
+                            &task_tx, &task_cancel,
+                        ).await;
                     }
                 }
                 Err(e) => {

@@ -1,9 +1,11 @@
 import type { ChatMessage } from '../../lib/store';
 import { MessageRenderer } from './MessageRenderer';
+import { CitationMarker } from '../awareness/CitationMarker';
 
 export function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
+  const ctx = message.context_attached;
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -29,6 +31,12 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
           </div>
         ) : (
           <MessageRenderer message={message} />
+        )}
+
+        {ctx && (ctx.probed_memories.length > 0 || ctx.recalled_memories.length > 0) && (
+          <div className="flex justify-end mt-1.5">
+            <CitationMarker probed={ctx.probed_memories} recalled={ctx.recalled_memories} />
+          </div>
         )}
       </div>
     </div>

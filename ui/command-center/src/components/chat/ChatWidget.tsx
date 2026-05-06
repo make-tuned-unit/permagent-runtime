@@ -9,6 +9,8 @@ import type { ChatInputHandle } from './ChatInput';
 import { DropZone } from './DropZone';
 import { ModelPicker } from './ModelPicker';
 import { InspectionPanel } from '../inspection/InspectionPanel';
+import { AwarenessIndicator } from '../awareness/AwarenessIndicator';
+import { PreTurnPreview } from '../awareness/PreTurnPreview';
 
 const MIN_W = 320;
 const MIN_H = 280;
@@ -33,6 +35,7 @@ export function ChatWidget() {
   const [agentName, setAgentName] = useState('Agent');
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [inspectionOpen, setInspectionOpen] = useState(false);
+  const [inputFocused, setInputFocused] = useState(false);
 
   const ensureSession = useCommandCenter(s => s.ensureSession);
   const connectSession = useCommandCenter(s => s.connectSession);
@@ -329,7 +332,11 @@ export function ChatWidget() {
             <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
               <MessageList />
             </div>
-            <ChatInput ref={chatInputRef} />
+            <AwarenessIndicator onOpenInspection={() => setInspectionOpen(true)} />
+            <PreTurnPreview visible={inputFocused} />
+            <div onFocusCapture={() => setInputFocused(true)} onBlurCapture={() => setInputFocused(false)}>
+              <ChatInput ref={chatInputRef} />
+            </div>
           </div>
         </DropZone>
       </div>
