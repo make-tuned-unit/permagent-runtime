@@ -130,6 +130,21 @@ pub async fn spawn_pty_session(
         );
     });
 
+    // Inject OSC 7 precmd hook so zsh reports CWD changes to the terminal.
+    // macOS zsh only does this for Apple_Terminal — we need our own hook.
+    // Leading space suppresses zsh history recording (HIST_IGNORE_SPACE).
+    let mut writer = writer;
+    if shell_path.contains("zsh") {
+        let init = concat!(
+            " autoload -Uz add-zsh-hook 2>/dev/null;",
+            " __permagent_osc7() { printf '\\e]7;file://%s%s\\a' \"${HOST}\" \"${PWD}\" };",
+            " add-zsh-hook precmd __permagent_osc7;",
+            " clear\n",
+        );
+        let _ = writer.write_all(init.as_bytes());
+        let _ = writer.flush();
+    }
+
     let session = PtySession {
         master: pair.master,
         writer,
