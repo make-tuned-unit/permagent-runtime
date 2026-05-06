@@ -87,3 +87,26 @@ fn is_daemon_running() -> bool {
     )
     .is_ok()
 }
+
+/// Read the daemon Bearer token from ~/.permagent/secrets/daemon_token.json.
+/// Returns the token string if available, or an error message.
+#[tauri::command]
+pub async fn get_daemon_token() -> Result<String, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+    let token_path = std::path::PathBuf::from(home)
+        .join(".permagent")
+        .join("secrets")
+        .join("daemon_token.json");
+
+    let content = std::fs::read_to_string(&token_path)
+        .map_err(|e| format!("Failed to read daemon token: {}", e))?;
+
+    let parsed: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse daemon token: {}", e))?;
+
+    parsed
+        .get("token")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "daemon_token.json missing 'token' field".into())
+}

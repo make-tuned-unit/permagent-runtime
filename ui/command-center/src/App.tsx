@@ -12,11 +12,10 @@ import { api } from './lib/api';
 function MainContent() {
   const activePanel = useCommandCenter(s => s.activePanel);
   const activeWorkspaceId = useCommandCenter(s => s.activeWorkspaceId);
+  const workspaces = useCommandCenter(s => s.workspaces);
   const workspacesLoaded = useCommandCenter(s => s.workspacesLoaded);
 
-  if (activePanel === 'settings') {
-    return <SettingsView />;
-  }
+  const showSettings = activePanel === 'settings';
 
   if (!workspacesLoaded) {
     return (
@@ -26,7 +25,7 @@ function MainContent() {
     );
   }
 
-  if (!activeWorkspaceId) {
+  if (!activeWorkspaceId && !showSettings) {
     return (
       <div className="flex h-full items-center justify-center text-dark-muted text-xs font-mono">
         No workspaces available
@@ -34,7 +33,27 @@ function MainContent() {
     );
   }
 
-  return <WorkspaceRenderer workspaceId={activeWorkspaceId} />;
+  // Render ALL workspaces simultaneously, hiding inactive ones.
+  // This prevents Terminal/Browser from unmounting and losing sessions
+  // when switching between workspace tabs or opening settings.
+  return (
+    <div className="h-full w-full relative">
+      {showSettings && (
+        <div className="absolute inset-0 z-10">
+          <SettingsView />
+        </div>
+      )}
+      {workspaces.map(ws => (
+        <div
+          key={ws.id}
+          className="absolute inset-0"
+          style={{ display: (!showSettings && ws.id === activeWorkspaceId) ? 'block' : 'none' }}
+        >
+          <WorkspaceRenderer workspaceId={ws.id} />
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function App() {
@@ -96,7 +115,7 @@ function App() {
   return (
     <div className={`flex h-screen density-${density}`} style={{ background: gradient.shell }}>
       <Sidebar />
-      <main className="flex-1 min-w-0 overflow-hidden">
+      <main className="flex-1 min-w-0 overflow-hidden relative">
         <MainContent />
       </main>
       <ChatWidget />

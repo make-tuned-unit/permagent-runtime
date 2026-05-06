@@ -27,6 +27,12 @@ struct PtyDataPayload {
 }
 
 #[derive(Clone, Serialize)]
+pub struct SpawnResult {
+    session_id: String,
+    cwd: String,
+}
+
+#[derive(Clone, Serialize)]
 struct PtyExitPayload {
     session_id: String,
     code: Option<u32>,
@@ -39,7 +45,7 @@ pub async fn spawn_pty_session(
     cwd: Option<String>,
     cols: u16,
     rows: u16,
-) -> Result<String, String> {
+) -> Result<SpawnResult, String> {
     let session_id = format!("pty-{}", uuid::Uuid::new_v4());
 
     let pty_system = native_pty_system();
@@ -56,8 +62,15 @@ pub async fn spawn_pty_session(
         std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string())
     });
 
+    // Resolve the working directory: use provided cwd, or fall back to HOME.
+    let resolved_cwd = cwd
+        .clone()
+        .unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/".to_string()));
+
     let mut cmd = CommandBuilder::new(&shell_path);
     cmd.arg("-l"); // login shell
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
     if let Some(dir) = cwd {
         cmd.cwd(dir);
     }
@@ -119,7 +132,10 @@ pub async fn spawn_pty_session(
         .unwrap()
         .insert(session_id.clone(), session);
 
-    Ok(session_id)
+    Ok(SpawnResult {
+        session_id,
+        cwd: resolved_cwd,
+    })
 }
 
 #[tauri::command]

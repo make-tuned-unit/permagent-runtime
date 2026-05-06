@@ -14,6 +14,25 @@ export function getApiBaseUrl(): string { return API_BASE_URL; }
 
 const SECRET_KEY = (import.meta.env.VITE_SECRET_KEY as string | undefined) || '';
 
+// Daemon Bearer token — loaded at runtime from Tauri IPC (not baked into the build).
+let _daemonToken: string | null = null;
+let _daemonTokenPromise: Promise<string | null> | null = null;
+
+function loadDaemonToken(): Promise<string | null> {
+  if (_daemonToken) return Promise.resolve(_daemonToken);
+  if (!isTauri) return Promise.resolve(null);
+  if (!_daemonTokenPromise) {
+    _daemonTokenPromise = import('@tauri-apps/api/core')
+      .then(({ invoke }) => invoke<string>('get_daemon_token'))
+      .then(token => { _daemonToken = token; return token; })
+      .catch(() => null);
+  }
+  return _daemonTokenPromise;
+}
+
+// Kick off token loading immediately so it's ready when needed.
+if (isTauri) loadDaemonToken();
+
 // --- Daemon types ---
 
 /** Content block inside a Message */
@@ -476,11 +495,12 @@ export const api = {
   }),
 
   /** Fetch with daemon Bearer token auth (for /activity/* endpoints). */
-  fetchAuthed: (endpoint: string, options?: RequestInit): Promise<Response> => {
+  fetchAuthed: async (endpoint: string, options?: RequestInit): Promise<Response> => {
+    const token = _daemonToken ?? await loadDaemonToken() ?? SECRET_KEY;
     const url = `${API_BASE_URL}${endpoint}`;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      ...(SECRET_KEY ? { Authorization: `Bearer ${SECRET_KEY}` } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
     };
     return fetch(url, { ...options, headers: { ...headers, ...(options?.headers as Record<string, string> ?? {}) } });
   },

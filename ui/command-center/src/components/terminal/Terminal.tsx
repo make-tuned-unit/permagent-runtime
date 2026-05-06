@@ -100,12 +100,13 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         theme: THEME,
         fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, "DejaVu Sans Mono", monospace',
         fontSize: 13,
-        lineHeight: 1.0,
+        lineHeight: 1.15,
         cursorBlink: true,
         cursorStyle: 'bar',
         allowProposedApi: true,
         scrollback: 10000,
         customGlyphs: true,
+        rescaleOverlappingGlyphs: true,
         drawBoldTextInBrightColors: false,
       });
 
@@ -138,8 +139,10 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
           if (cancelled) return;
           sessionIdRef.current = result.session_id;
           onSessionSpawnedRef.current?.(result.session_id);
-          // Report resolved CWD so the tab label shows the folder name immediately
-          if (result.cwd) {
+          // Only report CWD from spawn when an explicit cwd was requested.
+          // Otherwise let the shell's title/OSC 7 set the tab label
+          // (it reflects the actual cwd after profile scripts run).
+          if (result.cwd && cwdRef.current) {
             onCwdChangeRef.current?.(result.cwd);
           }
         } catch (err) {

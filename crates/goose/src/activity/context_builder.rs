@@ -6,7 +6,7 @@
 //! probed memories from Brain recognition, and optionally recalled memories.
 
 use crate::events::activity::{ActivityEvent, ActivityEventType};
-use spectral::{Brain, RecognizedMemory, Visibility};
+use spectral::{Brain, ProbeOpts, ProbeWindow, RecognizedMemory, Visibility};
 use std::collections::VecDeque;
 use std::sync::{Arc, RwLock, Mutex};
 use std::time::Duration;
@@ -118,60 +118,30 @@ impl ContextBuilder {
             .unwrap_or_default();
 
         let probed_memories = if opts.include_probe {
-            // Synthesize a context string from recent events to use as the probe query.
-            // This approximates probe_recent — finding memories relevant to current activity.
-            let context: String = recent_events
-                .iter()
-                .rev()
-                .take(10)
-                .map(|e| render_event_summary(e))
-                .collect::<Vec<_>>()
-                .join(" | ");
+            let window = ProbeWindow::Duration(chrono::Duration::from_std(opts.event_window)?);
+            let probe_opts = ProbeOpts {
+                max_results: opts.max_probe_results.unwrap_or(10),
+                min_relevance: opts.min_probe_relevance.unwrap_or(0.3),
+                wing_filter: opts.focus_wing.clone(),
+            };
 
-            if context.is_empty() {
-                Vec::new()
-            } else {
-                let max_results = opts.max_probe_results.unwrap_or(10);
-                let min_relevance = opts.min_probe_relevance.unwrap_or(0.3);
-                let wing_filter = opts.focus_wing.clone();
-
-                match self.brain.recall(&context, Visibility::Private) {
-                    Ok(result) => result
-                        .memory_hits
-                        .into_iter()
-                        .filter(|hit| {
-                            if let Some(ref wf) = wing_filter {
-                                hit.wing.as_deref() == Some(wf.as_str())
-                            } else {
-                                true
-                            }
-                        })
-                        .map(|hit| {
-                            let relevance = (hit.signal_score * 0.4
-                                + (hit.hits as f64).min(5.0) / 5.0 * 0.6)
-                                .min(1.0);
-                            RecognizedMemory {
-                                id: hit.id,
-                                key: hit.key,
-                                content: hit.content,
-                                wing: hit.wing,
-                                hall: hit.hall,
-                                signal_score: hit.signal_score,
-                                relevance,
-                                hits: hit.hits,
-                            }
-                        })
-                        .filter(|r| r.relevance >= min_relevance)
-                        .take(max_results)
-                        .collect(),
-                    Err(e) => {
-                        tracing::warn!(
-                            target: "permagent::activity::context_builder",
-                            "probe (via recall) failed: {}",
-                            e
-                        );
-                        Vec::new()
-                    }
+            match self.brain.probe_recent(window, probe_opts) {
+                Ok(mut memories) => {
+                    // Sort by relevance descending — highest scores first
+                    memories.sort_by(|a, b| {
+                        b.relevance
+                            .partial_cmp(&a.relevance)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    memories
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "permagent::activity::context_builder",
+                        "probe_recent failed: {}",
+                        e
+                    );
+                    Vec::new()
                 }
             }
         } else {
@@ -505,6 +475,133 @@ mod tests {
         assert_eq!(digest.recent_events.len(), 5);
         assert!(digest.probed_memories.is_empty());
         assert!(digest.recalled_memories.is_empty());
+    }
+
+    #[test]
+    fn probe_results_sorted_by_relevance_descending() {
+        let brain = build_test_brain();
+
+        // Seed a few activity memories with different content
+        brain
+            .remember_with(
+                "activity:1:test:aaa",
+                "First activity memory about wing classification",
+                spectral::RememberOpts {
+                    source: Some("permagent.activity".into()),
+                    visibility: spectral::Visibility::Private,
+                    wing: Some("permagent".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        brain
+            .remember_with(
+                "activity:2:test:bbb",
+                "Second activity memory about terminal commands and testing",
+                spectral::RememberOpts {
+                    source: Some("permagent.activity".into()),
+                    visibility: spectral::Visibility::Private,
+                    wing: Some("permagent".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let cb = ContextBuilder::new(brain);
+
+        // Inject events so probe_recent has something to synthesize context from
+        for _ in 0..3 {
+            let event = make_event(
+                ActivityEventType::ChatTurnCompleted,
+                SourceSurface::Chat,
+                EventTier::Always,
+                serde_json::json!({"duration_ms": 500, "input_tokens": 10, "output_tokens": 5}),
+            );
+            cb.handle_event(&event);
+        }
+
+        let digest = cb
+            .current_digest(DigestOpts {
+                include_probe: true,
+                min_probe_relevance: Some(0.0), // accept all
+                ..Default::default()
+            })
+            .unwrap();
+
+        // If probe returned results, they should be sorted by relevance descending
+        if digest.probed_memories.len() >= 2 {
+            for w in digest.probed_memories.windows(2) {
+                assert!(
+                    w[0].relevance >= w[1].relevance,
+                    "Expected sorted descending: {} >= {}",
+                    w[0].relevance,
+                    w[1].relevance
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn probe_wing_filter_passes_through() {
+        let brain = build_test_brain();
+
+        // Seed memories in two different wings
+        brain
+            .remember_with(
+                "activity:1:test:wing_a",
+                "Memory in permagent wing about Rust code",
+                spectral::RememberOpts {
+                    source: Some("permagent.activity".into()),
+                    visibility: spectral::Visibility::Private,
+                    wing: Some("permagent".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        brain
+            .remember_with(
+                "activity:2:test:wing_b",
+                "Memory in get-ladle wing about recipes",
+                spectral::RememberOpts {
+                    source: Some("permagent.activity".into()),
+                    visibility: spectral::Visibility::Private,
+                    wing: Some("get-ladle".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let cb = ContextBuilder::new(brain);
+
+        for _ in 0..3 {
+            let event = make_event(
+                ActivityEventType::ChatTurnCompleted,
+                SourceSurface::Chat,
+                EventTier::Always,
+                serde_json::json!({"duration_ms": 500, "input_tokens": 10, "output_tokens": 5}),
+            );
+            cb.handle_event(&event);
+        }
+
+        let digest = cb
+            .current_digest(DigestOpts {
+                include_probe: true,
+                focus_wing: Some("permagent".into()),
+                min_probe_relevance: Some(0.0),
+                ..Default::default()
+            })
+            .unwrap();
+
+        // All probed memories should be in the permagent wing (or empty if probe found nothing)
+        for mem in &digest.probed_memories {
+            assert_eq!(
+                mem.wing.as_deref(),
+                Some("permagent"),
+                "Expected wing 'permagent', got {:?} for key {}",
+                mem.wing,
+                mem.key
+            );
+        }
     }
 
     fn build_test_brain() -> Arc<Brain> {

@@ -12,14 +12,12 @@ interface MobiusProps {
 }
 
 const FRAME_COUNT = 151;
-const ASPECT = 1024 / 485; // source logo.webp dimensions
-
-// Idle pulse: frames 109-123, each tripled for slow breathing (45 frames at 30fps = 1.5s)
-const IDLE_FRAMES: number[] = [];
-for (let f = 109; f <= 123; f++) { IDLE_FRAMES.push(f, f, f); }
+const ASPECT = 1024 / 485; // source logo.webp dimensions (loading/active frames)
+const IDLE_FRAME_COUNT = 63;
+const IDLE_ASPECT = 1024 / 576; // idle pulse frames
 
 const FPS: Record<MobiusState, number> = {
-  idle: 30,
+  idle: 13,       // 63 frames at 80ms each ≈ 12.5fps
   thinking: 30,
   speaking: 24,
   calibrating: 20,
@@ -28,6 +26,10 @@ const FPS: Record<MobiusState, number> = {
 
 function frameSrc(n: number): string {
   return `/mobius/frame_${String(n).padStart(3, '0')}.webp`;
+}
+
+function idleFrameSrc(n: number): string {
+  return `/mobius-idle/frame_${String(n).padStart(2, '0')}.webp`;
 }
 
 export function Mobius({
@@ -49,34 +51,35 @@ export function Mobius({
   const isAnimated = state !== 'sleeping' && !idleDisabled;
   const fps = idleDisabled ? 0 : (FPS[state] || 0);
 
-  // Preload frames once
+  // Preload frames once per set
   useEffect(() => {
-    for (let i = 0; i < FRAME_COUNT; i++) {
-      const img = new Image();
-      img.src = frameSrc(i);
+    if (isIdle) {
+      for (let i = 0; i < IDLE_FRAME_COUNT; i++) {
+        const img = new Image();
+        img.src = idleFrameSrc(i);
+      }
+    } else {
+      for (let i = 0; i < FRAME_COUNT; i++) {
+        const img = new Image();
+        img.src = frameSrc(i);
+      }
     }
-  }, []);
+  }, [isIdle]);
 
   // rAF-driven frame cycling
-  // idle: steps through IDLE_FRAMES sequence (triplicated 109-123)
-  // other active states: loops all 0-150
-  const idleIdxRef = useRef(0);
+  // idle: loops 63 dedicated idle frames
+  // other active states: loops all 0-150 loading frames
   useEffect(() => {
     if (!isAnimated || fps === 0) {
       setFrame(0);
       return;
     }
-    idleIdxRef.current = 0;
-    setFrame(isIdle ? IDLE_FRAMES[0] : 0);
+    setFrame(0);
     const interval = 1000 / fps;
+    const count = isIdle ? IDLE_FRAME_COUNT : FRAME_COUNT;
     const tick = (now: number) => {
       if (now - lastTime.current >= interval) {
-        if (isIdle) {
-          idleIdxRef.current = (idleIdxRef.current + 1) % IDLE_FRAMES.length;
-          setFrame(IDLE_FRAMES[idleIdxRef.current]);
-        } else {
-          setFrame(f => (f + 1) % FRAME_COUNT);
-        }
+        setFrame(f => (f + 1) % count);
         lastTime.current = now;
       }
       rafRef.current = requestAnimationFrame(tick);
@@ -86,11 +89,14 @@ export function Mobius({
     return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
   }, [isAnimated, isIdle, fps]);
 
-  const src = isAnimated ? frameSrc(frame) : '/mobius/logo.webp';
+  const src = isAnimated
+    ? (isIdle ? idleFrameSrc(frame) : frameSrc(frame))
+    : '/mobius/logo.webp';
 
-  // size = height; width derives from natural aspect ratio of source asset
+  // size = height; width derives from natural aspect ratio of the active frame set
+  const aspect = isIdle ? IDLE_ASPECT : ASPECT;
   const height = size;
-  const width = Math.round(size * ASPECT);
+  const width = Math.round(size * aspect);
 
   const glowOpacity = state === 'sleeping' ? 0 : effectiveGlow * 0.45;
   const glowSize = Math.round(size * 0.4);

@@ -369,7 +369,22 @@ async fn get_current_digest(
         ..Default::default()
     };
 
-    match context_builder.current_digest(opts) {
+    // Brain::probe_recent() uses block_on() internally, so we must run
+    // the digest computation on the blocking thread pool to avoid
+    // "Cannot start a runtime from within a runtime" panics.
+    let cb = context_builder.clone();
+    let result = tokio::task::spawn_blocking(move || cb.current_digest(opts))
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorBody {
+                    error: format!("spawn_blocking failed: {}", e),
+                }),
+            )
+        })?;
+
+    match result {
         Ok(digest) => Ok(Json(serde_json::to_value(&digest).unwrap_or_default())),
         Err(e) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,

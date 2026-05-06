@@ -31,6 +31,7 @@ fn main() {
             browser::close_browser,
             browser::zoom_browser,
             files::read_dropped_file,
+            daemon::get_daemon_token,
         ])
         .setup(|app| {
             daemon::start_daemon(app.handle())?;
