@@ -139,10 +139,10 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
           if (cancelled) return;
           sessionIdRef.current = result.session_id;
           onSessionSpawnedRef.current?.(result.session_id);
-          // Only report CWD from spawn when an explicit cwd was requested.
-          // Otherwise let the shell's title/OSC 7 set the tab label
-          // (it reflects the actual cwd after profile scripts run).
-          if (result.cwd && cwdRef.current) {
+          // Always report the resolved CWD so the tab shows a folder name
+          // immediately. Later OSC 7 or title changes will override it
+          // if the shell navigates elsewhere.
+          if (result.cwd) {
             onCwdChangeRef.current?.(result.cwd);
           }
         } catch (err) {

@@ -114,21 +114,20 @@ export function TerminalManager() {
   }, []);
 
   const handleTitleChange = useCallback((tabId: string, title: string) => {
-    // Only use title if tab has no CWD-based label yet
     setTabs(prev => {
-      const tab = prev.find(t => t.id === tabId);
-      // If we already have a CWD-derived label, don't overwrite with process name
-      if (tab && tab.cwd) return prev;
-
       let label = title.trim();
       const pathMatch = label.match(/[~\/]([^:]+)$/);
       if (pathMatch) {
+        // Title contains a path — extract last segment as folder name
         const segments = pathMatch[1].split('/').filter(Boolean);
         label = segments[segments.length - 1] || label;
       } else if (label === 'zsh' || label === 'bash' || label === 'sh' || !label) {
+        // Shell name — only use if tab has no label yet
+        const tab = prev.find(t => t.id === tabId);
+        if (tab && tab.cwd) return prev;
         label = 'Terminal';
       } else {
-        // Process names like "Claude Code" — don't use, keep current
+        // Process names like "Claude Code" — don't overwrite
         return prev;
       }
       return prev.map(t => t.id === tabId ? { ...t, label } : t);

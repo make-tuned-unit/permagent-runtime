@@ -59,7 +59,17 @@ pub async fn spawn_pty_session(
         .map_err(|e| format!("Failed to open PTY: {e}"))?;
 
     let shell_path = shell.unwrap_or_else(|| {
-        std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string())
+        let env_shell = std::env::var("SHELL").unwrap_or_default();
+        // Prefer zsh on macOS — bash is deprecated and lacks OSC 7 CWD reporting.
+        if env_shell.is_empty() || env_shell == "/bin/bash" {
+            if std::path::Path::new("/bin/zsh").exists() {
+                "/bin/zsh".to_string()
+            } else {
+                env_shell
+            }
+        } else {
+            env_shell
+        }
     });
 
     // Resolve the working directory: use provided cwd, or fall back to HOME.
