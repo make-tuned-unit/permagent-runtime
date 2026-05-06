@@ -133,10 +133,17 @@ export function Browser() {
     const inv = apiRef.current;
     if (!containerRef.current || !inv) return;
     const rect = containerRef.current.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) return;
 
     const currentTabs = tabsRef.current;
     const currentActiveId = activeTabIdRef.current;
+
+    // When the container is hidden (workspace switch), hide all webviews
+    if (rect.width === 0 || rect.height === 0) {
+      currentTabs.forEach((t) => {
+        if (t.webviewId) inv.invoke('hide_browser', { webviewId: t.webviewId }).catch(() => {});
+      });
+      return;
+    }
 
     currentTabs.forEach((t) => {
       if (!t.webviewId) return;
@@ -154,7 +161,7 @@ export function Browser() {
     });
   }, []);
 
-  // ── ResizeObserver keeps the webview in sync with panel resizes ──
+  // ── ResizeObserver + visibility polling keeps webview in sync ──
   useEffect(() => {
     if (!containerRef.current || !api) return;
 
@@ -164,11 +171,15 @@ export function Browser() {
     const observer = new ResizeObserver(() => syncBounds());
     observer.observe(containerRef.current);
 
-    // Also listen for window scroll/move which changes getBoundingClientRect
+    // ResizeObserver doesn't fire on display:none changes (workspace switches).
+    // Poll visibility at low frequency so native webviews get hidden promptly.
+    const visibilityInterval = setInterval(syncBounds, 500);
+
     window.addEventListener('resize', syncBounds);
 
     return () => {
       observer.disconnect();
+      clearInterval(visibilityInterval);
       window.removeEventListener('resize', syncBounds);
     };
   }, [api, syncBounds]);
