@@ -101,17 +101,20 @@ export default function ChatApp() {
       display: 'flex', flexDirection: 'column',
       fontFamily: font.body,
     }}>
-      {/* Titlebar drag region */}
+      {/* Blank drag region for macOS traffic lights */}
       <div data-tauri-drag-region style={{
-        height: 38, flexShrink: 0,
+        height: 28, flexShrink: 0,
+        cursor: 'grab',
+      }} />
+
+      {/* Toolbar below traffic lights */}
+      <div style={{
+        height: 36, flexShrink: 0,
         display: 'flex', alignItems: 'center',
-        padding: '0 76px 0 12px', gap: 8,
+        padding: '0 12px', gap: 8,
         borderBottom: `1px solid ${color.border}`,
-        // @ts-expect-error — WebKit vendor prefix for drag region
-WebkitAppRegion: 'drag',
       }}>
-        <div style={{ // @ts-expect-error — WebKit vendor prefix
-WebkitAppRegion: 'no-drag', display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
           <Mobius size={16} state="idle" glow={0.6} />
 
           {/* Session selector */}
@@ -174,17 +177,12 @@ WebkitAppRegion: 'no-drag', display: 'flex', alignItems: 'center', gap: 8, flex:
 
           <div style={{ flex: 1 }} />
 
-          {/* @ts-expect-error — WebKit vendor prefix */}
-          <div style={{ WebkitAppRegion: 'no-drag' }}>
-            <ModelPicker />
-          </div>
+          <ModelPicker />
 
           <button
             onClick={() => setInspectionOpen(!inspectionOpen)}
             title="What your agent sees"
             style={{
-              // @ts-expect-error — WebKit vendor prefix
-WebkitAppRegion: 'no-drag',
               width: 26, height: 26, borderRadius: 6,
               background: inspectionOpen ? 'rgba(0,213,255,0.1)' : 'rgba(255,255,255,0.04)',
               border: `1px solid ${inspectionOpen ? 'rgba(0,213,255,0.3)' : color.border}`,

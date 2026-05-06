@@ -1,51 +1,68 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { color, font, ease } from '../../styles/tokens';
 import { api } from '../../lib/api';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
-async function openChatWindow() {
-  if (!isTauri) return;
-  try {
-    const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-
-    // If already open, focus it
-    const existing = await WebviewWindow.getByLabel('chat');
-    if (existing) {
-      await existing.show();
-      await existing.setFocus();
-      return;
-    }
-
-    // Create new chat window
-    const chatWindow = new WebviewWindow('chat', {
-      url: 'index.html?view=chat',
-      title: 'Permagent Chat',
-      width: 480,
-      height: 700,
-      minWidth: 360,
-      minHeight: 400,
-      center: true,
-      decorations: true,
-      resizable: true,
-      titleBarStyle: 'overlay',
-      hiddenTitle: true,
-    });
-
-    chatWindow.once('tauri://error', (e) => {
-      console.error('Chat window error:', e);
-    });
-  } catch (e) {
-    console.error('Failed to open chat window:', e);
-  }
-}
-
 export function ChatLauncher() {
   const [agentName, setAgentName] = useState('Agent');
+  const [chatWindowOpen, setChatWindowOpen] = useState(false);
 
   useEffect(() => {
     api.getIdentity().then(id => setAgentName(id.first_name)).catch(() => {});
   }, []);
+
+  // Poll whether the chat window exists (handles user closing it via traffic light)
+  useEffect(() => {
+    if (!isTauri || !chatWindowOpen) return;
+    const interval = setInterval(async () => {
+      try {
+        const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+        const existing = await WebviewWindow.getByLabel('chat');
+        if (!existing) setChatWindowOpen(false);
+      } catch { setChatWindowOpen(false); }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [chatWindowOpen]);
+
+  const openChatWindow = useCallback(async () => {
+    if (!isTauri) return;
+    try {
+      const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+
+      const existing = await WebviewWindow.getByLabel('chat');
+      if (existing) {
+        await existing.show();
+        await existing.setFocus();
+        setChatWindowOpen(true);
+        return;
+      }
+
+      const chatWindow = new WebviewWindow('chat', {
+        url: 'index.html?view=chat',
+        title: 'Permagent Chat',
+        width: 480,
+        height: 700,
+        minWidth: 360,
+        minHeight: 400,
+        center: true,
+        decorations: true,
+        resizable: true,
+        titleBarStyle: 'overlay',
+        hiddenTitle: true,
+      });
+
+      chatWindow.once('tauri://created', () => setChatWindowOpen(true));
+      chatWindow.once('tauri://error', (e) => {
+        console.error('Chat window error:', e);
+        setChatWindowOpen(false);
+      });
+    } catch (e) {
+      console.error('Failed to open chat window:', e);
+    }
+  }, []);
+
+  if (chatWindowOpen) return null;
 
   return (
     <button onClick={openChatWindow} style={{
