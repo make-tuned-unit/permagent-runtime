@@ -268,6 +268,14 @@ pub struct RecalledMemory {
 pub fn render_ambient_context(digest: &Digest) -> String {
     let mut parts = Vec::new();
 
+    parts.push(
+        "You have live awareness of the user's activity across the Permagent desktop app. \
+         You can see their terminal commands, working directories, browser navigation, \
+         and project context in real time. Use this information naturally when answering \
+         — do not claim you cannot see their terminal or browser. The data below is current."
+            .to_string(),
+    );
+
     // <live_state>
     let ls = &digest.live_state;
     let mut live_lines = Vec::new();
@@ -320,7 +328,9 @@ pub fn render_ambient_context(digest: &Digest) -> String {
         parts.push(format!("<relevant_memories>\n{}\n</relevant_memories>", lines.join("\n")));
     }
 
-    if parts.is_empty() {
+    // The first element is always the preamble — only emit if there's
+    // at least one data section beyond it.
+    if parts.len() <= 1 {
         return String::new();
     }
 
