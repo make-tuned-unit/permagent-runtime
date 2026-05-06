@@ -48,11 +48,14 @@ export function ChatLauncher() {
         center: true,
         decorations: true,
         resizable: true,
-        titleBarStyle: 'overlay',
-        hiddenTitle: true,
+        focus: true,
       });
 
-      chatWindow.once('tauri://created', () => setChatWindowOpen(true));
+      chatWindow.once('tauri://created', async () => {
+        setChatWindowOpen(true);
+        // Ensure chat window comes to front above the main window
+        await chatWindow.setFocus();
+      });
       chatWindow.once('tauri://error', (e) => {
         console.error('Chat window error:', e);
         setChatWindowOpen(false);

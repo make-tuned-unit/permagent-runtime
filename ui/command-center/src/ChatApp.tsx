@@ -101,13 +101,7 @@ export default function ChatApp() {
       display: 'flex', flexDirection: 'column',
       fontFamily: font.body,
     }}>
-      {/* Blank drag region for macOS traffic lights */}
-      <div data-tauri-drag-region style={{
-        height: 28, flexShrink: 0,
-        cursor: 'grab',
-      }} />
-
-      {/* Toolbar below traffic lights */}
+      {/* Toolbar */}
       <div style={{
         height: 36, flexShrink: 0,
         display: 'flex', alignItems: 'center',
