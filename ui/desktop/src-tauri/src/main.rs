@@ -38,9 +38,12 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // Only stop daemon when the main window closes, not the chat window
             if let tauri::WindowEvent::Destroyed = event {
-                let handle = window.app_handle().clone();
-                daemon::stop_daemon(&handle);
+                if window.label() == "main" {
+                    let handle = window.app_handle().clone();
+                    daemon::stop_daemon(&handle);
+                }
             }
         });
 

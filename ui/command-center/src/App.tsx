@@ -6,7 +6,7 @@ import { SettingsView } from './components/settings/SettingsView';
 import { WorkspaceRenderer } from './components/workspaces/WorkspaceRenderer';
 import { WizardShell } from './components/wizard/WizardShell';
 import { Splash } from './components/splash/Splash';
-import { ChatWidget } from './components/chat/ChatWidget';
+import { ChatLauncher } from './components/chat/ChatLauncher';
 import { api } from './lib/api';
 
 function MainContent() {
@@ -118,7 +118,7 @@ function App() {
       <main className="flex-1 min-w-0 overflow-hidden relative">
         <MainContent />
       </main>
-      <ChatWidget />
+      <ChatLauncher />
     </div>
   );
 }
