@@ -268,38 +268,43 @@ pub struct RecalledMemory {
 pub fn render_ambient_context(digest: &Digest) -> String {
     let mut parts = Vec::new();
 
-    parts.push(
-        "IMPORTANT INSTRUCTION: You have an integrated activity feed from the user's desktop. \
-         The data below is LIVE — it updates in real time as they use the app.\n\n\
-         Rules for responding about user activity:\n\
-         - Answer questions about their terminal, browser, or project DIRECTLY from this data.\n\
-         - Lead with what you know. Say \"You're working in ~/dev/canon\" not \"I can see you navigated to...\".\n\
-         - NEVER say \"I can't see your terminal\" or \"I don't have access to your screen.\" You DO have access via this feed.\n\
-         - NEVER suggest sharing screenshots, pasting output, or telling you what they're doing. You already know.\n\
-         - If they ask \"what am I working on?\" — answer with the project directory and recent commands. That's the answer.\n\
-         - The working directory IS the project. ~/dev/canon means they're working on the Canon project.\n\
-         - Keep answers short and direct. Don't list what you can't see."
-            .to_string(),
-    );
+    // Build live_state first so we can compute freshness
+    let ls = &digest.live_state;
+    let is_fresh = ls.events_in_last_5_minutes > 0;
+    let has_terminal = ls.last_terminal_cwd.is_some() || ls.last_terminal_command.is_some();
+    let has_browser = ls.last_browser_url.is_some();
+
+    // Preamble with unmissable signal
+    parts.push(format!(
+        "LIVE_ACTIVITY_AVAILABLE: true\n\
+         ACTIVITY_CURRENT: {}\n\
+         TERMINAL_VISIBLE: {}\n\
+         BROWSER_VISIBLE: {}\n\n\
+         You HAVE real-time access to the user's terminal, browser, and project activity. \
+         The live_state below updates every time they run a command or navigate a page. \
+         Always use it. Never say \"I can't see your terminal\" or suggest sharing screenshots. \
+         When asked what they're working on, answer directly: state the project directory and recent commands. \
+         Keep it short.",
+        is_fresh, has_terminal, has_browser,
+    ));
 
     // <live_state>
-    let ls = &digest.live_state;
     let mut live_lines = Vec::new();
     if let Some(ref pid) = ls.active_project_id {
-        live_lines.push(format!("You are currently working in: {} (project:{}).",
-            pid.strip_prefix("project:").unwrap_or(pid), pid.strip_prefix("project:").unwrap_or(pid)));
+        live_lines.push(format!("PROJECT: {}",
+            pid.strip_prefix("project:").unwrap_or(pid)));
     }
     if let Some(ref cwd) = ls.last_terminal_cwd {
-        live_lines.push(format!("Terminal working directory: {}.", cwd));
+        live_lines.push(format!("TERMINAL_CWD: {}", cwd));
     }
     if let Some(ref cmd) = ls.last_terminal_command {
-        live_lines.push(format!("Recent terminal command: {}.", cmd));
+        live_lines.push(format!("TERMINAL_LAST_COMMAND: {}", cmd));
     }
     if let Some(ref url) = ls.last_browser_url {
-        live_lines.push(format!("Last browser page: {}.", url));
+        live_lines.push(format!("BROWSER_URL: {}", url));
     }
     if ls.events_in_last_5_minutes > 0 {
-        live_lines.push(format!("Activity in last 5 minutes: {} events.", ls.events_in_last_5_minutes));
+        live_lines.push(format!("EVENTS_LAST_5MIN: {}", ls.events_in_last_5_minutes));
     }
     if !live_lines.is_empty() {
         parts.push(format!("<live_state>\n{}\n</live_state>", live_lines.join("\n")));
