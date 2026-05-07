@@ -484,3 +484,66 @@ Layout (top to bottom):
 - `npm run build`: PASS
 - `vitest run time-decay.test.ts`: 7 passed
 - Tauri bundle: PASS
+
+## Action Affordances Runtime Verification (commit d7e132c34)
+
+**Date:** 2026-05-07
+**Status:** Verified end-to-end on rebuilt desktop app
+
+### Trash action proof
+Test file: `/Users/jessesharratt/Downloads/permagent-test-trash-1778176790.txt`
+Pre-action: file at original location (71 bytes, created 14:59)
+
+API request:
+```
+POST /automation/finding/test-trash-file/action
+{"action": "trash", "run_id": "20260507_3"}
+```
+
+API response:
+```json
+{
+  "finding_id": "test-trash-file",
+  "action_taken": "trashed",
+  "size_recovered_bytes": 71,
+  "trash_path": "/Users/jessesharratt/.Trash/permagent-test-trash-1778176790.txt",
+  "timestamp": "2026-05-07T18:13:58.894628+00:00"
+}
+```
+
+Post-action: file gone from Downloads, present in ~/.Trash/
+Native Trash semantics confirmed via `trash` crate (macOS NSFileManager).
+
+### Sensitive path rejection
+Synthetic finding with path `/Users/jessesharratt/.ssh/id_rsa_test`
+
+API response:
+```json
+{"error": "Refusing to trash sensitive path: /Users/jessesharratt/.ssh/id_rsa_test"}
+```
+
+HTTP status: 403 Forbidden. Validation rejected BEFORE checking file existence.
+
+### Persistence across daemon restart
+Pre-restart finding state: `action=trashed, actioned_at=2026-05-07T18:13:58`
+Daemon killed and restarted.
+Post-restart finding state: `action=trashed, actioned_at=2026-05-07T18:13:58`
+Action state preserved in `~/.permagent/automation/findings/20260507_3.json`.
+
+### Scheduler events
+4 automation events captured in activity bus:
+```
+automation_job_started   scheduler  2026-05-07T18:08:42
+automation_job_started   scheduler  2026-05-07T18:08:51
+automation_job_completed scheduler  2026-05-07T18:08:59
+automation_job_completed scheduler  2026-05-07T18:10:36
+```
+
+### Brain state
+Baseline: 89 activity memories
+Post-verification: 91 (+2 automation_job_completed events)
+
+### Conclusion
+Action affordances verified end-to-end: native Trash via `trash` crate,
+sensitive path rejection, findings persistence across daemon restart,
+and scheduler event emission. Ready for use in Dispatch D recipes.
