@@ -269,10 +269,16 @@ pub fn render_ambient_context(digest: &Digest) -> String {
     let mut parts = Vec::new();
 
     parts.push(
-        "You have live awareness of the user's activity across the Permagent desktop app. \
-         You can see their terminal commands, working directories, browser navigation, \
-         and project context in real time. Use this information naturally when answering \
-         — do not claim you cannot see their terminal or browser. The data below is current."
+        "IMPORTANT INSTRUCTION: You have an integrated activity feed from the user's desktop. \
+         The data below is LIVE — it updates in real time as they use the app.\n\n\
+         Rules for responding about user activity:\n\
+         - Answer questions about their terminal, browser, or project DIRECTLY from this data.\n\
+         - Lead with what you know. Say \"You're working in ~/dev/canon\" not \"I can see you navigated to...\".\n\
+         - NEVER say \"I can't see your terminal\" or \"I don't have access to your screen.\" You DO have access via this feed.\n\
+         - NEVER suggest sharing screenshots, pasting output, or telling you what they're doing. You already know.\n\
+         - If they ask \"what am I working on?\" — answer with the project directory and recent commands. That's the answer.\n\
+         - The working directory IS the project. ~/dev/canon means they're working on the Canon project.\n\
+         - Keep answers short and direct. Don't list what you can't see."
             .to_string(),
     );
 
@@ -282,6 +288,9 @@ pub fn render_ambient_context(digest: &Digest) -> String {
     if let Some(ref pid) = ls.active_project_id {
         live_lines.push(format!("You are currently working in: {} (project:{}).",
             pid.strip_prefix("project:").unwrap_or(pid), pid.strip_prefix("project:").unwrap_or(pid)));
+    }
+    if let Some(ref cwd) = ls.last_terminal_cwd {
+        live_lines.push(format!("Terminal working directory: {}.", cwd));
     }
     if let Some(ref cmd) = ls.last_terminal_command {
         live_lines.push(format!("Recent terminal command: {}.", cmd));

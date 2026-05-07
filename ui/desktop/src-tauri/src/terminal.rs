@@ -81,6 +81,10 @@ pub async fn spawn_pty_session(
     cmd.arg("-l"); // login shell
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
+    // Remove env vars that prevent tools from running inside Permagent's terminal.
+    // CLAUDECODE is set by Claude Code sessions and blocks nested `claude` invocations.
+    cmd.env_remove("CLAUDECODE");
+    cmd.env_remove("CLAUDE_CODE_SESSION");
     if let Some(dir) = cwd {
         cmd.cwd(dir);
     }

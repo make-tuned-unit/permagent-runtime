@@ -45,7 +45,7 @@ pub async fn create_browser_webview(
     let nav_id = label.clone();
     let nav_app = app.clone();
     let builder = WebviewBuilder::new(&label, webview_url)
-        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15")
         .on_navigation(move |nav_url: &url::Url| {
             let _ = nav_app.emit(
                 "browser_navigated",
