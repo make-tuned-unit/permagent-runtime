@@ -207,6 +207,8 @@ async fn delete_schedule(
     Path(id): Path<String>,
 ) -> Result<StatusCode, ErrorResponse> {
     let scheduler = state.scheduler();
+    // Record deletion so starter recipes don't get re-installed on restart
+    crate::automation::starters::record_starter_deletion(&id);
     scheduler
         .remove_scheduled_job(&id, true)
         .await

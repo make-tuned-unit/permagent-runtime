@@ -160,6 +160,9 @@ impl AppState {
             .await;
         agent_manager.set_persona(persona.clone()).await;
 
+        // Seed starter recipes (Workspace Snapshot, Storage Insights) on first run.
+        crate::automation::starters::seed_starter_recipes(agent_manager.scheduler().as_ref()).await;
+
         // Load or generate daemon token for /activity/emit auth.
         let daemon_token = load_or_create_daemon_token();
 

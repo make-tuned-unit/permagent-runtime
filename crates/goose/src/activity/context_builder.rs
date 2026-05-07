@@ -381,6 +381,18 @@ fn render_event_summary(event: &ActivityEvent) -> String {
             let dur = event.payload.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
             format!("Chat turn completed ({}ms)", dur)
         }
+        ActivityEventType::AutomationJobStarted => {
+            let name = event.payload.get("job_name").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("Automation '{}' started", name)
+        }
+        ActivityEventType::AutomationJobCompleted => {
+            let name = event.payload.get("job_name").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("Automation '{}' completed", name)
+        }
+        ActivityEventType::AutomationJobFailed => {
+            let name = event.payload.get("job_name").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("Automation '{}' failed", name)
+        }
         _ => format!("{:?}", event.event_type),
     }
 }

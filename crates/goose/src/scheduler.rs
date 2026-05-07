@@ -254,6 +254,12 @@ impl Scheduler {
                     tasks.insert(task_job_id.clone(), cancel_token.clone());
                 }
 
+                // Emit job started activity event
+                crate::events::activity::emit_activity(
+                    crate::events::activity::automation_job_started(&task_job_id, &task_job_id),
+                );
+
+                let job_start_instant = std::time::Instant::now();
                 let brain_snapshot = brain_for_task.read().await.clone();
                 let persona_snapshot = persona_for_task.read().await.clone();
                 let ac_snapshot = agent_config_for_task.read().await.clone();
@@ -286,10 +292,29 @@ impl Scheduler {
                     tracing::error!("Failed to persist job completion: {}", e);
                 }
 
+                let duration_ms = job_start_instant.elapsed().as_millis() as u64;
                 match result {
-                    Ok(_) => tracing::info!("Job '{}' completed", task_job_id),
+                    Ok(ref session_id) => {
+                        tracing::info!("Job '{}' completed", task_job_id);
+                        crate::events::activity::emit_activity(
+                            crate::events::activity::automation_job_completed(
+                                &task_job_id,
+                                &task_job_id,
+                                session_id,
+                                duration_ms,
+                                0, // message count not easily available here
+                            ),
+                        );
+                    }
                     Err(ref e) => {
                         tracing::error!("Job '{}' failed: {}", task_job_id, e);
+                        crate::events::activity::emit_activity(
+                            crate::events::activity::automation_job_failed(
+                                &task_job_id,
+                                &task_job_id,
+                                &e.to_string(),
+                            ),
+                        );
                         #[cfg(feature = "telemetry")]
                         crate::posthog::emit_error("scheduler_job_failed", &e.to_string());
                     }
@@ -645,6 +670,12 @@ impl Scheduler {
             tasks.insert(sched_id.to_string(), cancel_token.clone());
         }
 
+        // Emit job started activity event
+        crate::events::activity::emit_activity(
+            crate::events::activity::automation_job_started(sched_id, sched_id),
+        );
+
+        let job_start_instant = std::time::Instant::now();
         let brain_snapshot = self.brain.read().await.clone();
         let persona_snapshot = self.persona.read().await.clone();
         let ac_snapshot = self.agent_config.read().await.clone();
@@ -664,6 +695,8 @@ impl Scheduler {
             tasks.remove(sched_id);
         }
 
+        let duration_ms = job_start_instant.elapsed().as_millis() as u64;
+
         {
             let mut jobs_guard = self.jobs.lock().await;
             if let Some((_, job)) = jobs_guard.get_mut(sched_id) {
@@ -677,12 +710,24 @@ impl Scheduler {
         persist_jobs(&self.storage_path, &self.jobs).await?;
 
         match result {
-            Ok(session_id) => Ok(session_id),
-            Err(e) => Err(SchedulerError::AnyhowError(anyhow!(
-                "Job '{}' failed: {}",
-                sched_id,
-                e
-            ))),
+            Ok(session_id) => {
+                crate::events::activity::emit_activity(
+                    crate::events::activity::automation_job_completed(
+                        sched_id, sched_id, &session_id, duration_ms, 0,
+                    ),
+                );
+                Ok(session_id)
+            }
+            Err(e) => {
+                crate::events::activity::emit_activity(
+                    crate::events::activity::automation_job_failed(sched_id, sched_id, &e.to_string()),
+                );
+                Err(SchedulerError::AnyhowError(anyhow!(
+                    "Job '{}' failed: {}",
+                    sched_id,
+                    e
+                )))
+            }
         }
     }
 

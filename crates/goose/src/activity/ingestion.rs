@@ -274,6 +274,9 @@ fn event_type_str(t: &ActivityEventType) -> &'static str {
         ActivityEventType::AgentContextProbed => "agent_context_probed",
         ActivityEventType::TerminalSessionStarted => "terminal_session_started",
         ActivityEventType::TerminalSessionEnded => "terminal_session_ended",
+        ActivityEventType::AutomationJobStarted => "automation_job_started",
+        ActivityEventType::AutomationJobCompleted => "automation_job_completed",
+        ActivityEventType::AutomationJobFailed => "automation_job_failed",
     }
 }
 
@@ -360,6 +363,24 @@ fn render_content(event: &ActivityEvent) -> String {
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0);
             format!("Edited {} ({} lines changed).", path, lines)
+        }
+        ActivityEventType::AutomationJobStarted => {
+            let name = p.get("job_name").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("Started scheduled automation '{}'.", name)
+        }
+        ActivityEventType::AutomationJobCompleted => {
+            let name = p.get("job_name").and_then(|v| v.as_str()).unwrap_or("?");
+            let dur = p.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+            let msgs = p.get("message_count").and_then(|v| v.as_u64()).unwrap_or(0);
+            format!(
+                "Automation '{}' completed in {}ms — {} messages.",
+                name, dur, msgs
+            )
+        }
+        ActivityEventType::AutomationJobFailed => {
+            let name = p.get("job_name").and_then(|v| v.as_str()).unwrap_or("?");
+            let err = p.get("error").and_then(|v| v.as_str()).unwrap_or("unknown error");
+            format!("Automation '{}' failed: {}.", name, truncate(err, 200))
         }
         _ => format!(
             "{} event from {:?}.",

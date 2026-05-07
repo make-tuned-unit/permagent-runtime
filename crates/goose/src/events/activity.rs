@@ -8,7 +8,8 @@
 //!
 //! **Always** (substantive — will become Brain memory in Phase 2):
 //!   ChatTurnCompleted, TerminalCommandCompleted, FileEdited,
-//!   ProjectSelected, SkillExecuted, IntegrationTokenRefreshed
+//!   ProjectSelected, SkillExecuted, IntegrationTokenRefreshed,
+//!   AutomationJobCompleted, AutomationJobFailed
 //!
 //! **Aggregated** (rolled up over time windows):
 //!   BrowserNavigated, BrowserFormSubmitted
@@ -16,7 +17,8 @@
 //! **Ephemeral** (live-only, never persisted):
 //!   ChatTurnStarted, BrowserSessionStarted, BrowserSessionEnded,
 //!   FileOpened, ProjectOpened, TerminalCommandStarted,
-//!   TerminalSessionStarted, TerminalSessionEnded, AgentContextProbed
+//!   TerminalSessionStarted, TerminalSessionEnded, AgentContextProbed,
+//!   AutomationJobStarted
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -46,6 +48,9 @@ pub enum ActivityEventType {
     SkillExecuted,
     IntegrationTokenRefreshed,
     AgentContextProbed,
+    AutomationJobStarted,
+    AutomationJobCompleted,
+    AutomationJobFailed,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -60,6 +65,7 @@ pub enum SourceSurface {
     SkillsEngine,
     Agent,
     External,
+    Scheduler,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -124,7 +130,9 @@ fn default_tier(event_type: &ActivityEventType) -> EventTier {
         | ActivityEventType::FileEdited
         | ActivityEventType::ProjectSelected
         | ActivityEventType::SkillExecuted
-        | ActivityEventType::IntegrationTokenRefreshed => EventTier::Always,
+        | ActivityEventType::IntegrationTokenRefreshed
+        | ActivityEventType::AutomationJobCompleted
+        | ActivityEventType::AutomationJobFailed => EventTier::Always,
 
         ActivityEventType::BrowserNavigated
         | ActivityEventType::BrowserFormSubmitted => EventTier::Aggregated,
@@ -137,7 +145,8 @@ fn default_tier(event_type: &ActivityEventType) -> EventTier {
         | ActivityEventType::TerminalCommandStarted
         | ActivityEventType::TerminalSessionStarted
         | ActivityEventType::TerminalSessionEnded
-        | ActivityEventType::AgentContextProbed => EventTier::Ephemeral,
+        | ActivityEventType::AgentContextProbed
+        | ActivityEventType::AutomationJobStarted => EventTier::Ephemeral,
     }
 }
 
@@ -214,6 +223,49 @@ pub fn chat_turn_completed(
         }),
     )
     .with_session(session_id)
+}
+
+pub fn automation_job_started(job_id: &str, job_name: &str) -> ActivityEvent {
+    ActivityEvent::new(
+        ActivityEventType::AutomationJobStarted,
+        SourceSurface::Scheduler,
+        serde_json::json!({
+            "job_id": job_id,
+            "job_name": job_name,
+        }),
+    )
+}
+
+pub fn automation_job_completed(
+    job_id: &str,
+    job_name: &str,
+    session_id: &str,
+    duration_ms: u64,
+    message_count: usize,
+) -> ActivityEvent {
+    ActivityEvent::new(
+        ActivityEventType::AutomationJobCompleted,
+        SourceSurface::Scheduler,
+        serde_json::json!({
+            "job_id": job_id,
+            "job_name": job_name,
+            "session_id": session_id,
+            "duration_ms": duration_ms,
+            "message_count": message_count,
+        }),
+    )
+}
+
+pub fn automation_job_failed(job_id: &str, job_name: &str, error: &str) -> ActivityEvent {
+    ActivityEvent::new(
+        ActivityEventType::AutomationJobFailed,
+        SourceSurface::Scheduler,
+        serde_json::json!({
+            "job_id": job_id,
+            "job_name": job_name,
+            "error": error,
+        }),
+    )
 }
 
 #[cfg(test)]

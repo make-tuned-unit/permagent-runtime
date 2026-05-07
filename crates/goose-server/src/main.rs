@@ -1,3 +1,4 @@
+mod automation;
 mod commands;
 mod configuration;
 mod error;

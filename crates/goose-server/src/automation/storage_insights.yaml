@@ -1,0 +1,48 @@
+version: "1.0.0"
+title: "Storage Insights"
+description: "Weekly cleanup opportunities — stale files, large downloads, space recovery"
+
+extensions:
+  - type: builtin
+    name: developer
+
+prompt: |
+  Analyze storage on this Mac and identify cleanup opportunities. Run these commands and synthesize findings:
+
+  1. Largest folders in home directory (excluding system paths):
+     ```
+     du -h -d 2 ~ 2>/dev/null | grep -v "/Library/" | sort -rh | head -20
+     ```
+
+  2. Large files in Downloads, Desktop, Documents (>50 MB):
+     ```
+     find ~/Downloads ~/Desktop ~/Documents \
+       -type f -size +50M 2>/dev/null \
+       -exec ls -lh {} \; | head -30
+     ```
+
+  3. Files in Downloads older than 30 days:
+     ```
+     find ~/Downloads -type f -mtime +30 2>/dev/null | head -50
+     ```
+
+  4. Overall disk usage:
+     ```
+     df -h / | tail -1
+     ```
+
+  Produce a structured report with two sections:
+
+  **Summary:** "Found approximately X GB of potential cleanup across Y items. Your disk is Z% full."
+
+  **Findings:** List each finding as a bullet with:
+  - What it is (file name, folder)
+  - Size
+  - Age (how old the file is)
+  - Location (full path)
+  - Recommendation: "Safe to remove" for obvious temporary files (installers, old downloads),
+    "Review before removing" for documents or project files
+
+  Focus on the highest-impact items first (largest files, oldest downloads).
+  Do NOT delete any files — only report findings.
+  Skip any files in sensitive directories (.ssh, .aws, .env files, credentials).
