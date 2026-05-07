@@ -74,6 +74,7 @@ socket2 = "0.6.1"
 fs2 = { workspace = true }
 rustls = { version = "0.23", features = ["aws_lc_rs"], optional = true }
 uuid = { workspace = true }
+trash = "5"
 rcgen = "0.13"
 axum-server = { version = "0.8.0" }
 aws-lc-rs = { version = "1.16.0", optional = true }

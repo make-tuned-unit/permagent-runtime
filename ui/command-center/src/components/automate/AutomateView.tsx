@@ -28,6 +28,18 @@ interface SessionInfo {
   outputTokens: number | null;
 }
 
+interface Finding {
+  id: string;
+  type: string;
+  path: string;
+  size_bytes: number;
+  age_days: number | null;
+  recommendation: string;
+  action_taken: string | null;
+  actioned_at: string | null;
+  size_recovered_bytes: number | null;
+}
+
 type Tab = 'runs' | 'automations';
 
 // Cron presets for the New Automation modal
@@ -296,6 +308,72 @@ function RunRow({ run, expanded, onToggle }: {
   expanded: boolean;
   onToggle: () => void;
 }) {
+  const [findings, setFindings] = useState<Finding[]>([]);
+  const [loadingFindings, setLoadingFindings] = useState(false);
+  const [actionInFlight, setActionInFlight] = useState<string | null>(null);
+
+  const token = useRef<string | null>(null);
+  useEffect(() => {
+    // Load daemon token for auth
+    try {
+      const stored = localStorage.getItem('daemon_token');
+      if (stored) token.current = stored;
+    } catch { /* ignore */ }
+  }, []);
+
+  // Fetch findings when expanded
+  useEffect(() => {
+    if (!expanded) return;
+    let cancelled = false;
+    const fetchFindings = async () => {
+      setLoadingFindings(true);
+      try {
+        const headers: Record<string, string> = {};
+        if (token.current) headers['Authorization'] = `Bearer ${token.current}`;
+        const res = await fetch(`${API}/automation/run/${encodeURIComponent(run.id)}/findings`, { headers });
+        if (res.ok && !cancelled) {
+          const data = await res.json();
+          setFindings(data.findings || []);
+        }
+      } catch { /* ignore */ }
+      if (!cancelled) setLoadingFindings(false);
+    };
+    fetchFindings();
+    const interval = setInterval(fetchFindings, 5000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [expanded, run.id]);
+
+  const handleAction = async (findingId: string, action: string) => {
+    setActionInFlight(findingId);
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token.current) headers['Authorization'] = `Bearer ${token.current}`;
+      const res = await fetch(`${API}/automation/finding/${encodeURIComponent(findingId)}/action`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ action, run_id: run.id }),
+      });
+      if (res.ok) {
+        const result = await res.json();
+        setFindings(prev => prev.map(f =>
+          f.id === findingId
+            ? { ...f, action_taken: result.action_taken, actioned_at: result.timestamp, size_recovered_bytes: result.size_recovered_bytes }
+            : f
+        ));
+      } else {
+        const err = await res.json().catch(() => ({ error: 'Unknown error' }));
+        alert(err.error || `Action failed: ${res.status}`);
+      }
+    } catch (e) {
+      alert(`Action failed: ${e}`);
+    }
+    setActionInFlight(null);
+  };
+
+  const totalRecovered = findings
+    .filter(f => f.action_taken === 'trashed')
+    .reduce((sum, f) => sum + (f.size_recovered_bytes || 0), 0);
+  const allActioned = findings.length > 0 && findings.every(f => f.action_taken !== null);
+
   return (
     <div style={{
       borderRadius: radius.md,
@@ -336,10 +414,132 @@ function RunRow({ run, expanded, onToggle }: {
             <div>Messages: <span style={{ color: color.text }}>{run.messageCount}</span></div>
             <div>Tokens: <span style={{ color: color.text }}>{run.totalTokens ?? 0} total ({run.inputTokens ?? 0} in / {run.outputTokens ?? 0} out)</span></div>
           </div>
+
+          {/* Findings list */}
+          {loadingFindings && findings.length === 0 && (
+            <div style={{ fontSize: 11, color: color.textDim, marginTop: 12 }}>Loading findings...</div>
+          )}
+          {findings.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: color.textMuted, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>
+                Findings ({findings.length})
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {findings.map(f => (
+                  <FindingRow
+                    key={f.id}
+                    finding={f}
+                    actionInFlight={actionInFlight === f.id}
+                    onAction={(action) => handleAction(f.id, action)}
+                  />
+                ))}
+              </div>
+              {allActioned && totalRecovered > 0 && (
+                <div style={{
+                  marginTop: 12, padding: '8px 12px', borderRadius: radius.sm,
+                  background: 'rgba(91,209,127,0.08)', border: '1px solid rgba(91,209,127,0.2)',
+                  fontSize: 12, color: '#5BD17F',
+                }}>
+                  Recovered {formatBytes(totalRecovered)} across {findings.filter(f => f.action_taken === 'trashed').length} items.
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
   );
+}
+
+function FindingRow({ finding, actionInFlight, onAction }: {
+  finding: Finding;
+  actionInFlight: boolean;
+  onAction: (action: string) => void;
+}) {
+  const fileName = finding.path.split('/').pop() || finding.path;
+  const dirPath = finding.path.replace(/\/[^/]+$/, '').replace(/^\/Users\/[^/]+/, '~');
+
+  if (finding.action_taken === 'trashed') {
+    return (
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px',
+        borderRadius: radius.sm, background: 'rgba(91,209,127,0.05)',
+        border: '1px solid rgba(91,209,127,0.12)',
+      }}>
+        <span style={{ fontSize: 12, color: '#5BD17F' }}>Moved to Trash</span>
+        <span style={{ fontSize: 11, color: color.textDim, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {fileName}
+        </span>
+        {finding.size_recovered_bytes && (
+          <span style={{ fontSize: 11, color: '#5BD17F', fontFamily: font.mono }}>
+            +{formatBytes(finding.size_recovered_bytes)}
+          </span>
+        )}
+      </div>
+    );
+  }
+
+  if (finding.action_taken === 'kept' || finding.action_taken === 'skipped') {
+    return (
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px',
+        borderRadius: radius.sm, background: 'rgba(255,255,255,0.02)',
+        border: `1px solid ${color.border}`, opacity: 0.6,
+      }}>
+        <span style={{ fontSize: 12, color: color.textMuted }}>Kept</span>
+        <span style={{ fontSize: 11, color: color.textDim, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {fileName}
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px',
+      borderRadius: radius.sm, background: 'rgba(20,28,48,0.5)',
+      border: `1px solid ${color.border}`,
+    }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 12, fontWeight: 500, color: color.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {fileName}
+        </div>
+        <div style={{ fontSize: 10, color: color.textDim, fontFamily: font.mono, marginTop: 2 }}>
+          {dirPath} &middot; {formatBytes(finding.size_bytes)}
+          {finding.age_days != null && <> &middot; {finding.age_days}d old</>}
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+        <button
+          onClick={() => onAction('trash')}
+          disabled={actionInFlight}
+          style={{
+            padding: '3px 8px', borderRadius: radius.sm,
+            background: 'rgba(255,100,100,0.1)', border: '1px solid rgba(255,100,100,0.2)',
+            color: '#ff6b6b', fontSize: 10, fontWeight: 600, cursor: actionInFlight ? 'wait' : 'pointer',
+            fontFamily: font.body, opacity: actionInFlight ? 0.5 : 1,
+          }}
+        >{actionInFlight ? '...' : 'Move to Trash'}</button>
+        <button
+          onClick={() => onAction('keep')}
+          disabled={actionInFlight}
+          style={{
+            padding: '3px 8px', borderRadius: radius.sm,
+            background: 'rgba(255,255,255,0.05)', border: `1px solid ${color.border}`,
+            color: color.textMuted, fontSize: 10, fontWeight: 500, cursor: actionInFlight ? 'wait' : 'pointer',
+            fontFamily: font.body, opacity: actionInFlight ? 0.5 : 1,
+          }}
+        >Keep</button>
+      </div>
+    </div>
+  );
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
 function EmptyAutomations({ onNew }: { onNew: () => void }) {
