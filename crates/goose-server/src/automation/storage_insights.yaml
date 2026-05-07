@@ -1,6 +1,6 @@
 version: "1.0.0"
-title: "Storage Insights"
-description: "Weekly cleanup opportunities — stale files, large downloads, space recovery"
+title: "Weekly Storage Cleanup"
+description: "Finds stale files, large downloads, and cleanup opportunities across your Downloads, Desktop, and Documents."
 
 extensions:
   - type: builtin
@@ -31,18 +31,38 @@ prompt: |
      df -h / | tail -1
      ```
 
-  Produce a structured report with two sections:
+  Produce a report with two parts:
+
+  PART 1 — Human-readable summary:
 
   **Summary:** "Found approximately X GB of potential cleanup across Y items. Your disk is Z% full."
 
-  **Findings:** List each finding as a bullet with:
-  - What it is (file name, folder)
-  - Size
-  - Age (how old the file is)
-  - Location (full path)
-  - Recommendation: "Safe to remove" for obvious temporary files (installers, old downloads),
-    "Review before removing" for documents or project files
+  Then list key findings as bullets with file name, size, age, location, and recommendation.
 
-  Focus on the highest-impact items first (largest files, oldest downloads).
-  Do NOT delete any files — only report findings.
-  Skip any files in sensitive directories (.ssh, .aws, .env files, credentials).
+  PART 2 — Structured findings block:
+
+  After the human-readable report, output a findings block in this exact format. This block will be parsed by Permagent to create actionable items with Trash/Keep buttons.
+
+  <findings>
+  [
+    {
+      "id": "finding-001",
+      "type": "stale_file",
+      "path": "/full/path/to/file.ext",
+      "size_bytes": 256000000,
+      "age_days": 45,
+      "recommendation": "Safe to remove"
+    }
+  ]
+  </findings>
+
+  Rules for the findings block:
+  - Use sequential IDs: finding-001, finding-002, etc.
+  - type must be one of: "stale_file", "large_file", "duplicate"
+  - path must be the FULL absolute path
+  - size_bytes must be in bytes (not MB or GB)
+  - age_days is optional (null if unknown)
+  - recommendation must be "Safe to remove" or "Review before removing"
+  - Include at most 20 findings, prioritized by size (largest first)
+  - Do NOT include files in .ssh, .aws, .gnupg, .env, credentials, or keychain paths
+  - Do NOT delete any files — only report findings

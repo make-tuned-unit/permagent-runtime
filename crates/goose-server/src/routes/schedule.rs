@@ -45,8 +45,16 @@ pub struct UpdateScheduleRequest {
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
+pub struct EnrichedJob {
+    #[serde(flatten)]
+    job: ScheduledJob,
+    display_name: Option<String>,
+    description: Option<String>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct ListSchedulesResponse {
-    jobs: Vec<ScheduledJob>,
+    jobs: Vec<EnrichedJob>,
 }
 
 // Response for the kill endpoint
@@ -185,7 +193,22 @@ async fn list_schedules(
     let scheduler = state.scheduler();
 
     let jobs = scheduler.list_scheduled_jobs().await;
-    Ok(Json(ListSchedulesResponse { jobs }))
+    let enriched: Vec<EnrichedJob> = jobs
+        .into_iter()
+        .map(|job| {
+            // Read recipe title/description from the YAML file (small files, sync is fine)
+            let (display_name, description) = std::fs::read_to_string(&job.source)
+                .ok()
+                .and_then(|content| {
+                    let recipe: Recipe = serde_yaml::from_str(&content).ok()?;
+                    let desc = if recipe.description.is_empty() { None } else { Some(recipe.description) };
+                    Some((Some(recipe.title), desc))
+                })
+                .unwrap_or((None, None));
+            EnrichedJob { job, display_name, description }
+        })
+        .collect();
+    Ok(Json(ListSchedulesResponse { jobs: enriched }))
 }
 
 #[utoipa::path(

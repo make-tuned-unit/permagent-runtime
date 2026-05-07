@@ -1172,6 +1172,50 @@ async fn execute_job(
         }
     }
 
+    // ── Phase 5: Extract structured findings from agent output ──
+    // If the agent's response contains a <findings>[...]</findings> block,
+    // parse it and store as actionable findings for the Automate tab UI.
+    {
+        let full_output = conversation
+            .messages()
+            .iter()
+            .filter(|m| m.role == rmcp::model::Role::Assistant)
+            .map(|m| m.as_concat_text())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if let Some(start) = full_output.find("<findings>") {
+            if let Some(end) = full_output.find("</findings>") {
+                let json_str = &full_output[start + "<findings>".len()..end].trim();
+                match serde_json::from_str::<Vec<serde_json::Value>>(json_str) {
+                    Ok(findings) => {
+                        let findings_dir = std::env::var("HOME")
+                            .map(|h| std::path::PathBuf::from(h).join(".permagent/automation/findings"))
+                            .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/findings"));
+                        let _ = std::fs::create_dir_all(&findings_dir);
+                        let findings_path = findings_dir.join(format!("{}.json", session.id));
+                        let findings_data = serde_json::json!({
+                            "run_id": session.id,
+                            "findings": findings,
+                        });
+                        let _ = std::fs::write(&findings_path, serde_json::to_string_pretty(&findings_data).unwrap_or_default());
+                        tracing::info!(
+                            target: "permagentd::automation",
+                            "Extracted {} findings from scheduled job {} (session {})",
+                            findings.len(), job_id, session.id
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "permagentd::automation",
+                            "Failed to parse findings JSON from job {}: {}",
+                            job_id, e
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     agent
         .config
         .session_manager

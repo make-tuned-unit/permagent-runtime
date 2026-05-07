@@ -1,6 +1,6 @@
 version: "1.0.0"
-title: "Workspace Snapshot"
-description: "Where you left off — files modified yesterday and current device state"
+title: "Daily Workspace Snapshot"
+description: "A morning briefing showing what you worked on yesterday and how your device is running."
 
 extensions:
   - type: builtin
