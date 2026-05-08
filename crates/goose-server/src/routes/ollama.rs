@@ -231,6 +231,154 @@ async fn set_librarian_schedule(
     Ok(Json(schedule))
 }
 
+// ── Librarian warm-load scheduler ────────────────────────────────────
+// Behavior A: warm for the full window duration, then let Ollama unload.
+// TODO(Behavior C): Once the Librarian exposes a "queue empty / done"
+// signal, switch to: warm at window start, run jobs, unload as soon as
+// queue is empty. Tracked as Librarian Phase 2 work.
+
+/// Returns (start_hour, start_minute, duration_minutes) from the schedule.
+fn parse_schedule_time(schedule: &LibrarianSchedule) -> Option<(u32, u32, u32)> {
+    let parts: Vec<&str> = schedule.start_time.split(':').collect();
+    if parts.len() != 2 { return None; }
+    let h: u32 = parts[0].parse().ok()?;
+    let m: u32 = parts[1].parse().ok()?;
+    Some((h, m, schedule.duration_minutes))
+}
+
+/// Check if the current local time is within the configured window.
+fn is_in_window(schedule: &LibrarianSchedule) -> bool {
+    let (sh, sm, dur) = match parse_schedule_time(schedule) {
+        Some(v) => v,
+        None => return false,
+    };
+    let now = chrono::Local::now();
+    let today = now.date_naive();
+    let naive_start = today.and_hms_opt(sh, sm, 0).unwrap_or_default();
+    let tz = now.timezone();
+    if let Some(start) = naive_start.and_local_timezone(tz).single() {
+        let end = start + chrono::Duration::minutes(dur as i64);
+        now >= start && now < end
+    } else {
+        false
+    }
+}
+
+/// Background loop: ticks once per minute, warm-loads if in window.
+pub async fn librarian_scheduler_loop() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARMED_TODAY: AtomicBool = AtomicBool::new(false);
+
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+    loop {
+        interval.tick().await;
+
+        let schedule = load_schedule();
+        if !schedule.enabled {
+            WARMED_TODAY.store(false, Ordering::Relaxed);
+            continue;
+        }
+
+        let in_window = is_in_window(&schedule);
+
+        if in_window && !WARMED_TODAY.load(Ordering::Relaxed) {
+            tracing::info!(
+                model = %schedule.model,
+                duration = schedule.duration_minutes,
+                "Librarian window active — warm-loading model"
+            );
+
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(120))
+                .build()
+                .unwrap_or_default();
+
+            let keep_alive_secs = schedule.duration_minutes as u64 * 60;
+            let body = serde_json::json!({
+                "model": schedule.model,
+                "prompt": "ok",
+                "stream": false,
+                "keep_alive": format!("{}s", keep_alive_secs),
+                "options": { "num_predict": 1 }
+            });
+
+            match client
+                .post(format!("{}/api/generate", OLLAMA_BASE))
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    tracing::info!(
+                        model = %schedule.model,
+                        keep_alive = keep_alive_secs,
+                        "Librarian model warm-loaded successfully"
+                    );
+                    WARMED_TODAY.store(true, Ordering::Relaxed);
+
+                    // TODO(Phase 2): Run Librarian jobs here (list_undescribed + describe_memory loop)
+                    // Currently no job logic — warm-load only.
+                }
+                Ok(resp) => {
+                    let status = resp.status();
+                    tracing::warn!(model = %schedule.model, %status, "Librarian warm-load failed");
+                }
+                Err(e) => {
+                    tracing::warn!(model = %schedule.model, error = %e, "Ollama unreachable for Librarian warm-load");
+                }
+            }
+        }
+
+        // Reset the daily flag when we leave the window (handles DST, clock changes)
+        if !in_window && WARMED_TODAY.load(Ordering::Relaxed) {
+            WARMED_TODAY.store(false, Ordering::Relaxed);
+            tracing::debug!("Librarian window ended, reset warm flag for next cycle");
+        }
+    }
+}
+
+/// POST /api/librarian/run-now — manual trigger for warm-load + run
+async fn run_librarian_now() -> Result<Json<WarmLoadResponse>, ErrorResponse> {
+    let schedule = load_schedule();
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| ErrorResponse::internal(format!("HTTP client error: {}", e)))?;
+
+    // Warm for 30 minutes on manual trigger
+    let keep_alive_secs: u64 = 1800;
+    let body = serde_json::json!({
+        "model": schedule.model,
+        "prompt": "ok",
+        "stream": false,
+        "keep_alive": format!("{}s", keep_alive_secs),
+        "options": { "num_predict": 1 }
+    });
+
+    let resp = client
+        .post(format!("{}/api/generate", OLLAMA_BASE))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| ErrorResponse::internal(format!("Ollama unreachable: {}", e)))?;
+
+    if !resp.status().is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(ErrorResponse::internal(format!("Warm-load failed: {}", text)));
+    }
+
+    tracing::info!(model = %schedule.model, "Librarian manual run triggered");
+
+    // TODO(Phase 2): Actually invoke Librarian tools (list_undescribed + describe_memory loop)
+
+    Ok(Json(WarmLoadResponse {
+        success: true,
+        model: schedule.model,
+        keep_alive_secs,
+    }))
+}
+
 // ── Router ──────────────────────────────────────────────────────────
 
 pub fn routes(state: Arc<AppState>) -> Router {
@@ -239,5 +387,6 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/api/ollama/warm", post(ollama_warm))
         .route("/api/librarian/schedule", get(get_librarian_schedule))
         .route("/api/librarian/schedule", axum::routing::put(set_librarian_schedule))
+        .route("/api/librarian/run-now", post(run_librarian_now))
         .with_state(state)
 }
