@@ -177,6 +177,33 @@ async fn perform_action(
                 })));
             }
 
+            // Check for iCloud-evicted (dataless) files. These exist on disk
+            // but their content is in iCloud — macOS Finder refuses to trash
+            // them without downloading first. Skip gracefully.
+            #[cfg(target_os = "macos")]
+            {
+                use std::os::unix::fs::MetadataExt;
+                if let Ok(meta) = std::fs::metadata(file_path) {
+                    let flags = meta.mode(); // st_flags via MetadataExt
+                    // SF_DATALESS = 0x40000000 — file content is in iCloud
+                    let raw_flags = unsafe {
+                        let mut stat_buf: libc::stat = std::mem::zeroed();
+                        libc::stat(
+                            std::ffi::CString::new(file_path.to_str().unwrap_or(""))
+                                .unwrap_or_default()
+                                .as_ptr(),
+                            &mut stat_buf,
+                        );
+                        stat_buf.st_flags
+                    };
+                    if raw_flags & 0x40000000 != 0 {
+                        return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(ErrorBody {
+                            error: format!("Skipped — file is stored in iCloud and needs to be downloaded first: {}", finding_path),
+                        })));
+                    }
+                }
+            }
+
             let size = std::fs::metadata(file_path).map(|m| m.len()).unwrap_or(0);
             let file_name = file_path.file_name()
                 .and_then(|n| n.to_str()).unwrap_or("unknown").to_string();
