@@ -410,26 +410,51 @@ function RunRow({ run, displayName, expanded, onToggle }: {
         <div style={{ padding: '0 16px 16px', borderTop: `1px solid ${color.border}` }}>
           {loadingContent ? (
             <div style={{ fontSize: 12, color: color.textDim, marginTop: 12 }}>Loading results...</div>
-          ) : (
+          ) : findings.length > 0 ? (
+            /* Findings-first view: actionable cards are primary, report is secondary */
             <>
-              {/* Rendered report */}
+              <FindingsPanel findings={findings} actionInFlight={actionInFlight} onAction={handleAction} totalRecovered={totalRecovered} allActioned={allActioned} />
+              {reportText && <ReportToggle text={reportText} createdAt={run.createdAt} tokens={run.totalTokens} />}
+            </>
+          ) : (
+            /* No findings: show rendered report as primary content */
+            <>
               {reportText && (
                 <div style={{ marginTop: 12, maxHeight: 600, overflowY: 'auto' }}>
                   <RenderedReport text={reportText} />
                 </div>
               )}
-
-              {/* Grouped findings with big action buttons */}
-              {findings.length > 0 && (
-                <FindingsPanel findings={findings} actionInFlight={actionInFlight} onAction={handleAction} totalRecovered={totalRecovered} allActioned={allActioned} />
-              )}
-
-              {/* Metadata footer */}
               <div style={{ fontSize: 11, color: color.textDim, marginTop: 12, paddingTop: 8, borderTop: `1px solid ${color.border}` }}>
                 {new Date(run.createdAt).toLocaleString()} &middot; {run.totalTokens ?? 0} tokens
               </div>
             </>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Report Toggle (collapsed by default when findings exist) ────────
+
+function ReportToggle({ text, createdAt, tokens }: { text: string; createdAt: string; tokens: number | null }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ marginTop: 16 }}>
+      <button onClick={() => setOpen(!open)} style={{
+        display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0',
+        background: 'none', border: 'none', cursor: 'pointer', color: color.textDim,
+        fontSize: 11, fontFamily: font.body,
+      }}>
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}
+          style={{ transform: open ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 150ms' }}>
+          <path d="M9 18l6-6-6-6" />
+        </svg>
+        View full report &middot; {new Date(createdAt).toLocaleString()} &middot; {tokens ?? 0} tokens
+      </button>
+      {open && (
+        <div style={{ maxHeight: 400, overflowY: 'auto', marginTop: 4 }}>
+          <RenderedReport text={text} />
         </div>
       )}
     </div>
@@ -584,6 +609,14 @@ function groupFindings(findings: Finding[]): Map<string, Finding[]> {
   return groups;
 }
 
+const FOLDER_ICONS: Record<string, string> = {
+  'Desktop': '🖥️',
+  'Downloads': '📥',
+  'Documents': '📄',
+  'Developer Caches': '🔧',
+  'Other': '📁',
+};
+
 function FindingsPanel({ findings, actionInFlight, onAction, totalRecovered, allActioned }: {
   findings: Finding[];
   actionInFlight: string | null;
@@ -598,102 +631,113 @@ function FindingsPanel({ findings, actionInFlight, onAction, totalRecovered, all
     const items = groups.get(groupName) || [];
     const pending = items.filter(f => !f.action_taken);
     if (pending.length === 0) return;
-    if (!confirm(`Move ${pending.length} items from ${groupName} to Trash?`)) return;
-    for (const f of pending) {
-      onAction(f.id, 'trash');
-    }
+    if (!confirm(`Move ${pending.length} items from ${groupName} to Trash? You can restore them from Finder.`)) return;
+    for (const f of pending) onAction(f.id, 'trash');
   };
 
   const handleCleanAll = () => {
     const pending = findings.filter(f => !f.action_taken);
     if (pending.length === 0) return;
-    if (!confirm(`Move all ${pending.length} items to Trash? You can restore them from Finder's Trash.`)) return;
-    for (const f of pending) {
-      onAction(f.id, 'trash');
-    }
+    if (!confirm(`Move all ${pending.length} items to Trash? You can restore them from Finder.`)) return;
+    for (const f of pending) onAction(f.id, 'trash');
   };
 
   const totalPending = findings.filter(f => !f.action_taken).length;
   const totalPendingBytes = findings.filter(f => !f.action_taken).reduce((s, f) => s + f.size_bytes, 0);
 
   return (
-    <div style={{ marginTop: 20 }}>
-      {/* Summary bar */}
+    <div style={{ marginTop: 12 }}>
+      {/* Big summary card */}
       <div style={{
-        padding: '14px 18px', borderRadius: radius.md, marginBottom: 16,
-        background: 'rgba(0,213,255,0.06)', border: `1px solid ${color.borderHi}`,
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '20px 24px', borderRadius: radius.lg, marginBottom: 20,
+        background: allActioned
+          ? 'linear-gradient(135deg, rgba(91,209,127,0.12), rgba(91,209,127,0.04))'
+          : 'linear-gradient(135deg, rgba(0,213,255,0.1), rgba(141,68,174,0.06))',
+        border: `1px solid ${allActioned ? 'rgba(91,209,127,0.25)' : color.borderHi}`,
       }}>
-        <div>
-          <div style={{ fontSize: 14, fontWeight: 600, fontFamily: font.display }}>
-            {totalPending > 0 ? `${formatBytes(totalPendingBytes)} to clean up` : 'All cleaned up!'}
-          </div>
-          {totalRecovered > 0 && (
-            <div style={{ fontSize: 12, color: '#5BD17F', marginTop: 2 }}>
-              {formatBytes(totalRecovered)} recovered so far
-            </div>
-          )}
+        <div style={{ fontSize: 22, fontWeight: 700, fontFamily: font.display, color: allActioned ? '#5BD17F' : color.text }}>
+          {allActioned ? `${formatBytes(totalRecovered)} recovered` : `${formatBytes(totalPendingBytes)} to clean up`}
+        </div>
+        <div style={{ fontSize: 13, color: color.textMuted, marginTop: 4 }}>
+          {allActioned
+            ? `All ${findings.length} items cleaned. Files are in your Trash — restore anytime from Finder.`
+            : `${totalPending} items across ${groups.size} locations. Files move to Trash — always recoverable.`}
         </div>
         {totalPending > 0 && (
           <button onClick={handleCleanAll} style={{
-            padding: '10px 24px', borderRadius: radius.md,
+            marginTop: 14, padding: '12px 32px', borderRadius: radius.md,
             background: color.cyan, color: '#000', fontWeight: 700,
-            fontSize: 13, border: 'none', cursor: 'pointer', fontFamily: font.body,
-          }}>Clean Up All ({totalPending} items)</button>
+            fontSize: 14, border: 'none', cursor: 'pointer', fontFamily: font.body,
+          }}>Clean Up All — {formatBytes(totalPendingBytes)}</button>
+        )}
+        {!allActioned && totalRecovered > 0 && (
+          <div style={{ fontSize: 12, color: '#5BD17F', marginTop: 8 }}>
+            {formatBytes(totalRecovered)} recovered so far
+          </div>
         )}
       </div>
 
-      {/* Category groups */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {/* Folder cards */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {Array.from(groups.entries()).map(([groupName, items]) => {
           const pending = items.filter(f => !f.action_taken);
           const pendingBytes = pending.reduce((s, f) => s + f.size_bytes, 0);
           const groupRecovered = items.filter(f => f.action_taken === 'trashed').reduce((s, f) => s + (f.size_recovered_bytes || 0), 0);
           const isExpanded = expandedGroup === groupName;
           const allDone = pending.length === 0;
+          const icon = FOLDER_ICONS[groupName] || '📁';
 
           return (
             <div key={groupName} style={{
-              borderRadius: radius.md, overflow: 'hidden',
+              borderRadius: radius.lg, overflow: 'hidden',
               border: `1px solid ${allDone ? 'rgba(91,209,127,0.2)' : color.border}`,
               background: allDone ? 'rgba(91,209,127,0.03)' : 'rgba(20,28,48,0.5)',
             }}>
-              {/* Group header with big action button */}
-              <div style={{
-                padding: '14px 18px', display: 'flex', alignItems: 'center', gap: 12,
-              }}>
+              <div style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 14 }}>
+                {/* Folder icon — click to expand */}
                 <button onClick={() => setExpandedGroup(isExpanded ? null : groupName)} style={{
-                  background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: color.textDim,
-                }}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}
-                    style={{ transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 150ms' }}>
-                    <path d="M9 18l6-6-6-6" />
-                  </svg>
+                  background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                  fontSize: 28, lineHeight: 1, display: 'flex', alignItems: 'center',
+                  opacity: allDone ? 0.5 : 1,
+                }} title="View individual files">
+                  {icon}
                 </button>
+
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: allDone ? '#5BD17F' : color.text }}>
-                    {allDone ? `${groupName} — cleaned` : groupName}
+                  <div style={{ fontSize: 15, fontWeight: 600, fontFamily: font.display, color: allDone ? '#5BD17F' : color.text }}>
+                    {groupName}
                   </div>
-                  <div style={{ fontSize: 11, color: color.textDim, marginTop: 2, fontFamily: font.mono }}>
+                  <div style={{ fontSize: 12, color: color.textDim, marginTop: 2 }}>
                     {allDone
-                      ? `${items.length} items cleaned (${formatBytes(groupRecovered)} recovered)`
+                      ? `Cleaned — ${formatBytes(groupRecovered)} recovered`
                       : `${pending.length} items · ${formatBytes(pendingBytes)}`}
                   </div>
                 </div>
-                {!allDone && (
+
+                {/* Big clean button or done indicator */}
+                {allDone ? (
+                  <div style={{
+                    padding: '8px 16px', borderRadius: radius.md,
+                    background: 'rgba(91,209,127,0.1)', color: '#5BD17F',
+                    fontSize: 12, fontWeight: 600,
+                  }}>Done</div>
+                ) : (
                   <button onClick={() => handleCleanGroup(groupName)} style={{
-                    padding: '8px 20px', borderRadius: radius.md,
-                    background: 'rgba(255,100,100,0.12)', border: '1px solid rgba(255,100,100,0.25)',
-                    color: '#ff6b6b', fontWeight: 600, fontSize: 12, cursor: 'pointer', fontFamily: font.body,
+                    padding: '10px 22px', borderRadius: radius.md,
+                    background: color.cyan, color: '#000', fontWeight: 700,
+                    fontSize: 13, border: 'none', cursor: 'pointer', fontFamily: font.body,
                     whiteSpace: 'nowrap',
-                  }}>Clean Up {groupName}</button>
+                  }}>Clean Up — {formatBytes(pendingBytes)}</button>
                 )}
               </div>
 
-              {/* Expanded item list */}
+              {/* Expanded: individual files with keep/remove options */}
               {isExpanded && (
-                <div style={{ padding: '0 18px 14px', borderTop: `1px solid ${color.border}` }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 10 }}>
+                <div style={{ padding: '0 20px 16px', borderTop: `1px solid ${color.border}` }}>
+                  <div style={{ fontSize: 11, color: color.textDim, marginTop: 10, marginBottom: 8 }}>
+                    Uncheck items you want to keep before cleaning up.
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                     {items.map(f => <FindingRow key={f.id} finding={f} loading={actionInFlight === f.id} onAction={(a) => onAction(f.id, a)} />)}
                   </div>
                 </div>
@@ -702,21 +746,6 @@ function FindingsPanel({ findings, actionInFlight, onAction, totalRecovered, all
           );
         })}
       </div>
-
-      {allActioned && totalRecovered > 0 && (
-        <div style={{
-          marginTop: 16, padding: '14px 18px', borderRadius: radius.md,
-          background: 'rgba(91,209,127,0.08)', border: '1px solid rgba(91,209,127,0.2)',
-          textAlign: 'center',
-        }}>
-          <div style={{ fontSize: 15, fontWeight: 700, color: '#5BD17F', fontFamily: font.display }}>
-            All done! Recovered {formatBytes(totalRecovered)}
-          </div>
-          <div style={{ fontSize: 12, color: color.textMuted, marginTop: 4 }}>
-            Files moved to Trash. Restore anytime from Finder.
-          </div>
-        </div>
-      )}
     </div>
   );
 }
