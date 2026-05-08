@@ -368,9 +368,18 @@ function RunRow({ run, displayName, expanded, onToggle }: {
           : f));
       } else {
         const err = await res.json().catch(() => ({ error: 'Unknown error' }));
-        alert(err.error || `Action failed: ${res.status}`);
+        // Mark as skipped with error instead of blocking the whole batch
+        setFindings(prev => prev.map(f => f.id === findingId
+          ? { ...f, action_taken: 'skipped', actioned_at: new Date().toISOString() }
+          : f));
+        console.debug(`[automate] Skipped ${findingId}: ${err.error}`);
       }
-    } catch (e) { alert(`Action failed: ${e}`); }
+    } catch (e) {
+      setFindings(prev => prev.map(f => f.id === findingId
+        ? { ...f, action_taken: 'skipped', actioned_at: new Date().toISOString() }
+        : f));
+      console.debug(`[automate] Skipped ${findingId}: ${e}`);
+    }
     setActionInFlight(null);
   };
 
@@ -605,13 +614,20 @@ function groupFindings(findings: Finding[]): Map<string, Finding[]> {
   return groups;
 }
 
-const FOLDER_ICONS: Record<string, string> = {
-  'Desktop': '🖥️',
-  'Downloads': '📥',
-  'Documents': '📄',
-  'Developer Caches': '🔧',
-  'Other': '📁',
-};
+function FolderIcon({ name }: { name: string }) {
+  const iconColor = name === 'Desktop' ? color.cyan : name === 'Downloads' ? '#5BD17F' : name === 'Documents' ? color.purple : color.textMuted;
+  return (
+    <div style={{ width: 36, height: 36, borderRadius: 8, background: `${iconColor}15`, border: `1px solid ${iconColor}30`, display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+        {name === 'Developer Caches' ? (
+          <><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" /></>
+        ) : (
+          <><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></>
+        )}
+      </svg>
+    </div>
+  );
+}
 
 function FindingsPanel({ findings, actionInFlight, onAction, totalRecovered, allActioned }: {
   findings: Finding[];
@@ -681,7 +697,6 @@ function FindingsPanel({ findings, actionInFlight, onAction, totalRecovered, all
           const groupRecovered = items.filter(f => f.action_taken === 'trashed').reduce((s, f) => s + (f.size_recovered_bytes || 0), 0);
           const isExpanded = expandedGroup === groupName;
           const allDone = pending.length === 0;
-          const icon = FOLDER_ICONS[groupName] || '📁';
 
           return (
             <div key={groupName} style={{
@@ -693,10 +708,10 @@ function FindingsPanel({ findings, actionInFlight, onAction, totalRecovered, all
                 {/* Folder icon — click to expand */}
                 <button onClick={() => setExpandedGroup(isExpanded ? null : groupName)} style={{
                   background: 'none', border: 'none', cursor: 'pointer', padding: 0,
-                  fontSize: 28, lineHeight: 1, display: 'flex', alignItems: 'center',
+                  display: 'flex', alignItems: 'center',
                   opacity: allDone ? 0.5 : 1,
                 }} title="View individual files">
-                  {icon}
+                  <FolderIcon name={groupName} />
                 </button>
 
                 <div style={{ flex: 1 }}>

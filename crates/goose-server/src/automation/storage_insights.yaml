@@ -33,7 +33,7 @@ prompt: |
 
   Produce a report with two parts:
 
-  PART 1 — Human-readable summary:
+  PART 1 — Summary:
 
   **Summary:** "Found approximately X GB of potential cleanup across Y items. Your disk is Z% full."
 
@@ -63,6 +63,6 @@ prompt: |
   - size_bytes must be in bytes (not MB or GB)
   - age_days is optional (null if unknown)
   - recommendation must be "Safe to remove" or "Review before removing"
-  - Include at most 20 findings, prioritized by size (largest first)
+  - Include at most 40 findings, prioritized by size (largest first)
   - Do NOT include files in .ssh, .aws, .gnupg, .env, credentials, or keychain paths
   - Do NOT delete any files — only report findings
