@@ -279,6 +279,18 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
     },
 );
 
+/// Global Brain handle, set once by the daemon at startup.
+/// Platform extensions can access this without plumbing Brain through every layer.
+static GLOBAL_BRAIN: std::sync::OnceLock<std::sync::Arc<spectral::Brain>> = std::sync::OnceLock::new();
+
+pub fn set_global_brain(brain: std::sync::Arc<spectral::Brain>) {
+    let _ = GLOBAL_BRAIN.set(brain);
+}
+
+pub fn get_global_brain() -> Option<std::sync::Arc<spectral::Brain>> {
+    GLOBAL_BRAIN.get().cloned()
+}
+
 #[derive(Clone)]
 pub struct PlatformExtensionContext {
     pub extension_manager:

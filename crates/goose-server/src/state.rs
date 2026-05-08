@@ -139,6 +139,11 @@ impl AppState {
         // Wire Brain into scheduler so scheduled jobs get recall/remember.
         agent_manager.scheduler().set_brain(brain.clone()).await;
 
+        // Make Brain available to platform extensions (Librarian etc.)
+        if let Some(ref b) = brain {
+            permagent::agents::platform_extensions::set_global_brain(b.clone());
+        }
+
         // Load agent config (primary + workers) from ~/.permagent/agent.yaml
         let agent_config = permagent::config::agent_identity::load_shared_agent_config();
         let persona = {
