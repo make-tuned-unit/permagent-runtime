@@ -94,7 +94,7 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
 
   const handleSelectAgent = useCallback((id: string) => {
     setSelectedAgent(id);
-    setCameraMode('first-person');
+    setCameraMode('third-person');
   }, []);
 
   const handleModeChange = useCallback((mode: CameraMode) => {

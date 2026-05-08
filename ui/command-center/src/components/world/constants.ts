@@ -25,7 +25,7 @@ export const STATIONS: StationConfig[] = [
     name: 'Library',
     position: [10, 0, 0] as Vector3Tuple,
     iconType: 'scroll',
-    tooltip: 'Library',
+    tooltip: 'Library (Mezzanine) - The Brain',
   },
   {
     id: 'observatory',

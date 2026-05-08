@@ -52,13 +52,37 @@ const INITIAL_AGENTS: AgentState[] = [
     togaTrimColor: '#A78BFA',
     isHenry: false,
   },
+  {
+    id: 'librarian',
+    name: 'The Librarian',
+    role: 'agent',
+    position: { x: 16.5, y: 5.15, z: 0 },
+    activity: 'idle',
+    currentStation: null,
+    togaTrimColor: '#8B7E6F',
+    isHenry: false,
+  },
 ];
 
 function randomInterval(): number {
   return WANDER_INTERVAL_MIN + Math.random() * (WANDER_INTERVAL_MAX - WANDER_INTERVAL_MIN);
 }
 
-function pickRandomStation(currentStation: string | null): string {
+// Mezzanine waypoints for the Librarian (on the raised ring at y=5.15)
+const MEZZ_INNER_R = 14.5;
+const MEZZ_OUTER_R = 19;
+const MEZZ_Y = 5.15;
+const MEZZ_WAYPOINTS = Array.from({ length: 8 }, (_, i) => {
+  const angle = (i / 8) * Math.PI * 2;
+  const r = (MEZZ_INNER_R + MEZZ_OUTER_R) / 2;
+  return { id: `mezz-${i}`, x: Math.cos(angle) * r, z: Math.sin(angle) * r };
+});
+
+function pickRandomStation(currentStation: string | null, isLibrarian: boolean): string {
+  if (isLibrarian) {
+    const available = MEZZ_WAYPOINTS.filter((w) => w.id !== currentStation);
+    return available[Math.floor(Math.random() * available.length)].id;
+  }
   const available = STATIONS.filter((s) => s.id !== currentStation);
   const idx = Math.floor(Math.random() * (available.length + 1));
   if (idx === available.length) return 'center';
@@ -67,6 +91,8 @@ function pickRandomStation(currentStation: string | null): string {
 
 function getStationPosition(stationId: string): { x: number; y: number; z: number } {
   if (stationId === 'center') return { x: 0, y: 0, z: 0 };
+  const mezzWp = MEZZ_WAYPOINTS.find((w) => w.id === stationId);
+  if (mezzWp) return { x: mezzWp.x, y: MEZZ_Y, z: mezzWp.z };
   const station = STATIONS.find((s) => s.id === stationId);
   if (!station) return { x: 0, y: 0, z: 0 };
   return { x: station.position[0], y: 0, z: station.position[2] };
@@ -96,7 +122,7 @@ export function useAgentStates(): {
         setAgents((prev) => {
           const agent = prev.find((a) => a.id === agentId);
           if (agent && agent.activity === 'idle') {
-            const station = pickRandomStation(agent.currentStation);
+            const station = pickRandomStation(agent.currentStation, agentId === 'librarian');
             setAgentTarget(agentId, station);
           }
           return prev;
@@ -134,14 +160,14 @@ export function useAgentStates(): {
           if (dist < 0.3) {
             changed = true;
             targetsRef.current.delete(agent.id);
-            return { ...agent, activity: 'idle' as const, position: { x: target.x, y: 0, z: target.z } };
+            return { ...agent, activity: 'idle' as const, position: { x: target.x, y: target.y, z: target.z } };
           }
 
           const step = Math.min(WALK_SPEED * dt, dist);
           const nx = agent.position.x + (dx / dist) * step;
           const nz = agent.position.z + (dz / dist) * step;
           changed = true;
-          return { ...agent, position: { x: nx, y: 0, z: nz } };
+          return { ...agent, position: { x: nx, y: target.y, z: nz } };
         });
         return changed ? next : prev;
       });

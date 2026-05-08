@@ -15,6 +15,10 @@ const ORBIT_TARGET = new THREE.Vector3(0, 2, 0);
 const AUTO_ROTATE_DELAY = 5000;
 const TRANSITION_DURATION = 1.5;
 
+// Third-person offset: behind + above the agent
+const TP_OFFSET = new THREE.Vector3(0, 3, 6);
+const TP_LOOK_OFFSET = new THREE.Vector3(0, 1.5, 0);
+
 function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
@@ -31,125 +35,68 @@ export function WorldCamera({ mode, selectedAgent, onModeChange }: WorldCameraPr
     startTarget: THREE.Vector3;
     endTarget: THREE.Vector3;
   } | null>(null);
-  const fpMovement = useRef({ forward: false, backward: false, left: false, right: false });
-  const fpRotation = useRef({ yaw: 0, pitch: 0 });
-  const isPointerLocked = useRef(false);
 
-  // Handle ESC and right-click to return to orbit
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && mode === 'first-person') {
-        startTransitionToOrbit();
-      }
-      if (mode === 'first-person') {
-        switch (e.key.toLowerCase()) {
-          case 'w': case 'arrowup': fpMovement.current.forward = true; break;
-          case 's': case 'arrowdown': fpMovement.current.backward = true; break;
-          case 'a': case 'arrowleft': fpMovement.current.left = true; break;
-          case 'd': case 'arrowright': fpMovement.current.right = true; break;
-        }
-      }
-    };
-    const handleKeyUp = (e: KeyboardEvent) => {
-      switch (e.key.toLowerCase()) {
-        case 'w': case 'arrowup': fpMovement.current.forward = false; break;
-        case 's': case 'arrowdown': fpMovement.current.backward = false; break;
-        case 'a': case 'arrowleft': fpMovement.current.left = false; break;
-        case 'd': case 'arrowright': fpMovement.current.right = false; break;
-      }
-    };
-    const handleContextMenu = (e: MouseEvent) => {
-      if (mode === 'first-person') {
-        e.preventDefault();
-        startTransitionToOrbit();
-      }
-    };
-    const handleMouseMove = (e: MouseEvent) => {
-      if (mode === 'first-person' && isPointerLocked.current) {
-        fpRotation.current.yaw -= e.movementX * 0.002;
-        fpRotation.current.pitch -= e.movementY * 0.002;
-        fpRotation.current.pitch = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, fpRotation.current.pitch));
-      }
-    };
-    const handlePointerLockChange = () => {
-      isPointerLocked.current = document.pointerLockElement === gl.domElement;
-      if (!isPointerLocked.current && mode === 'first-person' && !transitionRef.current?.active) {
-        startTransitionToOrbit();
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
-    gl.domElement.addEventListener('contextmenu', handleContextMenu);
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('pointerlockchange', handlePointerLockChange);
-
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
-      gl.domElement.removeEventListener('contextmenu', handleContextMenu);
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('pointerlockchange', handlePointerLockChange);
-    };
-  }, [mode, gl.domElement]);
+  // Smoothly interpolated camera position/target for third-person following
+  const smoothCamPos = useRef(new THREE.Vector3());
+  const smoothCamTarget = useRef(new THREE.Vector3());
 
   const startTransitionToOrbit = useCallback(() => {
-    if (document.pointerLockElement) {
-      document.exitPointerLock();
-    }
-    isPointerLocked.current = false;
-    fpMovement.current = { forward: false, backward: false, left: false, right: false };
-
     transitionRef.current = {
       active: true,
       startTime: performance.now() / 1000,
       startPos: camera.position.clone(),
       endPos: ORBIT_POSITION.clone(),
-      startTarget: new THREE.Vector3(0, 1.7, 0).add(
-        new THREE.Vector3(0, 0, -1).applyEuler(camera.rotation)
-      ).add(camera.position),
+      startTarget: smoothCamTarget.current.clone(),
       endTarget: ORBIT_TARGET.clone(),
     };
     onModeChange('orbit');
   }, [camera, onModeChange]);
 
-  // Start transition to first-person when agent is selected
+  // ESC or right-click returns to orbit from third-person
   useEffect(() => {
-    if (mode === 'first-person' && selectedAgent) {
-      const agentPos = new THREE.Vector3(selectedAgent.position.x, 1.7, selectedAgent.position.z);
-      const behindOffset = new THREE.Vector3(0, 0, 0.5);
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && mode === 'third-person') {
+        startTransitionToOrbit();
+      }
+    };
+    const handleContextMenu = (e: MouseEvent) => {
+      if (mode === 'third-person') {
+        e.preventDefault();
+        startTransitionToOrbit();
+      }
+    };
 
-      const eyePos = agentPos.clone().add(behindOffset);
+    window.addEventListener('keydown', handleKeyDown);
+    gl.domElement.addEventListener('contextmenu', handleContextMenu);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      gl.domElement.removeEventListener('contextmenu', handleContextMenu);
+    };
+  }, [mode, gl.domElement, startTransitionToOrbit]);
+
+  // Start transition to third-person when agent is selected
+  useEffect(() => {
+    if (mode === 'third-person' && selectedAgent) {
+      const agentPos = new THREE.Vector3(selectedAgent.position.x, 0, selectedAgent.position.z);
+      const targetPos = agentPos.clone().add(TP_OFFSET);
+      const lookAt = agentPos.clone().add(TP_LOOK_OFFSET);
 
       transitionRef.current = {
         active: true,
         startTime: performance.now() / 1000,
         startPos: camera.position.clone(),
-        endPos: eyePos,
-        startTarget: controlsRef.current
-          ? new THREE.Vector3().setFromSpherical(
-              new THREE.Spherical().setFromVector3(
-                new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion)
-              )
-            ).add(camera.position)
-          : ORBIT_TARGET.clone(),
-        endTarget: new THREE.Vector3(
-          selectedAgent.position.x,
-          1.7,
-          selectedAgent.position.z - 2
-        ),
+        endPos: targetPos,
+        startTarget: ORBIT_TARGET.clone(),
+        endTarget: lookAt,
       };
 
-      fpRotation.current.yaw = Math.atan2(
-        -(selectedAgent.position.z - 2 - selectedAgent.position.z),
-        0
-      );
-      fpRotation.current.pitch = 0;
+      smoothCamPos.current.copy(targetPos);
+      smoothCamTarget.current.copy(lookAt);
     }
-  }, [mode, selectedAgent, camera]);
+  }, [mode, selectedAgent?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Animation frame for transitions and first-person movement
-  useFrame(({ scene }, delta) => {
+  useFrame(({ scene }) => {
     // Handle camera transition
     if (transitionRef.current?.active) {
       const t = transitionRef.current;
@@ -162,46 +109,35 @@ export function WorldCamera({ mode, selectedAgent, onModeChange }: WorldCameraPr
       const currentTarget = new THREE.Vector3().lerpVectors(t.startTarget, t.endTarget, eased);
       camera.lookAt(currentTarget);
 
-      // "Diving in" fog pulse during transition — tighten fog at midpoint, release at end
+      // "Diving in" fog pulse during transition
       if (scene.fog && scene.fog instanceof THREE.Fog) {
-        const fogPulse = Math.sin(progress * Math.PI); // peaks at 0.5
+        const fogPulse = Math.sin(progress * Math.PI);
         scene.fog.near = 30 - fogPulse * 20;
         scene.fog.far = 150 - fogPulse * 80;
       }
 
       if (progress >= 1) {
         transitionRef.current = { ...t, active: false };
-        // Restore fog to defaults
         if (scene.fog && scene.fog instanceof THREE.Fog) {
           scene.fog.near = 30;
           scene.fog.far = 150;
-        }
-        if (mode === 'first-person') {
-          gl.domElement.requestPointerLock();
         }
       }
       return;
     }
 
-    // First-person controls
-    if (mode === 'first-person' && selectedAgent) {
-      const speed = 3 * delta;
-      const euler = new THREE.Euler(fpRotation.current.pitch, fpRotation.current.yaw, 0, 'YXZ');
-      const forward = new THREE.Vector3(0, 0, -1).applyEuler(euler);
-      const right = new THREE.Vector3(1, 0, 0).applyEuler(euler);
+    // Third-person follow: smoothly track the agent
+    if (mode === 'third-person' && selectedAgent) {
+      const agentPos = new THREE.Vector3(selectedAgent.position.x, 0, selectedAgent.position.z);
+      const desiredPos = agentPos.clone().add(TP_OFFSET);
+      const desiredTarget = agentPos.clone().add(TP_LOOK_OFFSET);
 
-      forward.y = 0;
-      forward.normalize();
-      right.y = 0;
-      right.normalize();
+      // Smooth lerp toward desired position
+      smoothCamPos.current.lerp(desiredPos, 0.05);
+      smoothCamTarget.current.lerp(desiredTarget, 0.08);
 
-      if (fpMovement.current.forward) camera.position.addScaledVector(forward, speed);
-      if (fpMovement.current.backward) camera.position.addScaledVector(forward, -speed);
-      if (fpMovement.current.left) camera.position.addScaledVector(right, -speed);
-      if (fpMovement.current.right) camera.position.addScaledVector(right, speed);
-
-      camera.position.y = 1.7;
-      camera.rotation.set(fpRotation.current.pitch, fpRotation.current.yaw, 0, 'YXZ');
+      camera.position.copy(smoothCamPos.current);
+      camera.lookAt(smoothCamTarget.current);
     }
 
     // Auto-rotate orbit when idle
@@ -216,7 +152,7 @@ export function WorldCamera({ mode, selectedAgent, onModeChange }: WorldCameraPr
     lastInteraction.current = Date.now();
   }, []);
 
-  if (mode === 'first-person') {
+  if (mode === 'third-person') {
     return null;
   }
 

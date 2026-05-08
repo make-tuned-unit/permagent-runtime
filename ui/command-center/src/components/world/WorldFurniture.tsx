@@ -234,22 +234,7 @@ function ReadingDesk({ position }: { position: [number, number, number] }) {
   );
 }
 
-function LibraryArea() {
-  return (
-    <group position={[10, 0, 0]} rotation-y={-Math.PI / 2}>
-      {/* Bookshelves along the back */}
-      <Bookshelf position={[-2, 1.5, -2]} />
-      <Bookshelf position={[0, 1.5, -2]} />
-      <Bookshelf position={[2, 1.5, -2]} />
-      {/* Reading desk */}
-      <ReadingDesk position={[0, 0, 1]} />
-      {/* Comfortable reading couch */}
-      <Couch position={[3, 0, 1.5]} rotation={Math.PI} />
-      {/* Reading chair */}
-      <ArmChair position={[-2.5, 0, 1]} rotation={0.3} />
-    </group>
-  );
-}
+// Library is now on the mezzanine — see MezzanineLibrary below
 
 // === OBSERVATORY AREA (South, z=10) ===
 // Armillary sphere, star chart table, observation seats
@@ -548,15 +533,159 @@ function LowTable({ position }: { position: [number, number, number] }) {
   );
 }
 
+// === MEZZANINE LIBRARY (The Brain) ===
+// Raised ring walkway around the outside of the columns, accessed by stairs
+// This is the physical representation of the Brain — the Librarian works here
+
+const MEZZ_HEIGHT = 5;
+const MEZZ_INNER_R = 14.5; // just inside columns
+const MEZZ_OUTER_R = 19;   // extends past columns
+
+function MezzanineRing() {
+  const marble = useMarbleMat();
+  const darkStone = useDarkStoneMat();
+
+  return (
+    <group position-y={MEZZ_HEIGHT}>
+      {/* Walkway floor — ring shape via two cylinders */}
+      <mesh receiveShadow material={marble}>
+        <cylinderGeometry args={[MEZZ_OUTER_R, MEZZ_OUTER_R, 0.3, 64]} />
+      </mesh>
+      {/* Cut-out center (dark, non-rendered — just a visual inner ring) */}
+      <mesh position-y={0.01}>
+        <cylinderGeometry args={[MEZZ_INNER_R, MEZZ_INNER_R, 0.32, 64]} />
+        <meshStandardMaterial color={COLORS.deepVoid} />
+      </mesh>
+      {/* Railing — inner edge */}
+      <mesh position-y={0.6} material={darkStone}>
+        <torusGeometry args={[MEZZ_INNER_R + 0.1, 0.06, 6, 64]} />
+      </mesh>
+      {/* Railing posts — inner */}
+      {Array.from({ length: 24 }, (_, i) => {
+        const angle = (i / 24) * Math.PI * 2;
+        return (
+          <mesh key={i} position={[Math.cos(angle) * (MEZZ_INNER_R + 0.1), 0.35, Math.sin(angle) * (MEZZ_INNER_R + 0.1)]} material={darkStone}>
+            <cylinderGeometry args={[0.04, 0.04, 0.7, 4]} />
+          </mesh>
+        );
+      })}
+      {/* Outer railing */}
+      <mesh position-y={0.6} material={darkStone}>
+        <torusGeometry args={[MEZZ_OUTER_R - 0.1, 0.06, 6, 64]} />
+      </mesh>
+      {/* Edge glow */}
+      <mesh position-y={0.16}>
+        <torusGeometry args={[MEZZ_INNER_R + 0.2, 0.04, 4, 64]} />
+        <meshBasicMaterial color={COLORS.neonCyan} transparent opacity={0.3} depthWrite={false} />
+      </mesh>
+    </group>
+  );
+}
+
+function Staircase() {
+  const marble = useMarbleMat();
+  const stepCount = 16;
+  const startAngle = Math.PI * 0.75; // starts near east side
+  const arcSpan = Math.PI * 0.4;
+  const stairR = MEZZ_INNER_R + 1; // stairs are just inside the mezzanine
+
+  return (
+    <group>
+      {Array.from({ length: stepCount }, (_, i) => {
+        const t = i / (stepCount - 1);
+        const angle = startAngle + t * arcSpan;
+        const y = t * MEZZ_HEIGHT;
+        const x = Math.cos(angle) * stairR;
+        const z = Math.sin(angle) * stairR;
+        return (
+          <mesh key={i} position={[x, y + 0.1, z]} rotation-y={-angle + Math.PI / 2} castShadow material={marble}>
+            <boxGeometry args={[2, 0.2, 0.8]} />
+          </mesh>
+        );
+      })}
+      {/* Stair railings — simple posts */}
+      {Array.from({ length: stepCount }, (_, i) => {
+        if (i % 2 !== 0) return null;
+        const t = i / (stepCount - 1);
+        const angle = startAngle + t * arcSpan;
+        const y = t * MEZZ_HEIGHT;
+        const innerR = stairR - 0.8;
+        const outerR = stairR + 0.8;
+        return (
+          <group key={`r-${i}`}>
+            <mesh position={[Math.cos(angle) * innerR, y + 0.5, Math.sin(angle) * innerR]}>
+              <cylinderGeometry args={[0.04, 0.04, 0.8, 4]} />
+              <meshStandardMaterial color="#888" metalness={0.5} roughness={0.3} />
+            </mesh>
+            <mesh position={[Math.cos(angle) * outerR, y + 0.5, Math.sin(angle) * outerR]}>
+              <cylinderGeometry args={[0.04, 0.04, 0.8, 4]} />
+              <meshStandardMaterial color="#888" metalness={0.5} roughness={0.3} />
+            </mesh>
+          </group>
+        );
+      })}
+    </group>
+  );
+}
+
+function MezzanineLibraryContents() {
+  // Bookshelves arranged around the outer edge of the mezzanine
+  const shelfPositions = useMemo(() => {
+    const count = 10;
+    const shelves: { x: number; z: number; angle: number }[] = [];
+    for (let i = 0; i < count; i++) {
+      const angle = (i / count) * Math.PI * 2;
+      const r = MEZZ_OUTER_R - 1;
+      shelves.push({
+        x: Math.cos(angle) * r,
+        z: Math.sin(angle) * r,
+        angle: angle + Math.PI,
+      });
+    }
+    return shelves;
+  }, []);
+
+  return (
+    <group position-y={MEZZ_HEIGHT + 0.15}>
+      {/* Bookshelves around outer ring */}
+      {shelfPositions.map((sp, i) => (
+        <Bookshelf key={i} position={[sp.x, 1.5, sp.z]} rotation={sp.angle} />
+      ))}
+      {/* Reading desks at cardinal points on inner edge */}
+      <ReadingDesk position={[MEZZ_INNER_R + 2, 0, 0]} />
+      <ReadingDesk position={[-(MEZZ_INNER_R + 2), 0, 0]} />
+      <ReadingDesk position={[0, 0, MEZZ_INNER_R + 2]} />
+      <ReadingDesk position={[0, 0, -(MEZZ_INNER_R + 2)]} />
+      {/* Seating */}
+      <Bench position={[MEZZ_INNER_R + 2, 0, 3]} rotation={0} />
+      <Bench position={[-(MEZZ_INNER_R + 2), 0, -3]} rotation={Math.PI} />
+      <ArmChair position={[MEZZ_INNER_R + 2, 0, -4]} rotation={Math.PI / 2} />
+      <ArmChair position={[-(MEZZ_INNER_R + 2), 0, 4]} rotation={-Math.PI / 2} />
+      {/* Ambient lighting for the mezzanine */}
+      <pointLight position={[0, 3, 0]} color={COLORS.neonAmber} intensity={0.3} distance={20} />
+      {Array.from({ length: 4 }, (_, i) => {
+        const angle = (i / 4) * Math.PI * 2 + Math.PI / 4;
+        const r = (MEZZ_INNER_R + MEZZ_OUTER_R) / 2;
+        return (
+          <pointLight key={i} position={[Math.cos(angle) * r, 2, Math.sin(angle) * r]} color={COLORS.neonAmber} intensity={0.2} distance={8} />
+        );
+      })}
+    </group>
+  );
+}
+
 // === MAIN EXPORT ===
 
 export function LabFurniture() {
   return (
     <group>
       <WorkbenchArea />
-      <LibraryArea />
       <ObservatoryArea />
       <ForumArea />
+      {/* Mezzanine Library (The Brain) */}
+      <MezzanineRing />
+      <Staircase />
+      <MezzanineLibraryContents />
     </group>
   );
 }

@@ -182,12 +182,13 @@ function CharacterModel({ agent }: { agent: AgentState }) {
 }
 
 export function AgentCharacter({ agent, isHovered, onPointerOver, onPointerOut, onClick }: Omit<CharacterProps, 'isSelected'>) {
-  const groupRef = useRef<THREE.Group>(null);
+  const rotationRef = useRef<THREE.Group>(null);
+  const bobRef = useRef<THREE.Group>(null);
   const prevPos = useRef({ x: agent.position.x, z: agent.position.z });
 
-  // Smoothly rotate to face movement direction
+  // Smoothly rotate to face movement direction + walking bob
   useFrame(() => {
-    if (!groupRef.current) return;
+    if (!rotationRef.current) return;
 
     const dx = agent.position.x - prevPos.current.x;
     const dz = agent.position.z - prevPos.current.z;
@@ -195,29 +196,32 @@ export function AgentCharacter({ agent, isHovered, onPointerOver, onPointerOut, 
 
     if (Math.abs(dx) > 0.001 || Math.abs(dz) > 0.001) {
       const targetAngle = Math.atan2(dx, dz);
-      const current = groupRef.current.rotation.y;
+      const current = rotationRef.current.rotation.y;
       let diff = targetAngle - current;
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
-      groupRef.current.rotation.y += diff * 0.1;
+      rotationRef.current.rotation.y += diff * 0.1;
     }
 
-    // Walking bob
-    if (agent.activity === 'walking') {
-      groupRef.current.position.y = 0.05 * Math.abs(Math.sin(performance.now() * 0.008));
-    } else {
-      groupRef.current.position.y = 0;
+    // Walking bob on inner group
+    if (bobRef.current) {
+      if (agent.activity === 'walking') {
+        bobRef.current.position.y = 0.05 * Math.abs(Math.sin(performance.now() * 0.008));
+      } else {
+        bobRef.current.position.y = 0;
+      }
     }
   });
 
   return (
     <group
-      ref={groupRef}
-      position={[agent.position.x, 0, agent.position.z]}
+      position={[agent.position.x, agent.position.y, agent.position.z]}
       onPointerOver={(e) => { e.stopPropagation(); onPointerOver(); }}
       onPointerOut={(e) => { e.stopPropagation(); onPointerOut(); }}
       onClick={(e) => { e.stopPropagation(); onClick(); }}
     >
+      <group ref={rotationRef}>
+        <group ref={bobRef}>
       <CharacterModel agent={agent} />
 
       {/* Hover outline effect — cyan glow ring at feet */}
@@ -246,9 +250,12 @@ export function AgentCharacter({ agent, isHovered, onPointerOver, onPointerOut, 
           >
             {agent.name}
             {agent.isHenry && ' (Orchestrator)'}
+            {agent.id === 'librarian' && ' (The Brain)'}
           </div>
         </Html>
       )}
+        </group>
+      </group>
     </group>
   );
 }

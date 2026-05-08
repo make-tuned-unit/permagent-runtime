@@ -7,22 +7,23 @@ import { LabFurniture } from './WorldFurniture';
 
 // Floor with glowing circuit mandala pattern
 function RotundaFloor() {
-  const floorRef = useRef<THREE.Mesh>(null);
-
   const floorMaterial = useMemo(
     () =>
       new THREE.MeshStandardMaterial({
         color: COLORS.primaryMarble,
         roughness: 0.3,
         metalness: 0.1,
+        polygonOffset: true,
+        polygonOffsetFactor: 1,
+        polygonOffsetUnits: 1,
       }),
     []
   );
 
   return (
-    <group>
-      {/* Main marble floor */}
-      <mesh ref={floorRef} rotation-x={-Math.PI / 2} receiveShadow>
+    <group position-y={0.05}>
+      {/* Main marble floor — raised above platform to avoid z-fighting */}
+      <mesh rotation-x={-Math.PI / 2} receiveShadow>
         <circleGeometry args={[ROTUNDA_RADIUS, 64]} />
         <primitive object={floorMaterial} attach="material" />
       </mesh>
@@ -59,9 +60,9 @@ function FloorCircuits() {
     return Array.from({ length: count }, (_, i) => (i / count) * Math.PI * 2);
   }, []);
 
-  // Use thin 3D torus rings + box beams raised above floor to avoid z-fighting
+  // Use thin 3D torus rings + box beams raised well above floor to avoid z-fighting
   return (
-    <group ref={ref} position-y={0.05}>
+    <group ref={ref} position-y={0.12}>
       {rings.map(({ geo }, i) => (
         <mesh key={`ring-${i}`} rotation-x={-Math.PI / 2} geometry={geo}>
           <meshBasicMaterial color={COLORS.neonCyan} transparent opacity={0.4} depthWrite={false} />

@@ -61,8 +61,8 @@ export function WorldHUD({ mode, showFps, hoveredStation, stationTooltip }: Worl
     <>
       <div style={hudStyle}>
         <div style={badgeStyle}>
-          {mode === 'orbit' ? 'ORBIT' : 'FIRST PERSON'}
-          {mode === 'first-person' && (
+          {mode === 'orbit' ? 'ORBIT' : 'FOLLOWING'}
+          {mode === 'third-person' && (
             <span style={{ opacity: 0.6, marginLeft: 8 }}>ESC to exit</span>
           )}
         </div>
