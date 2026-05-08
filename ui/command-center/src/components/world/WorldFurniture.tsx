@@ -505,7 +505,7 @@ export const MEZZ_OUTER_R = 15.5;
 const MEZZ_MID_R = (MEZZ_INNER_R + MEZZ_OUTER_R) / 2;
 
 const STAIR_GAP_CENTER = Math.PI * 0.5; // world-space angle: +Z direction (east)
-const STAIR_GAP_HALF = 0.4;
+const STAIR_GAP_HALF = 0.12;           // small opening, ~3.4 units of arc at r=14
 const SHELF_WALL_HEIGHT = 4;
 
 function isInStairGap(angle: number): boolean {
@@ -523,20 +523,24 @@ function ringAngle(worldA: number): number {
 
 function MezzanineRing() {
   const darkStone = useDarkStoneMat();
-  // Compute ring-space gap: center at mirrored angle, then start after the gap
   const rGapCenter = ringAngle(STAIR_GAP_CENTER);
   const rStart = rGapCenter + STAIR_GAP_HALF;
   const rLength = Math.PI * 2 - STAIR_GAP_HALF * 2;
 
   return (
     <group position-y={MEZZ_HEIGHT}>
-      {/* Ring floor with stair opening */}
+      {/* Inner half of ring floor — CONTINUOUS, no gap (bookshelf wall sits on this) */}
       <mesh rotation-x={-Math.PI / 2} receiveShadow>
-        <ringGeometry args={[MEZZ_INNER_R, MEZZ_OUTER_R, 64, 1, rStart, rLength]} />
+        <ringGeometry args={[MEZZ_INNER_R, MEZZ_MID_R, 64, 1, 0, Math.PI * 2]} />
+        <meshStandardMaterial color={COLORS.primaryMarble} roughness={0.3} metalness={0.1} />
+      </mesh>
+      {/* Outer half of ring floor — has small stair gap */}
+      <mesh rotation-x={-Math.PI / 2} receiveShadow>
+        <ringGeometry args={[MEZZ_MID_R, MEZZ_OUTER_R, 64, 1, rStart, rLength]} />
         <meshStandardMaterial color={COLORS.primaryMarble} roughness={0.3} metalness={0.1} />
       </mesh>
 
-      {/* Outer railing — skip stair gap (bookshelf wall covers inner edge) */}
+      {/* Outer railing — skip stair gap */}
       {Array.from({ length: 48 }, (_, i) => {
         const angle = (i / 48) * Math.PI * 2;
         if (isInStairGap(angle)) return null;
@@ -546,7 +550,6 @@ function MezzanineRing() {
           </mesh>
         );
       })}
-      {/* Outer railing rail — also ring geometry, needs angle conversion */}
       <mesh position-y={0.65} rotation-x={-Math.PI / 2}>
         <ringGeometry args={[MEZZ_OUTER_R - 0.03, MEZZ_OUTER_R + 0.03, 64, 1, rStart, rLength]} />
         <primitive object={darkStone} attach="material" />
