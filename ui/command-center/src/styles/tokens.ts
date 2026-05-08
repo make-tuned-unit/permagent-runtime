@@ -49,6 +49,7 @@ export type ThemeId = 'dark' | 'aurora' | 'slate';
 export const THEME_GRADIENTS: Record<ThemeId, {
   workspace: string; card: string; label: string;
   shell: string; sidebar: string; navRail: string;
+  dropdown: string; dropdownSolid: string;
 }> = {
   dark: {
     workspace: 'radial-gradient(120% 80% at 50% 0%, #142035 0%, #0B1220 50%, #050810 100%)',
@@ -56,6 +57,8 @@ export const THEME_GRADIENTS: Record<ThemeId, {
     shell: '#0B1220',
     sidebar: 'rgba(7,11,20,0.6)',
     navRail: 'rgba(7,11,20,0.4)',
+    dropdown: 'rgba(11,18,32,0.98)',
+    dropdownSolid: '#0B1220',
     label: 'Permagent dark',
   },
   aurora: {
@@ -64,6 +67,8 @@ export const THEME_GRADIENTS: Record<ThemeId, {
     shell: '#0e0a1e',
     sidebar: 'rgba(14,10,30,0.7)',
     navRail: 'rgba(14,10,30,0.5)',
+    dropdown: 'rgba(14,10,30,0.98)',
+    dropdownSolid: '#0e0a1e',
     label: 'Aurora',
   },
   slate: {
@@ -72,6 +77,8 @@ export const THEME_GRADIENTS: Record<ThemeId, {
     shell: '#13161e',
     sidebar: 'rgba(19,22,30,0.7)',
     navRail: 'rgba(19,22,30,0.5)',
+    dropdown: 'rgba(19,22,30,0.98)',
+    dropdownSolid: '#13161e',
     label: 'Slate',
   },
 };

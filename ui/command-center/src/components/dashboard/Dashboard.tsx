@@ -42,7 +42,7 @@ export function Dashboard() {
           <div style={{
             position: 'relative', overflow: 'hidden',
             padding: 24, borderRadius: radius.lg,
-            background: 'linear-gradient(180deg, rgba(20,28,48,0.7), rgba(11,18,32,0.7))',
+            background: gradient.card,
             border: `1px solid ${color.border}`, minHeight: 220,
             display: 'flex', alignItems: 'center', gap: 24,
           }}>

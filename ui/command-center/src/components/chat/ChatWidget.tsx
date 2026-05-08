@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { color, font, ease, radius } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import { useCommandCenter } from '../../lib/store';
 import { api } from '../../lib/api';
@@ -29,6 +30,7 @@ function timeAgo(dateStr: string): string {
 }
 
 export function ChatWidget() {
+  const { gradient } = useTheme();
   const open = useCommandCenter(s => s.chatOpen);
   const setChatOpen = useCommandCenter(s => s.setChatOpen);
   const [pos, setPos] = useState({ x: -1, y: -1 });
@@ -164,7 +166,7 @@ export function ChatWidget() {
       position: 'fixed', left: p.x, top: p.y, zIndex: 9999,
       width: size.w, height: size.h,
       borderRadius: radius.lg,
-      background: 'rgba(11,18,32,0.95)', backdropFilter: 'blur(24px)',
+      background: gradient.dropdown, backdropFilter: 'blur(24px)',
       border: `1px solid ${color.borderHi}`,
       boxShadow: '0 16px 48px rgba(0,0,0,0.6), 0 0 0 1px rgba(0,213,255,0.08)',
       display: 'flex', flexDirection: 'column',
@@ -213,7 +215,7 @@ export function ChatWidget() {
               style={{
                 position: 'absolute', top: '100%', left: 0, right: 60, zIndex: 50,
                 maxHeight: 320, overflowY: 'auto',
-                background: 'rgba(11,18,32,0.98)', backdropFilter: 'blur(16px)',
+                background: gradient.dropdown, backdropFilter: 'blur(16px)',
                 border: `1px solid ${color.borderHi}`,
                 borderRadius: radius.md,
                 boxShadow: '0 12px 40px rgba(0,0,0,0.5)',

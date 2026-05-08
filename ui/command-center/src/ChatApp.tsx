@@ -129,7 +129,7 @@ export default function ChatApp() {
               <div style={{
                 position: 'absolute', top: '100%', left: 0, marginTop: 4,
                 width: 260, maxHeight: 300, overflow: 'auto',
-                background: 'rgba(11,18,32,0.98)', backdropFilter: 'blur(16px)',
+                background: gradient.dropdown, backdropFilter: 'blur(16px)',
                 border: `1px solid ${color.borderHi}`, borderRadius: 8,
                 boxShadow: '0 12px 40px rgba(0,0,0,0.6)', zIndex: 100,
                 padding: '4px 0',
