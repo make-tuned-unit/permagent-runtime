@@ -504,9 +504,9 @@ export const MEZZ_INNER_R = 12.5;
 export const MEZZ_OUTER_R = 15.5;
 const MEZZ_MID_R = (MEZZ_INNER_R + MEZZ_OUTER_R) / 2;
 
-const STAIR_GAP_CENTER = Math.PI * 0.5;
+const STAIR_GAP_CENTER = Math.PI * 0.5; // world-space angle: +Z direction (east)
 const STAIR_GAP_HALF = 0.4;
-const SHELF_WALL_HEIGHT = 4;         // floor-to-ceiling shelving
+const SHELF_WALL_HEIGHT = 4;
 
 function isInStairGap(angle: number): boolean {
   let diff = angle - STAIR_GAP_CENTER;
@@ -515,38 +515,46 @@ function isInStairGap(angle: number): boolean {
   return Math.abs(diff) < STAIR_GAP_HALF;
 }
 
+// RingGeometry lives in XY, rotated -PI/2 to XZ. This negates the Z mapping.
+// To place a gap at world angle A, use ring angle = (2PI - A).
+function ringAngle(worldA: number): number {
+  return ((2 * Math.PI - worldA) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI);
+}
+
 function MezzanineRing() {
   const darkStone = useDarkStoneMat();
-  const gapSize = STAIR_GAP_HALF * 2;
-  const thetaStart = STAIR_GAP_CENTER + STAIR_GAP_HALF;
-  const thetaLength = Math.PI * 2 - gapSize;
+  // Compute ring-space gap: center at mirrored angle, then start after the gap
+  const rGapCenter = ringAngle(STAIR_GAP_CENTER);
+  const rStart = rGapCenter + STAIR_GAP_HALF;
+  const rLength = Math.PI * 2 - STAIR_GAP_HALF * 2;
 
   return (
     <group position-y={MEZZ_HEIGHT}>
       {/* Ring floor with stair opening */}
       <mesh rotation-x={-Math.PI / 2} receiveShadow>
-        <ringGeometry args={[MEZZ_INNER_R, MEZZ_OUTER_R, 64, 1, thetaStart, thetaLength]} />
+        <ringGeometry args={[MEZZ_INNER_R, MEZZ_OUTER_R, 64, 1, rStart, rLength]} />
         <meshStandardMaterial color={COLORS.primaryMarble} roughness={0.3} metalness={0.1} />
       </mesh>
 
-      {/* Inner railing — skip stair gap */}
+      {/* Outer railing — skip stair gap (bookshelf wall covers inner edge) */}
       {Array.from({ length: 48 }, (_, i) => {
         const angle = (i / 48) * Math.PI * 2;
         if (isInStairGap(angle)) return null;
         return (
-          <mesh key={`ip-${i}`} position={[Math.cos(angle) * MEZZ_INNER_R, 0.4, Math.sin(angle) * MEZZ_INNER_R]} material={darkStone}>
+          <mesh key={`op-${i}`} position={[Math.cos(angle) * MEZZ_OUTER_R, 0.4, Math.sin(angle) * MEZZ_OUTER_R]} material={darkStone}>
             <cylinderGeometry args={[0.04, 0.04, 0.8, 4]} />
           </mesh>
         );
       })}
+      {/* Outer railing rail — also ring geometry, needs angle conversion */}
       <mesh position-y={0.65} rotation-x={-Math.PI / 2}>
-        <ringGeometry args={[MEZZ_INNER_R - 0.03, MEZZ_INNER_R + 0.03, 64, 1, thetaStart, thetaLength]} />
+        <ringGeometry args={[MEZZ_OUTER_R - 0.03, MEZZ_OUTER_R + 0.03, 64, 1, rStart, rLength]} />
         <primitive object={darkStone} attach="material" />
       </mesh>
 
-      {/* Cyan glow on inner edge */}
+      {/* Cyan glow on outer edge */}
       <mesh position-y={0.02}>
-        <torusGeometry args={[MEZZ_INNER_R + 0.05, 0.03, 4, 64]} />
+        <torusGeometry args={[MEZZ_OUTER_R - 0.05, 0.03, 4, 64]} />
         <meshBasicMaterial color={COLORS.neonCyan} transparent opacity={0.3} depthWrite={false} />
       </mesh>
     </group>
@@ -601,26 +609,32 @@ function Staircase() {
 }
 
 // Continuous built-in bookshelf wall on the INNER edge of the ring.
-// Faces outward so you can look down past it to the ground floor.
+// CylinderGeometry angles match world-space. RingGeometry needs conversion.
 function BookshelfWall() {
   const wood = useWoodMat();
   const darkStone = useDarkStoneMat();
 
-  const thetaStart = STAIR_GAP_CENTER + STAIR_GAP_HALF;
-  const thetaLength = Math.PI * 2 - STAIR_GAP_HALF * 2;
-  // Shelves on the inner edge, facing outward (toward center of rotunda)
-  const wallR = MEZZ_INNER_R + 0.05;  // back wall just inside inner edge
-  const shelfR = MEZZ_INNER_R + 0.35; // shelf front extends into walkway
+  // Cylinder: world-space angles directly
+  const cylStart = STAIR_GAP_CENTER + STAIR_GAP_HALF;
+  const cylLength = Math.PI * 2 - STAIR_GAP_HALF * 2;
+  // Ring geometry: needs mirrored angles
+  const rStart = ringAngle(STAIR_GAP_CENTER) + STAIR_GAP_HALF;
+  const rLength = Math.PI * 2 - STAIR_GAP_HALF * 2;
+
+  const wallR = MEZZ_INNER_R + 0.05;
+  const shelfR = MEZZ_INNER_R + 0.35;
   const shelfCount = 5;
   const shelfDepth = 0.3;
 
+  // Books use world-space angles (positioned with cos/sin)
   const bookRows = useMemo(() => {
     const rows: { angle: number; shelfY: number; width: number; height: number; hue: number }[] = [];
     const booksPerShelf = 80;
     for (let s = 0; s < shelfCount; s++) {
       const shelfY = 0.15 + s * (SHELF_WALL_HEIGHT / shelfCount);
       for (let b = 0; b < booksPerShelf; b++) {
-        const angle = thetaStart + (b / booksPerShelf) * thetaLength;
+        // Distribute books around the ring in world-space, skipping stair gap
+        const angle = ((b / booksPerShelf) * Math.PI * 2);
         if (isInStairGap(angle)) continue;
         rows.push({
           angle,
@@ -635,27 +649,27 @@ function BookshelfWall() {
   }, []);
 
   return (
-    <group position-y={MEZZ_HEIGHT}>
-      {/* Back wall on inner edge */}
+    <group position-y={MEZZ_HEIGHT + 0.01}>
+      {/* Back wall — cylinder uses world-space angles */}
       <mesh position-y={SHELF_WALL_HEIGHT / 2} material={darkStone}>
         <cylinderGeometry args={[wallR, wallR, SHELF_WALL_HEIGHT, 64, 1, true,
-          thetaStart, thetaLength]} />
+          cylStart, cylLength]} />
       </mesh>
 
-      {/* Horizontal shelf planks */}
+      {/* Horizontal shelf planks — ring geometry needs converted angles */}
       {Array.from({ length: shelfCount + 1 }, (_, i) => {
         const y = i * (SHELF_WALL_HEIGHT / shelfCount);
         return (
           <mesh key={`shelf-${i}`} position-y={y} rotation-x={-Math.PI / 2}>
-            <ringGeometry args={[wallR, shelfR, 64, 1, thetaStart, thetaLength]} />
+            <ringGeometry args={[wallR, shelfR, 64, 1, rStart, rLength]} />
             <primitive object={wood} attach="material" />
           </mesh>
         );
       })}
 
-      {/* Vertical dividers */}
+      {/* Vertical dividers — world-space positions */}
       {Array.from({ length: 48 }, (_, i) => {
-        const angle = thetaStart + (i / 48) * thetaLength;
+        const angle = (i / 48) * Math.PI * 2;
         if (isInStairGap(angle)) return null;
         const midR = (wallR + shelfR) / 2;
         const x = Math.cos(angle) * midR;
@@ -668,7 +682,7 @@ function BookshelfWall() {
         );
       })}
 
-      {/* Books */}
+      {/* Books — world-space positions */}
       {bookRows.map((book, i) => {
         const bookR = wallR + shelfDepth * 0.4;
         const x = Math.cos(book.angle) * bookR;
