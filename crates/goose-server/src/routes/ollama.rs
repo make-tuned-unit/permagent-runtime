@@ -145,11 +145,99 @@ async fn ollama_warm(
     }))
 }
 
+// ── Librarian schedule config ───────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LibrarianSchedule {
+    pub enabled: bool,
+    /// Daily start time in "HH:MM" 24-hour local format
+    pub start_time: String,
+    /// Window duration in minutes (15..=720)
+    pub duration_minutes: u32,
+    /// Model name to warm-load for the Librarian
+    pub model: String,
+    /// If true, start Librarian if app launches mid-window
+    pub run_if_launched_in_window: bool,
+}
+
+impl Default for LibrarianSchedule {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            start_time: "02:00".to_string(),
+            duration_minutes: 240,
+            model: "qwen2.5:3b".to_string(),
+            run_if_launched_in_window: true,
+        }
+    }
+}
+
+fn schedule_path() -> std::path::PathBuf {
+    permagent::config::paths::Paths::in_data_dir("librarian_schedule.json")
+}
+
+fn load_schedule() -> LibrarianSchedule {
+    let path = schedule_path();
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
+        Err(_) => LibrarianSchedule::default(),
+    }
+}
+
+fn save_schedule(schedule: &LibrarianSchedule) -> Result<(), String> {
+    let path = schedule_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_string_pretty(schedule).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// GET /api/librarian/schedule
+async fn get_librarian_schedule() -> Json<LibrarianSchedule> {
+    Json(load_schedule())
+}
+
+/// PUT /api/librarian/schedule
+async fn set_librarian_schedule(
+    Json(schedule): Json<LibrarianSchedule>,
+) -> Result<Json<LibrarianSchedule>, ErrorResponse> {
+    // Validate
+    if schedule.duration_minutes < 15 || schedule.duration_minutes > 720 {
+        return Err(ErrorResponse::bad_request(
+            "Duration must be between 15 and 720 minutes".to_string(),
+        ));
+    }
+    // Validate HH:MM format
+    let parts: Vec<&str> = schedule.start_time.split(':').collect();
+    if parts.len() != 2 {
+        return Err(ErrorResponse::bad_request("start_time must be HH:MM".to_string()));
+    }
+    let hour: u32 = parts[0].parse().map_err(|_| ErrorResponse::bad_request("Invalid hour".to_string()))?;
+    let minute: u32 = parts[1].parse().map_err(|_| ErrorResponse::bad_request("Invalid minute".to_string()))?;
+    if hour >= 24 || minute >= 60 {
+        return Err(ErrorResponse::bad_request("start_time out of range".to_string()));
+    }
+
+    save_schedule(&schedule).map_err(|e| ErrorResponse::internal(format!("Failed to save: {}", e)))?;
+    tracing::info!(
+        enabled = schedule.enabled,
+        start = %schedule.start_time,
+        duration = schedule.duration_minutes,
+        model = %schedule.model,
+        "Librarian schedule updated"
+    );
+    Ok(Json(schedule))
+}
+
 // ── Router ──────────────────────────────────────────────────────────
 
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/ollama/status", get(ollama_status))
         .route("/api/ollama/warm", post(ollama_warm))
+        .route("/api/librarian/schedule", get(get_librarian_schedule))
+        .route("/api/librarian/schedule", axum::routing::put(set_librarian_schedule))
         .with_state(state)
 }
