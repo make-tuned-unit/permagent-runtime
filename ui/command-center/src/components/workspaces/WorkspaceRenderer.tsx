@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, lazy, Suspense } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import { useCommandCenter } from '../../lib/store';
 import type { LayoutNode, LayoutSplit, LayoutPanel, ToolType } from '../../lib/store';
@@ -6,7 +6,7 @@ import { ChatView } from '../chat/ChatView';
 import { SkillsPanel } from '../skills/SkillsPanel';
 import { TerminalManager } from '../terminal/TerminalManager';
 import { Browser } from '../browser';
-import { WorldView } from '../world/WorldView';
+const LazyWorldView = lazy(() => import('../world/WorldView').then(m => ({ default: m.WorldView })));
 import { ExecutionTrace } from '../trace/ExecutionTrace';
 import { BrainView } from '../brain/BrainView';
 import { Dashboard } from '../dashboard/Dashboard';
@@ -17,7 +17,7 @@ const TOOL_COMPONENTS: Record<ToolType, React.ComponentType> = {
   chat: ChatView,
   skills: SkillsPanel,
   trace: ExecutionTrace,
-  world: WorldView,
+  world: LazyWorldView,
   terminal: TerminalManager,
   browser: Browser,
   memory: BrainView,
@@ -45,7 +45,11 @@ function LayoutNodeRenderer({
         </div>
       );
     }
-    return <Component />;
+    return (
+      <Suspense fallback={<div className="flex h-full items-center justify-center text-dark-muted text-xs">Loading...</div>}>
+        <Component />
+      </Suspense>
+    );
   }
 
   const split = node as LayoutSplit;
