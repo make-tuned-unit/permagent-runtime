@@ -632,27 +632,35 @@ function FolderIcon({ name }: { name: string }) {
 function FindingsPanel({ findings, actionInFlight, onAction, totalRecovered, allActioned }: {
   findings: Finding[];
   actionInFlight: string | null;
-  onAction: (findingId: string, action: string) => void;
+  onAction: (findingId: string, action: string) => Promise<void>;
   totalRecovered: number;
   allActioned: boolean;
 }) {
   const groups = groupFindings(findings);
   const [expandedGroup, setExpandedGroup] = useState<string | null>(null);
+  const [previewGroup, setPreviewGroup] = useState<string | null>(null); // "all" or group name
+  const [cleaning, setCleaning] = useState(false);
+  const [cleanProgress, setCleanProgress] = useState(0);
+  const [cleanTotal, setCleanTotal] = useState(0);
 
-  const handleCleanGroup = (groupName: string) => {
-    const items = groups.get(groupName) || [];
+  const runCleanup = async (items: Finding[]) => {
     const pending = items.filter(f => !f.action_taken);
     if (pending.length === 0) return;
-    if (!confirm(`Move ${pending.length} items from ${groupName} to Trash? You can restore them from Finder.`)) return;
-    for (const f of pending) onAction(f.id, 'trash');
+    setCleaning(true);
+    setCleanTotal(pending.length);
+    setCleanProgress(0);
+    for (let i = 0; i < pending.length; i++) {
+      setCleanProgress(i + 1);
+      await onAction(pending[i].id, 'trash');
+      // Small delay so UI updates between items
+      await new Promise(r => setTimeout(r, 100));
+    }
+    setCleaning(false);
+    setPreviewGroup(null);
   };
 
-  const handleCleanAll = () => {
-    const pending = findings.filter(f => !f.action_taken);
-    if (pending.length === 0) return;
-    if (!confirm(`Move all ${pending.length} items to Trash? You can restore them from Finder.`)) return;
-    for (const f of pending) onAction(f.id, 'trash');
-  };
+  const handleCleanGroup = (groupName: string) => setPreviewGroup(groupName);
+  const handleCleanAll = () => setPreviewGroup('__all__');
 
   const totalPending = findings.filter(f => !f.action_taken).length;
   const totalPendingBytes = findings.filter(f => !f.action_taken).reduce((s, f) => s + f.size_bytes, 0);
@@ -688,6 +696,80 @@ function FindingsPanel({ findings, actionInFlight, onAction, totalRecovered, all
           </div>
         )}
       </div>
+
+      {/* Preview panel — shows before cleanup executes */}
+      {previewGroup && !cleaning && (() => {
+        const previewItems = previewGroup === '__all__'
+          ? findings.filter(f => !f.action_taken)
+          : (groups.get(previewGroup) || []).filter(f => !f.action_taken);
+        const previewBytes = previewItems.reduce((s, f) => s + f.size_bytes, 0);
+        return (
+          <div style={{
+            marginBottom: 16, borderRadius: radius.lg, overflow: 'hidden',
+            border: `1px solid ${color.borderHi}`, background: 'rgba(10,14,23,0.8)',
+          }}>
+            <div style={{ padding: '16px 20px', borderBottom: `1px solid ${color.border}` }}>
+              <div style={{ fontSize: 14, fontWeight: 600, fontFamily: font.display }}>
+                Review before cleaning ({previewItems.length} items, {formatBytes(previewBytes)})
+              </div>
+              <div style={{ fontSize: 12, color: color.textMuted, marginTop: 4 }}>
+                These files will move to your Trash. You can restore any of them from Finder.
+              </div>
+            </div>
+            <div style={{ maxHeight: 300, overflowY: 'auto', padding: '8px 20px' }}>
+              {previewItems.map(f => {
+                const name = f.path.split('/').pop() || f.path;
+                const dir = f.path.replace(/\/[^/]+$/, '').replace(/^\/Users\/[^/]+/, '~');
+                return (
+                  <div key={f.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0', borderBottom: `1px solid ${color.border}` }}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={color.textDim} strokeWidth={1.5}><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" /><path d="M13 2v7h7" /></svg>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12, color: color.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</div>
+                      <div style={{ fontSize: 10, color: color.textDim, fontFamily: font.mono }}>{dir}</div>
+                    </div>
+                    <div style={{ fontSize: 11, color: color.textMuted, fontFamily: font.mono, flexShrink: 0 }}>{formatBytes(f.size_bytes)}</div>
+                    {f.age_days != null && <div style={{ fontSize: 10, color: color.textDim, flexShrink: 0 }}>{f.age_days}d old</div>}
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ padding: '12px 20px', display: 'flex', gap: 8, justifyContent: 'flex-end', borderTop: `1px solid ${color.border}` }}>
+              <button onClick={() => setPreviewGroup(null)} style={{
+                padding: '8px 16px', borderRadius: radius.sm, background: 'transparent',
+                border: `1px solid ${color.border}`, color: color.textMuted, fontSize: 12,
+                cursor: 'pointer', fontFamily: font.body,
+              }}>Cancel</button>
+              <button onClick={() => runCleanup(previewItems)} style={{
+                padding: '8px 24px', borderRadius: radius.sm, background: color.cyan,
+                color: '#000', fontWeight: 700, fontSize: 12, border: 'none',
+                cursor: 'pointer', fontFamily: font.body,
+              }}>Move {previewItems.length} items to Trash</button>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Cleaning progress */}
+      {cleaning && (
+        <div style={{
+          marginBottom: 16, padding: '16px 20px', borderRadius: radius.lg,
+          background: 'rgba(0,213,255,0.06)', border: `1px solid ${color.borderHi}`,
+        }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: color.text }}>
+            Cleaning up... {cleanProgress} of {cleanTotal}
+          </div>
+          <div style={{
+            marginTop: 8, height: 4, borderRadius: 2, background: 'rgba(255,255,255,0.1)',
+            overflow: 'hidden',
+          }}>
+            <div style={{
+              height: '100%', borderRadius: 2, background: color.cyan,
+              width: `${(cleanProgress / cleanTotal) * 100}%`,
+              transition: 'width 200ms ease',
+            }} />
+          </div>
+        </div>
+      )}
 
       {/* Folder cards */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>

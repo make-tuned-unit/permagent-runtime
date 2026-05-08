@@ -33,13 +33,13 @@ prompt: |
 
   Produce a report with two parts:
 
-  PART 1 — Summary:
+  First, write a brief summary for a non-technical user:
 
-  **Summary:** "Found approximately X GB of potential cleanup across Y items. Your disk is Z% full."
+  **Your disk is Z% full** with X GB free. I found approximately Y GB that could be cleaned up across N items in your Downloads, Desktop, and Documents folders.
 
-  Then list key findings as bullets with file name, size, age, location, and recommendation.
+  Then give a brief overview of the biggest opportunities (2-3 sentences max, no technical jargon, no section headers like "PART 1" or "Human-Readable Summary").
 
-  PART 2 — Structured findings block:
+  Second, output the structured findings block:
 
   After the human-readable report, output a findings block in this exact format. This block will be parsed by Permagent to create actionable items with Trash/Keep buttons.
 
