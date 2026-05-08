@@ -504,4 +504,52 @@ export const api = {
     };
     return fetch(url, { ...options, headers: { ...headers, ...(options?.headers as Record<string, string> ?? {}) } });
   },
+
+  // ── Ollama + Librarian ──────────────────────────────────────────
+
+  getOllamaStatus: () =>
+    apiFetch<{
+      reachable: boolean;
+      installed: Array<{ name: string; size: number; digest: string; modified_at: string }>;
+      running: Array<{ name: string; size: number; size_vram: number; digest: string; expires_at: string }>;
+    }>('/api/ollama/status'),
+
+  getLibrarianSchedule: () =>
+    apiFetch<{
+      enabled: boolean;
+      start_time: string;
+      duration_minutes: number;
+      model: string;
+      run_if_launched_in_window: boolean;
+    }>('/api/librarian/schedule'),
+
+  setLibrarianSchedule: async (schedule: {
+    enabled: boolean;
+    start_time: string;
+    duration_minutes: number;
+    model: string;
+    run_if_launched_in_window: boolean;
+  }) => {
+    const url = `${API_BASE_URL}/api/librarian/schedule`;
+    const resp = await fetch(url, {
+      method: 'PUT',
+      headers: authHeaders(),
+      body: JSON.stringify(schedule),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    return resp.json();
+  },
+
+  runLibrarianNow: async () => {
+    const url = `${API_BASE_URL}/api/librarian/run-now`;
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ message: 'Unknown error' }));
+      throw new Error(err.message || `HTTP ${resp.status}`);
+    }
+    return resp.json();
+  },
 };
