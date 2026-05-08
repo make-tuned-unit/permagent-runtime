@@ -28,6 +28,7 @@ pub mod status;
 pub mod telemetry;
 pub mod tunnel;
 pub mod integrations;
+pub mod ollama;
 pub mod utils;
 pub mod workspaces;
 
@@ -65,7 +66,8 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(dashboard::routes(state.clone()))
         .merge(identity::routes(state.clone()))
         .merge(workers::routes(state.clone()))
-        .merge(findings::routes(state.clone()));
+        .merge(findings::routes(state.clone()))
+        .merge(ollama::routes(state.clone()));
 
     #[cfg(feature = "local-inference")]
     {
