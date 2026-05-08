@@ -282,7 +282,89 @@ function ToolsPanel() {
   );
 }
 
+type OllamaModel = { name: string; size: number; digest: string; modified_at: string };
+type OllamaRunning = { name: string; size: number; size_vram: number; digest: string; expires_at: string };
+type OllamaStatus = { reachable: boolean; installed: OllamaModel[]; running: OllamaRunning[] };
+type LibSchedule = { enabled: boolean; start_time: string; duration_minutes: number; model: string; run_if_launched_in_window: boolean };
+
+function formatBytes(b: number): string {
+  if (b < 1e9) return `${(b / 1e6).toFixed(0)} MB`;
+  return `${(b / 1e9).toFixed(1)} GB`;
+}
+
+function nextRunText(sched: LibSchedule): string {
+  if (!sched.enabled) return 'Disabled';
+  const [h, m] = sched.start_time.split(':').map(Number);
+  const now = new Date();
+  const next = new Date(now);
+  next.setHours(h, m, 0, 0);
+  if (next <= now) next.setDate(next.getDate() + 1);
+  const diff = next.getTime() - now.getTime();
+  const hrs = Math.floor(diff / 3600000);
+  const mins = Math.floor((diff % 3600000) / 60000);
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+  const mStr = String(m).padStart(2, '0');
+  if (hrs < 1) return `Next run: in ${mins}m (${h12}:${mStr} ${ampm})`;
+  return `Next run: in ${hrs}h ${mins}m (${h12}:${mStr} ${ampm})`;
+}
+
+function ModelStateBadge({ state }: { state: 'running' | 'installed' | 'missing' }) {
+  const styles: Record<string, { bg: string; text: string; label: string }> = {
+    running: { bg: 'rgba(0,213,255,0.12)', text: color.cyan, label: 'Loaded' },
+    installed: { bg: 'rgba(255,255,255,0.06)', text: color.textMuted, label: 'Installed' },
+    missing: { bg: 'rgba(255,180,162,0.1)', text: color.danger, label: 'Not installed' },
+  };
+  const s = styles[state];
+  return (
+    <span style={{ fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 999, background: s.bg, color: s.text }}>
+      {s.label}
+    </span>
+  );
+}
+
 function ModelsPanel() {
+  const [ollama, setOllama] = useState<OllamaStatus | null>(null);
+  const [schedule, setSchedule] = useState<LibSchedule | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [runningNow, setRunningNow] = useState(false);
+
+  // Poll Ollama status while panel is visible
+  useEffect(() => {
+    let active = true;
+    const poll = () => {
+      api.getOllamaStatus().then(s => { if (active) setOllama(s); }).catch(() => {});
+      api.getLibrarianSchedule().then(s => { if (active) setSchedule(s); }).catch(() => {});
+    };
+    poll();
+    const id = setInterval(poll, 8000);
+    return () => { active = false; clearInterval(id); };
+  }, []);
+
+  const modelState = (name: string): 'running' | 'installed' | 'missing' => {
+    if (!ollama) return 'missing';
+    if (ollama.running.some(m => m.name === name || m.name.startsWith(name + ':'))) return 'running';
+    if (ollama.installed.some(m => m.name === name || m.name.startsWith(name + ':'))) return 'installed';
+    return 'missing';
+  };
+
+  const handleScheduleChange = async (patch: Partial<LibSchedule>) => {
+    if (!schedule) return;
+    const next = { ...schedule, ...patch };
+    setSchedule(next);
+    setSaving(true);
+    try { await api.setLibrarianSchedule(next); } catch { /* */ }
+    setSaving(false);
+  };
+
+  const handleRunNow = async () => {
+    setRunningNow(true);
+    try { await api.runLibrarianNow(); } catch { /* */ }
+    setRunningNow(false);
+    // Refresh status to show model as loaded
+    api.getOllamaStatus().then(setOllama).catch(() => {});
+  };
+
   return (
     <div>
       <H1 sub="Pick the brains behind the agent. Use stronger models when stakes are high; cheaper for routine work.">Models</H1>
@@ -298,6 +380,103 @@ function ModelsPanel() {
         <Row label="Temperature" hint="Higher = more wandering. Lower = more grounded."><Slider value={50} suffix="%" /></Row>
         <Row label="Max thinking budget" hint="How many tokens to spend on a single thought."><Slider value={4096} min={512} max={32768} suffix=" tok" /></Row>
       </Section>
+
+      {/* ── Ollama Status ────────────────────────────────────────── */}
+      <Section title="Local models (Ollama)">
+        {!ollama ? (
+          <Row label="Status" hint="Checking..."><span style={{ fontSize: 12, color: color.textDim }}>Loading...</span></Row>
+        ) : !ollama.reachable ? (
+          <Row label="Status" hint="Ollama is not running. Install from ollama.com and run 'ollama serve'.">
+            <span style={{ fontSize: 12, color: color.danger }}>Ollama not running</span>
+          </Row>
+        ) : (
+          <>
+            <Row label="Connection" hint="Ollama at localhost:11434">
+              <span style={{ fontSize: 12, color: color.cyan }}>Connected</span>
+            </Row>
+            {ollama.installed.length === 0 ? (
+              <Row label="Models" hint="No models installed. Run 'ollama pull qwen2.5:3b' to get started.">
+                <span style={{ fontSize: 12, color: color.textDim }}>None</span>
+              </Row>
+            ) : (
+              ollama.installed.map(m => {
+                const running = ollama.running.find(r => r.name === m.name);
+                return (
+                  <Row key={m.name} label={m.name} hint={formatBytes(m.size)}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <ModelStateBadge state={running ? 'running' : 'installed'} />
+                      {running?.expires_at && (
+                        <span style={{ fontSize: 10, color: color.textDim }}>
+                          unloads {new Date(running.expires_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      )}
+                    </div>
+                  </Row>
+                );
+              })
+            )}
+          </>
+        )}
+      </Section>
+
+      {/* ── Librarian Schedule ───────────────────────────────────── */}
+      {schedule && (
+        <Section title="Librarian schedule">
+          <Row label="Enabled" hint="Run the Librarian on a daily schedule to describe memories.">
+            <Toggle on={schedule.enabled} onChange={v => handleScheduleChange({ enabled: v })} />
+          </Row>
+          {schedule.enabled && (
+            <>
+              <Row label="Start time" hint="Daily start time (24h). The Librarian model will warm-load at this time.">
+                <input
+                  type="time"
+                  value={schedule.start_time}
+                  onChange={e => handleScheduleChange({ start_time: e.target.value })}
+                  style={{ ...selectStyle, minWidth: 120, width: 'auto' }}
+                />
+              </Row>
+              <Row label="Duration" hint="How long to keep the model loaded (minutes).">
+                <input
+                  type="number"
+                  min={15}
+                  max={720}
+                  value={schedule.duration_minutes}
+                  onChange={e => handleScheduleChange({ duration_minutes: Math.max(15, Math.min(720, parseInt(e.target.value) || 15)) })}
+                  style={{ ...selectStyle, minWidth: 100, width: 'auto' }}
+                />
+                <span style={{ fontSize: 11, color: color.textDim, marginLeft: 6 }}>min</span>
+              </Row>
+              <Row label="Model" hint="Ollama model used by the Librarian.">
+                <span style={{ fontSize: 13, color: color.text, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {schedule.model}
+                  <ModelStateBadge state={modelState(schedule.model)} />
+                </span>
+              </Row>
+              <Row label="Next run" hint={nextRunText(schedule)}>
+                <span style={{ fontSize: 12, color: color.textMuted }}>{nextRunText(schedule)}</span>
+              </Row>
+            </>
+          )}
+          <Row label="Run now" hint="Manually warm-load the model and trigger a Librarian run.">
+            <button
+              onClick={handleRunNow}
+              disabled={runningNow || modelState(schedule.model) === 'missing'}
+              style={{
+                height: 30, padding: '0 14px', borderRadius: 6,
+                background: runningNow ? 'rgba(0,213,255,0.08)' : 'rgba(0,213,255,0.12)',
+                border: `1px solid ${color.borderHi}`,
+                color: runningNow ? color.textDim : color.cyan,
+                fontSize: 12, fontWeight: 600, fontFamily: font.body,
+                cursor: runningNow || modelState(schedule.model) === 'missing' ? 'not-allowed' : 'pointer',
+                transition: `all 150ms ${ease.out}`,
+              }}
+            >
+              {runningNow ? 'Warming...' : 'Run Librarian now'}
+            </button>
+          </Row>
+          {saving && <div style={{ fontSize: 10, color: color.textDim, textAlign: 'right', padding: '4px 0' }}>Saving...</div>}
+        </Section>
+      )}
     </div>
   );
 }
