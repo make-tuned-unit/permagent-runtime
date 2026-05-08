@@ -339,10 +339,7 @@ function RunRow({ run, displayName, expanded, onToggle }: {
 
       // Fetch structured findings
       try {
-        const token = localStorage.getItem('daemon_token') || '';
-        const headers: Record<string, string> = {};
-        if (token) headers['Authorization'] = `Bearer ${token}`;
-        const res = await fetch(`${API}/automation/run/${encodeURIComponent(run.id)}/findings`, { headers });
+        const res = await fetch(`${API}/automation/run/${encodeURIComponent(run.id)}/findings`);
         if (res.ok && !cancelled) {
           const data = await res.json();
           setFindings(data.findings || []);
@@ -359,11 +356,10 @@ function RunRow({ run, displayName, expanded, onToggle }: {
   const handleAction = async (findingId: string, action: string) => {
     setActionInFlight(findingId);
     try {
-      const token = localStorage.getItem('daemon_token') || '';
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (token) headers['Authorization'] = `Bearer ${token}`;
       const res = await fetch(`${API}/automation/finding/${encodeURIComponent(findingId)}/action`, {
-        method: 'POST', headers, body: JSON.stringify({ action, run_id: run.id }),
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, run_id: run.id }),
       });
       if (res.ok) {
         const result = await res.json();

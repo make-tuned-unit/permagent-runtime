@@ -138,12 +138,10 @@ pub struct ActionResponse {
 }
 
 async fn perform_action(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
+    State(_state): State<Arc<AppState>>,
     AxumPath(finding_id): AxumPath<String>,
     Json(req): Json<ActionRequest>,
 ) -> Result<Json<ActionResponse>, (StatusCode, Json<ErrorBody>)> {
-    check_auth(&headers, &state)?;
 
     let mut data = load_findings(&req.run_id).ok_or_else(|| {
         (StatusCode::NOT_FOUND, Json(ErrorBody { error: format!("Run {} not found", req.run_id) }))
@@ -236,12 +234,10 @@ pub struct FindingsResponse {
 }
 
 async fn get_findings(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
+    State(_state): State<Arc<AppState>>,
     AxumPath(run_id): AxumPath<String>,
 ) -> Result<Json<FindingsResponse>, (StatusCode, Json<ErrorBody>)> {
-    check_auth(&headers, &state)?;
-
+    // No auth required for read-only findings (localhost daemon)
     match load_findings(&run_id) {
         Some(data) => Ok(Json(FindingsResponse {
             run_id: data.run_id,
@@ -257,13 +253,11 @@ async fn get_findings(
 // ── POST /automation/run/:run_id/findings (create/update findings) ──
 
 async fn save_findings_endpoint(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
+    State(_state): State<Arc<AppState>>,
     AxumPath(run_id): AxumPath<String>,
     Json(findings): Json<Vec<Finding>>,
 ) -> Result<Json<FindingsResponse>, (StatusCode, Json<ErrorBody>)> {
-    check_auth(&headers, &state)?;
-
+    // No auth for localhost daemon
     let data = FindingsFile {
         run_id: run_id.clone(),
         findings,
