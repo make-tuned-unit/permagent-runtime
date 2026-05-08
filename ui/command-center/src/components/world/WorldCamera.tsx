@@ -43,19 +43,19 @@ export function WorldCamera({ mode, selectedAgent, onModeChange }: WorldCameraPr
       }
       if (mode === 'first-person') {
         switch (e.key.toLowerCase()) {
-          case 'w': fpMovement.current.forward = true; break;
-          case 's': fpMovement.current.backward = true; break;
-          case 'a': fpMovement.current.left = true; break;
-          case 'd': fpMovement.current.right = true; break;
+          case 'w': case 'arrowup': fpMovement.current.forward = true; break;
+          case 's': case 'arrowdown': fpMovement.current.backward = true; break;
+          case 'a': case 'arrowleft': fpMovement.current.left = true; break;
+          case 'd': case 'arrowright': fpMovement.current.right = true; break;
         }
       }
     };
     const handleKeyUp = (e: KeyboardEvent) => {
       switch (e.key.toLowerCase()) {
-        case 'w': fpMovement.current.forward = false; break;
-        case 's': fpMovement.current.backward = false; break;
-        case 'a': fpMovement.current.left = false; break;
-        case 'd': fpMovement.current.right = false; break;
+        case 'w': case 'arrowup': fpMovement.current.forward = false; break;
+        case 's': case 'arrowdown': fpMovement.current.backward = false; break;
+        case 'a': case 'arrowleft': fpMovement.current.left = false; break;
+        case 'd': case 'arrowright': fpMovement.current.right = false; break;
       }
     };
     const handleContextMenu = (e: MouseEvent) => {

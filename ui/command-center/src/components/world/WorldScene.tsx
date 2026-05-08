@@ -3,6 +3,7 @@ import { useFrame } from '@react-three/fiber';
 import { Float } from '@react-three/drei';
 import * as THREE from 'three';
 import { COLORS, STATIONS, COLUMN_COUNT, ROTUNDA_RADIUS, DOME_HEIGHT, PLATFORM_RADIUS } from './constants';
+import { LabFurniture } from './WorldFurniture';
 
 // Floor with glowing circuit mandala pattern
 function RotundaFloor() {
@@ -48,7 +49,7 @@ function FloorCircuits() {
   const rings = useMemo(() => {
     const radii = [3, 6, 9, 12];
     return radii.map((r) => {
-      const geo = new THREE.RingGeometry(r - 0.03, r + 0.03, 64);
+      const geo = new THREE.TorusGeometry(r, 0.03, 4, 64);
       return { geo, r };
     });
   }, []);
@@ -58,11 +59,12 @@ function FloorCircuits() {
     return Array.from({ length: count }, (_, i) => (i / count) * Math.PI * 2);
   }, []);
 
+  // Use thin 3D torus rings + box beams raised above floor to avoid z-fighting
   return (
-    <group ref={ref} position-y={0.01}>
+    <group ref={ref} position-y={0.05}>
       {rings.map(({ geo }, i) => (
         <mesh key={`ring-${i}`} rotation-x={-Math.PI / 2} geometry={geo}>
-          <meshBasicMaterial color={COLORS.neonCyan} transparent opacity={0.4} />
+          <meshBasicMaterial color={COLORS.neonCyan} transparent opacity={0.4} depthWrite={false} />
         </mesh>
       ))}
       {lineAngles.map((angle, i) => (
@@ -71,8 +73,8 @@ function FloorCircuits() {
           position={[Math.cos(angle) * 6, 0, Math.sin(angle) * 6]}
           rotation={[0, -angle + Math.PI / 2, 0]}
         >
-          <planeGeometry args={[12, 0.04]} />
-          <meshBasicMaterial color={COLORS.neonCyan} transparent opacity={0.3} side={THREE.DoubleSide} />
+          <boxGeometry args={[12, 0.06, 0.04]} />
+          <meshBasicMaterial color={COLORS.neonCyan} transparent opacity={0.3} depthWrite={false} />
         </mesh>
       ))}
     </group>
@@ -412,6 +414,7 @@ export function WorldSceneContent({
       <Columns />
       <Dome />
       <StationPedestals onHoverStation={onHoverStation} onClickStation={onClickStation} />
+      <LabFurniture />
 
       {/* Atmosphere */}
       <LightShaft />
