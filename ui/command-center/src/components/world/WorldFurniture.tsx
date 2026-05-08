@@ -504,7 +504,7 @@ export const MEZZ_INNER_R = 12.5;
 export const MEZZ_OUTER_R = 15.5;
 const MEZZ_MID_R = (MEZZ_INNER_R + MEZZ_OUTER_R) / 2;
 
-const STAIR_GAP_CENTER = Math.PI * 0.5; // world-space angle: +Z direction (east)
+const STAIR_GAP_CENTER = Math.PI * 0.375; // between columns 1 and 2 (67.5 deg)
 const STAIR_GAP_HALF = 0.12;           // small opening, ~3.4 units of arc at r=14
 const SHELF_WALL_HEIGHT = 4;
 
