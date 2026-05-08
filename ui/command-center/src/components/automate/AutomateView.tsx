@@ -80,9 +80,10 @@ export function AutomateView() {
   const [tab, setTab] = useState<Tab>('automations');
   const [showModal, setShowModal] = useState(false);
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
+  const [completionToast, setCompletionToast] = useState<string | null>(null);
+  const prevRunningRef = useRef<Set<string>>(new Set());
   const { gradient } = useTheme();
 
-  // Map job display names by ID for use in runs tab
   const jobNameMap = new Map(jobs.map(j => [j.id, j.display_name || j.id]));
 
   const fetchJobs = useCallback(async () => {
@@ -90,30 +91,53 @@ export function AutomateView() {
       const res = await fetch(`${API}/schedule/list`);
       if (res.ok) {
         const data = await res.json();
-        setJobs(data.jobs || []);
+        const newJobs: ScheduledJob[] = data.jobs || [];
+        setJobs(newJobs);
+
+        // Detect job completion: was running, now not
+        const nowRunning = new Set(newJobs.filter(j => j.currently_running).map(j => j.id));
+        const prev = prevRunningRef.current;
+        for (const id of prev) {
+          if (!nowRunning.has(id)) {
+            const name = newJobs.find(j => j.id === id)?.display_name || id;
+            setCompletionToast(name);
+            setTab('runs');
+            setTimeout(() => setCompletionToast(null), 8000);
+          }
+        }
+        prevRunningRef.current = nowRunning;
       }
-    } catch { /* daemon may be down */ }
+    } catch {}
   }, []);
 
-  const fetchSessions = useCallback(async (jobId: string) => {
-    try {
-      const res = await fetch(`${API}/schedule/${encodeURIComponent(jobId)}/sessions?limit=10`);
-      if (res.ok) {
-        const data: SessionInfo[] = await res.json();
-        setSessions(prev => new Map(prev).set(jobId, data));
-      }
-    } catch { /* ignore */ }
+  const fetchAllSessions = useCallback(async (jobIds: string[]) => {
+    for (const jobId of jobIds) {
+      try {
+        const res = await fetch(`${API}/schedule/${encodeURIComponent(jobId)}/sessions?limit=10`);
+        if (res.ok) {
+          const data: SessionInfo[] = await res.json();
+          setSessions(prev => new Map(prev).set(jobId, data));
+        }
+      } catch {}
+    }
   }, []);
 
-  // Poll every 5 seconds (v1; TODO: switch to event-based in v2)
+  // Poll every 5 seconds
   useEffect(() => {
     fetchJobs();
     const interval = setInterval(fetchJobs, 5000);
     return () => clearInterval(interval);
   }, [fetchJobs]);
 
+  // Re-fetch sessions every poll cycle (catches new runs)
   useEffect(() => {
-    jobs.forEach(j => fetchSessions(j.id));
+    if (jobs.length > 0) {
+      fetchAllSessions(jobs.map(j => j.id));
+    }
+    const interval = setInterval(() => {
+      if (jobs.length > 0) fetchAllSessions(jobs.map(j => j.id));
+    }, 5000);
+    return () => clearInterval(interval);
   }, [jobs.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const allRuns = Array.from(sessions.entries())
@@ -163,6 +187,22 @@ export function AutomateView() {
           ))}
         </div>
       </div>
+
+      {/* Completion toast */}
+      {completionToast && (
+        <div style={{
+          margin: '12px 32px 0', padding: '10px 16px', borderRadius: radius.md,
+          background: 'rgba(91,209,127,0.1)', border: '1px solid rgba(91,209,127,0.25)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        }}>
+          <span style={{ fontSize: 13, color: '#5BD17F' }}>
+            "{completionToast}" completed. Results are below.
+          </span>
+          <button onClick={() => setCompletionToast(null)} style={{
+            background: 'none', border: 'none', color: color.textDim, cursor: 'pointer', fontSize: 16,
+          }}>x</button>
+        </div>
+      )}
 
       {/* Content */}
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '20px 32px' }}>
@@ -232,10 +272,7 @@ function AutomationCard({ job, onRunNow, onPause, onUnpause, onDelete, onKill }:
         ) : (
           <>
             <Btn label="Run Now" onClick={() => onRunNow(job.id)} primary />
-            {job.paused
-              ? <Btn label="Resume" onClick={() => onUnpause(job.id)} />
-              : <Btn label="Pause" onClick={() => onPause(job.id)} />
-            }
+            {job.paused ? <Btn label="Resume" onClick={() => onUnpause(job.id)} /> : <Btn label="Pause" onClick={() => onPause(job.id)} />}
           </>
         )}
         <Btn label="Delete" onClick={() => onDelete(job.id)} danger muted />
@@ -249,18 +286,18 @@ function Btn({ label, onClick, primary, danger, muted }: {
 }) {
   const bg = primary ? color.cyan : danger ? 'rgba(255,100,100,0.1)' : 'rgba(255,255,255,0.05)';
   const fg = primary ? '#000' : danger ? '#ff6b6b' : color.textMuted;
-  const border = primary ? 'transparent' : danger ? 'rgba(255,100,100,0.2)' : color.border;
+  const bdr = primary ? 'transparent' : danger ? 'rgba(255,100,100,0.2)' : color.border;
   return (
     <button onClick={onClick} style={{
       padding: primary ? '6px 16px' : '4px 10px', borderRadius: radius.sm,
-      background: bg, border: `1px solid ${border}`, color: fg,
+      background: bg, border: `1px solid ${bdr}`, color: fg,
       fontSize: 11, fontWeight: primary ? 600 : 500, cursor: 'pointer', fontFamily: font.body,
       opacity: muted ? 0.6 : 1,
     }}>{label}</button>
   );
 }
 
-// ── Run Row ─────────────────────────────────────────────────────────
+// ── Run Row (fetches actual session content when expanded) ──────────
 
 function RunRow({ run, displayName, expanded, onToggle }: {
   run: SessionInfo & { jobId: string };
@@ -268,13 +305,39 @@ function RunRow({ run, displayName, expanded, onToggle }: {
   expanded: boolean;
   onToggle: () => void;
 }) {
+  const [reportText, setReportText] = useState<string | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [actionInFlight, setActionInFlight] = useState<string | null>(null);
+  const [loadingContent, setLoadingContent] = useState(false);
 
+  // Fetch session content + findings when expanded
   useEffect(() => {
     if (!expanded) return;
     let cancelled = false;
-    const load = async () => {
+
+    const loadContent = async () => {
+      setLoadingContent(true);
+
+      // Fetch session messages for the report text
+      try {
+        const res = await fetch(`${API}/api/sessions/${encodeURIComponent(run.id)}`);
+        if (res.ok && !cancelled) {
+          const session = await res.json();
+          const msgs = session.conversation || [];
+          // Extract assistant text messages, skip tool calls
+          const text = msgs
+            .filter((m: any) => m.role === 'assistant')
+            .flatMap((m: any) => (m.content || [])
+              .filter((c: any) => c.type === 'text')
+              .map((c: any) => c.text))
+            .join('\n\n');
+          // Strip <findings> block from display text
+          const cleaned = text.replace(/<findings>[\s\S]*?<\/findings>/g, '').trim();
+          setReportText(cleaned || 'No output captured.');
+        }
+      } catch {}
+
+      // Fetch structured findings
       try {
         const token = localStorage.getItem('daemon_token') || '';
         const headers: Record<string, string> = {};
@@ -285,10 +348,12 @@ function RunRow({ run, displayName, expanded, onToggle }: {
           setFindings(data.findings || []);
         }
       } catch {}
+
+      if (!cancelled) setLoadingContent(false);
     };
-    load();
-    const interval = setInterval(load, 5000);
-    return () => { cancelled = true; clearInterval(interval); };
+
+    loadContent();
+    return () => { cancelled = true; };
   }, [expanded, run.id]);
 
   const handleAction = async (findingId: string, action: string) => {
@@ -343,25 +408,44 @@ function RunRow({ run, displayName, expanded, onToggle }: {
       </button>
       {expanded && (
         <div style={{ padding: '0 16px 16px', borderTop: `1px solid ${color.border}` }}>
-          <div style={{ fontSize: 12, color: color.textMuted, marginTop: 12, lineHeight: 1.6 }}>
-            <span style={{ color: color.text }}>{new Date(run.createdAt).toLocaleString()}</span>
-            <span> &middot; {run.totalTokens ?? 0} tokens ({run.inputTokens ?? 0} in / {run.outputTokens ?? 0} out)</span>
-          </div>
-          {/* Findings */}
-          {findings.length > 0 && (
-            <div style={{ marginTop: 16 }}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: color.textMuted, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>
-                Findings ({findings.length})
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {findings.map(f => <FindingRow key={f.id} finding={f} loading={actionInFlight === f.id} onAction={(a) => handleAction(f.id, a)} />)}
-              </div>
-              {allActioned && totalRecovered > 0 && (
-                <div style={{ marginTop: 12, padding: '8px 12px', borderRadius: radius.sm, background: 'rgba(91,209,127,0.08)', border: '1px solid rgba(91,209,127,0.2)', fontSize: 12, color: '#5BD17F' }}>
-                  Recovered {formatBytes(totalRecovered)} across {findings.filter(f => f.action_taken === 'trashed').length} items.
+          {loadingContent ? (
+            <div style={{ fontSize: 12, color: color.textDim, marginTop: 12 }}>Loading results...</div>
+          ) : (
+            <>
+              {/* Report text */}
+              {reportText && (
+                <div style={{
+                  marginTop: 12, padding: '12px 14px', borderRadius: radius.sm,
+                  background: 'rgba(10,14,23,0.6)', border: `1px solid ${color.border}`,
+                  fontSize: 12, color: color.textMuted, lineHeight: 1.7, fontFamily: font.body,
+                  maxHeight: 400, overflowY: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                }}>
+                  {reportText}
                 </div>
               )}
-            </div>
+
+              {/* Metadata */}
+              <div style={{ fontSize: 11, color: color.textDim, marginTop: 8 }}>
+                {new Date(run.createdAt).toLocaleString()} &middot; {run.totalTokens ?? 0} tokens
+              </div>
+
+              {/* Findings */}
+              {findings.length > 0 && (
+                <div style={{ marginTop: 16 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: color.textMuted, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>
+                    Actionable Findings ({findings.length})
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {findings.map(f => <FindingRow key={f.id} finding={f} loading={actionInFlight === f.id} onAction={(a) => handleAction(f.id, a)} />)}
+                  </div>
+                  {allActioned && totalRecovered > 0 && (
+                    <div style={{ marginTop: 12, padding: '8px 12px', borderRadius: radius.sm, background: 'rgba(91,209,127,0.08)', border: '1px solid rgba(91,209,127,0.2)', fontSize: 12, color: '#5BD17F' }}>
+                      Recovered {formatBytes(totalRecovered)} across {findings.filter(f => f.action_taken === 'trashed').length} items.
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
           )}
         </div>
       )}
@@ -404,14 +488,12 @@ function FindingRow({ finding, loading, onAction }: { finding: Finding; loading:
         <button onClick={() => onAction('trash')} disabled={loading} style={{
           padding: '3px 8px', borderRadius: radius.sm, background: 'rgba(255,100,100,0.1)',
           border: '1px solid rgba(255,100,100,0.2)', color: '#ff6b6b', fontSize: 10,
-          fontWeight: 600, cursor: loading ? 'wait' : 'pointer', fontFamily: font.body,
-          opacity: loading ? 0.5 : 1,
+          fontWeight: 600, cursor: loading ? 'wait' : 'pointer', fontFamily: font.body, opacity: loading ? 0.5 : 1,
         }}>{loading ? '...' : 'Move to Trash'}</button>
         <button onClick={() => onAction('keep')} disabled={loading} style={{
           padding: '3px 8px', borderRadius: radius.sm, background: 'rgba(255,255,255,0.05)',
           border: `1px solid ${color.border}`, color: color.textMuted, fontSize: 10,
-          fontWeight: 500, cursor: loading ? 'wait' : 'pointer', fontFamily: font.body,
-          opacity: loading ? 0.5 : 1,
+          fontWeight: 500, cursor: loading ? 'wait' : 'pointer', fontFamily: font.body, opacity: loading ? 0.5 : 1,
         }}>Keep</button>
       </div>
     </div>
