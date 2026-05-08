@@ -157,43 +157,6 @@ function WorkbenchArea() {
   );
 }
 
-// === LIBRARY AREA (East, x=10) ===
-// Bookshelves, reading desk, couch
-
-function Bookshelf({ position, rotation = 0 }: { position: [number, number, number]; rotation?: number }) {
-  const wood = useWoodMat();
-  return (
-    <group position={position} rotation-y={rotation}>
-      {/* Frame */}
-      <mesh material={wood} castShadow>
-        <boxGeometry args={[2, 3, 0.4]} />
-      </mesh>
-      {/* Shelves */}
-      {[-0.9, -0.3, 0.3, 0.9].map((y, i) => (
-        <mesh key={i} position={[0, y, 0]} material={wood}>
-          <boxGeometry args={[1.85, 0.06, 0.38]} />
-        </mesh>
-      ))}
-      {/* Books (rows of colored boxes) */}
-      {[-0.9, -0.3, 0.3, 0.9].map((shelfY, si) => (
-        <group key={`bs-${si}`}>
-          {Array.from({ length: 8 }, (_, bi) => {
-            const bookH = 0.35 + Math.random() * 0.2;
-            const bookW = 0.08 + Math.random() * 0.06;
-            const hue = (si * 60 + bi * 30) % 360;
-            return (
-              <mesh key={`b-${si}-${bi}`} position={[-0.7 + bi * 0.2, shelfY + 0.03 + bookH / 2, 0]}>
-                <boxGeometry args={[bookW, bookH, 0.25]} />
-                <meshStandardMaterial color={`hsl(${hue}, 40%, 35%)`} roughness={0.7} />
-              </mesh>
-            );
-          })}
-        </group>
-      ))}
-    </group>
-  );
-}
-
 function ReadingDesk({ position }: { position: [number, number, number] }) {
   const wood = useWoodMat();
   const marble = useMarbleMat();
@@ -534,17 +497,16 @@ function LowTable({ position }: { position: [number, number, number] }) {
 }
 
 // === MEZZANINE LIBRARY (The Brain) ===
-// Narrow ring walkway hugging the columns, accessed by stairs
-// This is the physical representation of the Brain — the Librarian works here
+// Raised ring walkway high on the columns with built-in bookshelf walls
 
-export const MEZZ_HEIGHT = 5;
-export const MEZZ_INNER_R = 12.5;  // inner edge — overlooks ground floor
-export const MEZZ_OUTER_R = 15.5;  // outer edge — just past columns (at r=14)
-const MEZZ_MID_R = (MEZZ_INNER_R + MEZZ_OUTER_R) / 2; // walkway center ~14
+export const MEZZ_HEIGHT = 10;       // raised high so ground floor breathes
+export const MEZZ_INNER_R = 12.5;
+export const MEZZ_OUTER_R = 15.5;
+const MEZZ_MID_R = (MEZZ_INNER_R + MEZZ_OUTER_R) / 2;
 
-// Stair gap: generous opening in the ring where stairs arrive
-const STAIR_GAP_CENTER = Math.PI * 0.5; // east side (toward library pedestal)
-const STAIR_GAP_HALF = 0.35; // radians — wide enough to walk through (~10 units arc)
+const STAIR_GAP_CENTER = Math.PI * 0.5;
+const STAIR_GAP_HALF = 0.4;
+const SHELF_WALL_HEIGHT = 4;         // floor-to-ceiling shelving
 
 function isInStairGap(angle: number): boolean {
   let diff = angle - STAIR_GAP_CENTER;
@@ -555,8 +517,6 @@ function isInStairGap(angle: number): boolean {
 
 function MezzanineRing() {
   const darkStone = useDarkStoneMat();
-
-  // Ring floor with stair gap — thetaStart after the gap, thetaLength = arc minus gap
   const gapSize = STAIR_GAP_HALF * 2;
   const thetaStart = STAIR_GAP_CENTER + STAIR_GAP_HALF;
   const thetaLength = Math.PI * 2 - gapSize;
@@ -569,9 +529,9 @@ function MezzanineRing() {
         <meshStandardMaterial color={COLORS.primaryMarble} roughness={0.3} metalness={0.1} />
       </mesh>
 
-      {/* Inner railing — skip posts at stair gap */}
-      {Array.from({ length: 40 }, (_, i) => {
-        const angle = (i / 40) * Math.PI * 2;
+      {/* Inner railing — skip stair gap */}
+      {Array.from({ length: 48 }, (_, i) => {
+        const angle = (i / 48) * Math.PI * 2;
         if (isInStairGap(angle)) return null;
         return (
           <mesh key={`ip-${i}`} position={[Math.cos(angle) * MEZZ_INNER_R, 0.4, Math.sin(angle) * MEZZ_INNER_R]} material={darkStone}>
@@ -579,7 +539,6 @@ function MezzanineRing() {
           </mesh>
         );
       })}
-      {/* Inner railing rail — arc avoiding gap */}
       <mesh position-y={0.65} rotation-x={-Math.PI / 2}>
         <ringGeometry args={[MEZZ_INNER_R - 0.03, MEZZ_INNER_R + 0.03, 64, 1, thetaStart, thetaLength]} />
         <primitive object={darkStone} attach="material" />
@@ -596,41 +555,42 @@ function MezzanineRing() {
 
 function Staircase() {
   const marble = useMarbleMat();
-  const stepCount = 18;
-  // Spiral stairs from ground floor up to the stair gap
+  const stepCount = 30;  // more steps for the greater height
   const endAngle = STAIR_GAP_CENTER;
-  const arcSpan = Math.PI * 0.35;
+  const arcSpan = Math.PI * 0.6; // wider spiral arc
   const startAngle = endAngle - arcSpan;
-  const stairR = MEZZ_MID_R; // stairs centered on the ring walkway
+  const stairR = MEZZ_MID_R;
+  const stepWidth = MEZZ_OUTER_R - MEZZ_INNER_R - 0.4;
 
   return (
     <group>
       {Array.from({ length: stepCount }, (_, i) => {
         const t = i / (stepCount - 1);
         const angle = startAngle + t * arcSpan;
+        // Last step is exactly at MEZZ_HEIGHT (flush with floor)
         const y = t * MEZZ_HEIGHT;
         const x = Math.cos(angle) * stairR;
         const z = Math.sin(angle) * stairR;
         return (
-          <mesh key={i} position={[x, y + 0.1, z]} rotation-y={-angle + Math.PI / 2} castShadow material={marble}>
-            <boxGeometry args={[MEZZ_OUTER_R - MEZZ_INNER_R - 0.2, 0.2, 0.7]} />
+          <mesh key={i} position={[x, y + 0.05, z]} rotation-y={-angle + Math.PI / 2} castShadow material={marble}>
+            <boxGeometry args={[stepWidth, 0.15, 0.6]} />
           </mesh>
         );
       })}
-      {/* Stair railings */}
+      {/* Railings on both sides */}
       {Array.from({ length: stepCount }, (_, i) => {
-        if (i % 2 !== 0) return null;
+        if (i % 3 !== 0) return null;
         const t = i / (stepCount - 1);
         const angle = startAngle + t * arcSpan;
         const y = t * MEZZ_HEIGHT;
         return (
           <group key={`r-${i}`}>
-            <mesh position={[Math.cos(angle) * (MEZZ_INNER_R + 0.2), y + 0.5, Math.sin(angle) * (MEZZ_INNER_R + 0.2)]}>
-              <cylinderGeometry args={[0.04, 0.04, 0.8, 4]} />
+            <mesh position={[Math.cos(angle) * (MEZZ_INNER_R + 0.15), y + 0.5, Math.sin(angle) * (MEZZ_INNER_R + 0.15)]}>
+              <cylinderGeometry args={[0.04, 0.04, 1, 4]} />
               <meshStandardMaterial color="#888" metalness={0.5} roughness={0.3} />
             </mesh>
-            <mesh position={[Math.cos(angle) * (MEZZ_OUTER_R - 0.2), y + 0.5, Math.sin(angle) * (MEZZ_OUTER_R - 0.2)]}>
-              <cylinderGeometry args={[0.04, 0.04, 0.8, 4]} />
+            <mesh position={[Math.cos(angle) * (MEZZ_OUTER_R - 0.15), y + 0.5, Math.sin(angle) * (MEZZ_OUTER_R - 0.15)]}>
+              <cylinderGeometry args={[0.04, 0.04, 1, 4]} />
               <meshStandardMaterial color="#888" metalness={0.5} roughness={0.3} />
             </mesh>
           </group>
@@ -640,75 +600,105 @@ function Staircase() {
   );
 }
 
-// Back wall at the outer edge of the mezzanine — bookshelves sit against this
-function MezzanineBackWall() {
+// Continuous built-in bookshelf wall that circles the entire outer edge.
+// This is ONE structure — a curved wall with horizontal shelves and books.
+function BookshelfWall() {
+  const wood = useWoodMat();
   const darkStone = useDarkStoneMat();
+
+  const thetaStart = STAIR_GAP_CENTER + STAIR_GAP_HALF;
+  const thetaLength = Math.PI * 2 - STAIR_GAP_HALF * 2;
+  const shelfR = MEZZ_OUTER_R - 0.3; // slightly inset from outer wall
+  const shelfCount = 5; // horizontal shelf rows
+  const shelfDepth = 0.35;
+
+  // Generate book blocks around the ring per shelf level
+  const bookRows = useMemo(() => {
+    const rows: { angle: number; shelfY: number; width: number; height: number; hue: number }[] = [];
+    const booksPerShelf = 80;
+    for (let s = 0; s < shelfCount; s++) {
+      const shelfY = 0.15 + s * (SHELF_WALL_HEIGHT / shelfCount);
+      for (let b = 0; b < booksPerShelf; b++) {
+        const angle = thetaStart + (b / booksPerShelf) * thetaLength;
+        if (isInStairGap(angle)) continue;
+        rows.push({
+          angle,
+          shelfY,
+          width: 0.06 + Math.random() * 0.04,
+          height: 0.4 + Math.random() * 0.3,
+          hue: (s * 50 + b * 17) % 360,
+        });
+      }
+    }
+    return rows;
+  }, []);
+
   return (
     <group position-y={MEZZ_HEIGHT}>
-      {/* Outer wall — tall cylinder shell */}
-      <mesh material={darkStone}>
-        <cylinderGeometry args={[MEZZ_OUTER_R, MEZZ_OUTER_R, 4, 64, 1, true]} />
+      {/* Back wall — the structure the shelves are built into */}
+      <mesh position-y={SHELF_WALL_HEIGHT / 2} material={darkStone}>
+        <cylinderGeometry args={[MEZZ_OUTER_R, MEZZ_OUTER_R, SHELF_WALL_HEIGHT, 64, 1, true,
+          thetaStart, thetaLength]} />
       </mesh>
+
+      {/* Horizontal shelf planks — continuous arcs */}
+      {Array.from({ length: shelfCount + 1 }, (_, i) => {
+        const y = i * (SHELF_WALL_HEIGHT / shelfCount);
+        return (
+          <mesh key={`shelf-${i}`} position-y={y} rotation-x={-Math.PI / 2}>
+            <ringGeometry args={[shelfR - shelfDepth, shelfR, 64, 1, thetaStart, thetaLength]} />
+            <primitive object={wood} attach="material" />
+          </mesh>
+        );
+      })}
+
+      {/* Vertical dividers every ~2 units around the ring */}
+      {Array.from({ length: 48 }, (_, i) => {
+        const angle = thetaStart + (i / 48) * thetaLength;
+        if (isInStairGap(angle)) return null;
+        const x = Math.cos(angle) * shelfR;
+        const z = Math.sin(angle) * shelfR;
+        return (
+          <mesh key={`div-${i}`} position={[x, SHELF_WALL_HEIGHT / 2, z]} rotation-y={-angle}>
+            <boxGeometry args={[0.04, SHELF_WALL_HEIGHT, shelfDepth]} />
+            <primitive object={wood} attach="material" />
+          </mesh>
+        );
+      })}
+
+      {/* Books filling the shelves */}
+      {bookRows.map((book, i) => {
+        const x = Math.cos(book.angle) * (shelfR - shelfDepth / 2);
+        const z = Math.sin(book.angle) * (shelfR - shelfDepth / 2);
+        return (
+          <mesh key={`book-${i}`} position={[x, book.shelfY + book.height / 2, z]} rotation-y={-book.angle}>
+            <boxGeometry args={[book.width, book.height, 0.2]} />
+            <meshStandardMaterial color={`hsl(${book.hue}, 35%, 30%)`} roughness={0.8} />
+          </mesh>
+        );
+      })}
     </group>
   );
 }
 
 function MezzanineLibraryContents() {
-  // Bookshelves flush against the outer wall, completely ringing the mezzanine
-  // Each shelf is ~1.6 units wide. At r=15.2 (flush to wall), circumference ≈ 95.5 units
-  // 40 shelves × ~1.6 = 64 units of shelving + gaps for books
-  const shelfPositions = useMemo(() => {
-    const count = 36;
-    const shelves: { x: number; z: number; angle: number }[] = [];
-    for (let i = 0; i < count; i++) {
-      const angle = (i / count) * Math.PI * 2;
-      if (isInStairGap(angle)) continue;
-      // Back of shelf flush against outer wall (shelf is 0.4 deep, so center at outer - 0.2)
-      const r = MEZZ_OUTER_R - 0.25;
-      shelves.push({
-        x: Math.cos(angle) * r,
-        z: Math.sin(angle) * r,
-        angle: angle + Math.PI, // face inward toward walkway
-      });
-    }
-    return shelves;
-  }, []);
-
-  // Reading desks along the inner walkway edge
-  const deskPositions = useMemo(() => {
-    const desks: { x: number; z: number; angle: number }[] = [];
-    const deskCount = 6;
-    for (let i = 0; i < deskCount; i++) {
-      const angle = (i / deskCount) * Math.PI * 2 + Math.PI / 6;
-      if (isInStairGap(angle)) continue;
-      const r = MEZZ_INNER_R + 1.2;
-      desks.push({
-        x: Math.cos(angle) * r,
-        z: Math.sin(angle) * r,
-        angle: angle + Math.PI,
-      });
-    }
-    return desks;
-  }, []);
-
   return (
     <group position-y={MEZZ_HEIGHT + 0.15}>
-      {/* Bookshelves flush against outer wall */}
-      {shelfPositions.map((sp, i) => (
-        <Bookshelf key={i} position={[sp.x, 1.5, sp.z]} rotation={sp.angle} />
-      ))}
-      {/* Reading desks */}
-      {deskPositions.map((dp, i) => (
-        <ReadingDesk key={`desk-${i}`} position={[dp.x, 0, dp.z]} />
-      ))}
-      {/* A few armchairs along the walkway */}
+      {/* Reading desks along inner walkway */}
+      {Array.from({ length: 6 }, (_, i) => {
+        const angle = (i / 6) * Math.PI * 2 + Math.PI / 6;
+        if (isInStairGap(angle)) return null;
+        const r = MEZZ_INNER_R + 1.2;
+        return <ReadingDesk key={`desk-${i}`} position={[Math.cos(angle) * r, 0, Math.sin(angle) * r]} />;
+      })}
+      {/* Armchairs */}
       <ArmChair position={[Math.cos(Math.PI) * MEZZ_MID_R, 0, Math.sin(Math.PI) * MEZZ_MID_R]} rotation={0} />
       <ArmChair position={[Math.cos(0) * MEZZ_MID_R, 0, Math.sin(0) * MEZZ_MID_R]} rotation={Math.PI} />
-      {/* Warm amber lighting around the ring */}
+      {/* Warm amber lighting */}
       {Array.from({ length: 8 }, (_, i) => {
         const angle = (i / 8) * Math.PI * 2;
         return (
-          <pointLight key={i} position={[Math.cos(angle) * MEZZ_MID_R, 2.5, Math.sin(angle) * MEZZ_MID_R]} color={COLORS.neonAmber} intensity={0.2} distance={6} />
+          <pointLight key={i} position={[Math.cos(angle) * MEZZ_MID_R, 2.5, Math.sin(angle) * MEZZ_MID_R]} color={COLORS.neonAmber} intensity={0.2} distance={8} />
         );
       })}
     </group>
@@ -724,9 +714,9 @@ export function LabFurniture() {
       <ObservatoryArea />
       <ForumArea />
       {/* Mezzanine Library (The Brain) */}
-      <MezzanineBackWall />
       <MezzanineRing />
       <Staircase />
+      <BookshelfWall />
       <MezzanineLibraryContents />
     </group>
   );

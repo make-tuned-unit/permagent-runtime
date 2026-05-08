@@ -56,7 +56,7 @@ const INITIAL_AGENTS: AgentState[] = [
     id: 'librarian',
     name: 'The Librarian',
     role: 'agent',
-    position: { x: 14, y: 5.15, z: 0 },
+    position: { x: 14, y: 10.15, z: 0 },
     activity: 'idle',
     currentStation: null,
     togaTrimColor: '#8B7E6F',
@@ -70,7 +70,7 @@ function randomInterval(): number {
 
 // Mezzanine waypoints for the Librarian — stays on the ring walkway
 const MEZZ_MID_R = 14; // center of the walkway ring (12.5 to 15.5)
-const MEZZ_Y = 5.15;
+const MEZZ_Y = 10.15;
 const MEZZ_WAYPOINTS = Array.from({ length: 12 }, (_, i) => {
   const angle = (i / 12) * Math.PI * 2;
   return { id: `mezz-${i}`, x: Math.cos(angle) * MEZZ_MID_R, z: Math.sin(angle) * MEZZ_MID_R };
