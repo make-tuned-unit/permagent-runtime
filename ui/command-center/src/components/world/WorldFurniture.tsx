@@ -600,19 +600,20 @@ function Staircase() {
   );
 }
 
-// Continuous built-in bookshelf wall that circles the entire outer edge.
-// This is ONE structure — a curved wall with horizontal shelves and books.
+// Continuous built-in bookshelf wall on the INNER edge of the ring.
+// Faces outward so you can look down past it to the ground floor.
 function BookshelfWall() {
   const wood = useWoodMat();
   const darkStone = useDarkStoneMat();
 
   const thetaStart = STAIR_GAP_CENTER + STAIR_GAP_HALF;
   const thetaLength = Math.PI * 2 - STAIR_GAP_HALF * 2;
-  const shelfR = MEZZ_OUTER_R - 0.3; // slightly inset from outer wall
-  const shelfCount = 5; // horizontal shelf rows
-  const shelfDepth = 0.35;
+  // Shelves on the inner edge, facing outward (toward center of rotunda)
+  const wallR = MEZZ_INNER_R + 0.05;  // back wall just inside inner edge
+  const shelfR = MEZZ_INNER_R + 0.35; // shelf front extends into walkway
+  const shelfCount = 5;
+  const shelfDepth = 0.3;
 
-  // Generate book blocks around the ring per shelf level
   const bookRows = useMemo(() => {
     const rows: { angle: number; shelfY: number; width: number; height: number; hue: number }[] = [];
     const booksPerShelf = 80;
@@ -635,29 +636,30 @@ function BookshelfWall() {
 
   return (
     <group position-y={MEZZ_HEIGHT}>
-      {/* Back wall — the structure the shelves are built into */}
+      {/* Back wall on inner edge */}
       <mesh position-y={SHELF_WALL_HEIGHT / 2} material={darkStone}>
-        <cylinderGeometry args={[MEZZ_OUTER_R, MEZZ_OUTER_R, SHELF_WALL_HEIGHT, 64, 1, true,
+        <cylinderGeometry args={[wallR, wallR, SHELF_WALL_HEIGHT, 64, 1, true,
           thetaStart, thetaLength]} />
       </mesh>
 
-      {/* Horizontal shelf planks — continuous arcs */}
+      {/* Horizontal shelf planks */}
       {Array.from({ length: shelfCount + 1 }, (_, i) => {
         const y = i * (SHELF_WALL_HEIGHT / shelfCount);
         return (
           <mesh key={`shelf-${i}`} position-y={y} rotation-x={-Math.PI / 2}>
-            <ringGeometry args={[shelfR - shelfDepth, shelfR, 64, 1, thetaStart, thetaLength]} />
+            <ringGeometry args={[wallR, shelfR, 64, 1, thetaStart, thetaLength]} />
             <primitive object={wood} attach="material" />
           </mesh>
         );
       })}
 
-      {/* Vertical dividers every ~2 units around the ring */}
+      {/* Vertical dividers */}
       {Array.from({ length: 48 }, (_, i) => {
         const angle = thetaStart + (i / 48) * thetaLength;
         if (isInStairGap(angle)) return null;
-        const x = Math.cos(angle) * shelfR;
-        const z = Math.sin(angle) * shelfR;
+        const midR = (wallR + shelfR) / 2;
+        const x = Math.cos(angle) * midR;
+        const z = Math.sin(angle) * midR;
         return (
           <mesh key={`div-${i}`} position={[x, SHELF_WALL_HEIGHT / 2, z]} rotation-y={-angle}>
             <boxGeometry args={[0.04, SHELF_WALL_HEIGHT, shelfDepth]} />
@@ -666,13 +668,14 @@ function BookshelfWall() {
         );
       })}
 
-      {/* Books filling the shelves */}
+      {/* Books */}
       {bookRows.map((book, i) => {
-        const x = Math.cos(book.angle) * (shelfR - shelfDepth / 2);
-        const z = Math.sin(book.angle) * (shelfR - shelfDepth / 2);
+        const bookR = wallR + shelfDepth * 0.4;
+        const x = Math.cos(book.angle) * bookR;
+        const z = Math.sin(book.angle) * bookR;
         return (
           <mesh key={`book-${i}`} position={[x, book.shelfY + book.height / 2, z]} rotation-y={-book.angle}>
-            <boxGeometry args={[book.width, book.height, 0.2]} />
+            <boxGeometry args={[book.width, book.height, 0.18]} />
             <meshStandardMaterial color={`hsl(${book.hue}, 35%, 30%)`} roughness={0.8} />
           </mesh>
         );

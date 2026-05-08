@@ -56,118 +56,185 @@ function Crown() {
   );
 }
 
-// Stylized humanoid from primitives: capsule body, sphere head, cylinder limbs
-// Marble-skin with cyan circuit lines, toga with colored trim
+// Detailed stylized humanoid: marble skin, facial features, hands, sandals
 function CharacterModel({ agent }: { agent: AgentState }) {
   const groupRef = useRef<THREE.Group>(null);
-  // Idle sway animation
   useFrame(() => {
     if (groupRef.current) {
-      const sway = Math.sin(performance.now() * 0.002) * 0.02;
-      groupRef.current.rotation.z = sway;
+      groupRef.current.rotation.z = Math.sin(performance.now() * 0.002) * 0.02;
     }
   });
 
   const marbleMat = useMemo(
-    () =>
-      new THREE.MeshStandardMaterial({
-        color: COLORS.primaryMarble,
-        roughness: 0.4,
-        metalness: 0.05,
-      }),
+    () => new THREE.MeshStandardMaterial({ color: COLORS.primaryMarble, roughness: 0.4, metalness: 0.05 }),
     []
   );
-
   const circuitMat = useMemo(
-    () =>
-      new THREE.MeshBasicMaterial({
-        color: COLORS.neonCyan,
-        transparent: true,
-        opacity: 0.6,
-      }),
+    () => new THREE.MeshBasicMaterial({ color: COLORS.neonCyan, transparent: true, opacity: 0.6 }),
     []
   );
-
   const togaMat = useMemo(
-    () =>
-      new THREE.MeshStandardMaterial({
-        color: '#F5F0E8',
-        roughness: 0.7,
-        metalness: 0,
-      }),
+    () => new THREE.MeshStandardMaterial({ color: '#F5F0E8', roughness: 0.7, metalness: 0 }),
     []
   );
-
   const trimMat = useMemo(
-    () =>
-      new THREE.MeshBasicMaterial({
-        color: agent.togaTrimColor,
-        transparent: true,
-        opacity: 0.8,
-      }),
+    () => new THREE.MeshBasicMaterial({ color: agent.togaTrimColor, transparent: true, opacity: 0.8 }),
     [agent.togaTrimColor]
+  );
+  const darkMat = useMemo(
+    () => new THREE.MeshStandardMaterial({ color: '#1A1A2E', roughness: 0.5 }),
+    []
+  );
+  const lipMat = useMemo(
+    () => new THREE.MeshStandardMaterial({ color: '#C4A882', roughness: 0.6 }),
+    []
+  );
+  const sandalMat = useMemo(
+    () => new THREE.MeshStandardMaterial({ color: '#6B4226', roughness: 0.7 }),
+    []
   );
 
   return (
     <group ref={groupRef}>
-      {/* Head */}
-      <mesh position-y={2.1} material={marbleMat} castShadow>
-        <sphereGeometry args={[0.3, 16, 16]} />
-      </mesh>
-      {/* Head circuit line */}
-      <mesh position={[0.15, 2.15, 0.2]}>
-        <cylinderGeometry args={[0.02, 0.02, 0.2, 4]} />
-        <primitive object={circuitMat} attach="material" />
-      </mesh>
+      {/* === HEAD === */}
+      <group position-y={2.1}>
+        {/* Skull */}
+        <mesh material={marbleMat} castShadow>
+          <sphereGeometry args={[0.3, 16, 16]} />
+        </mesh>
 
-      {/* Neck */}
+        {/* Eyes — dark inset spheres */}
+        <mesh position={[0.1, 0.05, 0.24]} material={darkMat}>
+          <sphereGeometry args={[0.055, 8, 8]} />
+        </mesh>
+        <mesh position={[-0.1, 0.05, 0.24]} material={darkMat}>
+          <sphereGeometry args={[0.055, 8, 8]} />
+        </mesh>
+        {/* Eye glow — tiny cyan pupils */}
+        <mesh position={[0.1, 0.05, 0.28]}>
+          <sphereGeometry args={[0.025, 6, 6]} />
+          <primitive object={circuitMat} attach="material" />
+        </mesh>
+        <mesh position={[-0.1, 0.05, 0.28]}>
+          <sphereGeometry args={[0.025, 6, 6]} />
+          <primitive object={circuitMat} attach="material" />
+        </mesh>
+
+        {/* Eyebrows — small angled boxes */}
+        <mesh position={[0.1, 0.13, 0.26]} rotation-z={-0.15} material={darkMat}>
+          <boxGeometry args={[0.1, 0.02, 0.02]} />
+        </mesh>
+        <mesh position={[-0.1, 0.13, 0.26]} rotation-z={0.15} material={darkMat}>
+          <boxGeometry args={[0.1, 0.02, 0.02]} />
+        </mesh>
+
+        {/* Nose — small wedge */}
+        <mesh position={[0, -0.02, 0.28]} material={marbleMat}>
+          <coneGeometry args={[0.03, 0.08, 4]} />
+        </mesh>
+
+        {/* Mouth — thin dark line */}
+        <mesh position={[0, -0.1, 0.27]} material={lipMat}>
+          <boxGeometry args={[0.1, 0.015, 0.02]} />
+        </mesh>
+
+        {/* Ears */}
+        <mesh position={[0.28, 0, 0]} material={marbleMat}>
+          <sphereGeometry args={[0.06, 6, 6]} />
+        </mesh>
+        <mesh position={[-0.28, 0, 0]} material={marbleMat}>
+          <sphereGeometry args={[0.06, 6, 6]} />
+        </mesh>
+
+        {/* Circuit line on temple */}
+        <mesh position={[0.22, 0.1, 0.15]}>
+          <cylinderGeometry args={[0.012, 0.012, 0.15, 4]} />
+          <primitive object={circuitMat} attach="material" />
+        </mesh>
+      </group>
+
+      {/* === NECK === */}
       <mesh position-y={1.75} material={marbleMat}>
         <cylinderGeometry args={[0.1, 0.12, 0.15, 8]} />
       </mesh>
 
-      {/* Torso (toga-wrapped) */}
+      {/* === TORSO (toga) === */}
       <mesh position-y={1.2} material={togaMat} castShadow>
         <cylinderGeometry args={[0.3, 0.35, 1, 8]} />
       </mesh>
-      {/* Toga trim at neckline */}
-      <mesh position-y={1.7}>
-        <torusGeometry args={[0.3, 0.03, 8, 16]} />
+      {/* Shoulders — wider at top */}
+      <mesh position-y={1.55} material={togaMat}>
+        <cylinderGeometry args={[0.38, 0.3, 0.2, 8]} />
+      </mesh>
+      {/* Toga trim neckline */}
+      <mesh position-y={1.65}>
+        <torusGeometry args={[0.35, 0.025, 8, 16]} />
         <primitive object={trimMat} attach="material" />
       </mesh>
-      {/* Toga trim at hem */}
+      {/* Toga trim hem */}
       <mesh position-y={0.7}>
-        <torusGeometry args={[0.35, 0.03, 8, 16]} />
+        <torusGeometry args={[0.35, 0.025, 8, 16]} />
+        <primitive object={trimMat} attach="material" />
+      </mesh>
+      {/* Toga drape fold — diagonal line across chest */}
+      <mesh position={[0.1, 1.3, 0.3]} rotation-z={0.5}>
+        <boxGeometry args={[0.35, 0.015, 0.015]} />
         <primitive object={trimMat} attach="material" />
       </mesh>
 
-      {/* Circuit lines on torso */}
-      <mesh position={[0.2, 1.2, 0.25]}>
-        <cylinderGeometry args={[0.015, 0.015, 0.8, 4]} />
+      {/* Circuit veins on torso */}
+      <mesh position={[0.22, 1.2, 0.25]}>
+        <cylinderGeometry args={[0.012, 0.012, 0.8, 4]} />
         <primitive object={circuitMat} attach="material" />
       </mesh>
-      <mesh position={[-0.15, 1.3, 0.28]}>
-        <cylinderGeometry args={[0.015, 0.015, 0.5, 4]} />
+      <mesh position={[-0.18, 1.3, 0.28]}>
+        <cylinderGeometry args={[0.012, 0.012, 0.5, 4]} />
         <primitive object={circuitMat} attach="material" />
       </mesh>
 
-      {/* Arms */}
-      <mesh position={[0.45, 1.3, 0]} rotation-z={0.15} material={marbleMat} castShadow>
-        <cylinderGeometry args={[0.08, 0.07, 0.7, 8]} />
+      {/* === ARMS === */}
+      {/* Upper arms */}
+      <mesh position={[0.48, 1.35, 0]} rotation-z={0.15} material={marbleMat} castShadow>
+        <cylinderGeometry args={[0.08, 0.07, 0.45, 8]} />
       </mesh>
-      <mesh position={[-0.45, 1.3, 0]} rotation-z={-0.15} material={marbleMat} castShadow>
-        <cylinderGeometry args={[0.08, 0.07, 0.7, 8]} />
+      <mesh position={[-0.48, 1.35, 0]} rotation-z={-0.15} material={marbleMat} castShadow>
+        <cylinderGeometry args={[0.08, 0.07, 0.45, 8]} />
       </mesh>
+      {/* Forearms */}
+      <mesh position={[0.52, 1.0, 0.05]} rotation-z={0.1} rotation-x={-0.2} material={marbleMat}>
+        <cylinderGeometry args={[0.065, 0.055, 0.4, 8]} />
+      </mesh>
+      <mesh position={[-0.52, 1.0, 0.05]} rotation-z={-0.1} rotation-x={-0.2} material={marbleMat}>
+        <cylinderGeometry args={[0.065, 0.055, 0.4, 8]} />
+      </mesh>
+      {/* Hands — slightly flattened spheres */}
+      <mesh position={[0.54, 0.78, 0.08]} material={marbleMat}>
+        <sphereGeometry args={[0.06, 8, 8]} />
+      </mesh>
+      <mesh position={[-0.54, 0.78, 0.08]} material={marbleMat}>
+        <sphereGeometry args={[0.06, 8, 8]} />
+      </mesh>
+      {/* Fingers — tiny cylinders on each hand */}
+      {[1, -1].map((side) => (
+        <group key={`fingers-${side}`} position={[side * 0.54, 0.73, 0.1]}>
+          {[-0.03, -0.01, 0.01, 0.03].map((offset, fi) => (
+            <mesh key={fi} position={[offset, -0.02, 0.03]} rotation-x={-0.3} material={marbleMat}>
+              <cylinderGeometry args={[0.012, 0.01, 0.06, 4]} />
+            </mesh>
+          ))}
+        </group>
+      ))}
       {/* Arm circuit veins */}
-      <mesh position={[0.48, 1.3, 0.06]} rotation-z={0.15}>
-        <cylinderGeometry args={[0.015, 0.015, 0.6, 4]} />
+      <mesh position={[0.5, 1.2, 0.06]} rotation-z={0.12}>
+        <cylinderGeometry args={[0.012, 0.012, 0.5, 4]} />
         <primitive object={circuitMat} attach="material" />
       </mesh>
-      <mesh position={[-0.48, 1.3, 0.06]} rotation-z={-0.15}>
-        <cylinderGeometry args={[0.015, 0.015, 0.6, 4]} />
+      <mesh position={[-0.5, 1.2, 0.06]} rotation-z={-0.12}>
+        <cylinderGeometry args={[0.012, 0.012, 0.5, 4]} />
         <primitive object={circuitMat} attach="material" />
       </mesh>
 
-      {/* Legs */}
+      {/* === LEGS === */}
       <mesh position={[0.15, 0.35, 0]} material={marbleMat} castShadow>
         <cylinderGeometry args={[0.1, 0.08, 0.7, 8]} />
       </mesh>
@@ -175,7 +242,24 @@ function CharacterModel({ agent }: { agent: AgentState }) {
         <cylinderGeometry args={[0.1, 0.08, 0.7, 8]} />
       </mesh>
 
-      {/* Crown for Henry */}
+      {/* === FEET / SANDALS === */}
+      {[1, -1].map((side) => (
+        <group key={`foot-${side}`} position={[side * 0.15, 0.03, 0.04]}>
+          {/* Sole */}
+          <mesh material={sandalMat}>
+            <boxGeometry args={[0.12, 0.04, 0.22]} />
+          </mesh>
+          {/* Straps */}
+          <mesh position={[0, 0.03, -0.04]} material={sandalMat}>
+            <boxGeometry args={[0.13, 0.015, 0.03]} />
+          </mesh>
+          <mesh position={[0, 0.03, 0.04]} material={sandalMat}>
+            <boxGeometry args={[0.13, 0.015, 0.03]} />
+          </mesh>
+        </group>
+      ))}
+
+      {/* === CROWN (Henry only) === */}
       {agent.isHenry && <Crown />}
     </group>
   );
