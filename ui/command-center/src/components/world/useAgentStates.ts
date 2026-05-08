@@ -56,7 +56,7 @@ const INITIAL_AGENTS: AgentState[] = [
     id: 'librarian',
     name: 'The Librarian',
     role: 'agent',
-    position: { x: 16.5, y: 5.15, z: 0 },
+    position: { x: 14, y: 5.15, z: 0 },
     activity: 'idle',
     currentStation: null,
     togaTrimColor: '#8B7E6F',
@@ -68,14 +68,12 @@ function randomInterval(): number {
   return WANDER_INTERVAL_MIN + Math.random() * (WANDER_INTERVAL_MAX - WANDER_INTERVAL_MIN);
 }
 
-// Mezzanine waypoints for the Librarian (on the raised ring at y=5.15)
-const MEZZ_INNER_R = 14.5;
-const MEZZ_OUTER_R = 19;
+// Mezzanine waypoints for the Librarian — stays on the ring walkway
+const MEZZ_MID_R = 14; // center of the walkway ring (12.5 to 15.5)
 const MEZZ_Y = 5.15;
-const MEZZ_WAYPOINTS = Array.from({ length: 8 }, (_, i) => {
-  const angle = (i / 8) * Math.PI * 2;
-  const r = (MEZZ_INNER_R + MEZZ_OUTER_R) / 2;
-  return { id: `mezz-${i}`, x: Math.cos(angle) * r, z: Math.sin(angle) * r };
+const MEZZ_WAYPOINTS = Array.from({ length: 12 }, (_, i) => {
+  const angle = (i / 12) * Math.PI * 2;
+  return { id: `mezz-${i}`, x: Math.cos(angle) * MEZZ_MID_R, z: Math.sin(angle) * MEZZ_MID_R };
 });
 
 function pickRandomStation(currentStation: string | null, isLibrarian: boolean): string {
@@ -101,6 +99,7 @@ function getStationPosition(stationId: string): { x: number; y: number; z: numbe
 export function useAgentStates(): {
   agents: AgentState[];
   setAgentTarget: (id: string, station: string) => void;
+  moveAgent: (id: string, dx: number, dz: number) => void;
 } {
   const [agents, setAgents] = useState<AgentState[]>(INITIAL_AGENTS);
   const animRef = useRef<number>(0);
@@ -112,6 +111,22 @@ export function useAgentStates(): {
     targetsRef.current.set(id, { ...pos, stationId: station });
     setAgents((prev) =>
       prev.map((a) => (a.id === id ? { ...a, activity: 'walking' as const, currentStation: station } : a))
+    );
+  }, []);
+
+  // Direct movement: nudge an agent by dx/dz (for keyboard control in third-person)
+  const moveAgent = useCallback((id: string, dx: number, dz: number) => {
+    // Cancel any wander target so keyboard takes priority
+    targetsRef.current.delete(id);
+    setAgents((prev) =>
+      prev.map((a) => {
+        if (a.id !== id) return a;
+        return {
+          ...a,
+          activity: 'walking' as const,
+          position: { x: a.position.x + dx, y: a.position.y, z: a.position.z + dz },
+        };
+      })
     );
   }, []);
 
@@ -179,5 +194,5 @@ export function useAgentStates(): {
     return () => cancelAnimationFrame(animRef.current);
   }, []);
 
-  return { agents, setAgentTarget };
+  return { agents, setAgentTarget, moveAgent };
 }

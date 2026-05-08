@@ -8,6 +8,7 @@ interface WorldCameraProps {
   mode: CameraMode;
   selectedAgent: AgentState | null;
   onModeChange: (mode: CameraMode) => void;
+  onMoveAgent: (dx: number, dz: number) => void;
 }
 
 const ORBIT_POSITION = new THREE.Vector3(20, 15, 20);
@@ -23,7 +24,7 @@ function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
 
-export function WorldCamera({ mode, selectedAgent, onModeChange }: WorldCameraProps) {
+export function WorldCamera({ mode, selectedAgent, onModeChange, onMoveAgent }: WorldCameraProps) {
   const { camera, gl } = useThree();
   const controlsRef = useRef<React.ComponentRef<typeof OrbitControls>>(null);
   const lastInteraction = useRef(Date.now());
@@ -52,11 +53,30 @@ export function WorldCamera({ mode, selectedAgent, onModeChange }: WorldCameraPr
     onModeChange('orbit');
   }, [camera, onModeChange]);
 
-  // ESC or right-click returns to orbit from third-person
+  // Track held movement keys for per-frame movement
+  const moveKeys = useRef({ forward: false, backward: false, left: false, right: false });
+
+  // ESC, right-click, and movement keys for third-person
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && mode === 'third-person') {
         startTransitionToOrbit();
+      }
+      if (mode === 'third-person') {
+        switch (e.key.toLowerCase()) {
+          case 'w': case 'arrowup': moveKeys.current.forward = true; break;
+          case 's': case 'arrowdown': moveKeys.current.backward = true; break;
+          case 'a': case 'arrowleft': moveKeys.current.left = true; break;
+          case 'd': case 'arrowright': moveKeys.current.right = true; break;
+        }
+      }
+    };
+    const handleKeyUp = (e: KeyboardEvent) => {
+      switch (e.key.toLowerCase()) {
+        case 'w': case 'arrowup': moveKeys.current.forward = false; break;
+        case 's': case 'arrowdown': moveKeys.current.backward = false; break;
+        case 'a': case 'arrowleft': moveKeys.current.left = false; break;
+        case 'd': case 'arrowright': moveKeys.current.right = false; break;
       }
     };
     const handleContextMenu = (e: MouseEvent) => {
@@ -67,11 +87,14 @@ export function WorldCamera({ mode, selectedAgent, onModeChange }: WorldCameraPr
     };
 
     window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
     gl.domElement.addEventListener('contextmenu', handleContextMenu);
 
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
       gl.domElement.removeEventListener('contextmenu', handleContextMenu);
+      moveKeys.current = { forward: false, backward: false, left: false, right: false };
     };
   }, [mode, gl.domElement, startTransitionToOrbit]);
 
@@ -126,11 +149,36 @@ export function WorldCamera({ mode, selectedAgent, onModeChange }: WorldCameraPr
       return;
     }
 
+    // Third-person movement: arrow keys / WASD move the agent
+    if (mode === 'third-person' && selectedAgent) {
+      const m = moveKeys.current;
+      if (m.forward || m.backward || m.left || m.right) {
+        // Move relative to camera facing direction (projected to XZ)
+        const camDir = new THREE.Vector3();
+        camera.getWorldDirection(camDir);
+        camDir.y = 0;
+        camDir.normalize();
+        const camRight = new THREE.Vector3().crossVectors(camDir, new THREE.Vector3(0, 1, 0)).normalize();
+
+        const speed = 0.15;
+        let dx = 0, dz = 0;
+        if (m.forward) { dx += camDir.x * speed; dz += camDir.z * speed; }
+        if (m.backward) { dx -= camDir.x * speed; dz -= camDir.z * speed; }
+        if (m.left) { dx -= camRight.x * speed; dz -= camRight.z * speed; }
+        if (m.right) { dx += camRight.x * speed; dz += camRight.z * speed; }
+        onMoveAgent(dx, dz);
+      }
+    }
+
     // Third-person follow: smoothly track the agent
     if (mode === 'third-person' && selectedAgent) {
-      const agentPos = new THREE.Vector3(selectedAgent.position.x, 0, selectedAgent.position.z);
+      const agentPos = new THREE.Vector3(selectedAgent.position.x, selectedAgent.position.y, selectedAgent.position.z);
       const desiredPos = agentPos.clone().add(TP_OFFSET);
-      const desiredTarget = agentPos.clone().add(TP_LOOK_OFFSET);
+      const desiredTarget = new THREE.Vector3(
+        selectedAgent.position.x,
+        selectedAgent.position.y + TP_LOOK_OFFSET.y,
+        selectedAgent.position.z
+      );
 
       // Smooth lerp toward desired position
       smoothCamPos.current.lerp(desiredPos, 0.05);

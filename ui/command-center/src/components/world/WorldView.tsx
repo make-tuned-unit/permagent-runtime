@@ -63,8 +63,14 @@ function SceneContent({
   onHoverStation: (id: string | null) => void;
   onClickStation: (id: string) => void;
 }) {
-  const { agents } = useAgentStates();
+  const { agents, moveAgent } = useAgentStates();
   const selectedAgent = agents.find((a) => a.id === selectedAgentId) ?? null;
+
+  const handleMoveAgent = useCallback((dx: number, dz: number) => {
+    if (selectedAgentId) {
+      moveAgent(selectedAgentId, dx, dz);
+    }
+  }, [selectedAgentId, moveAgent]);
 
   return (
     <>
@@ -79,6 +85,7 @@ function SceneContent({
         mode={cameraMode}
         selectedAgent={selectedAgent}
         onModeChange={onModeChange}
+        onMoveAgent={handleMoveAgent}
       />
       <WorldPostProcessing />
     </>

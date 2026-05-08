@@ -534,48 +534,67 @@ function LowTable({ position }: { position: [number, number, number] }) {
 }
 
 // === MEZZANINE LIBRARY (The Brain) ===
-// Raised ring walkway around the outside of the columns, accessed by stairs
+// Narrow ring walkway hugging the columns, accessed by stairs
 // This is the physical representation of the Brain — the Librarian works here
 
-const MEZZ_HEIGHT = 5;
-const MEZZ_INNER_R = 14.5; // just inside columns
-const MEZZ_OUTER_R = 19;   // extends past columns
+export const MEZZ_HEIGHT = 5;
+export const MEZZ_INNER_R = 12.5;  // inner edge — overlooks ground floor
+export const MEZZ_OUTER_R = 15.5;  // outer edge — just past columns (at r=14)
+const MEZZ_MID_R = (MEZZ_INNER_R + MEZZ_OUTER_R) / 2; // walkway center ~14
+
+// Stair gap: opening in the ring where stairs arrive
+const STAIR_GAP_CENTER = Math.PI * 0.5; // east side (toward library pedestal)
+const STAIR_GAP_HALF = 0.15; // radians, ~half the gap width
 
 function MezzanineRing() {
-  const marble = useMarbleMat();
   const darkStone = useDarkStoneMat();
+
+  // Build ring floor as arc segments with a gap for the stairs
+  // We use multiple RingGeometry segments to create the gap
+  const gapStart = STAIR_GAP_CENTER - STAIR_GAP_HALF;
+  const gapEnd = STAIR_GAP_CENTER + STAIR_GAP_HALF;
 
   return (
     <group position-y={MEZZ_HEIGHT}>
-      {/* Walkway floor — ring shape via two cylinders */}
-      <mesh receiveShadow material={marble}>
-        <cylinderGeometry args={[MEZZ_OUTER_R, MEZZ_OUTER_R, 0.3, 64]} />
+      {/* Ring floor — main segment (gap to full circle) */}
+      <mesh rotation-x={-Math.PI / 2} receiveShadow>
+        <ringGeometry args={[MEZZ_INNER_R, MEZZ_OUTER_R, 64, 1, gapEnd, Math.PI * 2 - (gapEnd - gapStart)]} />
+        <meshStandardMaterial color={COLORS.primaryMarble} roughness={0.3} metalness={0.1} />
       </mesh>
-      {/* Cut-out center (dark, non-rendered — just a visual inner ring) */}
-      <mesh position-y={0.01}>
-        <cylinderGeometry args={[MEZZ_INNER_R, MEZZ_INNER_R, 0.32, 64]} />
-        <meshStandardMaterial color={COLORS.deepVoid} />
-      </mesh>
-      {/* Railing — inner edge */}
-      <mesh position-y={0.6} material={darkStone}>
-        <torusGeometry args={[MEZZ_INNER_R + 0.1, 0.06, 6, 64]} />
-      </mesh>
-      {/* Railing posts — inner */}
-      {Array.from({ length: 24 }, (_, i) => {
-        const angle = (i / 24) * Math.PI * 2;
+
+      {/* Inner railing — arc segments avoiding the gap */}
+      {Array.from({ length: 32 }, (_, i) => {
+        const angle = (i / 32) * Math.PI * 2;
+        // Skip posts near the stair gap
+        if (Math.abs(angle - STAIR_GAP_CENTER) < STAIR_GAP_HALF + 0.1) return null;
         return (
-          <mesh key={i} position={[Math.cos(angle) * (MEZZ_INNER_R + 0.1), 0.35, Math.sin(angle) * (MEZZ_INNER_R + 0.1)]} material={darkStone}>
-            <cylinderGeometry args={[0.04, 0.04, 0.7, 4]} />
+          <mesh key={`ip-${i}`} position={[Math.cos(angle) * MEZZ_INNER_R, 0.4, Math.sin(angle) * MEZZ_INNER_R]} material={darkStone}>
+            <cylinderGeometry args={[0.04, 0.04, 0.8, 4]} />
           </mesh>
         );
       })}
-      {/* Outer railing */}
-      <mesh position-y={0.6} material={darkStone}>
-        <torusGeometry args={[MEZZ_OUTER_R - 0.1, 0.06, 6, 64]} />
+      {/* Inner railing rail */}
+      <mesh position-y={0.65} material={darkStone}>
+        <torusGeometry args={[MEZZ_INNER_R, 0.05, 6, 64]} />
       </mesh>
-      {/* Edge glow */}
-      <mesh position-y={0.16}>
-        <torusGeometry args={[MEZZ_INNER_R + 0.2, 0.04, 4, 64]} />
+
+      {/* Outer railing posts */}
+      {Array.from({ length: 32 }, (_, i) => {
+        const angle = (i / 32) * Math.PI * 2;
+        return (
+          <mesh key={`op-${i}`} position={[Math.cos(angle) * MEZZ_OUTER_R, 0.4, Math.sin(angle) * MEZZ_OUTER_R]} material={darkStone}>
+            <cylinderGeometry args={[0.04, 0.04, 0.8, 4]} />
+          </mesh>
+        );
+      })}
+      {/* Outer railing rail */}
+      <mesh position-y={0.65} material={darkStone}>
+        <torusGeometry args={[MEZZ_OUTER_R, 0.05, 6, 64]} />
+      </mesh>
+
+      {/* Cyan glow on inner edge */}
+      <mesh position-y={0.02}>
+        <torusGeometry args={[MEZZ_INNER_R + 0.05, 0.03, 4, 64]} />
         <meshBasicMaterial color={COLORS.neonCyan} transparent opacity={0.3} depthWrite={false} />
       </mesh>
     </group>
@@ -584,10 +603,12 @@ function MezzanineRing() {
 
 function Staircase() {
   const marble = useMarbleMat();
-  const stepCount = 16;
-  const startAngle = Math.PI * 0.75; // starts near east side
-  const arcSpan = Math.PI * 0.4;
-  const stairR = MEZZ_INNER_R + 1; // stairs are just inside the mezzanine
+  const stepCount = 18;
+  // Spiral stairs from ground floor up to the stair gap
+  const endAngle = STAIR_GAP_CENTER;
+  const arcSpan = Math.PI * 0.35;
+  const startAngle = endAngle - arcSpan;
+  const stairR = MEZZ_MID_R; // stairs centered on the ring walkway
 
   return (
     <group>
@@ -599,25 +620,23 @@ function Staircase() {
         const z = Math.sin(angle) * stairR;
         return (
           <mesh key={i} position={[x, y + 0.1, z]} rotation-y={-angle + Math.PI / 2} castShadow material={marble}>
-            <boxGeometry args={[2, 0.2, 0.8]} />
+            <boxGeometry args={[MEZZ_OUTER_R - MEZZ_INNER_R - 0.2, 0.2, 0.7]} />
           </mesh>
         );
       })}
-      {/* Stair railings — simple posts */}
+      {/* Stair railings */}
       {Array.from({ length: stepCount }, (_, i) => {
         if (i % 2 !== 0) return null;
         const t = i / (stepCount - 1);
         const angle = startAngle + t * arcSpan;
         const y = t * MEZZ_HEIGHT;
-        const innerR = stairR - 0.8;
-        const outerR = stairR + 0.8;
         return (
           <group key={`r-${i}`}>
-            <mesh position={[Math.cos(angle) * innerR, y + 0.5, Math.sin(angle) * innerR]}>
+            <mesh position={[Math.cos(angle) * (MEZZ_INNER_R + 0.2), y + 0.5, Math.sin(angle) * (MEZZ_INNER_R + 0.2)]}>
               <cylinderGeometry args={[0.04, 0.04, 0.8, 4]} />
               <meshStandardMaterial color="#888" metalness={0.5} roughness={0.3} />
             </mesh>
-            <mesh position={[Math.cos(angle) * outerR, y + 0.5, Math.sin(angle) * outerR]}>
+            <mesh position={[Math.cos(angle) * (MEZZ_OUTER_R - 0.2), y + 0.5, Math.sin(angle) * (MEZZ_OUTER_R - 0.2)]}>
               <cylinderGeometry args={[0.04, 0.04, 0.8, 4]} />
               <meshStandardMaterial color="#888" metalness={0.5} roughness={0.3} />
             </mesh>
@@ -629,45 +648,59 @@ function Staircase() {
 }
 
 function MezzanineLibraryContents() {
-  // Bookshelves arranged around the outer edge of the mezzanine
+  // Bookshelves rim the entire outer edge of the ring
   const shelfPositions = useMemo(() => {
-    const count = 10;
+    const count = 20; // dense coverage
     const shelves: { x: number; z: number; angle: number }[] = [];
     for (let i = 0; i < count; i++) {
       const angle = (i / count) * Math.PI * 2;
-      const r = MEZZ_OUTER_R - 1;
+      // Skip shelf at stair gap
+      if (Math.abs(angle - STAIR_GAP_CENTER) < STAIR_GAP_HALF + 0.2) continue;
+      const r = MEZZ_OUTER_R - 0.5;
       shelves.push({
         x: Math.cos(angle) * r,
         z: Math.sin(angle) * r,
-        angle: angle + Math.PI,
+        angle: angle + Math.PI, // face inward
       });
     }
     return shelves;
   }, []);
 
+  // Reading desks on the inner side of the walkway
+  const deskPositions = useMemo(() => {
+    const desks: { x: number; z: number; angle: number }[] = [];
+    for (let i = 0; i < 4; i++) {
+      const angle = (i / 4) * Math.PI * 2 + Math.PI / 4; // offset from cardinal
+      // Skip near stair gap
+      if (Math.abs(angle - STAIR_GAP_CENTER) < 0.4) continue;
+      const r = MEZZ_INNER_R + 1;
+      desks.push({
+        x: Math.cos(angle) * r,
+        z: Math.sin(angle) * r,
+        angle: angle + Math.PI,
+      });
+    }
+    return desks;
+  }, []);
+
   return (
     <group position-y={MEZZ_HEIGHT + 0.15}>
-      {/* Bookshelves around outer ring */}
+      {/* Bookshelves rimming outer edge */}
       {shelfPositions.map((sp, i) => (
         <Bookshelf key={i} position={[sp.x, 1.5, sp.z]} rotation={sp.angle} />
       ))}
-      {/* Reading desks at cardinal points on inner edge */}
-      <ReadingDesk position={[MEZZ_INNER_R + 2, 0, 0]} />
-      <ReadingDesk position={[-(MEZZ_INNER_R + 2), 0, 0]} />
-      <ReadingDesk position={[0, 0, MEZZ_INNER_R + 2]} />
-      <ReadingDesk position={[0, 0, -(MEZZ_INNER_R + 2)]} />
-      {/* Seating */}
-      <Bench position={[MEZZ_INNER_R + 2, 0, 3]} rotation={0} />
-      <Bench position={[-(MEZZ_INNER_R + 2), 0, -3]} rotation={Math.PI} />
-      <ArmChair position={[MEZZ_INNER_R + 2, 0, -4]} rotation={Math.PI / 2} />
-      <ArmChair position={[-(MEZZ_INNER_R + 2), 0, 4]} rotation={-Math.PI / 2} />
-      {/* Ambient lighting for the mezzanine */}
-      <pointLight position={[0, 3, 0]} color={COLORS.neonAmber} intensity={0.3} distance={20} />
-      {Array.from({ length: 4 }, (_, i) => {
-        const angle = (i / 4) * Math.PI * 2 + Math.PI / 4;
-        const r = (MEZZ_INNER_R + MEZZ_OUTER_R) / 2;
+      {/* Reading desks on inner walkway side */}
+      {deskPositions.map((dp, i) => (
+        <ReadingDesk key={`desk-${i}`} position={[dp.x, 0, dp.z]} />
+      ))}
+      {/* A few seats along the walkway */}
+      <ArmChair position={[Math.cos(Math.PI) * MEZZ_MID_R, 0, Math.sin(Math.PI) * MEZZ_MID_R]} rotation={0} />
+      <ArmChair position={[Math.cos(0) * MEZZ_MID_R, 0, Math.sin(0) * MEZZ_MID_R]} rotation={Math.PI} />
+      {/* Warm amber lighting around the ring */}
+      {Array.from({ length: 6 }, (_, i) => {
+        const angle = (i / 6) * Math.PI * 2;
         return (
-          <pointLight key={i} position={[Math.cos(angle) * r, 2, Math.sin(angle) * r]} color={COLORS.neonAmber} intensity={0.2} distance={8} />
+          <pointLight key={i} position={[Math.cos(angle) * MEZZ_MID_R, 2.5, Math.sin(angle) * MEZZ_MID_R]} color={COLORS.neonAmber} intensity={0.25} distance={6} />
         );
       })}
     </group>
