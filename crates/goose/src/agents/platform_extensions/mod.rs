@@ -5,6 +5,7 @@ pub mod chatrecall;
 pub mod code_execution;
 pub mod developer;
 pub mod ext_manager;
+pub mod librarian;
 pub mod orchestrator;
 pub mod skills;
 pub mod summarize;
@@ -257,6 +258,20 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 unprefixed_tools: true,
                 hidden: false,
                 client_factory: |ctx| Box::new(skills::SkillsClient::new(ctx).unwrap()),
+            },
+        );
+
+        map.insert(
+            librarian::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: librarian::EXTENSION_NAME,
+                display_name: "Librarian",
+                description:
+                    "Memory archivist — generates prose descriptions for Brain memories using a local LLM (Ollama)",
+                default_enabled: true,
+                unprefixed_tools: false,
+                hidden: false,
+                client_factory: |ctx| Box::new(librarian::LibrarianClient::new(ctx).unwrap()),
             },
         );
 
