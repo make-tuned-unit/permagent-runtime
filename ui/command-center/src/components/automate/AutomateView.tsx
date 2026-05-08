@@ -412,45 +412,176 @@ function RunRow({ run, displayName, expanded, onToggle }: {
             <div style={{ fontSize: 12, color: color.textDim, marginTop: 12 }}>Loading results...</div>
           ) : (
             <>
-              {/* Report text */}
+              {/* Rendered report */}
               {reportText && (
-                <div style={{
-                  marginTop: 12, padding: '12px 14px', borderRadius: radius.sm,
-                  background: 'rgba(10,14,23,0.6)', border: `1px solid ${color.border}`,
-                  fontSize: 12, color: color.textMuted, lineHeight: 1.7, fontFamily: font.body,
-                  maxHeight: 400, overflowY: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                }}>
-                  {reportText}
+                <div style={{ marginTop: 12, maxHeight: 600, overflowY: 'auto' }}>
+                  <RenderedReport text={reportText} />
                 </div>
               )}
 
-              {/* Metadata */}
-              <div style={{ fontSize: 11, color: color.textDim, marginTop: 8 }}>
-                {new Date(run.createdAt).toLocaleString()} &middot; {run.totalTokens ?? 0} tokens
-              </div>
-
-              {/* Findings */}
+              {/* Findings with action buttons */}
               {findings.length > 0 && (
-                <div style={{ marginTop: 16 }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: color.textMuted, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>
-                    Actionable Findings ({findings.length})
+                <div style={{ marginTop: 20 }}>
+                  <div style={{
+                    fontSize: 13, fontWeight: 600, fontFamily: font.display, marginBottom: 12,
+                    padding: '10px 14px', borderRadius: radius.sm,
+                    background: 'rgba(0,213,255,0.06)', border: `1px solid ${color.borderHi}`,
+                  }}>
+                    {findings.filter(f => !f.action_taken).length} items to review
+                    {totalRecovered > 0 && <span style={{ color: '#5BD17F', fontWeight: 400, fontSize: 12, marginLeft: 8 }}>
+                      ({formatBytes(totalRecovered)} recovered so far)
+                    </span>}
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {findings.map(f => <FindingRow key={f.id} finding={f} loading={actionInFlight === f.id} onAction={(a) => handleAction(f.id, a)} />)}
                   </div>
                   {allActioned && totalRecovered > 0 && (
-                    <div style={{ marginTop: 12, padding: '8px 12px', borderRadius: radius.sm, background: 'rgba(91,209,127,0.08)', border: '1px solid rgba(91,209,127,0.2)', fontSize: 12, color: '#5BD17F' }}>
-                      Recovered {formatBytes(totalRecovered)} across {findings.filter(f => f.action_taken === 'trashed').length} items.
+                    <div style={{ marginTop: 12, padding: '10px 14px', borderRadius: radius.sm, background: 'rgba(91,209,127,0.08)', border: '1px solid rgba(91,209,127,0.2)', fontSize: 13, color: '#5BD17F', fontWeight: 600 }}>
+                      All done! Recovered {formatBytes(totalRecovered)} across {findings.filter(f => f.action_taken === 'trashed').length} items.
                     </div>
                   )}
                 </div>
               )}
+
+              {/* Metadata footer */}
+              <div style={{ fontSize: 11, color: color.textDim, marginTop: 12, paddingTop: 8, borderTop: `1px solid ${color.border}` }}>
+                {new Date(run.createdAt).toLocaleString()} &middot; {run.totalTokens ?? 0} tokens
+              </div>
             </>
           )}
         </div>
       )}
     </div>
   );
+}
+
+// ── Rendered Report (markdown → styled JSX) ─────────────────────────
+
+function RenderedReport({ text }: { text: string }) {
+  const lines = text.split('\n');
+  const elements: React.ReactNode[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // Skip empty lines
+    if (!line.trim()) { i++; continue; }
+
+    // H1: # heading
+    if (line.startsWith('# ')) {
+      elements.push(<div key={i} style={{ fontSize: 16, fontWeight: 700, fontFamily: font.display, color: color.text, marginTop: 16, marginBottom: 8 }}>{renderInline(line.slice(2))}</div>);
+      i++; continue;
+    }
+    // H2: ## heading
+    if (line.startsWith('## ')) {
+      elements.push(<div key={i} style={{ fontSize: 14, fontWeight: 600, fontFamily: font.display, color: color.text, marginTop: 14, marginBottom: 6 }}>{renderInline(line.slice(3))}</div>);
+      i++; continue;
+    }
+    // H3: ### heading
+    if (line.startsWith('### ')) {
+      elements.push(<div key={i} style={{ fontSize: 13, fontWeight: 600, color: color.cyan, marginTop: 12, marginBottom: 4 }}>{renderInline(line.slice(4))}</div>);
+      i++; continue;
+    }
+    // Horizontal rule
+    if (line.match(/^---+$/)) {
+      elements.push(<hr key={i} style={{ border: 'none', borderTop: `1px solid ${color.border}`, margin: '12px 0' }} />);
+      i++; continue;
+    }
+    // Code block
+    if (line.startsWith('```')) {
+      const codeLines: string[] = [];
+      i++;
+      while (i < lines.length && !lines[i].startsWith('```')) {
+        codeLines.push(lines[i]);
+        i++;
+      }
+      i++; // skip closing ```
+      elements.push(
+        <pre key={`code-${i}`} style={{
+          padding: '10px 12px', borderRadius: radius.sm,
+          background: 'rgba(10,14,23,0.8)', border: `1px solid ${color.border}`,
+          fontSize: 11, fontFamily: font.mono, color: color.textMuted,
+          overflow: 'auto', margin: '6px 0', lineHeight: 1.5,
+        }}>{codeLines.join('\n')}</pre>
+      );
+      continue;
+    }
+    // Bullet: - item
+    if (line.match(/^\s*-\s/)) {
+      const bulletLines: string[] = [];
+      while (i < lines.length && lines[i].match(/^\s*-\s/)) {
+        bulletLines.push(lines[i].replace(/^\s*-\s/, ''));
+        i++;
+      }
+      elements.push(
+        <div key={`bullets-${i}`} style={{ margin: '4px 0 4px 4px' }}>
+          {bulletLines.map((b, j) => (
+            <div key={j} style={{ display: 'flex', gap: 8, marginBottom: 3, fontSize: 12, color: color.textMuted, lineHeight: 1.5 }}>
+              <span style={{ color: color.cyan, flexShrink: 0, marginTop: 1 }}>&#8226;</span>
+              <span>{renderInline(b)}</span>
+            </div>
+          ))}
+        </div>
+      );
+      continue;
+    }
+    // Numbered list: 1. item
+    if (line.match(/^\d+\.\s/)) {
+      const numLines: string[] = [];
+      while (i < lines.length && lines[i].match(/^\d+\.\s/)) {
+        numLines.push(lines[i].replace(/^\d+\.\s/, ''));
+        i++;
+      }
+      elements.push(
+        <div key={`nums-${i}`} style={{ margin: '4px 0 4px 4px' }}>
+          {numLines.map((n, j) => (
+            <div key={j} style={{ display: 'flex', gap: 8, marginBottom: 3, fontSize: 12, color: color.textMuted, lineHeight: 1.5 }}>
+              <span style={{ color: color.textDim, flexShrink: 0, fontFamily: font.mono, fontSize: 11, minWidth: 16 }}>{j + 1}.</span>
+              <span>{renderInline(n)}</span>
+            </div>
+          ))}
+        </div>
+      );
+      continue;
+    }
+    // Regular paragraph
+    elements.push(<div key={i} style={{ fontSize: 12, color: color.textMuted, lineHeight: 1.6, marginBottom: 4 }}>{renderInline(line)}</div>);
+    i++;
+  }
+
+  return <div>{elements}</div>;
+}
+
+/** Render inline markdown: **bold**, `code`, ~~strike~~ */
+function renderInline(text: string): React.ReactNode {
+  const parts: React.ReactNode[] = [];
+  let remaining = text;
+  let key = 0;
+
+  while (remaining.length > 0) {
+    // Bold: **text**
+    const boldMatch = remaining.match(/^(.*?)\*\*(.+?)\*\*(.*)/s);
+    if (boldMatch) {
+      if (boldMatch[1]) parts.push(<span key={key++}>{boldMatch[1]}</span>);
+      parts.push(<strong key={key++} style={{ color: color.text, fontWeight: 600 }}>{boldMatch[2]}</strong>);
+      remaining = boldMatch[3];
+      continue;
+    }
+    // Inline code: `text`
+    const codeMatch = remaining.match(/^(.*?)`(.+?)`(.*)/s);
+    if (codeMatch) {
+      if (codeMatch[1]) parts.push(<span key={key++}>{codeMatch[1]}</span>);
+      parts.push(<code key={key++} style={{ fontFamily: font.mono, fontSize: 11, padding: '1px 4px', borderRadius: 3, background: 'rgba(255,255,255,0.06)', color: color.cyan }}>{codeMatch[2]}</code>);
+      remaining = codeMatch[3];
+      continue;
+    }
+    // No more matches — push rest as plain text
+    parts.push(<span key={key++}>{remaining}</span>);
+    break;
+  }
+
+  return parts.length === 1 ? parts[0] : <>{parts}</>;
 }
 
 // ── Finding Row ─────────────────────────────────────────────────────
