@@ -3,17 +3,18 @@ pub mod activity;
 pub mod agent;
 pub mod attachments;
 pub mod brain;
-pub mod dashboard;
 pub mod config_management;
+pub mod dashboard;
 pub mod errors;
 pub mod events;
 pub mod features;
 pub mod findings;
 pub mod gateway;
 pub mod identity;
-pub mod workers;
+pub mod integrations;
 #[cfg(feature = "local-inference")]
 pub mod local_inference;
+pub mod ollama;
 pub mod prompts;
 pub mod recipe;
 pub mod recipe_utils;
@@ -27,9 +28,8 @@ pub mod skills;
 pub mod status;
 pub mod telemetry;
 pub mod tunnel;
-pub mod integrations;
-pub mod ollama;
 pub mod utils;
+pub mod workers;
 pub mod workspaces;
 
 use std::sync::Arc;
@@ -80,10 +80,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
     let ui_dir = ui_dist_path();
     if let Some(dir) = ui_dir {
         let index = dir.join("index.html");
-        router = router.nest_service(
-            "/ui",
-            ServeDir::new(&dir).fallback(ServeFile::new(index)),
-        );
+        router = router.nest_service("/ui", ServeDir::new(&dir).fallback(ServeFile::new(index)));
     }
 
     router

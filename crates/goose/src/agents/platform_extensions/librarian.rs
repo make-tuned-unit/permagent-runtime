@@ -84,6 +84,7 @@ struct OllamaGenerateResponse {
     #[serde(default)]
     response: String,
     #[serde(default)]
+    #[allow(dead_code)]
     total_duration: u64,
     #[serde(default)]
     eval_count: u64,
@@ -101,18 +102,13 @@ pub struct LibrarianClient {
 
 impl LibrarianClient {
     pub fn new(context: PlatformExtensionContext) -> Result<Self> {
-        let info = InitializeResult::new(
-            ServerCapabilities::builder().enable_tools().build(),
-        )
-        .with_server_info(
-            Implementation::new(EXTENSION_NAME, "1.0.0")
-                .with_title("Librarian"),
-        )
-        .with_instructions(
-            "The Librarian generates prose descriptions for memories stored in the Brain. \
+        let info = InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new(EXTENSION_NAME, "1.0.0").with_title("Librarian"))
+            .with_instructions(
+                "The Librarian generates prose descriptions for memories stored in the Brain. \
              Use describe_memory to create a who/what/where/when/why description for a \
              specific memory. Use list_undescribed to find memories that need descriptions.",
-        );
+            );
 
         tracing::info!(
             "Librarian extension loaded. Ollama at {}, model: {}",
@@ -124,7 +120,8 @@ impl LibrarianClient {
     }
 
     fn get_brain(&self) -> Result<Arc<spectral::Brain>, String> {
-        get_global_brain().ok_or_else(|| "Brain not available — Spectral may not be initialized".to_string())
+        get_global_brain()
+            .ok_or_else(|| "Brain not available — Spectral may not be initialized".to_string())
     }
 
     async fn handle_describe_memory(
@@ -132,9 +129,8 @@ impl LibrarianClient {
         arguments: Option<JsonObject>,
     ) -> Result<CallToolResult, String> {
         let args = arguments.ok_or("Missing arguments")?;
-        let params: DescribeMemoryParams =
-            serde_json::from_value(serde_json::Value::Object(args))
-                .map_err(|e| format!("Invalid parameters: {}", e))?;
+        let params: DescribeMemoryParams = serde_json::from_value(serde_json::Value::Object(args))
+            .map_err(|e| format!("Invalid parameters: {}", e))?;
 
         let brain = self.get_brain()?;
         let start = std::time::Instant::now();
@@ -239,8 +235,9 @@ impl LibrarianClient {
         let items: Vec<serde_json::Value> = memories
             .into_iter()
             .map(|m| {
-                let preview = if m.content.len() > 200 {
-                    format!("{}...", &m.content[..200])
+                let preview = if m.content.chars().count() > 200 {
+                    let truncated: String = m.content.chars().take(200).collect();
+                    format!("{}...", truncated)
                 } else {
                     m.content.clone()
                 };
@@ -363,8 +360,9 @@ fn build_description_prompt(
     if !hits.is_empty() {
         prompt.push_str("\n=== RELATED MEMORIES (for context) ===\n");
         for (i, hit) in hits.iter().enumerate() {
-            let preview = if hit.content.len() > 300 {
-                format!("{}...", &hit.content[..300])
+            let preview = if hit.content.chars().count() > 300 {
+                let truncated: String = hit.content.chars().take(300).collect();
+                format!("{}...", truncated)
             } else {
                 hit.content.clone()
             };
@@ -379,7 +377,9 @@ fn build_description_prompt(
     }
 
     prompt.push_str("\n=== INSTRUCTIONS ===\n");
-    prompt.push_str("Write a 200-400 word description of this memory. Past tense, third person, plain prose.\n");
+    prompt.push_str(
+        "Write a 200-400 word description of this memory. Past tense, third person, plain prose.\n",
+    );
     prompt
 }
 

@@ -78,8 +78,8 @@ impl AppState {
                 return None;
             }
 
-            let device_id_str = std::env::var("HOSTNAME")
-                .unwrap_or_else(|_| "permagent-host".into());
+            let device_id_str =
+                std::env::var("HOSTNAME").unwrap_or_else(|_| "permagent-host".into());
 
             let brain = match spectral::Brain::builder()
                 .data_dir(&brain_dir)
@@ -174,17 +174,16 @@ impl AppState {
         // Activity awareness layer: create Ingester + ContextBuilder if Brain is available.
         // Both subscribe to the global event bus via a long-lived tokio task spawned below.
         let (activity_ingester, context_builder) = if let Some(ref brain) = brain {
-            let device_id = sanitize_device_id(&std::env::var("HOSTNAME")
-                .unwrap_or_else(|_| "permagent-host".into()));
-            let ingester = Arc::new(
-                permagent::activity::ingestion::ActivityIngester::new(
-                    brain.clone(),
-                    device_id.clone(),
-                ),
+            let device_id = sanitize_device_id(
+                &std::env::var("HOSTNAME").unwrap_or_else(|_| "permagent-host".into()),
             );
-            let cb = Arc::new(
-                permagent::activity::context_builder::ContextBuilder::new(brain.clone()),
-            );
+            let ingester = Arc::new(permagent::activity::ingestion::ActivityIngester::new(
+                brain.clone(),
+                device_id.clone(),
+            ));
+            let cb = Arc::new(permagent::activity::context_builder::ContextBuilder::new(
+                brain.clone(),
+            ));
             tracing::info!(
                 target: "permagentd::activity",
                 "ActivityIngester subscribed to event bus, device_id={}",
@@ -207,9 +206,11 @@ impl AppState {
                             if event.event_type == permagent::events::PermagentEventType::Activity {
                                 // Extract the ActivityEvent from the PermagentEvent payload
                                 if let Some(inner) = event.payload.get("event") {
-                                    if let Ok(activity_event) = serde_json::from_value::<
-                                        permagent::events::activity::ActivityEvent,
-                                    >(inner.clone()) {
+                                    if let Ok(activity_event) =
+                                        serde_json::from_value::<
+                                            permagent::events::activity::ActivityEvent,
+                                        >(inner.clone())
+                                    {
                                         // ContextBuilder is non-blocking (in-memory state)
                                         cb_ref.handle_event(&activity_event);
                                         // Ingester calls brain.remember_with() which blocks,
@@ -373,7 +374,13 @@ fn sanitize_device_id(hostname: &str) -> String {
     let sanitized: String = hostname
         .to_lowercase()
         .chars()
-        .map(|c| if c == '.' || c.is_ascii_whitespace() { '-' } else { c })
+        .map(|c| {
+            if c == '.' || c.is_ascii_whitespace() {
+                '-'
+            } else {
+                c
+            }
+        })
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
         .collect();
     // Collapse repeated hyphens
@@ -451,10 +458,8 @@ fn load_or_create_daemon_token() -> Option<String> {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(
-                    &token_path,
-                    std::fs::Permissions::from_mode(0o600),
-                );
+                let _ =
+                    std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o600));
             }
             tracing::info!(
                 target: "permagentd::auth",

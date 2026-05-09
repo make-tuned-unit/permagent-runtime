@@ -190,8 +190,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: code_execution::EXTENSION_NAME,
                 display_name: "Code Mode",
-                description:
-                    "Make extension calls through code execution, saving tokens",
+                description: "Make extension calls through code execution, saving tokens",
                 default_enabled: false,
                 unprefixed_tools: true,
                 hidden: false,
@@ -281,7 +280,8 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
 
 /// Global Brain handle, set once by the daemon at startup.
 /// Platform extensions can access this without plumbing Brain through every layer.
-static GLOBAL_BRAIN: std::sync::OnceLock<std::sync::Arc<spectral::Brain>> = std::sync::OnceLock::new();
+static GLOBAL_BRAIN: std::sync::OnceLock<std::sync::Arc<spectral::Brain>> =
+    std::sync::OnceLock::new();
 
 pub fn set_global_brain(brain: std::sync::Arc<spectral::Brain>) {
     let _ = GLOBAL_BRAIN.set(brain);

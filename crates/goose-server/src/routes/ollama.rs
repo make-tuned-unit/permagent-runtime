@@ -3,7 +3,10 @@
 
 use crate::routes::errors::ErrorResponse;
 use crate::state::AppState;
-use axum::{routing::{get, post}, Json, Router};
+use axum::{
+    routing::{get, post},
+    Json, Router,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -82,14 +85,18 @@ async fn ollama_status() -> Json<OllamaStatus> {
     let ps = client.get(format!("{}/api/ps", OLLAMA_BASE)).send().await;
 
     let installed = match tags {
-        Ok(resp) => resp.json::<OllamaTagsResponse>().await
+        Ok(resp) => resp
+            .json::<OllamaTagsResponse>()
+            .await
             .map(|r| r.models)
             .unwrap_or_default(),
         Err(_) => vec![],
     };
 
     let running = match ps {
-        Ok(resp) => resp.json::<OllamaPsResponse>().await
+        Ok(resp) => resp
+            .json::<OllamaPsResponse>()
+            .await
             .map(|r| r.models)
             .unwrap_or_default(),
         Err(_) => vec![],
@@ -97,10 +104,18 @@ async fn ollama_status() -> Json<OllamaStatus> {
 
     let reachable = !installed.is_empty() || {
         // If tags returned empty but didn't error, Ollama is reachable
-        client.get(format!("{}/api/tags", OLLAMA_BASE)).send().await.is_ok()
+        client
+            .get(format!("{}/api/tags", OLLAMA_BASE))
+            .send()
+            .await
+            .is_ok()
     };
 
-    Json(OllamaStatus { reachable, installed, running })
+    Json(OllamaStatus {
+        reachable,
+        installed,
+        running,
+    })
 }
 
 /// POST /api/ollama/warm — warm-load a model with keep_alive duration
@@ -212,15 +227,24 @@ async fn set_librarian_schedule(
     // Validate HH:MM format
     let parts: Vec<&str> = schedule.start_time.split(':').collect();
     if parts.len() != 2 {
-        return Err(ErrorResponse::bad_request("start_time must be HH:MM".to_string()));
+        return Err(ErrorResponse::bad_request(
+            "start_time must be HH:MM".to_string(),
+        ));
     }
-    let hour: u32 = parts[0].parse().map_err(|_| ErrorResponse::bad_request("Invalid hour".to_string()))?;
-    let minute: u32 = parts[1].parse().map_err(|_| ErrorResponse::bad_request("Invalid minute".to_string()))?;
+    let hour: u32 = parts[0]
+        .parse()
+        .map_err(|_| ErrorResponse::bad_request("Invalid hour".to_string()))?;
+    let minute: u32 = parts[1]
+        .parse()
+        .map_err(|_| ErrorResponse::bad_request("Invalid minute".to_string()))?;
     if hour >= 24 || minute >= 60 {
-        return Err(ErrorResponse::bad_request("start_time out of range".to_string()));
+        return Err(ErrorResponse::bad_request(
+            "start_time out of range".to_string(),
+        ));
     }
 
-    save_schedule(&schedule).map_err(|e| ErrorResponse::internal(format!("Failed to save: {}", e)))?;
+    save_schedule(&schedule)
+        .map_err(|e| ErrorResponse::internal(format!("Failed to save: {}", e)))?;
     tracing::info!(
         enabled = schedule.enabled,
         start = %schedule.start_time,
@@ -240,7 +264,9 @@ async fn set_librarian_schedule(
 /// Returns (start_hour, start_minute, duration_minutes) from the schedule.
 fn parse_schedule_time(schedule: &LibrarianSchedule) -> Option<(u32, u32, u32)> {
     let parts: Vec<&str> = schedule.start_time.split(':').collect();
-    if parts.len() != 2 { return None; }
+    if parts.len() != 2 {
+        return None;
+    }
     let h: u32 = parts[0].parse().ok()?;
     let m: u32 = parts[1].parse().ok()?;
     Some((h, m, schedule.duration_minutes))
@@ -365,7 +391,10 @@ async fn run_librarian_now() -> Result<Json<WarmLoadResponse>, ErrorResponse> {
 
     if !resp.status().is_success() {
         let text = resp.text().await.unwrap_or_default();
-        return Err(ErrorResponse::internal(format!("Warm-load failed: {}", text)));
+        return Err(ErrorResponse::internal(format!(
+            "Warm-load failed: {}",
+            text
+        )));
     }
 
     tracing::info!(model = %schedule.model, "Librarian manual run triggered");
@@ -386,7 +415,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/api/ollama/status", get(ollama_status))
         .route("/api/ollama/warm", post(ollama_warm))
         .route("/api/librarian/schedule", get(get_librarian_schedule))
-        .route("/api/librarian/schedule", axum::routing::put(set_librarian_schedule))
+        .route(
+            "/api/librarian/schedule",
+            axum::routing::put(set_librarian_schedule),
+        )
         .route("/api/librarian/run-now", post(run_librarian_now))
         .with_state(state)
 }
