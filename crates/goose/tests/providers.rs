@@ -6,7 +6,7 @@ use goose_test_support::{
 };
 use permagent::acp::ACP_CURRENT_MODEL;
 use permagent::agents::{
-    Agent, AgentRunnerConfig, AgentEvent, GoosePlatform, PromptManager, SessionConfig,
+    Agent, AgentEvent, AgentRunnerConfig, GoosePlatform, PromptManager, SessionConfig,
 };
 use permagent::config::{ExtensionConfig, GooseMode, PermissionManager};
 use permagent::conversation::message::{ActionRequiredData, Message, MessageContent};
