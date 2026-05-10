@@ -44,5 +44,5 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build (default features)
         run: cargo build -p spectral
-      - name: Build (no default features)
-        run: cargo build -p spectral --no-default-features
+      - name: Build (minimal features)
+        run: cargo build -p spectral --no-default-features --features rustls-tls
