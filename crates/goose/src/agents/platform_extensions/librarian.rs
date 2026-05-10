@@ -133,82 +133,41 @@ impl LibrarianClient {
             .map_err(|e| format!("Invalid parameters: {}", e))?;
 
         let brain = self.get_brain()?;
-        let start = std::time::Instant::now();
 
-        // 1. Fetch memory by ID
-        let memory_id = params.memory_id.clone();
-        let brain_ref = brain.clone();
-        let memory = tokio::task::spawn_blocking(move || brain_ref.get_memory(&memory_id))
-            .await
-            .map_err(|e| format!("spawn_blocking failed: {}", e))?
-            .map_err(|e| format!("Brain error: {}", e))?
-            .ok_or_else(|| format!("Memory '{}' not found", params.memory_id))?;
-
-        // 2. Check for existing description (idempotency)
+        // Check for existing description first (idempotency, no Ollama cost)
         if !params.force {
-            if let Some(ref desc) = memory.description {
-                let result = serde_json::json!({
-                    "description": desc,
-                    "cached": true,
-                    "model": PRIMARY_MODEL,
-                    "latency_ms": 0,
-                });
-                return Ok(CallToolResult::success(vec![Content::text(
-                    serde_json::to_string_pretty(&result).unwrap(),
-                )]));
+            let mid = params.memory_id.clone();
+            let brain_ref = brain.clone();
+            let existing = tokio::task::spawn_blocking(move || brain_ref.get_memory(&mid))
+                .await
+                .map_err(|e| format!("spawn_blocking failed: {}", e))?
+                .map_err(|e| format!("Brain error: {}", e))?;
+            if let Some(ref mem) = existing {
+                if let Some(ref desc) = mem.description {
+                    let result = serde_json::json!({
+                        "description": desc,
+                        "cached": true,
+                        "model": PRIMARY_MODEL,
+                        "latency_ms": 0,
+                    });
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        serde_json::to_string_pretty(&result).unwrap(),
+                    )]));
+                }
             }
         }
 
-        // 3. Fetch related memories for context via recall
-        let content_for_recall = memory.content.clone();
-        let brain_ref = brain.clone();
-        let related_hits = tokio::task::spawn_blocking(move || {
-            brain_ref.recall(&content_for_recall, spectral::Visibility::Private)
-        })
-        .await
-        .map_err(|e| format!("spawn_blocking failed: {}", e))?
-        .map(|r| r.memory_hits)
-        .unwrap_or_default();
+        let result = describe_one(&brain, &params.memory_id).await?;
 
-        // 4. Build the prompt
-        let prompt = build_description_prompt(&memory, &related_hits);
-
-        // 5. Call Ollama
-        let ollama_response = call_ollama(&prompt).await?;
-
-        // 6. Validate the response
-        let description = ollama_response.response.trim().to_string();
-        if description.is_empty() || description.len() < 50 {
-            return Err("Ollama returned an empty or too-short response".to_string());
-        }
-
-        // 7. Write description back to Spectral
-        let desc_clone = description.clone();
-        let mid = params.memory_id.clone();
-        let brain_ref = brain.clone();
-        tokio::task::spawn_blocking(move || brain_ref.set_description(&mid, &desc_clone))
-            .await
-            .map_err(|e| format!("spawn_blocking failed: {}", e))?
-            .map_err(|e| format!("Failed to write description: {}", e))?;
-
-        let latency_ms = start.elapsed().as_millis();
-        tracing::info!(
-            memory_id = %params.memory_id,
-            latency_ms = latency_ms,
-            tokens = ollama_response.eval_count,
-            "Librarian described memory"
-        );
-
-        // 8. Return result
-        let result = serde_json::json!({
-            "description": description,
+        let response = serde_json::json!({
+            "description": result.description,
             "cached": false,
             "model": PRIMARY_MODEL,
-            "latency_ms": latency_ms,
-            "tokens": ollama_response.eval_count,
+            "latency_ms": result.latency_ms,
+            "tokens": result.tokens,
         });
         Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&result).unwrap(),
+            serde_json::to_string_pretty(&response).unwrap(),
         )]))
     }
 
@@ -216,14 +175,12 @@ impl LibrarianClient {
         &self,
         arguments: Option<JsonObject>,
     ) -> Result<CallToolResult, String> {
-        let limit = if let Some(args) = arguments {
-            let params: ListUndescribedParams =
-                serde_json::from_value(serde_json::Value::Object(args))
-                    .map_err(|e| format!("Invalid parameters: {}", e))?;
-            params.limit.min(100)
-        } else {
-            default_limit()
-        };
+        let args = arguments.unwrap_or_default();
+        let params: ListUndescribedParams = serde_json::from_value(serde_json::Value::Object(args))
+            .unwrap_or(ListUndescribedParams {
+                limit: default_limit(),
+            });
+        let limit = params.limit.min(100);
 
         let brain = self.get_brain()?;
         let memories = tokio::task::spawn_blocking(move || brain.list_undescribed(limit))
@@ -259,6 +216,111 @@ impl LibrarianClient {
             serde_json::to_string_pretty(&result).unwrap(),
         )]))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Core describe logic — shared between MCP tool handler and batch runner
+// ---------------------------------------------------------------------------
+
+pub struct DescribeResult {
+    pub description: String,
+    pub latency_ms: u128,
+    pub tokens: u64,
+}
+
+/// Describe a single memory: fetch → recall related → LLM → write back.
+/// This is the single source of truth for description generation.
+pub async fn describe_one(
+    brain: &Arc<spectral::Brain>,
+    memory_id: &str,
+) -> Result<DescribeResult, String> {
+    let start = std::time::Instant::now();
+
+    // 1. Fetch memory
+    let mid = memory_id.to_string();
+    let brain_ref = brain.clone();
+    let memory = tokio::task::spawn_blocking(move || brain_ref.get_memory(&mid))
+        .await
+        .map_err(|e| format!("spawn_blocking failed: {}", e))?
+        .map_err(|e| format!("Brain error: {}", e))?
+        .ok_or_else(|| format!("Memory '{}' not found", memory_id))?;
+
+    // 2. Fetch related memories for context
+    let content = memory.content.clone();
+    let brain_ref = brain.clone();
+    let related_hits = tokio::task::spawn_blocking(move || {
+        brain_ref.recall(&content, spectral::Visibility::Private)
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking failed: {}", e))?
+    .map(|r| r.memory_hits)
+    .unwrap_or_default();
+
+    // 3. Build prompt and call Ollama
+    let prompt = build_description_prompt(&memory, &related_hits);
+    let ollama_response = call_ollama(&prompt).await?;
+
+    // 4. Validate
+    let description = ollama_response.response.trim().to_string();
+    if description.is_empty() || description.len() < 50 {
+        return Err("Ollama returned an empty or too-short response".to_string());
+    }
+
+    // 5. Write back to Spectral
+    let desc_clone = description.clone();
+    let mid = memory_id.to_string();
+    let brain_ref = brain.clone();
+    tokio::task::spawn_blocking(move || brain_ref.set_description(&mid, &desc_clone))
+        .await
+        .map_err(|e| format!("spawn_blocking failed: {}", e))?
+        .map_err(|e| format!("Failed to write description: {}", e))?;
+
+    let latency_ms = start.elapsed().as_millis();
+    tracing::info!(
+        memory_id = %memory_id,
+        latency_ms = latency_ms,
+        tokens = ollama_response.eval_count,
+        "Librarian described memory"
+    );
+
+    Ok(DescribeResult {
+        description,
+        latency_ms,
+        tokens: ollama_response.eval_count,
+    })
+}
+
+/// Run a batch of descriptions: list undescribed → describe each → return count.
+pub async fn run_batch(brain: &Arc<spectral::Brain>, batch_size: usize) -> Result<usize, String> {
+    let mut described = 0;
+    loop {
+        let brain_ref = brain.clone();
+        let memories = tokio::task::spawn_blocking(move || brain_ref.list_undescribed(batch_size))
+            .await
+            .map_err(|e| format!("spawn_blocking failed: {}", e))?
+            .map_err(|e| format!("Brain error: {}", e))?;
+
+        if memories.is_empty() {
+            break;
+        }
+
+        for mem in &memories {
+            match describe_one(brain, &mem.id).await {
+                Ok(_) => described += 1,
+                Err(e) => {
+                    tracing::warn!(memory_id = %mem.id, error = %e, "Librarian failed to describe memory, skipping");
+                }
+            }
+        }
+
+        // If we got fewer than batch_size, we've exhausted the queue
+        if memories.len() < batch_size {
+            break;
+        }
+    }
+
+    tracing::info!(described = described, "Librarian batch complete");
+    Ok(described)
 }
 
 // ---------------------------------------------------------------------------

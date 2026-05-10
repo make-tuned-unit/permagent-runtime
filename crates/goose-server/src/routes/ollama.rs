@@ -342,8 +342,24 @@ pub async fn librarian_scheduler_loop() {
                     );
                     WARMED_TODAY.store(true, Ordering::Relaxed);
 
-                    // TODO(Phase 2): Run Librarian jobs here (list_undescribed + describe_memory loop)
-                    // Currently no job logic — warm-load only.
+                    // Run the batch: describe all undescribed memories
+                    if let Some(brain) = permagent::agents::platform_extensions::get_global_brain()
+                    {
+                        match permagent::agents::platform_extensions::librarian::run_batch(
+                            &brain, 20,
+                        )
+                        .await
+                        {
+                            Ok(n) => {
+                                tracing::info!(described = n, "Librarian scheduled batch complete")
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "Librarian scheduled batch failed")
+                            }
+                        }
+                    } else {
+                        tracing::warn!("Librarian batch skipped — Brain not available");
+                    }
                 }
                 Ok(resp) => {
                     let status = resp.status();
@@ -399,7 +415,13 @@ async fn run_librarian_now() -> Result<Json<WarmLoadResponse>, ErrorResponse> {
 
     tracing::info!(model = %schedule.model, "Librarian manual run triggered");
 
-    // TODO(Phase 2): Actually invoke Librarian tools (list_undescribed + describe_memory loop)
+    // Run the batch immediately
+    if let Some(brain) = permagent::agents::platform_extensions::get_global_brain() {
+        match permagent::agents::platform_extensions::librarian::run_batch(&brain, 20).await {
+            Ok(n) => tracing::info!(described = n, "Librarian manual batch complete"),
+            Err(e) => tracing::warn!(error = %e, "Librarian manual batch failed"),
+        }
+    }
 
     Ok(Json(WarmLoadResponse {
         success: true,
