@@ -25,7 +25,10 @@ use crate::state::AppState;
 
 // ── Auth helper ─────────────────────────────────────────────��────────
 
-fn check_bearer_token(headers: &HeaderMap, state: &AppState) -> Result<(), (StatusCode, Json<ErrorBody>)> {
+fn check_bearer_token(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Result<(), (StatusCode, Json<ErrorBody>)> {
     let token = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())

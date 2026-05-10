@@ -55,9 +55,8 @@ fn upsert_config_integration(provider: &str, enabled: bool) -> Result<()> {
     let path = config_path();
     let mut doc: serde_yaml::Value = if path.exists() {
         let content = std::fs::read_to_string(&path).context("Failed to read config.yaml")?;
-        serde_yaml::from_str(&content).unwrap_or(serde_yaml::Value::Mapping(
-            serde_yaml::Mapping::new(),
-        ))
+        serde_yaml::from_str(&content)
+            .unwrap_or(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
     } else {
         serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
     };
@@ -165,10 +164,7 @@ pub async fn handle_integrations_list() -> Result<()> {
             .and_then(|v| v.as_str())
             .map(PathBuf::from);
 
-        let token_exists = token_path
-            .as_ref()
-            .map(|p| p.exists())
-            .unwrap_or(false);
+        let token_exists = token_path.as_ref().map(|p| p.exists()).unwrap_or(false);
 
         let status = if enabled && token_exists {
             "connected"
@@ -218,9 +214,15 @@ pub async fn handle_integrations_disconnect(provider: &str) -> Result<()> {
     upsert_config_integration(provider, false)?;
 
     if removed {
-        println!("Disconnected {} — tokens removed and integration disabled.", provider);
+        println!(
+            "Disconnected {} — tokens removed and integration disabled.",
+            provider
+        );
     } else {
-        println!("Disconnected {} — integration disabled (no tokens were stored).", provider);
+        println!(
+            "Disconnected {} — integration disabled (no tokens were stored).",
+            provider
+        );
     }
     Ok(())
 }
@@ -283,13 +285,8 @@ async fn connect_gmail() -> Result<()> {
     println!("Received authorization code, exchanging for tokens...");
 
     // Exchange code for tokens
-    let token_response = exchange_google_code(
-        &auth_code,
-        &client_id,
-        &client_secret,
-        &redirect_uri,
-    )
-    .await?;
+    let token_response =
+        exchange_google_code(&auth_code, &client_id, &client_secret, &redirect_uri).await?;
 
     // Save tokens
     let token_path = secrets_dir().join("gmail_token.json");
@@ -434,7 +431,10 @@ async fn listen_for_oauth_callback(port: u16) -> Result<String> {
         .await
         .with_context(|| format!("Failed to bind OAuth callback server on port {}", port))?;
 
-    println!("Listening for OAuth callback on http://127.0.0.1:{}...", port);
+    println!(
+        "Listening for OAuth callback on http://127.0.0.1:{}...",
+        port
+    );
 
     // Spawn the server
     let server_handle = tokio::spawn(async move {

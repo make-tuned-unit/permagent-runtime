@@ -88,7 +88,10 @@ async fn gmail_connect(
 ) -> Result<Json<GmailConnectResponse>, (StatusCode, String)> {
     ensure_secrets_dir().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
-    let redirect_uri = format!("http://localhost:{}/integrations/gmail/callback", CALLBACK_PORT);
+    let redirect_uri = format!(
+        "http://localhost:{}/integrations/gmail/callback",
+        CALLBACK_PORT
+    );
 
     let auth_url = format!(
         "https://accounts.google.com/o/oauth2/v2/auth?\
@@ -105,8 +108,12 @@ async fn gmail_connect(
         "client_secret": req.client_secret,
         "redirect_uri": redirect_uri,
     });
-    std::fs::write(&creds_path, serde_json::to_string(&creds_json).unwrap())
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to store pending creds: {e}")))?;
+    std::fs::write(&creds_path, serde_json::to_string(&creds_json).unwrap()).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to store pending creds: {e}"),
+        )
+    })?;
 
     #[cfg(unix)]
     {
@@ -121,13 +128,14 @@ async fn gmail_connect(
 }
 
 /// GET /integrations/gmail/callback — OAuth callback handler
-async fn gmail_callback(
-    Query(params): Query<HashMap<String, String>>,
-) -> impl IntoResponse {
+async fn gmail_callback(Query(params): Query<HashMap<String, String>>) -> impl IntoResponse {
     let code = match params.get("code") {
         Some(c) => c.clone(),
         None => {
-            let error = params.get("error").cloned().unwrap_or_else(|| "unknown".into());
+            let error = params
+                .get("error")
+                .cloned()
+                .unwrap_or_else(|| "unknown".into());
             return Html(format!(
                 "<html><body><h2>Authorization failed</h2><p>Error: {error}</p></body></html>"
             ));
@@ -148,7 +156,8 @@ async fn gmail_callback(
         Ok(v) => v,
         Err(_) => {
             return Html(
-                "<html><body><h2>Error</h2><p>Corrupted pending OAuth data.</p></body></html>".into()
+                "<html><body><h2>Error</h2><p>Corrupted pending OAuth data.</p></body></html>"
+                    .into(),
             );
         }
     };
@@ -208,7 +217,10 @@ async fn gmail_callback(
         "scopes": [GMAIL_SCOPES],
     });
 
-    if let Err(e) = std::fs::write(&token_path, serde_json::to_string_pretty(&token_json).unwrap()) {
+    if let Err(e) = std::fs::write(
+        &token_path,
+        serde_json::to_string_pretty(&token_json).unwrap(),
+    ) {
         return Html(format!(
             "<html><body><h2>Failed to save token</h2><p>{e}</p></body></html>"
         ));
@@ -250,8 +262,12 @@ async fn gmail_disconnect() -> Result<Json<serde_json::Value>, (StatusCode, Stri
                 }
             }
         }
-        std::fs::remove_file(&token_path)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to remove token: {e}")))?;
+        std::fs::remove_file(&token_path).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to remove token: {e}"),
+            )
+        })?;
     }
 
     let _ = upsert_gmail_config(false);
@@ -288,7 +304,8 @@ fn upsert_gmail_config(enabled: bool) -> Result<(), String> {
     let path = config_path();
     let mut doc: serde_yaml::Value = if path.exists() {
         let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        serde_yaml::from_str(&content).unwrap_or(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
+        serde_yaml::from_str(&content)
+            .unwrap_or(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
     } else {
         serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
     };
@@ -298,10 +315,16 @@ fn upsert_gmail_config(enabled: bool) -> Result<(), String> {
     // Ensure extensions section exists
     let ext_key = serde_yaml::Value::String("extensions".into());
     if !root.contains_key(&ext_key) {
-        root.insert(ext_key.clone(), serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+        root.insert(
+            ext_key.clone(),
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+        );
     }
 
-    let extensions = root.get_mut(&ext_key).unwrap().as_mapping_mut()
+    let extensions = root
+        .get_mut(&ext_key)
+        .unwrap()
+        .as_mapping_mut()
         .ok_or("extensions is not a mapping")?;
 
     let gmail_key = serde_yaml::Value::String("gmail".into());

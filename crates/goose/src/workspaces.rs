@@ -139,8 +139,7 @@ pub async fn list_workspaces(pool: &Pool<Sqlite>) -> Result<Vec<Workspace>, Stri
         .iter()
         .map(|r| {
             let layout_str: String = r.get("layout_json");
-            let layout_json =
-                serde_json::from_str(&layout_str).unwrap_or(serde_json::Value::Null);
+            let layout_json = serde_json::from_str(&layout_str).unwrap_or(serde_json::Value::Null);
             Workspace {
                 id: r.get("id"),
                 user_id: r.get("user_id"),
@@ -157,7 +156,10 @@ pub async fn list_workspaces(pool: &Pool<Sqlite>) -> Result<Vec<Workspace>, Stri
 }
 
 /// Get a single workspace by ID.
-pub async fn get_workspace(pool: &Pool<Sqlite>, workspace_id: &str) -> Result<Option<Workspace>, String> {
+pub async fn get_workspace(
+    pool: &Pool<Sqlite>,
+    workspace_id: &str,
+) -> Result<Option<Workspace>, String> {
     let row = sqlx::query(
         "SELECT id, user_id, name, icon, sort_order, layout_json, is_default, created_at, updated_at
          FROM workspaces
@@ -170,8 +172,7 @@ pub async fn get_workspace(pool: &Pool<Sqlite>, workspace_id: &str) -> Result<Op
 
     Ok(row.map(|r| {
         let layout_str: String = r.get("layout_json");
-        let layout_json =
-            serde_json::from_str(&layout_str).unwrap_or(serde_json::Value::Null);
+        let layout_json = serde_json::from_str(&layout_str).unwrap_or(serde_json::Value::Null);
         Workspace {
             id: r.get("id"),
             user_id: r.get("user_id"),

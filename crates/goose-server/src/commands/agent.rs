@@ -63,18 +63,9 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
                     Ok(m) => permagent::model::ModelConfig::new(m).ok(),
                     Err(_) => None,
                 };
-                match permagent::providers::create(
-                    name,
-                    model.unwrap_or_default(),
-                    vec![],
-                )
-                .await
-                {
+                match permagent::providers::create(name, model.unwrap_or_default(), vec![]).await {
                     Ok(provider) => {
-                        app_state
-                            .agent_manager
-                            .set_default_provider(provider)
-                            .await;
+                        app_state.agent_manager.set_default_provider(provider).await;
                         info!(
                             "Default provider initialized: {} (model: {})",
                             name,

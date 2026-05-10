@@ -46,9 +46,7 @@ struct DashboardResponse {
     recent: Vec<RecentSession>,
 }
 
-async fn get_dashboard(
-    State(state): State<Arc<AppState>>,
-) -> Json<DashboardResponse> {
+async fn get_dashboard(State(state): State<Arc<AppState>>) -> Json<DashboardResponse> {
     let persona = state.persona.read().await;
     let name = persona.first_name.clone();
     drop(persona);
@@ -73,7 +71,10 @@ async fn get_dashboard(
     let two_min_ago = now - chrono::Duration::seconds(120);
     let active: Vec<_> = sessions
         .iter()
-        .filter(|s| s.updated_at >= two_min_ago && matches!(s.session_type, SessionType::User | SessionType::Scheduled))
+        .filter(|s| {
+            s.updated_at >= two_min_ago
+                && matches!(s.session_type, SessionType::User | SessionType::Scheduled)
+        })
         .collect();
     let active_count = active.len();
 

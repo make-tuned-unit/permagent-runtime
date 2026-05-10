@@ -22,7 +22,10 @@ pub async fn handle_tail(json: bool, filter: Option<String>, since: Option<Strin
         .header("Connection", "Upgrade")
         .header("Upgrade", "websocket")
         .header("Sec-WebSocket-Version", "13")
-        .header("Sec-WebSocket-Key", tokio_tungstenite::tungstenite::handshake::client::generate_key())
+        .header(
+            "Sec-WebSocket-Key",
+            tokio_tungstenite::tungstenite::handshake::client::generate_key(),
+        )
         .header("Host", "127.0.0.1")
         .body(())?;
 
@@ -113,7 +116,10 @@ fn print_event_human(event: &serde_json::Value) {
         .and_then(|v| v.as_str())
         .unwrap_or("?");
 
-    let payload = event.get("payload").cloned().unwrap_or(serde_json::Value::Null);
+    let payload = event
+        .get("payload")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
     let summary = summarize_payload(event_type, &payload);
 
     println!("{} [{}] {} {}", ts, source, event_type, summary);
@@ -122,15 +128,24 @@ fn print_event_human(event: &serde_json::Value) {
 fn summarize_payload(event_type: &str, payload: &serde_json::Value) -> String {
     match event_type {
         "ChatTurnStarted" => {
-            let sid = payload.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
+            let sid = payload
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             format!("session={}", &sid[..sid.len().min(8)])
         }
         "ChatTurnCompleted" => {
-            let dur = payload.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+            let dur = payload
+                .get("duration_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             format!("({}ms)", dur)
         }
         "TerminalCommandStarted" | "TerminalCommandCompleted" => {
-            let cmd = payload.get("command").and_then(|v| v.as_str()).unwrap_or("?");
+            let cmd = payload
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             format!("\"{}\"", cmd.chars().take(60).collect::<String>())
         }
         "BrowserNavigated" => {
@@ -138,11 +153,17 @@ fn summarize_payload(event_type: &str, payload: &serde_json::Value) -> String {
             url.chars().take(80).collect()
         }
         "ProjectSelected" => {
-            let name = payload.get("project_name").and_then(|v| v.as_str()).unwrap_or("?");
+            let name = payload
+                .get("project_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             name.to_string()
         }
         "FileEdited" => {
-            let path = payload.get("file_path").and_then(|v| v.as_str()).unwrap_or("?");
+            let path = payload
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             path.chars().take(60).collect()
         }
         _ => String::new(),

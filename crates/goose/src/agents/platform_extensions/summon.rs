@@ -964,8 +964,7 @@ impl SummonClient {
             .await
             .map_err(|e| format!("Failed to build task config: {}", e))?;
 
-        let persona_override =
-            Self::resolve_worker_persona(params.worker_persona.as_deref());
+        let persona_override = Self::resolve_worker_persona(params.worker_persona.as_deref());
         info!(
             target: "permagentd::brain",
             "Subagent spawned with worker persona: {}",
@@ -1038,9 +1037,7 @@ impl SummonClient {
 
     /// Resolve worker_persona key to a (block, display_name) tuple.
     /// Returns None only when worker_persona is None (no persona injection needed).
-    fn resolve_worker_persona(
-        worker_persona: Option<&str>,
-    ) -> Option<(String, String)> {
+    fn resolve_worker_persona(worker_persona: Option<&str>) -> Option<(String, String)> {
         let worker_key = worker_persona?;
         let config = crate::config::agent_identity::load_agent_config();
         if let Some(worker) = config.workers.get(worker_key) {
@@ -1468,8 +1465,7 @@ impl SummonClient {
 
         let description = truncate(&Self::get_task_description(&params), 40);
 
-        let persona_override =
-            Self::resolve_worker_persona(params.worker_persona.as_deref());
+        let persona_override = Self::resolve_worker_persona(params.worker_persona.as_deref());
         info!(
             target: "permagentd::brain",
             "Subagent spawned with worker persona: {}",

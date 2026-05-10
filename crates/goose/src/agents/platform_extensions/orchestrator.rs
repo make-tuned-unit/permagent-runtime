@@ -428,10 +428,7 @@ impl OrchestratorClient {
             let config = crate::config::agent_identity::load_agent_config();
             if let Some(worker) = config.workers.get(worker_key) {
                 agent
-                    .set_persona_block_override(
-                        worker.system_prompt_block(),
-                        worker.display_name(),
-                    )
+                    .set_persona_block_override(worker.system_prompt_block(), worker.display_name())
                     .await;
             } else {
                 tracing::warn!(

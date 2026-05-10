@@ -75,7 +75,11 @@ async fn query_fts(
             let preview = truncate_preview(&msg.content, 200);
             results.push(BrainSearchResult {
                 source: "chat".to_string(),
-                id: format!("{}:{}", session_result.session_id, msg.timestamp.timestamp()),
+                id: format!(
+                    "{}:{}",
+                    session_result.session_id,
+                    msg.timestamp.timestamp()
+                ),
                 preview,
                 score: 0.7,
                 timestamp: msg.timestamp,
@@ -200,11 +204,8 @@ async fn brain_search(
     let (merged, dedup_count) = merge_and_rank(fts_results, spectral_results);
     let total = merged.len();
 
-    let paginated: Vec<BrainSearchResult> = merged
-        .into_iter()
-        .skip(params.offset)
-        .take(limit)
-        .collect();
+    let paginated: Vec<BrainSearchResult> =
+        merged.into_iter().skip(params.offset).take(limit).collect();
 
     Ok(Json(BrainSearchResponse {
         results: paginated,
@@ -275,12 +276,11 @@ async fn brain_graph(
 
     // Use persona name as seed query to pull related memories + graph
     let query = self_node.name.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        brain.recall(&query, spectral::Visibility::Private)
-    })
-    .await
-    .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?
-    .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?;
+    let result =
+        tokio::task::spawn_blocking(move || brain.recall(&query, spectral::Visibility::Private))
+            .await
+            .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?
+            .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?;
 
     let now = Utc::now();
 

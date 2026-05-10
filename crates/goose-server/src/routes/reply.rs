@@ -244,9 +244,9 @@ pub async fn reply(
     let session_id = request.session_id.clone();
 
     // Activity: chat turn started
-    permagent::events::activity::emit_activity(
-        permagent::events::activity::chat_turn_started(&session_id),
-    );
+    permagent::events::activity::emit_activity(permagent::events::activity::chat_turn_started(
+        &session_id,
+    ));
 
     if let Some(recipe_name) = request.recipe_name.clone() {
         if state.mark_recipe_run_if_absent(&session_id).await {
@@ -374,35 +374,41 @@ pub async fn reply(
                             "Injecting ambient context into system prompt"
                         );
                         agent
-                            .extend_system_prompt(
-                                "ambient_context".to_string(),
-                                ambient_block,
-                            )
+                            .extend_system_prompt("ambient_context".to_string(), ambient_block)
                             .await;
                     }
 
                     // Emit ContextAttached so the frontend can show citation markers
                     if !digest.probed_memories.is_empty() || !digest.recalled_memories.is_empty() {
-                        let probed: Vec<ProbedMemoryRef> = digest.probed_memories.iter().map(|m| {
-                            ProbedMemoryRef {
+                        let probed: Vec<ProbedMemoryRef> = digest
+                            .probed_memories
+                            .iter()
+                            .map(|m| ProbedMemoryRef {
                                 id: m.id.clone(),
                                 key: m.key.clone(),
                                 content_summary: m.content.chars().take(200).collect(),
                                 relevance: m.relevance,
                                 wing: m.wing.clone(),
-                            }
-                        }).collect();
-                        let recalled: Vec<RecalledMemoryRef> = digest.recalled_memories.iter().map(|m| {
-                            RecalledMemoryRef {
+                            })
+                            .collect();
+                        let recalled: Vec<RecalledMemoryRef> = digest
+                            .recalled_memories
+                            .iter()
+                            .map(|m| RecalledMemoryRef {
                                 id: m.source.clone().unwrap_or_default(),
                                 signal_score: m.signal_score,
                                 content_summary: m.content.chars().take(200).collect(),
-                            }
-                        }).collect();
+                            })
+                            .collect();
                         stream_event(
-                            MessageEvent::ContextAttached { probed_memories: probed, recalled_memories: recalled },
-                            &task_tx, &task_cancel,
-                        ).await;
+                            MessageEvent::ContextAttached {
+                                probed_memories: probed,
+                                recalled_memories: recalled,
+                            },
+                            &task_tx,
+                            &task_cancel,
+                        )
+                        .await;
                     }
                 }
                 Err(e) => {
@@ -439,8 +445,7 @@ pub async fn reply(
                             .collect();
 
                         if !top_hits.is_empty() {
-                            let mut prefix =
-                                String::from("Relevant memories from past context:\n");
+                            let mut prefix = String::from("Relevant memories from past context:\n");
                             for hit in &top_hits {
                                 prefix.push_str(&format!("- {}\n", hit.content));
                             }
@@ -453,10 +458,7 @@ pub async fn reply(
                             );
 
                             agent
-                                .extend_system_prompt(
-                                    "memory_recall".to_string(),
-                                    prefix,
-                                )
+                                .extend_system_prompt("memory_recall".to_string(), prefix)
                                 .await;
                         } else {
                             tracing::debug!(
@@ -586,8 +588,7 @@ pub async fn reply(
 
                 tokio::spawn(async move {
                     let key = format!("chat-{}-{}", remember_session_id, turn_idx);
-                    let content =
-                        format!("User: {}\nAssistant: {}", user_text, assistant_text);
+                    let content = format!("User: {}\nAssistant: {}", user_text, assistant_text);
                     let device_id = brain.device_id().clone();
                     let key_for_log = key.clone();
 

@@ -177,6 +177,9 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/api/workspaces/active", get(get_active_handler))
         .route("/api/workspaces/active", post(set_active_handler))
         .route("/api/workspaces/{workspace_id}", get(get_workspace_handler))
-        .route("/api/workspaces/{workspace_id}/layout", put(update_layout_handler))
+        .route(
+            "/api/workspaces/{workspace_id}/layout",
+            put(update_layout_handler),
+        )
         .with_state(state)
 }

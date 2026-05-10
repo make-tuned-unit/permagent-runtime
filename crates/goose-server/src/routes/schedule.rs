@@ -201,11 +201,19 @@ async fn list_schedules(
                 .ok()
                 .and_then(|content| {
                     let recipe: Recipe = serde_yaml::from_str(&content).ok()?;
-                    let desc = if recipe.description.is_empty() { None } else { Some(recipe.description) };
+                    let desc = if recipe.description.is_empty() {
+                        None
+                    } else {
+                        Some(recipe.description)
+                    };
                     Some((Some(recipe.title), desc))
                 })
                 .unwrap_or((None, None));
-            EnrichedJob { job, display_name, description }
+            EnrichedJob {
+                job,
+                display_name,
+                description,
+            }
         })
         .collect();
     Ok(Json(ListSchedulesResponse { jobs: enriched }))

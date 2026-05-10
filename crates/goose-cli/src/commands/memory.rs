@@ -21,10 +21,9 @@ async fn open_spectral_db() -> Result<sqlx::SqlitePool> {
         anyhow::bail!("Spectral database not found. Run permagent setup first.");
     }
 
-    let connect_opts =
-        SqliteConnectOptions::from_str(&format!("sqlite:{}", db_path.display()))?
-            .create_if_missing(false)
-            .read_only(false);
+    let connect_opts = SqliteConnectOptions::from_str(&format!("sqlite:{}", db_path.display()))?
+        .create_if_missing(false)
+        .read_only(false);
 
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
@@ -173,11 +172,7 @@ pub async fn handle_memory_list(
     }
 
     println!("{}", table);
-    println!(
-        "{} result(s) (offset {})",
-        rows.len(),
-        offset
-    );
+    println!("{} result(s) (offset {})", rows.len(), offset);
     Ok(())
 }
 

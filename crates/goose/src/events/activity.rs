@@ -134,8 +134,9 @@ fn default_tier(event_type: &ActivityEventType) -> EventTier {
         | ActivityEventType::AutomationJobCompleted
         | ActivityEventType::AutomationJobFailed => EventTier::Always,
 
-        ActivityEventType::BrowserNavigated
-        | ActivityEventType::BrowserFormSubmitted => EventTier::Aggregated,
+        ActivityEventType::BrowserNavigated | ActivityEventType::BrowserFormSubmitted => {
+            EventTier::Aggregated
+        }
 
         ActivityEventType::ChatTurnStarted
         | ActivityEventType::BrowserSessionStarted
@@ -293,6 +294,8 @@ mod tests {
         let event = chat_turn_started("buf-test");
         emit_activity(event);
         let recent = recent_activity(10);
-        assert!(recent.iter().any(|e| e.session_id.as_deref() == Some("buf-test")));
+        assert!(recent
+            .iter()
+            .any(|e| e.session_id.as_deref() == Some("buf-test")));
     }
 }

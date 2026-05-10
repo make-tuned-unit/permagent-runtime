@@ -102,12 +102,11 @@ pub async fn get_attachment_by_id(
 
 /// Check if a session exists.
 pub async fn session_exists(pool: &Pool<Sqlite>, session_id: &str) -> anyhow::Result<bool> {
-    let exists = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS (SELECT 1 FROM sessions WHERE id = ?)",
-    )
-    .bind(session_id)
-    .fetch_one(pool)
-    .await?;
+    let exists =
+        sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM sessions WHERE id = ?)")
+            .bind(session_id)
+            .fetch_one(pool)
+            .await?;
 
     Ok(exists)
 }
