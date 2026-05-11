@@ -36,9 +36,7 @@ impl WorkerResponse {
     }
 }
 
-async fn list_workers(
-    State(state): State<Arc<AppState>>,
-) -> Json<HashMap<String, WorkerResponse>> {
+async fn list_workers(State(state): State<Arc<AppState>>) -> Json<HashMap<String, WorkerResponse>> {
     let ac = state.agent_config.read().await;
     let map = ac
         .workers

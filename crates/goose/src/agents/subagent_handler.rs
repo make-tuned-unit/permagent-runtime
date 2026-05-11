@@ -1,5 +1,7 @@
 use crate::{
-    agents::{subagent_task_config::TaskConfig, Agent, AgentRunnerConfig, AgentEvent, SessionConfig},
+    agents::{
+        subagent_task_config::TaskConfig, Agent, AgentEvent, AgentRunnerConfig, SessionConfig,
+    },
     conversation::{
         message::{Message, MessageContent},
         Conversation,

@@ -1,5 +1,9 @@
 use crate::state::AppState;
-use axum::{extract::State, routing::{get, put}, Json, Router};
+use axum::{
+    extract::State,
+    routing::{get, put},
+    Json, Router,
+};
 use permagent::config::agent_identity::{self, PrimaryPersona};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -42,9 +46,7 @@ struct IdentityUpdate {
     voice_id: Option<String>,
 }
 
-async fn get_identity(
-    State(state): State<Arc<AppState>>,
-) -> Json<IdentityResponse> {
+async fn get_identity(State(state): State<Arc<AppState>>) -> Json<IdentityResponse> {
     let persona = state.persona.read().await;
     Json(IdentityResponse::from(&*persona))
 }

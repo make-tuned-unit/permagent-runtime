@@ -29,7 +29,10 @@ fn is_sensitive_path(path: &Path) -> bool {
 
     // Blocked directory prefixes
     let blocked_dirs = [
-        "/.ssh/", "/.aws/", "/.gcp/", "/.gnupg/",
+        "/.ssh/",
+        "/.aws/",
+        "/.gcp/",
+        "/.gnupg/",
         "/library/keychains/",
     ];
     for dir in &blocked_dirs {
@@ -96,12 +99,15 @@ fn save_findings(data: &FindingsFile) {
     let dir = findings_dir();
     let _ = std::fs::create_dir_all(&dir);
     let path = findings_path(&data.run_id);
-    let _ = std::fs::write(&path, serde_json::to_string_pretty(data).unwrap_or_default());
+    let _ = std::fs::write(
+        &path,
+        serde_json::to_string_pretty(data).unwrap_or_default(),
+    );
 }
 
 // ── Auth helper ────────────────────────────────────────────────────
 
-fn check_auth(headers: &HeaderMap, state: &AppState) -> Result<(), (StatusCode, Json<ErrorBody>)> {
+fn _check_auth(headers: &HeaderMap, state: &AppState) -> Result<(), (StatusCode, Json<ErrorBody>)> {
     let token = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -109,7 +115,12 @@ fn check_auth(headers: &HeaderMap, state: &AppState) -> Result<(), (StatusCode, 
 
     if let Some(expected) = state.daemon_token.as_deref() {
         if token != Some(expected) {
-            return Err((StatusCode::UNAUTHORIZED, Json(ErrorBody { error: "unauthorized".into() })));
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorBody {
+                    error: "unauthorized".into(),
+                }),
+            ));
         }
     }
     Ok(())
@@ -142,19 +153,38 @@ async fn perform_action(
     AxumPath(finding_id): AxumPath<String>,
     Json(req): Json<ActionRequest>,
 ) -> Result<Json<ActionResponse>, (StatusCode, Json<ErrorBody>)> {
-
     let mut data = load_findings(&req.run_id).ok_or_else(|| {
-        (StatusCode::NOT_FOUND, Json(ErrorBody { error: format!("Run {} not found", req.run_id) }))
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                error: format!("Run {} not found", req.run_id),
+            }),
+        )
     })?;
 
-    let idx = data.findings.iter().position(|f| f.id == finding_id).ok_or_else(|| {
-        (StatusCode::NOT_FOUND, Json(ErrorBody { error: format!("Finding {} not found", finding_id) }))
-    })?;
+    let idx = data
+        .findings
+        .iter()
+        .position(|f| f.id == finding_id)
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    error: format!("Finding {} not found", finding_id),
+                }),
+            )
+        })?;
 
     if data.findings[idx].action_taken.is_some() {
-        return Err((StatusCode::CONFLICT, Json(ErrorBody {
-            error: format!("Finding {} already actioned as {:?}", finding_id, data.findings[idx].action_taken),
-        })));
+        return Err((
+            StatusCode::CONFLICT,
+            Json(ErrorBody {
+                error: format!(
+                    "Finding {} already actioned as {:?}",
+                    finding_id, data.findings[idx].action_taken
+                ),
+            }),
+        ));
     }
 
     let now = Utc::now().to_rfc3339();
@@ -166,15 +196,21 @@ async fn perform_action(
 
             // Sensitive path validation
             if is_sensitive_path(file_path) {
-                return Err((StatusCode::FORBIDDEN, Json(ErrorBody {
-                    error: format!("Refusing to trash sensitive path: {}", finding_path),
-                })));
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    Json(ErrorBody {
+                        error: format!("Refusing to trash sensitive path: {}", finding_path),
+                    }),
+                ));
             }
 
             if !file_path.exists() {
-                return Err((StatusCode::NOT_FOUND, Json(ErrorBody {
-                    error: format!("File not found: {}", finding_path),
-                })));
+                return Err((
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorBody {
+                        error: format!("File not found: {}", finding_path),
+                    }),
+                ));
             }
 
             // Check for iCloud-evicted (dataless) files. These exist on disk
@@ -184,8 +220,8 @@ async fn perform_action(
             {
                 use std::os::unix::fs::MetadataExt;
                 if let Ok(meta) = std::fs::metadata(file_path) {
-                    let flags = meta.mode(); // st_flags via MetadataExt
-                    // SF_DATALESS = 0x40000000 — file content is in iCloud
+                    let _flags = meta.mode(); // st_flags via MetadataExt
+                                              // SF_DATALESS = 0x40000000 — file content is in iCloud
                     let raw_flags = unsafe {
                         let mut stat_buf: libc::stat = std::mem::zeroed();
                         libc::stat(
@@ -205,8 +241,11 @@ async fn perform_action(
             }
 
             let size = std::fs::metadata(file_path).map(|m| m.len()).unwrap_or(0);
-            let file_name = file_path.file_name()
-                .and_then(|n| n.to_str()).unwrap_or("unknown").to_string();
+            let file_name = file_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
 
             // Native macOS Trash via the `trash` crate.
             // This preserves original path for Finder restoration, integrates
@@ -214,9 +253,12 @@ async fn perform_action(
             // replace with shell rm or mv to ~/.Trash — those bypass native
             // Trash metadata and break restoration/undo.
             trash::delete(file_path).map_err(|e| {
-                (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorBody {
-                    error: format!("Failed to move to Trash: {}", e),
-                }))
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorBody {
+                        error: format!("Failed to move to Trash: {}", e),
+                    }),
+                )
             })?;
 
             data.findings[idx].action_taken = Some("trashed".into());
@@ -228,8 +270,11 @@ async fn perform_action(
                 finding_id,
                 action_taken: "trashed".into(),
                 size_recovered_bytes: Some(size),
-                trash_path: Some(format!("{}/.Trash/{}",
-                    std::env::var("HOME").unwrap_or_default(), file_name)),
+                trash_path: Some(format!(
+                    "{}/.Trash/{}",
+                    std::env::var("HOME").unwrap_or_default(),
+                    file_name
+                )),
                 timestamp: now,
             }))
         }
@@ -246,9 +291,12 @@ async fn perform_action(
                 timestamp: now,
             }))
         }
-        other => Err((StatusCode::BAD_REQUEST, Json(ErrorBody {
-            error: format!("Invalid action: {}. Must be trash, keep, or skip.", other),
-        }))),
+        other => Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: format!("Invalid action: {}. Must be trash, keep, or skip.", other),
+            }),
+        )),
     }
 }
 
@@ -301,8 +349,14 @@ async fn save_findings_endpoint(
 
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/automation/finding/{finding_id}/action", post(perform_action))
-        .route("/automation/run/{run_id}/findings", get(get_findings).post(save_findings_endpoint))
+        .route(
+            "/automation/finding/{finding_id}/action",
+            post(perform_action),
+        )
+        .route(
+            "/automation/run/{run_id}/findings",
+            get(get_findings).post(save_findings_endpoint),
+        )
         .with_state(state)
 }
 
@@ -315,20 +369,34 @@ mod tests {
     #[test]
     fn sensitive_paths_rejected() {
         assert!(is_sensitive_path(Path::new("/Users/jesse/.ssh/id_rsa")));
-        assert!(is_sensitive_path(Path::new("/Users/jesse/.aws/credentials")));
+        assert!(is_sensitive_path(Path::new(
+            "/Users/jesse/.aws/credentials"
+        )));
         assert!(is_sensitive_path(Path::new("/Users/jesse/project/.env")));
         assert!(is_sensitive_path(Path::new("/Users/jesse/.env.local")));
-        assert!(is_sensitive_path(Path::new("/Users/jesse/Library/Keychains/login.keychain")));
-        assert!(is_sensitive_path(Path::new("/Users/jesse/.gnupg/private-keys-v1.d/key")));
+        assert!(is_sensitive_path(Path::new(
+            "/Users/jesse/Library/Keychains/login.keychain"
+        )));
+        assert!(is_sensitive_path(Path::new(
+            "/Users/jesse/.gnupg/private-keys-v1.d/key"
+        )));
         assert!(is_sensitive_path(Path::new("/Users/jesse/server.key")));
         assert!(is_sensitive_path(Path::new("/Users/jesse/cert.pem")));
     }
 
     #[test]
     fn safe_paths_accepted() {
-        assert!(!is_sensitive_path(Path::new("/Users/jesse/Downloads/installer.dmg")));
-        assert!(!is_sensitive_path(Path::new("/Users/jesse/Desktop/photo.jpg")));
-        assert!(!is_sensitive_path(Path::new("/Users/jesse/Documents/report.pdf")));
-        assert!(!is_sensitive_path(Path::new("/Users/jesse/Downloads/node-v18.pkg")));
+        assert!(!is_sensitive_path(Path::new(
+            "/Users/jesse/Downloads/installer.dmg"
+        )));
+        assert!(!is_sensitive_path(Path::new(
+            "/Users/jesse/Desktop/photo.jpg"
+        )));
+        assert!(!is_sensitive_path(Path::new(
+            "/Users/jesse/Documents/report.pdf"
+        )));
+        assert!(!is_sensitive_path(Path::new(
+            "/Users/jesse/Downloads/node-v18.pkg"
+        )));
     }
 }

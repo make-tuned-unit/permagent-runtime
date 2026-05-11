@@ -25,7 +25,10 @@ use crate::state::AppState;
 
 // ── Auth helper ─────────────────────────────────────────────��────────
 
-fn check_bearer_token(headers: &HeaderMap, state: &AppState) -> Result<(), (StatusCode, Json<ErrorBody>)> {
+fn check_bearer_token(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Result<(), (StatusCode, Json<ErrorBody>)> {
     let token = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -133,7 +136,7 @@ async fn emit_event(
     let age = Utc::now()
         .signed_duration_since(event.timestamp)
         .num_seconds();
-    if age > 60 || age < -5 {
+    if !(-5..=60).contains(&age) {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorBody {
@@ -189,11 +192,7 @@ fn check_rate_limit() -> bool {
 
     // Prune entries older than 60 seconds
     let cutoff_60s = now_ms - 60_000;
-    while limiter
-        .timestamps
-        .front()
-        .map_or(false, |&t| t < cutoff_60s)
-    {
+    while limiter.timestamps.front().is_some_and(|&t| t < cutoff_60s) {
         limiter.timestamps.pop_front();
     }
 

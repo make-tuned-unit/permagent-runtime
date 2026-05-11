@@ -801,17 +801,11 @@ pub async fn set_config_provider(
         .set_goose_provider(provider.clone())
         .and_then(|_| config.set_goose_model(model.clone()))
         .map_err(|e| {
-            ErrorResponse::bad_request(format!(
-                "Failed to persist provider config: {}",
-                e
-            ))
+            ErrorResponse::bad_request(format!("Failed to persist provider config: {}", e))
         })?;
 
     // Update in-memory runtime state so new sessions use the new provider immediately
-    state
-        .agent_manager
-        .set_default_provider(provider_arc)
-        .await;
+    state.agent_manager.set_default_provider(provider_arc).await;
 
     tracing::info!(
         provider = %provider,

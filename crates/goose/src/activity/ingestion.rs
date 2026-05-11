@@ -101,12 +101,7 @@ impl ActivityIngester {
         let project_id = event
             .project_id
             .as_deref()
-            .or_else(|| {
-                event
-                    .payload
-                    .get("project_id")
-                    .and_then(|v| v.as_str())
-            });
+            .or_else(|| event.payload.get("project_id").and_then(|v| v.as_str()));
 
         let project_id = match project_id {
             Some(id) => id,
@@ -146,11 +141,11 @@ impl ActivityIngester {
             "activity:{}:{}:{}",
             event.timestamp.timestamp(),
             event_type_str(&event.event_type),
-            &event.event_id[..8],
+            event.event_id.get(..8).unwrap_or(&event.event_id),
         );
         let content = render_content(event);
 
-        let device_id = self.device_id.clone();
+        let device_id = self.device_id;
         let event_type_name = event_type_str(&event.event_type).to_string();
         let source_surface = format!("{:?}", event.source_surface).to_lowercase();
         let is_aggregated = event.tier == EventTier::Aggregated;
@@ -337,17 +332,11 @@ fn render_content(event: &ActivityEvent) -> String {
                 .get("project_name")
                 .and_then(|v| v.as_str())
                 .unwrap_or("?");
-            let id = p
-                .get("project_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
+            let id = p.get("project_id").and_then(|v| v.as_str()).unwrap_or("?");
             format!("Started working in project {} ({}).", name, id)
         }
         ActivityEventType::SkillExecuted => {
-            let name = p
-                .get("skill_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
+            let name = p.get("skill_name").and_then(|v| v.as_str()).unwrap_or("?");
             let status = p.get("status").and_then(|v| v.as_str()).unwrap_or("?");
             let dur = p.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
             format!("Ran skill '{}' — status {}, took {}ms.", name, status, dur)
@@ -358,10 +347,7 @@ fn render_content(event: &ActivityEvent) -> String {
         }
         ActivityEventType::FileEdited => {
             let path = p.get("path").and_then(|v| v.as_str()).unwrap_or("?");
-            let lines = p
-                .get("lines_changed")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
+            let lines = p.get("lines_changed").and_then(|v| v.as_i64()).unwrap_or(0);
             format!("Edited {} ({} lines changed).", path, lines)
         }
         ActivityEventType::AutomationJobStarted => {
@@ -379,7 +365,10 @@ fn render_content(event: &ActivityEvent) -> String {
         }
         ActivityEventType::AutomationJobFailed => {
             let name = p.get("job_name").and_then(|v| v.as_str()).unwrap_or("?");
-            let err = p.get("error").and_then(|v| v.as_str()).unwrap_or("unknown error");
+            let err = p
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error");
             format!("Automation '{}' failed: {}.", name, truncate(err, 200))
         }
         _ => format!(
@@ -394,7 +383,7 @@ fn truncate(s: &str, max: usize) -> &str {
     if s.len() <= max {
         s
     } else {
-        &s[..max]
+        s.get(..max).unwrap_or(s)
     }
 }
 
@@ -457,12 +446,18 @@ mod tests {
 
     #[test]
     fn wing_slug_from_canonical_project() {
-        assert_eq!(derive_wing_slug("project:permagent"), Some("permagent".into()));
+        assert_eq!(
+            derive_wing_slug("project:permagent"),
+            Some("permagent".into())
+        );
     }
 
     #[test]
     fn wing_slug_from_project_with_hyphens() {
-        assert_eq!(derive_wing_slug("project:get-ladle"), Some("get-ladle".into()));
+        assert_eq!(
+            derive_wing_slug("project:get-ladle"),
+            Some("get-ladle".into())
+        );
     }
 
     #[test]

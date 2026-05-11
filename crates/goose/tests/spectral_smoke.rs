@@ -42,7 +42,7 @@ fn spectral_round_trips_chat_memory_with_provenance() {
             "User asked about Spectral integration. Agent confirmed v1.0 ships chat memory with the graph layer foundation in place.",
             RememberOpts {
                 source: Some("chat".into()),
-                device_id: Some(brain.device_id().clone()),
+                device_id: Some(*brain.device_id()),
                 confidence: Some(1.0),
                 visibility: Visibility::Private,
                 wing: None,
@@ -109,7 +109,7 @@ fn ontology_loads_without_specific_entities() {
             "Schema-only ontology test memory.",
             RememberOpts {
                 source: Some("test".into()),
-                device_id: Some(brain.device_id().clone()),
+                device_id: Some(*brain.device_id()),
                 confidence: Some(1.0),
                 visibility: Visibility::Private,
                 wing: None,

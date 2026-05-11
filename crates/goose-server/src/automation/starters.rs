@@ -55,7 +55,10 @@ pub fn record_starter_deletion(starter_id: &str) {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let _ = std::fs::write(&path, serde_json::to_string_pretty(&disabled).unwrap_or_default());
+        let _ = std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&disabled).unwrap_or_default(),
+        );
     }
 }
 
@@ -67,11 +70,17 @@ pub async fn seed_starter_recipes(scheduler: &dyn SchedulerTrait) {
 
     for starter in STARTERS {
         if existing_ids.contains(&starter.id) {
-            tracing::debug!("Starter recipe '{}' already installed, skipping", starter.id);
+            tracing::debug!(
+                "Starter recipe '{}' already installed, skipping",
+                starter.id
+            );
             continue;
         }
         if disabled.contains(&starter.id.to_string()) {
-            tracing::debug!("Starter recipe '{}' was disabled by user, skipping", starter.id);
+            tracing::debug!(
+                "Starter recipe '{}' was disabled by user, skipping",
+                starter.id
+            );
             continue;
         }
 

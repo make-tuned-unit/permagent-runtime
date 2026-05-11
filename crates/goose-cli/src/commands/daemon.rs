@@ -49,8 +49,8 @@ pub fn load_daemon_token() -> Result<String> {
     let path = home.join(".permagent/secrets/daemon_token.json");
     let contents = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read daemon token from {}", path.display()))?;
-    let parsed: serde_json::Value = serde_json::from_str(&contents)
-        .context("failed to parse daemon_token.json")?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(&contents).context("failed to parse daemon_token.json")?;
     parsed
         .get("token")
         .and_then(|v| v.as_str())
@@ -186,7 +186,10 @@ pub fn handle_stop() -> Result<()> {
     let plist = plist_path();
 
     if !plist.exists() {
-        println!("Daemon plist not found at {}. Nothing to stop.", plist.display());
+        println!(
+            "Daemon plist not found at {}. Nothing to stop.",
+            plist.display()
+        );
         return Ok(());
     }
 

@@ -87,7 +87,13 @@ pub fn canonicalize_entity_id(
         .chars()
         .filter(|c| c.is_ascii())
         // Replace whitespace and underscores with hyphens
-        .map(|c| if c.is_ascii_whitespace() || c == '_' { '-' } else { c })
+        .map(|c| {
+            if c.is_ascii_whitespace() || c == '_' {
+                '-'
+            } else {
+                c
+            }
+        })
         // Keep only alphanumeric and hyphens
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
         .collect();

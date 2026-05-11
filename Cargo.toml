@@ -124,4 +124,4 @@ opentelemetry-stdout = { git = "https://github.com/open-telemetry/opentelemetry-
 # resolves to the specific package directory.
 # ============================================================
 # [patch."https://github.com/make-tuned-unit/spectral"]
-# spectral = { path = "/Users/jessesharratt/dev/spectral/crates/spectral" }
+# spectral = { path = "/path/to/spectral/crates/spectral" }

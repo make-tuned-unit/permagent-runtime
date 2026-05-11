@@ -8,7 +8,7 @@
 use crate::events::activity::{ActivityEvent, ActivityEventType};
 use spectral::{Brain, ProbeOpts, ProbeWindow, RecognizedMemory, Visibility};
 use std::collections::VecDeque;
-use std::sync::{Arc, RwLock, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 const MAX_RING_BUFFER_SIZE: usize = 1000;
@@ -103,8 +103,8 @@ impl ContextBuilder {
             .live_state
             .read()
             .map(|s| {
-                let five_min_ago =
-                    chrono::Utc::now() - chrono::Duration::from_std(Duration::from_secs(300)).unwrap();
+                let five_min_ago = chrono::Utc::now()
+                    - chrono::Duration::from_std(Duration::from_secs(300)).unwrap();
                 let events_in_last_5 = self
                     .recent_events
                     .lock()
@@ -186,10 +186,7 @@ impl ContextBuilder {
 
     /// Number of events currently in the ring buffer.
     pub fn buffered_count(&self) -> usize {
-        self.recent_events
-            .lock()
-            .map(|buf| buf.len())
-            .unwrap_or(0)
+        self.recent_events.lock().map(|buf| buf.len()).unwrap_or(0)
     }
 
     /// Snapshot of current live state.
@@ -201,7 +198,7 @@ impl ContextBuilder {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct LiveState {
     pub active_project_id: Option<String>,
     pub active_session_id: Option<String>,
@@ -209,19 +206,6 @@ pub struct LiveState {
     pub last_terminal_command: Option<String>,
     pub last_terminal_cwd: Option<String>,
     pub events_in_last_5_minutes: usize,
-}
-
-impl Default for LiveState {
-    fn default() -> Self {
-        Self {
-            active_project_id: None,
-            active_session_id: None,
-            last_browser_url: None,
-            last_terminal_command: None,
-            last_terminal_cwd: None,
-            events_in_last_5_minutes: 0,
-        }
-    }
 }
 
 pub struct DigestOpts {
@@ -291,8 +275,10 @@ pub fn render_ambient_context(digest: &Digest) -> String {
     // <live_state>
     let mut live_lines = Vec::new();
     if let Some(ref pid) = ls.active_project_id {
-        live_lines.push(format!("PROJECT: {}",
-            pid.strip_prefix("project:").unwrap_or(pid)));
+        live_lines.push(format!(
+            "PROJECT: {}",
+            pid.strip_prefix("project:").unwrap_or(pid)
+        ));
     }
     if let Some(ref cwd) = ls.last_terminal_cwd {
         live_lines.push(format!("TERMINAL_CWD: {}", cwd));
@@ -307,7 +293,10 @@ pub fn render_ambient_context(digest: &Digest) -> String {
         live_lines.push(format!("EVENTS_LAST_5MIN: {}", ls.events_in_last_5_minutes));
     }
     if !live_lines.is_empty() {
-        parts.push(format!("<live_state>\n{}\n</live_state>", live_lines.join("\n")));
+        parts.push(format!(
+            "<live_state>\n{}\n</live_state>",
+            live_lines.join("\n")
+        ));
     }
 
     // <recent_activity>
@@ -318,28 +307,45 @@ pub fn render_ambient_context(digest: &Digest) -> String {
             let summary = render_event_summary(event);
             lines.push(format!("- {} {}", time, summary));
         }
-        parts.push(format!("<recent_activity>\n{}\n</recent_activity>", lines.join("\n")));
+        parts.push(format!(
+            "<recent_activity>\n{}\n</recent_activity>",
+            lines.join("\n")
+        ));
     }
 
     // <recognized_memories>
     if !digest.probed_memories.is_empty() {
-        let mut lines = vec!["The following memories from your past activity may be relevant:".to_string()];
+        let mut lines =
+            vec!["The following memories from your past activity may be relevant:".to_string()];
         for mem in &digest.probed_memories {
             let wing_str = mem.wing.as_deref().unwrap_or("general");
-            lines.push(format!("- \"{}\" (relevance: {:.2}, wing: {})",
-                mem.content.chars().take(200).collect::<String>(), mem.relevance, wing_str));
+            lines.push(format!(
+                "- \"{}\" (relevance: {:.2}, wing: {})",
+                mem.content.chars().take(200).collect::<String>(),
+                mem.relevance,
+                wing_str
+            ));
         }
-        parts.push(format!("<recognized_memories>\n{}\n</recognized_memories>", lines.join("\n")));
+        parts.push(format!(
+            "<recognized_memories>\n{}\n</recognized_memories>",
+            lines.join("\n")
+        ));
     }
 
     // <relevant_memories>
     if !digest.recalled_memories.is_empty() {
         let mut lines = vec!["Recalled memories relevant to this query:".to_string()];
         for mem in &digest.recalled_memories {
-            lines.push(format!("- \"{}\" (score: {:.2})",
-                mem.content.chars().take(200).collect::<String>(), mem.signal_score));
+            lines.push(format!(
+                "- \"{}\" (score: {:.2})",
+                mem.content.chars().take(200).collect::<String>(),
+                mem.signal_score
+            ));
         }
-        parts.push(format!("<relevant_memories>\n{}\n</relevant_memories>", lines.join("\n")));
+        parts.push(format!(
+            "<relevant_memories>\n{}\n</relevant_memories>",
+            lines.join("\n")
+        ));
     }
 
     // The first element is always the preamble — only emit if there's
@@ -348,49 +354,100 @@ pub fn render_ambient_context(digest: &Digest) -> String {
         return String::new();
     }
 
-    format!("<ambient_context>\n{}\n</ambient_context>", parts.join("\n\n"))
+    format!(
+        "<ambient_context>\n{}\n</ambient_context>",
+        parts.join("\n\n")
+    )
 }
 
 fn render_event_summary(event: &ActivityEvent) -> String {
     match event.event_type {
         ActivityEventType::FileEdited => {
-            let path = event.payload.get("file_path").and_then(|v| v.as_str()).unwrap_or("unknown");
-            let lines = event.payload.get("lines_changed").and_then(|v| v.as_u64()).unwrap_or(0);
+            let path = event
+                .payload
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let lines = event
+                .payload
+                .get("lines_changed")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             format!("Edited file {} ({} lines)", path, lines)
         }
         ActivityEventType::TerminalCommandStarted => {
-            let cmd = event.payload.get("command").and_then(|v| v.as_str()).unwrap_or("?");
+            let cmd = event
+                .payload
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             format!("Ran '{}'", cmd)
         }
         ActivityEventType::TerminalCommandCompleted => {
-            let cmd = event.payload.get("command").and_then(|v| v.as_str()).unwrap_or("?");
-            let exit = event.payload.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(-1);
-            let dur = event.payload.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+            let cmd = event
+                .payload
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let exit = event
+                .payload
+                .get("exit_code")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(-1);
+            let dur = event
+                .payload
+                .get("duration_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             format!("Ran '{}' — exit {}, took {}ms", cmd, exit, dur)
         }
         ActivityEventType::BrowserNavigated => {
-            let url = event.payload.get("url").and_then(|v| v.as_str()).unwrap_or("?");
+            let url = event
+                .payload
+                .get("url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             format!("Navigated to {}", url)
         }
         ActivityEventType::ProjectSelected => {
-            let name = event.payload.get("project_name").and_then(|v| v.as_str()).unwrap_or("?");
+            let name = event
+                .payload
+                .get("project_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             format!("Started working in project {}", name)
         }
         ActivityEventType::ChatTurnStarted => "Chat turn started".to_string(),
         ActivityEventType::ChatTurnCompleted => {
-            let dur = event.payload.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+            let dur = event
+                .payload
+                .get("duration_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             format!("Chat turn completed ({}ms)", dur)
         }
         ActivityEventType::AutomationJobStarted => {
-            let name = event.payload.get("job_name").and_then(|v| v.as_str()).unwrap_or("?");
+            let name = event
+                .payload
+                .get("job_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             format!("Automation '{}' started", name)
         }
         ActivityEventType::AutomationJobCompleted => {
-            let name = event.payload.get("job_name").and_then(|v| v.as_str()).unwrap_or("?");
+            let name = event
+                .payload
+                .get("job_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             format!("Automation '{}' completed", name)
         }
         ActivityEventType::AutomationJobFailed => {
-            let name = event.payload.get("job_name").and_then(|v| v.as_str()).unwrap_or("?");
+            let name = event
+                .payload
+                .get("job_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             format!("Automation '{}' failed", name)
         }
         _ => format!("{:?}", event.event_type),
@@ -434,7 +491,10 @@ mod tests {
         cb.handle_event(&event);
 
         let state = cb.live_state_snapshot();
-        assert_eq!(state.last_browser_url.as_deref(), Some("https://example.com"));
+        assert_eq!(
+            state.last_browser_url.as_deref(),
+            Some("https://example.com")
+        );
     }
 
     #[test]
@@ -470,7 +530,10 @@ mod tests {
         cb.handle_event(&event);
 
         let state = cb.live_state_snapshot();
-        assert_eq!(state.active_project_id.as_deref(), Some("project:permagent"));
+        assert_eq!(
+            state.active_project_id.as_deref(),
+            Some("project:permagent")
+        );
     }
 
     #[test]

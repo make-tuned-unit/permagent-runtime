@@ -5,7 +5,7 @@ use permagent::config::Config;
 use permagent::session::spectral_schema::{init_spectral_db, is_schema_initialized};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 /// Provider choices for the setup wizard
@@ -20,11 +20,7 @@ const PROVIDERS: &[(&str, &str)] = &[
 /// Known models per provider for interactive selection
 fn models_for_provider(provider: &str) -> Vec<&'static str> {
     match provider {
-        "anthropic" => vec![
-            "claude-sonnet-4-5",
-            "claude-opus-4-6",
-            "claude-haiku-4-5",
-        ],
+        "anthropic" => vec!["claude-sonnet-4-5", "claude-opus-4-6", "claude-haiku-4-5"],
         "openai" => vec!["gpt-4o", "gpt-4o-mini", "o3"],
         "ollama" => vec!["qwen2.5:14b", "llama3.1", "mistral", "codestral"],
         "google" => vec!["gemini-2.0-flash", "gemini-2.5-pro"],
@@ -131,7 +127,10 @@ pub async fn handle_setup_interactive() -> Result<()> {
             Ok(()) => println!("connected."),
             Err(e) => {
                 println!("failed.");
-                eprintln!("Warning: Could not reach Ollama ({}). Make sure it's running.", e);
+                eprintln!(
+                    "Warning: Could not reach Ollama ({}). Make sure it's running.",
+                    e
+                );
                 eprintln!("Install Ollama from https://ollama.ai and run `ollama serve`.");
             }
         }
@@ -161,7 +160,10 @@ pub async fn handle_setup_interactive() -> Result<()> {
         match config.set_secret(key_name, key) {
             Ok(()) => println!("Key stored in system keyring (service: \"permagent\")"),
             Err(e) => {
-                eprintln!("Warning: Keyring unavailable ({}), falling back to secrets.yaml", e);
+                eprintln!(
+                    "Warning: Keyring unavailable ({}), falling back to secrets.yaml",
+                    e
+                );
                 write_secrets_fallback(&permagent_dir, key_name, key)?;
             }
         }
@@ -234,7 +236,10 @@ pub async fn handle_setup_interactive() -> Result<()> {
 
         if open_browser {
             if let Err(e) = webbrowser::open("http://localhost:3001/ui/") {
-                eprintln!("Could not open browser: {}. Visit http://localhost:3001/ui/", e);
+                eprintln!(
+                    "Could not open browser: {}. Visit http://localhost:3001/ui/",
+                    e
+                );
             }
         }
     } else {
@@ -284,10 +289,16 @@ pub async fn handle_setup_non_interactive(opts: NonInteractiveOpts) -> Result<()
     {
         let config = Config::global();
         if let Err(e) = config.set_goose_provider(provider_name) {
-            eprintln!("Warning: Failed to persist GOOSE_PROVIDER via Config API: {}", e);
+            eprintln!(
+                "Warning: Failed to persist GOOSE_PROVIDER via Config API: {}",
+                e
+            );
         }
         if let Err(e) = config.set_goose_model(default_model) {
-            eprintln!("Warning: Failed to persist GOOSE_MODEL via Config API: {}", e);
+            eprintln!(
+                "Warning: Failed to persist GOOSE_MODEL via Config API: {}",
+                e
+            );
         }
     }
     println!("Config written to ~/.permagent/config.yaml");
@@ -316,7 +327,7 @@ pub async fn handle_setup_non_interactive(opts: NonInteractiveOpts) -> Result<()
 }
 
 /// Initialize the Spectral database, respecting existing data.
-async fn init_spectral(permagent_dir: &PathBuf) -> Result<String> {
+async fn init_spectral(permagent_dir: &Path) -> Result<String> {
     let spectral_dir = permagent_dir.join("spectral");
     fs::create_dir_all(&spectral_dir)?;
 
@@ -324,8 +335,9 @@ async fn init_spectral(permagent_dir: &PathBuf) -> Result<String> {
 
     // If DB already exists, check if schema is initialized
     if db_path.exists() {
-        let connect_opts = SqliteConnectOptions::from_str(&format!("sqlite:{}", db_path.display()))?
-            .create_if_missing(false);
+        let connect_opts =
+            SqliteConnectOptions::from_str(&format!("sqlite:{}", db_path.display()))?
+                .create_if_missing(false);
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect_with(connect_opts)
@@ -359,10 +371,11 @@ async fn init_spectral(permagent_dir: &PathBuf) -> Result<String> {
         sqlx::query_as("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '%_fts%'")
             .fetch_one(&pool)
             .await?;
-    let index_count: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name LIKE '%_fts%'")
-            .fetch_one(&pool)
-            .await?;
+    let index_count: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name LIKE '%_fts%'",
+    )
+    .fetch_one(&pool)
+    .await?;
 
     pool.close().await;
 
@@ -424,7 +437,7 @@ skills:
 }
 
 /// Fallback: write API key to secrets.yaml when keyring is unavailable.
-fn write_secrets_fallback(permagent_dir: &PathBuf, key_name: &str, key: &str) -> Result<()> {
+fn write_secrets_fallback(permagent_dir: &Path, key_name: &str, key: &str) -> Result<()> {
     let secrets_path = permagent_dir.join("secrets.yaml");
 
     // Load existing secrets if any

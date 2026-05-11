@@ -13,9 +13,11 @@ use permagent_mcp::{AutoVisualiserRouter, ComputerControllerServer, MemoryServer
 use crate::commands::configure::configure_telemetry_consent_dialog;
 use crate::commands::configure::handle_configure;
 use crate::commands::info::handle_info;
-use crate::commands::setup::{handle_setup_interactive, handle_setup_non_interactive, NonInteractiveOpts};
 use crate::commands::project::{handle_project_default, handle_projects_interactive};
 use crate::commands::recipe::{handle_deeplink, handle_list, handle_open, handle_validate};
+use crate::commands::setup::{
+    handle_setup_interactive, handle_setup_non_interactive, NonInteractiveOpts,
+};
 use crate::commands::term::{
     handle_term_info, handle_term_init, handle_term_log, handle_term_run, Shell,
 };
@@ -824,7 +826,10 @@ enum Command {
     #[command(about = "Run the Permagent setup wizard")]
     Setup {
         /// Run in non-interactive mode (accepts defaults, requires --provider)
-        #[arg(long = "non-interactive", help = "Run setup without interactive prompts")]
+        #[arg(
+            long = "non-interactive",
+            help = "Run setup without interactive prompts"
+        )]
         non_interactive: bool,
 
         /// LLM provider (required for --non-interactive)
@@ -844,11 +849,7 @@ enum Command {
         api_key: Option<String>,
 
         /// Model override (for --non-interactive mode)
-        #[arg(
-            long = "model",
-            value_name = "MODEL",
-            help = "Default model to use"
-        )]
+        #[arg(long = "model", value_name = "MODEL", help = "Default model to use")]
         model: Option<String>,
 
         /// Agent name (for --non-interactive mode)
@@ -981,7 +982,10 @@ enum Command {
     },
 
     /// Memory management (search, list, add)
-    #[command(about = "Manage memories in the spectral database", visible_alias = "mem")]
+    #[command(
+        about = "Manage memories in the spectral database",
+        visible_alias = "mem"
+    )]
     Memory {
         #[command(subcommand)]
         command: MemoryCommand,
@@ -1625,9 +1629,7 @@ async fn handle_memory_command(command: MemoryCommand) -> Result<()> {
     use crate::commands::memory;
 
     match command {
-        MemoryCommand::Search { query, limit } => {
-            memory::handle_memory_search(&query, limit).await
-        }
+        MemoryCommand::Search { query, limit } => memory::handle_memory_search(&query, limit).await,
         MemoryCommand::List {
             wing,
             hall,
@@ -1679,9 +1681,11 @@ async fn handle_integrations_command(command: IntegrationsCommand) -> Result<()>
 
 async fn handle_activity_command(command: ActivityCommand) -> Result<()> {
     match command {
-        ActivityCommand::Tail { json, filter, since } => {
-            crate::commands::activity::handle_tail(json, filter, since).await
-        }
+        ActivityCommand::Tail {
+            json,
+            filter,
+            since,
+        } => crate::commands::activity::handle_tail(json, filter, since).await,
     }
 }
 

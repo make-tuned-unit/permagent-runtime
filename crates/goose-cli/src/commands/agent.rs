@@ -1,5 +1,5 @@
 use anyhow::Result;
-use permagent::config::agent_identity::{self, AgentConfig, PrimaryPersona};
+use permagent::config::agent_identity::{self, PrimaryPersona};
 
 pub async fn handle_agent_command(command: AgentCommand) -> Result<()> {
     match command {
@@ -18,13 +18,39 @@ fn show() -> Result<()> {
     let p = &config.primary;
     println!("Agent Identity");
     println!("  first_name:       {}", p.first_name);
-    println!("  last_name:        {}", p.last_name.as_deref().unwrap_or("(none)"));
-    println!("  nickname:         {}", p.nickname.as_deref().unwrap_or("(none)"));
+    println!(
+        "  last_name:        {}",
+        p.last_name.as_deref().unwrap_or("(none)")
+    );
+    println!(
+        "  nickname:         {}",
+        p.nickname.as_deref().unwrap_or("(none)")
+    );
     println!("  display_name:     {}", p.display_name());
-    println!("  traits:           {}", if p.traits.is_empty() { "(none)".into() } else { p.traits.join(", ") });
-    println!("  tone:             {}", if p.tone.is_empty() { "(none)" } else { &p.tone });
-    println!("  opening_greeting: {}", if p.opening_greeting.is_empty() { "(none)" } else { &p.opening_greeting });
-    println!("  voice_id:         {}", p.voice_id.as_deref().unwrap_or("(none)"));
+    println!(
+        "  traits:           {}",
+        if p.traits.is_empty() {
+            "(none)".into()
+        } else {
+            p.traits.join(", ")
+        }
+    );
+    println!(
+        "  tone:             {}",
+        if p.tone.is_empty() { "(none)" } else { &p.tone }
+    );
+    println!(
+        "  opening_greeting: {}",
+        if p.opening_greeting.is_empty() {
+            "(none)"
+        } else {
+            &p.opening_greeting
+        }
+    );
+    println!(
+        "  voice_id:         {}",
+        p.voice_id.as_deref().unwrap_or("(none)")
+    );
     Ok(())
 }
 
@@ -42,30 +68,20 @@ pub enum AgentCommand {
     Show,
     /// Set the agent's first name
     #[command(name = "set-first-name")]
-    SetFirstName {
-        name: String,
-    },
+    SetFirstName { name: String },
     /// Set the agent's last name
     #[command(name = "set-last-name")]
-    SetLastName {
-        name: String,
-    },
+    SetLastName { name: String },
     /// Set a nickname (overrides display name)
     #[command(name = "set-nickname")]
-    SetNickname {
-        name: String,
-    },
+    SetNickname { name: String },
     /// Clear the nickname (revert to first+last)
     #[command(name = "clear-nickname")]
     ClearNickname,
     /// Set the agent's tone description
     #[command(name = "set-tone")]
-    SetTone {
-        tone: String,
-    },
+    SetTone { tone: String },
     /// Set the agent's opening greeting
     #[command(name = "set-greeting")]
-    SetGreeting {
-        greeting: String,
-    },
+    SetGreeting { greeting: String },
 }

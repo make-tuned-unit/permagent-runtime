@@ -12,9 +12,7 @@ pub async fn handle_worker_command(command: WorkerCommand) -> Result<()> {
             tone,
             traits,
         } => create(&key, &first_name, &role, &tone, &traits),
-        WorkerCommand::SetNickname { key, name } => {
-            set_field(&key, |w| w.nickname = Some(name))
-        }
+        WorkerCommand::SetNickname { key, name } => set_field(&key, |w| w.nickname = Some(name)),
         WorkerCommand::ClearNickname { key } => set_field(&key, |w| w.nickname = None),
         WorkerCommand::Remove { key } => remove(&key),
     }
@@ -26,7 +24,7 @@ fn list() -> Result<()> {
         println!("No workers defined.");
         return Ok(());
     }
-    println!("{:<15} {:<20} {}", "KEY", "DISPLAY_NAME", "ROLE");
+    println!("{:<15} {:<20} ROLE", "KEY", "DISPLAY_NAME");
     let mut keys: Vec<_> = config.workers.keys().collect();
     keys.sort();
     for key in keys {

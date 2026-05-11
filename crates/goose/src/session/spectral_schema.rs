@@ -519,12 +519,10 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
         .await?;
 
     // Add active_workspace_id to users table
-    sqlx::query(
-        "ALTER TABLE users ADD COLUMN active_workspace_id TEXT REFERENCES workspaces(id)",
-    )
-    .execute(&mut *tx)
-    .await
-    .ok(); // Ignore if column already exists
+    sqlx::query("ALTER TABLE users ADD COLUMN active_workspace_id TEXT REFERENCES workspaces(id)")
+        .execute(&mut *tx)
+        .await
+        .ok(); // Ignore if column already exists
 
     // ── ATTACHMENTS ──
     sqlx::query(
@@ -702,9 +700,11 @@ pub async fn migrate_v3_to_v4(pool: &Pool<Sqlite>) -> Result<()> {
     .await?;
 
     if has_col == 0 {
-        sqlx::query("ALTER TABLE users ADD COLUMN active_workspace_id TEXT REFERENCES workspaces(id)")
-            .execute(pool)
-            .await?;
+        sqlx::query(
+            "ALTER TABLE users ADD COLUMN active_workspace_id TEXT REFERENCES workspaces(id)",
+        )
+        .execute(pool)
+        .await?;
     }
 
     // Record version

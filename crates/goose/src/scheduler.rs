@@ -143,7 +143,8 @@ pub struct Scheduler {
     session_manager: Arc<SessionManager>,
     brain: Arc<tokio::sync::RwLock<Option<Arc<spectral::Brain>>>>,
     persona: Arc<tokio::sync::RwLock<Option<crate::config::agent_identity::SharedPersona>>>,
-    agent_config: Arc<tokio::sync::RwLock<Option<crate::config::agent_identity::SharedAgentConfig>>>,
+    agent_config:
+        Arc<tokio::sync::RwLock<Option<crate::config::agent_identity::SharedAgentConfig>>>,
 }
 
 impl Scheduler {
@@ -671,9 +672,9 @@ impl Scheduler {
         }
 
         // Emit job started activity event
-        crate::events::activity::emit_activity(
-            crate::events::activity::automation_job_started(sched_id, sched_id),
-        );
+        crate::events::activity::emit_activity(crate::events::activity::automation_job_started(
+            sched_id, sched_id,
+        ));
 
         let job_start_instant = std::time::Instant::now();
         let brain_snapshot = self.brain.read().await.clone();
@@ -713,14 +714,22 @@ impl Scheduler {
             Ok(session_id) => {
                 crate::events::activity::emit_activity(
                     crate::events::activity::automation_job_completed(
-                        sched_id, sched_id, &session_id, duration_ms, 0,
+                        sched_id,
+                        sched_id,
+                        &session_id,
+                        duration_ms,
+                        0,
                     ),
                 );
                 Ok(session_id)
             }
             Err(e) => {
                 crate::events::activity::emit_activity(
-                    crate::events::activity::automation_job_failed(sched_id, sched_id, &e.to_string()),
+                    crate::events::activity::automation_job_failed(
+                        sched_id,
+                        sched_id,
+                        &e.to_string(),
+                    ),
                 );
                 Err(SchedulerError::AnyhowError(anyhow!(
                     "Job '{}' failed: {}",
@@ -892,10 +901,7 @@ async fn execute_job(
             let guard = ac.read().await;
             if let Some(worker) = guard.workers.get(worker_key) {
                 agent
-                    .set_persona_block_override(
-                        worker.system_prompt_block(),
-                        worker.display_name(),
-                    )
+                    .set_persona_block_override(worker.system_prompt_block(), worker.display_name())
                     .await;
                 resolved = true;
                 tracing::info!(
@@ -1124,7 +1130,7 @@ async fn execute_job(
             tokio::spawn(async move {
                 let key = format!("scheduled-{}-{}", remember_job_id, turn_idx);
                 let content = format!("User: {}\nAssistant: {}", user_text, assistant_text);
-                let device_id = brain_clone.device_id().clone();
+                let device_id = *brain_clone.device_id();
                 let key_for_log = key.clone();
 
                 let result = tokio::task::spawn_blocking(move || {
@@ -1185,11 +1191,16 @@ async fn execute_job(
             .join("\n");
         if let Some(start) = full_output.find("<findings>") {
             if let Some(end) = full_output.find("</findings>") {
-                let json_str = &full_output[start + "<findings>".len()..end].trim();
+                let json_str = full_output
+                    .get(start + "<findings>".len()..end)
+                    .unwrap_or("")
+                    .trim();
                 match serde_json::from_str::<Vec<serde_json::Value>>(json_str) {
                     Ok(findings) => {
                         let findings_dir = std::env::var("HOME")
-                            .map(|h| std::path::PathBuf::from(h).join(".permagent/automation/findings"))
+                            .map(|h| {
+                                std::path::PathBuf::from(h).join(".permagent/automation/findings")
+                            })
                             .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/findings"));
                         let _ = std::fs::create_dir_all(&findings_dir);
                         let findings_path = findings_dir.join(format!("{}.json", session.id));
@@ -1197,7 +1208,10 @@ async fn execute_job(
                             "run_id": session.id,
                             "findings": findings,
                         });
-                        let _ = std::fs::write(&findings_path, serde_json::to_string_pretty(&findings_data).unwrap_or_default());
+                        let _ = std::fs::write(
+                            &findings_path,
+                            serde_json::to_string_pretty(&findings_data).unwrap_or_default(),
+                        );
                         tracing::info!(
                             target: "permagentd::automation",
                             "Extracted {} findings from scheduled job {} (session {})",

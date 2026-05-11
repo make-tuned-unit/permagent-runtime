@@ -299,11 +299,14 @@ pub async fn session_reply(
         let current_provider = config.get_goose_provider().ok();
         let current_model = config.get_goose_model().ok();
 
-        let provider_stale =
-            current_provider.is_some() && current_provider.as_deref() != session_data.provider_name.as_deref();
+        let provider_stale = current_provider.is_some()
+            && current_provider.as_deref() != session_data.provider_name.as_deref();
         let model_stale = current_model.is_some()
             && current_model.as_deref()
-                != session_data.model_config.as_ref().map(|m| m.model_name.as_str());
+                != session_data
+                    .model_config
+                    .as_ref()
+                    .map(|m| m.model_name.as_str());
 
         if provider_stale || model_stale {
             let mut update = state.session_manager().update(&session_id);
@@ -333,9 +336,9 @@ pub async fn session_reply(
     let session_start = std::time::Instant::now();
 
     // Activity: chat turn started
-    permagent::events::activity::emit_activity(
-        permagent::events::activity::chat_turn_started(&session_id),
-    );
+    permagent::events::activity::emit_activity(permagent::events::activity::chat_turn_started(
+        &session_id,
+    ));
 
     tracing::info!(
         monotonic_counter.goose.session_starts = 1,
@@ -506,36 +509,41 @@ pub async fn session_reply(
                             "Injecting ambient context into system prompt"
                         );
                         agent
-                            .extend_system_prompt(
-                                "ambient_context".to_string(),
-                                ambient_block,
-                            )
+                            .extend_system_prompt("ambient_context".to_string(), ambient_block)
                             .await;
                     }
 
                     // Emit ContextAttached so the frontend can show citation markers
                     if !digest.probed_memories.is_empty() || !digest.recalled_memories.is_empty() {
                         use crate::routes::reply::{ProbedMemoryRef, RecalledMemoryRef};
-                        let probed: Vec<ProbedMemoryRef> = digest.probed_memories.iter().map(|m| {
-                            ProbedMemoryRef {
+                        let probed: Vec<ProbedMemoryRef> = digest
+                            .probed_memories
+                            .iter()
+                            .map(|m| ProbedMemoryRef {
                                 id: m.id.clone(),
                                 key: m.key.clone(),
                                 content_summary: m.content.chars().take(200).collect(),
                                 relevance: m.relevance,
                                 wing: m.wing.clone(),
-                            }
-                        }).collect();
-                        let recalled: Vec<RecalledMemoryRef> = digest.recalled_memories.iter().map(|m| {
-                            RecalledMemoryRef {
+                            })
+                            .collect();
+                        let recalled: Vec<RecalledMemoryRef> = digest
+                            .recalled_memories
+                            .iter()
+                            .map(|m| RecalledMemoryRef {
                                 id: m.source.clone().unwrap_or_default(),
                                 signal_score: m.signal_score,
                                 content_summary: m.content.chars().take(200).collect(),
-                            }
-                        }).collect();
+                            })
+                            .collect();
                         publish(
                             Some(task_request_id.clone()),
-                            MessageEvent::ContextAttached { probed_memories: probed, recalled_memories: recalled },
-                        ).await;
+                            MessageEvent::ContextAttached {
+                                probed_memories: probed,
+                                recalled_memories: recalled,
+                            },
+                        )
+                        .await;
                     }
                 }
                 Err(e) => {
@@ -572,8 +580,7 @@ pub async fn session_reply(
                             .collect();
 
                         if !top_hits.is_empty() {
-                            let mut prefix =
-                                String::from("Relevant memories from past context:\n");
+                            let mut prefix = String::from("Relevant memories from past context:\n");
                             for hit in &top_hits {
                                 prefix.push_str(&format!("- {}\n", hit.content));
                             }
@@ -586,10 +593,7 @@ pub async fn session_reply(
                             );
 
                             agent
-                                .extend_system_prompt(
-                                    "memory_recall".to_string(),
-                                    prefix,
-                                )
+                                .extend_system_prompt("memory_recall".to_string(), prefix)
                                 .await;
                         } else {
                             tracing::debug!(
@@ -728,9 +732,8 @@ pub async fn session_reply(
 
                 tokio::spawn(async move {
                     let key = format!("chat-{}-{}", remember_session_id, turn_idx);
-                    let content =
-                        format!("User: {}\nAssistant: {}", user_text, assistant_text);
-                    let device_id = brain.device_id().clone();
+                    let content = format!("User: {}\nAssistant: {}", user_text, assistant_text);
+                    let device_id = *brain.device_id();
                     let key_for_log = key.clone();
 
                     let result = tokio::task::spawn_blocking(move || {

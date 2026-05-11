@@ -6,7 +6,7 @@ use goose_test_support::{
 };
 use permagent::acp::ACP_CURRENT_MODEL;
 use permagent::agents::{
-    Agent, AgentConfig, AgentEvent, GoosePlatform, PromptManager, SessionConfig,
+    Agent, AgentEvent, AgentRunnerConfig, GoosePlatform, PromptManager, SessionConfig,
 };
 use permagent::config::{ExtensionConfig, GooseMode, PermissionManager};
 use permagent::conversation::message::{ActionRequiredData, Message, MessageContent};
@@ -246,7 +246,7 @@ impl ProviderFixture {
         let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
         let permission_manager = Arc::new(PermissionManager::new(temp_dir.path().to_path_buf()));
 
-        let agent = Agent::with_config(AgentConfig::new(
+        let agent = Agent::with_config(AgentRunnerConfig::new(
             session_manager.clone(),
             permission_manager,
             None,

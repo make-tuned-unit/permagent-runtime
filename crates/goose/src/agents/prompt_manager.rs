@@ -182,7 +182,7 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
         } else {
             prompt_template::render_template("system.md", &context)
         }
-        .unwrap_or_else(|_| persona_block);
+        .unwrap_or(persona_block);
 
         let mut system_prompt_extras = self.manager.system_prompt_extras.clone();
 
