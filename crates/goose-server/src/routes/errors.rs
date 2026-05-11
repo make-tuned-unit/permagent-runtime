@@ -38,6 +38,13 @@ impl ErrorResponse {
         }
     }
 
+    pub(crate) fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            status: StatusCode::CONFLICT,
+        }
+    }
+
     pub(crate) fn unprocessable(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
