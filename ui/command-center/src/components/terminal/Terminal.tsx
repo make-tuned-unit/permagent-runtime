@@ -249,14 +249,22 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         }
       });
 
+      // Debounce ResizeObserver to avoid sending rapid intermediate
+      // dimensions to the PTY. Without this, TUI apps (Claude Code, vim)
+      // can render their status bar at a stale row position, causing
+      // duplicate/ghost status lines during panel resizes.
+      let resizeTimer: ReturnType<typeof setTimeout> | null = null;
       const resizeObserver = new ResizeObserver(() => {
-        if (fitAddonRef.current && isVisibleRef.current) {
-          try {
-            fitAddonRef.current.fit();
-          } catch {
-            // ignore fit errors during layout transitions
+        if (resizeTimer) clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+          if (fitAddonRef.current && isVisibleRef.current) {
+            try {
+              fitAddonRef.current.fit();
+            } catch {
+              // ignore fit errors during layout transitions
+            }
           }
-        }
+        }, 100);
       });
       resizeObserver.observe(containerRef.current!);
 
@@ -276,6 +284,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         onResizeDisposable.dispose();
         unlistenData?.();
         unlistenExit?.();
+        if (resizeTimer) clearTimeout(resizeTimer);
         resizeObserver.disconnect();
         term.dispose();
         xtermRef.current = null;
