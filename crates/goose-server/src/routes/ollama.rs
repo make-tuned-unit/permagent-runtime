@@ -325,7 +325,7 @@ fn save_warmed_date(date: chrono::NaiveDate) {
 
 fn already_warmed_today() -> bool {
     let today = chrono::Local::now().date_naive();
-    load_last_warmed_date().map_or(false, |d| d == today)
+    load_last_warmed_date().is_some_and(|d| d == today)
 }
 
 fn mark_warmed_today() {
