@@ -198,7 +198,7 @@ impl ContextBuilder {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct LiveState {
     pub active_project_id: Option<String>,
     pub active_session_id: Option<String>,
@@ -206,19 +206,6 @@ pub struct LiveState {
     pub last_terminal_command: Option<String>,
     pub last_terminal_cwd: Option<String>,
     pub events_in_last_5_minutes: usize,
-}
-
-impl Default for LiveState {
-    fn default() -> Self {
-        Self {
-            active_project_id: None,
-            active_session_id: None,
-            last_browser_url: None,
-            last_terminal_command: None,
-            last_terminal_cwd: None,
-            events_in_last_5_minutes: 0,
-        }
-    }
 }
 
 pub struct DigestOpts {

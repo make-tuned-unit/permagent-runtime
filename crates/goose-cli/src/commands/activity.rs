@@ -132,7 +132,7 @@ fn summarize_payload(event_type: &str, payload: &serde_json::Value) -> String {
                 .get("session_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            format!("session={}", &sid[..sid.len().min(8)])
+            format!("session={}", sid.get(..sid.len().min(8)).unwrap_or(sid))
         }
         "ChatTurnCompleted" => {
             let dur = payload

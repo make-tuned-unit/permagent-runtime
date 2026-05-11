@@ -24,7 +24,7 @@ fn list() -> Result<()> {
         println!("No workers defined.");
         return Ok(());
     }
-    println!("{:<15} {:<20} {}", "KEY", "DISPLAY_NAME", "ROLE");
+    println!("{:<15} {:<20} ROLE", "KEY", "DISPLAY_NAME");
     let mut keys: Vec<_> = config.workers.keys().collect();
     keys.sort();
     for key in keys {

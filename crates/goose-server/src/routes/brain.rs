@@ -164,7 +164,7 @@ fn truncate_preview(s: &str, max_len: usize) -> String {
         while end > 0 && !s.is_char_boundary(end) {
             end -= 1;
         }
-        format!("{}...", &s[..end])
+        format!("{}...", s.get(..end).unwrap_or(s))
     }
 }
 
@@ -303,7 +303,7 @@ async fn brain_graph(
     entities.truncate(80);
 
     // Build memories, capped at 100
-    let max_age_secs: f64 = 90.0 * 24.0 * 3600.0; // 90 days
+    let _max_age_secs: f64 = 90.0 * 24.0 * 3600.0; // 90 days
     let mut memories: Vec<GraphMemory> = Vec::new();
     for (i, hit) in result.memory_hits.iter().enumerate().take(100) {
         let age = 0.5; // Spectral MemoryHit lacks timestamp; use score as proxy

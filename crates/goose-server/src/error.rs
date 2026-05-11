@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
+#[allow(dead_code)]
 pub enum ConfigError {
     #[error("Missing required environment variable: {env_var}")]
     MissingEnvVar { env_var: String },
@@ -9,6 +10,7 @@ pub enum ConfigError {
 }
 
 // Helper function to format environment variable names
+#[allow(dead_code)]
 pub(crate) fn to_env_var(field_path: &str) -> String {
     // Handle nested fields by converting dots to double underscores
     // If the field is in the provider object, we need to prefix it appropriately

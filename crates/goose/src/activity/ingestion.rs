@@ -141,11 +141,11 @@ impl ActivityIngester {
             "activity:{}:{}:{}",
             event.timestamp.timestamp(),
             event_type_str(&event.event_type),
-            &event.event_id[..8],
+            event.event_id.get(..8).unwrap_or(&event.event_id),
         );
         let content = render_content(event);
 
-        let device_id = self.device_id.clone();
+        let device_id = self.device_id;
         let event_type_name = event_type_str(&event.event_type).to_string();
         let source_surface = format!("{:?}", event.source_surface).to_lowercase();
         let is_aggregated = event.tier == EventTier::Aggregated;
@@ -383,7 +383,7 @@ fn truncate(s: &str, max: usize) -> &str {
     if s.len() <= max {
         s
     } else {
-        &s[..max]
+        s.get(..max).unwrap_or(s)
     }
 }
 

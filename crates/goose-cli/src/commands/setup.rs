@@ -5,7 +5,7 @@ use permagent::config::Config;
 use permagent::session::spectral_schema::{init_spectral_db, is_schema_initialized};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 /// Provider choices for the setup wizard
@@ -327,7 +327,7 @@ pub async fn handle_setup_non_interactive(opts: NonInteractiveOpts) -> Result<()
 }
 
 /// Initialize the Spectral database, respecting existing data.
-async fn init_spectral(permagent_dir: &PathBuf) -> Result<String> {
+async fn init_spectral(permagent_dir: &Path) -> Result<String> {
     let spectral_dir = permagent_dir.join("spectral");
     fs::create_dir_all(&spectral_dir)?;
 
@@ -437,7 +437,7 @@ skills:
 }
 
 /// Fallback: write API key to secrets.yaml when keyring is unavailable.
-fn write_secrets_fallback(permagent_dir: &PathBuf, key_name: &str, key: &str) -> Result<()> {
+fn write_secrets_fallback(permagent_dir: &Path, key_name: &str, key: &str) -> Result<()> {
     let secrets_path = permagent_dir.join("secrets.yaml");
 
     // Load existing secrets if any

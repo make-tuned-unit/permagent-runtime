@@ -65,10 +65,7 @@ pub fn buffered_events() -> Vec<PermagentEvent> {
 pub fn buffered_events_after(resume_from: &str) -> Option<Vec<PermagentEvent>> {
     let buf = EVENT_BUS.buffer.lock().ok()?;
     let pos = buf.iter().position(|e| e.id == resume_from);
-    match pos {
-        Some(idx) => Some(buf.iter().skip(idx + 1).cloned().collect()),
-        None => None, // resume_from not in buffer — gap
-    }
+    pos.map(|idx| buf.iter().skip(idx + 1).cloned().collect())
 }
 
 // ── Event types ─────────────────────────────────────────────────────────────

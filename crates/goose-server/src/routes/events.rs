@@ -32,15 +32,12 @@ async fn handle_socket(socket: WebSocket) {
     // Wait briefly for an optional resume_from message from client.
     // If the client sends {"resume_from": "<id>"} within 500ms, replay from that point.
     let resume_from = tokio::time::timeout(std::time::Duration::from_millis(500), async {
-        while let Some(Ok(msg)) = receiver.next().await {
-            if let Message::Text(text) = msg {
-                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
-                    if let Some(id) = parsed.get("resume_from").and_then(|v| v.as_str()) {
-                        return Some(id.to_string());
-                    }
+        if let Some(Ok(Message::Text(text))) = receiver.next().await {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(id) = parsed.get("resume_from").and_then(|v| v.as_str()) {
+                    return Some(id.to_string());
                 }
             }
-            break;
         }
         None
     })

@@ -307,6 +307,8 @@ pub fn compute_argument_shape_hash(
     }
     let hash = hasher.finalize();
     let hex = format!("{:x}", hash);
+    // hex is a hex-encoded blake3 hash (ASCII-only), so byte indexing is safe
+    #[allow(clippy::string_slice)]
     Some(hex[..16].to_string())
 }
 

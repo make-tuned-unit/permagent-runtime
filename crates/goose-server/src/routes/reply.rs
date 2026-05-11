@@ -589,7 +589,7 @@ pub async fn reply(
                 tokio::spawn(async move {
                     let key = format!("chat-{}-{}", remember_session_id, turn_idx);
                     let content = format!("User: {}\nAssistant: {}", user_text, assistant_text);
-                    let device_id = brain.device_id().clone();
+                    let device_id = *brain.device_id();
                     let key_for_log = key.clone();
 
                     let result = tokio::task::spawn_blocking(move || {

@@ -1130,7 +1130,7 @@ async fn execute_job(
             tokio::spawn(async move {
                 let key = format!("scheduled-{}-{}", remember_job_id, turn_idx);
                 let content = format!("User: {}\nAssistant: {}", user_text, assistant_text);
-                let device_id = brain_clone.device_id().clone();
+                let device_id = *brain_clone.device_id();
                 let key_for_log = key.clone();
 
                 let result = tokio::task::spawn_blocking(move || {
@@ -1191,7 +1191,10 @@ async fn execute_job(
             .join("\n");
         if let Some(start) = full_output.find("<findings>") {
             if let Some(end) = full_output.find("</findings>") {
-                let json_str = &full_output[start + "<findings>".len()..end].trim();
+                let json_str = full_output
+                    .get(start + "<findings>".len()..end)
+                    .unwrap_or("")
+                    .trim();
                 match serde_json::from_str::<Vec<serde_json::Value>>(json_str) {
                     Ok(findings) => {
                         let findings_dir = std::env::var("HOME")

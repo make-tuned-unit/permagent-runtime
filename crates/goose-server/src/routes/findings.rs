@@ -107,7 +107,7 @@ fn save_findings(data: &FindingsFile) {
 
 // ── Auth helper ────────────────────────────────────────────────────
 
-fn check_auth(headers: &HeaderMap, state: &AppState) -> Result<(), (StatusCode, Json<ErrorBody>)> {
+fn _check_auth(headers: &HeaderMap, state: &AppState) -> Result<(), (StatusCode, Json<ErrorBody>)> {
     let token = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -220,8 +220,8 @@ async fn perform_action(
             {
                 use std::os::unix::fs::MetadataExt;
                 if let Ok(meta) = std::fs::metadata(file_path) {
-                    let flags = meta.mode(); // st_flags via MetadataExt
-                                             // SF_DATALESS = 0x40000000 — file content is in iCloud
+                    let _flags = meta.mode(); // st_flags via MetadataExt
+                                              // SF_DATALESS = 0x40000000 — file content is in iCloud
                     let raw_flags = unsafe {
                         let mut stat_buf: libc::stat = std::mem::zeroed();
                         libc::stat(

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use permagent::config::agent_identity::{self, AgentConfig, PrimaryPersona};
+use permagent::config::agent_identity::{self, PrimaryPersona};
 
 pub async fn handle_agent_command(command: AgentCommand) -> Result<()> {
     match command {
