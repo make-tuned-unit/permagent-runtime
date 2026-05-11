@@ -316,10 +316,11 @@ fn save_warmed_date(date: chrono::NaiveDate) {
         let _ = std::fs::create_dir_all(parent);
     }
     let obj = serde_json::json!({ "last_warmed_date": date.format("%Y-%m-%d").to_string() });
-    let _ = std::fs::write(
-        &path,
-        serde_json::to_string_pretty(&obj).unwrap_or_default(),
-    );
+    // Write-temp-then-rename: protects against truncation on daemon crash mid-write.
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, serde_json::to_string_pretty(&obj).unwrap_or_default()).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
 }
 
 fn already_warmed_today() -> bool {
