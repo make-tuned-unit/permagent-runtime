@@ -261,7 +261,11 @@ async fn set_librarian_schedule(
 // signal, switch to: warm at window start, run jobs, unload as soon as
 // queue is empty. Tracked as Librarian Phase 2 work.
 
-/// Returns (start_hour, start_minute, duration_minutes) from the schedule.
+/// Mutex serializing batch runs. Both the scheduled window and "Run now"
+/// acquire this before calling run_batch. Second caller awaits the first.
+static BATCH_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 fn parse_schedule_time(schedule: &LibrarianSchedule) -> Option<(u32, u32, u32)> {
     let parts: Vec<&str> = schedule.start_time.split(':').collect();
     if parts.len() != 2 {
@@ -272,7 +276,6 @@ fn parse_schedule_time(schedule: &LibrarianSchedule) -> Option<(u32, u32, u32)> 
     Some((h, m, schedule.duration_minutes))
 }
 
-/// Check if the current local time is within the configured window.
 fn is_in_window(schedule: &LibrarianSchedule) -> bool {
     let (sh, sm, dur) = match parse_schedule_time(schedule) {
         Some(v) => v,
@@ -290,90 +293,53 @@ fn is_in_window(schedule: &LibrarianSchedule) -> bool {
     }
 }
 
-/// Background loop: ticks once per minute, warm-loads if in window.
-pub async fn librarian_scheduler_loop() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    static WARMED_TODAY: AtomicBool = AtomicBool::new(false);
+// ── Persisted warm date ─────────────────────────────────────────────
+// Replaces the old AtomicBool which reset on daemon restart. The warm
+// date is stored in ~/.permagent/data/librarian_state.json so the
+// scheduler knows not to re-warm if the daemon restarts mid-window.
 
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
-    loop {
-        interval.tick().await;
-
-        let schedule = load_schedule();
-        if !schedule.enabled {
-            WARMED_TODAY.store(false, Ordering::Relaxed);
-            continue;
-        }
-
-        let in_window = is_in_window(&schedule);
-
-        if in_window && !WARMED_TODAY.load(Ordering::Relaxed) {
-            tracing::info!(
-                model = %schedule.model,
-                duration = schedule.duration_minutes,
-                "Librarian window active — warm-loading model"
-            );
-
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(120))
-                .build()
-                .unwrap_or_default();
-
-            let keep_alive_secs = schedule.duration_minutes as u64 * 60;
-            let body = serde_json::json!({
-                "model": schedule.model,
-                "prompt": "ok",
-                "stream": false,
-                "keep_alive": format!("{}s", keep_alive_secs),
-                "options": { "num_predict": 1 }
-            });
-
-            match client
-                .post(format!("{}/api/generate", OLLAMA_BASE))
-                .json(&body)
-                .send()
-                .await
-            {
-                Ok(resp) if resp.status().is_success() => {
-                    tracing::info!(
-                        model = %schedule.model,
-                        keep_alive = keep_alive_secs,
-                        "Librarian model warm-loaded successfully"
-                    );
-                    WARMED_TODAY.store(true, Ordering::Relaxed);
-
-                    // TODO(Phase 2): Run Librarian jobs here (list_undescribed + describe_memory loop)
-                    // Currently no job logic — warm-load only.
-                }
-                Ok(resp) => {
-                    let status = resp.status();
-                    tracing::warn!(model = %schedule.model, %status, "Librarian warm-load failed");
-                }
-                Err(e) => {
-                    tracing::warn!(model = %schedule.model, error = %e, "Ollama unreachable for Librarian warm-load");
-                }
-            }
-        }
-
-        // Reset the daily flag when we leave the window (handles DST, clock changes)
-        if !in_window && WARMED_TODAY.load(Ordering::Relaxed) {
-            WARMED_TODAY.store(false, Ordering::Relaxed);
-            tracing::debug!("Librarian window ended, reset warm flag for next cycle");
-        }
-    }
+fn state_path() -> std::path::PathBuf {
+    permagent::config::paths::Paths::in_data_dir("librarian_state.json")
 }
 
-/// POST /api/librarian/run-now — manual trigger for warm-load + run
-async fn run_librarian_now() -> Result<Json<WarmLoadResponse>, ErrorResponse> {
-    let schedule = load_schedule();
+fn load_last_warmed_date() -> Option<chrono::NaiveDate> {
+    let path = state_path();
+    let contents = std::fs::read_to_string(path).ok()?;
+    let obj: serde_json::Value = serde_json::from_str(&contents).ok()?;
+    let date_str = obj.get("last_warmed_date")?.as_str()?;
+    chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d").ok()
+}
+
+fn save_warmed_date(date: chrono::NaiveDate) {
+    let path = state_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let obj = serde_json::json!({ "last_warmed_date": date.format("%Y-%m-%d").to_string() });
+    let _ = std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&obj).unwrap_or_default(),
+    );
+}
+
+fn already_warmed_today() -> bool {
+    let today = chrono::Local::now().date_naive();
+    load_last_warmed_date().map_or(false, |d| d == today)
+}
+
+fn mark_warmed_today() {
+    save_warmed_date(chrono::Local::now().date_naive());
+}
+
+/// Warm-load a model then run the batch, holding the BATCH_MUTEX.
+async fn warm_and_run(schedule: &LibrarianSchedule, keep_alive_secs: u64) -> Result<usize, String> {
+    let _guard = BATCH_MUTEX.lock().await;
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .build()
-        .map_err(|e| ErrorResponse::internal(format!("HTTP client error: {}", e)))?;
+        .map_err(|e| format!("HTTP client error: {}", e))?;
 
-    // Warm for 30 minutes on manual trigger
-    let keep_alive_secs: u64 = 1800;
     let body = serde_json::json!({
         "model": schedule.model,
         "prompt": "ok",
@@ -387,25 +353,76 @@ async fn run_librarian_now() -> Result<Json<WarmLoadResponse>, ErrorResponse> {
         .json(&body)
         .send()
         .await
-        .map_err(|e| ErrorResponse::internal(format!("Ollama unreachable: {}", e)))?;
+        .map_err(|e| format!("Ollama unreachable: {}", e))?;
 
     if !resp.status().is_success() {
         let text = resp.text().await.unwrap_or_default();
-        return Err(ErrorResponse::internal(format!(
-            "Warm-load failed: {}",
-            text
-        )));
+        return Err(format!("Warm-load failed: {}", text));
     }
+
+    tracing::info!(model = %schedule.model, keep_alive = keep_alive_secs, "Librarian model warm-loaded");
+
+    let brain =
+        permagent::agents::platform_extensions::get_global_brain().ok_or("Brain not available")?;
+
+    permagent::agents::platform_extensions::librarian::run_batch(&brain, 20).await
+}
+
+/// Background loop: ticks once per minute, warm-loads if in window.
+pub async fn librarian_scheduler_loop() {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+    loop {
+        interval.tick().await;
+
+        let schedule = load_schedule();
+        if !schedule.enabled {
+            continue;
+        }
+
+        let in_window = is_in_window(&schedule);
+
+        if in_window && !already_warmed_today() {
+            tracing::info!(
+                model = %schedule.model,
+                duration = schedule.duration_minutes,
+                "Librarian window active — warm-loading model and running batch"
+            );
+
+            let keep_alive_secs = schedule.duration_minutes as u64 * 60;
+            match warm_and_run(&schedule, keep_alive_secs).await {
+                Ok(n) => {
+                    mark_warmed_today();
+                    tracing::info!(described = n, "Librarian scheduled batch complete");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Librarian scheduled batch failed");
+                }
+            }
+        }
+    }
+}
+
+/// POST /api/librarian/run-now — manual trigger for warm-load + run
+async fn run_librarian_now() -> Result<Json<WarmLoadResponse>, ErrorResponse> {
+    let schedule = load_schedule();
+    let keep_alive_secs: u64 = 1800;
 
     tracing::info!(model = %schedule.model, "Librarian manual run triggered");
 
-    // TODO(Phase 2): Actually invoke Librarian tools (list_undescribed + describe_memory loop)
-
-    Ok(Json(WarmLoadResponse {
-        success: true,
-        model: schedule.model,
-        keep_alive_secs,
-    }))
+    match warm_and_run(&schedule, keep_alive_secs).await {
+        Ok(n) => {
+            tracing::info!(described = n, "Librarian manual batch complete");
+            Ok(Json(WarmLoadResponse {
+                success: true,
+                model: schedule.model,
+                keep_alive_secs,
+            }))
+        }
+        Err(e) => Err(ErrorResponse::internal(format!(
+            "Librarian run failed: {}",
+            e
+        ))),
+    }
 }
 
 // ── Router ──────────────────────────────────────────────────────────

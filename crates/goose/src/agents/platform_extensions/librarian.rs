@@ -46,9 +46,6 @@ Do not editorialize. Do not speculate beyond what the data shows. If a field is 
 
 const OLLAMA_BASE_URL: &str = "http://localhost:11434";
 const PRIMARY_MODEL: &str = "qwen2.5:3b";
-const OLLAMA_TEMPERATURE: f32 = 0.3;
-const OLLAMA_TOP_P: f32 = 0.9;
-const OLLAMA_MAX_TOKENS: u32 = 600;
 const RELATED_MEMORY_LIMIT: usize = 5;
 
 // ---------------------------------------------------------------------------
@@ -106,8 +103,8 @@ impl LibrarianClient {
             .with_server_info(Implementation::new(EXTENSION_NAME, "1.0.0").with_title("Librarian"))
             .with_instructions(
                 "The Librarian generates prose descriptions for memories stored in the Brain. \
-             Use describe_memory to create a who/what/where/when/why description for a \
-             specific memory. Use list_undescribed to find memories that need descriptions.",
+                 Use describe_memory to create a who/what/where/when/why description for a \
+                 specific memory. Use list_undescribed to find memories that need descriptions.",
             );
 
         tracing::info!(
@@ -133,82 +130,17 @@ impl LibrarianClient {
             .map_err(|e| format!("Invalid parameters: {}", e))?;
 
         let brain = self.get_brain()?;
-        let start = std::time::Instant::now();
+        let result = describe_one(&brain, &params.memory_id, params.force).await?;
 
-        // 1. Fetch memory by ID
-        let memory_id = params.memory_id.clone();
-        let brain_ref = brain.clone();
-        let memory = tokio::task::spawn_blocking(move || brain_ref.get_memory(&memory_id))
-            .await
-            .map_err(|e| format!("spawn_blocking failed: {}", e))?
-            .map_err(|e| format!("Brain error: {}", e))?
-            .ok_or_else(|| format!("Memory '{}' not found", params.memory_id))?;
-
-        // 2. Check for existing description (idempotency)
-        if !params.force {
-            if let Some(ref desc) = memory.description {
-                let result = serde_json::json!({
-                    "description": desc,
-                    "cached": true,
-                    "model": PRIMARY_MODEL,
-                    "latency_ms": 0,
-                });
-                return Ok(CallToolResult::success(vec![Content::text(
-                    serde_json::to_string_pretty(&result).unwrap(),
-                )]));
-            }
-        }
-
-        // 3. Fetch related memories for context via recall
-        let content_for_recall = memory.content.clone();
-        let brain_ref = brain.clone();
-        let related_hits = tokio::task::spawn_blocking(move || {
-            brain_ref.recall(&content_for_recall, spectral::Visibility::Private)
-        })
-        .await
-        .map_err(|e| format!("spawn_blocking failed: {}", e))?
-        .map(|r| r.memory_hits)
-        .unwrap_or_default();
-
-        // 4. Build the prompt
-        let prompt = build_description_prompt(&memory, &related_hits);
-
-        // 5. Call Ollama
-        let ollama_response = call_ollama(&prompt).await?;
-
-        // 6. Validate the response
-        let description = ollama_response.response.trim().to_string();
-        if description.is_empty() || description.len() < 50 {
-            return Err("Ollama returned an empty or too-short response".to_string());
-        }
-
-        // 7. Write description back to Spectral
-        let desc_clone = description.clone();
-        let mid = params.memory_id.clone();
-        let brain_ref = brain.clone();
-        tokio::task::spawn_blocking(move || brain_ref.set_description(&mid, &desc_clone))
-            .await
-            .map_err(|e| format!("spawn_blocking failed: {}", e))?
-            .map_err(|e| format!("Failed to write description: {}", e))?;
-
-        let latency_ms = start.elapsed().as_millis();
-        tracing::info!(
-            memory_id = %params.memory_id,
-            latency_ms = latency_ms,
-            tokens = ollama_response.eval_count,
-            "Librarian described memory"
-        );
-
-        // 8. Return result
-        let result = serde_json::json!({
-            "description": description,
-            "cached": false,
+        let response = serde_json::json!({
+            "description": result.description,
+            "cached": result.cached,
             "model": PRIMARY_MODEL,
-            "latency_ms": latency_ms,
-            "tokens": ollama_response.eval_count,
+            "latency_ms": result.latency_ms,
+            "tokens": result.tokens,
         });
         Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&result).unwrap(),
+            serde_json::to_string_pretty(&response).unwrap(),
         )]))
     }
 
@@ -216,14 +148,12 @@ impl LibrarianClient {
         &self,
         arguments: Option<JsonObject>,
     ) -> Result<CallToolResult, String> {
-        let limit = if let Some(args) = arguments {
-            let params: ListUndescribedParams =
-                serde_json::from_value(serde_json::Value::Object(args))
-                    .map_err(|e| format!("Invalid parameters: {}", e))?;
-            params.limit.min(100)
-        } else {
-            default_limit()
-        };
+        let args = arguments.unwrap_or_default();
+        let params: ListUndescribedParams = serde_json::from_value(serde_json::Value::Object(args))
+            .unwrap_or(ListUndescribedParams {
+                limit: default_limit(),
+            });
+        let limit = params.limit.min(100);
 
         let brain = self.get_brain()?;
         let memories = tokio::task::spawn_blocking(move || brain.list_undescribed(limit))
@@ -328,6 +258,142 @@ impl McpClientTrait for LibrarianClient {
 }
 
 // ---------------------------------------------------------------------------
+// Core describe logic — shared between MCP tool handler and batch runner
+// ---------------------------------------------------------------------------
+
+pub struct DescribeResult {
+    pub description: String,
+    pub latency_ms: u128,
+    pub tokens: u64,
+    pub cached: bool,
+}
+
+/// Describe a single memory: fetch → check idempotency → recall related → LLM → write back.
+///
+/// If `force` is false and the memory already has a description, returns the cached
+/// description without calling Ollama or writing to Spectral. This is the single
+/// source of truth for description idempotency — both the MCP tool handler and
+/// `run_batch` go through this function.
+pub async fn describe_one(
+    brain: &Arc<spectral::Brain>,
+    memory_id: &str,
+    force: bool,
+) -> Result<DescribeResult, String> {
+    let start = std::time::Instant::now();
+
+    // 1. Fetch memory
+    let mid = memory_id.to_string();
+    let brain_ref = brain.clone();
+    let memory = tokio::task::spawn_blocking(move || brain_ref.get_memory(&mid))
+        .await
+        .map_err(|e| format!("spawn_blocking failed: {}", e))?
+        .map_err(|e| format!("Brain error: {}", e))?
+        .ok_or_else(|| format!("Memory '{}' not found", memory_id))?;
+
+    // 2. Idempotency check: skip Ollama if description exists and force=false
+    if !force {
+        if let Some(ref desc) = memory.description {
+            return Ok(DescribeResult {
+                description: desc.clone(),
+                latency_ms: 0,
+                tokens: 0,
+                cached: true,
+            });
+        }
+    }
+
+    // 3. Fetch related memories for context
+    let content = memory.content.clone();
+    let brain_ref = brain.clone();
+    let related_hits = tokio::task::spawn_blocking(move || {
+        brain_ref.recall(&content, spectral::Visibility::Private)
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking failed: {}", e))?
+    .map(|r| r.memory_hits)
+    .unwrap_or_default();
+
+    // 4. Build prompt and call Ollama
+    let prompt = build_description_prompt(&memory, &related_hits);
+    let ollama_response = call_ollama(&prompt).await?;
+
+    // 5. Validate
+    let description = ollama_response.response.trim().to_string();
+    if description.is_empty() || description.len() < 50 {
+        return Err("Ollama returned an empty or too-short response".to_string());
+    }
+
+    // 6. Write back to Spectral
+    let desc_clone = description.clone();
+    let mid = memory_id.to_string();
+    let brain_ref = brain.clone();
+    tokio::task::spawn_blocking(move || brain_ref.set_description(&mid, &desc_clone))
+        .await
+        .map_err(|e| format!("spawn_blocking failed: {}", e))?
+        .map_err(|e| format!("Failed to write description: {}", e))?;
+
+    let latency_ms = start.elapsed().as_millis();
+    tracing::info!(
+        memory_id = %memory_id,
+        latency_ms = latency_ms,
+        tokens = ollama_response.eval_count,
+        "Librarian described memory"
+    );
+
+    Ok(DescribeResult {
+        description,
+        latency_ms,
+        tokens: ollama_response.eval_count,
+        cached: false,
+    })
+}
+
+/// Run a batch of descriptions: list undescribed → describe each → return count.
+///
+/// Calls `describe_one(force=false)` for each memory, so already-described memories
+/// are skipped cheaply. This handles the race where a memory gets described between
+/// the `list_undescribed` query and the `describe_one` call (audit vector #2).
+///
+/// NOTE on vector #2 (Spectral write fails after Ollama returns): if set_description
+/// fails after Ollama completes, the memory remains undescribed and will be re-queued
+/// on the next batch. The re-call to Ollama is a known cost — the description content
+/// may differ slightly but is functionally equivalent. Not worth guarding against
+/// since set_description failures indicate a deeper Spectral issue.
+pub async fn run_batch(brain: &Arc<spectral::Brain>, batch_size: usize) -> Result<usize, String> {
+    let mut described = 0;
+    loop {
+        let brain_ref = brain.clone();
+        let memories = tokio::task::spawn_blocking(move || brain_ref.list_undescribed(batch_size))
+            .await
+            .map_err(|e| format!("spawn_blocking failed: {}", e))?
+            .map_err(|e| format!("Brain error: {}", e))?;
+
+        if memories.is_empty() {
+            break;
+        }
+
+        for mem in &memories {
+            match describe_one(brain, &mem.id, false).await {
+                Ok(r) if r.cached => {
+                    tracing::debug!(memory_id = %mem.id, "Librarian skipped already-described memory");
+                }
+                Ok(_) => described += 1,
+                Err(e) => {
+                    tracing::warn!(memory_id = %mem.id, error = %e, "Librarian failed to describe memory, skipping");
+                }
+            }
+        }
+
+        if memories.len() < batch_size {
+            break;
+        }
+    }
+
+    tracing::info!(described = described, "Librarian batch complete");
+    Ok(described)
+}
+
+// ---------------------------------------------------------------------------
 // Prompt building
 // ---------------------------------------------------------------------------
 
@@ -355,7 +421,6 @@ fn build_description_prompt(
     }
     prompt.push_str(&format!("\nContent:\n{}\n", memory.content));
 
-    // Add related memories for context (up to RELATED_MEMORY_LIMIT)
     let hits: Vec<_> = related_hits.iter().take(RELATED_MEMORY_LIMIT).collect();
     if !hits.is_empty() {
         prompt.push_str("\n=== RELATED MEMORIES (for context) ===\n");
@@ -399,9 +464,9 @@ async fn call_ollama(prompt: &str) -> Result<OllamaGenerateResponse, String> {
         "system": LIBRARIAN_SYSTEM_PROMPT,
         "stream": false,
         "options": {
-            "temperature": OLLAMA_TEMPERATURE,
-            "top_p": OLLAMA_TOP_P,
-            "num_predict": OLLAMA_MAX_TOKENS,
+            "temperature": 0.3,
+            "top_p": 0.9,
+            "num_predict": 600,
         }
     });
 
@@ -474,7 +539,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_describe_memory_without_brain_returns_error() {
-        // No global brain set → should return a clear error
         let client = LibrarianClient::new(test_context()).unwrap();
         let args: JsonObject =
             serde_json::from_str(r#"{"memory_id": "test-123", "force": false}"#).unwrap();
