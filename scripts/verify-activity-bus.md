@@ -350,11 +350,11 @@ Brain activity memory count: **26** (delta: **+7**)
 
 Ring buffer captured events from real app interactions:
 ```
-terminal_session_started  terminal  2026-05-06T19:35:04  session=pty-dd7f6b3f, cwd=/Users/jessesharratt
-terminal_command_started  terminal  2026-05-06T19:35:14  command="echo test", cwd=/Users/jessesharratt
-terminal_command_started  terminal  2026-05-06T19:39:38  command="cd ~/dev/canon", cwd=/Users/jessesharratt
-terminal_command_started  terminal  2026-05-06T19:39:41  command="claude", cwd=/Users/jessesharratt/dev/canon
-terminal_session_started  terminal  2026-05-06T19:40:42  session=pty-31b0f2d3, cwd=/Users/jessesharratt
+terminal_session_started  terminal  2026-05-06T19:35:04  session=pty-dd7f6b3f, cwd=/Users/USER
+terminal_command_started  terminal  2026-05-06T19:35:14  command="echo test", cwd=/Users/USER
+terminal_command_started  terminal  2026-05-06T19:39:38  command="cd ~/dev/canon", cwd=/Users/USER
+terminal_command_started  terminal  2026-05-06T19:39:41  command="claude", cwd=/Users/USER/dev/canon
+terminal_session_started  terminal  2026-05-06T19:40:42  session=pty-31b0f2d3, cwd=/Users/USER
 terminal_command_started  terminal  2026-05-06T19:40:57  command="cd ~/dev/World Litter Run"
 terminal_command_started  terminal  2026-05-06T19:40:58  command="claude", cwd=.../World Litter Run
 ```
@@ -365,7 +365,7 @@ terminal_command_started  terminal  2026-05-06T19:40:58  command="claude", cwd=.
 {
   "live_state": {
     "last_terminal_command": "claude",
-    "last_terminal_cwd": "/Users/jessesharratt/dev/World Litter Run",
+    "last_terminal_cwd": "/Users/USER/dev/World Litter Run",
     "events_in_last_5_minutes": 7
   }
 }
@@ -491,7 +491,7 @@ Layout (top to bottom):
 **Status:** Verified end-to-end on rebuilt desktop app
 
 ### Trash action proof
-Test file: `/Users/jessesharratt/Downloads/permagent-test-trash-1778176790.txt`
+Test file: `/Users/USER/Downloads/permagent-test-trash-1778176790.txt`
 Pre-action: file at original location (71 bytes, created 14:59)
 
 API request:
@@ -506,7 +506,7 @@ API response:
   "finding_id": "test-trash-file",
   "action_taken": "trashed",
   "size_recovered_bytes": 71,
-  "trash_path": "/Users/jessesharratt/.Trash/permagent-test-trash-1778176790.txt",
+  "trash_path": "/Users/USER/.Trash/permagent-test-trash-1778176790.txt",
   "timestamp": "2026-05-07T18:13:58.894628+00:00"
 }
 ```
@@ -515,11 +515,11 @@ Post-action: file gone from Downloads, present in ~/.Trash/
 Native Trash semantics confirmed via `trash` crate (macOS NSFileManager).
 
 ### Sensitive path rejection
-Synthetic finding with path `/Users/jessesharratt/.ssh/id_rsa_test`
+Synthetic finding with path `/Users/USER/.ssh/id_rsa_test`
 
 API response:
 ```json
-{"error": "Refusing to trash sensitive path: /Users/jessesharratt/.ssh/id_rsa_test"}
+{"error": "Refusing to trash sensitive path: /Users/USER/.ssh/id_rsa_test"}
 ```
 
 HTTP status: 403 Forbidden. Validation rejected BEFORE checking file existence.

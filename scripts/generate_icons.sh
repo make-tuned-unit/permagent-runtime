@@ -5,7 +5,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-LOGO="$ROOT/public/Permagent Logo + Loading Animation Sequence/PermagentLogo.png"
+LOGO="$ROOT/public/PermagentLogo.png"
 OUT="$ROOT/ui/desktop/src-tauri/icons"
 
 if [ ! -f "$LOGO" ]; then

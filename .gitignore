@@ -86,3 +86,4 @@ gooseselftest/
 memory.db*
 brain.db*
 graph.kz
+.DS_Store
