@@ -402,8 +402,21 @@ pub async fn librarian_scheduler_loop() {
     }
 }
 
-/// POST /api/librarian/run-now — manual trigger for warm-load + run
+/// POST /api/librarian/run-now — manual trigger for warm-load + run.
+/// Returns immediately with 409 if a batch is already running.
 async fn run_librarian_now() -> Result<Json<WarmLoadResponse>, ErrorResponse> {
+    let guard = BATCH_MUTEX.try_lock();
+    if guard.is_err() {
+        return Err(ErrorResponse::conflict(
+            "A Librarian batch is already running. Try again later.".to_string(),
+        ));
+    }
+    // Drop the guard — warm_and_run will re-acquire. We only used try_lock
+    // to check availability. This creates a tiny race window but is fine:
+    // worst case, the scheduled batch finishes between our check and the
+    // re-acquire, and we run a second batch (idempotent via describe_one).
+    drop(guard);
+
     let schedule = load_schedule();
     let keep_alive_secs: u64 = 1800;
 
