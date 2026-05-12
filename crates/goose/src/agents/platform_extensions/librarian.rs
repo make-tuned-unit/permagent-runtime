@@ -698,6 +698,7 @@ mod tests {
             declarative_density: None,
             description: None,
             description_generated_at: None,
+            content_hash: None,
         };
         let no_related: Vec<spectral::ingest::MemoryHit> = vec![];
         let prompt = build_description_prompt(&memory, &no_related);
