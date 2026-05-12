@@ -84,6 +84,7 @@ let persistedActiveTabId: string | null = null;
 
 export function Browser() {
   const chatOpen = useCommandCenter(s => s.chatOpen);
+  const overlayBlocking = useCommandCenter(s => s.overlayBlockingBrowser);
   const chatOpenRef = useRef(false);
   chatOpenRef.current = chatOpen;
 
@@ -193,6 +194,20 @@ export function Browser() {
   useEffect(() => {
     syncBounds();
   }, [activeTabId, tabs, syncBounds]);
+
+  // ── Hide all webviews when a transient overlay is open ──
+  useEffect(() => {
+    if (overlayBlocking > 0) {
+      const inv = apiRef.current;
+      if (inv) {
+        tabsRef.current.forEach(t => {
+          if (t.webviewId) inv.invoke('hide_browser', { webviewId: t.webviewId }).catch(() => {});
+        });
+      }
+    } else {
+      syncBounds();
+    }
+  }, [overlayBlocking, syncBounds]);
 
   // Listen for navigation events from Tauri
   useEffect(() => {

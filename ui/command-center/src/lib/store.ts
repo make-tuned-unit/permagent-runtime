@@ -245,6 +245,11 @@ interface CommandCenterStore {
   handleSessionEvent: (data: SSEEvent) => void;
   clearEvents: () => void;
 
+  // --- Browser overlay z-order ---
+  overlayBlockingBrowser: number;
+  pushBrowserOverlay: () => void;
+  popBrowserOverlay: () => void;
+
   // --- Per-session SSE ---
   _eventSource: EventSource | null;
   _reconnectTimer: ReturnType<typeof setTimeout> | null;
@@ -754,6 +759,11 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       }
     }
   },
+
+  // Browser overlay z-order
+  overlayBlockingBrowser: 0,
+  pushBrowserOverlay: () => set(s => ({ overlayBlockingBrowser: s.overlayBlockingBrowser + 1 })),
+  popBrowserOverlay: () => set(s => ({ overlayBlockingBrowser: Math.max(0, s.overlayBlockingBrowser - 1) })),
 
   // ── Per-session SSE (replaces WebSocket) ──
   _eventSource: null,

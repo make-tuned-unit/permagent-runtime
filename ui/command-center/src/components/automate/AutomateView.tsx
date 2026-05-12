@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { color, font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { cronToEnglish } from '../../lib/schedule-format';
+import { useCommandCenter } from '../../lib/store';
 
 const API = 'http://127.0.0.1:3001';
 
@@ -925,6 +926,10 @@ function EmptyRuns() {
 // ── New Automation Modal ────────────────────────────────────────────
 
 function NewAutomationModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+  const pushOverlay = useCommandCenter(s => s.pushBrowserOverlay);
+  const popOverlay = useCommandCenter(s => s.popBrowserOverlay);
+  useEffect(() => { pushOverlay(); return () => { popOverlay(); }; }, [pushOverlay, popOverlay]);
+
   const [name, setName] = useState('');
   const [prompt, setPrompt] = useState('');
   const [selectedPreset, setSelectedPreset] = useState(0);
