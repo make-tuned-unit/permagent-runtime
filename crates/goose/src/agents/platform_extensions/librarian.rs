@@ -641,11 +641,15 @@ mod tests {
 
         // Describe one first
         let id = &described[0].id;
-        let first = describe_one(&brain, id, false, DEFAULT_MODEL).await.unwrap();
+        let first = describe_one(&brain, id, false, DEFAULT_MODEL)
+            .await
+            .unwrap();
         assert!(!first.cached, "First call should not be cached");
 
         // Second call with force=false should return cached
-        let second = describe_one(&brain, id, false, DEFAULT_MODEL).await.unwrap();
+        let second = describe_one(&brain, id, false, DEFAULT_MODEL)
+            .await
+            .unwrap();
         assert!(second.cached, "Second call should be cached");
         assert_eq!(second.description, first.description);
         assert_eq!(second.latency_ms, 0);
@@ -672,7 +676,9 @@ mod tests {
 
         let id = &described[0].id;
         // Ensure described
-        let _ = describe_one(&brain, id, false, DEFAULT_MODEL).await.unwrap();
+        let _ = describe_one(&brain, id, false, DEFAULT_MODEL)
+            .await
+            .unwrap();
 
         // Force regenerate
         let result = describe_one(&brain, id, true, DEFAULT_MODEL).await.unwrap();
