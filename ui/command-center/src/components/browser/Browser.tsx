@@ -83,10 +83,7 @@ let persistedTabs: BrowserTab[] | null = null;
 let persistedActiveTabId: string | null = null;
 
 export function Browser() {
-  const chatOpen = useCommandCenter(s => s.chatOpen);
   const overlayBlocking = useCommandCenter(s => s.overlayBlockingBrowser);
-  const chatOpenRef = useRef(false);
-  chatOpenRef.current = chatOpen;
 
   const [tabs, setTabs] = useState<BrowserTab[]>(() => {
     if (persistedTabs) return persistedTabs;

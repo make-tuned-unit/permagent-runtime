@@ -461,7 +461,7 @@ Only emitted when at least one probed or recalled memory exists — no-op on emp
    - Small "based on N memories" pill on agent responses
    - Click expands popover showing probed memories with relevance scores and wing badges
 
-### ChatWidget Integration
+### ChatApp Integration (via ChatLauncher native window)
 
 Layout (top to bottom):
 - Chat header with eye icon (unchanged)
