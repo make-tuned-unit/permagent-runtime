@@ -213,7 +213,7 @@ export function Browser() {
       setTabs((prev) =>
         prev.map((t) =>
           t.webviewId === payload.webview_id
-            ? { ...t, url: payload.url, label: extractTitle(payload.url) }
+            ? { ...t, url: payload.url, label: extractTitle(payload.url), loading: false }
             : t,
         ),
       );
