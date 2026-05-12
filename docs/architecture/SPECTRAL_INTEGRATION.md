@@ -1,15 +1,15 @@
 # Spectral Integration
 
-> Pinned to `rev = "5b9c457f"`. Spectral's integration audit at
+> Pinned to `rev = "e9a80d8"`. Spectral's integration audit at
 > `docs/internal/permagent-integration-audit-2026-05-11.md` in the
 > [Spectral repo](https://github.com/make-tuned-unit/spectral) reflects
-> that rev. **If the pin moves, re-verify the audit.**
+> rev `5b9c457f` — verify struct fields if pin moves past `e9a80d8`.
 
 ## Current pin
 
 ```toml
 # Cargo.toml (workspace root)
-spectral = { git = "https://github.com/make-tuned-unit/spectral", rev = "5b9c457f" }
+spectral = { git = "https://github.com/make-tuned-unit/spectral", rev = "e9a80d8" }
 ```
 
 ## Authoritative reference
@@ -75,20 +75,35 @@ without calling Ollama.
 
 | Decision | Status | Reference |
 |---|---|---|
-| Spectral pin `5b9c457f` (PR #78 wrapper methods) | Merged | PR #34 |
+| Spectral pin `e9a80d8` (PR #85 non-destructive remember_with) | Merged | PR #38 |
 | Librarian idempotency (force param, BATCH_MUTEX, persisted warm date) | Merged | PR #35 |
-| Native non-destructive `remember_with` (Spectral PR #85) | Pending next pin bump | Spectral PR #85 |
+| Non-destructive `remember_with` (Spectral PR #85) | **Shipped** — same-key writes now append-only via content_hash dedup | PR #38 |
 | `RecognitionContext` wiring (`session_id` from sessions table) | Pending | Step 5.5 |
 | BATCH_MUTEX concurrency test | Filed | Issue #36 |
 
+### Re-write vector (closed by PR #38, Spectral PR #85)
+
+`session_events.rs:740` and `reply.rs:596` both construct the key
+`chat-{session_id}-{turn_idx}` where `turn_idx = all_messages.len()`.
+Two reply endpoints (`POST /reply` and `POST /sessions/{id}/reply`)
+produce identical keys for the same logical turn. Under the current
+pin (5b9c457f), `remember_with` uses destructive upsert on same-key
+writes. Content is typically identical (same turn text), so this is a
+data integrity concern, not data loss. PR #85 (shipped via pin bump PR #38) makes `remember_with`
+non-destructive (append-only via content_hash dedup), eliminating
+the overwrite.
+
+Other `remember_with` call sites use fresh keys (UUID-derived or
+monotonically increasing) and are not affected.
+
 ## Write paths into Spectral
 
-| Caller | Method | Purpose |
-|---|---|---|
-| `session_events.rs` | `remember_with` | Chat turn memory |
-| `reply.rs` | `remember_with` | Chat turn memory |
-| `ingestion.rs` | `remember_with` | Activity events |
-| `context_builder.rs` | `remember_with` | Context snapshots |
+| Caller | Method | Purpose | Key pattern |
+|---|---|---|---|
+| `session_events.rs` | `remember_with` | Chat turn memory | `chat-{session_id}-{turn_idx}` |
+| `reply.rs` | `remember_with` | Chat turn memory | `chat-{session_id}-{turn_idx}` |
+| `ingestion.rs` | `remember_with` | Activity events | `activity:{ts}:{type}:{event_id[..8]}` |
+| `context_builder.rs` | `remember_with` | Test data only | hardcoded test keys |
 | `scheduler.rs` | `remember_with` | Scheduled job output |
 | `librarian.rs` | `set_description` | Memory descriptions |
 
