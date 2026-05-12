@@ -45,8 +45,25 @@ Do not editorialize. Do not speculate beyond what the data shows. If a field is 
 // ---------------------------------------------------------------------------
 
 const OLLAMA_BASE_URL: &str = "http://localhost:11434";
-const PRIMARY_MODEL: &str = "qwen2.5:3b";
+/// Default model used when LibrarianSchedule.model is empty or unavailable.
+const DEFAULT_MODEL: &str = "qwen2.5:3b";
 const RELATED_MEMORY_LIMIT: usize = 5;
+
+/// Resolve the Librarian model: read from the schedule config file,
+/// fall back to DEFAULT_MODEL if empty or unreadable.
+fn resolve_model() -> String {
+    let path = crate::config::paths::Paths::in_data_dir("librarian_schedule.json");
+    if let Ok(contents) = std::fs::read_to_string(&path) {
+        if let Ok(schedule) = serde_json::from_str::<serde_json::Value>(&contents) {
+            if let Some(model) = schedule.get("model").and_then(|v| v.as_str()) {
+                if !model.is_empty() {
+                    return model.to_string();
+                }
+            }
+        }
+    }
+    DEFAULT_MODEL.to_string()
+}
 
 // ---------------------------------------------------------------------------
 // Tool parameter schemas
@@ -107,10 +124,11 @@ impl LibrarianClient {
                  specific memory. Use list_undescribed to find memories that need descriptions.",
             );
 
+        let active_model = resolve_model();
         tracing::info!(
             "Librarian extension loaded. Ollama at {}, model: {}",
             OLLAMA_BASE_URL,
-            PRIMARY_MODEL
+            active_model
         );
 
         Ok(Self { info, context })
@@ -130,12 +148,13 @@ impl LibrarianClient {
             .map_err(|e| format!("Invalid parameters: {}", e))?;
 
         let brain = self.get_brain()?;
-        let result = describe_one(&brain, &params.memory_id, params.force).await?;
+        let model = resolve_model();
+        let result = describe_one(&brain, &params.memory_id, params.force, &model).await?;
 
         let response = serde_json::json!({
             "description": result.description,
             "cached": result.cached,
-            "model": PRIMARY_MODEL,
+            "model": result.model,
             "latency_ms": result.latency_ms,
             "tokens": result.tokens,
         });
@@ -263,6 +282,7 @@ impl McpClientTrait for LibrarianClient {
 
 pub struct DescribeResult {
     pub description: String,
+    pub model: String,
     pub latency_ms: u128,
     pub tokens: u64,
     pub cached: bool,
@@ -278,6 +298,7 @@ pub async fn describe_one(
     brain: &Arc<spectral::Brain>,
     memory_id: &str,
     force: bool,
+    model: &str,
 ) -> Result<DescribeResult, String> {
     let start = std::time::Instant::now();
 
@@ -295,6 +316,7 @@ pub async fn describe_one(
         if let Some(ref desc) = memory.description {
             return Ok(DescribeResult {
                 description: desc.clone(),
+                model: model.to_string(),
                 latency_ms: 0,
                 tokens: 0,
                 cached: true,
@@ -315,7 +337,7 @@ pub async fn describe_one(
 
     // 4. Build prompt and call Ollama
     let prompt = build_description_prompt(&memory, &related_hits);
-    let ollama_response = call_ollama(&prompt).await?;
+    let ollama_response = call_ollama(&prompt, model).await?;
 
     // 5. Validate
     let description = ollama_response.response.trim().to_string();
@@ -342,6 +364,7 @@ pub async fn describe_one(
 
     Ok(DescribeResult {
         description,
+        model: model.to_string(),
         latency_ms,
         tokens: ollama_response.eval_count,
         cached: false,
@@ -359,7 +382,11 @@ pub async fn describe_one(
 /// on the next batch. The re-call to Ollama is a known cost — the description content
 /// may differ slightly but is functionally equivalent. Not worth guarding against
 /// since set_description failures indicate a deeper Spectral issue.
-pub async fn run_batch(brain: &Arc<spectral::Brain>, batch_size: usize) -> Result<usize, String> {
+pub async fn run_batch(
+    brain: &Arc<spectral::Brain>,
+    batch_size: usize,
+    model: &str,
+) -> Result<usize, String> {
     let mut described = 0;
     loop {
         let brain_ref = brain.clone();
@@ -373,7 +400,7 @@ pub async fn run_batch(brain: &Arc<spectral::Brain>, batch_size: usize) -> Resul
         }
 
         for mem in &memories {
-            match describe_one(brain, &mem.id, false).await {
+            match describe_one(brain, &mem.id, false, model).await {
                 Ok(r) if r.cached => {
                     tracing::debug!(memory_id = %mem.id, "Librarian skipped already-described memory");
                 }
@@ -452,14 +479,14 @@ fn build_description_prompt(
 // Ollama integration
 // ---------------------------------------------------------------------------
 
-async fn call_ollama(prompt: &str) -> Result<OllamaGenerateResponse, String> {
+async fn call_ollama(prompt: &str, model: &str) -> Result<OllamaGenerateResponse, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .build()
         .map_err(|e| format!("HTTP client error: {}", e))?;
 
     let body = serde_json::json!({
-        "model": PRIMARY_MODEL,
+        "model": model,
         "prompt": prompt,
         "system": LIBRARIAN_SYSTEM_PROMPT,
         "stream": false,
@@ -614,11 +641,11 @@ mod tests {
 
         // Describe one first
         let id = &described[0].id;
-        let first = describe_one(&brain, id, false).await.unwrap();
+        let first = describe_one(&brain, id, false, DEFAULT_MODEL).await.unwrap();
         assert!(!first.cached, "First call should not be cached");
 
         // Second call with force=false should return cached
-        let second = describe_one(&brain, id, false).await.unwrap();
+        let second = describe_one(&brain, id, false, DEFAULT_MODEL).await.unwrap();
         assert!(second.cached, "Second call should be cached");
         assert_eq!(second.description, first.description);
         assert_eq!(second.latency_ms, 0);
@@ -645,10 +672,10 @@ mod tests {
 
         let id = &described[0].id;
         // Ensure described
-        let _ = describe_one(&brain, id, false).await.unwrap();
+        let _ = describe_one(&brain, id, false, DEFAULT_MODEL).await.unwrap();
 
         // Force regenerate
-        let result = describe_one(&brain, id, true).await.unwrap();
+        let result = describe_one(&brain, id, true, DEFAULT_MODEL).await.unwrap();
         assert!(!result.cached, "force=true should not return cached");
         assert!(result.latency_ms > 0, "Should have Ollama latency");
         assert!(result.tokens > 0, "Should have token count");
