@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { color, font, ease } from '../../styles/tokens';
 import { api } from '../../lib/api';
+import { useCommandCenter } from '../../lib/store';
 
 interface ActivityMemory {
   id: string;
@@ -48,6 +49,10 @@ interface Props {
 }
 
 export function InspectionPanel({ onClose }: Props) {
+  const pushOverlay = useCommandCenter(s => s.pushBrowserOverlay);
+  const popOverlay = useCommandCenter(s => s.popBrowserOverlay);
+  useEffect(() => { pushOverlay(); return () => { popOverlay(); }; }, [pushOverlay, popOverlay]);
+
   const [status, setStatus] = useState<IngestStatus | null>(null);
   const [digest, setDigest] = useState<DigestData | null>(null);
   const [memories, setMemories] = useState<ActivityMemory[]>([]);

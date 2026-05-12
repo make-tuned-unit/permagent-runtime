@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { color, font } from '../../styles/tokens';
+import { useCommandCenter } from '../../lib/store';
 import { Mobius } from '../mobius/Mobius';
 import { PrimaryButton, GhostLink, Input, Select, Glass, Particles, type SelectOption } from './atoms';
 import { api } from '../../lib/api';
@@ -18,6 +19,10 @@ interface Props {
 }
 
 export function MomentWelcome({ onAdvance }: Props) {
+  const pushOverlay = useCommandCenter(s => s.pushBrowserOverlay);
+  const popOverlay = useCommandCenter(s => s.popBrowserOverlay);
+  useEffect(() => { pushOverlay(); return () => { popOverlay(); }; }, [pushOverlay, popOverlay]);
+
   const [provider, setProvider] = useState('anthropic');
   const [key, setKey] = useState('');
   const [validating, setValidating] = useState(false);
