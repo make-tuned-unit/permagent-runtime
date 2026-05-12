@@ -366,7 +366,7 @@ async fn warm_and_run(schedule: &LibrarianSchedule, keep_alive_secs: u64) -> Res
     let brain =
         permagent::agents::platform_extensions::get_global_brain().ok_or("Brain not available")?;
 
-    permagent::agents::platform_extensions::librarian::run_batch(&brain, 20).await
+    permagent::agents::platform_extensions::librarian::run_batch(&brain, 20, &schedule.model).await
 }
 
 /// Background loop: ticks once per minute, warm-loads if in window.
