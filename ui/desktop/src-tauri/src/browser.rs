@@ -64,7 +64,7 @@ pub async fn create_browser_webview(
             );
             true
         })
-        .on_page_title_changed(move |title| {
+        .on_document_title_changed(move |_webview, title| {
             let _ = title_app.emit(
                 "browser_title_changed",
                 BrowserTitleChangedPayload {
