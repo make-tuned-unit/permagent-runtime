@@ -201,8 +201,6 @@ interface CommandCenterStore {
   spendMonth: number;
 
   // --- Chat state ---
-  chatOpen: boolean;
-  setChatOpen: (open: boolean) => void;
   chatMessages: ChatMessage[];
   chatSessionId: string | null;
   addChatMessage: (msg: ChatMessage) => void;
@@ -393,8 +391,6 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   spendMonth: 0,
 
   // Chat
-  chatOpen: false,
-  setChatOpen: (open) => set({ chatOpen: open }),
   chatMessages: [],
   chatSessionId: (() => {
     try { return localStorage.getItem('permagent-chat-session-id'); } catch { return null; }
