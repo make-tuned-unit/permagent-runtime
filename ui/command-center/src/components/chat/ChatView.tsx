@@ -1,10 +1,9 @@
-import { useEffect, useCallback, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { useCommandCenter } from '../../lib/store';
 import { MessageList } from './MessageList';
 import { ChatInput } from './ChatInput';
 import type { ChatInputHandle } from './ChatInput';
 import { SkillPromptBanner } from './SkillPromptBanner';
-import { DropZone } from './DropZone';
 import { ModelPicker } from './ModelPicker';
 
 export function ChatView() {
@@ -28,28 +27,22 @@ export function ChatView() {
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleDrop = useCallback((files: File[]) => {
-    chatInputRef.current?.addFiles(files);
-  }, []);
-
   return (
-    <DropZone onDrop={handleDrop}>
-      <div className="flex h-full flex-col bg-[#0A0E17]">
-        {/* Header */}
-        <div className="flex items-center justify-between border-b border-dark-border px-4 py-2.5">
-          <span className="text-[11px] font-mono uppercase tracking-wider text-dark-muted">Chat</span>
-          <ModelPicker />
-        </div>
-
-        {/* Message list */}
-        <MessageList />
-
-        {/* Skill proposal banner */}
-        <SkillPromptBanner />
-
-        {/* Input */}
-        <ChatInput ref={chatInputRef} />
+    <div className="flex h-full flex-col bg-[#0A0E17]">
+      {/* Header */}
+      <div className="flex items-center justify-between border-b border-dark-border px-4 py-2.5">
+        <span className="text-[11px] font-mono uppercase tracking-wider text-dark-muted">Chat</span>
+        <ModelPicker />
       </div>
-    </DropZone>
+
+      {/* Message list */}
+      <MessageList />
+
+      {/* Skill proposal banner */}
+      <SkillPromptBanner />
+
+      {/* Input */}
+      <ChatInput ref={chatInputRef} />
+    </div>
   );
 }

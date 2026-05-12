@@ -88,7 +88,7 @@ export function DropZone({ onDrop, children }: DropZoneProps) {
       {dragging && (
         <div className="absolute inset-0 z-40 flex flex-col items-center justify-center bg-[#0A0E17]/90 border-2 border-dashed border-accent/50 rounded-xl m-2 pointer-events-none">
           <FiUpload size={32} className="text-accent/60 mb-2" />
-          <span className="text-accent/80 font-mono text-sm">Drop files here</span>
+          <span className="text-accent/80 font-mono text-sm">Drop files to send to chat</span>
         </div>
       )}
     </div>

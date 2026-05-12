@@ -51,6 +51,23 @@ export default function ChatApp() {
     chatInputRef.current?.addFiles(files);
   }, []);
 
+  // Listen for cross-window file drops and signal readiness
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      const { emit, listen } = await import('@tauri-apps/api/event');
+      unlisten = await listen<{ files: { name: string; mime_type: string; data_b64: string }[] }>('chat_drop_files', (event) => {
+        const files = event.payload.files.map((f) => {
+          const bytes = Uint8Array.from(atob(f.data_b64), (c) => c.charCodeAt(0));
+          return new File([bytes], f.name, { type: f.mime_type });
+        });
+        chatInputRef.current?.addFiles(files);
+      });
+      await emit('chat_ready', {});
+    })();
+    return () => { unlisten?.(); };
+  }, []);
+
   useEffect(() => {
     api.getIdentity().then(id => setAgentName(id.first_name)).catch(() => {});
   }, []);
