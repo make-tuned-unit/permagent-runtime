@@ -229,6 +229,21 @@ export function Browser() {
       unlisten = fn;
     });
 
+    // Listen for page title changes from the native webview
+    let unlistenTitle: (() => void) | null = null;
+    api.listen('browser_title_changed', (e) => {
+      const payload = e.payload as { webview_id: string; title: string };
+      setTabs((prev) =>
+        prev.map((t) =>
+          t.webviewId === payload.webview_id
+            ? { ...t, label: payload.title }
+            : t,
+        ),
+      );
+    }).then((fn) => {
+      unlistenTitle = fn;
+    });
+
     // Listen for OAuth URL open events
     let unlistenOAuth: (() => void) | null = null;
     api.listen('browser_open_url', (e) => {
@@ -265,6 +280,7 @@ export function Browser() {
 
     return () => {
       unlisten?.();
+      unlistenTitle?.();
       unlistenOAuth?.();
       unlistenOAuthComplete?.();
     };

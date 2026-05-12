@@ -24,6 +24,12 @@ struct BrowserNavigatedPayload {
     url: String,
 }
 
+#[derive(Clone, Serialize)]
+struct BrowserTitleChangedPayload {
+    webview_id: String,
+    title: String,
+}
+
 #[tauri::command]
 pub async fn create_browser_webview(
     app: AppHandle,
@@ -44,6 +50,8 @@ pub async fn create_browser_webview(
 
     let nav_id = label.clone();
     let nav_app = app.clone();
+    let title_id = label.clone();
+    let title_app = app.clone();
     let builder = WebviewBuilder::new(&label, webview_url)
         .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15")
         .on_navigation(move |nav_url: &url::Url| {
@@ -55,6 +63,15 @@ pub async fn create_browser_webview(
                 },
             );
             true
+        })
+        .on_page_title_changed(move |title| {
+            let _ = title_app.emit(
+                "browser_title_changed",
+                BrowserTitleChangedPayload {
+                    webview_id: title_id.clone(),
+                    title,
+                },
+            );
         });
 
     let position = tauri::Position::Logical(tauri::LogicalPosition::new(x, y));
