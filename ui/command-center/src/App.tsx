@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useCommandCenter } from './lib/store';
 import { useTheme } from './styles/useTheme';
 import { Sidebar } from './components/sidebar/Sidebar';
@@ -7,7 +7,8 @@ import { WorkspaceRenderer } from './components/workspaces/WorkspaceRenderer';
 import { WizardShell } from './components/wizard/WizardShell';
 import { Splash } from './components/splash/Splash';
 import { ChatLauncher } from './components/chat/ChatLauncher';
-import { api } from './lib/api';
+import { DropZone } from './components/chat/DropZone';
+import { api, fileToBase64 } from './lib/api';
 
 function MainContent() {
   const activePanel = useCommandCenter(s => s.activePanel);
@@ -100,6 +101,42 @@ function App() {
     return () => window.removeEventListener('keydown', handler);
   }, [setActivePanel, activePanel]);
 
+  const handleDrop = useCallback(async (files: File[]) => {
+    if (!('__TAURI_INTERNALS__' in window)) return;
+    const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+    const { emit, listen } = await import('@tauri-apps/api/event');
+
+    const payload = await Promise.all(
+      files.map(async (f) => ({ name: f.name, mime_type: f.type, data_b64: await fileToBase64(f) }))
+    );
+
+    const existing = await WebviewWindow.getByLabel('chat');
+    if (existing) {
+      await emit('chat_drop_files', { files: payload });
+      return;
+    }
+
+    // Open a new chat window and wait for it to signal readiness
+    const chatWindow = new WebviewWindow('chat', {
+      url: 'index.html?view=chat', title: 'Permagent Chat',
+      width: 480, height: 700, minWidth: 360, minHeight: 400,
+      center: true, decorations: true, resizable: true, focus: true,
+    });
+    chatWindow.once('tauri://error', (e) => console.error('Chat window error:', e));
+
+    const ready = await Promise.race([
+      new Promise<true>((resolve) => { listen('chat_ready', () => resolve(true)).then(/* unlisten handled by once */); }),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 3000)),
+    ]);
+
+    if (ready) {
+      await emit('chat_drop_files', { files: payload });
+    } else {
+      console.error('[drop] chat window did not become ready');
+      window.alert('Could not deliver files to chat — please try again');
+    }
+  }, []);
+
   if (phase === 'splash') {
     return <Splash onDone={() => setPhase('loading')} />;
   }
@@ -116,7 +153,9 @@ function App() {
     <div className={`flex h-screen density-${density}`} style={{ background: gradient.shell }}>
       <Sidebar />
       <main className="flex-1 min-w-0 overflow-hidden relative">
-        <MainContent />
+        <DropZone onDrop={handleDrop}>
+          <MainContent />
+        </DropZone>
       </main>
       <ChatLauncher />
     </div>
