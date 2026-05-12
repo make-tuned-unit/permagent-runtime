@@ -104,7 +104,7 @@ function App() {
   const handleDrop = useCallback(async (files: File[]) => {
     if (!('__TAURI_INTERNALS__' in window)) return;
     const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-    const { emit, listen } = await import('@tauri-apps/api/event');
+    const { emit, once } = await import('@tauri-apps/api/event');
 
     const payload = await Promise.all(
       files.map(async (f) => ({ name: f.name, mime_type: f.type, data_b64: await fileToBase64(f) }))
@@ -125,7 +125,7 @@ function App() {
     chatWindow.once('tauri://error', (e) => console.error('Chat window error:', e));
 
     const ready = await Promise.race([
-      new Promise<true>((resolve) => { listen('chat_ready', () => resolve(true)).then(/* unlisten handled by once */); }),
+      new Promise<true>((resolve) => { once('chat_ready', () => resolve(true)); }),
       new Promise<false>((resolve) => setTimeout(() => resolve(false), 3000)),
     ]);
 
