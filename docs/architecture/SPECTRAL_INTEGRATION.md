@@ -1,137 +1,118 @@
-# Spectral Integration Plan
+# Spectral Integration
 
-**Status:** Phase 1 complete (foundation). Phases 2-5 pending.
-**Goal:** Replace Permagent's custom 18-table memory schema with Spectral's Brain API.
-**Scope:** v1.0 ships with chat memory through Spectral. v1.1 adds activity capture.
+> Pinned to `rev = "e9a80d8"`. Spectral's integration audit at
+> `docs/internal/permagent-integration-audit-2026-05-11.md` in the
+> [Spectral repo](https://github.com/make-tuned-unit/spectral) reflects
+> rev `5b9c457f` — verify struct fields if pin moves past `e9a80d8`.
 
-## What Spectral provides
+## Current pin
 
-Spectral is a hybrid memory substrate combining a Kuzu knowledge graph,
-a SQLite + FTS5 fingerprint store, ontology validation, and federation
-primitives (DeviceId, BrainId, Visibility, source attribution). It
-replaces what Permagent currently does with 18 custom tables, plus
-provides project detection (wing_rules), graph relationships, and
-content-addressed identity for future federation.
+```toml
+# Cargo.toml (workspace root)
+spectral = { git = "https://github.com/make-tuned-unit/spectral", rev = "e9a80d8" }
+```
 
-Repo: https://github.com/make-tuned-unit/spectral
-License: Apache 2.0
-Performance: 393us single ingest, 564us warm recall on 1k memories.
+## Authoritative reference
 
-## Cargo dependency
+Spectral owns its own API surface documentation. Do not duplicate it here.
 
-Spectral is consumed as a git dependency, branch = "main", until v0.1.0 is
-published to crates.io. The local patch override in Cargo.toml is
-commented out by default — uncomment it only when iterating on Spectral's
-API locally.
+- **Spectral API audit:** `spectral/docs/internal/permagent-integration-audit-2026-05-11.md`
+- **Brain wrapper source:** `spectral/crates/spectral/src/lib.rs` (public API)
+- **Memory/MemoryHit structs:** `spectral/crates/spectral-ingest/src/lib.rs`
+- **Brain graph methods:** `spectral/crates/spectral-graph/src/brain.rs`
 
-**cxx-build version pinning:** `cxx-build` must match `cxx` (both 1.0.138)
-in `Cargo.lock` to avoid kuzu FFI symbol mismatches. If the lockfile drifts
-after a `cargo update`, run `cargo update -p cxx-build --precise 1.0.138`.
+## Permagent-side gotchas
 
-## Ontology
+### spawn_blocking requirement
 
-Permagent ships its own ontology at `crates/goose/assets/ontology.toml`,
-embedded into the binary and written to `~/.permagent/ontology.toml` on
-first run.
+All Brain methods use `block_on()` internally. Calling them from an async
+context without `spawn_blocking` deadlocks the tokio runtime.
 
-### v1.0 ontology (chat memory only)
+```rust
+let brain = brain.clone();
+let result = tokio::task::spawn_blocking(move || {
+    brain.recall(&query, spectral::Visibility::Private)
+}).await??;
+```
 
-- Entities: jesse-sharratt (person), permagent (project), spectral (project)
-- Predicates: worked_on (person -> project)
-- New entities are added at runtime as the user interacts
+Every call site in Permagent follows this pattern. Do not add new Brain
+calls without wrapping.
 
-### v1.1 ontology additions (activity capture, planned)
+### Brain access
 
-- Entity types: chat_session, skill, activity
-- Predicates: discussed_in, uses_skill, mentions_person, mentions_project,
-  occurred_in_project, started_at, involves_person
+Brain is available to platform extensions via a global `OnceLock`:
 
-Note: Spectral validates that all predicate domain/range types have at least
-one entity instance. Predicates referencing future entity types (chat_session,
-skill) must wait until those types are populated at runtime.
+```rust
+use crate::agents::platform_extensions::get_global_brain;
+let brain = get_global_brain().ok_or("Brain not available")?;
+```
 
-## Single-writer constraint
+Set once at daemon startup in `state.rs`. Not threaded through
+`PlatformExtensionContext` (would require plumbing through
+ExtensionManager -> Agent -> per-session context).
 
-Spectral uses Kuzu, which is undefined behavior under concurrent process
-access to the same data_dir. Permagent satisfies this by routing all
-brain writes through `permagentd` (single process, multi-threaded).
-Activity capture in v1.1 will run as a tokio task inside `permagentd`
-rather than as a separate daemon -- keeps the single-writer guarantee
-without RPC overhead.
+### Brain import path
 
-## Migration phases
+Use `spectral::Brain` (the wrapper type). Methods `get_memory`,
+`set_description`, `list_undescribed` are on the wrapper as of rev
+`5b9c457f` (PR #78).
 
-### Phase 1: Foundation (this commit)
+### session_id convention
 
-- Add Spectral as workspace dependency with branch = "main"
-- Patch override committed but commented out, with documentation
-- Ontology file at `crates/goose/assets/ontology.toml`
-- Smoke test at `crates/goose/tests/spectral_smoke.rs` proving:
-  - Brain compiles inside Permagent's tree
-  - Memory round-trips with full provenance fields
-  - Graph triples write and read back
-  - Schema persists across brain reopen
+Permagent's `sessions.id` (UUID in `permagent.db`) maps 1:1 to what
+the UI calls a "conversation." Stable across all turns, never reused.
+Wire directly to Spectral's `RecognitionContext.session_id` when that
+plumbing lands (Step 5.5, pending).
 
-### Phase 2: Audit existing memory schema
+### Librarian write path
 
-Map Permagent's 18 current tables to Spectral primitives. Output is
-`docs/architecture/SCHEMA_AUDIT.md` with one row per table:
+The Librarian calls `set_description(id, text)` only. It never calls
+`remember_with`. Idempotency is at the `describe_one` layer: if
+`force=false` and `memory.description.is_some()`, returns cached
+without calling Ollama.
 
-| Table | Disposition | Notes |
-| ----- | ----------- | ----- |
-| chat_messages | Migrate to brain.remember_with() | source = "chat" |
-| chat_sessions | Keep in Permagent SQLite | Session metadata, not memory |
-| memory_records | Retire | Covered by Spectral's fingerprint store |
-| ... | ... | ... |
+## Recent decisions
 
-Identifies which tables retire entirely, which migrate to Spectral, and
-which stay in Permagent's own SQLite (session metadata, agent state,
-settings -- not memory).
+| Decision | Status | Reference |
+|---|---|---|
+| Spectral pin `e9a80d8` (PR #85 non-destructive remember_with) | Merged | PR #38 |
+| Librarian idempotency (force param, BATCH_MUTEX, persisted warm date) | Merged | PR #35 |
+| Non-destructive `remember_with` (Spectral PR #85) | **Shipped** — same-key writes now append-only via content_hash dedup | PR #38 |
+| `RecognitionContext` wiring (`session_id` from sessions table) | Pending | Step 5.5 |
+| BATCH_MUTEX concurrency test | Filed | Issue #36 |
 
-### Phase 3: Migration script (if needed)
+### Re-write vector (closed by PR #38, Spectral PR #85)
 
-Pre-release: probably no migration needed. Permagent's existing brain.db
-isn't structured the way Spectral wants, and pre-release users can start
-fresh. If post-release migration becomes necessary, write a one-time
-script that reads from `~/.permagent/brain.db` (custom schema) and
-writes to `~/.permagent/brain/` (Spectral data dir).
+`session_events.rs:740` and `reply.rs:596` both construct the key
+`chat-{session_id}-{turn_idx}` where `turn_idx = all_messages.len()`.
+Two reply endpoints (`POST /reply` and `POST /sessions/{id}/reply`)
+produce identical keys for the same logical turn. Under the current
+pin (5b9c457f), `remember_with` uses destructive upsert on same-key
+writes. Content is typically identical (same turn text), so this is a
+data integrity concern, not data loss. PR #85 (shipped via pin bump PR #38) makes `remember_with`
+non-destructive (append-only via content_hash dedup), eliminating
+the overwrite.
 
-### Phase 4: Production cutover
+Other `remember_with` call sites use fresh keys (UUID-derived or
+monotonically increasing) and are not affected.
 
-- Replace memory write paths with `brain.remember_with()`
-- Replace memory read paths with `brain.recall()`
-- Remove the 18 custom tables from Permagent's SQLite migrations
-- Verify chat works end-to-end through Spectral
-- Run `./scripts/verify-provider-alignment.sh` to confirm no regression
-- Add a similar Spectral-specific verification script
+## Write paths into Spectral
 
-### Phase 5: Ship v1.0
+| Caller | Method | Purpose | Key pattern |
+|---|---|---|---|
+| `session_events.rs` | `remember_with` | Chat turn memory | `chat-{session_id}-{turn_idx}` |
+| `reply.rs` | `remember_with` | Chat turn memory | `chat-{session_id}-{turn_idx}` |
+| `ingestion.rs` | `remember_with` | Activity events | `activity:{ts}:{type}:{event_id[..8]}` |
+| `context_builder.rs` | `remember_with` | Test data only | hardcoded test keys |
+| `scheduler.rs` | `remember_with` | Scheduled job output |
+| `librarian.rs` | `set_description` | Memory descriptions |
 
-Permagent v1.0 with Spectral as memory substrate. Activity capture
-deferred to v1.1.
+## Read paths from Spectral
 
-## v1.1 forward references
-
-Activity capture against Spectral primitives is documented separately
-at `docs/architecture/ACTIVITY_CAPTURE_v1.1.md`. Wing rules, project
-detection, and the Henry-OpenBird-derived design lessons live there.
-
-## What's NOT in Spectral yet
-
-These don't block Permagent integration but are worth knowing:
-
-- **Federation protocol.** Primitives exist; sync mechanism doesn't.
-  v1.0 ships single-device. Cross-machine via rsync of `~/.permagent/brain/`
-  works as interim (Spectral's idempotent writes resolve conflicts).
-- **Cognitive Spectrogram.** Phase 2 architecture, reserved as
-  spectral-spectrogram crate but unimplemented. Recall works at full
-  quality without it.
-- **Memify feedback loop.** Self-reinforcing recall. Not built yet.
-
-## Verification
-
-Phase 1 success criteria:
-
-- `cargo build --release -p permagent-cli -p permagent-daemon` clean
-- `cargo test -p permagent --test spectral_smoke` passes
-- `./scripts/verify-provider-alignment.sh` still passes (no regression)
+| Caller | Method | Purpose |
+|---|---|---|
+| `session_events.rs` | `recall` | Pre-reply context |
+| `reply.rs` | `recall` | Pre-reply context |
+| `context_builder.rs` | `probe_recent` | Activity awareness |
+| `brain.rs` (routes) | `recall` | Brain search API |
+| `librarian.rs` | `get_memory`, `list_undescribed`, `recall` | Description generation |
