@@ -185,6 +185,7 @@ llama-cpp-2 = { version = "0.1.143", features = ["sampler", "mtmd"], optional = 
 encoding_rs = "0.8.35"
 pastey = "0.2.1"
 shell-words = { workspace = true }
+process-wrap = { version = "9.1.0", features = ["std"] }
 pem = { version = "3", optional = true }
 pkcs1 = { version = "0.7", default-features = false, features = ["pkcs8"], optional = true }
 pkcs8 = { version = "0.10", default-features = false, features = ["alloc"], optional = true }
