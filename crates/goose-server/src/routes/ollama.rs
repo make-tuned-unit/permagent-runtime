@@ -181,7 +181,7 @@ impl Default for LibrarianSchedule {
             enabled: true,
             start_time: "02:00".to_string(),
             duration_minutes: 240,
-            model: "qwen2.5:3b".to_string(),
+            model: "qwen2.5:7b".to_string(),
             run_if_launched_in_window: true,
         }
     }

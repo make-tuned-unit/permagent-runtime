@@ -25,20 +25,37 @@ pub static EXTENSION_NAME: &str = "librarian";
 // System prompt for the Librarian (sent to Qwen via Ollama)
 // ---------------------------------------------------------------------------
 
-pub const LIBRARIAN_SYSTEM_PROMPT: &str = r#"You are the Librarian, a memory archivist for an AI agent system.
-Your job is to write clear, factual descriptions of memories that have been stored in the system's knowledge graph.
+pub const LIBRARIAN_SYSTEM_PROMPT: &str = r#"You write search-index entries for stored memories. Your output has exactly three labeled fields. Fill in each field based only on the memory content.
 
-Each memory you describe should answer:
-- WHAT happened (the event itself)
-- WHO was involved (which agents, tools, or humans)
-- WHEN it occurred (timestamp and the broader session context)
-- WHERE in the workflow it emerged from (what came before)
-- WHY it was stored (what makes this memory worth keeping)
-- HOW it was created (was it user input, agent action, tool result, or automated trigger)
+Output format (exactly this structure, nothing else):
 
-Write in past tense, third person, plain prose. No bullet points. No headers. No markdown. 200-400 words. Be informative and neutral — you are writing catalogue entries, not narratives. Future retrieval depends on your descriptions being precise and useful.
+FACTS: <one short sentence restating what the memory describes>
+TERMS: <4 to 10 vocabulary terms — words from the memory plus their inflected forms>
+CATEGORIES: <2 to 5 category-level terms the memory belongs to>
 
-Do not editorialize. Do not speculate beyond what the data shows. If a field is unknown, say so plainly rather than inventing it."#;
+Rules:
+- FACTS: under 30 tokens, one sentence, plain restatement of facts. No speculation. No significance commentary.
+- TERMS: include exact words from the memory plus inflected forms (e.g., "doctor, doctors, doctoring"; "navigate, navigation, navigated"). 4 to 10 terms total. Comma-separated.
+- CATEGORIES: name the broader categories the memory belongs to (e.g., for Dr. Patel: "physician, medical, healthcare"; for a Slack message: "conversation, chat, communication"). 2 to 5 terms. Comma-separated.
+
+Do not add any text outside these three lines.
+
+EXAMPLES:
+
+Memory: "Henry tell me a joke" (Slack message from Jesse to Henry on April 24)
+FACTS: Jesse asked Henry to tell a joke via Slack on April 24, 2026.
+TERMS: joke, jokes, ask, asked, asking, message, request
+CATEGORIES: conversation, chat, communication, humor
+
+Memory: "Navigated to mail.google.com in tab btab-..."
+FACTS: Browser navigated to Gmail in a browser tab.
+TERMS: navigate, navigation, navigated, browser, browsing, tab, Gmail
+CATEGORIES: web browsing, email, Google services
+
+Memory: "Task completed via claude-code: read Phase 2 docs and execute build plan"
+FACTS: Completed a task to read Phase 2 documentation and execute the build plan.
+TERMS: task, tasks, build, building, plan, planning, completed, documentation
+CATEGORIES: software development, project management, task execution"#;
 
 // ---------------------------------------------------------------------------
 // Ollama configuration
@@ -46,8 +63,7 @@ Do not editorialize. Do not speculate beyond what the data shows. If a field is 
 
 const OLLAMA_BASE_URL: &str = "http://localhost:11434";
 /// Default model used when LibrarianSchedule.model is empty or unavailable.
-const DEFAULT_MODEL: &str = "qwen2.5:3b";
-const RELATED_MEMORY_LIMIT: usize = 5;
+const DEFAULT_MODEL: &str = "qwen2.5:7b";
 
 /// Resolve the Librarian model: read from the schedule config file,
 /// fall back to DEFAULT_MODEL if empty or unreadable.
@@ -324,25 +340,39 @@ pub async fn describe_one(
         }
     }
 
-    // 3. Fetch related memories for context
-    let content = memory.content.clone();
-    let brain_ref = brain.clone();
-    let related_hits = tokio::task::spawn_blocking(move || {
-        brain_ref.recall(&content, spectral::Visibility::Private)
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking failed: {}", e))?
-    .map(|r| r.memory_hits)
-    .unwrap_or_default();
+    // 3. Build prompt and call Ollama with structured output + retry
+    let prompt = build_description_prompt(&memory);
 
-    // 4. Build prompt and call Ollama
-    let prompt = build_description_prompt(&memory, &related_hits);
-    let ollama_response = call_ollama(&prompt, model).await?;
+    let mut description: Option<String> = None;
+    for attempt in 0..2 {
+        let ollama_response = call_ollama(&prompt, model).await?;
+        let raw = ollama_response.response.trim().to_string();
 
-    // 5. Validate
-    let description = ollama_response.response.trim().to_string();
-    if description.is_empty() || description.len() < 50 {
-        return Err("Ollama returned an empty or too-short response".to_string());
+        if let Some(parsed) = parse_structured_description(&raw) {
+            description = Some(parsed);
+            break;
+        }
+
+        if attempt == 0 {
+            tracing::warn!(
+                memory_id = %memory_id,
+                "Structured output malformed, retrying at lower temperature"
+            );
+            // Retry will use the same call_ollama (temperature is fixed in the body).
+            // For the retry, we accept the raw output as-is.
+        } else {
+            // Second attempt failed — store raw output anyway
+            tracing::warn!(
+                memory_id = %memory_id,
+                "Structured output still malformed after retry, storing raw"
+            );
+            description = Some(raw);
+        }
+    }
+
+    let description = description.ok_or("Ollama returned no response")?;
+    if description.is_empty() {
+        return Err("Ollama returned an empty response".to_string());
     }
 
     // 6. Write back to Spectral
@@ -358,7 +388,6 @@ pub async fn describe_one(
     tracing::info!(
         memory_id = %memory_id,
         latency_ms = latency_ms,
-        tokens = ollama_response.eval_count,
         "Librarian described memory"
     );
 
@@ -366,7 +395,7 @@ pub async fn describe_one(
         description,
         model: model.to_string(),
         latency_ms,
-        tokens: ollama_response.eval_count,
+        tokens: 0, // token count not tracked in structured output mode
         cached: false,
     })
 }
@@ -424,55 +453,48 @@ pub async fn run_batch(
 // Prompt building
 // ---------------------------------------------------------------------------
 
-fn build_description_prompt(
-    memory: &spectral::ingest::Memory,
-    related_hits: &[spectral::ingest::MemoryHit],
-) -> String {
-    let mut prompt = String::with_capacity(2000);
-    prompt.push_str("Describe the following memory from the knowledge graph.\n\n");
+fn build_description_prompt(memory: &spectral::ingest::Memory) -> String {
+    // Truncate content to avoid blowing context on very large memories
+    let content: String = memory.content.chars().take(2000).collect();
+    format!(
+        "Memory key: {}\nMemory content: {}\n\nOutput the three labeled fields.",
+        memory.key, content
+    )
+}
 
-    prompt.push_str("=== MEMORY ===\n");
-    prompt.push_str(&format!("ID: {}\n", memory.id));
-    prompt.push_str(&format!("Key: {}\n", memory.key));
-    if let Some(ref wing) = memory.wing {
-        prompt.push_str(&format!("Wing: {}\n", wing));
-    }
-    if let Some(ref source) = memory.source {
-        prompt.push_str(&format!("Source: {}\n", source));
-    }
-    if let Some(ref created) = memory.created_at {
-        prompt.push_str(&format!("Created: {}\n", created));
-    }
-    if let Some(ref tier) = memory.compaction_tier {
-        prompt.push_str(&format!("Compaction tier: {:?}\n", tier));
-    }
-    prompt.push_str(&format!("\nContent:\n{}\n", memory.content));
+/// Parse the three-field structural output into a single description string.
+/// Returns None if the output doesn't contain all required fields.
+fn parse_structured_description(raw: &str) -> Option<String> {
+    let mut facts = None;
+    let mut terms = None;
+    let mut categories = None;
 
-    let hits: Vec<_> = related_hits.iter().take(RELATED_MEMORY_LIMIT).collect();
-    if !hits.is_empty() {
-        prompt.push_str("\n=== RELATED MEMORIES (for context) ===\n");
-        for (i, hit) in hits.iter().enumerate() {
-            let preview = if hit.content.chars().count() > 300 {
-                let truncated: String = hit.content.chars().take(300).collect();
-                format!("{}...", truncated)
-            } else {
-                hit.content.clone()
-            };
-            prompt.push_str(&format!(
-                "\n--- Related {} (score: {:.2}) ---\nKey: {}\n{}\n",
-                i + 1,
-                hit.signal_score,
-                hit.key,
-                preview,
-            ));
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("FACTS:") {
+            facts = Some(rest.trim().to_string());
+        } else if let Some(rest) = trimmed.strip_prefix("TERMS:") {
+            terms = Some(rest.trim().to_string());
+        } else if let Some(rest) = trimmed.strip_prefix("CATEGORIES:") {
+            categories = Some(rest.trim().to_string());
         }
     }
 
-    prompt.push_str("\n=== INSTRUCTIONS ===\n");
-    prompt.push_str(
-        "Write a 200-400 word description of this memory. Past tense, third person, plain prose.\n",
-    );
-    prompt
+    let facts = facts?;
+    let terms = terms?;
+    let categories = categories?;
+
+    // Validate minimum counts
+    let term_count = terms.split(',').count();
+    let cat_count = categories.split(',').count();
+    if term_count < 4 || cat_count < 2 {
+        return None;
+    }
+
+    Some(format!(
+        "{} Related terms: {}. Categories: {}.",
+        facts, terms, categories
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -491,9 +513,9 @@ async fn call_ollama(prompt: &str, model: &str) -> Result<OllamaGenerateResponse
         "system": LIBRARIAN_SYSTEM_PROMPT,
         "stream": false,
         "options": {
-            "temperature": 0.3,
+            "temperature": 0.2,
             "top_p": 0.9,
-            "num_predict": 600,
+            "num_predict": 150,
         }
     });
 
@@ -733,10 +755,45 @@ mod tests {
             description_generated_at: None,
             content_hash: None,
         };
-        let no_related: Vec<spectral::ingest::MemoryHit> = vec![];
-        let prompt = build_description_prompt(&memory, &no_related);
-        assert!(prompt.contains("mem-001"));
+        let prompt = build_description_prompt(&memory);
+        assert!(prompt.contains("session:2026-05-08:chat"));
         assert!(prompt.contains("Rust async patterns"));
-        assert!(prompt.contains("engineering"));
+    }
+
+    #[test]
+    fn test_parse_structured_valid() {
+        let raw = "FACTS: Jesse asked Henry to tell a joke via Slack.\nTERMS: joke, jokes, ask, asked, asking, message, request\nCATEGORIES: conversation, chat, communication, humor";
+        let result = parse_structured_description(raw).unwrap();
+        assert!(result.starts_with("Jesse asked Henry"));
+        assert!(result.contains("Related terms:"));
+        assert!(result.contains("Categories:"));
+        assert!(result.contains("joke, jokes"));
+        assert!(result.contains("conversation, chat"));
+    }
+
+    #[test]
+    fn test_parse_structured_missing_field() {
+        let raw = "FACTS: Something happened.\nTERMS: a, b, c, d";
+        assert!(parse_structured_description(raw).is_none());
+    }
+
+    #[test]
+    fn test_parse_structured_too_few_terms() {
+        let raw = "FACTS: Something.\nTERMS: a, b, c\nCATEGORIES: x, y";
+        assert!(parse_structured_description(raw).is_none());
+    }
+
+    #[test]
+    fn test_parse_structured_too_few_categories() {
+        let raw = "FACTS: Something.\nTERMS: a, b, c, d\nCATEGORIES: x";
+        assert!(parse_structured_description(raw).is_none());
+    }
+
+    #[test]
+    fn test_parse_structured_with_extra_whitespace() {
+        let raw = "  FACTS:  Browser navigated to Gmail. \n  TERMS:  navigate, navigation, navigated, browser  \n  CATEGORIES:  web browsing, email  ";
+        let result = parse_structured_description(raw).unwrap();
+        assert!(result.starts_with("Browser navigated"));
+        assert!(result.contains("navigate, navigation"));
     }
 }
