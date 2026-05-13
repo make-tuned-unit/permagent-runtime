@@ -165,7 +165,7 @@ export function BrainView() {
         transition: `transform 320ms ${ease.out}`,
       }}>
         <div style={{
-          height: '100%', overflowY: 'auto',
+          height: '100%', overflow: 'hidden',
           background: 'rgba(20,28,48,0.78)',
           backdropFilter: 'blur(24px) saturate(140%)',
           WebkitBackdropFilter: 'blur(24px) saturate(140%)',
@@ -202,25 +202,38 @@ export function BrainView() {
               </p>
             )}
 
-            {/* Memory: full text + chips + stats */}
+            {/* Memory: description + content + chips + stats */}
             {selected.kind === 'memory' && selected.data && (() => {
               const mem = selected.data as GraphMemory;
               return (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                  <p style={{ fontFamily: font.body, fontSize: 13, color: color.text, lineHeight: 1.7, margin: 0 }}>
-                    {mem.text}
-                  </p>
-                  {mem.ent.length > 0 && (
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                      {mem.ent.map(id => (
-                        <span key={id} style={{
-                          fontFamily: font.mono, fontSize: 10, color: color.cyan,
-                          border: `1px solid ${color.borderHi}`, borderRadius: 999, padding: '4px 10px',
-                        }}>{id}</span>
-                      ))}
-                    </div>
-                  )}
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 0, minHeight: 0, flex: 1 }}>
+                  {/* Scrollable content area */}
+                  <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 14, marginBottom: 14 }}>
+                    {mem.description && (
+                      <p style={{ fontFamily: font.body, fontSize: 13, color: color.text, lineHeight: 1.7, margin: 0 }}>
+                        {mem.description}
+                      </p>
+                    )}
+                    <p style={{
+                      fontFamily: font.mono, fontSize: 11, color: color.textMuted, lineHeight: 1.6, margin: 0,
+                      padding: '10px 12px', background: 'rgba(0,0,0,0.2)', borderRadius: 8,
+                      whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                    }}>
+                      {mem.text}
+                    </p>
+                    {mem.ent.length > 0 && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        {mem.ent.map(id => (
+                          <span key={id} style={{
+                            fontFamily: font.mono, fontSize: 10, color: color.cyan,
+                            border: `1px solid ${color.borderHi}`, borderRadius: 999, padding: '4px 10px',
+                          }}>{id}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  {/* Pinned stats footer */}
+                  <div style={{ flexShrink: 0, display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, borderTop: `1px solid ${color.borderHi}`, paddingTop: 12 }}>
                     <Stat label="reinforcement" value={`${Math.round(mem.weight * 100)}%`} />
                     <Stat label="recency" value={recencyLabel(mem.age)} />
                     <Stat label="last recalled" value={mem.age < 0.1 ? 'today' : mem.age < 0.3 ? '3 days ago' : '2 weeks ago'} />

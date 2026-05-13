@@ -240,6 +240,7 @@ struct GraphEntity {
 struct GraphMemory {
     id: String,
     text: String,
+    description: Option<String>,
     ent: Vec<String>,
     age: f64,
     weight: f64,
@@ -314,11 +315,12 @@ async fn brain_graph(
 
         memories.push(GraphMemory {
             id: format!("m:{}", i),
-            text: truncate_preview(&hit.content, 200),
+            text: hit.content.clone(),
+            description: hit.description.clone(),
             ent: ent_ids,
             age,
             weight,
-            timestamp: now.to_rfc3339(),
+            timestamp: hit.created_at.clone().unwrap_or_else(|| now.to_rfc3339()),
         });
     }
 
