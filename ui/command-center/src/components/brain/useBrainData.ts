@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 
 export interface GraphSelf { name: string; id: string }
 export interface GraphEntity { id: string; type: string; name: string; note: string }
-export interface GraphMemory { id: string; text: string; ent: string[]; age: number; weight: number; timestamp: string }
+export interface GraphMemory { id: string; text: string; description: string | null; ent: string[]; age: number; weight: number; timestamp: string }
 export interface BrainGraph { self: GraphSelf; entities: GraphEntity[]; memories: GraphMemory[] }
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
