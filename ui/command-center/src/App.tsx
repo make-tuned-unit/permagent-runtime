@@ -9,6 +9,7 @@ import { Splash } from './components/splash/Splash';
 import { ChatLauncher } from './components/chat/ChatLauncher';
 import { DropZone } from './components/chat/DropZone';
 import { api, fileToBase64 } from './lib/api';
+import type { LayoutNode } from './lib/store';
 
 function MainContent() {
   const activePanel = useCommandCenter(s => s.activePanel);
@@ -62,6 +63,7 @@ function App() {
   const loadSkills = useCommandCenter(s => s.loadSkills);
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
   const activePanel = useCommandCenter(s => s.activePanel);
+  const activeWorkspace = useCommandCenter(s => s.workspaces.find(w => w.id === s.activeWorkspaceId));
   const { gradient, density } = useTheme();
 
   const [phase, setPhase] = useState<'splash' | 'loading' | 'wizard' | 'app'>('splash');
@@ -103,6 +105,8 @@ function App() {
 
   const handleDrop = useCallback(async (files: File[]) => {
     if (!('__TAURI_INTERNALS__' in window)) return;
+    // Don't accept drops on World View — it's a watch-only surface
+    if (activeWorkspace && hasToolType(activeWorkspace.layoutJson, 'world')) return;
     const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
     const { emit, once } = await import('@tauri-apps/api/event');
 
@@ -135,7 +139,7 @@ function App() {
       console.error('[drop] chat window did not become ready');
       window.alert('Could not deliver files to chat — please try again');
     }
-  }, []);
+  }, [activeWorkspace]);
 
   if (phase === 'splash') {
     return <Splash onDone={() => setPhase('loading')} />;
@@ -160,6 +164,12 @@ function App() {
       <ChatLauncher />
     </div>
   );
+}
+
+function hasToolType(node: LayoutNode, tool: string): boolean {
+  if (node.type === 'panel') return (node as { tool: string }).tool === tool;
+  if (node.type === 'split') return (node as { children: LayoutNode[] }).children.some(c => hasToolType(c, tool));
+  return false;
 }
 
 export default App;

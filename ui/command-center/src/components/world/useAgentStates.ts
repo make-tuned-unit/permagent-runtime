@@ -179,8 +179,18 @@ export function useAgentStates(): {
           }
 
           const step = Math.min(WALK_SPEED * dt, dist);
-          const nx = agent.position.x + (dx / dist) * step;
-          const nz = agent.position.z + (dz / dist) * step;
+          let nx = agent.position.x + (dx / dist) * step;
+          let nz = agent.position.z + (dz / dist) * step;
+
+          // Librarian: project position onto mezzanine ring to prevent cutting across the void
+          if (agent.id === 'librarian') {
+            const r = Math.sqrt(nx * nx + nz * nz);
+            if (r > 0.1) {
+              nx = (nx / r) * MEZZ_MID_R;
+              nz = (nz / r) * MEZZ_MID_R;
+            }
+          }
+
           changed = true;
           return { ...agent, position: { x: nx, y: target.y, z: nz } };
         });
