@@ -79,6 +79,20 @@ export function BrainView() {
   useEffect(() => { sceneRef.current?.setTimeRange([0, timeValue]); }, [timeValue]);
 
   const isEmpty = !loading && data && data.entities.length === 0 && data.memories.length === 0;
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
+  // Suppress WebKit's HTML5 drag indicator — Brain is a read-only view, not a drop target.
+  useEffect(() => {
+    const el = wrapperRef.current;
+    if (!el) return;
+    const prevent = (e: Event) => e.preventDefault();
+    el.addEventListener('dragover', prevent);
+    el.addEventListener('dragenter', prevent);
+    return () => {
+      el.removeEventListener('dragover', prevent);
+      el.removeEventListener('dragenter', prevent);
+    };
+  }, []);
 
   const toggleFilter = (key: keyof TypeFilters) =>
     setFilters(f => ({ ...f, [key]: !f[key] }));
@@ -88,7 +102,7 @@ export function BrainView() {
     age < 0.2 ? 'this week' : age < 0.5 ? 'this month' : age < 0.8 ? '~3 months' : '~year';
 
   return (
-    <div style={{ position: 'relative', width: '100%', height: '100%', background: gradient.workspace, overflow: 'hidden' }}>
+    <div ref={wrapperRef} style={{ position: 'relative', width: '100%', height: '100%', background: gradient.workspace, overflow: 'hidden' }}>
       {/* Three.js canvas container — hidden in list mode */}
       <div ref={containerRef} style={{ position: 'absolute', inset: 0, display: viewMode === 'graph' ? 'block' : 'none' }} />
 

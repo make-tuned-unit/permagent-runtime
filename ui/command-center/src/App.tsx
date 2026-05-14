@@ -157,7 +157,7 @@ function App() {
     <div className={`flex h-screen density-${density}`} style={{ background: gradient.shell }}>
       <Sidebar />
       <main className="flex-1 min-w-0 overflow-hidden relative">
-        <DropZone onDrop={handleDrop} disabled={!!(activeWorkspace && hasToolType(activeWorkspace.layoutJson, 'world'))}>
+        <DropZone onDrop={handleDrop} disabled={!!(activeWorkspace && (hasToolType(activeWorkspace.layoutJson, 'world') || hasToolType(activeWorkspace.layoutJson, 'memory')))}>
           <MainContent />
         </DropZone>
       </main>
