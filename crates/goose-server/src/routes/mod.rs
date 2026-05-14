@@ -10,6 +10,7 @@ pub mod events;
 pub mod features;
 pub mod findings;
 pub mod gateway;
+pub mod henry_status;
 pub mod identity;
 pub mod integrations;
 #[cfg(feature = "local-inference")]
@@ -69,7 +70,8 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(workers::routes(state.clone()))
         .merge(findings::routes(state.clone()))
         .merge(ollama::routes(state.clone()))
-        .merge(version::routes(state.clone()));
+        .merge(version::routes(state.clone()))
+        .merge(henry_status::routes(state.clone()));
 
     #[cfg(feature = "local-inference")]
     {
