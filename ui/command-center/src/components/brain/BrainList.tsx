@@ -183,6 +183,7 @@ export function BrainList({ onSelect, selectedId, timeValue, searchQuery }: Brai
             key={mem.id}
             memory={mem}
             selected={mem.id === selectedId}
+            highlightTerms={isSearch ? searchQuery!.trim().toLowerCase().split(/\s+/) : []}
             onClick={() => onSelect({
               id: mem.id,
               kind: 'memory',
@@ -215,11 +216,27 @@ export function BrainList({ onSelect, selectedId, timeValue, searchQuery }: Brai
   );
 }
 
+// ── Highlight helper ─────────────────────────────────────────────────
+
+function highlightText(text: string, terms: string[]): React.ReactNode {
+  if (terms.length === 0) return text;
+  const escaped = terms.filter(t => t.length > 1).map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  if (escaped.length === 0) return text;
+  const regex = new RegExp(`(${escaped.join('|')})`, 'gi');
+  const parts = text.split(regex);
+  return parts.map((part, i) =>
+    regex.test(part)
+      ? <mark key={i} style={{ background: 'rgba(0,213,255,0.25)', color: color.text, borderRadius: 2, padding: '0 1px' }}>{part}</mark>
+      : part
+  );
+}
+
 // ── Row component ────────────────────────────────────────────────────
 
-function MemoryRow({ memory, selected, onClick }: {
+function MemoryRow({ memory, selected, highlightTerms, onClick }: {
   memory: GraphMemory;
   selected: boolean;
+  highlightTerms: string[];
   onClick: () => void;
 }) {
   const title = deriveTitle(memory);
@@ -247,7 +264,7 @@ function MemoryRow({ memory, selected, onClick }: {
           fontFamily: font.body, fontSize: 13, fontWeight: 600, color: color.text,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, marginRight: 12,
         }}>
-          {title}
+          {highlightText(title, highlightTerms)}
         </div>
         <span style={{ fontFamily: font.mono, fontSize: 10, color: color.textDim, flexShrink: 0 }}>
           {formatDate(memory.timestamp)}
@@ -261,7 +278,7 @@ function MemoryRow({ memory, selected, onClick }: {
           marginBottom: 4, overflow: 'hidden', textOverflow: 'ellipsis',
           display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
         }}>
-          {descPreview}
+          {highlightText(descPreview, highlightTerms)}
         </div>
       )}
 
@@ -270,7 +287,7 @@ function MemoryRow({ memory, selected, onClick }: {
         fontFamily: font.mono, fontSize: 10, color: color.textDim, lineHeight: 1.4,
         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
       }}>
-        {preview}
+        {highlightText(preview, highlightTerms)}
       </div>
 
       {/* Metadata footer */}
