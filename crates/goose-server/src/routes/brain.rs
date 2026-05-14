@@ -463,17 +463,16 @@ fn query_browse_memories(
         format!("WHERE {}", where_clauses.join(" AND "))
     };
 
-    // Total count respecting the after filter
-    let count_sql = format!("SELECT COUNT(*) FROM memories {}", where_sql);
-    let total: usize = {
-        let mut stmt = conn.prepare(&count_sql).map_err(|e| e.to_string())?;
-        // Only bind the 'after' param for the count (cursor params are for pagination, not count)
-        let count_params: Vec<String> = if after.is_some() {
-            vec![after.unwrap().to_string()]
-        } else {
-            vec![]
-        };
-        stmt.query_row(rusqlite::params_from_iter(count_params.iter()), |r| r.get(0))
+    // Total count: only apply the 'after' filter (not cursor params which are for pagination)
+    let total: usize = if let Some(a) = after {
+        conn.query_row(
+            "SELECT COUNT(*) FROM memories WHERE created_at >= ?1",
+            [a],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?
+    } else {
+        conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
             .map_err(|e| e.to_string())?
     };
 
