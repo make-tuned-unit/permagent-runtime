@@ -368,6 +368,9 @@ struct MemoriesQuery {
     /// Page size. Default 50, max 200.
     #[serde(default)]
     limit: Option<usize>,
+    /// Time slider lower bound: only return memories with created_at >= this value (browse mode).
+    #[serde(default)]
+    after: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -402,6 +405,7 @@ async fn brain_memories(
                 &conn,
                 params.before.as_deref(),
                 params.before_id.as_deref(),
+                params.after.as_deref(),
                 limit,
                 now,
                 max_age_secs,
@@ -419,37 +423,68 @@ fn query_browse_memories(
     conn: &rusqlite::Connection,
     before: Option<&str>,
     before_id: Option<&str>,
+    after: Option<&str>,
     limit: usize,
     now: DateTime<Utc>,
     max_age_secs: f64,
 ) -> Result<MemoriesResponse, String> {
-    let total: usize = conn
-        .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
-        .map_err(|e| e.to_string())?;
+    // Build WHERE clauses dynamically
+    let mut where_clauses: Vec<String> = Vec::new();
+    let mut params_vec: Vec<String> = Vec::new();
+    let mut param_idx = 1usize;
 
-    let (sql, params_vec): (String, Vec<String>) = match (before, before_id) {
-        (Some(b), Some(bid)) => (
-            "SELECT id, key, content, description, signal_score, created_at \
-             FROM memories \
-             WHERE (created_at < ?1 OR (created_at = ?1 AND id < ?2)) \
-             ORDER BY created_at DESC, id DESC LIMIT ?3"
-                .to_string(),
-            vec![b.to_string(), bid.to_string(), (limit + 1).to_string()],
-        ),
-        (Some(b), None) => (
-            "SELECT id, key, content, description, signal_score, created_at \
-             FROM memories WHERE created_at < ?1 \
-             ORDER BY created_at DESC, id DESC LIMIT ?2"
-                .to_string(),
-            vec![b.to_string(), (limit + 1).to_string()],
-        ),
-        _ => (
-            "SELECT id, key, content, description, signal_score, created_at \
-             FROM memories ORDER BY created_at DESC, id DESC LIMIT ?1"
-                .to_string(),
-            vec![(limit + 1).to_string()],
-        ),
+    // Time slider lower bound
+    if let Some(a) = after {
+        where_clauses.push(format!("created_at >= ?{}", param_idx));
+        params_vec.push(a.to_string());
+        param_idx += 1;
+    }
+
+    // Cursor upper bound
+    if let (Some(b), Some(bid)) = (before, before_id) {
+        where_clauses.push(format!(
+            "(created_at < ?{} OR (created_at = ?{} AND id < ?{}))",
+            param_idx,
+            param_idx,
+            param_idx + 1
+        ));
+        params_vec.push(b.to_string());
+        params_vec.push(bid.to_string());
+        param_idx += 2;
+    } else if let Some(b) = before {
+        where_clauses.push(format!("created_at < ?{}", param_idx));
+        params_vec.push(b.to_string());
+        param_idx += 1;
+    }
+
+    let where_sql = if where_clauses.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", where_clauses.join(" AND "))
     };
+
+    // Total count respecting the after filter
+    let count_sql = format!("SELECT COUNT(*) FROM memories {}", where_sql);
+    let total: usize = {
+        let mut stmt = conn.prepare(&count_sql).map_err(|e| e.to_string())?;
+        // Only bind the 'after' param for the count (cursor params are for pagination, not count)
+        let count_params: Vec<String> = if after.is_some() {
+            vec![after.unwrap().to_string()]
+        } else {
+            vec![]
+        };
+        stmt.query_row(rusqlite::params_from_iter(count_params.iter()), |r| r.get(0))
+            .map_err(|e| e.to_string())?
+    };
+
+    let limit_param = format!("?{}", param_idx);
+    params_vec.push((limit + 1).to_string());
+
+    let sql = format!(
+        "SELECT id, key, content, description, signal_score, created_at \
+         FROM memories {} ORDER BY created_at DESC, id DESC LIMIT {}",
+        where_sql, limit_param
+    );
 
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
@@ -502,14 +537,17 @@ fn query_fts_memories(
 
     let fts_query = words.join(" OR ");
 
-    // Count total matches
-    let total: usize = conn
-        .query_row(
+    // Count total matches only on first page to avoid double-query per keystroke
+    let total: usize = if offset == 0 {
+        conn.query_row(
             "SELECT COUNT(*) FROM memories_fts WHERE memories_fts MATCH ?1",
             [&fts_query],
             |r| r.get(0),
         )
-        .unwrap_or(0);
+        .unwrap_or(0)
+    } else {
+        0 // subsequent pages don't recompute total
+    };
 
     let sql = format!(
         "SELECT m.id, m.key, m.content, m.description, m.signal_score, m.created_at \

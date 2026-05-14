@@ -113,6 +113,12 @@ export function BrainList({ onSelect, selectedId, timeValue, searchQuery }: Brai
           params.before = currentState.lastTimestamp;
           if (currentState.lastId) params.before_id = currentState.lastId;
         }
+        // Time slider → server-side after filter (0 = today, 1 = all time)
+        if (timeValue < 1.0) {
+          const maxAgeDays = 90;
+          const cutoffMs = Date.now() - timeValue * maxAgeDays * 24 * 60 * 60 * 1000;
+          params.after = new Date(cutoffMs).toISOString();
+        }
       }
 
       const res = await api.getBrainMemories(params);
@@ -148,8 +154,7 @@ export function BrainList({ onSelect, selectedId, timeValue, searchQuery }: Brai
     }
   }, [loadPage, state.hasMore, state.loading]);
 
-  // Filter by time slider (client-side for browse, since browse returns all by recency)
-  const filtered = state.memories.filter(m => m.age <= timeValue || isSearch);
+  const filtered = state.memories;
 
   return (
     <div style={{

@@ -570,11 +570,12 @@ export const api = {
       next_scheduled: { id: string; cron: string; currently_running: boolean } | null;
     }>('/api/henry/status'),
 
-  getBrainMemories: (params: { q?: string; before?: string; before_id?: string; offset?: number; limit?: number }) => {
+  getBrainMemories: (params: { q?: string; before?: string; before_id?: string; after?: string; offset?: number; limit?: number }) => {
     const qs = new URLSearchParams();
     if (params.q) qs.set('q', params.q);
     if (params.before) qs.set('before', params.before);
     if (params.before_id) qs.set('before_id', params.before_id);
+    if (params.after) qs.set('after', params.after);
     if (params.offset !== undefined) qs.set('offset', String(params.offset));
     if (params.limit !== undefined) qs.set('limit', String(params.limit));
     return apiFetch<{
