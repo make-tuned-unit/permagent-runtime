@@ -416,6 +416,16 @@ async fn warm_and_run(schedule: &LibrarianSchedule, keep_alive_secs: u64) -> Res
 
 /// Background loop: ticks once per minute, warm-loads if in window.
 pub async fn librarian_scheduler_loop() {
+    let schedule = load_schedule();
+    let brain_db = permagent::config::paths::Paths::brain_dir().join("memory.db");
+    tracing::info!(
+        model = %schedule.model,
+        enabled = schedule.enabled,
+        schedule_window = %format!("{} + {}min", schedule.start_time, schedule.duration_minutes),
+        brain_db = %brain_db.display(),
+        "Librarian scheduler started"
+    );
+
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
     loop {
         interval.tick().await;
