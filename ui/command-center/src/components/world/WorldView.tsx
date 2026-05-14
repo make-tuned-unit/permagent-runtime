@@ -1,4 +1,4 @@
-import { Suspense, useState, useCallback, useEffect } from 'react';
+import { Suspense, useState, useCallback, useEffect, useRef } from 'react';
 import { Canvas } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { CameraMode } from './types';
@@ -102,6 +102,7 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
   const [hoveredStation, setHoveredStation] = useState<string | null>(null);
   const [showFps, setShowFps] = useState(false);
   const [activeHud, setActiveHud] = useState<'henry' | 'librarian' | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const handleSelectAgent = useCallback((id: string) => {
     if (id === 'henry') {
@@ -144,6 +145,22 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
     ? STATIONS.find((s) => s.id === hoveredStation)?.tooltip ?? null
     : null;
 
+  // Suppress WebKit's HTML5 drag indicator on this view.
+  // The native Tauri bridge (onDragDropEvent) operates at the window level
+  // independently of HTML5 drag events — preventDefault here only suppresses
+  // WebKit's content-level "drop a file" overlay, not the native file bridge.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const prevent = (e: Event) => e.preventDefault();
+    el.addEventListener('dragover', prevent);
+    el.addEventListener('dragenter', prevent);
+    return () => {
+      el.removeEventListener('dragover', prevent);
+      el.removeEventListener('dragenter', prevent);
+    };
+  }, []);
+
   if (!visible) {
     return (
       <div style={{ width: '100%', height: '100%', background: COLORS.deepVoid }} />
@@ -151,7 +168,7 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
   }
 
   return (
-    <div style={{ width: '100%', height: '100%', position: 'relative', background: COLORS.deepVoid }}>
+    <div ref={containerRef} style={{ width: '100%', height: '100%', position: 'relative', background: COLORS.deepVoid }}>
       <Suspense fallback={<LoadingShimmer />}>
         <Canvas
           shadows
