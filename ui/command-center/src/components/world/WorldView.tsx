@@ -11,6 +11,7 @@ import { WorldPostProcessing } from './WorldPostProcessing';
 import { WorldHUD } from './WorldHUD';
 import { LibrarianHUD } from './LibrarianHUD';
 import { HenryHUD } from './HenryHUD';
+import { AgentPicker } from './AgentPicker';
 
 function LoadingShimmer() {
   return (
@@ -198,6 +199,10 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
       <LibrarianHUD
         visible={activeHud === 'librarian'}
         onClose={() => setActiveHud(null)}
+      />
+      <AgentPicker
+        selectedAgentId={selectedAgent}
+        onSelectAgent={handleSelectAgent}
       />
     </div>
   );

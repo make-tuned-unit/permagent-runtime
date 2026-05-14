@@ -85,6 +85,11 @@ pub use ext_manager::MANAGE_EXTENSIONS_TOOL_NAME;
 #[allow(unused_imports)]
 pub use ext_manager::SEARCH_AVAILABLE_EXTENSIONS_TOOL_NAME;
 
+/// Platform extensions that represent embodied agents in the World View.
+/// Used by GET /api/agents to build the agent roster for the picker dropdown.
+/// Orchestrator is deliberately excluded — it manages sessions but isn't a character.
+pub static AGENT_EXTENSIONS: &[&str] = &[librarian::EXTENSION_NAME];
+
 pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>> = Lazy::new(
     || {
         let mut map = HashMap::new();
