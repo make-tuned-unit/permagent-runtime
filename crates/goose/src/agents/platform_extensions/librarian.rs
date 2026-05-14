@@ -81,6 +81,37 @@ fn resolve_model() -> String {
     DEFAULT_MODEL.to_string()
 }
 
+/// Read the schedule config and return a human-readable window summary
+/// like "02:00 + 240min (enabled)" or "disabled".
+fn load_schedule_summary() -> String {
+    let path = crate::config::paths::Paths::in_data_dir("librarian_schedule.json");
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => {
+            if let Ok(schedule) = serde_json::from_str::<serde_json::Value>(&contents) {
+                let enabled = schedule
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                if !enabled {
+                    return "disabled".to_string();
+                }
+                let start = schedule
+                    .get("start_time")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("02:00");
+                let dur = schedule
+                    .get("duration_minutes")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(240);
+                format!("{} + {}min (enabled)", start, dur)
+            } else {
+                "02:00 + 240min (defaults)".to_string()
+            }
+        }
+        Err(_) => "02:00 + 240min (defaults)".to_string(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tool parameter schemas
 // ---------------------------------------------------------------------------
@@ -128,10 +159,13 @@ impl LibrarianClient {
             );
 
         let active_model = resolve_model();
+        let schedule = load_schedule_summary();
+        let brain_db = crate::config::paths::Paths::brain_dir().join("memory.db");
         tracing::info!(
-            "Librarian extension loaded. Ollama at {}, model: {}",
-            OLLAMA_BASE_URL,
-            active_model
+            model = %active_model,
+            schedule_window = %schedule,
+            brain_db = %brain_db.display(),
+            "Librarian extension loaded"
         );
 
         Ok(Self { info, context })
