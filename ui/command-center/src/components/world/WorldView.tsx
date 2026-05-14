@@ -10,6 +10,7 @@ import { WorldCamera } from './WorldCamera';
 import { WorldPostProcessing } from './WorldPostProcessing';
 import { WorldHUD } from './WorldHUD';
 import { LibrarianHUD } from './LibrarianHUD';
+import { HenryHUD } from './HenryHUD';
 
 function LoadingShimmer() {
   return (
@@ -99,11 +100,15 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [hoveredStation, setHoveredStation] = useState<string | null>(null);
   const [showFps, setShowFps] = useState(false);
-  const [librarianHudOpen, setLibrarianHudOpen] = useState(false);
+  const [activeHud, setActiveHud] = useState<'henry' | 'librarian' | null>(null);
 
   const handleSelectAgent = useCallback((id: string) => {
-    if (id === 'librarian') {
-      setLibrarianHudOpen(true);
+    if (id === 'henry') {
+      setActiveHud('henry');
+    } else if (id === 'librarian') {
+      setActiveHud('librarian');
+    } else {
+      setActiveHud(null);
     }
     setSelectedAgent(id);
     setCameraMode('third-person');
@@ -113,6 +118,7 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
     setCameraMode(mode);
     if (mode === 'orbit') {
       setSelectedAgent(null);
+      setActiveHud(null);
     }
   }, []);
 
@@ -185,9 +191,13 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
         hoveredStation={hoveredStation}
         stationTooltip={stationTooltip}
       />
+      <HenryHUD
+        visible={activeHud === 'henry'}
+        onClose={() => setActiveHud(null)}
+      />
       <LibrarianHUD
-        visible={librarianHudOpen}
-        onClose={() => setLibrarianHudOpen(false)}
+        visible={activeHud === 'librarian'}
+        onClose={() => setActiveHud(null)}
       />
     </div>
   );
