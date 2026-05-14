@@ -119,7 +119,7 @@ function Columns() {
           {/* Circuit vein */}
           <mesh position-y={DOME_HEIGHT / 2}>
             <cylinderGeometry args={[0.15, 0.15, DOME_HEIGHT - 1, 8]} />
-            <meshBasicMaterial color={COLORS.neonCyan} transparent opacity={0.6} />
+            <meshBasicMaterial color={COLORS.neonCyan} transparent opacity={0.7} />
           </mesh>
           {/* Capital (top) */}
           <mesh position-y={DOME_HEIGHT + 0.3}>
@@ -131,8 +131,8 @@ function Columns() {
             <cylinderGeometry args={[0.7, 0.9, 0.6, 16]} />
             <meshStandardMaterial color={COLORS.primaryMarble} roughness={0.3} />
           </mesh>
-          {/* Rim light (point light at column edge) */}
-          <pointLight position={[0.7, DOME_HEIGHT * 0.7, 0]} color={COLORS.neonCyan} intensity={0.3} distance={3} />
+          {/* Rim light (point light at column edge) — subtle cyan wash */}
+          <pointLight position={[0.7, DOME_HEIGHT * 0.7, 0]} color={COLORS.neonCyan} intensity={0.15} distance={4} decay={2} />
         </group>
       ))}
     </group>
@@ -368,14 +368,14 @@ function LightShaft() {
   useFrame(() => {
     if (ref.current) {
       const mat = ref.current.material as THREE.MeshBasicMaterial;
-      mat.opacity = 0.06 + 0.02 * Math.sin(performance.now() * 0.0005);
+      mat.opacity = 0.09 + 0.03 * Math.sin(performance.now() * 0.0005);
     }
   });
 
   return (
     <mesh ref={ref} position-y={DOME_HEIGHT / 2}>
       <cylinderGeometry args={[2.5, 4, DOME_HEIGHT, 32, 1, true]} />
-      <meshBasicMaterial color="#FFFAE5" transparent opacity={0.07} side={THREE.DoubleSide} depthWrite={false} />
+      <meshBasicMaterial color="#FFFAE5" transparent opacity={0.1} side={THREE.DoubleSide} depthWrite={false} />
     </mesh>
   );
 }
@@ -390,22 +390,32 @@ export function WorldSceneContent({
 }) {
   return (
     <>
-      {/* Lighting */}
-      <ambientLight intensity={0.3} color="#E8E4DD" />
+      {/* Lighting — low ambient lets neon accents read as emissive */}
+      <ambientLight intensity={0.08} color="#B8C4D8" />
+      {/* Warm key light from above-and-to-the-side — creates real shadow falloff */}
       <directionalLight
-        position={[0, DOME_HEIGHT + 10, 0]}
-        intensity={1.2}
-        color="#FFF8E7"
+        position={[12, DOME_HEIGHT + 8, 8]}
+        intensity={1.6}
+        color="#FFF0D4"
         castShadow
         shadow-mapSize-width={2048}
         shadow-mapSize-height={2048}
+        shadow-bias={-0.0002}
         shadow-camera-near={0.5}
-        shadow-camera-far={50}
-        shadow-camera-left={-20}
-        shadow-camera-right={20}
-        shadow-camera-top={20}
-        shadow-camera-bottom={-20}
+        shadow-camera-far={60}
+        shadow-camera-left={-25}
+        shadow-camera-right={25}
+        shadow-camera-top={25}
+        shadow-camera-bottom={-25}
       />
+      {/* Cool fill light from opposite side — prevents pure black shadows */}
+      <directionalLight
+        position={[-10, DOME_HEIGHT, -6]}
+        intensity={0.25}
+        color="#8EC8E8"
+      />
+      {/* Uplight from oculus shaft — faint warm wash on dome interior */}
+      <pointLight position={[0, 2, 0]} color="#FFF8E7" intensity={0.4} distance={DOME_HEIGHT + 5} decay={2} />
 
       {/* Environment */}
       <Starfield />
@@ -422,7 +432,7 @@ export function WorldSceneContent({
       <DustMotes />
 
       {/* Fog */}
-      <fog attach="fog" args={[COLORS.deepVoid, 30, 150]} />
+      <fog attach="fog" args={[COLORS.deepVoid, 20, 120]} />
     </>
   );
 }
