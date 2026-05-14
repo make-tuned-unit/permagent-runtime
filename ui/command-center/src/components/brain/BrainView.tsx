@@ -4,6 +4,9 @@ import { useTheme } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import { BrainScene, type TypeFilters } from './BrainScene';
 import { useBrainData, type GraphMemory, type GraphEntity } from './useBrainData';
+import { BrainList } from './BrainList';
+
+type ViewMode = 'graph' | 'list';
 
 const FILTERS: { key: keyof TypeFilters; label: string; shape: string }[] = [
   { key: 'person', label: 'people', shape: '●' },
@@ -21,6 +24,7 @@ export function BrainView() {
   const sceneRef = useRef<BrainScene | null>(null);
   const { data, loading } = useBrainData();
 
+  const [viewMode, setViewMode] = useState<ViewMode>('graph');
   const [search, setSearch] = useState('');
   const [filters, setFilters] = useState<TypeFilters>({ person: true, project: true, topic: true, memory: true });
   const [timeValue, setTimeValue] = useState(1);
@@ -68,11 +72,23 @@ export function BrainView() {
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%', background: gradient.workspace, overflow: 'hidden' }}>
-      {/* Three.js canvas container */}
-      <div ref={containerRef} style={{ position: 'absolute', inset: 0 }} />
+      {/* Three.js canvas container — hidden in list mode */}
+      <div ref={containerRef} style={{ position: 'absolute', inset: 0, display: viewMode === 'graph' ? 'block' : 'none' }} />
+
+      {/* List view */}
+      {viewMode === 'list' && (
+        <div style={{ position: 'absolute', inset: 0, top: 64, bottom: 64 }}>
+          <BrainList
+            onSelect={onSelect}
+            selectedId={selected?.id ?? null}
+            timeValue={timeValue}
+            searchQuery={search}
+          />
+        </div>
+      )}
 
       {/* Empty state overlay */}
-      {isEmpty && (
+      {isEmpty && viewMode === 'graph' && (
         <div style={{
           position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
           alignItems: 'center', justifyContent: 'center', zIndex: 10,
@@ -135,6 +151,26 @@ export function BrainView() {
               transition: `all 160ms ${ease.out}`,
             }}>
               <span style={{ marginRight: 4 }}>{f.shape}</span>{f.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Graph / List toggle */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 2, padding: '4px 6px',
+          background: 'rgba(20,28,48,0.75)', backdropFilter: 'blur(16px)',
+          border: '1px solid rgba(255,255,255,0.06)', borderRadius: 8,
+        }}>
+          {(['graph', 'list'] as const).map(mode => (
+            <button key={mode} onClick={() => setViewMode(mode)} style={{
+              fontFamily: font.mono, fontSize: 10, fontWeight: 600,
+              color: viewMode === mode ? color.text : color.textDim,
+              background: viewMode === mode ? 'rgba(0,213,255,0.12)' : 'transparent',
+              border: 'none', borderRadius: 6, padding: '4px 10px', cursor: 'pointer',
+              textTransform: 'uppercase', letterSpacing: '0.05em',
+              transition: `all 160ms ${ease.out}`,
+            }}>
+              {mode}
             </button>
           ))}
         </div>
@@ -258,6 +294,10 @@ export function BrainView() {
           style={{ flex: 1, accentColor: color.cyan }}
         />
         <span style={{ fontFamily: font.mono, fontSize: 10, color: color.textDim }}>all time</span>
+        <span style={{ fontFamily: font.mono, fontSize: 9, color: color.textDim, opacity: 0.6 }}
+          title="Imported memories are dated by import time, not original event time">
+          *
+        </span>
       </div>
     </div>
   );

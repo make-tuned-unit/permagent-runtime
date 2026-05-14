@@ -239,6 +239,8 @@ struct GraphEntity {
 #[derive(Debug, Serialize)]
 struct GraphMemory {
     id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    key: Option<String>,
     text: String,
     description: Option<String>,
     ent: Vec<String>,
@@ -324,6 +326,7 @@ async fn brain_graph(
 
         memories.push(GraphMemory {
             id: format!("m:{}", i),
+            key: None,
             text: hit.content.clone(),
             description: hit.description.clone(),
             ent: ent_ids,
@@ -346,9 +349,240 @@ async fn brain_graph(
     }))
 }
 
+// ── GET /api/brain/memories — paginated browse + FTS search ──────────
+
+#[derive(Debug, Deserialize)]
+struct MemoriesQuery {
+    /// Full-text search query. Absent = browse mode.
+    #[serde(default)]
+    q: Option<String>,
+    /// Cursor for browse mode: only return memories with created_at < this value.
+    #[serde(default)]
+    before: Option<String>,
+    /// Cursor tiebreaker: memory id of the last row in the previous page.
+    #[serde(default)]
+    before_id: Option<String>,
+    /// Offset for search mode pagination (ignored in browse mode).
+    #[serde(default)]
+    offset: Option<usize>,
+    /// Page size. Default 50, max 200.
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+struct MemoriesResponse {
+    memories: Vec<GraphMemory>,
+    total: usize,
+    has_more: bool,
+}
+
+async fn brain_memories(
+    Query(params): Query<MemoriesQuery>,
+) -> Result<Json<MemoriesResponse>, crate::routes::errors::ErrorResponse> {
+    let limit = params.limit.unwrap_or(50).min(200);
+    let now = Utc::now();
+    let max_age_secs: f64 = 90.0 * 24.0 * 3600.0;
+
+    let result = tokio::task::spawn_blocking(move || {
+        let db_path = permagent::config::paths::Paths::brain_dir().join("memory.db");
+        let conn = rusqlite::Connection::open_with_flags(
+            &db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|e| format!("Failed to open brain DB: {}", e))?;
+
+        let q = params.q.as_deref().unwrap_or("").trim().to_string();
+        let is_search = !q.is_empty();
+
+        if is_search {
+            query_fts_memories(&conn, &q, params.offset.unwrap_or(0), limit, now, max_age_secs)
+        } else {
+            query_browse_memories(
+                &conn,
+                params.before.as_deref(),
+                params.before_id.as_deref(),
+                limit,
+                now,
+                max_age_secs,
+            )
+        }
+    })
+    .await
+    .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?
+    .map_err(|e| crate::routes::errors::ErrorResponse::internal(e))?;
+
+    Ok(Json(result))
+}
+
+fn query_browse_memories(
+    conn: &rusqlite::Connection,
+    before: Option<&str>,
+    before_id: Option<&str>,
+    limit: usize,
+    now: DateTime<Utc>,
+    max_age_secs: f64,
+) -> Result<MemoriesResponse, String> {
+    let total: usize = conn
+        .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+
+    let (sql, params_vec): (String, Vec<String>) = match (before, before_id) {
+        (Some(b), Some(bid)) => (
+            "SELECT id, key, content, description, signal_score, created_at \
+             FROM memories \
+             WHERE (created_at < ?1 OR (created_at = ?1 AND id < ?2)) \
+             ORDER BY created_at DESC, id DESC LIMIT ?3"
+                .to_string(),
+            vec![b.to_string(), bid.to_string(), (limit + 1).to_string()],
+        ),
+        (Some(b), None) => (
+            "SELECT id, key, content, description, signal_score, created_at \
+             FROM memories WHERE created_at < ?1 \
+             ORDER BY created_at DESC, id DESC LIMIT ?2"
+                .to_string(),
+            vec![b.to_string(), (limit + 1).to_string()],
+        ),
+        _ => (
+            "SELECT id, key, content, description, signal_score, created_at \
+             FROM memories ORDER BY created_at DESC, id DESC LIMIT ?1"
+                .to_string(),
+            vec![(limit + 1).to_string()],
+        ),
+    };
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params_from_iter(params_vec.iter()),
+            |row| row_to_graph_memory(row, now, max_age_secs),
+        )
+        .map_err(|e| e.to_string())?;
+
+    let mut memories: Vec<GraphMemory> = rows.filter_map(|r| r.ok()).collect();
+    let has_more = memories.len() > limit;
+    memories.truncate(limit);
+
+    Ok(MemoriesResponse {
+        memories,
+        total,
+        has_more,
+    })
+}
+
+fn query_fts_memories(
+    conn: &rusqlite::Connection,
+    query: &str,
+    offset: usize,
+    limit: usize,
+    now: DateTime<Utc>,
+    max_age_secs: f64,
+) -> Result<MemoriesResponse, String> {
+    // Sanitize query for FTS5: wrap each word in quotes, join with OR
+    let words: Vec<String> = query
+        .split_whitespace()
+        .filter(|w| w.len() > 1)
+        .map(|w| {
+            let clean: String = w
+                .chars()
+                .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                .collect();
+            format!("\"{}\"", clean)
+        })
+        .filter(|w| w.len() > 2)
+        .collect();
+
+    if words.is_empty() {
+        return Ok(MemoriesResponse {
+            memories: Vec::new(),
+            total: 0,
+            has_more: false,
+        });
+    }
+
+    let fts_query = words.join(" OR ");
+
+    // Count total matches
+    let total: usize = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memories_fts WHERE memories_fts MATCH ?1",
+            [&fts_query],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+
+    let sql = format!(
+        "SELECT m.id, m.key, m.content, m.description, m.signal_score, m.created_at \
+         FROM memories_fts fts \
+         JOIN memories m ON m.rowid = fts.rowid \
+         WHERE memories_fts MATCH ?1 \
+         ORDER BY bm25(memories_fts, 1.0, 1.0, 0.5) \
+         LIMIT ?2 OFFSET ?3"
+    );
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![fts_query, (limit + 1) as i64, offset as i64],
+            |row| row_to_graph_memory(row, now, max_age_secs),
+        )
+        .map_err(|e| e.to_string())?;
+
+    let mut memories: Vec<GraphMemory> = rows.filter_map(|r| r.ok()).collect();
+    let has_more = memories.len() > limit;
+    memories.truncate(limit);
+
+    Ok(MemoriesResponse {
+        memories,
+        total,
+        has_more,
+    })
+}
+
+fn row_to_graph_memory(
+    row: &rusqlite::Row,
+    now: DateTime<Utc>,
+    max_age_secs: f64,
+) -> rusqlite::Result<GraphMemory> {
+    let id: String = row.get(0)?;
+    let key: String = row.get(1)?;
+    let content: String = row.get(2)?;
+    let description: Option<String> = row.get(3)?;
+    let signal_score: f64 = row.get(4)?;
+    let created_at: Option<String> = row.get(5)?;
+
+    let age = created_at
+        .as_deref()
+        .and_then(|s| {
+            s.parse::<DateTime<Utc>>()
+                .ok()
+                .or_else(|| {
+                    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                        .ok()
+                        .map(|dt| dt.and_utc())
+                })
+        })
+        .map(|ts| ((now - ts).num_seconds().max(0) as f64 / max_age_secs).clamp(0.0, 1.0))
+        .unwrap_or(0.5);
+
+    let timestamp = created_at.unwrap_or_else(|| now.to_rfc3339());
+
+    Ok(GraphMemory {
+        id,
+        key: Some(key),
+        text: content,
+        description,
+        ent: Vec::new(),
+        age,
+        weight: signal_score.clamp(0.0, 1.0),
+        timestamp,
+    })
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/brain/search", get(brain_search))
         .route("/api/brain/graph", get(brain_graph))
+        .route("/api/brain/memories", get(brain_memories))
         .with_state(state)
 }
