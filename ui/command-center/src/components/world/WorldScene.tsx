@@ -1,8 +1,9 @@
 import { useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { Float } from '@react-three/drei';
+import { Float, ContactShadows } from '@react-three/drei';
 import * as THREE from 'three';
 import { COLORS, STATIONS, COLUMN_COUNT, ROTUNDA_RADIUS, DOME_HEIGHT, PLATFORM_RADIUS } from './constants';
+import { MEZZ_HEIGHT } from './WorldFurniture';
 import { LabFurniture } from './WorldFurniture';
 
 // Floor with glowing circuit mandala pattern
@@ -416,6 +417,27 @@ export function WorldSceneContent({
       <Dome />
       <StationPedestals onHoverStation={onHoverStation} onClickStation={onClickStation} />
       <LabFurniture />
+
+      {/* Contact shadows — soft dark blobs under characters and furniture */}
+      <ContactShadows
+        position={[0, 0.06, 0]}
+        opacity={0.6}
+        scale={40}
+        blur={2}
+        far={4}
+        resolution={512}
+        color="#0A0E1A"
+      />
+      {/* Contact shadows on mezzanine level for the Librarian */}
+      <ContactShadows
+        position={[0, MEZZ_HEIGHT + 0.02, 0]}
+        opacity={0.5}
+        scale={35}
+        blur={2}
+        far={4}
+        resolution={256}
+        color="#0A0E1A"
+      />
 
       {/* Atmosphere */}
       <LightShaft />
