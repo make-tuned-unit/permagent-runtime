@@ -585,6 +585,11 @@ export const api = {
     }>(`/api/brain/memories?${qs.toString()}`);
   },
 
+  getAgents: () =>
+    apiFetch<{
+      agents: { id: string; name: string; role: string; source: string }[];
+    }>('/api/agents'),
+
   runLibrarianNow: async () => {
     const url = `${API_BASE_URL}/api/librarian/run-now`;
     const resp = await fetch(url, {

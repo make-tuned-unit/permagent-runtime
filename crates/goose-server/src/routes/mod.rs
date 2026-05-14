@@ -1,6 +1,7 @@
 pub mod action_required;
 pub mod activity;
 pub mod agent;
+pub mod agents;
 pub mod attachments;
 pub mod brain;
 pub mod config_management;
@@ -71,7 +72,8 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(findings::routes(state.clone()))
         .merge(ollama::routes(state.clone()))
         .merge(version::routes(state.clone()))
-        .merge(henry_status::routes(state.clone()));
+        .merge(henry_status::routes(state.clone()))
+        .merge(agents::routes(state.clone()));
 
     #[cfg(feature = "local-inference")]
     {
