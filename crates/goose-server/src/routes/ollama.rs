@@ -332,14 +332,49 @@ fn mark_warmed_today() {
     save_warmed_date(chrono::Local::now().date_naive());
 }
 
+/// Read-only query against the Brain's SQLite for total and described memory counts.
+fn query_memory_counts() -> Result<(usize, usize), String> {
+    let db_path = permagent::config::paths::Paths::brain_dir().join("memory.db");
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| format!("Failed to open brain DB: {}", e))?;
+
+    let total: usize = conn
+        .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
+        .map_err(|e| format!("Count query failed: {}", e))?;
+    let described: usize = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memories WHERE description IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("Described count query failed: {}", e))?;
+
+    Ok((total, described))
+}
+
 /// Warm-load a model then run the batch, holding the BATCH_MUTEX.
 async fn warm_and_run(schedule: &LibrarianSchedule, keep_alive_secs: u64) -> Result<usize, String> {
+    use permagent::agents::platform_extensions::librarian_state;
+
     let _guard = BATCH_MUTEX.lock().await;
+
+    let brain =
+        permagent::agents::platform_extensions::get_global_brain().ok_or("Brain not available")?;
+
+    // Query actual memory counts from the Brain's SQLite DB.
+    let (total, described) = query_memory_counts()?;
+    librarian_state::set_warming(total, described);
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .build()
-        .map_err(|e| format!("HTTP client error: {}", e))?;
+        .map_err(|e| {
+            librarian_state::set_error(&format!("HTTP client error: {}", e));
+            format!("HTTP client error: {}", e)
+        })?;
 
     let body = serde_json::json!({
         "model": schedule.model,
@@ -354,19 +389,29 @@ async fn warm_and_run(schedule: &LibrarianSchedule, keep_alive_secs: u64) -> Res
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("Ollama unreachable: {}", e))?;
+        .map_err(|e| {
+            librarian_state::set_error(&format!("Ollama unreachable: {}", e));
+            format!("Ollama unreachable: {}", e)
+        })?;
 
     if !resp.status().is_success() {
         let text = resp.text().await.unwrap_or_default();
-        return Err(format!("Warm-load failed: {}", text));
+        let msg = format!("Warm-load failed: {}", text);
+        librarian_state::set_error(&msg);
+        return Err(msg);
     }
 
     tracing::info!(model = %schedule.model, keep_alive = keep_alive_secs, "Librarian model warm-loaded");
 
-    let brain =
-        permagent::agents::platform_extensions::get_global_brain().ok_or("Brain not available")?;
+    let result =
+        permagent::agents::platform_extensions::librarian::run_batch(&brain, 20, &schedule.model)
+            .await;
 
-    permagent::agents::platform_extensions::librarian::run_batch(&brain, 20, &schedule.model).await
+    if let Err(ref e) = result {
+        librarian_state::set_error(e);
+    }
+
+    result
 }
 
 /// Background loop: ticks once per minute, warm-loads if in window.
@@ -439,6 +484,87 @@ async fn run_librarian_now() -> Result<Json<WarmLoadResponse>, ErrorResponse> {
     }
 }
 
+// ── Librarian status endpoint ────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+struct LibrarianStatusResponse {
+    state: String,
+    current_task: String,
+    current_memory: Option<serde_json::Value>,
+    schedule: serde_json::Value,
+    session_stats: serde_json::Value,
+    lifetime_stats: serde_json::Value,
+    model: String,
+    provider: String,
+    error_message: Option<String>,
+}
+
+/// GET /api/librarian/status
+async fn get_librarian_status() -> Json<LibrarianStatusResponse> {
+    use permagent::agents::platform_extensions::librarian_state;
+
+    let rt_state = librarian_state::get_state();
+    let schedule = load_schedule();
+
+    let current_memory = rt_state.current_memory.map(|m| {
+        serde_json::json!({ "key": m.key, "content_preview": m.content_preview })
+    });
+
+    let next_window = compute_next_window_start(&schedule);
+
+    // Always read real counts from the DB for lifetime stats.
+    let (total, described) = query_memory_counts().unwrap_or((0, 0));
+    let pending = total.saturating_sub(described);
+
+    Json(LibrarianStatusResponse {
+        state: serde_json::to_value(&rt_state.phase)
+            .ok()
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_else(|| "unknown".to_string()),
+        current_task: rt_state.current_task,
+        current_memory,
+        schedule: serde_json::json!({
+            "next_window_start": next_window,
+            "window_duration_min": schedule.duration_minutes,
+        }),
+        session_stats: serde_json::json!({
+            "batch_started_at": rt_state.session_stats.batch_started_at,
+            "memories_described_this_session": rt_state.session_stats.memories_described_this_session,
+            "avg_seconds_per_memory": rt_state.session_stats.avg_seconds_per_memory,
+        }),
+        lifetime_stats: serde_json::json!({
+            "total_memories": total,
+            "described": described,
+            "pending": pending,
+        }),
+        model: schedule.model,
+        provider: "ollama".to_string(),
+        error_message: rt_state.error_message,
+    })
+}
+
+/// Compute the next window start time as ISO 8601 string.
+fn compute_next_window_start(schedule: &LibrarianSchedule) -> Option<String> {
+    let (sh, sm, dur) = parse_schedule_time(schedule)?;
+    let now = chrono::Local::now();
+    let today = now.date_naive();
+    let tz = now.timezone();
+
+    let naive_start = today.and_hms_opt(sh, sm, 0)?;
+    let start_today = naive_start.and_local_timezone(tz).single()?;
+    let end_today = start_today + chrono::Duration::minutes(dur as i64);
+
+    if now < start_today {
+        Some(start_today.to_rfc3339())
+    } else if now < end_today {
+        let tomorrow_start = start_today + chrono::Duration::days(1);
+        Some(tomorrow_start.to_rfc3339())
+    } else {
+        let tomorrow_start = start_today + chrono::Duration::days(1);
+        Some(tomorrow_start.to_rfc3339())
+    }
+}
+
 // ── Router ──────────────────────────────────────────────────────────
 
 pub fn routes(state: Arc<AppState>) -> Router {
@@ -451,5 +577,6 @@ pub fn routes(state: Arc<AppState>) -> Router {
             axum::routing::put(set_librarian_schedule),
         )
         .route("/api/librarian/run-now", post(run_librarian_now))
+        .route("/api/librarian/status", get(get_librarian_status))
         .with_state(state)
 }

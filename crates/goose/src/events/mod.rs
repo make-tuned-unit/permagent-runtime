@@ -117,6 +117,11 @@ pub enum PermagentEventType {
     IntegrationError,
     // Activity awareness layer (Phase 1)
     Activity,
+    // Librarian
+    LibrarianDescribeStarted,
+    LibrarianDescribeToken,
+    LibrarianDescribeRetry,
+    LibrarianDescribeCompleted,
 }
 
 // ── Convenience constructors ────────────────────────────────────────────────
@@ -277,6 +282,44 @@ pub fn integration_error(provider: &str, error: &str) -> PermagentEvent {
         serde_json::json!({
             "provider": provider,
             "error": error,
+        }),
+    )
+}
+
+pub fn librarian_describe_started(memory_key: &str, started_at: &str) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::LibrarianDescribeStarted,
+        serde_json::json!({ "memory_key": memory_key, "started_at": started_at }),
+    )
+}
+
+pub fn librarian_describe_token(memory_key: &str, token: &str) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::LibrarianDescribeToken,
+        serde_json::json!({ "memory_key": memory_key, "token": token }),
+    )
+}
+
+pub fn librarian_describe_retry(memory_key: &str, attempt: u32) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::LibrarianDescribeRetry,
+        serde_json::json!({ "memory_key": memory_key, "attempt": attempt }),
+    )
+}
+
+pub fn librarian_describe_completed(
+    memory_key: &str,
+    description: &str,
+    duration_ms: u64,
+    quality: crate::agents::platform_extensions::librarian::DescriptionQuality,
+) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::LibrarianDescribeCompleted,
+        serde_json::json!({
+            "memory_key": memory_key,
+            "description": description,
+            "duration_ms": duration_ms,
+            "quality": quality,
         }),
     )
 }

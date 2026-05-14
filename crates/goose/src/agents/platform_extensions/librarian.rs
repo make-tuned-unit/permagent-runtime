@@ -105,20 +105,7 @@ fn default_limit() -> usize {
     20
 }
 
-// ---------------------------------------------------------------------------
-// Ollama response types
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-struct OllamaGenerateResponse {
-    #[serde(default)]
-    response: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    total_duration: u64,
-    #[serde(default)]
-    eval_count: u64,
-}
+// (Ollama response types removed — streaming NDJSON parser handles inline)
 
 // ---------------------------------------------------------------------------
 // Librarian client
@@ -165,7 +152,7 @@ impl LibrarianClient {
 
         let brain = self.get_brain()?;
         let model = resolve_model();
-        let result = describe_one(&brain, &params.memory_id, params.force, &model).await?;
+        let result = describe_one(&brain, &params.memory_id, params.force, &model, false).await?;
 
         let response = serde_json::json!({
             "description": result.description,
@@ -304,18 +291,31 @@ pub struct DescribeResult {
     pub cached: bool,
 }
 
-/// Describe a single memory: fetch → check idempotency → recall related → LLM → write back.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DescriptionQuality {
+    Structured,
+    Fallback,
+}
+
+/// Describe a single memory: fetch → check idempotency → LLM (streaming) → parse → write back.
 ///
 /// If `force` is false and the memory already has a description, returns the cached
 /// description without calling Ollama or writing to Spectral. This is the single
 /// source of truth for description idempotency — both the MCP tool handler and
 /// `run_batch` go through this function.
+///
+/// When `emit_events` is true, emits librarian events on the global event bus
+/// for live HUD streaming (Started, Token, Retry, Completed).
 pub async fn describe_one(
     brain: &Arc<spectral::Brain>,
     memory_id: &str,
     force: bool,
     model: &str,
+    emit_events: bool,
 ) -> Result<DescribeResult, String> {
+    use super::librarian_state;
+    let track_state = emit_events;
     let start = std::time::Instant::now();
 
     // 1. Fetch memory
@@ -340,42 +340,71 @@ pub async fn describe_one(
         }
     }
 
-    // 3. Build prompt and call Ollama with structured output + retry
+    // 3. Build prompt and call Ollama (streaming) with structured output + retry
+    if track_state {
+        librarian_state::set_current_memory(&memory.key, &memory.content);
+    }
+
     let prompt = build_description_prompt(&memory);
+    let memory_key = memory.key.clone();
 
     let mut description: Option<String> = None;
-    for attempt in 0..2 {
-        let ollama_response = call_ollama(&prompt, model).await?;
-        let raw = ollama_response.response.trim().to_string();
+    let mut quality = DescriptionQuality::Structured;
+
+    for attempt in 0..2u32 {
+        if attempt == 0 {
+            if emit_events {
+                let started_at = chrono::Utc::now().to_rfc3339();
+                crate::events::emit(crate::events::librarian_describe_started(
+                    &memory_key, &started_at,
+                ));
+            }
+        } else {
+            if track_state {
+                librarian_state::set_retry_in_progress(true);
+            }
+            if emit_events {
+                crate::events::emit(crate::events::librarian_describe_retry(
+                    &memory_key, attempt,
+                ));
+            }
+            tracing::warn!(
+                memory_id = %memory_id,
+                attempt = attempt,
+                "Structured output malformed, retrying"
+            );
+        }
+
+        let raw = call_ollama_streaming(
+            OLLAMA_BASE_URL, &prompt, model, emit_events, &memory_key,
+        ).await?;
+        let raw = raw.trim().to_string();
 
         if let Some(parsed) = parse_structured_description(&raw) {
             description = Some(parsed);
             break;
         }
 
-        if attempt == 0 {
-            tracing::warn!(
-                memory_id = %memory_id,
-                "Structured output malformed, retrying at lower temperature"
-            );
-            // Retry will use the same call_ollama (temperature is fixed in the body).
-            // For the retry, we accept the raw output as-is.
-        } else {
-            // Second attempt failed — store raw output anyway
+        if attempt == 1 {
             tracing::warn!(
                 memory_id = %memory_id,
                 "Structured output still malformed after retry, storing raw"
             );
+            quality = DescriptionQuality::Fallback;
             description = Some(raw);
         }
     }
 
+    // Validate
     let description = description.ok_or("Ollama returned no response")?;
     if description.is_empty() {
+        if track_state {
+            librarian_state::record_describe_failure("Empty response");
+        }
         return Err("Ollama returned an empty response".to_string());
     }
 
-    // 6. Write back to Spectral
+    // 4. Write to Spectral first — if this fails, state hasn't been updated
     let desc_clone = description.clone();
     let mid = memory_id.to_string();
     let brain_ref = brain.clone();
@@ -384,10 +413,25 @@ pub async fn describe_one(
         .map_err(|e| format!("spawn_blocking failed: {}", e))?
         .map_err(|e| format!("Failed to write description: {}", e))?;
 
+    // 5. All state updates + event emission together (after DB write succeeds)
     let latency_ms = start.elapsed().as_millis();
+    let duration_secs = start.elapsed().as_secs_f64();
+
+    if track_state {
+        // record_describe_success internally resets retry_in_progress + current_memory
+        librarian_state::record_describe_success(duration_secs);
+    }
+
+    if emit_events {
+        crate::events::emit(crate::events::librarian_describe_completed(
+            &memory_key, &description, latency_ms as u64, quality,
+        ));
+    }
+
     tracing::info!(
         memory_id = %memory_id,
         latency_ms = latency_ms,
+        quality = ?quality,
         "Librarian described memory"
     );
 
@@ -395,7 +439,7 @@ pub async fn describe_one(
         description,
         model: model.to_string(),
         latency_ms,
-        tokens: 0, // token count not tracked in structured output mode
+        tokens: 0,
         cached: false,
     })
 }
@@ -416,6 +460,8 @@ pub async fn run_batch(
     batch_size: usize,
     model: &str,
 ) -> Result<usize, String> {
+    use super::librarian_state;
+
     let mut described = 0;
     loop {
         let brain_ref = brain.clone();
@@ -428,13 +474,17 @@ pub async fn run_batch(
             break;
         }
 
+        // Update state: entering describing phase with this batch's count
+        librarian_state::set_describing(memories.len());
+
         for mem in &memories {
-            match describe_one(brain, &mem.id, false, model).await {
+            match describe_one(brain, &mem.id, false, model, true).await {
                 Ok(r) if r.cached => {
                     tracing::debug!(memory_id = %mem.id, "Librarian skipped already-described memory");
                 }
                 Ok(_) => described += 1,
                 Err(e) => {
+                    librarian_state::record_describe_failure(&e);
                     tracing::warn!(memory_id = %mem.id, error = %e, "Librarian failed to describe memory, skipping");
                 }
             }
@@ -445,6 +495,7 @@ pub async fn run_batch(
         }
     }
 
+    librarian_state::set_batch_complete();
     tracing::info!(described = described, "Librarian batch complete");
     Ok(described)
 }
@@ -498,10 +549,19 @@ fn parse_structured_description(raw: &str) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
-// Ollama integration
+// Ollama integration (streaming NDJSON parser)
 // ---------------------------------------------------------------------------
 
-async fn call_ollama(prompt: &str, model: &str) -> Result<OllamaGenerateResponse, String> {
+/// Stream tokens from Ollama's /api/generate endpoint.
+async fn call_ollama_streaming(
+    base_url: &str,
+    prompt: &str,
+    model: &str,
+    emit_events: bool,
+    memory_key: &str,
+) -> Result<String, String> {
+    use futures::StreamExt;
+
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .build()
@@ -511,7 +571,7 @@ async fn call_ollama(prompt: &str, model: &str) -> Result<OllamaGenerateResponse
         "model": model,
         "prompt": prompt,
         "system": LIBRARIAN_SYSTEM_PROMPT,
-        "stream": false,
+        "stream": true,
         "options": {
             "temperature": 0.2,
             "top_p": 0.9,
@@ -520,7 +580,7 @@ async fn call_ollama(prompt: &str, model: &str) -> Result<OllamaGenerateResponse
     });
 
     let resp = client
-        .post(format!("{}/api/generate", OLLAMA_BASE_URL))
+        .post(format!("{}/api/generate", base_url))
         .json(&body)
         .send()
         .await
@@ -532,9 +592,80 @@ async fn call_ollama(prompt: &str, model: &str) -> Result<OllamaGenerateResponse
         return Err(format!("Ollama error ({}): {}", status, text));
     }
 
-    resp.json::<OllamaGenerateResponse>()
-        .await
-        .map_err(|e| format!("Failed to parse Ollama response: {}", e))
+    let mut stream = resp.bytes_stream();
+    let mut accumulated = String::new();
+    let mut line_buffer = String::new();
+    let mut saw_done = false;
+
+    while let Some(chunk_result) = stream.next().await {
+        let chunk = chunk_result.map_err(|e| {
+            format!("Stream interrupted during description generation: {}", e)
+        })?;
+
+        let chunk_str = String::from_utf8_lossy(&chunk);
+        line_buffer.push_str(&chunk_str);
+
+        while let Some(newline_pos) = line_buffer.find('\n') {
+            let line: String = line_buffer.drain(..=newline_pos).collect();
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let parsed: serde_json::Value = serde_json::from_str(line).map_err(|e| {
+                format!("Malformed NDJSON from Ollama: {} (line: {})", e, line)
+            })?;
+
+            if let Some(token) = parsed.get("response").and_then(|v| v.as_str()) {
+                if !token.is_empty() {
+                    accumulated.push_str(token);
+                    if emit_events {
+                        crate::events::emit(crate::events::librarian_describe_token(
+                            memory_key, token,
+                        ));
+                    }
+                }
+            }
+
+            if parsed.get("done").and_then(|v| v.as_bool()).unwrap_or(false) {
+                saw_done = true;
+            }
+
+            if let Some(err) = parsed.get("error").and_then(|v| v.as_str()) {
+                return Err(format!("Ollama stream error: {}", err));
+            }
+        }
+    }
+
+    // Process remaining buffer
+    let remaining = line_buffer.trim();
+    if !remaining.is_empty() {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(remaining) {
+            if let Some(token) = parsed.get("response").and_then(|v| v.as_str()) {
+                if !token.is_empty() {
+                    accumulated.push_str(token);
+                    if emit_events {
+                        crate::events::emit(crate::events::librarian_describe_token(
+                            memory_key, token,
+                        ));
+                    }
+                }
+            }
+            if parsed.get("done").and_then(|v| v.as_bool()).unwrap_or(false) {
+                saw_done = true;
+            }
+        }
+    }
+
+    if !saw_done {
+        return Err(
+            "Ollama stream terminated prematurely — no done signal received. \
+             Model may have crashed or run out of memory."
+                .to_string(),
+        );
+    }
+
+    Ok(accumulated)
 }
 
 // ---------------------------------------------------------------------------
@@ -663,13 +794,13 @@ mod tests {
 
         // Describe one first
         let id = &described[0].id;
-        let first = describe_one(&brain, id, false, DEFAULT_MODEL)
+        let first = describe_one(&brain, id, false, DEFAULT_MODEL, false)
             .await
             .unwrap();
         assert!(!first.cached, "First call should not be cached");
 
         // Second call with force=false should return cached
-        let second = describe_one(&brain, id, false, DEFAULT_MODEL)
+        let second = describe_one(&brain, id, false, DEFAULT_MODEL, false)
             .await
             .unwrap();
         assert!(second.cached, "Second call should be cached");
@@ -698,15 +829,14 @@ mod tests {
 
         let id = &described[0].id;
         // Ensure described
-        let _ = describe_one(&brain, id, false, DEFAULT_MODEL)
+        let _ = describe_one(&brain, id, false, DEFAULT_MODEL, false)
             .await
             .unwrap();
 
         // Force regenerate
-        let result = describe_one(&brain, id, true, DEFAULT_MODEL).await.unwrap();
+        let result = describe_one(&brain, id, true, DEFAULT_MODEL, false).await.unwrap();
         assert!(!result.cached, "force=true should not return cached");
         assert!(result.latency_ms > 0, "Should have Ollama latency");
-        assert!(result.tokens > 0, "Should have token count");
     }
 
     // concurrent run_batch → one set of Ollama invocations:

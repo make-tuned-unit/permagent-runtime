@@ -9,6 +9,7 @@ import { WorldCharacters } from './WorldCharacters';
 import { WorldCamera } from './WorldCamera';
 import { WorldPostProcessing } from './WorldPostProcessing';
 import { WorldHUD } from './WorldHUD';
+import { LibrarianHUD } from './LibrarianHUD';
 
 function LoadingShimmer() {
   return (
@@ -98,8 +99,12 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [hoveredStation, setHoveredStation] = useState<string | null>(null);
   const [showFps, setShowFps] = useState(false);
+  const [librarianHudOpen, setLibrarianHudOpen] = useState(false);
 
   const handleSelectAgent = useCallback((id: string) => {
+    if (id === 'librarian') {
+      setLibrarianHudOpen(true);
+    }
     setSelectedAgent(id);
     setCameraMode('third-person');
   }, []);
@@ -179,6 +184,10 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
         showFps={showFps}
         hoveredStation={hoveredStation}
         stationTooltip={stationTooltip}
+      />
+      <LibrarianHUD
+        visible={librarianHudOpen}
+        onClose={() => setLibrarianHudOpen(false)}
       />
     </div>
   );
