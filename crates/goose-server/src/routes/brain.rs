@@ -304,10 +304,19 @@ async fn brain_graph(
     entities.truncate(80);
 
     // Build memories, capped at 100
-    let _max_age_secs: f64 = 90.0 * 24.0 * 3600.0; // 90 days
+    let max_age_secs: f64 = 90.0 * 24.0 * 3600.0; // 90 days
     let mut memories: Vec<GraphMemory> = Vec::new();
     for (i, hit) in result.memory_hits.iter().enumerate().take(100) {
-        let age = 0.5; // Spectral MemoryHit lacks timestamp; use score as proxy
+        let age = hit
+            .created_at
+            .as_deref()
+            .and_then(|s| {
+                s.parse::<DateTime<Utc>>()
+                    .ok()
+                    .or_else(|| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok().map(|dt| dt.and_utc()))
+            })
+            .map(|ts| ((now - ts).num_seconds().max(0) as f64 / max_age_secs).clamp(0.0, 1.0))
+            .unwrap_or(0.5);
         let weight = hit.signal_score.clamp(0.0, 1.0);
 
         // Find connected entities from triples that mention related entity IDs
