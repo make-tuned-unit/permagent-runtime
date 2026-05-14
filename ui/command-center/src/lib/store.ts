@@ -115,7 +115,8 @@ export type PermagentEventType =
   | 'memory_added'
   | 'skill_proposed' | 'skill_saved' | 'skill_triggered'
   | 'message_received' | 'stream_chunk'
-  | 'integration_connected' | 'integration_error';
+  | 'integration_connected' | 'integration_error'
+  | 'librarian_describe_started' | 'librarian_describe_token' | 'librarian_describe_retry' | 'librarian_describe_completed';
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 

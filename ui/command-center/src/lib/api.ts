@@ -540,6 +540,23 @@ export const api = {
     return resp.json();
   },
 
+  getLibrarianStatus: () =>
+    apiFetch<{
+      state: string;
+      current_task: string;
+      current_memory: { key: string; content_preview: string } | null;
+      schedule: { next_window_start: string | null; window_duration_min: number };
+      session_stats: {
+        batch_started_at: string | null;
+        memories_described_this_session: number;
+        avg_seconds_per_memory: number | null;
+      };
+      lifetime_stats: { total_memories: number; described: number; pending: number };
+      model: string;
+      provider: string;
+      error_message: string | null;
+    }>('/api/librarian/status'),
+
   runLibrarianNow: async () => {
     const url = `${API_BASE_URL}/api/librarian/run-now`;
     const resp = await fetch(url, {

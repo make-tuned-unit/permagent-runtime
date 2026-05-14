@@ -6,6 +6,7 @@ pub mod code_execution;
 pub mod developer;
 pub mod ext_manager;
 pub mod librarian;
+pub mod librarian_state;
 pub mod orchestrator;
 pub mod skills;
 pub mod summarize;
