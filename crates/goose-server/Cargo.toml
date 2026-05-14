@@ -79,7 +79,7 @@ libc = "0.2"
 rcgen = "0.13"
 rusqlite = { version = "0.32", features = ["bundled"] }
 axum-server = { version = "0.8.0" }
-aws-lc-rs = { version = "1.16.0", optional = true }
+aws-lc-rs = { version = "1.17.0", optional = true }
 openssl = { version = "0.10", optional = true }
 pem = "3.0.6"
 dirs = { workspace = true }
