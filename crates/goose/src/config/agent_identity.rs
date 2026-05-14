@@ -137,21 +137,9 @@ pub struct AgentConfig {
 
 impl Default for AgentConfig {
     fn default() -> Self {
-        let mut workers = HashMap::new();
-        workers.insert(
-            "archivist".to_string(),
-            WorkerPersona {
-                first_name: "Archivist".into(),
-                last_name: None,
-                nickname: None,
-                role: "Library research and overnight memory consolidation".into(),
-                traits: vec!["methodical".into(), "quiet".into(), "thorough".into()],
-                tone: "Reports findings concisely. Surfaces what matters. Skips ceremony.".into(),
-            },
-        );
         Self {
             primary: PrimaryPersona::default(),
-            workers,
+            workers: HashMap::new(),
         }
     }
 }
