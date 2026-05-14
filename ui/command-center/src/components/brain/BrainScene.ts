@@ -275,9 +275,10 @@ export class BrainScene {
       }
     }
 
-    // Build edge geometry
+    // Build edge geometry and re-apply current filter state to new nodes
     this.rebuildEdges();
     this.rebuildPulses();
+    this.applyFilters();
     this.alpha = 1.0;
   }
 
