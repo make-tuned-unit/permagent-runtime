@@ -5,11 +5,12 @@ import { setDropHandlers } from '../../lib/native-drag-drop';
 interface DropZoneProps {
   onDrop: (files: File[]) => void;
   children: React.ReactNode;
+  disabled?: boolean;
 }
 
 const isTauri = '__TAURI_INTERNALS__' in window;
 
-export function DropZone({ onDrop, children }: DropZoneProps) {
+export function DropZone({ onDrop, children, disabled = false }: DropZoneProps) {
   const [dragging, setDragging] = useState(false);
   const counter = useRef(0);
 
@@ -24,6 +25,7 @@ export function DropZone({ onDrop, children }: DropZoneProps) {
     console.log('[dropzone] registering native drop handlers');
     setDropHandlers({
       onEnter: () => {
+        if (disabled) return;
         console.log('[dropzone] native onEnter → show overlay');
         setDragging(true);
       },
@@ -32,6 +34,7 @@ export function DropZone({ onDrop, children }: DropZoneProps) {
         setDragging(false);
       },
       onDrop: (files) => {
+        if (disabled) return;
         console.log('[dropzone] native onDrop, file count:', files.length);
         onDrop(files);
       },
@@ -41,11 +44,11 @@ export function DropZone({ onDrop, children }: DropZoneProps) {
       console.log('[dropzone] clearing native drop handlers');
       setDropHandlers(null);
     };
-  }, [onDrop]);
+  }, [onDrop, disabled]);
 
   // HTML5 drag-drop handlers (browser fallback)
   const handleDragEnter = useCallback((e: React.DragEvent) => {
-    if (isTauri) return;
+    if (isTauri || disabled) return;
     e.preventDefault();
     counter.current++;
     if (e.dataTransfer.types.includes('Files')) {
