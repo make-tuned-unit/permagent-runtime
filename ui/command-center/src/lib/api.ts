@@ -557,6 +557,19 @@ export const api = {
       error_message: string | null;
     }>('/api/librarian/status'),
 
+  getHenryStatus: () =>
+    apiFetch<{
+      identity: { name: string; traits: string[]; tone: string };
+      current_state: string;
+      active_sessions: { id: string; name: string; started_at: string }[];
+      current_tool: string | null;
+      tasks_in_flight: number;
+      recent_tasks: { id: string; description: string; status: string; tool_used: string | null; completed_at: string | null }[];
+      today_totals: { messages_sent: number; tasks_dispatched: number; scheduled_fires: number; memories_formed: number };
+      lifetime_stats: { total_memories: number; total_sessions: number; days_active: number; first_active: string | null };
+      next_scheduled: { id: string; cron: string; currently_running: boolean } | null;
+    }>('/api/henry/status'),
+
   runLibrarianNow: async () => {
     const url = `${API_BASE_URL}/api/librarian/run-now`;
     const resp = await fetch(url, {
