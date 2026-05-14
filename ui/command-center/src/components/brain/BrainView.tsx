@@ -26,6 +26,8 @@ export function BrainView() {
 
   const [viewMode, setViewMode] = useState<ViewMode>('graph');
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [modeBeforeSearch, setModeBeforeSearch] = useState<ViewMode>('graph');
   const [filters, setFilters] = useState<TypeFilters>({ person: true, project: true, topic: true, memory: true });
   const [timeValue, setTimeValue] = useState(1);
   const [hover, setHover] = useState<HoverInfo | null>(null);
@@ -49,10 +51,25 @@ export function BrainView() {
     if (sceneRef.current && data) sceneRef.current.setData(data);
   }, [data]);
 
-  // Search
+  // Search: debounce 300ms, auto-switch to list mode on non-empty query
   useEffect(() => {
-    const t = setTimeout(() => sceneRef.current?.setSearch(search), 200);
+    const t = setTimeout(() => {
+      const q = search.trim();
+      setDebouncedSearch(q);
+      if (q) {
+        if (viewMode !== 'list') {
+          setModeBeforeSearch(viewMode);
+          setViewMode('list');
+        }
+      } else if (debouncedSearch) {
+        // Query cleared — restore previous mode
+        setViewMode(modeBeforeSearch);
+      }
+      // Also update graph-side dimming
+      sceneRef.current?.setSearch(search);
+    }, 300);
     return () => clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
 
   // Filters
@@ -82,7 +99,7 @@ export function BrainView() {
             onSelect={onSelect}
             selectedId={selected?.id ?? null}
             timeValue={timeValue}
-            searchQuery={search}
+            searchQuery={debouncedSearch}
           />
         </div>
       )}
