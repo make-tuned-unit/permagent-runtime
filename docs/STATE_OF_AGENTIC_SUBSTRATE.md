@@ -566,7 +566,7 @@ The observability infrastructure is surprisingly complete. Structured logging, L
 - **Agent persona**: `PrimaryPersona` (first_name, last_name, nickname, traits, tone, opening_greeting, voice_id) stored in `~/.permagent/agent.yaml`
 - Persona injected into system prompt: "You are Henry. You are a Permagent..."
 - Confirmed: agent is "Henry" with traits ["precise", "direct", "concise"]
-- **Worker personas**: HashMap of named workers (e.g., "archivist" for overnight memory consolidation)
+- **Worker personas**: HashMap of named workers (e.g., "Librarian" for overnight memory consolidation)
 - API: GET/PUT `/api/agent/identity`, CRUD `/api/agent/workers/{key}`
 - **Workspaces**: 5 configured (Home, Automate, World, Build, Brain) with layout persistence
 - **Spectral Brain**: `~/.permagent/brain/memory.db` — **997 memories**, **138,825 constellation fingerprints**

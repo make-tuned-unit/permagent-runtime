@@ -130,7 +130,7 @@ The inherited Goose codebase contains two high-leverage systems hiding in plain 
 
 3. **Lab View / World View representation.** Workers are invisible. The World View component is a placeholder (globe emoji). Surfacing active workers, their sessions, and their status in the World View would make the worker system tangible.
 
-4. **Worker identity / persona.** Workers inherit the parent's provider and extensions but not a persona. A worker should know its role ("Archivist," "Researcher," "Builder") and carry that identity through its interactions.
+4. **Worker identity / persona.** Workers inherit the parent's provider and extensions but not a persona. A worker should know its role ("Librarian," "Researcher," "Builder") and carry that identity through its interactions.
 
 ### Verdict: Partial — Strong Foundation, Needs Wiring
 
