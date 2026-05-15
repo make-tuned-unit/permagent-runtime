@@ -1,0 +1,106 @@
+import { Suspense, useState } from 'react';
+import { Canvas } from '@react-three/fiber';
+import { OrbitControls } from '@react-three/drei';
+import * as THREE from 'three';
+import { CyborgCharacterModel } from './components/world/CyborgCharacter';
+
+const PRESETS = [
+  { label: 'Librarian', trimColor: '#8B7E6F', weathering: 0.4, crown: false },
+  { label: 'Henry', trimColor: '#00D9FF', weathering: 0, crown: true },
+  { label: 'Aria', trimColor: '#FFB347', weathering: 0, crown: false },
+  { label: 'Felix', trimColor: '#FF6B9D', weathering: 0, crown: false },
+  { label: 'Nova', trimColor: '#A78BFA', weathering: 0, crown: false },
+];
+
+// URL param ?cam=back for rear view screenshot
+const camParam = new URLSearchParams(window.location.search).get('cam');
+const CAM_FRONT: [number, number, number] = [3, 2.5, 4];
+const CAM_BACK: [number, number, number] = [-3, 2.5, -4];
+const initialCam = camParam === 'back' ? CAM_BACK : CAM_FRONT;
+
+export default function CyborgTest() {
+  const [preset, setPreset] = useState(0);
+  const current = PRESETS[preset];
+
+  return (
+    <div style={{ width: '100vw', height: '100vh', background: '#18181B', position: 'relative' }}>
+      <Canvas
+        shadows
+        camera={{ position: initialCam, fov: 40, near: 0.1, far: 100 }}
+        gl={{
+          antialias: true,
+          toneMapping: THREE.ACESFilmicToneMapping,
+          toneMappingExposure: 1.3,
+          outputColorSpace: THREE.SRGBColorSpace,
+        }}
+      >
+        <Suspense fallback={null}>
+          {/* Lighting — matches A1 lighting direction */}
+          <ambientLight intensity={0.08} color="#B8C4D8" />
+          <directionalLight
+            position={[4, 8, 3]}
+            intensity={1.6}
+            color="#FFF0D4"
+            castShadow
+            shadow-mapSize-width={1024}
+            shadow-mapSize-height={1024}
+          />
+          <directionalLight position={[-3, 6, -2]} intensity={0.25} color="#8EC8E8" />
+
+          {/* Ground plane for shadow reference */}
+          <mesh rotation-x={-Math.PI / 2} position-y={-0.01} receiveShadow>
+            <planeGeometry args={[8, 8]} />
+            <meshStandardMaterial color="#1A1D25" roughness={0.8} />
+          </mesh>
+
+          {/* The character */}
+          <CyborgCharacterModel
+            trimColor={current.trimColor}
+            weathering={current.weathering}
+            showCrown={current.crown}
+          />
+
+          <OrbitControls
+            target={[0, 1.2, 0]}
+            minDistance={2}
+            maxDistance={12}
+            enableDamping
+          />
+        </Suspense>
+      </Canvas>
+
+      {/* Preset switcher */}
+      <div style={{
+        position: 'absolute', top: 16, left: 16,
+        display: 'flex', gap: 8, flexWrap: 'wrap',
+      }}>
+        {PRESETS.map((p, i) => (
+          <button
+            key={p.label}
+            onClick={() => setPreset(i)}
+            style={{
+              padding: '6px 14px',
+              borderRadius: 6,
+              border: `1px solid ${i === preset ? p.trimColor : '#444'}`,
+              background: i === preset ? `${p.trimColor}22` : '#222',
+              color: i === preset ? p.trimColor : '#888',
+              fontFamily: 'monospace',
+              fontSize: 13,
+              cursor: 'pointer',
+            }}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Info */}
+      <div style={{
+        position: 'absolute', bottom: 16, left: 16,
+        color: '#666', fontFamily: 'monospace', fontSize: 12,
+      }}>
+        B1 Cyborg Character Test — orbit with mouse, switch presets above
+      </div>
+    </div>
+  );
+}

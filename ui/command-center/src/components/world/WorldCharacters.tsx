@@ -4,6 +4,7 @@ import { Html } from '@react-three/drei';
 import * as THREE from 'three';
 import type { AgentState } from './types';
 import { COLORS } from './constants';
+import { CyborgCharacterModel } from './CyborgCharacter';
 
 interface CharacterProps {
   agent: AgentState;
@@ -56,8 +57,8 @@ function Crown() {
   );
 }
 
-// Detailed stylized humanoid: marble skin, facial features, hands, sandals
-function CharacterModel({ agent }: { agent: AgentState }) {
+// Legacy character model — kept for rollback, replaced by CyborgCharacterModel in render path
+export function CharacterModel({ agent }: { agent: AgentState }) {
   const groupRef = useRef<THREE.Group>(null);
   useFrame(() => {
     if (groupRef.current) {
@@ -306,7 +307,11 @@ export function AgentCharacter({ agent, isHovered, onPointerOver, onPointerOut, 
     >
       <group ref={rotationRef}>
         <group ref={bobRef}>
-      <CharacterModel agent={agent} />
+      <CyborgCharacterModel
+        trimColor={agent.togaTrimColor}
+        weathering={agent.id === 'librarian' ? 0.4 : 0}
+        showCrown={agent.isHenry}
+      />
 
       {/* Hover outline effect — cyan glow ring at feet */}
       {isHovered && (
