@@ -144,6 +144,22 @@ impl AppState {
             permagent::agents::platform_extensions::set_global_brain(b.clone());
         }
 
+        // Self-healing annotation backfill — runs at daemon startup, not gated on Ollama.
+        // Parses "Related terms:" from existing Librarian descriptions and populates
+        // memory_annotations. First run annotates ~1384 memories; subsequent starts are no-ops.
+        tokio::task::spawn(async {
+            let result = tokio::task::spawn_blocking(|| {
+                permagent::agents::platform_extensions::librarian::backfill_annotations()
+            })
+            .await;
+            match result {
+                Ok(Ok(n)) if n > 0 => tracing::info!(annotated = n, "Annotation backfill completed"),
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => tracing::warn!(error = %e, "Annotation backfill failed"),
+                Err(e) => tracing::warn!(error = %e, "Annotation backfill task panicked"),
+            }
+        });
+
         // Load agent config (primary + workers) from ~/.permagent/agent.yaml
         let agent_config = permagent::config::agent_identity::load_shared_agent_config();
         let persona = {
