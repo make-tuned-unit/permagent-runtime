@@ -1,0 +1,42 @@
+[package]
+name = "permagent-social"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+# Async runtime + HTTP (HTTP unused day 1, prep for day 5)
+tokio = { workspace = true }
+axum = { workspace = true }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono", "macros", "migrate"] }
+
+# Bluesky + OAuth (added day 2-3, prep deps now)
+atrium-api = "0.25"
+atrium-oauth = "0.1"
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Crypto / keychain
+keyring = "3"
+aes-gcm = "0.10"
+rand = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Async trait
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
