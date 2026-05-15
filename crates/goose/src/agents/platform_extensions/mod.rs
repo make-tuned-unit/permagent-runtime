@@ -1,5 +1,6 @@
 pub mod analyze;
 pub mod apps;
+pub mod browser;
 pub mod chatrecall;
 #[cfg(feature = "code-mode")]
 pub mod code_execution;
@@ -105,6 +106,20 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 unprefixed_tools: true,
                 hidden: false,
                 client_factory: |ctx| Box::new(analyze::AnalyzeClient::new(ctx).unwrap()),
+            },
+        );
+
+        map.insert(
+            browser::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: browser::EXTENSION_NAME,
+                display_name: "Browser",
+                description:
+                    "Read content from the page currently open in the Permagent browser",
+                default_enabled: true,
+                unprefixed_tools: true,
+                hidden: false,
+                client_factory: |ctx| Box::new(browser::BrowserClient::new(ctx).unwrap()),
             },
         );
 

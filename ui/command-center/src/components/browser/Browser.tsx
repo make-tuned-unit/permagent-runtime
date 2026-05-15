@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useCommandCenter } from '../../lib/store';
+import { useBrowserContentBridge } from '../../hooks/useBrowserContentBridge';
 import {
   FiArrowLeft,
   FiArrowRight,
@@ -108,6 +109,9 @@ export function Browser() {
   apiRef.current = api;
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
+
+  // Bridge: daemon MCP tool → Tauri webview content extraction → daemon fulfillment
+  useBrowserContentBridge(activeTab?.webviewId ?? null);
 
   // Initialize Tauri API
   useEffect(() => {

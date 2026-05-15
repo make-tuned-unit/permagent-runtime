@@ -44,6 +44,8 @@ pub struct AppState {
     pub activity_ingester: Option<Arc<permagent::activity::ingestion::ActivityIngester>>,
     /// Activity context builder — maintains live state for per-turn digests.
     pub context_builder: Option<Arc<permagent::activity::context_builder::ContextBuilder>>,
+    /// Bridge for pending browser content extraction requests.
+    pub browser_content_bridge: Arc<crate::routes::browser_content::BrowserContentBridge>,
 }
 
 impl AppState {
@@ -311,6 +313,7 @@ impl AppState {
             daemon_token,
             activity_ingester,
             context_builder,
+            browser_content_bridge: Arc::new(crate::routes::browser_content::BrowserContentBridge::new()),
         }))
     }
 
