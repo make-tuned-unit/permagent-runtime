@@ -583,7 +583,7 @@ function Staircase() {
         const x = Math.cos(angle) * stairR;
         const z = Math.sin(angle) * stairR;
         return (
-          <mesh key={i} position={[x, y + 0.05, z]} rotation-y={-angle + Math.PI / 2} castShadow material={marble}>
+          <mesh key={i} position={[x, y + 0.05, z]} rotation-y={-angle + Math.PI / 2} material={marble}>
             <boxGeometry args={[stepWidth, 0.15, 0.6]} />
           </mesh>
         );
