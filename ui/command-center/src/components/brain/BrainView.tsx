@@ -22,12 +22,13 @@ export function BrainView() {
   const { gradient } = useTheme();
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<BrainScene | null>(null);
-  const { data, loading } = useBrainData();
 
   const [viewMode, setViewMode] = useState<ViewMode>('graph');
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [modeBeforeSearch, setModeBeforeSearch] = useState<ViewMode>('graph');
+
+  const { data, loading } = useBrainData(debouncedSearch);
   const [filters, setFilters] = useState<TypeFilters>({ person: true, project: true, topic: true, memory: true });
   const [timeValue, setTimeValue] = useState(1);
   const [hover, setHover] = useState<HoverInfo | null>(null);

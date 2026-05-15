@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 
 export interface GraphSelf { name: string; id: string }
 export interface GraphEntity { id: string; type: string; name: string; note: string }
@@ -10,24 +10,35 @@ const API = (import.meta.env.VITE_DAEMON_URL as string | undefined) ||
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ||
   (isTauri ? 'http://127.0.0.1:3001' : '');
 
-export function useBrainData() {
+export function useBrainData(searchQuery = '') {
   const [data, setData] = useState<BrainGraph | null>(null);
   const [loading, setLoading] = useState(true);
   const intervalRef = useRef<ReturnType<typeof setInterval>>();
+  const queryRef = useRef(searchQuery);
+  queryRef.current = searchQuery;
 
-  const fetchGraph = async () => {
+  const fetchGraph = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/api/brain/graph`);
+      const q = queryRef.current.trim();
+      const url = q
+        ? `${API}/api/brain/graph?q=${encodeURIComponent(q)}`
+        : `${API}/api/brain/graph`;
+      const res = await fetch(url);
       if (res.ok) setData(await res.json());
     } catch { /* ignore */ }
     setLoading(false);
-  };
+  }, []);
 
   useEffect(() => {
     fetchGraph();
     intervalRef.current = setInterval(fetchGraph, 60_000);
     return () => clearInterval(intervalRef.current);
-  }, []);
+  }, [fetchGraph]);
+
+  // Re-fetch when search query changes
+  useEffect(() => {
+    fetchGraph();
+  }, [searchQuery, fetchGraph]);
 
   return { data, loading, refresh: fetchGraph };
 }

@@ -221,6 +221,14 @@ async fn brain_search(
 
 // ── GET /api/brain/graph — force-directed graph data for Brain View ──
 
+#[derive(Debug, Deserialize)]
+struct GraphQuery {
+    /// Optional search query. When provided, recall is scoped to this term.
+    /// When absent, a multi-seed strategy provides diverse coverage.
+    #[serde(default)]
+    q: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 struct GraphSelf {
     name: String,
@@ -259,6 +267,7 @@ struct GraphResponse {
 
 async fn brain_graph(
     State(state): State<Arc<AppState>>,
+    Query(params): Query<GraphQuery>,
 ) -> Result<Json<GraphResponse>, crate::routes::errors::ErrorResponse> {
     let persona = state.persona.read().await;
     let self_node = GraphSelf {
@@ -277,70 +286,113 @@ async fn brain_graph(
         }
     };
 
-    // Use persona name as seed query to pull related memories + graph
-    let query = self_node.name.clone();
-    let result =
-        tokio::task::spawn_blocking(move || brain.recall(&query, spectral::Visibility::Private))
-            .await
-            .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?
-            .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?;
-
     let now = Utc::now();
-
-    // Build entities from graph neighborhood
-    let mut entities: Vec<GraphEntity> = Vec::new();
-    let mut entity_id_set = std::collections::HashSet::new();
-    for ent in &result.graph.neighborhood.entities {
-        let id_hex = format!("e:{}", hex::encode(ent.id.as_bytes()));
-        if entity_id_set.insert(id_hex.clone()) {
-            entities.push(GraphEntity {
-                id: id_hex,
-                entity_type: ent.entity_type.clone(),
-                name: ent.canonical.clone(),
-                note: String::new(),
-            });
-        }
-    }
-
-    // Cap entities to avoid overwhelming the force simulation
-    entities.truncate(80);
-
-    // Build memories, capped at 100
     let max_age_secs: f64 = 90.0 * 24.0 * 3600.0; // 90 days
-    let mut memories: Vec<GraphMemory> = Vec::new();
-    for (i, hit) in result.memory_hits.iter().enumerate().take(100) {
-        let age = hit
-            .created_at
-            .as_deref()
-            .and_then(|s| {
-                s.parse::<DateTime<Utc>>()
-                    .ok()
-                    .or_else(|| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok().map(|dt| dt.and_utc()))
-            })
-            .map(|ts| ((now - ts).num_seconds().max(0) as f64 / max_age_secs).clamp(0.0, 1.0))
-            .unwrap_or(0.5);
-        let weight = hit.signal_score.clamp(0.0, 1.0);
+    const MAX_MEMORIES: usize = 100;
 
-        // Find connected entities from triples that mention related entity IDs
-        let ent_ids: Vec<String> = Vec::new(); // v1: no direct memory→entity mapping
+    // --- Entities: use recall's graph neighborhood (only source) ---
+    let entity_brain = brain.clone();
+    let entity_query = self_node.name.clone();
+    let entities = tokio::task::spawn_blocking(move || -> Vec<GraphEntity> {
+        let result = match entity_brain.recall(&entity_query, spectral::Visibility::Private) {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+        let mut ents: Vec<GraphEntity> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for ent in &result.graph.neighborhood.entities {
+            let id_hex = format!("e:{}", hex::encode(ent.id.as_bytes()));
+            if seen.insert(id_hex.clone()) {
+                ents.push(GraphEntity {
+                    id: id_hex,
+                    entity_type: ent.entity_type.clone(),
+                    name: ent.canonical.clone(),
+                    note: String::new(),
+                });
+            }
+        }
+        ents.truncate(80);
+        ents
+    })
+    .await
+    .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?;
 
-        memories.push(GraphMemory {
-            id: format!("m:{}", i),
-            key: None,
-            text: hit.content.clone(),
-            description: hit.description.clone(),
-            ent: ent_ids,
-            age,
-            weight,
-            timestamp: hit.created_at.clone().unwrap_or_else(|| now.to_rfc3339()),
-        });
-    }
+    // --- Memories: recall-seeded for diversity, capped at MAX_MEMORIES ---
+    let search_q = params.q.as_deref().unwrap_or("").trim().to_string();
+    let persona_name = self_node.name.clone();
 
-    // Cap total nodes at 100
-    if entities.len() + memories.len() > 100 {
-        let mem_budget = 100usize.saturating_sub(entities.len());
-        memories.truncate(mem_budget);
-    }
+    let memories = tokio::task::spawn_blocking(move || -> Vec<GraphMemory> {
+        // Build seed queries: explicit search term OR multi-seed for diversity
+        let seeds: Vec<String> = if !search_q.is_empty() {
+            vec![search_q]
+        } else {
+            vec![
+                persona_name,
+                "recent work".to_string(),
+                "project".to_string(),
+                "conversation".to_string(),
+            ]
+        };
+
+        // Recall with each seed and merge hits, dedup by memory ID
+        let mut seen_ids = std::collections::HashSet::new();
+        let mut merged: Vec<GraphMemory> = Vec::new();
+
+        for seed in &seeds {
+            if merged.len() >= MAX_MEMORIES {
+                break;
+            }
+            let result = match brain.recall(seed, spectral::Visibility::Private) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            for hit in result.memory_hits {
+                if merged.len() >= MAX_MEMORIES {
+                    break;
+                }
+                if !seen_ids.insert(hit.id.clone()) {
+                    continue; // dedup
+                }
+
+                let age = hit
+                    .created_at
+                    .as_deref()
+                    .and_then(|s| {
+                        s.parse::<DateTime<Utc>>()
+                            .ok()
+                            .or_else(|| {
+                                chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                                    .ok()
+                                    .map(|dt| dt.and_utc())
+                            })
+                    })
+                    .map(|ts| {
+                        ((now - ts).num_seconds().max(0) as f64 / max_age_secs).clamp(0.0, 1.0)
+                    })
+                    .unwrap_or(0.5);
+
+                let timestamp = hit
+                    .created_at
+                    .clone()
+                    .unwrap_or_else(|| now.to_rfc3339());
+
+                merged.push(GraphMemory {
+                    id: hit.id,
+                    key: Some(hit.key),
+                    text: hit.content,
+                    description: hit.description,
+                    ent: Vec::new(),
+                    age,
+                    weight: hit.signal_score.clamp(0.0, 1.0),
+                    timestamp,
+                });
+            }
+        }
+
+        merged
+    })
+    .await
+    .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?;
 
     Ok(Json(GraphResponse {
         self_node,
