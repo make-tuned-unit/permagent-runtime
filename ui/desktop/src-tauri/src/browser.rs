@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, WebviewBuilder, WebviewUrl};
 
 struct BrowserWebview {
@@ -171,4 +171,75 @@ pub async fn zoom_browser(
         .eval(&js)
         .map_err(|e| format!("Zoom failed: {e}"))?;
     Ok(())
+}
+
+const MAX_CONTENT_CHARS: usize = 16000;
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct PageContent {
+    pub title: String,
+    pub url: String,
+    pub content: String,
+    #[serde(default = "default_status")]
+    pub status: String,
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+fn default_status() -> String {
+    "ok".to_string()
+}
+
+#[tauri::command]
+pub async fn get_page_content(
+    app: AppHandle,
+    webview_id: String,
+) -> Result<PageContent, String> {
+    let webview = app
+        .get_webview(&webview_id)
+        .ok_or_else(|| "Webview not found".to_string())?;
+
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+
+    let js = r#"
+        (function() {
+            var title = document.title || '';
+            var url = location.href || '';
+            var content = document.body ? document.body.innerText : '';
+            return JSON.stringify({ title: title, url: url, content: content });
+        })()
+    "#;
+
+    webview
+        .eval_with_callback(js, move |result| {
+            let _ = tx.send(result);
+        })
+        .map_err(|e| format!("eval failed: {e}"))?;
+
+    let raw = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .map_err(|_| "Timed out waiting for page content".to_string())?;
+
+    // eval_with_callback JSON-serializes the JS return value, so the callback
+    // receives a double-encoded string. Unwrap one layer.
+    let json_str: String =
+        serde_json::from_str(&raw).unwrap_or_else(|_| raw.clone());
+    let mut page: PageContent =
+        serde_json::from_str(&json_str).map_err(|e| format!("Parse failed: {e}"))?;
+
+    if page.content.len() > MAX_CONTENT_CHARS {
+        // Truncate at nearest paragraph or sentence boundary within the last 500 chars
+        let search_start = MAX_CONTENT_CHARS.saturating_sub(500);
+        let cut_at = page.content[search_start..MAX_CONTENT_CHARS]
+            .rfind("\n\n")
+            .or_else(|| page.content[search_start..MAX_CONTENT_CHARS].rfind(". "))
+            .or_else(|| page.content[search_start..MAX_CONTENT_CHARS].rfind('\n'))
+            .map(|pos| search_start + pos)
+            .unwrap_or(MAX_CONTENT_CHARS);
+        page.content.truncate(cut_at);
+        page.content.push_str("\n\n[content truncated]");
+        page.truncated = true;
+    }
+
+    Ok(page)
 }

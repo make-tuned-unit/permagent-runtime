@@ -31,6 +31,7 @@ fn main() {
             browser::hide_browser,
             browser::close_browser,
             browser::zoom_browser,
+            browser::get_page_content,
             files::read_dropped_file,
             daemon::get_daemon_token,
             activity::emit_activity,

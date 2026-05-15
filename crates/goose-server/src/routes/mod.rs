@@ -4,6 +4,7 @@ pub mod agent;
 pub mod agents;
 pub mod attachments;
 pub mod brain;
+pub mod browser_content;
 pub mod config_management;
 pub mod dashboard;
 pub mod errors;
@@ -66,6 +67,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(workspaces::routes(state.clone()))
         .merge(attachments::routes(state.clone()))
         .merge(brain::routes(state.clone()))
+        .merge(browser_content::routes(state.clone()))
         .merge(dashboard::routes(state.clone()))
         .merge(identity::routes(state.clone()))
         .merge(workers::routes(state.clone()))

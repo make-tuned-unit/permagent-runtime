@@ -122,6 +122,8 @@ pub enum PermagentEventType {
     LibrarianDescribeToken,
     LibrarianDescribeRetry,
     LibrarianDescribeCompleted,
+    // Browser content extraction
+    BrowserContentRequested,
 }
 
 // ── Convenience constructors ────────────────────────────────────────────────
