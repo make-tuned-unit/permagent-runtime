@@ -1,16 +1,25 @@
-import { useEffect } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { COLORS } from './constants';
 import { Section, StatRow } from './HudShell';
 import { useIdentityStore } from '../../stores/identityStore';
+import { computePortalEligibility } from '../../utils/portalEligibility';
+import { SBT_CONTRACT } from '../../config/chain';
+
+// ── External link helper ─────────────────────────────────────────
+
+async function openExternal(url: string): Promise<void> {
+  try {
+    const { open } = await import('@tauri-apps/plugin-shell');
+    await open(url);
+  } catch {
+    window.open(url, '_blank', 'noopener');
+  }
+}
 
 // ── Helpers ──────────────────────────────────────────────────────
 
 function truncAddr(addr: string): string {
   return addr.slice(0, 6) + '...' + addr.slice(-4);
-}
-
-function daysAgo(iso: string): number {
-  return Math.floor((Date.now() - new Date(iso).getTime()) / (24 * 60 * 60 * 1000));
 }
 
 function formatDate(iso: string): string {
@@ -24,6 +33,20 @@ function relativeMinutes(date: Date | null): string {
   if (mins < 60) return `${mins}m ago`;
   const hrs = Math.floor(mins / 60);
   return `${hrs}h ago`;
+}
+
+// ── URLs ─────────────────────────────────────────────────────────
+
+function sbtUrl(tokenId: number): string {
+  return `https://basescan.org/nft/${SBT_CONTRACT}/${tokenId}`;
+}
+
+function passportUrl(tokenId: number): string {
+  return `https://www.8004scan.io/agents/base/${tokenId}`;
+}
+
+function arweaveUrl(txId: string): string {
+  return `https://arweave.net/${txId}`;
 }
 
 // ── Colors ───────────────────────────────────────────────────────
@@ -44,12 +67,16 @@ const CONNECTIVITY_COLORS: Record<string, string> = {
 // ── Component ────────────────────────────────────────────────────
 
 export function HenryIdentityTab() {
-  const { data: id, connectivity, lastSuccessfulFetch, startPolling, stopPolling } = useIdentityStore();
+  const { data: id, loading, connectivity, lastSuccessfulFetch, refresh, startPolling, stopPolling } = useIdentityStore();
 
   useEffect(() => {
     startPolling();
     return () => stopPolling();
   }, [startPolling, stopPolling]);
+
+  const handleRefresh = useCallback(() => {
+    if (!loading) refresh();
+  }, [loading, refresh]);
 
   // First launch — no cached data at all
   if (!id) {
@@ -62,7 +89,7 @@ export function HenryIdentityTab() {
     );
   }
 
-  const verifiedDaysAgo = id.lastVerifiedAt ? daysAgo(id.lastVerifiedAt) : null;
+  const eligibility = computePortalEligibility(id);
 
   return (
     <>
@@ -117,49 +144,52 @@ export function HenryIdentityTab() {
       <Section title="VERIFICATION" trimColor={IDENTITY_GREEN}>
         <StatRow label="Status" value={id.status.toUpperCase()} />
         <StatRow label="Soul" value={id.soulValid ? 'Valid' : 'Invalid'} />
-        <StatRow label="Last verified" value={verifiedDaysAgo != null ? `${verifiedDaysAgo}d ago` : 'N/A'} />
+        <StatRow label="Last verified" value={eligibility.verifiedDaysAgo != null ? `${eligibility.verifiedDaysAgo}d ago` : 'N/A'} />
         <StatRow label="Alignment" value={id.alignmentScore != null ? String(id.alignmentScore) : 'N/A'} />
       </Section>
 
       {/* ON-CHAIN */}
       <Section title="ON-CHAIN" trimColor={COLORS.neonAmber}>
-        <LinkRow label="SBT" value={`#${id.sbtId}`} />
-        <LinkRow label="Passport" value={`#${id.passportId}`} />
+        <LinkRow label="SBT" value={`#${id.sbtId}`} href={sbtUrl(id.sbtId)} />
+        <LinkRow label="Passport" value={`#${id.passportId}`} href={passportUrl(id.passportId)} />
         <LinkRow label="Chain" value="Base L2" />
-        <LinkRow label="Arweave" value={truncAddr(id.arweaveTxId)} />
+        <LinkRow label="Arweave" value={truncAddr(id.arweaveTxId)} href={arweaveUrl(id.arweaveTxId)} />
       </Section>
 
       {/* PORTAL READINESS */}
       <Section title="PORTAL READINESS" trimColor={COLORS.neonCyan}>
         <CheckRow
-          label="Soul sealed"
-          pass={id.soulValid}
-          detail={id.soulValid ? 'OK' : 'Required'}
+          label="Sealed"
+          pass={eligibility.sealed}
+          detail={eligibility.sealed ? 'OK' : 'Required'}
+        />
+        <CheckRow
+          label="Soul valid"
+          pass={eligibility.soulValid}
+          detail={eligibility.soulValid ? 'OK' : 'Required'}
         />
         <CheckRow
           label="Last verified"
-          pass={verifiedDaysAgo != null && verifiedDaysAgo < 30}
-          detail={verifiedDaysAgo != null ? `${verifiedDaysAgo}d ago (requires <30d)` : 'N/A (requires <30d)'}
-          warn={verifiedDaysAgo != null && verifiedDaysAgo >= 30}
-        />
-        <CheckRow
-          label="Chronicle count"
-          pass={id.chronicleCount >= 1}
-          detail={`${id.chronicleCount} (requires >= 1)`}
+          pass={eligibility.freshlyVerified}
+          detail={eligibility.verifiedDaysAgo != null ? `${eligibility.verifiedDaysAgo}d ago (requires <30d)` : 'N/A (requires <30d)'}
+          warn={eligibility.verifiedDaysAgo != null && !eligibility.freshlyVerified}
         />
         <CheckRow
           label="Bindings"
-          pass={id.bindingsCount >= 1}
+          pass={eligibility.hasBindings}
           detail={`${id.bindingsCount} (requires >= 1)`}
         />
+        {/* Overall status */}
         <div style={{
-          fontSize: 9,
-          color: MUTED,
-          marginTop: 6,
-          fontStyle: 'italic',
-          lineHeight: 1.4,
+          fontSize: 10,
+          fontWeight: 700,
+          letterSpacing: '0.06em',
+          marginTop: 8,
+          color: eligibility.ready ? CHECK_PASS : MUTED,
         }}>
-          Diagnostic only — verification actions coming soon
+          {eligibility.ready
+            ? 'READY'
+            : 'NOT READY — verification actions coming soon'}
         </div>
       </Section>
 
@@ -175,8 +205,15 @@ export function HenryIdentityTab() {
           ACTIONS
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <PlaceholderButton label="Verify Soul" />
-          <PlaceholderButton label="Sync Chain" />
+          <ActionButton
+            label={loading ? '[ Refreshing... ]' : '[ Refresh ]'}
+            disabled={loading}
+            onClick={handleRefresh}
+          />
+          <ActionButton
+            label="[ BaseScan ]"
+            onClick={() => openExternal(sbtUrl(id.sbtId))}
+          />
         </div>
       </div>
 
@@ -195,13 +232,42 @@ export function HenryIdentityTab() {
 
 // ── Sub-components ───────────────────────────────────────────────
 
-function LinkRow({ label, value }: { label: string; value: string }) {
+function LinkRow({ label, value, href }: { label: string; value: string; href?: string }) {
+  const [hovered, setHovered] = useState(false);
+  const clickable = !!href;
+
+  const handleClick = () => {
+    if (href) openExternal(href);
+  };
+
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, lineHeight: 1.6 }}>
+    <div
+      style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        fontSize: 11,
+        lineHeight: 1.6,
+        cursor: clickable ? 'pointer' : 'default',
+      }}
+      onClick={handleClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
       <span style={{ color: '#9CA3AF' }}>{label}</span>
-      <span style={{ color: COLORS.primaryMarble, fontWeight: 500 }}>
+      <span style={{
+        color: COLORS.primaryMarble,
+        fontWeight: 500,
+        textDecoration: clickable && hovered ? 'underline' : 'none',
+      }}>
         {value}
-        <span style={{ color: MUTED, marginLeft: 4, fontSize: 10 }}>↗</span>
+        {clickable && (
+          <span style={{
+            color: hovered ? COLORS.neonCyan : MUTED,
+            marginLeft: 4,
+            fontSize: 10,
+            transition: 'color 0.15s',
+          }}>↗</span>
+        )}
       </span>
     </div>
   );
@@ -226,22 +292,30 @@ function CheckRow({ label, pass, detail, warn }: {
   );
 }
 
-function PlaceholderButton({ label }: { label: string }) {
+function ActionButton({ label, disabled, onClick }: {
+  label: string;
+  disabled?: boolean;
+  onClick?: () => void;
+}) {
+  const [hovered, setHovered] = useState(false);
   return (
     <button
-      disabled
+      disabled={disabled}
+      onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{
         flex: 1,
         padding: '5px 0',
-        background: 'rgba(107, 114, 128, 0.1)',
-        border: '1px solid #4B556340',
-        borderRadius: 4,
-        color: '#4B5563',
+        background: 'none',
+        border: 'none',
+        color: disabled ? '#4B5563' : hovered ? COLORS.neonCyan : '#9CA3AF',
         fontSize: 10,
         fontWeight: 600,
         fontFamily: 'monospace',
         letterSpacing: '0.04em',
-        cursor: 'default',
+        cursor: disabled ? 'default' : 'pointer',
+        transition: 'color 0.15s',
       }}
     >
       {label}
