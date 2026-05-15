@@ -6998,6 +6998,7 @@ dependencies = [
  "reqwest 0.13.2",
  "rmcp",
  "rubato",
+ "rusqlite",
  "sacp",
  "schemars 1.2.1",
  "sec1",
