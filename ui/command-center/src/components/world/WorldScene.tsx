@@ -495,13 +495,13 @@ export function WorldSceneContent({
         castShadow
         shadow-mapSize-width={2048}
         shadow-mapSize-height={2048}
-        shadow-bias={-0.0002}
-        shadow-camera-near={0.5}
-        shadow-camera-far={60}
-        shadow-camera-left={-25}
-        shadow-camera-right={25}
-        shadow-camera-top={25}
-        shadow-camera-bottom={-25}
+        shadow-bias={-0.001}
+        shadow-camera-near={10}
+        shadow-camera-far={35}
+        shadow-camera-left={-18}
+        shadow-camera-right={18}
+        shadow-camera-top={18}
+        shadow-camera-bottom={-18}
       />
       {/* Cool fill light from opposite side — prevents pure black shadows */}
       <directionalLight
@@ -525,10 +525,10 @@ export function WorldSceneContent({
       {/* Contact shadows — soft dark blobs under characters and furniture */}
       <ContactShadows
         position={[0, 0.06, 0]}
-        opacity={0.6}
+        opacity={0.5}
         scale={40}
-        blur={2}
-        far={4}
+        blur={2.5}
+        far={2}
         resolution={512}
         color="#0A0E1A"
       />
