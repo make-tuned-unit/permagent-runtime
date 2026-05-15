@@ -181,7 +181,7 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
           gl={{
             antialias: true,
             toneMapping: THREE.ACESFilmicToneMapping,
-            toneMappingExposure: 1.1,
+            toneMappingExposure: 1.3,
             outputColorSpace: THREE.SRGBColorSpace,
           }}
           style={{ width: '100%', height: '100%' }}

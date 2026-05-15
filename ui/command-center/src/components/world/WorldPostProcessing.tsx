@@ -5,15 +5,15 @@ export function WorldPostProcessing() {
   return (
     <EffectComposer>
       <Bloom
-        intensity={0.6}
-        luminanceThreshold={0.85}
-        luminanceSmoothing={0.3}
-        kernelSize={KernelSize.MEDIUM}
+        intensity={0.8}
+        luminanceThreshold={0.4}
+        luminanceSmoothing={0.4}
+        kernelSize={KernelSize.LARGE}
       />
       <Noise
         premultiply
         blendFunction={BlendFunction.ADD}
-        opacity={0.15}
+        opacity={0.12}
       />
     </EffectComposer>
   );
