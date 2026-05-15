@@ -133,17 +133,25 @@ export function WorldCamera({ mode, selectedAgent, onModeChange, onMoveAgent }: 
       camera.lookAt(currentTarget);
 
       // "Diving in" fog pulse during transition
-      if (scene.fog && scene.fog instanceof THREE.Fog) {
+      if (scene.fog) {
         const fogPulse = Math.sin(progress * Math.PI);
-        scene.fog.near = 30 - fogPulse * 20;
-        scene.fog.far = 150 - fogPulse * 80;
+        if (scene.fog instanceof THREE.Fog) {
+          scene.fog.near = 30 - fogPulse * 20;
+          scene.fog.far = 150 - fogPulse * 80;
+        } else if (scene.fog instanceof THREE.FogExp2) {
+          scene.fog.density = 0.012 + fogPulse * 0.008;
+        }
       }
 
       if (progress >= 1) {
         transitionRef.current = { ...t, active: false };
-        if (scene.fog && scene.fog instanceof THREE.Fog) {
-          scene.fog.near = 30;
-          scene.fog.far = 150;
+        if (scene.fog) {
+          if (scene.fog instanceof THREE.Fog) {
+            scene.fog.near = 30;
+            scene.fog.far = 150;
+          } else if (scene.fog instanceof THREE.FogExp2) {
+            scene.fog.density = 0.012;
+          }
         }
       }
       return;

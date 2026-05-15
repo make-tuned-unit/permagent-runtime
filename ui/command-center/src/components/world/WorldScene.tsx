@@ -453,8 +453,8 @@ export function WorldSceneContent({
       <LightShaft />
       <DustMotes />
 
-      {/* Fog */}
-      <fog attach="fog" args={[COLORS.deepVoid, 20, 120]} />
+      {/* Depth atmosphere — exponential fog for natural falloff */}
+      <fogExp2 attach="fog" args={[COLORS.deepVoid, 0.012]} />
     </>
   );
 }
