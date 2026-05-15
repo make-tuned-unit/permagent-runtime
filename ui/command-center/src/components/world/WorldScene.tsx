@@ -486,12 +486,22 @@ export function WorldSceneContent({
     <>
       {/* Lighting — low ambient lets neon accents read as emissive */}
       <ambientLight intensity={0.08} color="#B8C4D8" />
-      {/* Warm key light from above-and-to-the-side — directional lighting only,
-         shadow mapping disabled (ContactShadows handles ground contact) */}
+      {/* Warm key light from above-and-to-the-side with soft shadows */}
       <directionalLight
         position={[12, DOME_HEIGHT + 8, 8]}
         intensity={1.6}
         color="#FFF0D4"
+        castShadow
+        shadow-mapSize-width={2048}
+        shadow-mapSize-height={2048}
+        shadow-radius={4}
+        shadow-bias={-0.0005}
+        shadow-camera-near={18}
+        shadow-camera-far={38}
+        shadow-camera-left={-20}
+        shadow-camera-right={20}
+        shadow-camera-top={20}
+        shadow-camera-bottom={-20}
       />
       {/* Cool fill light from opposite side — prevents pure black shadows */}
       <directionalLight

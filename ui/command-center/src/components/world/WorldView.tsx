@@ -171,6 +171,7 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
     <div ref={containerRef} style={{ width: '100%', height: '100%', position: 'relative', background: COLORS.deepVoid }}>
       <Suspense fallback={<LoadingShimmer />}>
         <Canvas
+          shadows="soft"
           camera={{
             position: [20, 15, 20],
             fov: 50,
