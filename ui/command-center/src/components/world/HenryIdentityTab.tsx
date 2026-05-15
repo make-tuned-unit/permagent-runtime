@@ -1,24 +1,7 @@
+import { useEffect } from 'react';
 import { COLORS } from './constants';
 import { Section, StatRow } from './HudShell';
-
-// ── Mock IdentityState ───────────────────────────────────────────
-
-const MOCK_IDENTITY = {
-  did: 'did:chitin:henry-malcolm',
-  name: 'Hank',
-  avatarUrl: 'https://arweave.net/Y-PzbKKdNBzsaNO5lD-U2lHUDEuW0psyXabWQLLHk7M',
-  status: 'sealed' as const,
-  soulValid: true,
-  lastVerifiedAt: new Date(Date.now() - 46 * 24 * 60 * 60 * 1000).toISOString(),
-  alignmentScore: null as number | null,
-  chronicleCount: 0,
-  bindingsCount: 0,
-  sbtId: 54,
-  passportId: 38105,
-  owner: '0x95Ab1B24f8c0C70E59687f742C79F97a9277996f',
-  arweaveTxId: '0OzCHA2MiK2aEhIq7GJ16xUc4QXKdOZFreGByaXiAxI',
-  bornAt: '2026-03-30T17:12:00Z',
-};
+import { useIdentityStore } from '../../stores/identityStore';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -34,6 +17,15 @@ function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+function relativeMinutes(date: Date | null): string {
+  if (!date) return 'never';
+  const mins = Math.floor((Date.now() - date.getTime()) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  return `${hrs}h ago`;
+}
+
 // ── Colors ───────────────────────────────────────────────────────
 
 const IDENTITY_GREEN = '#4ADE80';
@@ -43,24 +35,59 @@ const CHECK_FAIL = '#EF4444';
 const CHECK_WARN = COLORS.neonAmber;
 const MUTED = '#6B7280';
 
+const CONNECTIVITY_COLORS: Record<string, string> = {
+  ok: '#4ADE80',
+  degraded: COLORS.neonAmber,
+  offline: '#EF4444',
+};
+
 // ── Component ────────────────────────────────────────────────────
 
 export function HenryIdentityTab() {
-  const id = MOCK_IDENTITY;
-  const verifiedDaysAgo = daysAgo(id.lastVerifiedAt);
+  const { data: id, connectivity, lastSuccessfulFetch, startPolling, stopPolling } = useIdentityStore();
+
+  useEffect(() => {
+    startPolling();
+    return () => stopPolling();
+  }, [startPolling, stopPolling]);
+
+  // First launch — no cached data at all
+  if (!id) {
+    return (
+      <div style={{ padding: '20px 14px', textAlign: 'center' }}>
+        <div style={{ fontSize: 11, color: MUTED, lineHeight: 1.6 }}>
+          Awaiting first verification
+        </div>
+      </div>
+    );
+  }
+
+  const verifiedDaysAgo = id.lastVerifiedAt ? daysAgo(id.lastVerifiedAt) : null;
 
   return (
     <>
-      {/* Header row: avatar + name + SEALED pill */}
+      {/* Header row: avatar + name + status pill + connectivity indicator */}
       <div style={{ padding: '8px 14px 4px', display: 'flex', alignItems: 'center', gap: 10 }}>
         <img
           src={id.avatarUrl}
           alt={id.name}
           style={{ width: 36, height: 36, borderRadius: 6, border: `1px solid ${IDENTITY_GREEN}40` }}
         />
-        <div>
-          <div style={{ fontSize: 14, fontWeight: 600, color: COLORS.primaryMarble }}>
-            {id.name}
+        <div style={{ flex: 1 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: 14, fontWeight: 600, color: COLORS.primaryMarble }}>
+              {id.name}
+            </span>
+            {connectivity !== 'ok' && (
+              <span style={{
+                width: 6,
+                height: 6,
+                borderRadius: '50%',
+                background: CONNECTIVITY_COLORS[connectivity],
+                display: 'inline-block',
+                flexShrink: 0,
+              }} title={`Chain: ${connectivity}`} />
+            )}
           </div>
           <div style={{
             display: 'inline-block',
@@ -90,7 +117,7 @@ export function HenryIdentityTab() {
       <Section title="VERIFICATION" trimColor={IDENTITY_GREEN}>
         <StatRow label="Status" value={id.status.toUpperCase()} />
         <StatRow label="Soul" value={id.soulValid ? 'Valid' : 'Invalid'} />
-        <StatRow label="Last verified" value={`${verifiedDaysAgo}d ago`} />
+        <StatRow label="Last verified" value={verifiedDaysAgo != null ? `${verifiedDaysAgo}d ago` : 'N/A'} />
         <StatRow label="Alignment" value={id.alignmentScore != null ? String(id.alignmentScore) : 'N/A'} />
       </Section>
 
@@ -98,7 +125,7 @@ export function HenryIdentityTab() {
       <Section title="ON-CHAIN" trimColor={COLORS.neonAmber}>
         <LinkRow label="SBT" value={`#${id.sbtId}`} />
         <LinkRow label="Passport" value={`#${id.passportId}`} />
-        <LinkRow label="Chain" value="Chitin L2" />
+        <LinkRow label="Chain" value="Base L2" />
         <LinkRow label="Arweave" value={truncAddr(id.arweaveTxId)} />
       </Section>
 
@@ -111,9 +138,9 @@ export function HenryIdentityTab() {
         />
         <CheckRow
           label="Last verified"
-          pass={verifiedDaysAgo < 30}
-          detail={`${verifiedDaysAgo}d ago (requires <30d)`}
-          warn={verifiedDaysAgo >= 30}
+          pass={verifiedDaysAgo != null && verifiedDaysAgo < 30}
+          detail={verifiedDaysAgo != null ? `${verifiedDaysAgo}d ago (requires <30d)` : 'N/A (requires <30d)'}
+          warn={verifiedDaysAgo != null && verifiedDaysAgo >= 30}
         />
         <CheckRow
           label="Chronicle count"
@@ -151,6 +178,16 @@ export function HenryIdentityTab() {
           <PlaceholderButton label="Verify Soul" />
           <PlaceholderButton label="Sync Chain" />
         </div>
+      </div>
+
+      {/* Footer: last refreshed */}
+      <div style={{
+        padding: '4px 14px 8px',
+        fontSize: 9,
+        color: '#4B5563',
+        textAlign: 'right',
+      }}>
+        Last refreshed: {relativeMinutes(lastSuccessfulFetch)}
       </div>
     </>
   );
