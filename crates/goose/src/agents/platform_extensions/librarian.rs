@@ -447,6 +447,37 @@ pub async fn describe_one(
         .map_err(|e| format!("spawn_blocking failed: {}", e))?
         .map_err(|e| format!("Failed to write description: {}", e))?;
 
+    // 4b. Annotate the memory with entity refs from the description
+    {
+        let desc_for_annotate = description.clone();
+        let mid_for_annotate = memory_id.to_string();
+        let created_at = memory
+            .created_at
+            .as_deref()
+            .and_then(|s| {
+                s.parse::<chrono::DateTime<chrono::Utc>>()
+                    .ok()
+                    .or_else(|| {
+                        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                            .ok()
+                            .map(|dt| dt.and_utc())
+                    })
+            })
+            .unwrap_or_else(chrono::Utc::now);
+
+        // Run annotation in spawn_blocking since it opens SQLite
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Err(e) = annotate_memory(&desc_for_annotate, &mid_for_annotate, created_at) {
+                tracing::warn!(
+                    memory_id = %mid_for_annotate,
+                    error = %e,
+                    "Failed to annotate memory, continuing"
+                );
+            }
+        })
+        .await;
+    }
+
     // 5. All state updates + event emission together (after DB write succeeds)
     let latency_ms = start.elapsed().as_millis();
     let duration_secs = start.elapsed().as_secs_f64();
@@ -700,6 +731,230 @@ async fn call_ollama_streaming(
     }
 
     Ok(accumulated)
+}
+
+// ---------------------------------------------------------------------------
+// Entity annotation pipeline — extracts terms/categories from Librarian
+// descriptions and writes them to the memory_annotations table.
+// ---------------------------------------------------------------------------
+
+/// Parse "Related terms:" and "Categories:" from a Librarian description,
+/// build EntityRef structs, and write an annotation row to SQLite.
+///
+/// This writes directly to the memory_annotations table because the
+/// `spectral::Brain` wrapper does not expose the inner `annotate()` method.
+/// The table schema and serialization format match spectral-ingest exactly.
+pub fn annotate_memory(
+    description: &str,
+    memory_id: &str,
+    created_at: chrono::DateTime<chrono::Utc>,
+) -> Result<usize> {
+    // 1. Parse terms from the structured description
+    let mut entity_refs: Vec<spectral::ingest::EntityRef> = Vec::new();
+
+    // Extract "Related terms: ..." segment
+    if let Some(after_terms) = description.split("Related terms:").nth(1) {
+        let terms_str = after_terms.split('.').next().unwrap_or("");
+        for term in terms_str.split(',') {
+            let t = term.trim();
+            if !t.is_empty() {
+                entity_refs.push(spectral::ingest::EntityRef {
+                    canonical_id: format!("term:{}", t.to_lowercase()),
+                    display_name: t.to_string(),
+                });
+            }
+        }
+    }
+
+    // Extract "Categories: ..." segment
+    if let Some(after_cats) = description.split("Categories:").nth(1) {
+        let cats_str = after_cats.split('.').next().unwrap_or("");
+        for cat in cats_str.split(',') {
+            let c = cat.trim();
+            if !c.is_empty() {
+                entity_refs.push(spectral::ingest::EntityRef {
+                    canonical_id: format!("cat:{}", c.to_lowercase()),
+                    display_name: c.to_string(),
+                });
+            }
+        }
+    }
+
+    if entity_refs.is_empty() {
+        tracing::debug!(memory_id = %memory_id, "No terms/categories found in description, skipping annotation");
+        return Ok(0);
+    }
+
+    // 2. Write to SQLite directly (idempotent on memory_id + description + when_)
+    let db_path = crate::config::paths::Paths::brain_dir().join("memory.db");
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+
+    let when_rfc = created_at.to_rfc3339();
+
+    // Idempotency check: skip if identical annotation exists
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT id FROM memory_annotations WHERE memory_id = ?1 AND description = ?2 AND when_ = ?3",
+            rusqlite::params![memory_id, description, when_rfc],
+            |row| row.get(0),
+        )
+        .ok();
+
+    if existing.is_some() {
+        tracing::debug!(memory_id = %memory_id, "Annotation already exists, skipping");
+        return Ok(0);
+    }
+
+    // Generate annotation ID (matches spectral's blake3-based scheme)
+    let now = chrono::Utc::now();
+    let id = format!(
+        "ann-{:016x}",
+        u64::from_be_bytes(
+            blake3::hash(
+                format!("{}-{}", memory_id, now.timestamp_nanos_opt().unwrap_or(0)).as_bytes()
+            )
+            .as_bytes()[..8]
+                .try_into()
+                .unwrap()
+        )
+    );
+
+    let who_json = serde_json::to_string(&entity_refs)?;
+    conn.execute(
+        "INSERT INTO memory_annotations (id, memory_id, description, who, why, where_, when_, how, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        rusqlite::params![
+            id,
+            memory_id,
+            description,
+            who_json,
+            "",        // why
+            None::<String>,  // where_
+            when_rfc,
+            "",        // how
+            now.to_rfc3339(),
+        ],
+    )?;
+
+    tracing::debug!(
+        memory_id = %memory_id,
+        entity_count = entity_refs.len(),
+        "Annotation written"
+    );
+
+    Ok(entity_refs.len())
+}
+
+/// Backfill annotations for all described memories that lack annotations.
+/// Returns the number of memories annotated.
+///
+/// This is designed to run once at startup when the annotation table is
+/// empty or significantly behind the described memory count. Subsequent
+/// annotations happen inline in describe_one().
+pub fn backfill_annotations() -> Result<usize> {
+    let db_path = crate::config::paths::Paths::brain_dir().join("memory.db");
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+
+    // Count described memories vs annotations
+    let described_count: usize = conn.query_row(
+        "SELECT COUNT(*) FROM memories WHERE description IS NOT NULL AND description LIKE '%Related terms:%'",
+        [],
+        |r| r.get(0),
+    )?;
+    let annotation_count: usize = conn.query_row(
+        "SELECT COUNT(*) FROM memory_annotations",
+        [],
+        |r| r.get(0),
+    )?;
+
+    // Only backfill if annotations are significantly behind
+    if annotation_count >= described_count.saturating_sub(5) {
+        tracing::info!(
+            described = described_count,
+            annotations = annotation_count,
+            "Annotation backfill not needed"
+        );
+        return Ok(0);
+    }
+
+    tracing::info!(
+        described = described_count,
+        annotations = annotation_count,
+        gap = described_count.saturating_sub(annotation_count),
+        "Starting annotation backfill"
+    );
+
+    // Fetch all described memories that need annotations
+    // LEFT JOIN to exclude memories that already have annotations
+    let mut stmt = conn.prepare(
+        "SELECT m.id, m.description, m.created_at FROM memories m \
+         LEFT JOIN memory_annotations a ON a.memory_id = m.id \
+         WHERE m.description IS NOT NULL \
+           AND m.description LIKE '%Related terms:%' \
+           AND a.id IS NULL \
+         ORDER BY m.created_at DESC",
+    )?;
+
+    let rows: Vec<(String, String, Option<String>)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    drop(stmt);
+    drop(conn);
+
+    let total = rows.len();
+    let mut annotated = 0;
+
+    for (i, (mem_id, description, created_at_str)) in rows.iter().enumerate() {
+        let created_at = created_at_str
+            .as_deref()
+            .and_then(|s| {
+                s.parse::<chrono::DateTime<chrono::Utc>>()
+                    .ok()
+                    .or_else(|| {
+                        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                            .ok()
+                            .map(|dt| dt.and_utc())
+                    })
+            })
+            .unwrap_or_else(chrono::Utc::now);
+
+        match annotate_memory(description, mem_id, created_at) {
+            Ok(n) if n > 0 => annotated += 1,
+            Ok(_) => {} // no terms found, skip
+            Err(e) => {
+                tracing::warn!(memory_id = %mem_id, error = %e, "Annotation backfill failed for memory, skipping");
+            }
+        }
+
+        if (i + 1) % 100 == 0 {
+            tracing::info!(
+                progress = format!("{}/{}", i + 1, total),
+                annotated = annotated,
+                "Annotation backfill progress"
+            );
+        }
+    }
+
+    tracing::info!(
+        total_processed = total,
+        annotated = annotated,
+        "Annotation backfill complete"
+    );
+
+    Ok(annotated)
 }
 
 // ---------------------------------------------------------------------------

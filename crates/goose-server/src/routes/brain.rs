@@ -321,7 +321,7 @@ async fn brain_graph(
     let search_q = params.q.as_deref().unwrap_or("").trim().to_string();
     let persona_name = self_node.name.clone();
 
-    let memories = tokio::task::spawn_blocking(move || -> Vec<GraphMemory> {
+    let mut memories = tokio::task::spawn_blocking(move || -> Vec<GraphMemory> {
         // Build seed queries: explicit search term OR multi-seed for diversity
         let seeds: Vec<String> = if !search_q.is_empty() {
             vec![search_q]
@@ -393,6 +393,67 @@ async fn brain_graph(
     })
     .await
     .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?;
+
+    // Populate entity links from memory_annotations table
+    if !memories.is_empty() {
+        let memory_ids: Vec<String> = memories.iter().map(|m| m.id.clone()).collect();
+        let annotation_map = tokio::task::spawn_blocking(move || -> std::collections::HashMap<String, Vec<String>> {
+            let db_path = permagent::config::paths::Paths::brain_dir().join("memory.db");
+            let conn = match rusqlite::Connection::open_with_flags(
+                &db_path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            ) {
+                Ok(c) => c,
+                Err(_) => return std::collections::HashMap::new(),
+            };
+
+            let placeholders: Vec<String> = (1..=memory_ids.len()).map(|i| format!("?{}", i)).collect();
+            let sql = format!(
+                "SELECT memory_id, who FROM memory_annotations WHERE memory_id IN ({})",
+                placeholders.join(", ")
+            );
+
+            let mut stmt = match conn.prepare(&sql) {
+                Ok(s) => s,
+                Err(_) => return std::collections::HashMap::new(),
+            };
+
+            let params: Vec<&dyn rusqlite::types::ToSql> = memory_ids
+                .iter()
+                .map(|id| id as &dyn rusqlite::types::ToSql)
+                .collect();
+
+            let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+
+            if let Ok(rows) = stmt.query_map(params.as_slice(), |row| {
+                let memory_id: String = row.get(0)?;
+                let who_json: String = row.get(1)?;
+                Ok((memory_id, who_json))
+            }) {
+                for row_result in rows {
+                    if let Ok((mem_id, who_json)) = row_result {
+                        if let Ok(refs) = serde_json::from_str::<Vec<serde_json::Value>>(&who_json) {
+                            let ent_ids: Vec<String> = refs
+                                .iter()
+                                .filter_map(|r| r.get("canonical_id").and_then(|v| v.as_str()).map(String::from))
+                                .collect();
+                            map.entry(mem_id).or_default().extend(ent_ids);
+                        }
+                    }
+                }
+            }
+
+            map
+        })
+        .await
+        .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?;
+
+        for mem in &mut memories {
+            if let Some(ents) = annotation_map.get(&mem.id) {
+                mem.ent.clone_from(ents);
+            }
+        }
+    }
 
     Ok(Json(GraphResponse {
         self_node,
