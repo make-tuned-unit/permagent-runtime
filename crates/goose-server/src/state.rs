@@ -359,6 +359,32 @@ impl AppState {
         self.agent_manager.session_manager()
     }
 
+    /// Build a RecognitionContext for recall_cascade from current runtime state.
+    ///
+    /// Populates: now (Utc::now), persona ("henry"), session_id (if provided),
+    /// focus_wing (from active project, if any).
+    pub fn build_recognition_context(
+        &self,
+        session_id: Option<&str>,
+    ) -> spectral::graph::RecognitionContext {
+        let focus_wing = self
+            .activity_ingester
+            .as_ref()
+            .and_then(|ing| ing.active_project())
+            .map(|ap| ap.wing);
+
+        let mut ctx = spectral::graph::RecognitionContext::empty()
+            .with_persona("henry");
+
+        if let Some(sid) = session_id {
+            ctx = ctx.with_session(sid);
+        }
+        if let Some(wing) = focus_wing {
+            ctx = ctx.with_focus_wing(wing);
+        }
+        ctx
+    }
+
     pub async fn set_recipe_file_hash_map(&self, hash_map: HashMap<String, PathBuf>) {
         let mut map = self.recipe_file_hash_map.lock().await;
         *map = hash_map;

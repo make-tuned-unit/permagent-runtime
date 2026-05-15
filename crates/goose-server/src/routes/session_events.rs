@@ -565,15 +565,16 @@ pub async fn session_reply(
             if !user_query.is_empty() {
                 let brain = brain.clone();
                 let query = user_query.clone();
+                let recognition_ctx = task_state.build_recognition_context(Some(&task_session_id));
                 let recall_result = tokio::task::spawn_blocking(move || {
-                    brain.recall(&query, spectral::Visibility::Private)
+                    brain.recall_cascade(&query, &recognition_ctx, &Default::default())
                 })
                 .await;
 
                 match recall_result {
                     Ok(Ok(result)) => {
                         let top_hits: Vec<_> = result
-                            .memory_hits
+                            .merged_hits
                             .iter()
                             .filter(|hit| hit.signal_score >= RECALL_SCORE_FLOOR)
                             .take(RECALL_TOP_K)
