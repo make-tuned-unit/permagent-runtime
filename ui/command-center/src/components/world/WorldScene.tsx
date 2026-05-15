@@ -35,26 +35,34 @@ function RotundaFloor() {
 }
 
 function FloorCircuits() {
-  const ref = useRef<THREE.Group>(null);
+  const ringRefs = useRef<(THREE.Mesh | null)[]>([]);
+  const lineRefs = useRef<(THREE.Mesh | null)[]>([]);
 
+  const radii = useMemo(() => [3, 6, 9, 12], []);
+  const maxRadius = 12;
+
+  // Distance-based falloff: inner rings bright, outer rings dimmer
   useFrame(() => {
-    if (ref.current) {
-      ref.current.children.forEach((child, i) => {
-        if (child instanceof THREE.Mesh) {
-          const mat = child.material as THREE.MeshBasicMaterial;
-          mat.opacity = 0.3 + 0.2 * Math.sin(performance.now() * 0.001 + i * 0.5);
-        }
-      });
-    }
+    ringRefs.current.forEach((mesh, i) => {
+      if (!mesh) return;
+      const mat = mesh.material as THREE.MeshBasicMaterial;
+      const distanceFade = 1 - (radii[i] / maxRadius) * 0.6; // outer rings fade to 40% of inner
+      mat.opacity = distanceFade * (0.35 + 0.2 * Math.sin(performance.now() * 0.001 + i * 0.5));
+    });
+    lineRefs.current.forEach((mesh, i) => {
+      if (!mesh) return;
+      const mat = mesh.material as THREE.MeshBasicMaterial;
+      // Radial lines: subtle pulse, moderate falloff
+      mat.opacity = 0.2 + 0.1 * Math.sin(performance.now() * 0.0008 + i * 0.7);
+    });
   });
 
   const rings = useMemo(() => {
-    const radii = [3, 6, 9, 12];
     return radii.map((r) => {
       const geo = new THREE.TorusGeometry(r, 0.03, 4, 64);
       return { geo, r };
     });
-  }, []);
+  }, [radii]);
 
   const lineAngles = useMemo(() => {
     const count = 8;
@@ -63,20 +71,21 @@ function FloorCircuits() {
 
   // Use thin 3D torus rings + box beams raised well above floor to avoid z-fighting
   return (
-    <group ref={ref} position-y={0.12}>
+    <group position-y={0.12}>
       {rings.map(({ geo }, i) => (
-        <mesh key={`ring-${i}`} rotation-x={-Math.PI / 2} geometry={geo}>
+        <mesh key={`ring-${i}`} ref={(el) => { ringRefs.current[i] = el; }} rotation-x={-Math.PI / 2} geometry={geo}>
           <meshBasicMaterial color={COLORS.neonCyan} transparent opacity={0.4} depthWrite={false} />
         </mesh>
       ))}
       {lineAngles.map((angle, i) => (
         <mesh
           key={`line-${i}`}
+          ref={(el) => { lineRefs.current[i] = el; }}
           position={[Math.cos(angle) * 6, 0, Math.sin(angle) * 6]}
           rotation={[0, -angle + Math.PI / 2, 0]}
         >
           <boxGeometry args={[12, 0.06, 0.04]} />
-          <meshBasicMaterial color={COLORS.neonCyan} transparent opacity={0.3} depthWrite={false} />
+          <meshBasicMaterial color={COLORS.neonCyan} transparent opacity={0.25} depthWrite={false} />
         </mesh>
       ))}
     </group>
