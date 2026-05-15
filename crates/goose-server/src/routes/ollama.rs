@@ -403,17 +403,7 @@ async fn warm_and_run(schedule: &LibrarianSchedule, keep_alive_secs: u64) -> Res
 
     tracing::info!(model = %schedule.model, keep_alive = keep_alive_secs, "Librarian model warm-loaded");
 
-    // Self-healing annotation backfill: if memory_annotations is significantly
-    // behind described memories, backfill before running the describe batch.
-    // This runs once (first startup after this feature ships) then becomes a no-op.
-    let _ = tokio::task::spawn_blocking(|| {
-        match permagent::agents::platform_extensions::librarian::backfill_annotations() {
-            Ok(n) if n > 0 => tracing::info!(annotated = n, "Annotation backfill completed"),
-            Ok(_) => {}
-            Err(e) => tracing::warn!(error = %e, "Annotation backfill failed, continuing"),
-        }
-    })
-    .await;
+    // Annotation backfill runs at daemon startup (state.rs), not here.
 
     let result =
         permagent::agents::platform_extensions::librarian::run_batch(&brain, 20, &schedule.model)

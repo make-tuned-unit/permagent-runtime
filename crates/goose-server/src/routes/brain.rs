@@ -317,43 +317,89 @@ async fn brain_graph(
     .await
     .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?;
 
-    // --- Memories: recall-seeded for diversity, capped at MAX_MEMORIES ---
+    // --- Memories ---
     let search_q = params.q.as_deref().unwrap_or("").trim().to_string();
-    let persona_name = self_node.name.clone();
 
-    let mut memories = tokio::task::spawn_blocking(move || -> Vec<GraphMemory> {
-        // Build seed queries: explicit search term OR multi-seed for diversity
-        let seeds: Vec<String> = if !search_q.is_empty() {
-            vec![search_q]
-        } else {
-            vec![
-                persona_name,
-                "recent work".to_string(),
-                "project".to_string(),
-                "conversation".to_string(),
-            ]
-        };
-
-        // Recall with each seed and merge hits, dedup by memory ID
-        let mut seen_ids = std::collections::HashSet::new();
-        let mut merged: Vec<GraphMemory> = Vec::new();
-
-        for seed in &seeds {
-            if merged.len() >= MAX_MEMORIES {
-                break;
-            }
-            let result = match brain.recall(seed, spectral::Visibility::Private) {
-                Ok(r) => r,
-                Err(_) => continue,
+    let mut memories = if search_q.is_empty() {
+        // DEFAULT VIEW: top 100 by entity connection richness, recency tiebreak.
+        // Direct SQL — shows "what does this Brain know best?"
+        tokio::task::spawn_blocking(move || -> Vec<GraphMemory> {
+            let db_path = permagent::config::paths::Paths::brain_dir().join("memory.db");
+            let conn = match rusqlite::Connection::open_with_flags(
+                &db_path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            ) {
+                Ok(c) => c,
+                Err(_) => return Vec::new(),
             };
-            for hit in result.memory_hits {
-                if merged.len() >= MAX_MEMORIES {
-                    break;
+            let mut stmt = match conn.prepare(
+                "SELECT m.id, m.key, m.content, m.description, m.signal_score, m.created_at, \
+                        COUNT(a.id) as entity_count \
+                 FROM memories m \
+                 LEFT JOIN memory_annotations a ON a.memory_id = m.id \
+                 WHERE m.description IS NOT NULL \
+                 GROUP BY m.id \
+                 ORDER BY entity_count DESC, m.created_at DESC \
+                 LIMIT ?1",
+            ) {
+                Ok(s) => s,
+                Err(_) => return Vec::new(),
+            };
+            let rows = stmt
+                .query_map(rusqlite::params![MAX_MEMORIES], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, f64>(4).unwrap_or(0.0),
+                        row.get::<_, Option<String>>(5)?,
+                    ))
+                })
+                .ok();
+            let mut result = Vec::new();
+            if let Some(rows) = rows {
+                for row in rows.flatten() {
+                    let (id, key, content, description, signal_score, created_at_str) = row;
+                    let age = created_at_str
+                        .as_deref()
+                        .and_then(|s| {
+                            s.parse::<DateTime<Utc>>()
+                                .ok()
+                                .or_else(|| {
+                                    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                                        .ok()
+                                        .map(|dt| dt.and_utc())
+                                })
+                        })
+                        .map(|ts| ((now - ts).num_seconds().max(0) as f64 / max_age_secs).clamp(0.0, 1.0))
+                        .unwrap_or(0.5);
+                    let timestamp = created_at_str.unwrap_or_else(|| now.to_rfc3339());
+                    result.push(GraphMemory {
+                        id,
+                        key,
+                        text: content,
+                        description,
+                        ent: Vec::new(),
+                        age,
+                        weight: signal_score.clamp(0.0, 1.0),
+                        timestamp,
+                    });
                 }
-                if !seen_ids.insert(hit.id.clone()) {
-                    continue; // dedup
-                }
-
+            }
+            result
+        })
+        .await
+        .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?
+    } else {
+        // SEARCH VIEW: semantic recall for the query neighborhood
+        tokio::task::spawn_blocking(move || -> Vec<GraphMemory> {
+            let result = match brain.recall(&search_q, spectral::Visibility::Private) {
+                Ok(r) => r,
+                Err(_) => return Vec::new(),
+            };
+            let mut memories = Vec::new();
+            for hit in result.memory_hits.into_iter().take(MAX_MEMORIES) {
                 let age = hit
                     .created_at
                     .as_deref()
@@ -366,17 +412,10 @@ async fn brain_graph(
                                     .map(|dt| dt.and_utc())
                             })
                     })
-                    .map(|ts| {
-                        ((now - ts).num_seconds().max(0) as f64 / max_age_secs).clamp(0.0, 1.0)
-                    })
+                    .map(|ts| ((now - ts).num_seconds().max(0) as f64 / max_age_secs).clamp(0.0, 1.0))
                     .unwrap_or(0.5);
-
-                let timestamp = hit
-                    .created_at
-                    .clone()
-                    .unwrap_or_else(|| now.to_rfc3339());
-
-                merged.push(GraphMemory {
+                let timestamp = hit.created_at.clone().unwrap_or_else(|| now.to_rfc3339());
+                memories.push(GraphMemory {
                     id: hit.id,
                     key: Some(hit.key),
                     text: hit.content,
@@ -387,12 +426,11 @@ async fn brain_graph(
                     timestamp,
                 });
             }
-        }
-
-        merged
-    })
-    .await
-    .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?;
+            memories
+        })
+        .await
+        .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?
+    };
 
     // Populate entity links from memory_annotations table
     if !memories.is_empty() {
