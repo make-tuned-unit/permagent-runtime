@@ -188,8 +188,26 @@ export class BrainScene {
     this.animate();
   }
 
+  private lastDataKey = '';
+
   // ── Data ─────────────────────────────────────────────────────────────
   setData(data: BrainGraph) {
+    // Diff: skip full rebuild if the node set hasn't changed
+    const memIds = data.memories.map(m => m.id).sort().join(',');
+    const entIds = data.entities.map(e => e.id).sort().join(',');
+    const dataKey = `${memIds}|${entIds}`;
+    if (dataKey === this.lastDataKey && this.nodes.length > 0) {
+      return; // same data, skip rebuild — simulation continues undisturbed
+    }
+
+    // Preserve existing positions for nodes that survive the rebuild
+    const oldPositions = new Map<string, THREE.Vector3>();
+    for (const n of this.nodes) {
+      oldPositions.set(n.id, n.pos.clone());
+    }
+
+    this.lastDataKey = dataKey;
+
     // Clear old meshes
     for (const n of this.nodes) this.scene.remove(n.mesh);
     if (this.edgeLines) { this.scene.remove(this.edgeLines); this.edgeLines = null; }
@@ -230,9 +248,14 @@ export class BrainScene {
         roughness: 0.15, transparent: true, opacity: 0.95,
       });
       const mesh = new THREE.Mesh(geo, mat);
-      const angle = Math.random() * Math.PI * 2;
-      const r = 6 + Math.random() * 8;
-      mesh.position.set(Math.cos(angle) * r, (Math.random() - 0.5) * 4, Math.sin(angle) * r);
+      const oldPos = oldPositions.get(ent.id);
+      if (oldPos) {
+        mesh.position.copy(oldPos);
+      } else {
+        const angle = Math.random() * Math.PI * 2;
+        const r = 6 + Math.random() * 8;
+        mesh.position.set(Math.cos(angle) * r, (Math.random() - 0.5) * 4, Math.sin(angle) * r);
+      }
       this.scene.add(mesh);
       const node: SimNode = {
         id: ent.id, kind, label: ent.name, note: ent.note,
@@ -245,7 +268,7 @@ export class BrainScene {
 
     // Memories
     for (const mem of data.memories) {
-      const radius = 0.14 + mem.weight * 0.16;
+      const radius = 0.28 + mem.weight * 0.18;
       const col = MEM_FRESH.clone().lerp(MEM_STALE, mem.age);
       const geo = new THREE.SphereGeometry(radius, 14, 12);
       const mat = new THREE.MeshPhysicalMaterial({
@@ -253,9 +276,14 @@ export class BrainScene {
         roughness: 0.25, transparent: true, opacity: 0.92,
       });
       const mesh = new THREE.Mesh(geo, mat);
-      const angle = Math.random() * Math.PI * 2;
-      const r = 3 + Math.random() * 6;
-      mesh.position.set(Math.cos(angle) * r, (Math.random() - 0.5) * 3, Math.sin(angle) * r);
+      const oldPos = oldPositions.get(mem.id);
+      if (oldPos) {
+        mesh.position.copy(oldPos);
+      } else {
+        const angle = Math.random() * Math.PI * 2;
+        const r = 3 + Math.random() * 6;
+        mesh.position.set(Math.cos(angle) * r, (Math.random() - 0.5) * 3, Math.sin(angle) * r);
+      }
       this.scene.add(mesh);
       const node: SimNode = {
         id: mem.id, kind: 'memory', label: mem.text.slice(0, 60), note: mem.text,
@@ -265,12 +293,22 @@ export class BrainScene {
       this.nodes.push(node);
 
       // Connect to associated entities or self
+      let linked = false;
       if (mem.ent.length > 0) {
         for (const eId of mem.ent) {
-          const target = this.nodes.find(n => n.id === eId);
-          if (target) this.edges.push({ a: node, b: target, kind: 'memory', k: 0.12, rest: 2.4, weight: mem.weight });
+          // Match by ID, or by canonical name (ent contains "term:foo" / "cat:bar",
+          // entity nodes have "e:hex" IDs but their label matches the term)
+          const termName = eId.replace(/^(term|cat):/, '').toLowerCase();
+          const target = this.nodes.find(n =>
+            n.id === eId || (n.kind !== 'self' && n.kind !== 'memory' && n.label.toLowerCase() === termName)
+          );
+          if (target) {
+            this.edges.push({ a: node, b: target, kind: 'memory', k: 0.12, rest: 2.4, weight: mem.weight });
+            linked = true;
+          }
         }
-      } else {
+      }
+      if (!linked) {
         this.edges.push({ a: node, b: selfNode, kind: 'memory', k: 0.10, rest: 5.0, weight: mem.weight });
       }
     }
@@ -492,7 +530,7 @@ export class BrainScene {
         if (node && node !== this.hoveredNode) {
           if (this.hoveredNode) this.hoveredNode.mesh.scale.setScalar(1);
           this.hoveredNode = node;
-          node.mesh.scale.setScalar(1.25);
+          node.mesh.scale.setScalar(1.6);
           this.renderer.domElement.style.cursor = 'pointer';
           this.callbacks.onHover({ id: node.id, kind: node.kind, label: node.label, note: node.note, x: e.clientX, y: e.clientY });
         }
