@@ -28,7 +28,7 @@ use spectral::ingest::CompactionTier;
 use spectral::{Brain, DeviceId, RememberOpts, Visibility};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 /// Tracks the user's currently-active project for wing classification.
 #[derive(Clone, Debug, serde::Serialize)]
@@ -38,6 +38,127 @@ pub struct ActiveProject {
     pub wing: String,
 }
 
+/// Hard-block patterns for ad/tracking domains in content.
+const AD_TRACKING_PATTERNS: &[&str] = &[
+    "doubleclick",
+    "crwdcntrl",
+    "recaptcha",
+    "ogs.google.com",
+    "googleads",
+    "adtrafficquality",
+    "/ads/",
+    "/tracking/",
+];
+
+/// Determine whether an activity event should be ingested into Brain.
+///
+/// Returns `false` for:
+/// - content containing "about:blank"
+/// - content matching ad/tracking patterns
+/// - chat_turn_completed events (token-count noise)
+/// - very short browser_navigated content (< 20 chars)
+fn should_ingest_activity(content: &str, activity_type: &str) -> bool {
+    // about:blank
+    if content.contains("about:blank") {
+        debug!(
+            target: "permagent::activity::filter",
+            activity_type = %activity_type,
+            "Rejected: about:blank"
+        );
+        return false;
+    }
+
+    // Ad/tracking patterns
+    let content_lower = content.to_lowercase();
+    for pattern in AD_TRACKING_PATTERNS {
+        if content_lower.contains(pattern) {
+            debug!(
+                target: "permagent::activity::filter",
+                activity_type = %activity_type,
+                pattern = %pattern,
+                "Rejected: ad/tracking pattern"
+            );
+            return false;
+        }
+    }
+
+    // chat_turn_completed is pure noise (token counts)
+    if activity_type == "chat_turn_completed" {
+        debug!(
+            target: "permagent::activity::filter",
+            "Rejected: chat_turn_completed"
+        );
+        return false;
+    }
+
+    // Very short browser_navigated content
+    if activity_type == "browser_navigated" && content.len() < 20 {
+        debug!(
+            target: "permagent::activity::filter",
+            content_len = content.len(),
+            "Rejected: browser_navigated too short"
+        );
+        return false;
+    }
+
+    true
+}
+
+/// Extract domain from rendered browser_navigated content.
+///
+/// Content format: "Navigated to <title> (<url>) in tab <id>."
+/// We extract the domain from the URL between parentheses.
+fn extract_domain_from_content(content: &str) -> Option<String> {
+    // Find URL in parentheses: "(<url>)"
+    let start = content.find("(http")?;
+    let url_start = start + 1;
+    let end = content[url_start..].find(')')? + url_start;
+    let url = &content[url_start..end];
+
+    // Extract domain: skip scheme, take until '/' or end
+    let after_scheme = if let Some(pos) = url.find("://") {
+        &url[pos + 3..]
+    } else {
+        return None;
+    };
+
+    let domain_end = after_scheme.find('/').unwrap_or(after_scheme.len());
+    let domain = &after_scheme[..domain_end];
+
+    if domain.is_empty() {
+        None
+    } else {
+        Some(domain.to_lowercase())
+    }
+}
+
+/// Check if a memory with the same domain was ingested within the last 24 hours.
+/// Uses direct SQLite query against the Brain's memory.db.
+fn domain_seen_recently(domain: &str) -> bool {
+    let db_path = crate::config::paths::Paths::brain_dir().join("memory.db");
+    let conn = match rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    let pattern = format!("%{}%", domain);
+    let count: usize = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memories \
+             WHERE key LIKE 'activity:%browser_navigated%' \
+               AND content LIKE ?1 \
+               AND created_at > datetime('now', '-24 hours')",
+            rusqlite::params![pattern],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+
+    count > 0
+}
+
 pub struct ActivityIngester {
     brain: Arc<Brain>,
     device_id: DeviceId,
@@ -45,6 +166,10 @@ pub struct ActivityIngester {
     always_count: AtomicU64,
     aggregated_count: AtomicU64,
     ephemeral_count: AtomicU64,
+    /// Events rejected by the ingest filter (noise, ad/tracking, etc.)
+    filtered_count: AtomicU64,
+    /// Events deduplicated by domain within the 24h window.
+    deduped_count: AtomicU64,
     last_ingested_at: Mutex<Option<chrono::DateTime<chrono::Utc>>>,
     aggregation_queue: Mutex<Vec<String>>,
     /// The user's currently-active project. Set when ProjectSelected events
@@ -65,6 +190,8 @@ impl ActivityIngester {
             always_count: AtomicU64::new(0),
             aggregated_count: AtomicU64::new(0),
             ephemeral_count: AtomicU64::new(0),
+            filtered_count: AtomicU64::new(0),
+            deduped_count: AtomicU64::new(0),
             last_ingested_at: Mutex::new(None),
             aggregation_queue: Mutex::new(Vec::new()),
             active_project: RwLock::new(None),
@@ -150,6 +277,27 @@ impl ActivityIngester {
         let source_surface = format!("{:?}", event.source_surface).to_lowercase();
         let is_aggregated = event.tier == EventTier::Aggregated;
 
+        // ── Ingest filter: reject noise before writing to Brain ──
+        if !should_ingest_activity(&content, &event_type_name) {
+            self.filtered_count.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+
+        // ── Domain dedup: skip browser_navigated if same domain seen in last 24h ──
+        if event.event_type == ActivityEventType::BrowserNavigated {
+            if let Some(domain) = extract_domain_from_content(&content) {
+                if domain_seen_recently(&domain) {
+                    debug!(
+                        target: "permagent::activity::filter",
+                        domain = %domain,
+                        "Rejected: domain seen within 24h"
+                    );
+                    self.deduped_count.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+            }
+        }
+
         let wing_override: Option<String> = self
             .active_project
             .read()
@@ -208,6 +356,14 @@ impl ActivityIngester {
 
     pub fn ephemeral_count(&self) -> u64 {
         self.ephemeral_count.load(Ordering::Relaxed)
+    }
+
+    pub fn filtered_count(&self) -> u64 {
+        self.filtered_count.load(Ordering::Relaxed)
+    }
+
+    pub fn deduped_count(&self) -> u64 {
+        self.deduped_count.load(Ordering::Relaxed)
     }
 
     pub fn aggregation_queue_size(&self) -> usize {
@@ -426,6 +582,25 @@ mod tests {
         }
     }
 
+    fn make_terminal_event() -> ActivityEvent {
+        ActivityEvent {
+            event_id: uuid::Uuid::new_v4().to_string(),
+            event_type: ActivityEventType::TerminalCommandCompleted,
+            source_surface: SourceSurface::Terminal,
+            timestamp: chrono::Utc::now(),
+            session_id: Some("s1".into()),
+            project_id: None,
+            payload: serde_json::json!({
+                "command": "cargo build",
+                "working_directory": "/home/user/project",
+                "exit_code": 0,
+                "duration_ms": 5000,
+                "stdout_summary": "Compiling...",
+            }),
+            tier: EventTier::Always,
+        }
+    }
+
     fn make_project_selected(project_id: &str, project_name: &str) -> ActivityEvent {
         ActivityEvent {
             event_id: uuid::Uuid::new_v4().to_string(),
@@ -545,15 +720,15 @@ mod tests {
         // Set active project
         ingester.handle_event(&make_project_selected("project:permagent", "Permagent"));
 
-        // Trigger an Always-tier ingestion
-        ingester.handle_event(&make_always_event());
+        // Trigger an Always-tier ingestion with a terminal command (not filtered)
+        ingester.handle_event(&make_terminal_event());
 
         // The active project should still be set (ingestion didn't clear it)
         let ap = ingester.active_project().expect("should still be set");
         assert_eq!(ap.wing, "permagent");
         // wing_override is computed and passed to RememberOpts.wing inside
         // ingest_to_brain — Brain writes get wing: Some("permagent").
-        assert_eq!(ingester.always_count(), 2); // ProjectSelected + ChatTurnCompleted
+        assert_eq!(ingester.always_count(), 2); // ProjectSelected + TerminalCommandCompleted
     }
 
     // ── Brain write tests ──
@@ -562,7 +737,8 @@ mod tests {
     fn always_event_ingested_to_brain() {
         let brain = build_test_brain();
         let ingester = ActivityIngester::new(brain, "test-device".into());
-        ingester.handle_event(&make_always_event());
+        // Use a terminal command event (not filtered, unlike ChatTurnCompleted)
+        ingester.handle_event(&make_terminal_event());
         assert_eq!(ingester.always_count(), 1);
         assert_eq!(ingester.failure_count(), 0);
         assert!(ingester.last_ingested_at().is_some());
@@ -625,11 +801,12 @@ mod tests {
                 .expect("test brain"),
         );
         let ingester = ActivityIngester::new(brain, "test-device".into());
-        ingester.handle_event(&make_always_event());
+        // Use terminal event (not filtered, unlike ChatTurnCompleted)
+        ingester.handle_event(&make_terminal_event());
         assert_eq!(ingester.always_count(), 1);
         assert_eq!(ingester.failure_count(), 0);
         let _ = std::fs::remove_dir_all(&brain_path);
-        ingester.handle_event(&make_always_event());
+        ingester.handle_event(&make_terminal_event());
         assert_eq!(ingester.always_count(), 2, "both events should be counted");
     }
 
@@ -666,5 +843,82 @@ mod tests {
         let content = render_content(&event);
         assert!(content.contains("Example"));
         assert!(content.contains("https://example.com"));
+    }
+
+    // ── ingest filter tests ──
+
+    #[test]
+    fn filter_blocks_about_blank() {
+        assert!(!should_ingest_activity("Navigated to about:blank", "browser_navigated"));
+    }
+
+    #[test]
+    fn filter_blocks_ad_tracking() {
+        assert!(!should_ingest_activity("Navigated to Ad (https://doubleclick.net/ad) in tab t1.", "browser_navigated"));
+        assert!(!should_ingest_activity("Navigated to X (https://crwdcntrl.net/px) in tab t1.", "browser_navigated"));
+        assert!(!should_ingest_activity("Navigated to reCAPTCHA in tab t1.", "browser_navigated"));
+        assert!(!should_ingest_activity("Navigated to (https://ogs.google.com/u/0) in tab t1.", "browser_navigated"));
+        assert!(!should_ingest_activity("Navigated to (https://googleads.g.doubleclick.net) in tab t1.", "browser_navigated"));
+        assert!(!should_ingest_activity("Navigated to (https://www.google.com/ads/foo) in tab t1.", "browser_navigated"));
+        assert!(!should_ingest_activity("Navigated to (https://example.com/tracking/pixel) in tab t1.", "browser_navigated"));
+    }
+
+    #[test]
+    fn filter_blocks_chat_turn_completed() {
+        assert!(!should_ingest_activity(
+            "Chat turn completed in 500ms (100 input tokens, 50 output tokens).",
+            "chat_turn_completed"
+        ));
+    }
+
+    #[test]
+    fn filter_blocks_short_browser_navigated() {
+        assert!(!should_ingest_activity("Nav to x.", "browser_navigated"));
+    }
+
+    #[test]
+    fn filter_allows_normal_navigation() {
+        assert!(should_ingest_activity(
+            "Navigated to GitHub (https://github.com/permagent) in tab t1.",
+            "browser_navigated"
+        ));
+    }
+
+    #[test]
+    fn filter_allows_terminal_command() {
+        assert!(should_ingest_activity(
+            "Ran 'cargo build' in /home/user/project. Exit code 0, took 5000ms. Output: ''.",
+            "terminal_command_completed"
+        ));
+    }
+
+    // ── domain extraction tests ──
+
+    #[test]
+    fn extract_domain_from_navigation_content() {
+        let content = "Navigated to GitHub (https://github.com/permagent) in tab t1.";
+        assert_eq!(extract_domain_from_content(content), Some("github.com".to_string()));
+    }
+
+    #[test]
+    fn extract_domain_with_path() {
+        let content = "Navigated to Gmail (https://mail.google.com/mail/u/0) in tab t1.";
+        assert_eq!(extract_domain_from_content(content), Some("mail.google.com".to_string()));
+    }
+
+    #[test]
+    fn extract_domain_no_url() {
+        let content = "Navigated to local page in tab t1.";
+        assert_eq!(extract_domain_from_content(content), None);
+    }
+
+    #[test]
+    fn chat_turn_completed_filtered_by_ingester() {
+        let brain = build_test_brain();
+        let ingester = ActivityIngester::new(brain, "test-device".into());
+        ingester.handle_event(&make_always_event()); // ChatTurnCompleted
+        assert_eq!(ingester.always_count(), 1);
+        assert_eq!(ingester.filtered_count(), 1); // should be filtered
+        assert!(ingester.last_ingested_at().is_none()); // never actually ingested
     }
 }
