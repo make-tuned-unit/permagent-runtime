@@ -1,0 +1,324 @@
+import { useEffect, useState, useCallback } from 'react';
+import { COLORS } from './constants';
+import { Section, StatRow } from './HudShell';
+import { useIdentityStore } from '../../stores/identityStore';
+import { computePortalEligibility } from '../../utils/portalEligibility';
+import { SBT_CONTRACT } from '../../config/chain';
+
+// ── External link helper ─────────────────────────────────────────
+
+async function openExternal(url: string): Promise<void> {
+  try {
+    const { open } = await import('@tauri-apps/plugin-shell');
+    await open(url);
+  } catch {
+    window.open(url, '_blank', 'noopener');
+  }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────
+
+function truncAddr(addr: string): string {
+  return addr.slice(0, 6) + '...' + addr.slice(-4);
+}
+
+function formatDate(iso: string): string {
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function relativeMinutes(date: Date | null): string {
+  if (!date) return 'never';
+  const mins = Math.floor((Date.now() - date.getTime()) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  return `${hrs}h ago`;
+}
+
+// ── URLs ─────────────────────────────────────────────────────────
+
+function sbtUrl(tokenId: number): string {
+  return `https://basescan.org/nft/${SBT_CONTRACT}/${tokenId}`;
+}
+
+function passportUrl(tokenId: number): string {
+  return `https://www.8004scan.io/agents/base/${tokenId}`;
+}
+
+function arweaveUrl(txId: string): string {
+  return `https://arweave.net/${txId}`;
+}
+
+// ── Colors ───────────────────────────────────────────────────────
+
+const IDENTITY_GREEN = '#4ADE80';
+const SEALED_PILL = { bg: 'rgba(74, 222, 128, 0.12)', text: IDENTITY_GREEN, border: '#22C55E' };
+const CHECK_PASS = '#4ADE80';
+const CHECK_FAIL = '#EF4444';
+const CHECK_WARN = COLORS.neonAmber;
+const MUTED = '#6B7280';
+
+const CONNECTIVITY_COLORS: Record<string, string> = {
+  ok: '#4ADE80',
+  degraded: COLORS.neonAmber,
+  offline: '#EF4444',
+};
+
+// ── Component ────────────────────────────────────────────────────
+
+export function HenryIdentityTab() {
+  const { data: id, loading, connectivity, lastSuccessfulFetch, refresh, startPolling, stopPolling } = useIdentityStore();
+
+  useEffect(() => {
+    startPolling();
+    return () => stopPolling();
+  }, [startPolling, stopPolling]);
+
+  const handleRefresh = useCallback(() => {
+    if (!loading) refresh();
+  }, [loading, refresh]);
+
+  // First launch — no cached data at all
+  if (!id) {
+    return (
+      <div style={{ padding: '20px 14px', textAlign: 'center' }}>
+        <div style={{ fontSize: 11, color: MUTED, lineHeight: 1.6 }}>
+          Awaiting first verification
+        </div>
+      </div>
+    );
+  }
+
+  const eligibility = computePortalEligibility(id);
+
+  return (
+    <>
+      {/* Header row: avatar + name + status pill + connectivity indicator */}
+      <div style={{ padding: '8px 14px 4px', display: 'flex', alignItems: 'center', gap: 10 }}>
+        <img
+          src={id.avatarUrl}
+          alt={id.name}
+          style={{ width: 36, height: 36, borderRadius: 6, border: `1px solid ${IDENTITY_GREEN}40` }}
+        />
+        <div style={{ flex: 1 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: 14, fontWeight: 600, color: COLORS.primaryMarble }}>
+              {id.name}
+            </span>
+            {connectivity !== 'ok' && (
+              <span style={{
+                width: 6,
+                height: 6,
+                borderRadius: '50%',
+                background: CONNECTIVITY_COLORS[connectivity],
+                display: 'inline-block',
+                flexShrink: 0,
+              }} title={`Chain: ${connectivity}`} />
+            )}
+          </div>
+          <div style={{
+            display: 'inline-block',
+            padding: '1px 8px',
+            borderRadius: 3,
+            fontSize: 9,
+            fontWeight: 700,
+            letterSpacing: '0.08em',
+            background: SEALED_PILL.bg,
+            color: SEALED_PILL.text,
+            border: `1px solid ${SEALED_PILL.border}`,
+            marginTop: 2,
+          }}>
+            {id.status.toUpperCase()}
+          </div>
+        </div>
+      </div>
+
+      {/* SOUL */}
+      <Section title="SOUL" trimColor={IDENTITY_GREEN}>
+        <StatRow label="DID" value={id.did} />
+        <StatRow label="Born" value={formatDate(id.bornAt)} />
+        <StatRow label="Owner" value={truncAddr(id.owner)} />
+      </Section>
+
+      {/* VERIFICATION */}
+      <Section title="VERIFICATION" trimColor={IDENTITY_GREEN}>
+        <StatRow label="Status" value={id.status.toUpperCase()} />
+        <StatRow label="Soul" value={id.soulValid ? 'Valid' : 'Invalid'} />
+        <StatRow label="Last verified" value={eligibility.verifiedDaysAgo != null ? `${eligibility.verifiedDaysAgo}d ago` : 'N/A'} />
+        <StatRow label="Alignment" value={id.alignmentScore != null ? String(id.alignmentScore) : 'N/A'} />
+      </Section>
+
+      {/* ON-CHAIN */}
+      <Section title="ON-CHAIN" trimColor={COLORS.neonAmber}>
+        <LinkRow label="SBT" value={`#${id.sbtId}`} href={sbtUrl(id.sbtId)} />
+        <LinkRow label="Passport" value={`#${id.passportId}`} href={passportUrl(id.passportId)} />
+        <LinkRow label="Chain" value="Base L2" />
+        <LinkRow label="Arweave" value={truncAddr(id.arweaveTxId)} href={arweaveUrl(id.arweaveTxId)} />
+      </Section>
+
+      {/* PORTAL READINESS */}
+      <Section title="PORTAL READINESS" trimColor={COLORS.neonCyan}>
+        <CheckRow
+          label="Sealed"
+          pass={eligibility.sealed}
+          detail={eligibility.sealed ? 'OK' : 'Required'}
+        />
+        <CheckRow
+          label="Soul valid"
+          pass={eligibility.soulValid}
+          detail={eligibility.soulValid ? 'OK' : 'Required'}
+        />
+        <CheckRow
+          label="Last verified"
+          pass={eligibility.freshlyVerified}
+          detail={eligibility.verifiedDaysAgo != null ? `${eligibility.verifiedDaysAgo}d ago (requires <30d)` : 'N/A (requires <30d)'}
+          warn={eligibility.verifiedDaysAgo != null && !eligibility.freshlyVerified}
+        />
+        <CheckRow
+          label="Bindings"
+          pass={eligibility.hasBindings}
+          detail={`${id.bindingsCount} (requires >= 1)`}
+        />
+        {/* Overall status */}
+        <div style={{
+          fontSize: 10,
+          fontWeight: 700,
+          letterSpacing: '0.06em',
+          marginTop: 8,
+          color: eligibility.ready ? CHECK_PASS : MUTED,
+        }}>
+          {eligibility.ready
+            ? 'READY'
+            : 'NOT READY — verification actions coming soon'}
+        </div>
+      </Section>
+
+      {/* ACTIONS */}
+      <div style={{ padding: '4px 14px 12px' }}>
+        <div style={{
+          fontSize: 10,
+          fontWeight: 700,
+          letterSpacing: '0.1em',
+          color: MUTED,
+          marginBottom: 6,
+        }}>
+          ACTIONS
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <ActionButton
+            label={loading ? '[ Refreshing... ]' : '[ Refresh ]'}
+            disabled={loading}
+            onClick={handleRefresh}
+          />
+          <ActionButton
+            label="[ BaseScan ]"
+            onClick={() => openExternal(sbtUrl(id.sbtId))}
+          />
+        </div>
+      </div>
+
+      {/* Footer: last refreshed */}
+      <div style={{
+        padding: '4px 14px 8px',
+        fontSize: 9,
+        color: '#4B5563',
+        textAlign: 'right',
+      }}>
+        Last refreshed: {relativeMinutes(lastSuccessfulFetch)}
+      </div>
+    </>
+  );
+}
+
+// ── Sub-components ───────────────────────────────────────────────
+
+function LinkRow({ label, value, href }: { label: string; value: string; href?: string }) {
+  const [hovered, setHovered] = useState(false);
+  const clickable = !!href;
+
+  const handleClick = () => {
+    if (href) openExternal(href);
+  };
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        fontSize: 11,
+        lineHeight: 1.6,
+        cursor: clickable ? 'pointer' : 'default',
+      }}
+      onClick={handleClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <span style={{ color: '#9CA3AF' }}>{label}</span>
+      <span style={{
+        color: COLORS.primaryMarble,
+        fontWeight: 500,
+        textDecoration: clickable && hovered ? 'underline' : 'none',
+      }}>
+        {value}
+        {clickable && (
+          <span style={{
+            color: hovered ? COLORS.neonCyan : MUTED,
+            marginLeft: 4,
+            fontSize: 10,
+            transition: 'color 0.15s',
+          }}>↗</span>
+        )}
+      </span>
+    </div>
+  );
+}
+
+function CheckRow({ label, pass, detail, warn }: {
+  label: string;
+  pass: boolean;
+  detail: string;
+  warn?: boolean;
+}) {
+  const icon = pass ? '✓' : '✗';
+  const color = pass ? CHECK_PASS : warn ? CHECK_WARN : CHECK_FAIL;
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, lineHeight: 1.6 }}>
+      <span style={{ color: '#9CA3AF' }}>
+        <span style={{ color, marginRight: 4 }}>{icon}</span>
+        {label}
+      </span>
+      <span style={{ color: MUTED, fontSize: 10, fontWeight: 400 }}>{detail}</span>
+    </div>
+  );
+}
+
+function ActionButton({ label, disabled, onClick }: {
+  label: string;
+  disabled?: boolean;
+  onClick?: () => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <button
+      disabled={disabled}
+      onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        flex: 1,
+        padding: '5px 0',
+        background: 'none',
+        border: 'none',
+        color: disabled ? '#4B5563' : hovered ? COLORS.neonCyan : '#9CA3AF',
+        fontSize: 10,
+        fontWeight: 600,
+        fontFamily: 'monospace',
+        letterSpacing: '0.04em',
+        cursor: disabled ? 'default' : 'pointer',
+        transition: 'color 0.15s',
+      }}
+    >
+      {label}
+    </button>
+  );
+}
