@@ -160,6 +160,34 @@ impl AppState {
             }
         });
 
+        // Brain cleanup: prune noise memories, then consolidate redundant clusters.
+        // Runs after annotation backfill at daemon startup.
+        tokio::task::spawn(async {
+            // Phase 1: prune pure noise
+            let prune_result = tokio::task::spawn_blocking(|| {
+                permagent::activity::cleanup::prune_noise_memories()
+            })
+            .await;
+            match prune_result {
+                Ok(Ok(n)) if n > 0 => tracing::info!(pruned = n, "Noise memory prune completed"),
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => tracing::warn!(error = %e, "Noise memory prune failed"),
+                Err(e) => tracing::warn!(error = %e, "Noise memory prune task panicked"),
+            }
+
+            // Phase 2: consolidate browser navigation clusters
+            let consolidate_result = tokio::task::spawn_blocking(|| {
+                permagent::activity::cleanup::consolidate_clusters()
+            })
+            .await;
+            match consolidate_result {
+                Ok(Ok(n)) if n > 0 => tracing::info!(consolidated = n, "Cluster consolidation completed"),
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => tracing::warn!(error = %e, "Cluster consolidation failed"),
+                Err(e) => tracing::warn!(error = %e, "Cluster consolidation task panicked"),
+            }
+        });
+
         // Load agent config (primary + workers) from ~/.permagent/agent.yaml
         let agent_config = permagent::config::agent_identity::load_shared_agent_config();
         let persona = {
