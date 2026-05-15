@@ -2,6 +2,7 @@ import { useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { COLORS } from './constants';
+import { StargatePortal } from './Stargate';
 
 // Shared materials
 function useMarbleMat() {
@@ -314,7 +315,8 @@ function ObservatoryArea() {
 // === FORUM PORTAL AREA (West, x=-10) ===
 // Lounge with couches, low table, the portal gateway
 
-function PortalGateway({ position }: { position: [number, number, number] }) {
+// Legacy portal — kept for reference, replaced by StargatePortal
+export function PortalGateway({ position }: { position: [number, number, number] }) {
   const ref = useRef<THREE.Mesh>(null);
 
   useFrame(() => {
@@ -356,14 +358,14 @@ function PortalGateway({ position }: { position: [number, number, number] }) {
 function ForumArea() {
   return (
     <group position={[-10, 0, 0]} rotation-y={Math.PI / 2}>
-      {/* Portal archway */}
-      <PortalGateway position={[0, 0, -2]} />
+      {/* Stargate portal */}
+      <StargatePortal position={[0, 0, -3]} />
       {/* Semicircle of couches facing portal */}
-      <Couch position={[-3, 0, 1.5]} rotation={-0.4} />
-      <Couch position={[0, 0, 2.5]} rotation={0} />
-      <Couch position={[3, 0, 1.5]} rotation={0.4} />
+      <Couch position={[-3, 0, 3]} rotation={-0.4} />
+      <Couch position={[0, 0, 4]} rotation={0} />
+      <Couch position={[3, 0, 3]} rotation={0.4} />
       {/* Low central table */}
-      <LowTable position={[0, 0, 1.5]} />
+      <LowTable position={[0, 0, 3]} />
     </group>
   );
 }
