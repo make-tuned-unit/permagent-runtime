@@ -1019,15 +1019,18 @@ async fn execute_job(
     if let Some(ref brain_handle) = brain {
         let brain_clone = brain_handle.clone();
         let query = prompt_text.to_string();
+        let recognition_ctx = spectral::graph::RecognitionContext::empty()
+            .with_persona("henry")
+            .with_session(session.id.clone());
         let recall_result = tokio::task::spawn_blocking(move || {
-            brain_clone.recall(&query, spectral::Visibility::Private)
+            brain_clone.recall_cascade(&query, &recognition_ctx, &Default::default())
         })
         .await;
 
         match recall_result {
             Ok(Ok(result)) => {
                 let top_hits: Vec<_> = result
-                    .memory_hits
+                    .merged_hits
                     .iter()
                     .filter(|hit| hit.signal_score >= RECALL_SCORE_FLOOR)
                     .take(RECALL_TOP_K)

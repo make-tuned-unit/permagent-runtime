@@ -6,7 +6,7 @@
 //! probed memories from Brain recognition, and optionally recalled memories.
 
 use crate::events::activity::{ActivityEvent, ActivityEventType};
-use spectral::{Brain, ProbeOpts, ProbeWindow, RecognizedMemory, Visibility};
+use spectral::{Brain, ProbeOpts, ProbeWindow, RecognizedMemory};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -152,9 +152,11 @@ impl ContextBuilder {
         let recalled_memories = if let Some(ref query) = opts.include_recall_query {
             let brain = self.brain.clone();
             let q = query.clone();
-            match brain.recall(&q, Visibility::Private) {
+            let recognition_ctx = spectral::graph::RecognitionContext::empty()
+                .with_persona("henry");
+            match brain.recall_cascade(&q, &recognition_ctx, &Default::default()) {
                 Ok(result) => result
-                    .memory_hits
+                    .merged_hits
                     .into_iter()
                     .map(|hit| RecalledMemory {
                         content: hit.content,
