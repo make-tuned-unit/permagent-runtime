@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { COLORS } from './constants';
 import { api, getApiBaseUrl } from '../../lib/api';
+import { HudShell, Section, StatRow } from './HudShell';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -67,7 +68,6 @@ function useLibrarianTokenStream(active: boolean): StreamState {
           currentKeyRef.current = event.payload?.memory_key ?? null;
           setState({ tokens: '', retrying: false, lastQuality: null });
         } else if (eventType === 'LibrarianDescribeRetry') {
-          // Clear token buffer, show retry indicator
           setState((prev) => ({ ...prev, tokens: '', retrying: true }));
         } else if (eventType === 'LibrarianDescribeToken') {
           const key = event.payload?.memory_key;
@@ -149,19 +149,6 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
     return () => { cancelled = true; clearInterval(id); };
   }, [visible]);
 
-  // ESC to close — capture phase so it fires before the camera's bubble listener
-  useEffect(() => {
-    if (!visible) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopImmediatePropagation();
-        onClose();
-      }
-    };
-    window.addEventListener('keydown', handler, true);
-    return () => window.removeEventListener('keydown', handler, true);
-  }, [visible, onClose]);
-
   const handleRunNow = useCallback(async () => {
     if (runningNow) return;
     setRunningNow(true);
@@ -181,30 +168,32 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
   const { lifetime_stats: lt, session_stats: ss, schedule } = status;
   const descPct = lt.total_memories > 0 ? Math.round((lt.described / lt.total_memories) * 100) : 0;
 
-  return (
-    <div style={panelStyle} onClick={(e) => e.stopPropagation()}>
-      {/* Header */}
-      <div style={headerStyle}>
-        <span style={{ fontWeight: 600, letterSpacing: '0.05em' }}>THE LIBRARIAN</span>
-        <button onClick={onClose} style={closeBtnStyle} title="Close (ESC)">✕</button>
-      </div>
+  const statusPill = (
+    <div style={{
+      display: 'inline-block',
+      padding: '2px 8px',
+      borderRadius: 3,
+      fontSize: 9,
+      fontWeight: 700,
+      letterSpacing: '0.08em',
+      background: colors.bg,
+      color: colors.text,
+      border: `1px solid ${colors.border}`,
+    }}>
+      {phaseName(phase)}
+    </div>
+  );
 
-      {/* Phase badge */}
-      <div style={{ padding: '8px 14px' }}>
-        <div style={{
-          display: 'inline-block',
-          padding: '2px 10px',
-          borderRadius: 3,
-          fontSize: 11,
-          fontWeight: 700,
-          letterSpacing: '0.08em',
-          background: colors.bg,
-          color: colors.text,
-          border: `1px solid ${colors.border}`,
-        }}>
-          {phaseName(phase)}
-        </div>
-        <span style={{ marginLeft: 10, fontSize: 11, color: '#9CA3AF' }}>
+  return (
+    <HudShell
+      visible={visible}
+      onClose={onClose}
+      title="THE LIBRARIAN"
+      statusPill={statusPill}
+    >
+      {/* Phase task description */}
+      <div style={{ padding: '4px 14px 8px' }}>
+        <span style={{ fontSize: 11, color: '#9CA3AF' }}>
           {status.current_task}
         </span>
       </div>
@@ -309,82 +298,11 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
           {runningNow ? 'Starting…' : 'Run Now'}
         </button>
       </div>
-    </div>
-  );
-}
-
-// ── Sub-components ───────────────────────────────────────────────────
-
-function Section({ title, trimColor, children }: {
-  title: string;
-  trimColor: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div style={{ padding: '0 14px 8px' }}>
-      <div style={{
-        fontSize: 10,
-        fontWeight: 700,
-        letterSpacing: '0.1em',
-        color: trimColor,
-        borderBottom: `1px solid ${trimColor}30`,
-        paddingBottom: 3,
-        marginBottom: 6,
-      }}>
-        {title}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function StatRow({ label, value }: { label: string; value: string | number }) {
-  return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, lineHeight: 1.6 }}>
-      <span style={{ color: '#9CA3AF' }}>{label}</span>
-      <span style={{ color: COLORS.primaryMarble, fontWeight: 500 }}>{String(value)}</span>
-    </div>
+    </HudShell>
   );
 }
 
 // ── Styles ───────────────────────────────────────────────────────────
-
-const panelStyle: React.CSSProperties = {
-  position: 'absolute',
-  top: 16,
-  left: 16,
-  width: 300,
-  background: 'rgba(10, 14, 26, 0.88)',
-  backdropFilter: 'blur(12px)',
-  border: `1px solid ${COLORS.marbleVeining}25`,
-  borderRadius: 8,
-  fontFamily: 'monospace',
-  color: COLORS.primaryMarble,
-  zIndex: 20,
-  pointerEvents: 'auto',
-  overflow: 'hidden',
-};
-
-const headerStyle: React.CSSProperties = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  padding: '10px 14px 6px',
-  fontSize: 13,
-  color: COLORS.primaryMarble,
-  borderBottom: `1px solid ${COLORS.marbleVeining}20`,
-  marginBottom: 4,
-};
-
-const closeBtnStyle: React.CSSProperties = {
-  background: 'none',
-  border: 'none',
-  color: '#6B7280',
-  cursor: 'pointer',
-  fontSize: 14,
-  padding: '2px 4px',
-  lineHeight: 1,
-};
 
 const actionBtnStyle: React.CSSProperties = {
   width: '100%',

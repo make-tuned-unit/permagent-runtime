@@ -1,6 +1,9 @@
 import { useState, useEffect } from 'react';
 import { COLORS } from './constants';
 import { api } from '../../lib/api';
+import { HudShell, Section, StatRow, useTabReset } from './HudShell';
+import type { HudTab } from './HudShell';
+import { HenryIdentityTab } from './HenryIdentityTab';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -29,6 +32,15 @@ const STATE_COLORS: Record<HenryState, { bg: string; text: string; border: strin
   in_conversation: { bg: 'rgba(0, 217, 255, 0.12)', text: COLORS.neonCyan, border: '#0891B2' },
   tool_call: { bg: 'rgba(255, 179, 71, 0.15)', text: COLORS.neonAmber, border: '#D97706' },
 };
+
+// ── Tab definitions ─────────────────────────────────────────────────
+
+const HENRY_TABS: HudTab[] = [
+  { id: 'status', label: 'STATUS', accentColor: '#00D9FF' },
+  { id: 'identity', label: 'IDENTITY', accentColor: '#4ADE80' },
+  { id: 'chat', label: 'CHAT', accentColor: '#FFB347', disabled: true, disabledLabel: 'SOON' },
+  { id: 'tools', label: 'TOOLS', accentColor: '#F472B6', disabled: true, disabledLabel: 'SOON' },
+];
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -70,6 +82,7 @@ interface HenryHUDProps {
 
 export function HenryHUD({ visible, onClose }: HenryHUDProps) {
   const [status, setStatus] = useState<HenryStatus | null>(null);
+  const [activeTab, setActiveTab] = useTabReset(visible, 'status');
 
   // Poll /api/henry/status at 1s
   useEffect(() => {
@@ -89,60 +102,61 @@ export function HenryHUD({ visible, onClose }: HenryHUDProps) {
     return () => { cancelled = true; clearInterval(id); };
   }, [visible]);
 
-  // ESC to close — capture phase
-  useEffect(() => {
-    if (!visible) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopImmediatePropagation();
-        onClose();
-      }
-    };
-    window.addEventListener('keydown', handler, true);
-    return () => window.removeEventListener('keydown', handler, true);
-  }, [visible, onClose]);
+  if (!visible) return null;
 
-  if (!visible || !status) return null;
-
-  const state = (status.current_state as HenryState) || 'idle';
+  const state = status ? ((status.current_state as HenryState) || 'idle') : 'idle';
   const colors = STATE_COLORS[state] ?? STATE_COLORS.idle;
-  const { identity, today_totals: today, lifetime_stats: lt } = status;
+  const displayName = status?.identity?.name?.toUpperCase() ?? 'HENRY';
+
+  const statusPill = (
+    <div style={{
+      display: 'inline-block',
+      padding: '2px 8px',
+      borderRadius: 3,
+      fontSize: 9,
+      fontWeight: 700,
+      letterSpacing: '0.08em',
+      background: colors.bg,
+      color: colors.text,
+      border: `1px solid ${colors.border}`,
+    }}>
+      {stateName(state)}
+    </div>
+  );
 
   return (
-    <div style={panelStyle} onClick={(e) => e.stopPropagation()}>
-      {/* Header */}
-      <div style={headerStyle}>
-        <span style={{ fontWeight: 600, letterSpacing: '0.05em' }}>
-          {identity.name.toUpperCase()}
-        </span>
-        <button onClick={onClose} style={closeBtnStyle} title="Close (ESC)">✕</button>
-      </div>
+    <HudShell
+      visible={visible}
+      onClose={onClose}
+      title={displayName}
+      statusPill={statusPill}
+      tabs={HENRY_TABS}
+      activeTab={activeTab}
+      onTabChange={setActiveTab}
+    >
+      {activeTab === 'status' && <HenryStatusBody status={status} />}
+      {activeTab === 'identity' && <HenryIdentityTab />}
+    </HudShell>
+  );
+}
 
-      {/* State badge */}
-      <div style={{ padding: '8px 14px' }}>
-        <div style={{
-          display: 'inline-block',
-          padding: '2px 10px',
-          borderRadius: 3,
-          fontSize: 11,
-          fontWeight: 700,
-          letterSpacing: '0.08em',
-          background: colors.bg,
-          color: colors.text,
-          border: `1px solid ${colors.border}`,
-        }}>
-          {stateName(state)}
-        </div>
-        {status.current_tool && (
-          <span style={{
-            marginLeft: 10,
-            fontSize: 11,
-            color: COLORS.neonAmber,
-          }}>
+// ── Status tab body (pixel-identical to previous full HUD) ──────────
+
+function HenryStatusBody({ status }: { status: HenryStatus | null }) {
+  if (!status) return null;
+
+  const { today_totals: today, lifetime_stats: lt } = status;
+
+  return (
+    <>
+      {/* State badge area (current tool indicator) */}
+      {status.current_tool && (
+        <div style={{ padding: '4px 14px 0' }}>
+          <span style={{ fontSize: 11, color: COLORS.neonAmber }}>
             <span style={spinnerStyle}>◠</span> processing…
           </span>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Active sessions */}
       {status.active_sessions.length > 0 && (
@@ -203,82 +217,11 @@ export function HenryHUD({ visible, onClose }: HenryHUDProps) {
           />
         </Section>
       )}
-    </div>
-  );
-}
-
-// ── Sub-components ───────────────────────────────────────────────────
-
-function Section({ title, trimColor, children }: {
-  title: string;
-  trimColor: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div style={{ padding: '0 14px 8px' }}>
-      <div style={{
-        fontSize: 10,
-        fontWeight: 700,
-        letterSpacing: '0.1em',
-        color: trimColor,
-        borderBottom: `1px solid ${trimColor}30`,
-        paddingBottom: 3,
-        marginBottom: 6,
-      }}>
-        {title}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function StatRow({ label, value }: { label: string; value: string | number }) {
-  return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, lineHeight: 1.6 }}>
-      <span style={{ color: '#9CA3AF' }}>{label}</span>
-      <span style={{ color: COLORS.primaryMarble, fontWeight: 500 }}>{String(value)}</span>
-    </div>
+    </>
   );
 }
 
 // ── Styles ───────────────────────────────────────────────────────────
-
-const panelStyle: React.CSSProperties = {
-  position: 'absolute',
-  top: 16,
-  left: 16,
-  width: 300,
-  background: 'rgba(10, 14, 26, 0.88)',
-  backdropFilter: 'blur(12px)',
-  border: `1px solid ${COLORS.marbleVeining}25`,
-  borderRadius: 8,
-  fontFamily: 'monospace',
-  color: COLORS.primaryMarble,
-  zIndex: 20,
-  pointerEvents: 'auto',
-  overflow: 'hidden',
-};
-
-const headerStyle: React.CSSProperties = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  padding: '10px 14px 6px',
-  fontSize: 13,
-  color: COLORS.primaryMarble,
-  borderBottom: `1px solid ${COLORS.marbleVeining}20`,
-  marginBottom: 4,
-};
-
-const closeBtnStyle: React.CSSProperties = {
-  background: 'none',
-  border: 'none',
-  color: '#6B7280',
-  cursor: 'pointer',
-  fontSize: 14,
-  padding: '2px 4px',
-  lineHeight: 1,
-};
 
 const spinnerStyle: React.CSSProperties = {
   display: 'inline-block',
