@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { color, ease } from '../../styles/tokens';
 import { ProgressDots, BackChevron } from './atoms';
 import { MomentWelcome } from './MomentWelcome';
+import { MomentHardware } from './MomentHardware';
 import { MomentCalibration } from './MomentCalibration';
 import { MomentIntent } from './MomentIntent';
 import { MomentMeet } from './MomentMeet';
@@ -32,23 +33,27 @@ export function WizardShell({ onComplete }: Props) {
     setStep(1);
   };
 
+  const handleHardwareDone = () => {
+    setStep(2);
+  };
+
   const handleCalibrationDone = (traits: string[], tone: string) => {
     setPersona(p => ({
       ...p, traits, tone,
       greeting: `Hello! I'm ready to help. ${tone.split('.')[0]}.`,
     }));
-    setStep(2);
+    setStep(3);
   };
 
   const handleIntentDone = () => {
     if (!persona.name) {
       setPersona(p => ({ ...p, name: 'Henry' }));
     }
-    setStep(3);
+    setStep(4);
   };
 
   const handleMeetDone = () => {
-    setStep(4);
+    setStep(5);
   };
 
   const handleComplete = async () => {
@@ -78,6 +83,7 @@ export function WizardShell({ onComplete }: Props) {
 
   const moments = [
     <MomentWelcome key="welcome" onAdvance={handleProviderDone} />,
+    <MomentHardware key="hardware" onAdvance={handleHardwareDone} onBack={back} />,
     <MomentCalibration key="calibration" onAdvance={handleCalibrationDone} onBack={back} />,
     <MomentIntent key="intent" intent={intent} setIntent={setIntent} onAdvance={handleIntentDone} onBack={back} />,
     <MomentMeet key="meet" persona={persona} setPersona={setPersona} onAdvance={handleMeetDone} onBack={back} />,
@@ -92,10 +98,10 @@ export function WizardShell({ onComplete }: Props) {
       overflow: 'hidden',
     }}>
       {/* Top bar: back + dots */}
-      {step > 0 && step < 4 && (
+      {step > 0 && step < 5 && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px' }}>
           <BackChevron onClick={back} />
-          <ProgressDots count={4} current={step - 1} />
+          <ProgressDots count={5} current={step - 1} />
           <div style={{ width: 60 }} />
         </div>
       )}

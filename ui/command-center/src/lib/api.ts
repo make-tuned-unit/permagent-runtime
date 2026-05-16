@@ -505,6 +505,22 @@ export const api = {
     return fetch(url, { ...options, headers: { ...headers, ...(options?.headers as Record<string, string> ?? {}) } });
   },
 
+  // ── System Info ────────────────────────────────────────────────
+
+  getSystemInfo: () =>
+    apiFetch<{
+      app_version: string;
+      os: string;
+      os_version: string;
+      architecture: string;
+      provider: string | null;
+      model: string | null;
+      enabled_extensions: string[];
+      total_ram_bytes: number | null;
+      cpu_brand: string | null;
+      disk_free_bytes: number | null;
+    }>('/api/system_info'),
+
   // ── Ollama + Librarian ──────────────────────────────────────────
 
   getOllamaStatus: () =>
@@ -538,6 +554,45 @@ export const api = {
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     return resp.json();
+  },
+
+  /** Pull an Ollama model with SSE progress streaming.
+   *  Returns an EventSource-like interface. Each event.data is NDJSON from Ollama:
+   *  {"status":"pulling ...","digest":"sha256:...","total":N,"completed":N}
+   */
+  pullOllamaModel: (model: string, onProgress: (data: { status: string; total?: number; completed?: number }) => void) => {
+    const url = `${API_BASE_URL}/api/ollama/pull`;
+    const controller = new AbortController();
+    const promise = (async () => {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ model }),
+        signal: controller.signal,
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const reader = resp.body?.getReader();
+      if (!reader) throw new Error('No response body');
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          const trimmed = line.replace(/^data:\s*/, '').trim();
+          if (!trimmed) continue;
+          try { onProgress(JSON.parse(trimmed)); } catch { /* skip non-JSON */ }
+        }
+      }
+      if (buffer.trim()) {
+        const trimmed = buffer.replace(/^data:\s*/, '').trim();
+        try { onProgress(JSON.parse(trimmed)); } catch { /* */ }
+      }
+    })();
+    return { promise, abort: () => controller.abort() };
   },
 
   getLibrarianStatus: () =>

@@ -49,6 +49,7 @@ tower-http = { workspace = true, features = ["cors", "fs"] }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 futures = { workspace = true }
+async-stream = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "json", "time"] }
 tracing-appender = { workspace = true }
