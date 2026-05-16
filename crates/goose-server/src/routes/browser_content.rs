@@ -87,7 +87,78 @@ async fn read_content(State(state): State<Arc<AppState>>) -> Result<Json<PageCon
     ));
 
     match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
-        Ok(Ok(content)) => Ok(Json(content)),
+        Ok(Ok(content)) => {
+            // Persist successful reads to Spectral as a background task.
+            // Key: browser:read:<sha256(url)> — deduplicates by URL.
+            if content.status == "ok" && !content.content.is_empty() {
+                if let Some(brain) = state.brain.as_ref() {
+                    let brain = brain.clone();
+                    let title = content.title.clone();
+                    let url = content.url.clone();
+                    // Truncate content for memory — store a readable summary, not the full page
+                    let mem_content = {
+                        let max = 2000;
+                        let text = &content.content;
+                        if text.len() > max {
+                            let cut = text[..max]
+                                .rfind('\n')
+                                .unwrap_or(max);
+                            format!("{}\n[truncated]", &text[..cut])
+                        } else {
+                            text.clone()
+                        }
+                    };
+                    let remember_content =
+                        format!("Page: {title}\nURL: {url}\n\n{mem_content}");
+                    tokio::spawn(async move {
+                        let url_for_key = url.clone();
+                        let result = tokio::task::spawn_blocking(move || {
+                            use std::hash::{Hash, Hasher};
+                            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                            url_for_key.hash(&mut hasher);
+                            let hash = format!("{:x}", hasher.finish());
+                            let key = format!("browser:read:{}", &hash[..12]);
+                            brain.remember_with(
+                                &key,
+                                &remember_content,
+                                spectral::RememberOpts {
+                                    source: Some("browser".into()),
+                                    visibility: spectral::Visibility::Private,
+                                    ..Default::default()
+                                },
+                            )
+                        })
+                        .await;
+                        match result {
+                            Ok(Ok(r)) => {
+                                tracing::info!(
+                                    target: "permagentd::brain",
+                                    memory_id = r.memory_id,
+                                    url,
+                                    "Browser page read persisted to Spectral"
+                                );
+                            }
+                            Ok(Err(e)) => {
+                                tracing::warn!(
+                                    target: "permagentd::brain",
+                                    error = %e,
+                                    url,
+                                    "Failed to persist browser page read"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    target: "permagentd::brain",
+                                    error = %e,
+                                    "Browser page persist panicked"
+                                );
+                            }
+                        }
+                    });
+                }
+            }
+            Ok(Json(content))
+        }
         Ok(Err(_)) => Err(StatusCode::INTERNAL_SERVER_ERROR),
         Err(_) => {
             state
