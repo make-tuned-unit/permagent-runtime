@@ -430,7 +430,7 @@ pub async fn describe_one(
     }
 
     // Validate
-    let description = description.ok_or("Ollama returned no response")?;
+    let mut description = description.ok_or("Ollama returned no response")?;
     if description.is_empty() {
         if track_state {
             librarian_state::record_describe_failure("Empty response");
@@ -446,6 +446,25 @@ pub async fn describe_one(
         .await
         .map_err(|e| format!("spawn_blocking failed: {}", e))?
         .map_err(|e| format!("Failed to write description: {}", e))?;
+
+    // 4a. Stale fact heuristic — flag descriptions whose content contains
+    //      temporal supersession markers. No automated action, just tagging.
+    {
+        let content_lower = memory.content.to_lowercase();
+        let stale_markers = [
+            "no longer", "used to", "changed from", "stopped",
+            "switched to", "moved from", "deprecated", "replaced by",
+            "was previously", "formerly", "old approach",
+        ];
+        if stale_markers.iter().any(|m| content_lower.contains(m)) {
+            description = format!("{}\nSTALE_RISK: content contains temporal supersession markers", description);
+            tracing::debug!(
+                memory_id = %memory_id,
+                key = %memory.key,
+                "Flagged STALE_RISK — temporal markers detected"
+            );
+        }
+    }
 
     // 4b. Annotate the memory with entity refs from the description
     {
