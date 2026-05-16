@@ -21,7 +21,7 @@ export function AgentPicker({ selectedAgentId, onSelectAgent }: AgentPickerProps
   useEffect(() => {
     api.getAgents()
       .then(res => setAgents(res.agents))
-      .catch(() => {});
+      .catch((err: unknown) => console.warn('[AgentPicker] Failed to fetch agents:', err));
   }, []);
 
   if (agents.length === 0) return null;
