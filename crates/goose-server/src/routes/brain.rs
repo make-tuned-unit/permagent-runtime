@@ -493,6 +493,34 @@ async fn brain_graph(
         }
     }
 
+    // ── Bridge: resolve annotation term:/cat: IDs to Kuzu entity IDs ──
+    // Builds a lookup from entity canonical names to their graph IDs,
+    // then substitutes matching annotation terms with real entity IDs
+    // so the frontend can draw edges between memory and entity nodes.
+    {
+        let entity_map: std::collections::HashMap<String, String> = entities
+            .iter()
+            .map(|e| (e.name.to_lowercase(), e.id.clone()))
+            .collect();
+
+        for mem in &mut memories {
+            mem.ent = mem
+                .ent
+                .iter()
+                .map(|term_id| {
+                    let name = term_id
+                        .strip_prefix("term:")
+                        .or_else(|| term_id.strip_prefix("cat:"))
+                        .unwrap_or(term_id);
+                    entity_map
+                        .get(&name.to_lowercase())
+                        .cloned()
+                        .unwrap_or_else(|| term_id.clone())
+                })
+                .collect();
+        }
+    }
+
     Ok(Json(GraphResponse {
         self_node,
         entities,
