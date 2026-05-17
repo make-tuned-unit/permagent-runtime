@@ -67,7 +67,7 @@ export function HudShell({
       {/* Tab bar — only when tabs prop provided */}
       {tabs && tabs.length > 0 && (
         <div style={tabBarStyle}>
-          {tabs.map((tab) => {
+          {tabs.map((tab, idx) => {
             const isActive = tab.id === activeTab;
             const isDisabled = !!tab.disabled;
             return (
@@ -79,6 +79,7 @@ export function HudShell({
                 disabled={isDisabled}
                 style={{
                   ...tabBtnBase,
+                  ...(idx === 0 ? { paddingLeft: 0 } : {}),
                   color: isActive
                     ? tab.accentColor
                     : isDisabled
