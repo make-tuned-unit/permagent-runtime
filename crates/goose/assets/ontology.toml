@@ -1,103 +1,2283 @@
-# Permagent v1.0 Ontology — Schema Only
-#
-# Defines the schema of memory: what kinds of entities can exist and what
-# typed relationships connect them. Specific entities (the user's name,
-# their projects, people they discuss) are created at runtime as the user
-# interacts with Permagent — they are NOT pre-declared in this file.
-#
-# This file ships in every Permagent binary as an embedded asset and is
-# written to ~/.permagent/brain/ontology.toml on first run. Spectral
-# validates all graph writes against the (domain, range) constraints
-# declared here.
-#
-# Runtime entity creation is gated on Spectral's AutoCreateWithCanonicalizer
-# support (Phase 2 Track A). Until then, entities are inferred by the
-# constellation fingerprint layer without explicit graph nodes.
-
 version = 1
 
-# ── Entity types ─────────────────────────────────────────────────────
-# Each type describes a kind of thing Permagent reasons about. Specific
-# entities of these types are created at runtime when first referenced.
+[[entity]]
+type = "person"
+canonical = "henry malcolm"
+aliases = ["henry"]
+visibility = "private"
 
-[[entity_types]]
-name = "person"
-aliases = ["user", "human", "contact"]
+[[entity]]
+type = "project"
+canonical = "permagent"
+aliases = ["henry-sells", "permagent.ai", "henry sells"]
+visibility = "private"
 
-[[entity_types]]
-name = "project"
-aliases = ["repo", "codebase", "product"]
+[[entity]]
+type = "project"
+canonical = "task runner"
+aliases = ["task_runner"]
+visibility = "private"
 
-[[entity_types]]
-name = "organization"
-aliases = ["company", "team", "org"]
+[[entity]]
+type = "tool"
+canonical = "claude"
+aliases = ["claude code", "claude api"]
+visibility = "private"
 
-[[entity_types]]
-name = "document"
-aliases = ["file", "page", "note"]
+[[entity]]
+type = "project"
+canonical = "zeroclaw"
+aliases = ["henry-core", "zeroclaw-fork"]
+visibility = "private"
 
-[[entity_types]]
-name = "concept"
-aliases = ["idea", "topic", "subject", "theme"]
+[[entity]]
+type = "project"
+canonical = "tact"
+aliases = ["tact retrieval", "tact memory"]
+visibility = "private"
 
-[[entity_types]]
-name = "event"
-aliases = ["meeting", "milestone", "incident"]
+[[entity]]
+type = "tool"
+canonical = "stripe"
+aliases = []
+visibility = "private"
 
-[[entity_types]]
+[[entity]]
+type = "tool"
+canonical = "vercel"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "github"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "next.js"
+aliases = ["nextjs", "next js"]
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "react"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "tailwind"
+aliases = ["tailwind css"]
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "typescript"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "chitin"
+aliases = ["chitin.id"]
+visibility = "private"
+
+[[entity]]
+type = "location"
+canonical = "nova scotia"
+aliases = ["ns"]
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "agent blueprint"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "agent launch"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "app router"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "person"
+canonical = "jesse sharratt"
+aliases = ["jesse"]
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "gmail"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "delete agent launch"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "delete the mesh"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "google sheets"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "claude code prompting best"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "give claude"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "tell claude"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "if claude"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "codex"
+aliases = ["codex cli"]
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "codex prompting best practices"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "tell codex"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "ask codex"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "state node"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "use rust"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "agent deployment"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "getladle"
+aliases = ["ladle", "get ladle"]
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "ollama"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "polybot"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "brave search"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "python"
+aliases = ["python3"]
+visibility = "private"
+
+[[entity]]
+type = "organization"
+canonical = "polymarket"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "polybot weather engine"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "task evolution"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "gaussian probability model"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "market scanner"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "polymarket gamma"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "love nova scotia"
+aliases = ["love-ns", "lns", "love ns", "leave out violence"]
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "nova"
+aliases = ["nova wearable"]
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "links employability program"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "slack"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "sqlite"
+aliases = ["sqlite3"]
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "google drive"
+aliases = ["gdrive"]
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "atlas atlantic"
+aliases = ["atlas-atlantic", "atlasatlantic"]
+visibility = "private"
+
+[[entity]]
+type = "person"
+canonical = "mel schembri"
+aliases = ["mel"]
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "active claude"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "person"
+canonical = "robin hood"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "indie hackers"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "agent managed"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "autonomous sales pipeline"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "scheduled workflows"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "plex mono"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "atlas atlantic supabase"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "location"
+canonical = "atlantic canada"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "remove polybot"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "stripe checkout session"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "litellm"
+aliases = ["lite llm"]
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "slack socket mode"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "engineering discipline"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "browser extension"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "apify"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "location"
+canonical = "halifax"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "location"
+canonical = "new brunswick"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "browser bridge"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "anthropic claude"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "openai"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "claude projects"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "hugging face agents"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "google assistant"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "persistent memory"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "learns over time"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "autonomous action"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "data ownership"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "lifetime relationship"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "emotional continuity"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "gemma"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "your permagent"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "organization"
+canonical = "red hat"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "dead simple"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "monthly recurring revenue"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "customer acquisition cost"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "lifetime value"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "actual permagent"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "google calendar"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "indie hacker"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "permagent hosting"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "permagent network"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "write permagent"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "goose"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "samsung food"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "eat this much"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "who we are for"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "who we are not"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "active coordinators"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "app store"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "supabase realtime"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "gumroad potluck planner"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "roadmap overview"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "gumroad planner"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "cook mode"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "creator program"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "coordinator mode"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "revenue targets"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "ultimate potluck planner"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "acquisition channels"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "highest leverage"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "community food culture"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "instagram broadcast channel"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "supabase auth"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "apple developer"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "edge function"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "database rules"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "component rules"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "lucide react"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "upgrade connector"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "complete upgrade flow"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "events tab rebuild spec"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "app vision"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "upgrade flows"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "master task list"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "all build tasks"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "optimise app store"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "heavy slack"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "constellation"
+aliases = ["constellation fingerprint"]
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "based memory architecture"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "why vector memory fails"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "temporal activation"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "cue targeting"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "ground truth"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "key project state"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "environmental context"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "current active session"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "session history"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "ambient signals"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "runtime logger"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "signal scorer"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "matching memory inspired"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "pair algorithm"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "anchor points"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "pair hashing"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "database lookup"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "constellation architecture"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "agent memory"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "dimension reduction"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "event stream"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "peak detection"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "feature extraction"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "constellation points"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "constellation pairs"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "hashing strategy"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "retrieval process"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "scoring engine"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "implement signal scorer"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "constellation prototype"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "behavioral signals"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "recommendation engine"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "selection criteria"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "weight calculation"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "token budget distribution"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "structured memory"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "temporal knowledge graph"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "driven context loading"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "active agent awareness kernel"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "active systems"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "signal scoring engine"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "mac mini"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "worldlitterrun"
+aliases = ["wlr", "world litter run"]
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "teenity"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "plekk"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "parentals"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "adsage"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "carbonblock"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "ringsocial"
+aliases = ["ring social"]
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "myuse"
+aliases = ["myuse-ai"]
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "lauft"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "grocery saver"
+aliases = ["grocery-saver"]
+visibility = "private"
+
+[[entity]]
+type = "person"
+canonical = "sophie sharratt"
+aliases = ["sophie"]
+visibility = "private"
+
+[[entity]]
+type = "organization"
+canonical = "canada council"
+aliases = ["canada council for the arts"]
+visibility = "private"
+
+[[entity]]
+type = "organization"
+canonical = "canadian heritage"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "organization"
+canonical = "ns department of community services"
+aliases = ["community services"]
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "nova scotia grant applications"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "person"
+canonical = "dennis adams"
+aliases = ["dennis"]
+visibility = "private"
+
+[[entity]]
+type = "location"
+canonical = "north preston"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "canadian heritage local festivals"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "youth voices against violence"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "celebrating african nova scotian"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "african nova scotian"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "location"
+canonical = "east preston"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "location"
+canonical = "cherry brook"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "halifax regional municipality"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "composite activities program"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "year media arts"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "cultural expression program"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "media arts production workshops"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "free flow fridays"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "north preston braiding project"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "leadership arts residency"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "person"
+canonical = "rowan"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "person"
+canonical = "jude"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "apify web content crawler"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "digital system navigator"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "signal hill consultancy"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "henry command center"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "familylife"
+aliases = ["family life organizer"]
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "model context protocol"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "organization"
+canonical = "linux foundation"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "grocery savings planner"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "marsh canada bonded imports"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "avatar platform"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "framer motion"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "web speech"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "custom software"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "organization"
+canonical = "product foundations"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "web platforms"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "system automation"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "organization"
+canonical = "brand foundations"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "venture building"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "systems problem"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "polls supabase"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "react compiler"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "organization"
+canonical = "marsh canada"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "apple health"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "google fit"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "blue nose may"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "person"
+canonical = "craig beaton"
+aliases = ["deputy minister craig beaton"]
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "hermes agent orange book"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "health concierge platform"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "person"
+canonical = "graham wong"
+aliases = ["graham"]
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "living atlas"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "stripe connect"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "person"
+canonical = "ashley lecroy"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "marketplace redefined"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "instant stripe"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "early french immersion"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "location"
+canonical = "bicentennial elementary"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "person"
+canonical = "claudia chender"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "person"
+canonical = "susan leblanc"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "civic guild"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "democratic literacy"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "organization"
+canonical = "philosophical foundation"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "core design principles"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "addictive design"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "human energy"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "product system"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "four layers"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "discovery layer"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "learning layer"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "social layer"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "action layer"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "salon progression system"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "four stages"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "case file model"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "human verification"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "nova scotia pilot"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "success metrics"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "term vision"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "powered home improvement marketplace"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "downloads slack"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "automatic context retrieval"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "constellation fingerprint encoding"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "facing vehicle transparency platform"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "core features"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "revenue streams"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "product roadmap"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "competitive differentiation"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "technical stack"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "powered home improvement platform"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "market opportunity"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "location"
+canonical = "north american"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "financial projections"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "risk mitigation"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "retrieval engine"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "henry nightly memory maintenance"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "command center"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "docker"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "anchored constellation triples"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "multimodal audio support"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "model upgrade"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "speculative decoding"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "apple silicon"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "person"
+canonical = "penny arsenault"
+aliases = ["penny"]
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "sidecurrent repositioning"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "operator summary"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "atlas atlantic website updates"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "vercel environment variables setup"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "complete google sheets setup"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "google sheet update guide"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "new contact flows"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "properly add credentials"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "video deployment guide"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "quick start guide"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "content updates needed"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "signal hill consultancy website"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "share your google sheet"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "final credentials setup"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "atlas atlantic rebrand summary"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "quick setup guide"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "google sheets integration"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "google sheets integration setup"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "your voice matters"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "parents want french immersion"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "location"
+canonical = "dartmouth advocacy"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "key contacts research"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "comprehensive project blueprint"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "balrog"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "home services marketplace"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "vehicle platform"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "if gmail"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "honesty discipline"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "file extraction discipline"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "verification discipline"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "nightly task pre"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "no root directory"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "modified nifty nabber pro"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "Henry"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "Jesse"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "a doer and a systems thinker"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "a recipe and meal planning app for people who feed people"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "already logged into X and Reddit in his real Chrome browser on the M4"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "atlas_atlantic"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "august_3rd"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "blue"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "blue_nose_marathon"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "chrome"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "currently set up as idle — he stays at the reactor"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "dartmouth_ns"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "firefox"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "founder"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "gemma_4_e4b"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "immigration_lawyer"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "live"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "losing tokens very quickly"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "love_nova_scotia"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "m4_mac_mini"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "mel_schembri"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "messages_app"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "morleys_dartmouth"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "near_certain"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "north_star_immigration"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "offline\" if LiteLLM is unreachable"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "permagent.ai"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "ready to download"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "sophie"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "the core orchestrator and should be visually unique"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "the friend who shows up early and helps you set the table"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "the sole authenticated operator of this system"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "the_canteen_dartmouth"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "working on for better support"
+aliases = []
+visibility = "private"
+
+[[predicate]]
+name = "anniversary"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "board_chair"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "built_with"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "business"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "client"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "company"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "deployed_on"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "employer"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "favourite_coffee_shop"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "favourite_color"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "favourite_restaurant"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "founded_by"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "is"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
 name = "location"
-aliases = ["place", "region", "city"]
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
 
-[[entity_types]]
-name = "tool"
-aliases = ["extension", "service", "api", "skill"]
+[[predicate]]
+name = "manages"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
 
-# ── Predicates ───────────────────────────────────────────────────────
-# Each predicate describes a typed relationship. domain = subject type,
-# range = object type. Spectral validates these at write time when
-# brain.assert() is called.
-
-[[predicates]]
-name = "worked_on"
-domain = "person"
-range = "project"
-
-[[predicates]]
-name = "created"
-domain = "person"
-range = "document"
-
-[[predicates]]
-name = "mentioned"
-domain = "document"
-range = "concept"
-
-[[predicates]]
-name = "related_to"
-domain = "concept"
-range = "concept"
-
-[[predicates]]
-name = "located_in"
-domain = "organization"
-range = "location"
-
-[[predicates]]
-name = "occurred_at"
-domain = "event"
-range = "location"
-
-[[predicates]]
-name = "authored"
-domain = "person"
-range = "document"
-
-[[predicates]]
-name = "depends_on"
-domain = "project"
-range = "project"
-
-[[predicates]]
+[[predicate]]
 name = "part_of"
-domain = "project"
-range = "organization"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "partner"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "primary_browser"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "primary_messaging"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "primary_strategy"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "related_to"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "role"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "runs_on"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "secondary_browser"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "son"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "status"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "tier1_model"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "wife"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "works_on"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
