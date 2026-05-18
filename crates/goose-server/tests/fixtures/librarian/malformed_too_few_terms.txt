@@ -1,0 +1,3 @@
+FACTS: A brief event occurred.
+TERMS: event, brief, occurred
+CATEGORIES: events, monitoring

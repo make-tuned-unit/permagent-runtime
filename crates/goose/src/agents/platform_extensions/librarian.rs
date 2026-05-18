@@ -599,7 +599,7 @@ fn build_description_prompt(memory: &spectral::ingest::Memory) -> String {
 
 /// Parse the three-field structural output into a single description string.
 /// Returns None if the output doesn't contain all required fields.
-fn parse_structured_description(raw: &str) -> Option<String> {
+pub fn parse_structured_description(raw: &str) -> Option<String> {
     let mut facts = None;
     let mut terms = None;
     let mut categories = None;

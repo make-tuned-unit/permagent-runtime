@@ -324,11 +324,7 @@ async fn brain_graph(
         // DEFAULT VIEW: top 100 by entity connection richness, recency tiebreak.
         // Direct SQL — shows "what does this Brain know best?"
         tokio::task::spawn_blocking(move || -> Vec<GraphMemory> {
-            let db_path = permagent::config::paths::Paths::brain_dir().join("memory.db");
-            let conn = match rusqlite::Connection::open_with_flags(
-                &db_path,
-                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-            ) {
+            let conn = match crate::brain_ops::read_only_brain_conn() {
                 Ok(c) => c,
                 Err(_) => return Vec::new(),
             };
@@ -436,11 +432,7 @@ async fn brain_graph(
     if !memories.is_empty() {
         let memory_ids: Vec<String> = memories.iter().map(|m| m.id.clone()).collect();
         let annotation_map = tokio::task::spawn_blocking(move || -> std::collections::HashMap<String, Vec<String>> {
-            let db_path = permagent::config::paths::Paths::brain_dir().join("memory.db");
-            let conn = match rusqlite::Connection::open_with_flags(
-                &db_path,
-                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-            ) {
+            let conn = match crate::brain_ops::read_only_brain_conn() {
                 Ok(c) => c,
                 Err(_) => return std::collections::HashMap::new(),
             };
@@ -567,12 +559,8 @@ async fn brain_memories(
     let max_age_secs: f64 = 90.0 * 24.0 * 3600.0;
 
     let result = tokio::task::spawn_blocking(move || {
-        let db_path = permagent::config::paths::Paths::brain_dir().join("memory.db");
-        let conn = rusqlite::Connection::open_with_flags(
-            &db_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )
-        .map_err(|e| format!("Failed to open brain DB: {}", e))?;
+        let conn = crate::brain_ops::read_only_brain_conn()
+            .map_err(|e| format!("Failed to open brain DB: {}", e))?;
 
         let q = params.q.as_deref().unwrap_or("").trim().to_string();
         let is_search = !q.is_empty();

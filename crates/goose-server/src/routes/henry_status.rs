@@ -294,11 +294,7 @@ fn query_spectral_stats(
 
 /// Query Brain's memory.db for total memories and memories created today.
 fn query_brain_memory_stats(today_str: &str) -> (usize, usize) {
-    let db_path = permagent::config::paths::Paths::brain_dir().join("memory.db");
-    let conn = match rusqlite::Connection::open_with_flags(
-        &db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    ) {
+    let conn = match crate::brain_ops::read_only_brain_conn() {
         Ok(c) => c,
         Err(_) => return (0, 0),
     };

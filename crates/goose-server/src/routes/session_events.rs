@@ -557,70 +557,11 @@ pub async fn session_reply(
         }
 
         // ── Phase 3: Recall from brain before model invocation ──
-        const RECALL_SCORE_FLOOR: f64 = 0.7;
-        const RECALL_TOP_K: usize = 3;
-
         if let Some(brain) = task_state.brain.as_ref() {
             let user_query = user_message.as_concat_text();
-            if !user_query.is_empty() {
-                let brain = brain.clone();
-                let query = user_query.clone();
-                let recognition_ctx = task_state.build_recognition_context(Some(&task_session_id));
-                let recall_result = tokio::task::spawn_blocking(move || {
-                    brain.recall_cascade(&query, &recognition_ctx, &Default::default())
-                })
+            let recognition_ctx = task_state.build_recognition_context(Some(&task_session_id));
+            crate::brain_ops::inject_recall(brain, &agent, &user_query, recognition_ctx)
                 .await;
-
-                match recall_result {
-                    Ok(Ok(result)) => {
-                        let top_hits: Vec<_> = result
-                            .merged_hits
-                            .iter()
-                            .filter(|hit| hit.signal_score >= RECALL_SCORE_FLOOR)
-                            .take(RECALL_TOP_K)
-                            .collect();
-
-                        if !top_hits.is_empty() {
-                            let mut prefix = String::from("Relevant memories from past context:\n");
-                            for hit in &top_hits {
-                                prefix.push_str(&format!("- {}\n", hit.content));
-                            }
-
-                            tracing::info!(
-                                target: "permagentd::brain",
-                                "Recall injected {} memories into system prompt for query: {:?}",
-                                top_hits.len(),
-                                user_query.chars().take(80).collect::<String>()
-                            );
-
-                            agent
-                                .extend_system_prompt("memory_recall".to_string(), prefix)
-                                .await;
-                        } else {
-                            tracing::debug!(
-                                target: "permagentd::brain",
-                                "Recall returned no hits above {} threshold for query: {:?}",
-                                RECALL_SCORE_FLOOR,
-                                user_query.chars().take(80).collect::<String>()
-                            );
-                        }
-                    }
-                    Ok(Err(e)) => {
-                        tracing::warn!(
-                            target: "permagentd::brain",
-                            "Brain recall failed: {}",
-                            e
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            target: "permagentd::brain",
-                            "Brain recall spawn_blocking panicked: {}",
-                            e
-                        );
-                    }
-                }
-            }
         }
 
         let mut stream = match agent
@@ -728,57 +669,13 @@ pub async fn session_reply(
             let turn_idx = all_messages.len();
 
             if !user_text.is_empty() && !assistant_text.is_empty() {
-                let brain = brain.clone();
-                let remember_session_id = task_session_id.clone();
-
-                tokio::spawn(async move {
-                    let key = format!("chat-{}-{}", remember_session_id, turn_idx);
-                    let content = format!("User: {}\nAssistant: {}", user_text, assistant_text);
-                    let device_id = *brain.device_id();
-                    let key_for_log = key.clone();
-
-                    let result = tokio::task::spawn_blocking(move || {
-                        brain.remember_with(
-                            &key,
-                            &content,
-                            spectral::RememberOpts {
-                                source: Some("chat".into()),
-                                device_id: Some(device_id),
-                                confidence: Some(1.0),
-                                visibility: spectral::Visibility::Private,
-                                wing: None,
-                                ..Default::default()
-                            },
-                        )
-                    })
-                    .await;
-
-                    match result {
-                        Ok(Ok(_)) => {
-                            tracing::info!(
-                                target: "permagentd::brain",
-                                "Remembered chat turn: {}",
-                                key_for_log
-                            );
-                        }
-                        Ok(Err(e)) => {
-                            tracing::warn!(
-                                target: "permagentd::brain",
-                                "Failed to remember chat turn {}: {}",
-                                key_for_log,
-                                e
-                            );
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                target: "permagentd::brain",
-                                "spawn_blocking panicked for remember {}: {}",
-                                key_for_log,
-                                e
-                            );
-                        }
-                    }
-                });
+                crate::brain_ops::spawn_persist_chat_turn(
+                    brain.clone(),
+                    task_session_id.clone(),
+                    turn_idx,
+                    user_text,
+                    assistant_text,
+                );
             }
         }
 

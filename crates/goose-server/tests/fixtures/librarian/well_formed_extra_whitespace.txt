@@ -1,0 +1,3 @@
+  FACTS:  Dr. Patel prescribed medication during the consultation.
+  TERMS:  doctor, doctors, prescribe, prescribed, medication, consultation, medical, visit
+  CATEGORIES:  healthcare, medical, physician

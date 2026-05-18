@@ -1,0 +1,3 @@
+FACTS: User said "don't forget the API key" in the team channel.
+TERMS: API, key, forget, reminder, team, channel, said, message
+CATEGORIES: security, team communication, configuration

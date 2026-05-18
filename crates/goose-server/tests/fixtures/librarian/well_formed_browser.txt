@@ -1,0 +1,3 @@
+FACTS: Browser navigated to Gmail in a browser tab.
+TERMS: navigate, navigation, navigated, browser, browsing, tab, Gmail
+CATEGORIES: web browsing, email, Google services
