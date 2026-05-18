@@ -304,7 +304,9 @@ mod consolidation_clusters {
 
     #[test]
     fn cleanup_removes_buggy_clusters_and_unconsolidates_pointers() {
-        use permagent::activity::cleanup::run_domain_cluster_cleanup_sql;
+        use permagent::activity::cleanup::{
+            ensure_and_check_migration, mark_migration, run_domain_cluster_cleanup_sql,
+        };
 
         let conn = setup_db();
 
@@ -326,8 +328,12 @@ mod consolidation_clusters {
         // 1 control memory — should not be touched
         insert_memory(&conn, "ctrl", "k_ctrl", "Unrelated memory", "test", "2026-01-06T00:00:00Z");
 
+        // Migration not yet applied
+        assert!(!ensure_and_check_migration(&conn, "domain_cluster_cleanup_v1").unwrap());
+
         // Run cleanup
         let (un_consolidated, deleted) = run_domain_cluster_cleanup_sql(&conn).unwrap();
+        mark_migration(&conn, "domain_cluster_cleanup_v1").unwrap();
 
         // 5 memories un-consolidated
         assert_eq!(un_consolidated, 5);
@@ -357,6 +363,9 @@ mod consolidation_clusters {
             |r| r.get(0),
         ).unwrap();
         assert_eq!(ctrl_content, "Unrelated memory");
+
+        // Migration is now marked
+        assert!(ensure_and_check_migration(&conn, "domain_cluster_cleanup_v1").unwrap());
 
         // Idempotency: run again — no changes
         let (un2, del2) = run_domain_cluster_cleanup_sql(&conn).unwrap();
