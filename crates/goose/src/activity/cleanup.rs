@@ -242,36 +242,33 @@ pub fn consolidate_clusters() -> Result<usize> {
     Ok(consolidated)
 }
 
+const MIGRATION_DOMAIN_CLUSTER_CLEANUP: &str = "domain_cluster_cleanup_v1";
+
 /// One-shot cleanup for buggy domain cluster consolidation.
 ///
 /// A substring offset bug in `find_domain_clusters` caused all https URLs to be
 /// grouped under "tps:" and all http URLs under "ttp:" instead of actual domains.
 /// This un-consolidates the victims and deletes the catchall cluster memories.
 ///
-/// Idempotent: uses a marker file at `~/.permagent/brain/.domain-cluster-cleanup-applied`.
+/// Idempotent: tracked via `_pm_migrations_applied` table in the brain DB.
 pub fn cleanup_buggy_domain_clusters() -> Result<(usize, usize)> {
-    let brain_dir = crate::config::paths::Paths::brain_dir();
-    let marker = brain_dir.join(".domain-cluster-cleanup-applied");
-
-    if marker.exists() {
-        debug!(target: "permagent::cleanup", "domain-cluster cleanup: already applied, skipping");
-        return Ok((0, 0));
-    }
-
-    let db_path = brain_dir.join("memory.db");
+    let db_path = crate::config::paths::Paths::brain_dir().join("memory.db");
     if !db_path.exists() {
         debug!(target: "permagent::cleanup", "domain-cluster cleanup: no memory.db, skipping");
         return Ok((0, 0));
     }
 
     let conn = rusqlite::Connection::open(&db_path)?;
-    let (un_consolidated, deleted) = run_domain_cluster_cleanup_sql(&conn)?;
 
-    // Write marker
-    if let Some(parent) = marker.parent() {
-        let _ = std::fs::create_dir_all(parent);
+    ensure_migrations_table(&conn)?;
+
+    if is_migration_applied(&conn, MIGRATION_DOMAIN_CLUSTER_CLEANUP)? {
+        debug!(target: "permagent::cleanup", "domain-cluster cleanup: already applied, skipping");
+        return Ok((0, 0));
     }
-    std::fs::write(&marker, "applied")?;
+
+    let (un_consolidated, deleted) = run_domain_cluster_cleanup_sql(&conn)?;
+    mark_migration_applied(&conn, MIGRATION_DOMAIN_CLUSTER_CLEANUP)?;
 
     info!(
         target: "permagent::cleanup",
@@ -305,6 +302,50 @@ pub fn run_domain_cluster_cleanup_sql(conn: &rusqlite::Connection) -> Result<(us
     )?;
 
     Ok((un_consolidated, deleted))
+}
+
+// ── Permagent-side migration tracking ────────────────────────────
+// Lightweight table in the Brain DB for one-shot Permagent migrations.
+// Prefixed `_pm_` to signal it's Permagent-owned, not Spectral-owned.
+
+fn ensure_migrations_table(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS _pm_migrations_applied ( \
+           name TEXT PRIMARY KEY, \
+           applied_at TEXT NOT NULL DEFAULT (datetime('now')) \
+         );"
+    )?;
+    Ok(())
+}
+
+fn is_migration_applied(conn: &rusqlite::Connection, name: &str) -> Result<bool> {
+    let count: usize = conn.query_row(
+        "SELECT COUNT(*) FROM _pm_migrations_applied WHERE name = ?1",
+        [name],
+        |r| r.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+fn mark_migration_applied(conn: &rusqlite::Connection, name: &str) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO _pm_migrations_applied (name) VALUES (?1)",
+        [name],
+    )?;
+    Ok(())
+}
+
+/// Check and mark a migration in the `_pm_migrations_applied` table.
+/// Exposed for testing.
+pub fn ensure_and_check_migration(conn: &rusqlite::Connection, name: &str) -> Result<bool> {
+    ensure_migrations_table(conn)?;
+    is_migration_applied(conn, name)
+}
+
+/// Mark a migration as applied. Exposed for testing.
+pub fn mark_migration(conn: &rusqlite::Connection, name: &str) -> Result<()> {
+    ensure_migrations_table(conn)?;
+    mark_migration_applied(conn, name)
 }
 
 // Note: prune_noise_memories and consolidate_clusters use Paths::brain_dir()
