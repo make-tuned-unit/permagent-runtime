@@ -1,0 +1,2 @@
+FACTS: Something happened in the system.
+TERMS: system, event, happened, occurring

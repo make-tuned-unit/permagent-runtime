@@ -1,4 +1,5 @@
 mod automation;
+mod brain_ops;
 mod commands;
 mod configuration;
 mod error;

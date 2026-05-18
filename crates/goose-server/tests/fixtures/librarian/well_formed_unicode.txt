@@ -1,0 +1,3 @@
+FACTS: User searched for "café résumé" in the document archive.
+TERMS: café, résumé, search, searched, searching, document, archive, query
+CATEGORIES: document management, search, internationalization

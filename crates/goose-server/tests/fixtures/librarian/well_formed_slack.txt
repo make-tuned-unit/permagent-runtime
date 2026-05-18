@@ -1,0 +1,3 @@
+FACTS: Jesse asked Henry to tell a joke via Slack on April 24, 2026.
+TERMS: joke, jokes, ask, asked, asking, message, request
+CATEGORIES: conversation, chat, communication, humor
