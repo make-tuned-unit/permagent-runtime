@@ -242,6 +242,71 @@ pub fn consolidate_clusters() -> Result<usize> {
     Ok(consolidated)
 }
 
+/// One-shot cleanup for buggy domain cluster consolidation.
+///
+/// A substring offset bug in `find_domain_clusters` caused all https URLs to be
+/// grouped under "tps:" and all http URLs under "ttp:" instead of actual domains.
+/// This un-consolidates the victims and deletes the catchall cluster memories.
+///
+/// Idempotent: uses a marker file at `~/.permagent/brain/.domain-cluster-cleanup-applied`.
+pub fn cleanup_buggy_domain_clusters() -> Result<(usize, usize)> {
+    let brain_dir = crate::config::paths::Paths::brain_dir();
+    let marker = brain_dir.join(".domain-cluster-cleanup-applied");
+
+    if marker.exists() {
+        debug!(target: "permagent::cleanup", "domain-cluster cleanup: already applied, skipping");
+        return Ok((0, 0));
+    }
+
+    let db_path = brain_dir.join("memory.db");
+    if !db_path.exists() {
+        debug!(target: "permagent::cleanup", "domain-cluster cleanup: no memory.db, skipping");
+        return Ok((0, 0));
+    }
+
+    let conn = rusqlite::Connection::open(&db_path)?;
+    let (un_consolidated, deleted) = run_domain_cluster_cleanup_sql(&conn)?;
+
+    // Write marker
+    if let Some(parent) = marker.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(&marker, "applied")?;
+
+    info!(
+        target: "permagent::cleanup",
+        un_consolidated,
+        deleted,
+        "domain-cluster cleanup: un-consolidated {} memories, deleted {} catchall clusters",
+        un_consolidated,
+        deleted
+    );
+
+    Ok((un_consolidated, deleted))
+}
+
+/// Run the buggy domain cluster cleanup SQL on an arbitrary connection.
+/// Exposed for testing — the production entrypoint is `cleanup_buggy_domain_clusters`.
+pub fn run_domain_cluster_cleanup_sql(conn: &rusqlite::Connection) -> Result<(usize, usize)> {
+    let un_consolidated: usize = conn.execute(
+        "UPDATE memories SET _pm_consolidated_into = NULL \
+         WHERE _pm_consolidated_into IN ( \
+           SELECT id FROM memories WHERE key LIKE 'consolidated:browser:tps:%' \
+              OR key LIKE 'consolidated:browser:ttp:%' \
+         )",
+        [],
+    )?;
+
+    let deleted: usize = conn.execute(
+        "DELETE FROM memories \
+         WHERE key LIKE 'consolidated:browser:tps:%' \
+            OR key LIKE 'consolidated:browser:ttp:%'",
+        [],
+    )?;
+
+    Ok((un_consolidated, deleted))
+}
+
 // Note: prune_noise_memories and consolidate_clusters use Paths::brain_dir()
 // which can't be overridden in unit tests. The SQL correctness is validated
 // by the daemon at startup. The ingest filter tests in ingestion.rs cover

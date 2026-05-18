@@ -621,9 +621,9 @@ pub fn find_domain_clusters(
             "SELECT \
                CASE \
                  WHEN content LIKE 'Navigated to https://%' THEN \
-                   substr(content, 16, instr(substr(content, 16), '/') - 1) \
+                   substr(content, 22, instr(substr(content, 22), '/') - 1) \
                  WHEN content LIKE 'Navigated to http://%' THEN \
-                   substr(content, 15, instr(substr(content, 15), '/') - 1) \
+                   substr(content, 21, instr(substr(content, 21), '/') - 1) \
                  ELSE NULL \
                END as domain, \
                COUNT(*) as cnt, \
