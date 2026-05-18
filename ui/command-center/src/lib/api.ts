@@ -152,11 +152,14 @@ export interface PermagentEvent {
 
 function authHeaders(): Record<string, string> {
   const h: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (_daemonToken) h['Authorization'] = \`Bearer \${_daemonToken}\`;
   if (SECRET_KEY) h['x-secret-key'] = SECRET_KEY;
   return h;
 }
 
 async function apiFetch<T>(endpoint: string, options?: RequestInit): Promise<T> {
+  // Ensure the daemon token is loaded before making any authenticated request.
+  if (!_daemonToken && isTauri) await loadDaemonToken();
   const url = `${API_BASE_URL}${endpoint}`;
   const response = await fetch(url, {
     ...options,

@@ -38,13 +38,29 @@ pub mod workspaces;
 
 use std::sync::Arc;
 
-use axum::Router;
+use axum::{middleware, Router};
 use tower_http::services::{ServeDir, ServeFile};
 
-// Function to configure all routes
+use crate::middleware::auth::require_bearer_token;
+
+/// Configure all routes, applying bearer token middleware to protected endpoints.
 pub fn configure(state: Arc<crate::state::AppState>) -> Router {
-    let mut router = Router::new()
+    // ── Public routes (no auth required) ──
+    let mut public = Router::new()
         .merge(status::routes(state.clone()))
+        .merge(version::routes(state.clone()))
+        .merge(events::routes(state.clone()))
+        .merge(session_events::routes(state.clone()));
+
+    // Static UI assets
+    let ui_dir = ui_dist_path();
+    if let Some(dir) = ui_dir {
+        let index = dir.join("index.html");
+        public = public.nest_service("/ui", ServeDir::new(&dir).fallback(ServeFile::new(index)));
+    }
+
+    // ── Protected routes (bearer token required) ──
+    let mut protected = Router::new()
         .merge(reply::routes(state.clone()))
         .merge(activity::routes(state.clone()))
         .merge(action_required::routes(state.clone()))
@@ -58,10 +74,8 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(telemetry::routes(state.clone()))
         .merge(tunnel::routes(state.clone()))
         .merge(gateway::routes(state.clone()))
-        .merge(session_events::routes(state.clone()))
         .merge(sampling::routes(state.clone()))
         .merge(features::routes())
-        .merge(events::routes(state.clone()))
         .merge(skills::routes(state.clone()))
         .merge(integrations::routes(state.clone()))
         .merge(workspaces::routes(state.clone()))
@@ -73,25 +87,20 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(workers::routes(state.clone()))
         .merge(findings::routes(state.clone()))
         .merge(ollama::routes(state.clone()))
-        .merge(version::routes(state.clone()))
         .merge(henry_status::routes(state.clone()))
         .merge(agents::routes(state.clone()));
 
     #[cfg(feature = "local-inference")]
     {
-        router = router.merge(local_inference::routes(state));
+        protected = protected.merge(local_inference::routes(state.clone()));
     }
 
-    // Serve Command Center UI from ui/command-center/dist/ if available.
-    // Check relative to the binary location first, then fall back to the
-    // PERMAGENT_UI_DIR env var or the repo-relative path.
-    let ui_dir = ui_dist_path();
-    if let Some(dir) = ui_dir {
-        let index = dir.join("index.html");
-        router = router.nest_service("/ui", ServeDir::new(&dir).fallback(ServeFile::new(index)));
-    }
+    protected = protected.layer(middleware::from_fn_with_state(
+        state,
+        require_bearer_token,
+    ));
 
-    router
+    public.merge(protected)
 }
 
 /// Locate the Command Center dist directory.

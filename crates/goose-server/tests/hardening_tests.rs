@@ -253,13 +253,6 @@ mod consolidation_clusters {
 
     // ── Domain clusters ──
 
-    // NOTE: The domain extraction SQL uses substr offsets that extract a
-    // protocol fragment (e.g., "tps:" for https, "ttp:" for http) rather
-    // than the actual domain name. This is a known bug (filed as follow-up).
-    // These tests document the ACTUAL behavior — the SQL groups by these
-    // fragments, which still achieves the consolidation goal because all
-    // https:// URLs share the same fragment "tps:" per domain pattern.
-
     #[test]
     fn browser_domain_cluster_with_three_entries() {
         let conn = setup_db();
@@ -269,8 +262,7 @@ mod consolidation_clusters {
 
         let clusters = find_domain_clusters(&conn).unwrap();
         assert_eq!(clusters.len(), 1);
-        // BUG: extracts protocol fragment, not domain. See note above.
-        assert_eq!(clusters[0].0, "tps:");
+        assert_eq!(clusters[0].0, "github.com");
         assert_eq!(clusters[0].1, 3);
     }
 
@@ -296,7 +288,7 @@ mod consolidation_clusters {
     }
 
     #[test]
-    fn http_and_https_produce_different_fragments() {
+    fn http_and_https_extract_different_domains() {
         let conn = setup_db();
         // HTTP URLs
         insert_memory(&conn, "m1", "k1", "Navigated to http://local.dev/api", "permagent.activity", "2026-01-01T00:00:00Z");
@@ -305,8 +297,71 @@ mod consolidation_clusters {
 
         let clusters = find_domain_clusters(&conn).unwrap();
         assert_eq!(clusters.len(), 1);
-        // BUG: extracts "ttp:" for http:// URLs (same substr offset issue)
-        assert_eq!(clusters[0].0, "ttp:");
+        assert_eq!(clusters[0].0, "local.dev");
+    }
+
+    // ── Cleanup migration ──
+
+    #[test]
+    fn cleanup_removes_buggy_clusters_and_unconsolidates_pointers() {
+        use permagent::activity::cleanup::run_domain_cluster_cleanup_sql;
+
+        let conn = setup_db();
+
+        // Insert the two buggy catchall cluster memories
+        insert_memory(&conn, "tps_cluster", "consolidated:browser:tps:", "tps: — visited 50 times", "librarian.consolidation", "2026-01-10T00:00:00Z");
+        insert_memory(&conn, "ttp_cluster", "consolidated:browser:ttp:", "ttp: — visited 20 times", "librarian.consolidation", "2026-01-10T00:00:00Z");
+
+        // 3 memories pointing to the https catchall
+        insert_memory(&conn, "m1", "k1", "Navigated to https://github.com/repo1", "permagent.activity", "2026-01-01T00:00:00Z");
+        insert_memory(&conn, "m2", "k2", "Navigated to https://github.com/repo2", "permagent.activity", "2026-01-02T00:00:00Z");
+        insert_memory(&conn, "m3", "k3", "Navigated to https://github.com/repo3", "permagent.activity", "2026-01-03T00:00:00Z");
+        conn.execute("UPDATE memories SET _pm_consolidated_into = 'tps_cluster' WHERE id IN ('m1','m2','m3')", []).unwrap();
+
+        // 2 memories pointing to the http catchall
+        insert_memory(&conn, "m4", "k4", "Navigated to http://local.dev/api", "permagent.activity", "2026-01-04T00:00:00Z");
+        insert_memory(&conn, "m5", "k5", "Navigated to http://local.dev/dash", "permagent.activity", "2026-01-05T00:00:00Z");
+        conn.execute("UPDATE memories SET _pm_consolidated_into = 'ttp_cluster' WHERE id IN ('m4','m5')", []).unwrap();
+
+        // 1 control memory — should not be touched
+        insert_memory(&conn, "ctrl", "k_ctrl", "Unrelated memory", "test", "2026-01-06T00:00:00Z");
+
+        // Run cleanup
+        let (un_consolidated, deleted) = run_domain_cluster_cleanup_sql(&conn).unwrap();
+
+        // 5 memories un-consolidated
+        assert_eq!(un_consolidated, 5);
+        // 2 catchall cluster memories deleted
+        assert_eq!(deleted, 2);
+
+        // Verify: all 5 now have _pm_consolidated_into = NULL
+        let still_consolidated: usize = conn.query_row(
+            "SELECT COUNT(*) FROM memories WHERE _pm_consolidated_into IS NOT NULL",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(still_consolidated, 0);
+
+        // Verify: catchall clusters are gone
+        let catchall_count: usize = conn.query_row(
+            "SELECT COUNT(*) FROM memories WHERE key LIKE 'consolidated:browser:tps:%' OR key LIKE 'consolidated:browser:ttp:%'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(catchall_count, 0);
+
+        // Verify: control memory unchanged
+        let ctrl_content: String = conn.query_row(
+            "SELECT content FROM memories WHERE id = 'ctrl'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(ctrl_content, "Unrelated memory");
+
+        // Idempotency: run again — no changes
+        let (un2, del2) = run_domain_cluster_cleanup_sql(&conn).unwrap();
+        assert_eq!(un2, 0);
+        assert_eq!(del2, 0);
     }
 
     // ── SQL builder ──

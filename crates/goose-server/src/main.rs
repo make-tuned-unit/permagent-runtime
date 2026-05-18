@@ -4,6 +4,7 @@ mod commands;
 mod configuration;
 mod error;
 mod logging;
+mod middleware;
 mod openapi;
 mod routes;
 mod session_event_bus;

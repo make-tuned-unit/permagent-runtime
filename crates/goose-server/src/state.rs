@@ -162,6 +162,23 @@ impl AppState {
             }
         });
 
+        // One-shot fix: un-consolidate memories grouped under buggy "tps:" / "ttp:" catchall
+        // clusters (substring offset bug in find_domain_clusters). Marker-file gated.
+        tokio::task::spawn(async {
+            let result = tokio::task::spawn_blocking(|| {
+                permagent::activity::cleanup::cleanup_buggy_domain_clusters()
+            })
+            .await;
+            match result {
+                Ok(Ok((un, del))) if un > 0 || del > 0 => {
+                    tracing::info!(un_consolidated = un, deleted = del, "Buggy domain-cluster cleanup completed");
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => tracing::warn!(error = %e, "Buggy domain-cluster cleanup failed"),
+                Err(e) => tracing::warn!(error = %e, "Buggy domain-cluster cleanup task panicked"),
+            }
+        });
+
         // Brain cleanup: prune noise memories, then consolidate redundant clusters.
         // Runs after annotation backfill at daemon startup.
         tokio::task::spawn(async {
