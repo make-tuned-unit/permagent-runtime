@@ -1,16 +1,10 @@
 //! Activity event endpoints for the Permagent awareness layer.
 //!
-//! - GET  /activity/recent?limit=N — auth-gated, returns last N events from ring buffer
-//! - POST /activity/emit — authenticated endpoint for frontend surfaces
-//! - GET  /activity/ingest-status — auth-gated ingestion stats
-//! - GET  /activity/recent-memories — auth-gated, last N ambient memories from Brain
-//! - GET  /activity/current-digest — auth-gated, current ContextBuilder digest as JSON
-//! - POST /activity/pause — auth-gated, pause Brain writes
-//! - POST /activity/resume — auth-gated, resume Brain writes
+//! Auth is handled by the bearer token middleware in middleware::auth.
 
 use axum::{
     extract::{Json, Query, State},
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     routing::{get, post},
     Router,
 };
@@ -22,30 +16,6 @@ use std::collections::VecDeque;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use crate::state::AppState;
-
-// ── Auth helper ─────────────────────────────────────────────��────────
-
-fn check_bearer_token(
-    headers: &HeaderMap,
-    state: &AppState,
-) -> Result<(), (StatusCode, Json<ErrorBody>)> {
-    let token = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-
-    if let Some(expected) = state.daemon_token.as_deref() {
-        if token != Some(expected) {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                Json(ErrorBody {
-                    error: "unauthorized".into(),
-                }),
-            ));
-        }
-    }
-    Ok(())
-}
 
 // ── GET /activity/recent ───────────────────────────────────────────────
 
@@ -60,13 +30,10 @@ fn default_limit() -> usize {
 }
 
 async fn get_recent(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     Query(params): Query<RecentQuery>,
-) -> Result<Json<Vec<ActivityEvent>>, (StatusCode, Json<ErrorBody>)> {
-    check_bearer_token(&headers, &state)?;
+) -> Json<Vec<ActivityEvent>> {
     let limit = params.limit.min(500);
-    Ok(Json(activity::recent_activity(limit)))
+    Json(activity::recent_activity(limit))
 }
 
 // ── POST /activity/emit ────────────────────────────────────────────────
@@ -83,45 +50,8 @@ struct ErrorBody {
 }
 
 async fn emit_event(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     Json(mut event): Json<ActivityEvent>,
 ) -> Result<Json<EmitResponse>, (StatusCode, Json<ErrorBody>)> {
-    // ── Auth ──
-    let token = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-
-    let expected = state.daemon_token.as_deref();
-    match (token, expected) {
-        (_, None) => {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                Json(ErrorBody {
-                    error: "daemon token not configured".into(),
-                }),
-            ));
-        }
-        (None, Some(_)) => {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                Json(ErrorBody {
-                    error: "missing Authorization: Bearer <token> header".into(),
-                }),
-            ));
-        }
-        (Some(provided), Some(expected)) if provided != expected => {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                Json(ErrorBody {
-                    error: "invalid token".into(),
-                }),
-            ));
-        }
-        _ => {} // Auth OK
-    }
-
     // ── Rate limit ──
     if !check_rate_limit() {
         return Err((
@@ -168,13 +98,9 @@ async fn emit_event(
 }
 
 // ── Rate limiter ───────────────────────────────────────────────────────
-//
-// Simple sliding-window: 100 events/second, 1000 events/60 seconds.
-// Intentionally generous — foot-gun guard, not a quota. Limits are
-// global (not per-token) since there's only one token in Phase 2.
 
 struct RateLimiter {
-    timestamps: VecDeque<i64>, // unix millis
+    timestamps: VecDeque<i64>,
 }
 
 static RATE_LIMITER: LazyLock<Mutex<RateLimiter>> = LazyLock::new(|| {
@@ -187,21 +113,18 @@ fn check_rate_limit() -> bool {
     let now_ms = Utc::now().timestamp_millis();
     let mut limiter = match RATE_LIMITER.lock() {
         Ok(l) => l,
-        Err(_) => return true, // Poisoned — allow
+        Err(_) => return true,
     };
 
-    // Prune entries older than 60 seconds
     let cutoff_60s = now_ms - 60_000;
     while limiter.timestamps.front().is_some_and(|&t| t < cutoff_60s) {
         limiter.timestamps.pop_front();
     }
 
-    // Check 60-second window (1000 max)
     if limiter.timestamps.len() >= 1000 {
         return false;
     }
 
-    // Check 1-second window (100 max)
     let cutoff_1s = now_ms - 1_000;
     let count_1s = limiter
         .timestamps
@@ -221,10 +144,7 @@ fn check_rate_limit() -> bool {
 
 async fn ingest_status(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
-    check_bearer_token(&headers, &state)?;
-
     let mut result = serde_json::json!({
         "events_ingested": { "always": 0, "aggregated": 0 },
         "events_observed": { "ephemeral": 0 },
@@ -278,11 +198,8 @@ fn default_memories_limit() -> usize {
 
 async fn get_recent_memories(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     Query(params): Query<RecentMemoriesQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
-    check_bearer_token(&headers, &state)?;
-
     let limit = params.limit.min(100);
 
     let brain = state.brain.as_ref().ok_or_else(|| {
@@ -296,8 +213,6 @@ async fn get_recent_memories(
 
     let brain = brain.clone();
     let result = tokio::task::spawn_blocking(move || {
-        // Use recall with a broad activity query to find recent activity memories.
-        // Filter by source="permagent.activity" to only return ambient captures.
         brain.recall("activity recent events", spectral::Visibility::Private)
     })
     .await
@@ -343,10 +258,7 @@ async fn get_recent_memories(
 
 async fn get_current_digest(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
-    check_bearer_token(&headers, &state)?;
-
     let context_builder = state.context_builder.as_ref().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -368,9 +280,6 @@ async fn get_current_digest(
         ..Default::default()
     };
 
-    // Brain::probe_recent() uses block_on() internally, so we must run
-    // the digest computation on the blocking thread pool to avoid
-    // "Cannot start a runtime from within a runtime" panics.
     let cb = context_builder.clone();
     let result = tokio::task::spawn_blocking(move || cb.current_digest(opts))
         .await
@@ -398,10 +307,7 @@ async fn get_current_digest(
 
 async fn pause_ingestion(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
-    check_bearer_token(&headers, &state)?;
-
     if let Some(ref ingester) = state.activity_ingester {
         ingester.pause();
         Ok(Json(serde_json::json!({ "paused": true })))
@@ -419,10 +325,7 @@ async fn pause_ingestion(
 
 async fn resume_ingestion(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
-    check_bearer_token(&headers, &state)?;
-
     if let Some(ref ingester) = state.activity_ingester {
         ingester.resume();
         Ok(Json(serde_json::json!({ "paused": false })))

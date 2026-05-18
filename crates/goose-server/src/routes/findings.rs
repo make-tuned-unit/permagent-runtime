@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Path as AxumPath, State},
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     routing::{get, post},
     Json, Router,
 };
@@ -103,27 +103,6 @@ fn save_findings(data: &FindingsFile) {
         &path,
         serde_json::to_string_pretty(data).unwrap_or_default(),
     );
-}
-
-// ── Auth helper ────────────────────────────────────────────────────
-
-fn _check_auth(headers: &HeaderMap, state: &AppState) -> Result<(), (StatusCode, Json<ErrorBody>)> {
-    let token = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-
-    if let Some(expected) = state.daemon_token.as_deref() {
-        if token != Some(expected) {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                Json(ErrorBody {
-                    error: "unauthorized".into(),
-                }),
-            ));
-        }
-    }
-    Ok(())
 }
 
 #[derive(Serialize)]
