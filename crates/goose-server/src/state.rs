@@ -311,7 +311,7 @@ impl AppState {
         // Librarian warm-load scheduler: checks once per minute if it's time
         // to warm the Librarian's Ollama model for the configured window.
         tokio::spawn(async move {
-            crate::routes::ollama::librarian_scheduler_loop().await;
+            crate::routes::librarian::librarian_scheduler_loop().await;
         });
 
         Ok(Arc::new(Self {

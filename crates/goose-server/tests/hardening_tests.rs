@@ -163,7 +163,7 @@ mod annotation_parser {
 // ═══════════════════════════════════════════════════════════════════
 
 mod consolidation_clusters {
-    use permagent_daemon::routes::ollama::{
+    use permagent_daemon::routes::librarian::consolidation::{
         build_consolidation_update_sql, find_domain_clusters, find_exact_duplicate_clusters,
     };
 
