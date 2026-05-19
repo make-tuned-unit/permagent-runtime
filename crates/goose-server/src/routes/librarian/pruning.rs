@@ -8,11 +8,6 @@ pub(super) fn run_pruning_pass() -> Result<usize, String> {
     let conn = rusqlite::Connection::open(&db_path)
         .map_err(|e| format!("Failed to open brain DB: {e}"))?;
 
-    // Ensure columns exist
-    conn.execute_batch(
-        "ALTER TABLE memories ADD COLUMN _pm_consolidated_into TEXT DEFAULT NULL;"
-    ).ok();
-
     let annotation_table_exists: bool = conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='memory_annotations'",
@@ -28,7 +23,7 @@ pub(super) fn run_pruning_pass() -> Result<usize, String> {
              WHERE length(m.content) < 20 \
                AND m.source = 'permagent.activity' \
                AND m.last_reinforced_at IS NULL \
-               AND m._pm_consolidated_into IS NULL",
+               AND m.key NOT IN (SELECT source_key FROM consolidation_edges)",
         )
         .map_err(|e| format!("Prune query failed: {e}"))?;
 

@@ -352,3 +352,370 @@ pub fn mark_migration(conn: &rusqlite::Connection, name: &str) -> Result<()> {
 // which can't be overridden in unit tests. The SQL correctness is validated
 // by the daemon at startup. The ingest filter tests in ingestion.rs cover
 // the filtering logic independently.
+
+// ── Consolidation migration ─────────────────────────────────────
+
+const MIGRATION_CONSOLIDATE_INTO: &str = "consolidate_into_migration_v1";
+
+/// Stats returned by the consolidation migration.
+#[derive(Debug)]
+pub struct ConsolidateMigrationStats {
+    pub rows_migrated: usize,
+    pub distinct_targets: usize,
+    pub orphans_skipped: usize,
+    pub column_dropped: bool,
+}
+
+/// Migrate `_pm_consolidated_into` column data to Spectral's `consolidation_edges` table.
+///
+/// One-shot, idempotent (gated by `_pm_migrations_applied`).
+/// Direct SQL INSERT (Option B) — no consolidate_into() calls, no score merging.
+///
+/// Steps:
+/// 1. Check if already applied
+/// 2. Resolve id→key via JOIN, INSERT OR IGNORE into consolidation_edges
+/// 3. Cross-check: row count + API verification via list_consolidated()
+/// 4. DROP COLUMN _pm_consolidated_into (gated on cross-check)
+/// 5. Mark migration applied
+pub fn migrate_consolidated_into_to_spectral(
+    brain: &spectral::Brain,
+) -> Result<ConsolidateMigrationStats> {
+    let db_path = crate::config::paths::Paths::brain_dir().join("memory.db");
+    if !db_path.exists() {
+        debug!(target: "permagent::cleanup", "consolidate_into migration: no memory.db, skipping");
+        return Ok(ConsolidateMigrationStats {
+            rows_migrated: 0,
+            distinct_targets: 0,
+            orphans_skipped: 0,
+            column_dropped: false,
+        });
+    }
+
+    let conn = rusqlite::Connection::open(&db_path)?;
+    ensure_migrations_table(&conn)?;
+
+    if is_migration_applied(&conn, MIGRATION_CONSOLIDATE_INTO)? {
+        debug!(target: "permagent::cleanup", "consolidate_into migration: already applied, skipping");
+        return Ok(ConsolidateMigrationStats {
+            rows_migrated: 0,
+            distinct_targets: 0,
+            orphans_skipped: 0,
+            column_dropped: false,
+        });
+    }
+
+    // Check if _pm_consolidated_into column exists
+    let has_column: bool = conn
+        .prepare("SELECT _pm_consolidated_into FROM memories LIMIT 0")
+        .is_ok();
+
+    if !has_column {
+        // Column already gone (maybe a partial previous run) — just mark and return
+        info!(target: "permagent::cleanup", "consolidate_into migration: column already absent, marking applied");
+        mark_migration_applied(&conn, MIGRATION_CONSOLIDATE_INTO)?;
+        return Ok(ConsolidateMigrationStats {
+            rows_migrated: 0,
+            distinct_targets: 0,
+            orphans_skipped: 0,
+            column_dropped: false,
+        });
+    }
+
+    // Step 3a: Read mapping with id→key JOIN
+    let mut stmt = conn.prepare(
+        "SELECT src.key AS source_key, tgt.key AS target_key \
+         FROM memories src \
+         JOIN memories tgt ON tgt.id = src._pm_consolidated_into \
+         WHERE src._pm_consolidated_into IS NOT NULL",
+    )?;
+    let mappings: Vec<(String, String)> = stmt
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(stmt);
+
+    // Step 3b: Count orphans (dangling references)
+    let orphans: usize = conn.query_row(
+        "SELECT COUNT(*) FROM memories \
+         WHERE _pm_consolidated_into IS NOT NULL \
+           AND _pm_consolidated_into NOT IN (SELECT id FROM memories)",
+        [],
+        |r| r.get(0),
+    )?;
+    if orphans > 0 {
+        warn!(
+            target: "permagent::cleanup",
+            orphans,
+            "consolidate_into migration: {} orphan references skipped (target id not found)",
+            orphans
+        );
+    }
+
+    // Distinct targets
+    let distinct_targets = {
+        let mut targets = std::collections::HashSet::new();
+        for (_, t) in &mappings {
+            targets.insert(t.clone());
+        }
+        targets.len()
+    };
+
+    // Step 3c: INSERT OR IGNORE into consolidation_edges (single transaction)
+    conn.execute_batch("BEGIN TRANSACTION;")?;
+
+    // Ensure consolidation_edges table exists (Spectral's init_schema creates it,
+    // but be defensive for the migration path)
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS consolidation_edges ( \
+             source_key TEXT PRIMARY KEY, \
+             target_key TEXT NOT NULL, \
+             consolidated_at TEXT NOT NULL DEFAULT (datetime('now')), \
+             UNIQUE(source_key, target_key) \
+         ); \
+         CREATE INDEX IF NOT EXISTS idx_consolidation_target \
+             ON consolidation_edges(target_key);",
+    )?;
+
+    for (source_key, target_key) in &mappings {
+        conn.execute(
+            "INSERT OR IGNORE INTO consolidation_edges (source_key, target_key) VALUES (?1, ?2)",
+            rusqlite::params![source_key, target_key],
+        )?;
+    }
+
+    conn.execute_batch("COMMIT;")?;
+
+    // Step 3d: Cross-check via direct SQL
+    let edge_count: usize = conn.query_row(
+        "SELECT COUNT(*) FROM consolidation_edges",
+        [],
+        |r| r.get(0),
+    )?;
+
+    // We expect edge_count >= mappings.len() (could be > if some edges were already
+    // present from a partial previous run or from Spectral's own consolidation calls).
+    // The critical check: every mapping we inserted should be present.
+    let missing: usize = conn.query_row(
+        "SELECT COUNT(*) FROM memories src \
+         JOIN memories tgt ON tgt.id = src._pm_consolidated_into \
+         WHERE src._pm_consolidated_into IS NOT NULL \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM consolidation_edges ce \
+               WHERE ce.source_key = src.key AND ce.target_key = tgt.key \
+           )",
+        [],
+        |r| r.get(0),
+    )?;
+
+    if missing > 0 {
+        warn!(
+            target: "permagent::cleanup",
+            missing,
+            edge_count,
+            expected = mappings.len(),
+            "consolidate_into migration: cross-check FAILED — {} mappings missing from consolidation_edges. \
+             Aborting column drop. Column left in place for triage.",
+            missing
+        );
+        return Ok(ConsolidateMigrationStats {
+            rows_migrated: mappings.len(),
+            distinct_targets,
+            orphans_skipped: orphans,
+            column_dropped: false,
+        });
+    }
+
+    // Cross-check via Spectral API: list_consolidated(None) should see the edges
+    let api_edges = brain.list_consolidated(None);
+    match api_edges {
+        Ok(edges) => {
+            if edges.len() < mappings.len() {
+                warn!(
+                    target: "permagent::cleanup",
+                    api_count = edges.len(),
+                    sql_count = mappings.len(),
+                    "consolidate_into migration: API cross-check mismatch — \
+                     list_consolidated() returned fewer edges than expected. \
+                     Aborting column drop.",
+                );
+                return Ok(ConsolidateMigrationStats {
+                    rows_migrated: mappings.len(),
+                    distinct_targets,
+                    orphans_skipped: orphans,
+                    column_dropped: false,
+                });
+            }
+            info!(
+                target: "permagent::cleanup",
+                api_count = edges.len(),
+                "consolidate_into migration: API cross-check passed"
+            );
+        }
+        Err(e) => {
+            warn!(
+                target: "permagent::cleanup",
+                error = %e,
+                "consolidate_into migration: API cross-check failed — \
+                 list_consolidated() returned error. Aborting column drop.",
+            );
+            return Ok(ConsolidateMigrationStats {
+                rows_migrated: mappings.len(),
+                distinct_targets,
+                orphans_skipped: orphans,
+                column_dropped: false,
+            });
+        }
+    }
+
+    // Step 3e: Drop the column
+    let column_dropped = match conn.execute_batch(
+        "ALTER TABLE memories DROP COLUMN _pm_consolidated_into;",
+    ) {
+        Ok(()) => {
+            info!(target: "permagent::cleanup", "consolidate_into migration: _pm_consolidated_into column dropped");
+            true
+        }
+        Err(e) => {
+            warn!(
+                target: "permagent::cleanup",
+                error = %e,
+                "consolidate_into migration: DROP COLUMN failed (vestigial column remains)"
+            );
+            false
+        }
+    };
+
+    mark_migration_applied(&conn, MIGRATION_CONSOLIDATE_INTO)?;
+
+    info!(
+        target: "permagent::cleanup",
+        rows_migrated = mappings.len(),
+        distinct_targets,
+        orphans_skipped = orphans,
+        column_dropped,
+        "consolidate_into migration complete"
+    );
+
+    Ok(ConsolidateMigrationStats {
+        rows_migrated: mappings.len(),
+        distinct_targets,
+        orphans_skipped: orphans,
+        column_dropped,
+    })
+}
+
+/// Run the consolidation migration on an arbitrary connection (for testing).
+/// Does not use Paths::brain_dir() — operates on the provided connection.
+pub fn run_consolidate_into_migration_sql(
+    conn: &rusqlite::Connection,
+) -> Result<ConsolidateMigrationStats> {
+    ensure_migrations_table(conn)?;
+
+    if is_migration_applied(conn, MIGRATION_CONSOLIDATE_INTO)? {
+        return Ok(ConsolidateMigrationStats {
+            rows_migrated: 0,
+            distinct_targets: 0,
+            orphans_skipped: 0,
+            column_dropped: false,
+        });
+    }
+
+    // Check if column exists
+    let has_column: bool = conn
+        .prepare("SELECT _pm_consolidated_into FROM memories LIMIT 0")
+        .is_ok();
+
+    if !has_column {
+        mark_migration_applied(conn, MIGRATION_CONSOLIDATE_INTO)?;
+        return Ok(ConsolidateMigrationStats {
+            rows_migrated: 0,
+            distinct_targets: 0,
+            orphans_skipped: 0,
+            column_dropped: false,
+        });
+    }
+
+    // Read mappings with id→key JOIN
+    let mut stmt = conn.prepare(
+        "SELECT src.key AS source_key, tgt.key AS target_key \
+         FROM memories src \
+         JOIN memories tgt ON tgt.id = src._pm_consolidated_into \
+         WHERE src._pm_consolidated_into IS NOT NULL",
+    )?;
+    let mappings: Vec<(String, String)> = stmt
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(stmt);
+
+    let orphans: usize = conn.query_row(
+        "SELECT COUNT(*) FROM memories \
+         WHERE _pm_consolidated_into IS NOT NULL \
+           AND _pm_consolidated_into NOT IN (SELECT id FROM memories)",
+        [],
+        |r| r.get(0),
+    )?;
+
+    let distinct_targets = {
+        let mut targets = std::collections::HashSet::new();
+        for (_, t) in &mappings {
+            targets.insert(t.clone());
+        }
+        targets.len()
+    };
+
+    // Ensure consolidation_edges table
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS consolidation_edges ( \
+             source_key TEXT PRIMARY KEY, \
+             target_key TEXT NOT NULL, \
+             consolidated_at TEXT NOT NULL DEFAULT (datetime('now')), \
+             UNIQUE(source_key, target_key) \
+         ); \
+         CREATE INDEX IF NOT EXISTS idx_consolidation_target \
+             ON consolidation_edges(target_key);",
+    )?;
+
+    for (source_key, target_key) in &mappings {
+        conn.execute(
+            "INSERT OR IGNORE INTO consolidation_edges (source_key, target_key) VALUES (?1, ?2)",
+            rusqlite::params![source_key, target_key],
+        )?;
+    }
+
+    // Cross-check
+    let missing: usize = conn.query_row(
+        "SELECT COUNT(*) FROM memories src \
+         JOIN memories tgt ON tgt.id = src._pm_consolidated_into \
+         WHERE src._pm_consolidated_into IS NOT NULL \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM consolidation_edges ce \
+               WHERE ce.source_key = src.key AND ce.target_key = tgt.key \
+           )",
+        [],
+        |r| r.get(0),
+    )?;
+
+    if missing > 0 {
+        return Ok(ConsolidateMigrationStats {
+            rows_migrated: mappings.len(),
+            distinct_targets,
+            orphans_skipped: orphans,
+            column_dropped: false,
+        });
+    }
+
+    // Drop column
+    let column_dropped = conn
+        .execute_batch("ALTER TABLE memories DROP COLUMN _pm_consolidated_into;")
+        .is_ok();
+
+    mark_migration_applied(conn, MIGRATION_CONSOLIDATE_INTO)?;
+
+    Ok(ConsolidateMigrationStats {
+        rows_migrated: mappings.len(),
+        distinct_targets,
+        orphans_skipped: orphans,
+        column_dropped,
+    })
+}
