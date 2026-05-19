@@ -10,6 +10,7 @@ import { ChatLauncher } from './components/chat/ChatLauncher';
 import { DropZone } from './components/chat/DropZone';
 import { api, fileToBase64 } from './lib/api';
 import type { LayoutNode } from './lib/store';
+import { useAppNavigate } from './hooks/useAppNavigate';
 
 function MainContent() {
   const activePanel = useCommandCenter(s => s.activePanel);
@@ -67,6 +68,9 @@ function App() {
   const { gradient, density } = useTheme();
 
   const [phase, setPhase] = useState<'splash' | 'loading' | 'wizard' | 'app'>('splash');
+
+  // Subscribe to AppNavigate events from the agent
+  useAppNavigate();
 
   useEffect(() => {
     if (phase !== 'loading') return;

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { api, extractText, fileToBase64 } from './api';
-import type { Session, DaemonMessage, SSEEvent } from './api';
+import type { Session, DaemonMessage, SSEEvent, AppContextPayload } from './api';
 import { startEventPruning } from './eventBus';
 
 // --- Types ---
@@ -295,6 +295,25 @@ function daemonMsgToChat(msg: DaemonMessage, index: number, sessionId: string): 
   };
 }
 
+/** Extract the primary tool type from a workspace layout tree. */
+function primaryToolType(node: LayoutNode): ToolType | null {
+  if (node.type === 'panel') return node.tool;
+  if (node.type === 'split' && node.children.length > 0) return primaryToolType(node.children[0]);
+  return null;
+}
+
+/** Build AppContextPayload from current store state. */
+function buildAppContext(state: CommandCenterStore): AppContextPayload | undefined {
+  const ws = state.workspaces.find(w => w.id === state.activeWorkspaceId);
+  const toolType = ws ? primaryToolType(ws.layoutJson) : null;
+  if (!toolType) return undefined;
+  const ctx: AppContextPayload = { current_tab: toolType };
+  if (state.activePanel !== 'chat') {
+    ctx.active_panel = state.activePanel;
+  }
+  return ctx;
+}
+
 export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   // Panel routing
   activePanel: 'chat',
@@ -497,9 +516,12 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       }],
     }));
 
+    // Build app_context from current UI state
+    const appContext = buildAppContext(get());
+
     try {
       // Fire-and-forget: events arrive on SSE channel
-      await api.sendReply(sessionId, text, images);
+      await api.sendReply(sessionId, text, images, appContext);
     } catch (err) {
       console.error('[send] api.sendReply FAILED:', err);
       set(s => ({

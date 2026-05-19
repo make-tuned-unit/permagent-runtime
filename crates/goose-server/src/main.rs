@@ -1,3 +1,4 @@
+mod app_catalog;
 mod automation;
 mod brain_ops;
 mod commands;

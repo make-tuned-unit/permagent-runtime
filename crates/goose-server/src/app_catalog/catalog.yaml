@@ -1,0 +1,86 @@
+tabs:
+  - name: Build
+    tool_type: build
+    panel_type: workspace
+    description: >-
+      The Build tab is where the user works with code, terminals, and browsers
+      in an integrated dev environment.
+    affords:
+      - Code editor and terminal access
+      - Browser webview for documentation lookup
+    suggest_when:
+      - User asks about code, dev work, terminals, or browsing
+    customizable_layout: false
+
+  - name: Automate
+    tool_type: automate
+    panel_type: workspace
+    description: >-
+      The Automate tab shows the user's scheduled recipes, saved skills, and
+      device-health insights — all automations the agent can run for them.
+    affords:
+      - Run a scheduled recipe on-demand
+      - View next run time for each scheduled recipe
+      - (Skills section coming in PR 1.6.B)
+      - (Insights section coming in PR 1.6.C)
+    suggest_when:
+      - User asks about scheduled tasks, recipes, skills, or automation
+      - User wants to know what's running on a schedule
+    customizable_layout: false
+
+  - name: Brain
+    tool_type: memory
+    panel_type: workspace
+    description: >-
+      The Brain tab visualizes the user's Spectral memory graph — memories,
+      entities, descriptions, consolidations. It's how the user inspects what
+      the agent has learned and remembered.
+    affords:
+      - Browse memories by recency or topic
+      - View entity descriptions
+      - Search the memory graph
+    suggest_when:
+      - User asks "what do you remember" or "what do you know about X"
+      - User wants to inspect or audit memory contents
+    customizable_layout: false
+
+  - name: World
+    tool_type: world
+    panel_type: workspace
+    description: >-
+      The World tab is a 3D scene showing the user's agents and their current
+      activity. Visual representation of the agent ecosystem.
+    affords:
+      - See agents as 3D characters with status indicators
+      - Click an agent to inspect its state
+    suggest_when:
+      - User asks to see the agents or wants a visual overview
+    customizable_layout: false
+
+  - name: Settings
+    tool_type: settings
+    panel_type: overlay
+    description: >-
+      The Settings tab is where providers, models, appearance, and scheduling
+      defaults are configured.
+    affords:
+      - Configure AI provider (Anthropic, OpenAI, Ollama)
+      - Adjust appearance / theme
+      - Set Librarian schedule
+    suggest_when:
+      - User asks how to configure a provider, change model, or adjust the Librarian
+    customizable_layout: false
+
+  - name: Dashboard
+    tool_type: dashboard
+    panel_type: workspace
+    description: >-
+      The Dashboard is the home view — a customizable surface showing the user's
+      most important real-time information. Layout customization coming in PR 1.6.E.
+    affords:
+      - View current agent activity at a glance
+      - (Customizable component layout — coming soon)
+    suggest_when:
+      - User asks "what's happening" or wants a summary
+      - User asks about customizing their home view
+    customizable_layout: true

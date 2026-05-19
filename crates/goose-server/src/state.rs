@@ -46,6 +46,8 @@ pub struct AppState {
     pub context_builder: Option<Arc<permagent::activity::context_builder::ContextBuilder>>,
     /// Bridge for pending browser content extraction requests.
     pub browser_content_bridge: Arc<crate::routes::browser_content::BrowserContentBridge>,
+    /// App catalog — static tab/view descriptions for agent navigation.
+    pub app_catalog: Arc<permagent::app_catalog::AppCatalog>,
 }
 
 impl AppState {
@@ -349,6 +351,9 @@ impl AppState {
             crate::routes::librarian::librarian_scheduler_loop().await;
         });
 
+        // Load app catalog (static tab/view descriptions for agent navigation).
+        let app_catalog = crate::app_catalog::init();
+
         Ok(Arc::new(Self {
             agent_manager,
             recipe_file_hash_map: Arc::new(Mutex::new(HashMap::new())),
@@ -366,6 +371,7 @@ impl AppState {
             activity_ingester,
             context_builder,
             browser_content_bridge: Arc::new(crate::routes::browser_content::BrowserContentBridge::new()),
+            app_catalog,
         }))
     }
 

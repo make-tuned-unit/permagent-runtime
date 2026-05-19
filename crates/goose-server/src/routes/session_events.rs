@@ -35,6 +35,25 @@ pub struct SessionReplyRequest {
     pub user_message: Message,
     #[serde(default)]
     pub override_conversation: Option<Vec<Message>>,
+    /// Current UI state sent by the frontend (tab, selection, etc.).
+    #[serde(default)]
+    pub app_context: Option<AppContext>,
+}
+
+/// Snapshot of the frontend's current UI state, sent with each chat message.
+#[derive(Debug, Clone, Deserialize, Serialize, utoipa::ToSchema)]
+pub struct AppContext {
+    /// Internal tool_type of the active workspace panel (e.g. "memory", "build").
+    pub current_tab: String,
+    /// If an overlay is open (e.g. "settings"), its panel name.
+    #[serde(default)]
+    pub active_panel: Option<String>,
+    /// ID of a selected item in the current view (memory ID, recipe ID, etc.).
+    #[serde(default)]
+    pub selected_id: Option<String>,
+    /// Opaque per-view state the receiving component may interpret.
+    #[serde(default)]
+    pub view_state: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -393,6 +412,7 @@ pub async fn session_reply(
     }
 
     let override_conversation = request.override_conversation;
+    let app_context = request.app_context;
 
     let task_state = state.clone();
     let task_session_id = session_id.clone();
@@ -562,6 +582,36 @@ pub async fn session_reply(
             let recognition_ctx = task_state.build_recognition_context(Some(&task_session_id));
             crate::brain_ops::inject_recall(brain, &agent, &user_query, recognition_ctx)
                 .await;
+        }
+
+        // ── Phase 3c: Inject app catalog + current UI state ──
+        {
+            let catalog = &task_state.app_catalog;
+            agent
+                .extend_system_prompt("app_catalog".to_string(), catalog.to_prompt_block())
+                .await;
+
+            if let Some(ref ctx) = app_context {
+                let tab_name = catalog
+                    .find_by_name(&ctx.current_tab)
+                    .or_else(|| {
+                        catalog.tabs.iter().find(|e| e.tool_type == ctx.current_tab)
+                    })
+                    .map(|e| e.name.as_str())
+                    .unwrap_or(&ctx.current_tab);
+                let mut block = format!("Current UI state: User is on the {} tab.", tab_name);
+                if let Some(ref panel) = ctx.active_panel {
+                    if panel != "chat" {
+                        block.push_str(&format!(" They have the {} overlay open.", panel));
+                    }
+                }
+                if let Some(ref id) = ctx.selected_id {
+                    block.push_str(&format!(" They have selected item {}.", id));
+                }
+                agent
+                    .extend_system_prompt("app_context".to_string(), block)
+                    .await;
+            }
         }
 
         let mut stream = match agent
