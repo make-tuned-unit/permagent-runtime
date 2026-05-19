@@ -218,7 +218,7 @@ dependencies = [
  "objc2-foundation",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
  "x11rb",
 ]
 
@@ -3227,7 +3227,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3537,7 +3537,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4876,7 +4876,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.56.0",
 ]
 
 [[package]]
@@ -5310,7 +5310,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6172,7 +6172,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6322,7 +6322,7 @@ version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51e219e79014df21a225b1860a479e2dcd7cbd9130f4defd4bd0e191ea31d67d"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.21.7",
  "chrono",
  "getrandom 0.2.17",
  "http 1.4.0",
@@ -7740,7 +7740,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8386,7 +8386,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8445,7 +8445,7 @@ dependencies = [
  "security-framework 3.7.0",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -9289,7 +9289,7 @@ dependencies = [
 [[package]]
 name = "spectral"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=b52d7d2#b52d7d29cd22d221f2746a402444aa80b33fbf37"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=1aca613#1aca613d84a41d7fc9a6546014c13fb29b8c3e23"
 dependencies = [
  "anyhow",
  "reqwest 0.12.28",
@@ -9306,7 +9306,7 @@ dependencies = [
 [[package]]
 name = "spectral-cascade"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=b52d7d2#b52d7d29cd22d221f2746a402444aa80b33fbf37"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=1aca613#1aca613d84a41d7fc9a6546014c13fb29b8c3e23"
 dependencies = [
  "chrono",
  "serde",
@@ -9317,7 +9317,7 @@ dependencies = [
 [[package]]
 name = "spectral-core"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=b52d7d2#b52d7d29cd22d221f2746a402444aa80b33fbf37"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=1aca613#1aca613d84a41d7fc9a6546014c13fb29b8c3e23"
 dependencies = [
  "blake3",
  "ed25519-dalek",
@@ -9329,7 +9329,7 @@ dependencies = [
 [[package]]
 name = "spectral-graph"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=b52d7d2#b52d7d29cd22d221f2746a402444aa80b33fbf37"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=1aca613#1aca613d84a41d7fc9a6546014c13fb29b8c3e23"
 dependencies = [
  "blake3",
  "chrono",
@@ -9353,7 +9353,7 @@ dependencies = [
 [[package]]
 name = "spectral-ingest"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=b52d7d2#b52d7d29cd22d221f2746a402444aa80b33fbf37"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=1aca613#1aca613d84a41d7fc9a6546014c13fb29b8c3e23"
 dependencies = [
  "anyhow",
  "blake3",
@@ -9372,7 +9372,7 @@ dependencies = [
 [[package]]
 name = "spectral-spectrogram"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=b52d7d2#b52d7d29cd22d221f2746a402444aa80b33fbf37"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=1aca613#1aca613d84a41d7fc9a6546014c13fb29b8c3e23"
 dependencies = [
  "chrono",
  "regex",
@@ -9387,7 +9387,7 @@ dependencies = [
 [[package]]
 name = "spectral-tact"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=b52d7d2#b52d7d29cd22d221f2746a402444aa80b33fbf37"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=1aca613#1aca613d84a41d7fc9a6546014c13fb29b8c3e23"
 dependencies = [
  "anyhow",
  "regex",
@@ -10517,7 +10517,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -12171,7 +12171,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

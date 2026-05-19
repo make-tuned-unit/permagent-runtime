@@ -164,20 +164,55 @@ impl AppState {
 
         // One-shot fix: un-consolidate memories grouped under buggy "tps:" / "ttp:" catchall
         // clusters (substring offset bug in find_domain_clusters). Marker-file gated.
-        tokio::task::spawn(async {
-            let result = tokio::task::spawn_blocking(|| {
-                permagent::activity::cleanup::cleanup_buggy_domain_clusters()
-            })
-            .await;
-            match result {
-                Ok(Ok((un, del))) if un > 0 || del > 0 => {
-                    tracing::info!(un_consolidated = un, deleted = del, "Buggy domain-cluster cleanup completed");
+        // Then migrate _pm_consolidated_into column data to Spectral's consolidation_edges table.
+        // Sequenced: domain cluster cleanup must complete before consolidation migration.
+        {
+            let brain_for_migration = brain.clone();
+            tokio::task::spawn(async move {
+                let result = tokio::task::spawn_blocking(|| {
+                    permagent::activity::cleanup::cleanup_buggy_domain_clusters()
+                })
+                .await;
+                match result {
+                    Ok(Ok((un, del))) if un > 0 || del > 0 => {
+                        tracing::info!(un_consolidated = un, deleted = del, "Buggy domain-cluster cleanup completed");
+                    }
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => {
+                        tracing::warn!(error = %e, "Buggy domain-cluster cleanup failed");
+                        return; // Don't proceed to consolidation migration
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Buggy domain-cluster cleanup task panicked");
+                        return;
+                    }
                 }
-                Ok(Ok(_)) => {}
-                Ok(Err(e)) => tracing::warn!(error = %e, "Buggy domain-cluster cleanup failed"),
-                Err(e) => tracing::warn!(error = %e, "Buggy domain-cluster cleanup task panicked"),
-            }
-        });
+
+                // Migrate _pm_consolidated_into → consolidation_edges (Spectral API).
+                // Must run after domain cluster cleanup so the data is clean.
+                if let Some(ref brain) = brain_for_migration {
+                    let brain = brain.clone();
+                    let result = tokio::task::spawn_blocking(move || {
+                        permagent::activity::cleanup::migrate_consolidated_into_to_spectral(&brain)
+                    })
+                    .await;
+                    match result {
+                        Ok(Ok(stats)) if stats.rows_migrated > 0 => {
+                            tracing::info!(
+                                rows_migrated = stats.rows_migrated,
+                                distinct_targets = stats.distinct_targets,
+                                orphans_skipped = stats.orphans_skipped,
+                                column_dropped = stats.column_dropped,
+                                "consolidate_into migration completed"
+                            );
+                        }
+                        Ok(Ok(_)) => {}
+                        Ok(Err(e)) => tracing::warn!(error = %e, "consolidate_into migration failed"),
+                        Err(e) => tracing::warn!(error = %e, "consolidate_into migration task panicked"),
+                    }
+                }
+            });
+        }
 
         // Brain cleanup: prune noise memories, then consolidate redundant clusters.
         // Runs after annotation backfill at daemon startup.

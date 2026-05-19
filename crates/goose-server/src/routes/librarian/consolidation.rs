@@ -1,12 +1,10 @@
 //! Memory consolidation: duplicate detection, domain clustering, and merge.
 //!
 //! Detects redundant memory clusters and merges them into representative
-//! summaries. Uses direct SQL against the Brain's memory.db — Spectral
-//! has no delete/archive API (append-only by design).
-//!
-//! FORWARD-LOOKING NOTE: _pm_consolidated_into will be removed in an
-//! upcoming PR (PR 4) once Spectral's consolidate_into API at pin a18041e
-//! is in use. Keep the column and ALTER for now.
+//! summaries. Uses Spectral's consolidate_into() API for recording
+//! consolidation edges; recall automatically filters consolidated sources.
+
+use crate::brain_ops::read_only_brain_conn;
 
 /// Find groups of memories with identical content that haven't been consolidated yet.
 /// Returns Vec<(content, count)> — each entry is a cluster of exact duplicates.
@@ -16,7 +14,7 @@ pub fn find_exact_duplicate_clusters(
     let mut stmt = conn
         .prepare(
             "SELECT content, COUNT(*) as cnt FROM memories \
-             WHERE _pm_consolidated_into IS NULL \
+             WHERE key NOT IN (SELECT source_key FROM consolidation_edges) \
              GROUP BY content HAVING cnt > 1 ORDER BY cnt DESC LIMIT 50",
         )
         .map_err(|e| format!("Prepare failed: {e}"))?;
@@ -48,7 +46,7 @@ pub fn find_domain_clusters(
                MAX(created_at) as last_visit \
              FROM memories \
              WHERE source = 'permagent.activity' \
-               AND _pm_consolidated_into IS NULL \
+               AND key NOT IN (SELECT source_key FROM consolidation_edges) \
                AND content LIKE 'Navigated to http%' \
              GROUP BY domain \
              HAVING cnt >= 3 AND domain IS NOT NULL \
@@ -72,21 +70,9 @@ pub fn find_domain_clusters(
     Ok(clusters)
 }
 
-/// Build the SQL UPDATE that marks a duplicate as consolidated into the keeper.
-/// Returns the statement string and params. Does NOT execute.
-pub fn build_consolidation_update_sql() -> &'static str {
-    "UPDATE memories SET _pm_consolidated_into = ?1 WHERE id = ?2"
-}
-
 pub(super) fn run_consolidation_scan(brain: &spectral::Brain) -> Result<(usize, usize), String> {
-    let db_path = permagent::config::paths::Paths::brain_dir().join("memory.db");
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = read_only_brain_conn()
         .map_err(|e| format!("Failed to open brain DB: {e}"))?;
-
-    // Ensure Permagent-side column exists (idempotent)
-    conn.execute_batch(
-        "ALTER TABLE memories ADD COLUMN _pm_consolidated_into TEXT DEFAULT NULL;"
-    ).ok(); // Ignore "duplicate column" error
 
     let mut total_clusters = 0usize;
     let mut total_originals = 0usize;
@@ -94,41 +80,53 @@ pub(super) fn run_consolidation_scan(brain: &spectral::Brain) -> Result<(usize, 
     // ── Strategy 1: Exact content duplicates ──
     let dup_clusters = find_exact_duplicate_clusters(&conn)?;
 
-    for (content, count) in &dup_clusters {
+    for (content, _count) in &dup_clusters {
         // Keep the oldest, mark the rest
-        let ids: Vec<(String, String)> = conn
+        let keys: Vec<String> = conn
             .prepare(
-                "SELECT id, key FROM memories \
-                 WHERE content = ?1 AND _pm_consolidated_into IS NULL \
+                "SELECT key FROM memories \
+                 WHERE content = ?1 \
+                   AND key NOT IN (SELECT source_key FROM consolidation_edges) \
                  ORDER BY created_at ASC",
             )
             .and_then(|mut s| {
-                s.query_map([content], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })
-                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                s.query_map([content], |row| row.get::<_, String>(0))
+                    .map(|rows| rows.filter_map(|r| r.ok()).collect())
             })
             .unwrap_or_default();
 
-        if ids.len() < 2 {
+        if keys.len() < 2 {
             continue;
         }
-        let keeper_id = &ids[0].0;
-        for (id, key) in &ids[1..] {
-            conn.execute(
-                build_consolidation_update_sql(),
-                rusqlite::params![keeper_id, id],
-            )
-            .ok();
-            tracing::debug!(
-                target: "permagentd::librarian",
-                key,
-                keeper = keeper_id,
-                "Consolidated duplicate"
-            );
+        let keeper_key = &keys[0];
+        let source_keys: Vec<String> = keys[1..].to_vec();
+
+        match brain.consolidate_into(
+            &source_keys,
+            keeper_key,
+            &spectral::ingest::ConsolidateOpts::default(),
+        ) {
+            Ok(result) => {
+                for key in &result.consolidated {
+                    tracing::debug!(
+                        target: "permagentd::librarian",
+                        key,
+                        keeper = keeper_key,
+                        "Consolidated duplicate"
+                    );
+                }
+                total_clusters += 1;
+                total_originals += result.consolidated.len();
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "permagentd::librarian",
+                    error = %e,
+                    keeper = keeper_key,
+                    "Failed to consolidate duplicate cluster"
+                );
+            }
         }
-        total_clusters += 1;
-        total_originals += count - 1;
     }
 
     // ── Strategy 2: Same-domain browser navigations with 3+ entries ──
@@ -153,27 +151,52 @@ pub(super) fn run_consolidation_scan(brain: &spectral::Brain) -> Result<(usize, 
             },
         );
 
-        if let Ok(r) = result {
-            // Mark originals as consolidated
-            conn.execute(
-                "UPDATE memories SET _pm_consolidated_into = ?1 \
-                 WHERE source = 'permagent.activity' \
-                   AND _pm_consolidated_into IS NULL \
-                   AND content LIKE ?2",
-                rusqlite::params![r.memory_id, format!("Navigated to%{domain}%")],
-            )
-            .ok();
+        if let Ok(_r) = result {
+            // Collect the keys of the originals to consolidate
+            let source_keys: Vec<String> = conn
+                .prepare(
+                    "SELECT key FROM memories \
+                     WHERE source = 'permagent.activity' \
+                       AND key NOT IN (SELECT source_key FROM consolidation_edges) \
+                       AND content LIKE ?1",
+                )
+                .and_then(|mut s| {
+                    s.query_map(
+                        rusqlite::params![format!("Navigated to%{domain}%")],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                })
+                .unwrap_or_default();
 
-            total_clusters += 1;
-            total_originals += count;
+            if !source_keys.is_empty() {
+                match brain.consolidate_into(
+                    &source_keys,
+                    &key,
+                    &spectral::ingest::ConsolidateOpts::default(),
+                ) {
+                    Ok(result) => {
+                        total_clusters += 1;
+                        total_originals += result.consolidated.len();
 
-            tracing::debug!(
-                target: "permagentd::librarian",
-                domain,
-                count,
-                summary_id = r.memory_id,
-                "Consolidated browser navigation cluster"
-            );
+                        tracing::debug!(
+                            target: "permagentd::librarian",
+                            domain,
+                            consolidated = result.consolidated.len(),
+                            summary_key = key,
+                            "Consolidated browser navigation cluster"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "permagentd::librarian",
+                            error = %e,
+                            domain,
+                            "Failed to consolidate browser navigation cluster"
+                        );
+                    }
+                }
+            }
         }
     }
 

@@ -164,11 +164,35 @@ mod annotation_parser {
 
 mod consolidation_clusters {
     use permagent_daemon::routes::librarian::consolidation::{
-        build_consolidation_update_sql, find_domain_clusters, find_exact_duplicate_clusters,
+        find_domain_clusters, find_exact_duplicate_clusters,
     };
 
-    /// Create an in-memory SQLite DB with the memories schema.
+    /// Create an in-memory SQLite DB with the memories schema + consolidation_edges.
     fn setup_db() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE memories (
+                id TEXT PRIMARY KEY,
+                key TEXT NOT NULL,
+                content TEXT NOT NULL,
+                source TEXT,
+                created_at TEXT,
+                last_reinforced_at TEXT
+            );
+            CREATE TABLE consolidation_edges (
+                source_key TEXT PRIMARY KEY,
+                target_key TEXT NOT NULL,
+                consolidated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(source_key, target_key)
+            );
+            CREATE INDEX idx_consolidation_target ON consolidation_edges(target_key);"
+        ).unwrap();
+        conn
+    }
+
+    /// Create an in-memory SQLite DB with the OLD schema (includes _pm_consolidated_into).
+    /// Used for testing the domain cluster cleanup migration which operates on the old column.
+    fn setup_legacy_db() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE memories (
@@ -179,7 +203,14 @@ mod consolidation_clusters {
                 created_at TEXT,
                 last_reinforced_at TEXT,
                 _pm_consolidated_into TEXT DEFAULT NULL
-            );"
+            );
+            CREATE TABLE consolidation_edges (
+                source_key TEXT PRIMARY KEY,
+                target_key TEXT NOT NULL,
+                consolidated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(source_key, target_key)
+            );
+            CREATE INDEX idx_consolidation_target ON consolidation_edges(target_key);"
         ).unwrap();
         conn
     }
@@ -231,8 +262,11 @@ mod consolidation_clusters {
         let conn = setup_db();
         insert_memory(&conn, "m1", "k1", "Duplicate", "test", "2026-01-01T00:00:00Z");
         insert_memory(&conn, "m2", "k2", "Duplicate", "test", "2026-01-02T00:00:00Z");
-        // Mark m2 as already consolidated
-        conn.execute("UPDATE memories SET _pm_consolidated_into = 'm1' WHERE id = 'm2'", []).unwrap();
+        // Mark k2 as consolidated into k1 via consolidation_edges
+        conn.execute(
+            "INSERT INTO consolidation_edges (source_key, target_key) VALUES ('k2', 'k1')",
+            [],
+        ).unwrap();
 
         let clusters = find_exact_duplicate_clusters(&conn).unwrap();
         assert!(clusters.is_empty(), "Consolidated memories should be excluded");
@@ -290,7 +324,6 @@ mod consolidation_clusters {
     #[test]
     fn http_and_https_extract_different_domains() {
         let conn = setup_db();
-        // HTTP URLs
         insert_memory(&conn, "m1", "k1", "Navigated to http://local.dev/api", "permagent.activity", "2026-01-01T00:00:00Z");
         insert_memory(&conn, "m2", "k2", "Navigated to http://local.dev/dashboard", "permagent.activity", "2026-01-02T00:00:00Z");
         insert_memory(&conn, "m3", "k3", "Navigated to http://local.dev/settings", "permagent.activity", "2026-01-03T00:00:00Z");
@@ -300,7 +333,7 @@ mod consolidation_clusters {
         assert_eq!(clusters[0].0, "local.dev");
     }
 
-    // ── Cleanup migration ──
+    // ── Domain cluster cleanup migration (operates on legacy _pm_consolidated_into column) ──
 
     #[test]
     fn cleanup_removes_buggy_clusters_and_unconsolidates_pointers() {
@@ -308,7 +341,7 @@ mod consolidation_clusters {
             ensure_and_check_migration, mark_migration, run_domain_cluster_cleanup_sql,
         };
 
-        let conn = setup_db();
+        let conn = setup_legacy_db();
 
         // Insert the two buggy catchall cluster memories
         insert_memory(&conn, "tps_cluster", "consolidated:browser:tps:", "tps: — visited 50 times", "librarian.consolidation", "2026-01-10T00:00:00Z");
@@ -373,33 +406,100 @@ mod consolidation_clusters {
         assert_eq!(del2, 0);
     }
 
-    // ── SQL builder ──
+    // ── Consolidation migration: _pm_consolidated_into → consolidation_edges ──
 
     #[test]
-    fn consolidation_sql_produces_correct_statement() {
-        let sql = build_consolidation_update_sql();
-        assert_eq!(sql, "UPDATE memories SET _pm_consolidated_into = ?1 WHERE id = ?2");
+    fn consolidate_into_migration_migrates_and_drops_column() {
+        use permagent::activity::cleanup::{
+            ensure_and_check_migration, run_consolidate_into_migration_sql,
+        };
+
+        let conn = setup_legacy_db();
+
+        // Cluster 1: 3 sources → 1 target
+        insert_memory(&conn, "t1", "target1", "Summary A", "test", "2026-01-01T00:00:00Z");
+        insert_memory(&conn, "s1", "src1", "Detail A1", "test", "2026-01-02T00:00:00Z");
+        insert_memory(&conn, "s2", "src2", "Detail A2", "test", "2026-01-03T00:00:00Z");
+        insert_memory(&conn, "s3", "src3", "Detail A3", "test", "2026-01-04T00:00:00Z");
+        conn.execute("UPDATE memories SET _pm_consolidated_into = 't1' WHERE id IN ('s1','s2','s3')", []).unwrap();
+
+        // Cluster 2: 2 sources → 1 target
+        insert_memory(&conn, "t2", "target2", "Summary B", "test", "2026-01-05T00:00:00Z");
+        insert_memory(&conn, "s4", "src4", "Detail B1", "test", "2026-01-06T00:00:00Z");
+        insert_memory(&conn, "s5", "src5", "Detail B2", "test", "2026-01-07T00:00:00Z");
+        conn.execute("UPDATE memories SET _pm_consolidated_into = 't2' WHERE id IN ('s4','s5')", []).unwrap();
+
+        // Control: not consolidated
+        insert_memory(&conn, "ctrl", "ctrl_key", "Not consolidated", "test", "2026-01-08T00:00:00Z");
+
+        // Dangling reference: source points to non-existent target id
+        insert_memory(&conn, "orphan", "orphan_key", "Orphaned", "test", "2026-01-09T00:00:00Z");
+        conn.execute("UPDATE memories SET _pm_consolidated_into = 'nonexistent_id' WHERE id = 'orphan'", []).unwrap();
+
+        // Run migration
+        let stats = run_consolidate_into_migration_sql(&conn).unwrap();
+
+        // 5 rows migrated (3 in cluster 1 + 2 in cluster 2), orphan skipped
+        assert_eq!(stats.rows_migrated, 5);
+        assert_eq!(stats.distinct_targets, 2);
+        assert_eq!(stats.orphans_skipped, 1);
+        assert!(stats.column_dropped, "Column should be dropped after successful cross-check");
+
+        // Verify consolidation_edges has 5 rows
+        let edge_count: usize = conn.query_row(
+            "SELECT COUNT(*) FROM consolidation_edges",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(edge_count, 5);
+
+        // Verify correct source→target mappings
+        let t1_sources: usize = conn.query_row(
+            "SELECT COUNT(*) FROM consolidation_edges WHERE target_key = 'target1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(t1_sources, 3);
+
+        let t2_sources: usize = conn.query_row(
+            "SELECT COUNT(*) FROM consolidation_edges WHERE target_key = 'target2'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(t2_sources, 2);
+
+        // Verify column is dropped (querying it should fail)
+        assert!(
+            conn.prepare("SELECT _pm_consolidated_into FROM memories LIMIT 0").is_err(),
+            "_pm_consolidated_into column should be dropped"
+        );
+
+        // Verify control memory still exists and is unaffected
+        let ctrl_content: String = conn.query_row(
+            "SELECT content FROM memories WHERE id = 'ctrl'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(ctrl_content, "Not consolidated");
+
+        // Migration is marked
+        assert!(ensure_and_check_migration(&conn, "consolidate_into_migration_v1").unwrap());
+
+        // Idempotency: re-run is a no-op
+        let stats2 = run_consolidate_into_migration_sql(&conn).unwrap();
+        assert_eq!(stats2.rows_migrated, 0);
     }
 
     #[test]
-    fn consolidation_sql_executes_against_real_db() {
+    fn consolidate_into_migration_noop_without_column() {
+        use permagent::activity::cleanup::run_consolidate_into_migration_sql;
+
+        // DB without _pm_consolidated_into column (post-migration state)
         let conn = setup_db();
-        insert_memory(&conn, "keeper", "k1", "Original", "test", "2026-01-01T00:00:00Z");
-        insert_memory(&conn, "dupe", "k2", "Original", "test", "2026-01-02T00:00:00Z");
 
-        conn.execute(
-            build_consolidation_update_sql(),
-            rusqlite::params!["keeper", "dupe"],
-        ).unwrap();
-
-        let consolidated: String = conn
-            .query_row(
-                "SELECT _pm_consolidated_into FROM memories WHERE id = 'dupe'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(consolidated, "keeper");
+        let stats = run_consolidate_into_migration_sql(&conn).unwrap();
+        assert_eq!(stats.rows_migrated, 0);
+        assert!(!stats.column_dropped);
     }
 }
 
