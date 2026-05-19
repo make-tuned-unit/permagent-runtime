@@ -87,3 +87,6 @@ memory.db*
 brain.db*
 graph.kz
 .DS_Store
+
+# Build artifacts
+ui/command-center/dist/
