@@ -152,7 +152,7 @@ export interface PermagentEvent {
 
 function authHeaders(): Record<string, string> {
   const h: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (_daemonToken) h['Authorization'] = \`Bearer \${_daemonToken}\`;
+  if (_daemonToken) h['Authorization'] = `Bearer ${_daemonToken}`;
   if (SECRET_KEY) h['x-secret-key'] = SECRET_KEY;
   return h;
 }
