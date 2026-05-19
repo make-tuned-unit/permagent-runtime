@@ -1,4 +1,5 @@
 pub mod analyze;
+pub mod app_conductor;
 pub mod apps;
 pub mod browser;
 pub mod chatrecall;
@@ -292,6 +293,22 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 unprefixed_tools: false,
                 hidden: false,
                 client_factory: |ctx| Box::new(librarian::LibrarianClient::new(ctx).unwrap()),
+            },
+        );
+
+        map.insert(
+            app_conductor::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: app_conductor::EXTENSION_NAME,
+                display_name: "App Conductor",
+                description:
+                    "Navigate the user to specific tabs and views in the Permagent app",
+                default_enabled: true,
+                unprefixed_tools: true,
+                hidden: false,
+                client_factory: |ctx| {
+                    Box::new(app_conductor::AppConductorClient::new(ctx).unwrap())
+                },
             },
         );
 

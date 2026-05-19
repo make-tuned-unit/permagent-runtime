@@ -55,6 +55,14 @@ export interface ToolResponseContent {
 
 export type MessageContent = TextContent | ToolRequestContent | ToolResponseContent | { type: string; [key: string]: unknown };
 
+/** UI state snapshot sent with each chat message. */
+export interface AppContextPayload {
+  current_tab: string;
+  active_panel?: string;
+  selected_id?: string;
+  view_state?: unknown;
+}
+
 /** Message as serialized by the daemon (camelCase via serde) */
 export interface DaemonMessage {
   id?: string;
@@ -297,6 +305,7 @@ export const api = {
     sessionId: string,
     text: string,
     images?: Array<{ data: string; mime_type: string }>,
+    appContext?: AppContextPayload,
   ): Promise<{ request_id: string }> => {
     const requestId = crypto.randomUUID();
     const userMessage = buildUserMessage(text, images);
@@ -305,14 +314,18 @@ export const api = {
       '— content blocks:', contentTypes,
       'images:', images?.length ?? 0,
       'text length:', text.length);
+    const body: Record<string, unknown> = {
+      request_id: requestId,
+      user_message: userMessage,
+    };
+    if (appContext) {
+      body.app_context = appContext;
+    }
     const result = await apiFetch<{ request_id: string }>(
       `/sessions/${encodeURIComponent(sessionId)}/reply`,
       {
         method: 'POST',
-        body: JSON.stringify({
-          request_id: requestId,
-          user_message: userMessage,
-        }),
+        body: JSON.stringify(body),
       },
     );
     console.log('[api-reply] response:', result);

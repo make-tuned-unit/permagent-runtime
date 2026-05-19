@@ -124,6 +124,8 @@ pub enum PermagentEventType {
     LibrarianDescribeCompleted,
     // Browser content extraction
     BrowserContentRequested,
+    // App navigation (chat agent → frontend)
+    AppNavigate,
 }
 
 // ── Convenience constructors ────────────────────────────────────────────────
@@ -322,6 +324,27 @@ pub fn librarian_describe_completed(
             "description": description,
             "duration_ms": duration_ms,
             "quality": quality,
+        }),
+    )
+}
+
+pub fn app_navigate(
+    tab: &str,
+    tool_type: &str,
+    panel_type: &str,
+    section: Option<&str>,
+    state: Option<&serde_json::Value>,
+    reason: &str,
+) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::AppNavigate,
+        serde_json::json!({
+            "tab": tab,
+            "tool_type": tool_type,
+            "panel_type": panel_type,
+            "section": section,
+            "state": state,
+            "reason": reason,
         }),
     )
 }

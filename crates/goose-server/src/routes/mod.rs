@@ -90,7 +90,8 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(ollama::routes(state.clone()))
         .merge(librarian::routes(state.clone()))
         .merge(henry_status::routes(state.clone()))
-        .merge(agents::routes(state.clone()));
+        .merge(agents::routes(state.clone()))
+        .merge(crate::app_catalog::routes(state.clone()));
 
     #[cfg(feature = "local-inference")]
     {

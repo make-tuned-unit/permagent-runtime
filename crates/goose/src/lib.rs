@@ -8,6 +8,7 @@ pub mod acp;
 pub mod action_required_manager;
 pub mod activity;
 pub mod agents;
+pub mod app_catalog;
 pub mod attachments;
 pub mod builtin_extension;
 pub mod config;
