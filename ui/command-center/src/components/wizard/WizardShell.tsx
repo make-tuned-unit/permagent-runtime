@@ -6,7 +6,7 @@ import { MomentCalibration } from './MomentCalibration';
 import { MomentIntent } from './MomentIntent';
 import { MomentMeet } from './MomentMeet';
 import { MomentChat } from './MomentChat';
-import { api, getApiBaseUrl } from '../../lib/api';
+import { api, apiFetch } from '../../lib/api';
 
 interface Persona {
   name: string;
@@ -63,9 +63,8 @@ export function WizardShell({ onComplete }: Props) {
         opening_greeting: persona.greeting,
         voice_id: null,
       };
-      await fetch(`${getApiBaseUrl()}/api/agent/identity`, {
+      await apiFetch<unknown>('/api/agent/identity', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
       // Mark wizard complete

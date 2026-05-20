@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { getApiBaseUrl } from '../lib/api';
+import { getApiBaseUrl, apiFetch } from '../lib/api';
 
 /**
  * Subscribes to the daemon's global event bus (/events WebSocket).
@@ -117,9 +117,8 @@ async function fulfill(
     truncated: boolean;
   },
 ) {
-  await fetch(`${getApiBaseUrl()}/api/browser/content/${requestId}`, {
+  await apiFetch<unknown>(`/api/browser/content/${requestId}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(content),
   }).catch(() => {});
 }
