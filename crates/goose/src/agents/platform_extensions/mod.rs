@@ -10,6 +10,7 @@ pub mod ext_manager;
 pub mod librarian;
 pub mod librarian_state;
 pub mod orchestrator;
+pub mod recipe_author;
 pub mod skills;
 pub mod summarize;
 pub mod summon;
@@ -308,6 +309,22 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 client_factory: |ctx| {
                     Box::new(app_conductor::AppConductorClient::new(ctx).unwrap())
+                },
+            },
+        );
+
+        map.insert(
+            recipe_author::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: recipe_author::EXTENSION_NAME,
+                display_name: "Recipe Author",
+                description:
+                    "Create, list, and manage scheduled automations and saved skills through chat",
+                default_enabled: true,
+                unprefixed_tools: true,
+                hidden: false,
+                client_factory: |ctx| {
+                    Box::new(recipe_author::RecipeAuthorClient::new(ctx).unwrap())
                 },
             },
         );

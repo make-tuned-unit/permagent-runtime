@@ -148,6 +148,11 @@ impl AppState {
             permagent::agents::platform_extensions::set_global_brain(b.clone());
         }
 
+        // Make scheduler available to platform extensions (RecipeAuthor).
+        permagent::agents::platform_extensions::recipe_author::set_global_scheduler(
+            agent_manager.scheduler(),
+        );
+
         // Self-healing annotation backfill — runs at daemon startup, not gated on Ollama.
         // Parses "Related terms:" from existing Librarian descriptions and populates
         // memory_annotations. First run annotates ~1384 memories; subsequent starts are no-ops.
