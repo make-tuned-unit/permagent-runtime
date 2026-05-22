@@ -137,7 +137,7 @@ export interface Skill {
   trigger_type?: string;
   trigger_config?: Record<string, unknown>;
   steps?: Array<{ action: string; tool?: string; description?: string }>;
-  usage_count?: number;
+  usageCount?: number;
   last_run?: string;
   status?: string;
   version?: string;
@@ -441,6 +441,14 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ argumentShapeHash }),
     }).catch(() => {}),
+
+  getSkillProposals: () => apiFetch<Array<{
+    toolUsed: string;
+    argumentShapeHash: string;
+    occurrenceCount: number;
+    description: string;
+    sourceTaskIds: string[];
+  }>>('/permagent/skills/proposals').catch(() => []),
 
   // Workspaces
   getWorkspaces: () =>

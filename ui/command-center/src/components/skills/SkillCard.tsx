@@ -37,8 +37,8 @@ export function SkillCard({ skill, isSelected, onSelect }: SkillCardProps) {
                 {skill.trigger_type}
               </span>
             )}
-            {skill.usage_count !== undefined && (
-              <span>{skill.usage_count} runs</span>
+            {skill.usageCount !== undefined && (
+              <span>{skill.usageCount} runs</span>
             )}
             {skill.last_run && (
               <span className="flex items-center gap-1">

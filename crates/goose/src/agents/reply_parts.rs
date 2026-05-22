@@ -209,6 +209,14 @@ impl Agent {
         // Stable tool ordering is important for multi session prompt caching.
         tools.sort_by(|a, b| a.name.cmp(&b.name));
 
+        // Inject saved skills into system prompt (Hermes feedback loop)
+        if let Ok(pool) = self.config.session_manager.pool_clone().await {
+            if let Ok(Some(skills_prompt)) = crate::skills::build_skills_prompt(&pool).await {
+                let mut pm = self.prompt_manager.lock().await;
+                pm.add_system_prompt_extra("saved_skills".to_string(), skills_prompt);
+            }
+        }
+
         // Prepare system prompt
         let extensions_info = self
             .extension_manager
