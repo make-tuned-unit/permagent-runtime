@@ -1,9 +1,11 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, lazy, Suspense } from 'react';
 import { color, font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { cronToEnglish } from '../../lib/schedule-format';
 import { useCommandCenter } from '../../lib/store';
 import { apiFetch } from '../../lib/api';
+
+const LazySkillsPanel = lazy(() => import('../skills/SkillsPanel').then(m => ({ default: m.SkillsPanel })));
 
 interface ScheduledJob {
   id: string;
@@ -43,7 +45,7 @@ interface Finding {
   size_recovered_bytes: number | null;
 }
 
-type Tab = 'automations' | 'runs';
+type Tab = 'automations' | 'runs' | 'skills';
 
 const CRON_PRESETS = [
   { label: 'Every weekday morning (8 AM)', cron: '0 8 * * 1-5' },
@@ -171,7 +173,7 @@ export function AutomateView() {
           }}>+ New Automation</button>
         </div>
         <div style={{ display: 'flex', gap: 0, marginTop: 16, borderBottom: `1px solid ${color.border}` }}>
-          {([['automations', 'Active Automations'], ['runs', 'Recent Runs']] as const).map(([id, label]) => (
+          {([['automations', 'Active Automations'], ['runs', 'Recent Runs'], ['skills', 'Skills']] as const).map(([id, label]) => (
             <button key={id} onClick={() => setTab(id)} style={{
               padding: '8px 16px', fontFamily: font.body, fontSize: 12, fontWeight: 600,
               color: tab === id ? color.cyan : color.textMuted, background: 'transparent',
@@ -216,6 +218,11 @@ export function AutomateView() {
               ))}
             </div>
           )
+        )}
+        {tab === 'skills' && (
+          <Suspense fallback={<div style={{ fontSize: 12, color: color.textDim }}>Loading skills...</div>}>
+            <LazySkillsPanel />
+          </Suspense>
         )}
       </div>
       {showModal && <NewAutomationModal onClose={() => setShowModal(false)} onCreated={() => { setShowModal(false); fetchJobs(); }} />}
