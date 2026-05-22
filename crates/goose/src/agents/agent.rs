@@ -578,9 +578,28 @@ impl Agent {
             .arguments
             .as_ref()
             .map(|m| Value::Object(m.clone()));
+        // Build a human-readable description from tool + key arguments
+        let task_description = {
+            let mut desc = tool_name_str.clone();
+            if let Some(ref args) = args_value {
+                if let Some(obj) = args.as_object() {
+                    // For shell, include the command; for others, include first string arg
+                    if let Some(cmd) = obj.get("command").and_then(|v| v.as_str()) {
+                        let short = if cmd.len() > 80 { &cmd[..80] } else { cmd };
+                        desc = format!("{}: {}", tool_name_str, short);
+                    } else if let Some((key, val)) = obj.iter().find(|(_, v)| v.is_string()) {
+                        if let Some(s) = val.as_str() {
+                            let short = if s.len() > 60 { &s[..60] } else { s };
+                            desc = format!("{}: {}={}", tool_name_str, key, short);
+                        }
+                    }
+                }
+            }
+            desc
+        };
         let task_id = if let Some(logger) = crate::tasks::global() {
             let tid = logger
-                .log_task_created(&tool_name_str, Some(&tool_name_str))
+                .log_task_created(&task_description, Some(&tool_name_str))
                 .await;
             logger.log_task_started(&tid, &session.id).await;
             Some(tid)
@@ -637,7 +656,9 @@ impl Agent {
 
                 // Auto-skills: check for repetition patterns after completion
                 let skills_config = crate::tasks::SkillsConfig::from_config();
-                logger.check_repetition_candidates(&skills_config).await;
+                if let Some(proposal_prompt) = logger.check_repetition_candidates(&skills_config).await {
+                    self.extend_system_prompt("skill_proposals".to_string(), proposal_prompt).await;
+                }
             }
         }
 

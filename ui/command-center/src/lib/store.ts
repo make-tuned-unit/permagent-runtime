@@ -100,7 +100,7 @@ export interface SkillState {
   trigger_type?: string;
   trigger_config?: Record<string, unknown>;
   steps?: Array<{ action: string; tool?: string; description?: string }>;
-  usage_count?: number;
+  usageCount?: number;
   last_run?: string;
   status?: string;
   version?: string;
@@ -226,8 +226,12 @@ interface CommandCenterStore {
 
   // --- Skill proposals ---
   pendingSkillProposal: SkillProposal | null;
+  proposals: SkillProposal[];
   saveSkillProposal: () => Promise<void>;
   dismissSkillProposal: () => void;
+  loadProposals: () => Promise<void>;
+  saveProposal: (proposal: SkillProposal) => Promise<void>;
+  dismissProposal: (argumentShapeHash: string) => void;
 
   // --- Sessions state ---
   sessions: SessionState[];
@@ -611,6 +615,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
   // Skill proposals
   pendingSkillProposal: null,
+  proposals: [],
   saveSkillProposal: async () => {
     const proposal = get().pendingSkillProposal;
     if (!proposal) return;
@@ -625,6 +630,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       });
       set({ pendingSkillProposal: null, selectedSkillId: saved.id, activePanel: 'skills' });
       get().loadSkills();
+      get().loadProposals();
     } catch (e) {
       console.error('Failed to save skill:', e);
     }
@@ -635,6 +641,55 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       api.dismissSkillProposal(proposal.argument_shape_hash).catch(() => {});
     }
     set({ pendingSkillProposal: null });
+  },
+  loadProposals: async () => {
+    try {
+      const data = await api.getSkillProposals();
+      const proposals: SkillProposal[] = data.map(p => ({
+        description: p.description,
+        tool_used: p.toolUsed,
+        argument_shape_hash: p.argumentShapeHash,
+        occurrence_count: p.occurrenceCount,
+        source_task_ids: p.sourceTaskIds,
+        timestamp: new Date().toISOString(),
+      }));
+      set({ proposals });
+      // Set the first proposal as the banner if none is currently shown
+      if (!get().pendingSkillProposal && proposals.length > 0) {
+        set({ pendingSkillProposal: proposals[0] });
+      }
+    } catch {
+      set({ proposals: [] });
+    }
+  },
+  saveProposal: async (proposal: SkillProposal) => {
+    try {
+      await api.createSkill({
+        name: proposal.description.slice(0, 64).replace(/\s+/g, '-').toLowerCase(),
+        description: proposal.description,
+        toolUsed: proposal.tool_used,
+        argumentShapeHash: proposal.argument_shape_hash,
+        definitionJson: { source_task_ids: proposal.source_task_ids },
+        sourceTaskId: proposal.source_task_ids[0] || null,
+      });
+      // Auto-dismiss banner if it matches the same hash
+      const pending = get().pendingSkillProposal;
+      if (pending && pending.argument_shape_hash === proposal.argument_shape_hash) {
+        set({ pendingSkillProposal: null });
+      }
+      get().loadSkills();
+      get().loadProposals();
+    } catch (e) {
+      console.error('Failed to save proposal:', e);
+    }
+  },
+  dismissProposal: (argumentShapeHash: string) => {
+    api.dismissSkillProposal(argumentShapeHash).catch(() => {});
+    set(s => ({
+      proposals: s.proposals.filter(p => p.argument_shape_hash !== argumentShapeHash),
+      pendingSkillProposal: s.pendingSkillProposal?.argument_shape_hash === argumentShapeHash
+        ? null : s.pendingSkillProposal,
+    }));
   },
 
   // Sessions
@@ -757,6 +812,10 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       }
       case 'Finish': {
         set({ isStreaming: false, _streamingMessageId: null });
+        // Reload proposals + skills after each reply completes — the agent may
+        // have created a skill (save_skill) or a new proposal may have fired.
+        get().loadProposals();
+        get().loadSkills();
         break;
       }
       case 'ContextAttached': {
@@ -809,6 +868,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       set({ connectionStatus: 'connected', _reconnectAttempts: 0 });
       get().loadSnapshot();
       get().loadSkills();
+      get().loadProposals();
       get().loadWorkspaces();
     };
 

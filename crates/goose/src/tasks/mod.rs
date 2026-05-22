@@ -138,27 +138,40 @@ impl TaskLogger {
     /// Check for repetition candidates after a task completes.
     /// Queries the `repetition_candidates` view for shapes that appear >= threshold
     /// times within the configured window, then emits `SkillProposed` for new patterns.
-    pub async fn check_repetition_candidates(&self, config: &SkillsConfig) {
+    /// Returns a prompt fragment for injection into the agent's system prompt.
+    ///
+    /// Only proposes patterns with 2-10 occurrences in the 7-day window. Patterns
+    /// above 10 are considered fundamental tool usage (e.g. `shell`) rather than
+    /// discrete user tasks. After surfacing a proposal, auto-dismisses for 7 days
+    /// to prevent re-proposing every turn.
+    pub async fn check_repetition_candidates(&self, config: &SkillsConfig) -> Option<String> {
         if !config.auto_detect {
-            return;
+            return None;
         }
+
+        // Cap at 10: beyond that, it's generic tool usage, not a task pattern
+        let max_threshold: i64 = 10;
 
         let rows = match sqlx::query(
             "SELECT tool_used, argument_shape_hash, occurrence_count, latest_description
              FROM repetition_candidates
              WHERE user_id = 'default'
-               AND occurrence_count >= ?",
+               AND occurrence_count >= ?
+               AND occurrence_count <= ?",
         )
         .bind(config.repetition_threshold as i64)
+        .bind(max_threshold)
         .fetch_all(&self.pool)
         .await
         {
             Ok(rows) => rows,
             Err(e) => {
                 warn!("Failed to query repetition_candidates: {}", e);
-                return;
+                return None;
             }
         };
+
+        let mut proposals = Vec::new();
 
         for row in &rows {
             let tool_used: String = row.get("tool_used");
@@ -181,16 +194,22 @@ impl TaskLogger {
             .unwrap_or(false);
 
             if skill_exists {
+                // Record execution for post-hoc matching
+                if let Err(e) = crate::skills::record_execution(
+                    &self.pool, &tool_used, &shape_hash, None,
+                ).await {
+                    warn!("Failed to record skill execution: {}", e);
+                }
                 continue;
             }
 
-            // Check if dismissed within the last 30 days
+            // Check if dismissed or already proposed within the last 7 days
             let dismissed = sqlx::query_scalar::<_, bool>(
                 "SELECT EXISTS (
                     SELECT 1 FROM skill_dismissals
                     WHERE user_id = 'default'
                       AND argument_shape_hash = ?
-                      AND dismissed_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-30 days')
+                      AND dismissed_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')
                 )",
             )
             .bind(&shape_hash)
@@ -201,6 +220,26 @@ impl TaskLogger {
             if dismissed {
                 continue;
             }
+
+            // Get the most recent user messages from sessions that triggered this pattern,
+            // so we can describe the task in the user's own words
+            let user_intent: Option<String> = sqlx::query_scalar(
+                "SELECT t.description FROM tasks t
+                 WHERE t.user_id = 'default'
+                   AND t.tool_used = ?
+                   AND t.argument_shape_hash = ?
+                   AND t.status = 'completed'
+                 ORDER BY t.completed_at DESC
+                 LIMIT 1",
+            )
+            .bind(&tool_used)
+            .bind(&shape_hash)
+            .fetch_optional(&self.pool)
+            .await
+            .unwrap_or(None);
+
+            // Use the task description (now enriched with argument context) or fall back
+            let intent_text = user_intent.unwrap_or_else(|| description.clone());
 
             // Get source task IDs for this pattern
             let task_ids: Vec<String> = sqlx::query_scalar(
@@ -220,16 +259,65 @@ impl TaskLogger {
 
             info!(
                 "Skill proposed: '{}' ({} occurrences of {})",
-                description, count, tool_used
+                intent_text, count, tool_used
             );
             events::emit(events::skill_proposed(
-                &description,
+                &intent_text,
                 &tool_used,
                 &shape_hash,
                 count,
                 &task_ids,
             ));
+
+            // Auto-dismiss for 7 days to prevent re-proposing to the agent every turn.
+            // Uses tool_used='__agent_surfaced' to distinguish from user dismissals —
+            // the UI proposals endpoint ignores these so the banner still appears.
+            let dismiss_id = Uuid::now_v7().to_string();
+            let _ = sqlx::query(
+                "INSERT INTO skill_dismissals (id, user_id, tool_used, argument_shape_hash)
+                 VALUES (?, 'default', '__agent_surfaced', ?)",
+            )
+            .bind(&dismiss_id)
+            .bind(&shape_hash)
+            .execute(&self.pool)
+            .await;
+
+            proposals.push((intent_text, count, tool_used.clone(), shape_hash.clone()));
         }
+
+        if proposals.is_empty() {
+            return None;
+        }
+
+        // Build prompt fragment for the agent — IMPERATIVE language
+        let mut lines = vec![
+            "## Skill Proposal — YOU MUST SURFACE THIS".to_string(),
+            "You have detected a repeating pattern. When the user's next message arrives, \
+             you MUST begin your response by surfacing this proposal. Do not skip it."
+                .to_string(),
+            String::new(),
+        ];
+        for (intent, count, tool, hash) in &proposals {
+            lines.push(format!(
+                "Say something like: \"I've noticed you've asked me to do something similar \
+                 {} times recently — {}. Want me to save how I do this so I can do it \
+                 consistently next time?\"",
+                count, intent
+            ));
+            lines.push(format!(
+                "(Internal: tool={}, argument_shape_hash={})",
+                tool, hash
+            ));
+            lines.push(String::new());
+        }
+        lines.push(
+            "If the user agrees, call the `save_skill` tool with a descriptive name for the skill, \
+             the tool_used and argument_shape_hash shown above, and a definition_json object \
+             summarizing the approach you used."
+                .to_string(),
+        );
+
+        Some(lines.join("\n"))
     }
 
     /// Get a clone of the database pool (for use by skills routes).

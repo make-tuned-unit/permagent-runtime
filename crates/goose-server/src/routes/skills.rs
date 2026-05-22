@@ -47,8 +47,19 @@ pub struct SkillSummaryResponse {
     tool_used: Option<String>,
     trigger_count: i64,
     last_triggered_at: Option<String>,
+    usage_count: i64,
     status: String,
     created_at: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillProposalResponse {
+    tool_used: String,
+    argument_shape_hash: String,
+    occurrence_count: i64,
+    description: String,
+    source_task_ids: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -132,6 +143,7 @@ async fn list_skills_handler(
                 tool_used: s.tool_used,
                 trigger_count: s.trigger_count,
                 last_triggered_at: s.last_triggered_at,
+                usage_count: s.usage_count,
                 status: s.status,
                 created_at: s.created_at,
             })
@@ -208,6 +220,33 @@ async fn dismiss_skill_handler(
     Ok(StatusCode::OK)
 }
 
+async fn list_proposals_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<SkillProposalResponse>>, StatusCode> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let proposals = skills::list_proposals(&pool, 2)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(
+        proposals
+            .into_iter()
+            .map(|p| SkillProposalResponse {
+                tool_used: p.tool_used,
+                argument_shape_hash: p.argument_shape_hash,
+                occurrence_count: p.occurrence_count,
+                description: p.latest_description,
+                source_task_ids: p.source_task_ids,
+            })
+            .collect(),
+    ))
+}
+
 // ── Router ───────────────────────────────────────────────────────────────────
 
 pub fn routes(state: Arc<AppState>) -> Router {
@@ -215,6 +254,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/permagent/skills", post(create_skill_handler))
         .route("/permagent/skills", get(list_skills_handler))
         .route("/permagent/skills/dismiss", post(dismiss_skill_handler))
+        .route("/permagent/skills/proposals", get(list_proposals_handler))
         .route("/permagent/skills/{skill_id}", get(get_skill_handler))
         .route("/permagent/skills/{skill_id}", delete(delete_skill_handler))
         .with_state(state)

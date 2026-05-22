@@ -104,13 +104,25 @@ export function AutomateView() {
   const [detail, setDetail] = useState<DetailTarget | null>(null);
   const [search, setSearch] = useState('');
   const [showSearch, setShowSearch] = useState(false);
-  const [showInstalledExpanded, setShowInstalledExpanded] = useState(false);
+  const [showInstalledExpanded, setShowInstalledExpanded] = useState(() => {
+    try { return localStorage.getItem('automate:installed-expanded') === 'true'; } catch { return false; }
+  });
   const prevRunningRef = useRef<Set<string>>(new Set());
   const { gradient } = useTheme();
 
   const skills = useCommandCenter(s => s.skills);
   const skillsLoading = useCommandCenter(s => s.skillsLoading);
   const loadSkills = useCommandCenter(s => s.loadSkills);
+  const proposals = useCommandCenter(s => s.proposals);
+  const loadProposals = useCommandCenter(s => s.loadProposals);
+  const saveProposal = useCommandCenter(s => s.saveProposal);
+  const dismissProposal = useCommandCenter(s => s.dismissProposal);
+
+  // Persist Installed collapse state
+  const toggleInstalledExpanded = useCallback((val: boolean) => {
+    setShowInstalledExpanded(val);
+    try { localStorage.setItem('automate:installed-expanded', String(val)); } catch {}
+  }, []);
 
   // ── Data fetching ──
 
@@ -148,7 +160,7 @@ export function AutomateView() {
     } catch {}
   }, []);
 
-  useEffect(() => { fetchJobs(); fetchExtensions(); loadSkills(); }, [fetchJobs, fetchExtensions, loadSkills]);
+  useEffect(() => { fetchJobs(); fetchExtensions(); loadSkills(); loadProposals(); }, [fetchJobs, fetchExtensions, loadSkills, loadProposals]);
   useEffect(() => {
     const interval = setInterval(fetchJobs, 5000);
     return () => clearInterval(interval);
@@ -178,6 +190,7 @@ export function AutomateView() {
   const q = search.toLowerCase().trim();
   const filteredJobs = q ? jobs.filter(j => (j.display_name || j.id).toLowerCase().includes(q) || (j.description || '').toLowerCase().includes(q)) : jobs;
   const filteredSkills = q ? skills.filter(s => s.name.toLowerCase().includes(q) || (s.description || '').toLowerCase().includes(q)) : skills;
+  const filteredProposals = q ? proposals.filter(p => p.description.toLowerCase().includes(q)) : proposals;
   const filteredExtensions = q ? extensions.filter(e => e.display_name.toLowerCase().includes(q) || e.description.toLowerCase().includes(q)) : extensions;
 
   // ── Actions ──
@@ -193,7 +206,7 @@ export function AutomateView() {
   const handleKill = async (id: string) => { try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/kill`, { method: 'POST' }); fetchJobs(); } catch {} };
 
   // ── Truly-empty check ──
-  const trulyEmpty = jobs.length === 0 && skills.length === 0 && !skillsLoading;
+  const trulyEmpty = jobs.length === 0 && skills.length === 0 && proposals.length === 0 && !skillsLoading;
 
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', background: gradient.workspace, color: color.text, fontFamily: font.body }}>
@@ -264,7 +277,7 @@ export function AutomateView() {
                 fontWeight: 600, fontSize: 13, border: 'none', cursor: 'pointer', fontFamily: font.body,
               }}>Schedule a task</button>
             </div>
-            <button onClick={() => setShowInstalledExpanded(true)} style={{
+            <button onClick={() => toggleInstalledExpanded(true)} style={{
               marginTop: 12, background: 'none', border: 'none', color: color.textDim,
               fontSize: 11, cursor: 'pointer', fontFamily: font.body,
             }}>or browse what your agent can do &rarr;</button>
@@ -304,10 +317,10 @@ export function AutomateView() {
         )}
 
         {/* ── LEARNED ── */}
-        <Section title="Learned" count={filteredSkills.length}>
+        <Section title="Learned" count={filteredSkills.length + filteredProposals.length}>
           {skillsLoading ? (
             <div style={{ fontSize: 12, color: color.textDim }}>Loading...</div>
-          ) : filteredSkills.length === 0 ? (
+          ) : filteredSkills.length === 0 && filteredProposals.length === 0 ? (
             <div style={{
               padding: '20px 24px', borderRadius: radius.lg,
               background: 'rgba(141,68,174,0.04)', border: '1px solid rgba(141,68,174,0.12)',
@@ -323,23 +336,62 @@ export function AutomateView() {
             </div>
           ) : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
-              {filteredSkills.map(skill => (
-                <div key={skill.id} style={{
-                  padding: '16px 20px', borderRadius: radius.lg, cursor: 'pointer',
-                  background: 'rgba(20,28,48,0.5)', border: `1px solid ${color.border}`,
+              {/* Proposal cards first (amber) */}
+              {filteredProposals.map(proposal => (
+                <div key={proposal.argument_shape_hash} style={{
+                  padding: '16px 20px', borderRadius: radius.lg,
+                  background: 'rgba(255,179,71,0.04)', border: '1px solid rgba(255,179,71,0.2)',
                   transition: 'border-color 150ms',
-                }} onClick={() => {}}>
+                }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
-                    <div style={{ width: 8, height: 8, borderRadius: '50%', background: skill.status === 'active' ? '#5BD17F' : color.textDim }} />
-                    <div style={{ fontSize: 14, fontWeight: 600, fontFamily: font.display, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{skill.name}</div>
-                    <span style={{ fontSize: 9, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: color.purpleSoft, color: color.purpleBright }}>LEARNED</span>
+                    <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#FFB347' }} />
+                    <div style={{ fontSize: 14, fontWeight: 600, fontFamily: font.display, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{proposal.description}</div>
+                    <span style={{ fontSize: 9, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: 'rgba(255,179,71,0.15)', color: '#FFB347' }}>PROPOSED</span>
                   </div>
-                  {skill.description && <div style={{ fontSize: 12, color: color.textMuted, lineHeight: 1.5, marginBottom: 8 }}>{skill.description}</div>}
-                  <div style={{ fontSize: 10, color: color.textDim, fontFamily: font.mono }}>
-                    {skill.usage_count || 0} runs &middot; {skill.status}
+                  <div style={{ fontSize: 12, color: color.textMuted, lineHeight: 1.5, marginBottom: 8 }}>
+                    Seen {proposal.occurrence_count} time{proposal.occurrence_count !== 1 ? 's' : ''} using {proposal.tool_used}
+                  </div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <Btn label="Save" onClick={() => saveProposal(proposal)} primary />
+                    <Btn label="Dismiss" onClick={() => dismissProposal(proposal.argument_shape_hash)} muted />
                   </div>
                 </div>
               ))}
+              {/* Saved skills sorted by graduation tier: MASTERED > TRUSTED > LEARNED */}
+              {[...filteredSkills]
+                .sort((a, b) => {
+                  const tierOf = (s: typeof a) => {
+                    const u = s.usageCount || 0;
+                    if (u >= 10) return 0; // MASTERED
+                    if (u >= 3) return 1;  // TRUSTED
+                    return 2;              // LEARNED
+                  };
+                  return tierOf(a) - tierOf(b);
+                })
+                .map(skill => {
+                  const uses = skill.usageCount || 0;
+                  const tier = uses >= 10 ? 'MASTERED' : uses >= 3 ? 'TRUSTED' : 'LEARNED';
+                  const tierBg = tier === 'MASTERED' ? 'rgba(255,179,71,0.15)' : tier === 'TRUSTED' ? 'rgba(91,209,127,0.12)' : color.purpleSoft;
+                  const tierFg = tier === 'MASTERED' ? '#FFB347' : tier === 'TRUSTED' ? '#5BD17F' : color.purpleBright;
+                  const dotColor = tier === 'MASTERED' ? '#FFB347' : tier === 'TRUSTED' ? '#5BD17F' : (skill.status === 'active' ? color.purpleBright : color.textDim);
+                  return (
+                    <div key={skill.id} style={{
+                      padding: '16px 20px', borderRadius: radius.lg, cursor: 'pointer',
+                      background: 'rgba(20,28,48,0.5)', border: `1px solid ${color.border}`,
+                      transition: 'border-color 150ms',
+                    }} onClick={() => {}}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+                        <div style={{ width: 8, height: 8, borderRadius: '50%', background: dotColor }} />
+                        <div style={{ fontSize: 14, fontWeight: 600, fontFamily: font.display, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{skill.name}</div>
+                        <span style={{ fontSize: 9, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: tierBg, color: tierFg }}>{tier}</span>
+                      </div>
+                      {skill.description && <div style={{ fontSize: 12, color: color.textMuted, lineHeight: 1.5, marginBottom: 8 }}>{skill.description}</div>}
+                      <div style={{ fontSize: 10, color: color.textDim, fontFamily: font.mono }}>
+                        Used {uses} time{uses !== 1 ? 's' : ''} &middot; {skill.status}
+                      </div>
+                    </div>
+                  );
+                })}
             </div>
           )}
         </Section>
@@ -347,7 +399,7 @@ export function AutomateView() {
         {/* ── INSTALLED ── */}
         <Section title="Installed" count={filteredExtensions.length} collapsed>
           {!showInstalledExpanded ? (
-            <button onClick={() => setShowInstalledExpanded(true)} style={{
+            <button onClick={() => toggleInstalledExpanded(true)} style={{
               background: 'none', border: 'none', color: color.textMuted, cursor: 'pointer',
               fontSize: 12, fontFamily: font.body, padding: '4px 0', textAlign: 'left',
             }}>
@@ -355,7 +407,7 @@ export function AutomateView() {
             </button>
           ) : (
             <>
-              <button onClick={() => setShowInstalledExpanded(false)} style={{
+              <button onClick={() => toggleInstalledExpanded(false)} style={{
                 background: 'none', border: 'none', color: color.textDim, cursor: 'pointer',
                 fontSize: 11, fontFamily: font.body, padding: '0 0 8px', textAlign: 'left',
               }}>Hide &uarr;</button>

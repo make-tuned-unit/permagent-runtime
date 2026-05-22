@@ -94,7 +94,7 @@ export function SkillDetailPanel({ skill }: SkillDetailPanelProps) {
             <div className="grid grid-cols-2 gap-3">
               <MetaField label="Trigger Type" value={skill.trigger_type || 'manual'} />
               <MetaField label="Status" value={skill.status || 'active'} />
-              <MetaField label="Usage Count" value={String(skill.usage_count ?? 0)} />
+              <MetaField label="Usage Count" value={String(skill.usageCount ?? 0)} />
               <MetaField label="Version" value={skill.version || '1'} />
               <MetaField label="Created" value={skill.created_at ? new Date(skill.created_at).toLocaleString() : '--'} />
               <MetaField label="Last Run" value={skill.last_run ? new Date(skill.last_run).toLocaleString() : 'Never'} />
