@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { api, extractText, fileToBase64 } from './api';
+import { api, apiFetch, extractText, fileToBase64 } from './api';
 import type { Session, DaemonMessage, SSEEvent, AppContextPayload } from './api';
 import { startEventPruning } from './eventBus';
 
@@ -561,10 +561,9 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
   renameSession: async (sessionId: string, name: string) => {
     try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      await fetch(
-        `${(import.meta.env.VITE_DAEMON_URL as string | undefined) || ''}/api/sessions/${encodeURIComponent(sessionId)}/name`,
-        { method: 'PUT', headers, body: JSON.stringify({ name }) },
+      await apiFetch<unknown>(
+        `/api/sessions/${encodeURIComponent(sessionId)}/name`,
+        { method: 'PUT', body: JSON.stringify({ name }) },
       );
       await get().loadSessions();
     } catch (e) {

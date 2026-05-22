@@ -165,7 +165,7 @@ function authHeaders(): Record<string, string> {
   return h;
 }
 
-async function apiFetch<T>(endpoint: string, options?: RequestInit): Promise<T> {
+export async function apiFetch<T>(endpoint: string, options?: RequestInit): Promise<T> {
   // Ensure the daemon token is loaded before making any authenticated request.
   if (!_daemonToken && isTauri) await loadDaemonToken();
   const url = `${API_BASE_URL}${endpoint}`;

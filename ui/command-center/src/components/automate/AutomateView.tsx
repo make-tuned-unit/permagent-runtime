@@ -3,8 +3,7 @@ import { color, font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { cronToEnglish } from '../../lib/schedule-format';
 import { useCommandCenter } from '../../lib/store';
-
-const API = 'http://127.0.0.1:3001';
+import { apiFetch } from '../../lib/api';
 
 interface ScheduledJob {
   id: string;
@@ -89,36 +88,30 @@ export function AutomateView() {
 
   const fetchJobs = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/schedule/list`);
-      if (res.ok) {
-        const data = await res.json();
-        const newJobs: ScheduledJob[] = data.jobs || [];
-        setJobs(newJobs);
+      const data = await apiFetch<{ jobs: ScheduledJob[] }>('/schedule/list');
+      const newJobs: ScheduledJob[] = data.jobs || [];
+      setJobs(newJobs);
 
-        // Detect job completion: was running, now not
-        const nowRunning = new Set(newJobs.filter(j => j.currently_running).map(j => j.id));
-        const prev = prevRunningRef.current;
-        for (const id of prev) {
-          if (!nowRunning.has(id)) {
-            const name = newJobs.find(j => j.id === id)?.display_name || id;
-            setCompletionToast(name);
-            setTab('runs');
-            setTimeout(() => setCompletionToast(null), 8000);
-          }
+      // Detect job completion: was running, now not
+      const nowRunning = new Set(newJobs.filter(j => j.currently_running).map(j => j.id));
+      const prev = prevRunningRef.current;
+      for (const id of prev) {
+        if (!nowRunning.has(id)) {
+          const name = newJobs.find(j => j.id === id)?.display_name || id;
+          setCompletionToast(name);
+          setTab('runs');
+          setTimeout(() => setCompletionToast(null), 8000);
         }
-        prevRunningRef.current = nowRunning;
       }
+      prevRunningRef.current = nowRunning;
     } catch {}
   }, []);
 
   const fetchAllSessions = useCallback(async (jobIds: string[]) => {
     for (const jobId of jobIds) {
       try {
-        const res = await fetch(`${API}/schedule/${encodeURIComponent(jobId)}/sessions?limit=10`);
-        if (res.ok) {
-          const data: SessionInfo[] = await res.json();
-          setSessions(prev => new Map(prev).set(jobId, data));
-        }
+        const data = await apiFetch<SessionInfo[]>(`/schedule/${encodeURIComponent(jobId)}/sessions?limit=10`);
+        setSessions(prev => new Map(prev).set(jobId, data));
       } catch {}
     }
   }, []);
@@ -146,21 +139,21 @@ export function AutomateView() {
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
   const handleRunNow = async (id: string) => {
-    try { await fetch(`${API}/schedule/${encodeURIComponent(id)}/run_now`, { method: 'POST' }); fetchJobs(); } catch {}
+    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/run_now`, { method: 'POST' }); fetchJobs(); } catch {}
   };
   const handlePause = async (id: string) => {
-    try { await fetch(`${API}/schedule/${encodeURIComponent(id)}/pause`, { method: 'POST' }); fetchJobs(); } catch {}
+    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/pause`, { method: 'POST' }); fetchJobs(); } catch {}
   };
   const handleUnpause = async (id: string) => {
-    try { await fetch(`${API}/schedule/${encodeURIComponent(id)}/unpause`, { method: 'POST' }); fetchJobs(); } catch {}
+    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/unpause`, { method: 'POST' }); fetchJobs(); } catch {}
   };
   const handleDelete = async (id: string) => {
     const name = jobNameMap.get(id) || id;
     if (!confirm(`Delete "${name}"? This can't be undone.`)) return;
-    try { await fetch(`${API}/schedule/delete/${encodeURIComponent(id)}`, { method: 'DELETE' }); fetchJobs(); } catch {}
+    try { await apiFetch<unknown>(`/schedule/delete/${encodeURIComponent(id)}`, { method: 'DELETE' }); fetchJobs(); } catch {}
   };
   const handleKill = async (id: string) => {
-    try { await fetch(`${API}/schedule/${encodeURIComponent(id)}/kill`, { method: 'POST' }); fetchJobs(); } catch {}
+    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/kill`, { method: 'POST' }); fetchJobs(); } catch {}
   };
 
   return (
@@ -321,18 +314,15 @@ function RunRow({ run, displayName, expanded, onToggle }: {
 
       // Fetch session messages for the report text
       try {
-        const res = await fetch(`${API}/api/sessions/${encodeURIComponent(run.id)}`);
-        if (res.ok && !cancelled) {
-          const session = await res.json();
+        const session = await apiFetch<{ conversation?: Array<{ role: string; content?: Array<{ type: string; text?: string }> }> }>(`/api/sessions/${encodeURIComponent(run.id)}`);
+        if (!cancelled) {
           const msgs = session.conversation || [];
-          // Extract assistant text messages, skip tool calls
           const text = msgs
             .filter((m: any) => m.role === 'assistant')
             .flatMap((m: any) => (m.content || [])
               .filter((c: any) => c.type === 'text')
               .map((c: any) => c.text))
             .join('\n\n');
-          // Strip <findings> block from display text
           const cleaned = text.replace(/<findings>[\s\S]*?<\/findings>/g, '').trim();
           setReportText(cleaned || 'No output captured.');
         }
@@ -340,9 +330,8 @@ function RunRow({ run, displayName, expanded, onToggle }: {
 
       // Fetch structured findings
       try {
-        const res = await fetch(`${API}/automation/run/${encodeURIComponent(run.id)}/findings`);
-        if (res.ok && !cancelled) {
-          const data = await res.json();
+        const data = await apiFetch<{ findings: Finding[] }>(`/automation/run/${encodeURIComponent(run.id)}/findings`);
+        if (!cancelled) {
           setFindings(data.findings || []);
         }
       } catch {}
@@ -357,24 +346,13 @@ function RunRow({ run, displayName, expanded, onToggle }: {
   const handleAction = async (findingId: string, action: string) => {
     setActionInFlight(findingId);
     try {
-      const res = await fetch(`${API}/automation/finding/${encodeURIComponent(findingId)}/action`, {
+      const result = await apiFetch<{ action_taken: string; timestamp: string; size_recovered_bytes?: number }>(`/automation/finding/${encodeURIComponent(findingId)}/action`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action, run_id: run.id }),
       });
-      if (res.ok) {
-        const result = await res.json();
-        setFindings(prev => prev.map(f => f.id === findingId
-          ? { ...f, action_taken: result.action_taken, actioned_at: result.timestamp, size_recovered_bytes: result.size_recovered_bytes }
-          : f));
-      } else {
-        const err = await res.json().catch(() => ({ error: 'Unknown error' }));
-        // Mark as skipped with error instead of blocking the whole batch
-        setFindings(prev => prev.map(f => f.id === findingId
-          ? { ...f, action_taken: 'skipped', actioned_at: new Date().toISOString() }
-          : f));
-        console.debug(`[automate] Skipped ${findingId}: ${err.error}`);
-      }
+      setFindings(prev => prev.map(f => f.id === findingId
+        ? { ...f, action_taken: result.action_taken, actioned_at: result.timestamp, size_recovered_bytes: result.size_recovered_bytes ?? null }
+        : f));
     } catch (e) {
       setFindings(prev => prev.map(f => f.id === findingId
         ? { ...f, action_taken: 'skipped', actioned_at: new Date().toISOString() }
@@ -945,13 +923,12 @@ function NewAutomationModal({ onClose, onCreated }: { onClose: () => void; onCre
     setSaving(true); setError('');
     try {
       const recipe = { version: '1.0.0', title: name.trim(), description: prompt.trim().slice(0, 120), prompt: prompt.trim() };
-      const res = await fetch(`${API}/schedule/create`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+      await apiFetch<unknown>('/schedule/create', {
+        method: 'POST',
         body: JSON.stringify({ id: name.trim().replace(/\s+/g, '-').toLowerCase(), recipe, cron }),
       });
-      if (!res.ok) { const data = await res.json().catch(() => ({ message: 'Unknown error' })); setError(data.message || `Error ${res.status}`); setSaving(false); return; }
       onCreated();
-    } catch (e) { setError(String(e)); setSaving(false); }
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); setSaving(false); }
   };
 
   return (

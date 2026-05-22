@@ -1,15 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
+import { apiFetch } from '../../lib/api';
 
 export interface DashboardAgent { name: string; state: string; active_count: number; summary: string }
 export interface DashboardStats { sessions_today: number; sessions_total: number; memory_count: number; memory_delta_today: number }
 export interface InFlightSession { id: string; title: string; started_at: string; state: string; progress: number }
 export interface RecentSession { id: string; title: string; state: string; ended_at: string }
 export interface DashboardData { agent: DashboardAgent; stats: DashboardStats; in_flight: InFlightSession[]; recent: RecentSession[] }
-
-const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-const API = (import.meta.env.VITE_DAEMON_URL as string | undefined) ||
-  (import.meta.env.VITE_API_BASE_URL as string | undefined) ||
-  (isTauri ? 'http://127.0.0.1:3001' : '');
 
 export function useDashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
@@ -18,8 +14,8 @@ export function useDashboard() {
 
   const fetchDashboard = async () => {
     try {
-      const res = await fetch(`${API}/api/dashboard`);
-      if (res.ok) setData(await res.json());
+      const result = await apiFetch<DashboardData>('/api/dashboard');
+      setData(result);
     } catch { /* ignore */ }
     setLoading(false);
   };
