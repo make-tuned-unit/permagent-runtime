@@ -144,6 +144,10 @@ impl RecipeAuthorClient {
             current_session_id: None,
             process_start_time: None,
             worker_persona: None,
+            starter_id: None,
+            starter_version: None,
+            starter_content_hash: None,
+            user_customized: None,
         };
 
         // Write recipe to disk and register with scheduler

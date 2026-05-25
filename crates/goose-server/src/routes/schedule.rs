@@ -50,6 +50,9 @@ pub struct EnrichedJob {
     job: ScheduledJob,
     display_name: Option<String>,
     description: Option<String>,
+    version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    embedded_version: Option<String>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -154,6 +157,10 @@ async fn create_schedule(
         current_session_id: None,
         process_start_time: None,
         worker_persona: req.worker_persona,
+        starter_id: None,
+        starter_version: None,
+        starter_content_hash: None,
+        user_customized: None,
     };
 
     let scheduler = state.scheduler();
@@ -196,8 +203,8 @@ async fn list_schedules(
     let enriched: Vec<EnrichedJob> = jobs
         .into_iter()
         .map(|job| {
-            // Read recipe title/description from the YAML file (small files, sync is fine)
-            let (display_name, description) = std::fs::read_to_string(&job.source)
+            // Read recipe title/description/version from the YAML file
+            let (display_name, description, version) = std::fs::read_to_string(&job.source)
                 .ok()
                 .and_then(|content| {
                     let recipe: Recipe = serde_yaml::from_str(&content).ok()?;
@@ -206,13 +213,19 @@ async fn list_schedules(
                     } else {
                         Some(recipe.description)
                     };
-                    Some((Some(recipe.title), desc))
+                    Some((Some(recipe.title), desc, Some(recipe.version)))
                 })
-                .unwrap_or((None, None));
+                .unwrap_or((None, None, None));
+            let embedded_version = job
+                .starter_id
+                .as_deref()
+                .and_then(crate::automation::starters::embedded_starter_version);
             EnrichedJob {
                 job,
                 display_name,
                 description,
+                version,
+                embedded_version,
             }
         })
         .collect();
@@ -578,6 +591,31 @@ pub async fn inspect_running_job(
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/schedule/{id}/reset_to_default",
+    params(
+        ("id" = String, Path, description = "ID of the starter schedule to reset")
+    ),
+    responses(
+        (status = 204, description = "Starter recipe reset to default"),
+        (status = 400, description = "Not a starter recipe or reset failed"),
+        (status = 404, description = "Schedule not found")
+    ),
+    tag = "schedule"
+)]
+#[axum::debug_handler]
+async fn reset_to_default(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ErrorResponse> {
+    let scheduler = state.scheduler();
+    crate::automation::starters::reset_starter_to_default(scheduler.as_ref(), &id)
+        .await
+        .map_err(|e| ErrorResponse::bad_request(e))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/schedule/create", post(create_schedule))
@@ -590,5 +628,6 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/schedule/{id}/kill", post(kill_running_job))
         .route("/schedule/{id}/inspect", get(inspect_running_job))
         .route("/schedule/{id}/sessions", get(sessions_handler)) // Corrected
+        .route("/schedule/{id}/reset_to_default", post(reset_to_default))
         .with_state(state)
 }

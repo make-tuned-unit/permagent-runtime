@@ -68,6 +68,7 @@ serde_path_to_error = "0.1.20"
 tokio-tungstenite = { version = "0.28.0" }
 url = { workspace = true }
 rand = { workspace = true }
+sha2 = { workspace = true }
 hex = "0.4.3"
 subtle = "2.6"
 socket2 = "0.6.1"
@@ -98,6 +99,10 @@ path = "src/bin/generate_schema.rs"
 
 [dev-dependencies]
 tower = "0.5.2"
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros"] }
+env-lock = { workspace = true }
+async-trait = { workspace = true }
 
 [package.metadata.cargo-machete]
 ignored = [

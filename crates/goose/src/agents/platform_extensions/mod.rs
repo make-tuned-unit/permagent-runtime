@@ -12,6 +12,7 @@ pub mod librarian_state;
 pub mod orchestrator;
 pub mod recipe_author;
 pub mod skills;
+pub mod storage_health;
 pub mod summarize;
 pub mod summon;
 pub mod todo;
@@ -325,6 +326,22 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 client_factory: |ctx| {
                     Box::new(recipe_author::RecipeAuthorClient::new(ctx).unwrap())
+                },
+            },
+        );
+
+        map.insert(
+            storage_health::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: storage_health::EXTENSION_NAME,
+                display_name: "Storage Health",
+                description:
+                    "Scan the filesystem for storage cleanup opportunities — dev caches, app caches, stale downloads, and large files",
+                default_enabled: true,
+                unprefixed_tools: true,
+                hidden: false,
+                client_factory: |ctx| {
+                    Box::new(storage_health::StorageHealthClient::new(ctx).unwrap())
                 },
             },
         );
