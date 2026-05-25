@@ -119,6 +119,20 @@ pub struct ScheduledJob {
     /// When set, the scheduled run uses the worker's identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_persona: Option<String>,
+
+    // ── Starter recipe versioning fields ──
+    /// Non-null for starter recipes (e.g. "storage-insights", "workspace-snapshot").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starter_id: Option<String>,
+    /// Embedded YAML version at install/upgrade time (e.g. "2.0.0").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starter_version: Option<String>,
+    /// SHA-256 of the YAML content we last wrote to disk (install or upgrade).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starter_content_hash: Option<String>,
+    /// True if the user has manually edited this starter recipe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_customized: Option<bool>,
 }
 
 async fn persist_jobs(
@@ -410,6 +424,10 @@ impl Scheduler {
                         current_session_id: None,
                         process_start_time: None,
                         worker_persona: None,
+                        starter_id: None,
+                        starter_version: None,
+                        starter_content_hash: None,
+                        user_customized: None,
                     };
                     self.add_scheduled_job(job, false).await
                 }
@@ -1390,6 +1408,34 @@ impl SchedulerTrait for Scheduler {
     ) -> Result<Option<(String, DateTime<Utc>)>, SchedulerError> {
         self.get_running_job_info(sched_id).await
     }
+
+    async fn update_starter_fields(
+        &self,
+        sched_id: &str,
+        starter_id: Option<String>,
+        version: Option<String>,
+        hash: Option<String>,
+        user_customized: bool,
+    ) {
+        {
+            let mut jobs_guard = self.jobs.lock().await;
+            if let Some((_, job)) = jobs_guard.get_mut(sched_id) {
+                if let Some(sid) = starter_id {
+                    job.starter_id = Some(sid);
+                }
+                if let Some(v) = version {
+                    job.starter_version = Some(v);
+                }
+                if let Some(h) = hash {
+                    job.starter_content_hash = Some(h);
+                }
+                job.user_customized = Some(user_customized);
+            }
+        }
+        if let Err(e) = persist_jobs(&self.storage_path, &self.jobs).await {
+            tracing::error!("Failed to persist starter field update: {}", e);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1428,6 +1474,10 @@ mod tests {
             current_session_id: None,
             process_start_time: None,
             worker_persona: None,
+            starter_id: None,
+            starter_version: None,
+            starter_content_hash: None,
+            user_customized: None,
         };
 
         scheduler.add_scheduled_job(job, true).await.unwrap();
@@ -1461,6 +1511,10 @@ mod tests {
             current_session_id: None,
             process_start_time: None,
             worker_persona: None,
+            starter_id: None,
+            starter_version: None,
+            starter_content_hash: None,
+            user_customized: None,
         };
 
         scheduler.add_scheduled_job(job, true).await.unwrap();
@@ -1501,6 +1555,10 @@ mod tests {
             current_session_id: None,
             process_start_time: None,
             worker_persona: None,
+            starter_id: None,
+            starter_version: None,
+            starter_content_hash: None,
+            user_customized: None,
         };
 
         // Schedule the job and let it run — should not panic

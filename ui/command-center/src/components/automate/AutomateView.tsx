@@ -19,6 +19,11 @@ interface ScheduledJob {
   worker_persona: string | null;
   display_name: string | null;
   description: string | null;
+  starter_id: string | null;
+  starter_version: string | null;
+  user_customized: boolean | null;
+  version: string | null;
+  embedded_version: string | null;
 }
 
 interface SessionInfo {
@@ -101,6 +106,7 @@ export function AutomateView() {
   const [extensions, setExtensions] = useState<ExtensionInfo[]>([]);
   const [showModal, setShowModal] = useState(false);
   const [completionToast, setCompletionToast] = useState<string | null>(null);
+  const [actionStates, setActionStates] = useState<Record<string, 'loading' | 'success'>>({});
   const [detail, setDetail] = useState<DetailTarget | null>(null);
   const [search, setSearch] = useState('');
   const [showSearch, setShowSearch] = useState(false);
@@ -193,17 +199,61 @@ export function AutomateView() {
   const filteredProposals = q ? proposals.filter(p => p.description.toLowerCase().includes(q)) : proposals;
   const filteredExtensions = q ? extensions.filter(e => e.display_name.toLowerCase().includes(q) || e.description.toLowerCase().includes(q)) : extensions;
 
-  // ── Actions ──
+  // ── Action state tracking (in-button feedback) ──
 
-  const handleRunNow = async (id: string) => { try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/run_now`, { method: 'POST' }); fetchJobs(); } catch {} };
-  const handlePause = async (id: string) => { try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/pause`, { method: 'POST' }); fetchJobs(); } catch {} };
-  const handleUnpause = async (id: string) => { try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/unpause`, { method: 'POST' }); fetchJobs(); } catch {} };
+  const setActionState = useCallback((key: string, state: 'loading' | 'success' | null) => {
+    setActionStates(prev => {
+      if (state === null) { const next = { ...prev }; delete next[key]; return next; }
+      return { ...prev, [key]: state };
+    });
+  }, []);
+
+  // ── Derive detail panel job from current jobs state ──
+
+  const currentDetail = useMemo<DetailTarget | null>(() => {
+    if (!detail) return null;
+    if (detail.kind === 'recipe') {
+      const fresh = jobs.find(j => j.id === detail.job.id);
+      return fresh ? { ...detail, job: fresh } : detail;
+    }
+    return detail;
+  }, [detail, jobs]);
+
+  // ── Actions ──
+  // Handlers set actionStates as a mount guard (prevents polling from unmounting
+  // the button mid-animation), then call the API. Visual feedback (loading/success
+  // labels) is handled locally inside Btn via its own useState.
+
+  const handleRunNow = async (id: string) => {
+    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/run_now`, { method: 'POST' }); fetchJobs(); } catch {}
+  };
+  const handlePause = async (id: string) => {
+    setActionState(`${id}:pause`, 'loading');
+    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/pause`, { method: 'POST' }); } catch {}
+  };
+  const handleUnpause = async (id: string) => {
+    setActionState(`${id}:unpause`, 'loading');
+    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/unpause`, { method: 'POST' }); } catch {}
+  };
   const handleDelete = async (id: string) => {
     const name = jobNameMap.get(id) || id;
     if (!confirm(`Delete "${name}"? This can't be undone.`)) return;
-    try { await apiFetch<unknown>(`/schedule/delete/${encodeURIComponent(id)}`, { method: 'DELETE' }); fetchJobs(); setDetail(null); } catch {}
+    setActionState(`${id}:delete`, 'loading');
+    try { await apiFetch<unknown>(`/schedule/delete/${encodeURIComponent(id)}`, { method: 'DELETE' }); } catch {}
   };
-  const handleKill = async (id: string) => { try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/kill`, { method: 'POST' }); fetchJobs(); } catch {} };
+  const handleKill = async (id: string) => {
+    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/kill`, { method: 'POST' }); fetchJobs(); } catch {}
+  };
+  const handleResetToDefault = async (id: string) => {
+    setActionState(`${id}:reset`, 'loading');
+    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/reset_to_default`, { method: 'POST' }); } catch {}
+  };
+
+  // Callback for Btn to signal animation complete — clears mount guard + refreshes data
+  const handleActionDone = useCallback((key: string, afterRefresh?: () => void) => {
+    setActionState(key, null);
+    fetchJobs().then(() => afterRefresh?.());
+  }, [setActionState, fetchJobs]);
 
   // ── Truly-empty check ──
   const trulyEmpty = jobs.length === 0 && skills.length === 0 && proposals.length === 0 && !skillsLoading;
@@ -246,15 +296,15 @@ export function AutomateView() {
           </div>
         </div>
 
-        {/* Completion toast */}
+        {/* Run completion banner */}
         {completionToast && (
           <div style={{
             marginBottom: 16, padding: '10px 16px', borderRadius: radius.md,
             background: 'rgba(91,209,127,0.1)', border: '1px solid rgba(91,209,127,0.25)',
             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           }}>
-            <span style={{ fontSize: 13, color: '#5BD17F' }}>"{completionToast}" completed.</span>
-            <button onClick={() => setCompletionToast(null)} style={{ background: 'none', border: 'none', color: color.textDim, cursor: 'pointer', fontSize: 16 }}>x</button>
+            <span style={{ fontSize: 13, color: '#5BD17F' }}>&#10003; "{completionToast}" completed.</span>
+            <button onClick={() => setCompletionToast(null)} style={{ background: 'none', border: 'none', color: color.textDim, cursor: 'pointer', fontSize: 16 }}>&times;</button>
           </div>
         )}
 
@@ -290,6 +340,7 @@ export function AutomateView() {
             {runningJobs.map(job => (
               <RecipeCard key={job.id} job={job} onRunNow={handleRunNow} onPause={handlePause}
                 onUnpause={handleUnpause} onDelete={handleDelete} onKill={handleKill}
+                onResetToDefault={handleResetToDefault} actionStates={actionStates} onActionDone={handleActionDone}
                 onSelect={() => setDetail({ kind: 'recipe', job })}
                 selected={detail?.kind === 'recipe' && detail.job.id === job.id} />
             ))}
@@ -308,6 +359,7 @@ export function AutomateView() {
                 {filteredJobs.filter(j => !j.currently_running).map(job => (
                   <RecipeCard key={job.id} job={job} onRunNow={handleRunNow} onPause={handlePause}
                     onUnpause={handleUnpause} onDelete={handleDelete} onKill={handleKill}
+                    onResetToDefault={handleResetToDefault} actionStates={actionStates} onActionDone={handleActionDone}
                     onSelect={() => setDetail({ kind: 'recipe', job })}
                     selected={detail?.kind === 'recipe' && detail.job.id === job.id} />
                 ))}
@@ -456,10 +508,11 @@ export function AutomateView() {
       </div>
 
       {/* ── Detail panel (slides in from right) ── */}
-      {detail && (
-        <DetailPanel detail={detail} onClose={() => setDetail(null)}
+      {currentDetail && (
+        <DetailPanel detail={currentDetail} onClose={() => setDetail(null)}
           onRunNow={handleRunNow} onPause={handlePause} onUnpause={handleUnpause}
-          onDelete={handleDelete} onKill={handleKill} />
+          onDelete={handleDelete} onKill={handleKill} onResetToDefault={handleResetToDefault}
+          actionStates={actionStates} onActionDone={handleActionDone} />
       )}
 
       {showModal && <NewAutomationModal onClose={() => setShowModal(false)} onCreated={() => { setShowModal(false); fetchJobs(); }} />}
@@ -497,13 +550,16 @@ function Section({ title, count, accentColor, collapsed, children }: {
 // Recipe card (for Recipes + Running Now sections)
 // ═══════════════════════════════════════════════════════════════════════
 
-function RecipeCard({ job, onRunNow, onPause, onUnpause, onDelete, onKill, onSelect, selected }: {
+function RecipeCard({ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionStates, onActionDone, onSelect, selected }: {
   job: ScheduledJob;
   onRunNow: (id: string) => void;
   onPause: (id: string) => void;
   onUnpause: (id: string) => void;
   onDelete: (id: string) => void;
   onKill: (id: string) => void;
+  onResetToDefault: (id: string) => void;
+  actionStates: Record<string, 'loading' | 'success'>;
+  onActionDone: (key: string, afterRefresh?: () => void) => void;
   onSelect: () => void;
   selected: boolean;
 }) {
@@ -511,6 +567,7 @@ function RecipeCard({ job, onRunNow, onPause, onUnpause, onDelete, onKill, onSel
   const desc = job.description || '';
   const schedule = cronToEnglish(job.cron);
   const statusColor = job.currently_running ? '#5BD17F' : job.paused ? color.textDim : color.cyan;
+  const hasUpdate = job.starter_id && job.user_customized && job.embedded_version && job.version !== job.embedded_version;
 
   return (
     <div onClick={onSelect} style={{
@@ -525,6 +582,11 @@ function RecipeCard({ job, onRunNow, onPause, onUnpause, onDelete, onKill, onSel
           boxShadow: job.currently_running ? `0 0 8px ${statusColor}` : 'none',
         }} />
         <div style={{ fontSize: 14, fontWeight: 600, fontFamily: font.display, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</div>
+        {job.version && (
+          <span style={{ fontSize: 9, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: 'rgba(255,255,255,0.04)', color: color.textDim }}>
+            v{job.version}
+          </span>
+        )}
         <span style={{ fontSize: 9, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: color.cyanSoft, color: color.cyan }}>
           {job.currently_running ? 'RUNNING' : job.paused ? 'PAUSED' : 'SCHEDULED'}
         </span>
@@ -532,6 +594,7 @@ function RecipeCard({ job, onRunNow, onPause, onUnpause, onDelete, onKill, onSel
       {desc && <div style={{ fontSize: 12, color: color.textMuted, lineHeight: 1.5, marginBottom: 8, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' } as React.CSSProperties}>{desc}</div>}
       <div style={{ fontSize: 10, color: color.textDim, fontFamily: font.mono, marginBottom: 10 }}>
         {schedule} &middot; {job.last_run ? `Ran ${timeAgo(job.last_run)}` : 'Never run yet'}
+        {hasUpdate && <> &middot; <span style={{ color: '#FFB347' }}>Update available</span></>}
       </div>
       <div style={{ display: 'flex', gap: 6 }} onClick={e => e.stopPropagation()}>
         {job.currently_running ? (
@@ -539,10 +602,15 @@ function RecipeCard({ job, onRunNow, onPause, onUnpause, onDelete, onKill, onSel
         ) : (
           <>
             <Btn label="Run Now" onClick={() => onRunNow(job.id)} primary />
-            {job.paused ? <Btn label="Resume" onClick={() => onUnpause(job.id)} /> : <Btn label="Pause" onClick={() => onPause(job.id)} />}
+            {job.paused
+              ? <Btn label="Resume" onClick={() => onUnpause(job.id)} actionState={actionStates[`${job.id}:unpause`]} successLabel="Resumed" loadingLabel="Resuming..." onDone={() => onActionDone(`${job.id}:unpause`)} />
+              : <Btn label="Pause" onClick={() => onPause(job.id)} actionState={actionStates[`${job.id}:pause`]} successLabel="Paused" loadingLabel="Pausing..." onDone={() => onActionDone(`${job.id}:pause`)} />}
           </>
         )}
-        <Btn label="Delete" onClick={() => onDelete(job.id)} danger muted />
+        {((job.user_customized && job.starter_id) || actionStates[`${job.id}:reset`]) && (
+          <Btn label="Reset to default" onClick={() => onResetToDefault(job.id)} actionState={actionStates[`${job.id}:reset`]} successLabel="Reset complete" loadingLabel="Resetting..." onDone={() => onActionDone(`${job.id}:reset`)} />
+        )}
+        <Btn label="Delete" onClick={() => onDelete(job.id)} danger muted actionState={actionStates[`${job.id}:delete`]} successLabel="Deleted" loadingLabel="Deleting..." onDone={() => onActionDone(`${job.id}:delete`, () => {})} />
       </div>
     </div>
   );
@@ -552,7 +620,7 @@ function RecipeCard({ job, onRunNow, onPause, onUnpause, onDelete, onKill, onSel
 // Detail panel (right slide-in)
 // ═══════════════════════════════════════════════════════════════════════
 
-function DetailPanel({ detail, onClose, onRunNow, onPause, onUnpause, onDelete, onKill }: {
+function DetailPanel({ detail, onClose, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionStates, onActionDone }: {
   detail: DetailTarget;
   onClose: () => void;
   onRunNow: (id: string) => void;
@@ -560,6 +628,9 @@ function DetailPanel({ detail, onClose, onRunNow, onPause, onUnpause, onDelete, 
   onUnpause: (id: string) => void;
   onDelete: (id: string) => void;
   onKill: (id: string) => void;
+  onResetToDefault: (id: string) => void;
+  actionStates: Record<string, 'loading' | 'success'>;
+  onActionDone: (key: string, afterRefresh?: () => void) => void;
 }) {
   // Close on Escape
   useEffect(() => {
@@ -580,7 +651,8 @@ function DetailPanel({ detail, onClose, onRunNow, onPause, onUnpause, onDelete, 
 
       {detail.kind === 'recipe' && (
         <RecipeDetail job={detail.job} onRunNow={onRunNow} onPause={onPause}
-          onUnpause={onUnpause} onDelete={onDelete} onKill={onKill} />
+          onUnpause={onUnpause} onDelete={onDelete} onKill={onKill} onResetToDefault={onResetToDefault}
+          actionStates={actionStates} onActionDone={onActionDone} />
       )}
       {detail.kind === 'extension' && <ExtensionDetail ext={detail.ext} />}
       {detail.kind === 'run' && <RunDetail run={detail.run} displayName={detail.displayName} />}
@@ -588,21 +660,30 @@ function DetailPanel({ detail, onClose, onRunNow, onPause, onUnpause, onDelete, 
   );
 }
 
-function RecipeDetail({ job, onRunNow, onPause, onUnpause, onDelete, onKill }: {
+function RecipeDetail({ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionStates, onActionDone }: {
   job: ScheduledJob;
   onRunNow: (id: string) => void; onPause: (id: string) => void;
   onUnpause: (id: string) => void; onDelete: (id: string) => void;
-  onKill: (id: string) => void;
+  onKill: (id: string) => void; onResetToDefault: (id: string) => void;
+  actionStates: Record<string, 'loading' | 'success'>;
+  onActionDone: (key: string, afterRefresh?: () => void) => void;
 }) {
   const name = job.display_name || job.id;
   const statusColor = job.currently_running ? '#5BD17F' : job.paused ? color.textDim : color.cyan;
+  const hasUpdate = job.starter_id && job.user_customized && job.embedded_version && job.version !== job.embedded_version;
   return (
     <>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
         <div style={{ width: 10, height: 10, borderRadius: '50%', background: statusColor, boxShadow: job.currently_running ? `0 0 8px ${statusColor}` : 'none' }} />
         <div style={{ fontSize: 18, fontWeight: 600, fontFamily: font.display }}>{name}</div>
+        {job.version && <span style={{ fontSize: 11, fontFamily: font.mono, color: color.textDim }}>v{job.version}</span>}
       </div>
       {job.description && <div style={{ fontSize: 13, color: color.textMuted, lineHeight: 1.6, marginBottom: 16 }}>{job.description}</div>}
+      {hasUpdate && (
+        <div style={{ marginBottom: 16, padding: '10px 16px', borderRadius: radius.md, background: 'rgba(255,179,71,0.08)', border: '1px solid rgba(255,179,71,0.2)', fontSize: 12, color: '#FFB347' }}>
+          Update available (v{job.embedded_version}). Reset to default to apply.
+        </div>
+      )}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 24px', marginBottom: 20 }}>
         <MetaField label="Schedule" value={cronToEnglish(job.cron)} />
         <MetaField label="Status" value={job.currently_running ? 'Running' : job.paused ? 'Paused' : 'Active'} />
@@ -615,10 +696,15 @@ function RecipeDetail({ job, onRunNow, onPause, onUnpause, onDelete, onKill }: {
         ) : (
           <>
             <Btn label="Run Now" onClick={() => onRunNow(job.id)} primary />
-            {job.paused ? <Btn label="Resume" onClick={() => onUnpause(job.id)} /> : <Btn label="Pause" onClick={() => onPause(job.id)} />}
+            {job.paused
+              ? <Btn label="Resume" onClick={() => onUnpause(job.id)} actionState={actionStates[`${job.id}:unpause`]} successLabel="Resumed" loadingLabel="Resuming..." onDone={() => onActionDone(`${job.id}:unpause`)} />
+              : <Btn label="Pause" onClick={() => onPause(job.id)} actionState={actionStates[`${job.id}:pause`]} successLabel="Paused" loadingLabel="Pausing..." onDone={() => onActionDone(`${job.id}:pause`)} />}
           </>
         )}
-        <Btn label="Delete" onClick={() => onDelete(job.id)} danger muted />
+        {((job.user_customized && job.starter_id) || actionStates[`${job.id}:reset`]) && (
+          <Btn label="Reset to default" onClick={() => onResetToDefault(job.id)} actionState={actionStates[`${job.id}:reset`]} successLabel="Reset complete" loadingLabel="Resetting..." onDone={() => onActionDone(`${job.id}:reset`)} />
+        )}
+        <Btn label="Delete" onClick={() => onDelete(job.id)} danger muted actionState={actionStates[`${job.id}:delete`]} successLabel="Deleted" loadingLabel="Deleting..." onDone={() => onActionDone(`${job.id}:delete`, () => {})} />
       </div>
     </>
   );
@@ -727,19 +813,47 @@ function MetaField({ label, value, mono }: { label: string; value: string; mono?
 // Shared button
 // ═══════════════════════════════════════════════════════════════════════
 
-function Btn({ label, onClick, primary, danger, muted }: {
+function Btn({ label, onClick, primary, danger, muted, actionState, successLabel, loadingLabel, onDone }: {
   label: string; onClick: () => void; primary?: boolean; danger?: boolean; muted?: boolean;
+  actionState?: 'loading' | 'success'; successLabel?: string; loadingLabel?: string;
+  onDone?: () => void;
 }) {
-  const bg = primary ? color.cyan : danger ? 'rgba(255,100,100,0.1)' : 'rgba(255,255,255,0.05)';
-  const fg = primary ? '#000' : danger ? '#ff6b6b' : color.textMuted;
-  const bdr = primary ? 'transparent' : danger ? 'rgba(255,100,100,0.2)' : color.border;
+  // Local phase state — visual feedback managed HERE, not via parent props.
+  // This guarantees synchronous re-render on click (same component, no prop delay).
+  const [phase, setPhase] = useState<'idle' | 'loading' | 'success'>('idle');
+
+  const handleClick = () => {
+    if (phase !== 'idle') return;
+    if (loadingLabel) {
+      setPhase('loading');
+      const minDuration = new Promise(r => setTimeout(r, 700));
+      Promise.all([Promise.resolve((onClick as () => unknown)()), minDuration]).then(
+        () => {
+          setPhase('success');
+          setTimeout(() => { setPhase('idle'); onDone?.(); }, 1500);
+        },
+        () => { setPhase('idle'); onDone?.(); },
+      );
+    } else {
+      onClick();
+    }
+  };
+
+  const isLoading = phase === 'loading';
+  const isSuccess = phase === 'success';
+  const bg = isSuccess ? 'rgba(91,209,127,0.15)' : isLoading ? 'rgba(255,255,255,0.03)' : primary ? color.cyan : danger ? 'rgba(255,100,100,0.1)' : 'rgba(255,255,255,0.05)';
+  const fg = isSuccess ? '#5BD17F' : isLoading ? color.textDim : primary ? '#000' : danger ? '#ff6b6b' : color.textMuted;
+  const bdr = isSuccess ? 'rgba(91,209,127,0.3)' : isLoading ? color.border : primary ? 'transparent' : danger ? 'rgba(255,100,100,0.2)' : color.border;
+  const displayLabel = isSuccess ? `\u2713 ${successLabel || label}` : isLoading ? (loadingLabel || label) : label;
   return (
-    <button onClick={onClick} style={{
+    <button onClick={handleClick} disabled={isLoading || isSuccess} style={{
       padding: primary ? '6px 16px' : '4px 10px', borderRadius: radius.sm,
       background: bg, border: `1px solid ${bdr}`, color: fg,
-      fontSize: 11, fontWeight: primary ? 600 : 500, cursor: 'pointer', fontFamily: font.body,
-      opacity: muted ? 0.6 : 1,
-    }}>{label}</button>
+      fontSize: 11, fontWeight: primary ? 600 : 500, fontFamily: font.body,
+      cursor: isLoading || isSuccess ? 'default' : 'pointer',
+      opacity: muted && !phase && !actionState ? 0.6 : 1,
+      transition: 'background 200ms, color 200ms, border-color 200ms',
+    }}>{displayLabel}</button>
   );
 }
 
@@ -798,15 +912,30 @@ function renderInline(text: string): React.ReactNode {
   return parts.length === 1 ? parts[0] : <>{parts}</>;
 }
 
+const FINDING_TYPE_LABELS: Record<string, string> = {
+  dev_cache: 'Dev Caches',
+  app_cache: 'App Caches',
+  build_artifact: 'Build Artifacts',
+  stale_file: 'Old Downloads',
+  large_file: 'Large User Files',
+};
+
 function groupFindings(findings: Finding[]): Map<string, Finding[]> {
   const groups = new Map<string, Finding[]>();
   for (const f of findings) {
-    let group = 'Other';
-    const p = f.path.toLowerCase();
-    if (p.includes('/desktop/')) group = 'Desktop';
-    else if (p.includes('/downloads/')) group = 'Downloads';
-    else if (p.includes('/documents/')) group = 'Documents';
-    else if (p.includes('/.cache/') || p.includes('/.npm') || p.includes('/.rustup')) group = 'Developer Caches';
+    // Group by finding_type if available, fall back to path-based grouping
+    let group: string;
+    const ft = (f as unknown as Record<string, unknown>).type as string | undefined;
+    if (ft && FINDING_TYPE_LABELS[ft]) {
+      group = FINDING_TYPE_LABELS[ft];
+    } else {
+      const p = f.path.toLowerCase();
+      if (p.includes('/desktop/')) group = 'Desktop';
+      else if (p.includes('/downloads/')) group = 'Downloads';
+      else if (p.includes('/documents/')) group = 'Documents';
+      else if (p.includes('/.cache/') || p.includes('/.npm') || p.includes('/.rustup') || p.includes('/target/')) group = 'Dev Caches';
+      else group = 'Other';
+    }
     (groups.get(group) || (() => { const l: Finding[] = []; groups.set(group, l); return l; })()).push(f);
   }
   return groups;

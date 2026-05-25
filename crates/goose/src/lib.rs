@@ -45,6 +45,7 @@ pub mod session_context;
 pub mod skills;
 pub mod slash_commands;
 pub mod sources;
+pub mod storage_health;
 pub mod subprocess;
 pub mod tasks;
 pub mod token_counter;

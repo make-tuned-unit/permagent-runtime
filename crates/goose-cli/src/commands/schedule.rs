@@ -89,6 +89,10 @@ pub async fn handle_schedule_add(
         current_session_id: None,
         process_start_time: None,
         worker_persona: None,
+        starter_id: None,
+        starter_version: None,
+        starter_content_hash: None,
+        user_customized: None,
     };
 
     let scheduler_storage_path =

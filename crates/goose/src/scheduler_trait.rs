@@ -46,4 +46,16 @@ pub trait SchedulerTrait: Send + Sync {
         &self,
         sched_id: &str,
     ) -> Result<Option<(String, DateTime<Utc>)>, SchedulerError>;
+
+    /// Update starter recipe versioning metadata on a scheduled job.
+    async fn update_starter_fields(
+        &self,
+        _sched_id: &str,
+        _starter_id: Option<String>,
+        _version: Option<String>,
+        _content_hash: Option<String>,
+        _user_customized: bool,
+    ) {
+        // Default no-op for test doubles
+    }
 }

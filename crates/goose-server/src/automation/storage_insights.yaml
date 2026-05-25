@@ -1,68 +1,22 @@
-version: "1.0.0"
+version: "2.0.1"
 title: "Weekly Storage Cleanup"
-description: "Finds stale files, large downloads, and cleanup opportunities across your Downloads, Desktop, and Documents."
-
-extensions:
-  - type: builtin
-    name: developer
+description: "Scans your Mac for cleanup opportunities — dev caches, app caches, stale downloads, and large files."
 
 prompt: |
-  Analyze storage on this Mac and identify cleanup opportunities. Run these commands and synthesize findings:
+  Run a storage health scan to find cleanup opportunities on this Mac.
 
-  1. Largest folders in home directory (excluding system paths):
-     ```
-     du -h -d 2 ~ 2>/dev/null | grep -v "/Library/" | sort -rh | head -20
-     ```
+  1. Call the scan_storage_health tool to scan the filesystem. This is the ONLY
+     way to produce storage findings — do NOT run find, du, ls, or any shell
+     commands to scan storage.
 
-  2. Large files in Downloads, Desktop, Documents (>50 MB):
-     ```
-     find ~/Downloads ~/Desktop ~/Documents \
-       -type f -size +50M 2>/dev/null \
-       -exec ls -lh {} \; | head -30
-     ```
+  2. After the tool returns, write a brief summary for the user:
+     - Start with: **Your disk has X GB of cleanup opportunities across N items.**
+     - List the top 3 categories by size (e.g., "Dev Caches: 14.2 GB across 3 projects")
+     - If any item is flagged "Review before removing", mention it specifically
+     - Keep the summary to 3-5 sentences, no technical jargon
 
-  3. Files in Downloads older than 30 days:
-     ```
-     find ~/Downloads -type f -mtime +30 2>/dev/null | head -50
-     ```
+  3. Emit the findings JSON from the tool result in <findings>...</findings> tags
+     so the UI can render actionable Trash/Keep buttons for each item.
 
-  4. Overall disk usage:
-     ```
-     df -h / | tail -1
-     ```
-
-  Produce a report with two parts:
-
-  First, write a brief summary for a non-technical user:
-
-  **Your disk is Z% full** with X GB free. I found approximately Y GB that could be cleaned up across N items in your Downloads, Desktop, and Documents folders.
-
-  Then give a brief overview of the biggest opportunities (2-3 sentences max, no technical jargon, no section headers like "PART 1" or "Human-Readable Summary").
-
-  Second, output the structured findings block:
-
-  After the human-readable report, output a findings block in this exact format. This block will be parsed by Permagent to create actionable items with Trash/Keep buttons.
-
-  <findings>
-  [
-    {
-      "id": "finding-001",
-      "type": "stale_file",
-      "path": "/full/path/to/file.ext",
-      "size_bytes": 256000000,
-      "age_days": 45,
-      "recommendation": "Safe to remove"
-    }
-  ]
-  </findings>
-
-  Rules for the findings block:
-  - Use sequential IDs: finding-001, finding-002, etc.
-  - type must be one of: "stale_file", "large_file", "duplicate"
-  - path must be the FULL absolute path
-  - size_bytes must be in bytes (not MB or GB)
-  - age_days is optional (null if unknown)
-  - recommendation must be "Safe to remove" or "Review before removing"
-  - Include at most 40 findings, prioritized by size (largest first)
-  - Do NOT include files in .ssh, .aws, .gnupg, .env, credentials, or keychain paths
-  - Do NOT delete any files — only report findings
+  Do NOT add section headers like "PART 1" or "Human-Readable Summary".
+  Do NOT delete any files — only report findings for user review.

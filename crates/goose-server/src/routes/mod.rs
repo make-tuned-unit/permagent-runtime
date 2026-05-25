@@ -30,6 +30,7 @@ pub mod session_events;
 pub mod setup;
 pub mod skills;
 pub mod status;
+pub mod storage;
 pub mod telemetry;
 pub mod tunnel;
 pub mod utils;
@@ -87,6 +88,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(identity::routes(state.clone()))
         .merge(workers::routes(state.clone()))
         .merge(findings::routes(state.clone()))
+        .merge(storage::routes(state.clone()))
         .merge(ollama::routes(state.clone()))
         .merge(librarian::routes(state.clone()))
         .merge(henry_status::routes(state.clone()))

@@ -51,6 +51,7 @@ pub enum ActivityEventType {
     AutomationJobStarted,
     AutomationJobCompleted,
     AutomationJobFailed,
+    StarterRecipeUpgraded,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -132,7 +133,8 @@ fn default_tier(event_type: &ActivityEventType) -> EventTier {
         | ActivityEventType::SkillExecuted
         | ActivityEventType::IntegrationTokenRefreshed
         | ActivityEventType::AutomationJobCompleted
-        | ActivityEventType::AutomationJobFailed => EventTier::Always,
+        | ActivityEventType::AutomationJobFailed
+        | ActivityEventType::StarterRecipeUpgraded => EventTier::Always,
 
         ActivityEventType::BrowserNavigated | ActivityEventType::BrowserFormSubmitted => {
             EventTier::Aggregated
@@ -265,6 +267,22 @@ pub fn automation_job_failed(job_id: &str, job_name: &str, error: &str) -> Activ
             "job_id": job_id,
             "job_name": job_name,
             "error": error,
+        }),
+    )
+}
+
+pub fn starter_recipe_upgraded(
+    starter_id: &str,
+    from_version: &str,
+    to_version: &str,
+) -> ActivityEvent {
+    ActivityEvent::new(
+        ActivityEventType::StarterRecipeUpgraded,
+        SourceSurface::Scheduler,
+        serde_json::json!({
+            "starter_id": starter_id,
+            "from_version": from_version,
+            "to_version": to_version,
         }),
     )
 }
