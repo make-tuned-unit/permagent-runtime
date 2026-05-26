@@ -1,8 +1,9 @@
 use crate::state::AppState;
 use axum::{extract::State, routing::get, Json, Router};
 use chrono::{NaiveTime, Utc};
+use permagent::config::paths::Paths;
 use permagent::session::session_manager::SessionType;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 #[derive(Serialize)]
@@ -185,8 +186,246 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+// ─── Dashboard Layout Persistence ───────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CardPosition {
+    pub x: i32,
+    pub y: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CardSize {
+    pub w: i32,
+    pub h: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DashboardCard {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub card_type: String,
+    pub position: CardPosition,
+    pub size: CardSize,
+    pub visible: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DashboardLayout {
+    pub cards: Vec<DashboardCard>,
+}
+
+impl DashboardLayout {
+    /// The default layout matching the current static Dashboard render.
+    /// Grid uses 12 columns. Row height is abstract (1 unit ~ one card row).
+    pub fn default_layout() -> Self {
+        Self {
+            cards: vec![
+                DashboardCard {
+                    id: "hero".to_string(),
+                    card_type: "hero".to_string(),
+                    position: CardPosition { x: 0, y: 0 },
+                    size: CardSize { w: 7, h: 4 },
+                    visible: true,
+                },
+                DashboardCard {
+                    id: "stats".to_string(),
+                    card_type: "stats".to_string(),
+                    position: CardPosition { x: 7, y: 0 },
+                    size: CardSize { w: 5, h: 4 },
+                    visible: true,
+                },
+                DashboardCard {
+                    id: "in_flight".to_string(),
+                    card_type: "in_flight".to_string(),
+                    position: CardPosition { x: 0, y: 4 },
+                    size: CardSize { w: 12, h: 3 },
+                    visible: true,
+                },
+                DashboardCard {
+                    id: "recent".to_string(),
+                    card_type: "recent".to_string(),
+                    position: CardPosition { x: 0, y: 7 },
+                    size: CardSize { w: 12, h: 4 },
+                    visible: true,
+                },
+            ],
+        }
+    }
+}
+
+fn layout_path() -> std::path::PathBuf {
+    Paths::in_data_dir("dashboard.json")
+}
+
+async fn get_layout() -> Json<DashboardLayout> {
+    let path = layout_path();
+    let layout = match tokio::fs::read_to_string(&path).await {
+        Ok(contents) => serde_json::from_str::<DashboardLayout>(&contents)
+            .unwrap_or_else(|_| DashboardLayout::default_layout()),
+        Err(_) => DashboardLayout::default_layout(),
+    };
+    Json(layout)
+}
+
+#[derive(Deserialize)]
+struct PutLayoutBody {
+    cards: Vec<DashboardCard>,
+}
+
+async fn put_layout(
+    Json(body): Json<PutLayoutBody>,
+) -> Result<Json<DashboardLayout>, crate::routes::errors::ErrorResponse> {
+    // Validate: at least one card
+    if body.cards.is_empty() {
+        return Err(crate::routes::errors::ErrorResponse::bad_request(
+            "Layout must contain at least one card",
+        ));
+    }
+
+    // Validate: no duplicate ids
+    let mut seen_ids = std::collections::HashSet::new();
+    for card in &body.cards {
+        if !seen_ids.insert(&card.id) {
+            return Err(crate::routes::errors::ErrorResponse::bad_request(format!(
+                "Duplicate card id: {}",
+                card.id
+            )));
+        }
+    }
+
+    let layout = DashboardLayout { cards: body.cards };
+    let path = layout_path();
+
+    // Ensure parent dir exists
+    if let Some(parent) = path.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+
+    // Atomic write: write to tmp then rename
+    let tmp_path = path.with_extension("json.tmp");
+    let json = serde_json::to_string_pretty(&layout)
+        .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?;
+
+    tokio::fs::write(&tmp_path, json.as_bytes())
+        .await
+        .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?;
+
+    tokio::fs::rename(&tmp_path, &path)
+        .await
+        .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?;
+
+    Ok(Json(layout))
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/dashboard", get(get_dashboard))
+        .route("/api/dashboard/layout", get(get_layout).put(put_layout))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_layout_has_four_cards() {
+        let layout = DashboardLayout::default_layout();
+        assert_eq!(layout.cards.len(), 4);
+        assert_eq!(layout.cards[0].id, "hero");
+        assert_eq!(layout.cards[1].id, "stats");
+        assert_eq!(layout.cards[2].id, "in_flight");
+        assert_eq!(layout.cards[3].id, "recent");
+    }
+
+    #[test]
+    fn default_layout_uses_12_column_grid() {
+        let layout = DashboardLayout::default_layout();
+        // Hero(7) + Stats(5) = 12 columns in first row
+        assert_eq!(layout.cards[0].size.w + layout.cards[1].size.w, 12);
+        // Top row cards have same height
+        assert_eq!(layout.cards[0].size.h, layout.cards[1].size.h);
+        // In-flight and Recent span full width
+        assert_eq!(layout.cards[2].size.w, 12);
+        assert_eq!(layout.cards[3].size.w, 12);
+        // In-flight starts after top row
+        assert_eq!(layout.cards[2].position.y, layout.cards[0].size.h);
+    }
+
+    #[test]
+    fn layout_serialization_roundtrip() {
+        let layout = DashboardLayout::default_layout();
+        let json = serde_json::to_string_pretty(&layout).unwrap();
+        let deserialized: DashboardLayout = serde_json::from_str(&json).unwrap();
+        assert_eq!(layout, deserialized);
+    }
+
+    #[test]
+    fn card_type_field_serializes_as_type() {
+        let card = DashboardCard {
+            id: "test".to_string(),
+            card_type: "hero".to_string(),
+            position: CardPosition { x: 0, y: 0 },
+            size: CardSize { w: 6, h: 3 },
+            visible: true,
+        };
+        let json = serde_json::to_string(&card).unwrap();
+        assert!(json.contains(r#""type":"hero""#));
+        assert!(!json.contains("card_type"));
+    }
+
+    #[test]
+    fn malformed_json_returns_default_layout() {
+        // Simulates what get_layout does when file content is invalid
+        let bad_json = "{ not valid json }";
+        let result = serde_json::from_str::<DashboardLayout>(bad_json)
+            .unwrap_or_else(|_| DashboardLayout::default_layout());
+        assert_eq!(result, DashboardLayout::default_layout());
+    }
+
+    #[tokio::test]
+    async fn layout_file_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Point Paths at temp dir
+        std::env::set_var("PERMAGENT_PATH_ROOT", tmp.path());
+
+        let layout = DashboardLayout {
+            cards: vec![DashboardCard {
+                id: "hero".to_string(),
+                card_type: "hero".to_string(),
+                position: CardPosition { x: 0, y: 0 },
+                size: CardSize { w: 12, h: 4 },
+                visible: true,
+            }],
+        };
+
+        let path = layout_path();
+        let json = serde_json::to_string_pretty(&layout).unwrap();
+        tokio::fs::write(&path, json.as_bytes()).await.unwrap();
+
+        let read_back = tokio::fs::read_to_string(&path).await.unwrap();
+        let parsed: DashboardLayout = serde_json::from_str(&read_back).unwrap();
+        assert_eq!(parsed, layout);
+
+        // Clean up env var
+        std::env::remove_var("PERMAGENT_PATH_ROOT");
+    }
+
+    #[tokio::test]
+    async fn missing_file_returns_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("PERMAGENT_PATH_ROOT", tmp.path());
+
+        let path = layout_path();
+        // File doesn't exist
+        let result = match tokio::fs::read_to_string(&path).await {
+            Ok(contents) => serde_json::from_str::<DashboardLayout>(&contents)
+                .unwrap_or_else(|_| DashboardLayout::default_layout()),
+            Err(_) => DashboardLayout::default_layout(),
+        };
+        assert_eq!(result, DashboardLayout::default_layout());
+
+        std::env::remove_var("PERMAGENT_PATH_ROOT");
+    }
 }
