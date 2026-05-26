@@ -393,6 +393,9 @@ export const api = {
   getProviderModels: (name: string) =>
     apiFetch<string[]>(`/config/providers/${encodeURIComponent(name)}/models`).catch(() => []),
 
+  reloadConfig: () =>
+    apiFetch<{ provider: string; keyTail: string }>('/config/reload', { method: 'POST' }),
+
   setProvider: async (provider: string, model: string): Promise<void> => {
     const url = `${API_BASE_URL}/config/set_provider`;
     const response = await fetch(url, {
