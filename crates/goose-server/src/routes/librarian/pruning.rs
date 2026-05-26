@@ -14,7 +14,8 @@ pub(super) fn run_pruning_pass() -> Result<usize, String> {
             [],
             |r| r.get::<_, usize>(0),
         )
-        .unwrap_or(0) > 0;
+        .unwrap_or(0)
+        > 0;
 
     // Find candidates: short content, activity source, never recalled, not consolidated
     let mut stmt = conn

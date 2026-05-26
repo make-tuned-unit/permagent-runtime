@@ -45,9 +45,7 @@ fn home_dir() -> PathBuf {
 /// Resolve dev scan roots: probe conventional directories first, fall back to $HOME.
 fn dev_scan_roots() -> Vec<(PathBuf, u32)> {
     let home = home_dir();
-    let conventional = [
-        "dev", "code", "src", "projects", "repos", "workspace",
-    ];
+    let conventional = ["dev", "code", "src", "projects", "repos", "workspace"];
     // Also check Documents/GitHub (common for GitHub Desktop users)
     let extra = ["Documents/GitHub"];
 
@@ -146,8 +144,7 @@ pub fn scan_dev_caches(counter: &mut u32) -> Vec<ScanFinding> {
                                 path: path.to_string_lossy().to_string(),
                                 size_bytes: sz,
                                 age_days: size::age_days(path),
-                                recommendation: safety::recommendation_for("dev_cache")
-                                    .to_string(),
+                                recommendation: safety::recommendation_for("dev_cache").to_string(),
                             });
                             debug!("dev_cache: {} ({} bytes)", path.display(), sz);
                         }
@@ -168,8 +165,7 @@ pub fn scan_dev_caches(counter: &mut u32) -> Vec<ScanFinding> {
                                 path: path.to_string_lossy().to_string(),
                                 size_bytes: sz,
                                 age_days: size::age_days(path),
-                                recommendation: safety::recommendation_for("dev_cache")
-                                    .to_string(),
+                                recommendation: safety::recommendation_for("dev_cache").to_string(),
                             });
                             debug!("dev_cache: {} ({} bytes)", path.display(), sz);
                         }

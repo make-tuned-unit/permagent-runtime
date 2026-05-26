@@ -128,7 +128,9 @@ mod tests {
 
     #[test]
     fn test_allows_normal_paths() {
-        assert!(!is_excluded(Path::new("/Users/jesse/dev/project/src/main.rs")));
+        assert!(!is_excluded(Path::new(
+            "/Users/jesse/dev/project/src/main.rs"
+        )));
         assert!(!is_excluded(Path::new("/Users/jesse/Downloads/report.pdf")));
     }
 

@@ -850,18 +850,42 @@ mod tests {
 
     #[test]
     fn filter_blocks_about_blank() {
-        assert!(!should_ingest_activity("Navigated to about:blank", "browser_navigated"));
+        assert!(!should_ingest_activity(
+            "Navigated to about:blank",
+            "browser_navigated"
+        ));
     }
 
     #[test]
     fn filter_blocks_ad_tracking() {
-        assert!(!should_ingest_activity("Navigated to Ad (https://doubleclick.net/ad) in tab t1.", "browser_navigated"));
-        assert!(!should_ingest_activity("Navigated to X (https://crwdcntrl.net/px) in tab t1.", "browser_navigated"));
-        assert!(!should_ingest_activity("Navigated to reCAPTCHA in tab t1.", "browser_navigated"));
-        assert!(!should_ingest_activity("Navigated to (https://ogs.google.com/u/0) in tab t1.", "browser_navigated"));
-        assert!(!should_ingest_activity("Navigated to (https://googleads.g.doubleclick.net) in tab t1.", "browser_navigated"));
-        assert!(!should_ingest_activity("Navigated to (https://www.google.com/ads/foo) in tab t1.", "browser_navigated"));
-        assert!(!should_ingest_activity("Navigated to (https://example.com/tracking/pixel) in tab t1.", "browser_navigated"));
+        assert!(!should_ingest_activity(
+            "Navigated to Ad (https://doubleclick.net/ad) in tab t1.",
+            "browser_navigated"
+        ));
+        assert!(!should_ingest_activity(
+            "Navigated to X (https://crwdcntrl.net/px) in tab t1.",
+            "browser_navigated"
+        ));
+        assert!(!should_ingest_activity(
+            "Navigated to reCAPTCHA in tab t1.",
+            "browser_navigated"
+        ));
+        assert!(!should_ingest_activity(
+            "Navigated to (https://ogs.google.com/u/0) in tab t1.",
+            "browser_navigated"
+        ));
+        assert!(!should_ingest_activity(
+            "Navigated to (https://googleads.g.doubleclick.net) in tab t1.",
+            "browser_navigated"
+        ));
+        assert!(!should_ingest_activity(
+            "Navigated to (https://www.google.com/ads/foo) in tab t1.",
+            "browser_navigated"
+        ));
+        assert!(!should_ingest_activity(
+            "Navigated to (https://example.com/tracking/pixel) in tab t1.",
+            "browser_navigated"
+        ));
     }
 
     #[test]
@@ -898,13 +922,19 @@ mod tests {
     #[test]
     fn extract_domain_from_navigation_content() {
         let content = "Navigated to GitHub (https://github.com/permagent) in tab t1.";
-        assert_eq!(extract_domain_from_content(content), Some("github.com".to_string()));
+        assert_eq!(
+            extract_domain_from_content(content),
+            Some("github.com".to_string())
+        );
     }
 
     #[test]
     fn extract_domain_with_path() {
         let content = "Navigated to Gmail (https://mail.google.com/mail/u/0) in tab t1.";
-        assert_eq!(extract_domain_from_content(content), Some("mail.google.com".to_string()));
+        assert_eq!(
+            extract_domain_from_content(content),
+            Some("mail.google.com".to_string())
+        );
     }
 
     #[test]

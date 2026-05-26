@@ -47,9 +47,16 @@ fn create_session(token: &str) -> String {
         .json(&serde_json::json!({}))
         .send()
         .expect("failed to create session");
-    assert!(resp.status().is_success(), "create session failed: {}", resp.status());
+    assert!(
+        resp.status().is_success(),
+        "create session failed: {}",
+        resp.status()
+    );
     let body: serde_json::Value = resp.json().expect("session response not JSON");
-    body["id"].as_str().expect("no id in session response").to_string()
+    body["id"]
+        .as_str()
+        .expect("no id in session response")
+        .to_string()
 }
 
 fn now_ts() -> i64 {
@@ -91,10 +98,7 @@ fn smoke_recall_round_trip() {
 
     let status = resp.status();
     println!("Status: {status}");
-    assert!(
-        status.is_success(),
-        "Expected 2xx, got {status}"
-    );
+    assert!(status.is_success(), "Expected 2xx, got {status}");
 
     // The response is SSE — read lines and look for recall evidence
     let reader = BufReader::new(resp);
@@ -128,7 +132,10 @@ fn smoke_recall_round_trip() {
     // The test passes if the daemon accepted the request and streamed back.
     // ContextAttached is bonus evidence that recall fired; its absence is not
     // a failure (brain may be empty or query too short for recall threshold).
-    assert!(line_count > 0, "Expected at least some SSE output from /reply");
+    assert!(
+        line_count > 0,
+        "Expected at least some SSE output from /reply"
+    );
 }
 
 /// Verify recall behavior through the /sessions/{id}/events SSE endpoint.
@@ -235,5 +242,8 @@ fn smoke_session_events_recall() {
     // Wait for the /reply thread to finish
     let (reply_status, reply_lines) = reply_handle.join().expect("reply thread panicked");
     println!("\n/reply completed: status={reply_status}, lines={reply_lines}");
-    assert!(reply_status.is_success(), "/reply failed with {reply_status}");
+    assert!(
+        reply_status.is_success(),
+        "/reply failed with {reply_status}"
+    );
 }

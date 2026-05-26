@@ -45,7 +45,10 @@ async fn scan_handler(
         "run_id": result.run_id,
         "findings": result.findings,
     });
-    let _ = std::fs::write(&findings_path, serde_json::to_string_pretty(&findings_file).unwrap_or_default());
+    let _ = std::fs::write(
+        &findings_path,
+        serde_json::to_string_pretty(&findings_file).unwrap_or_default(),
+    );
 
     let categories = result
         .categories

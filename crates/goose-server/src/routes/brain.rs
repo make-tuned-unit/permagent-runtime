@@ -360,15 +360,15 @@ async fn brain_graph(
                     let age = created_at_str
                         .as_deref()
                         .and_then(|s| {
-                            s.parse::<DateTime<Utc>>()
-                                .ok()
-                                .or_else(|| {
-                                    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
-                                        .ok()
-                                        .map(|dt| dt.and_utc())
-                                })
+                            s.parse::<DateTime<Utc>>().ok().or_else(|| {
+                                chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                                    .ok()
+                                    .map(|dt| dt.and_utc())
+                            })
                         })
-                        .map(|ts| ((now - ts).num_seconds().max(0) as f64 / max_age_secs).clamp(0.0, 1.0))
+                        .map(|ts| {
+                            ((now - ts).num_seconds().max(0) as f64 / max_age_secs).clamp(0.0, 1.0)
+                        })
                         .unwrap_or(0.5);
                     let timestamp = created_at_str.unwrap_or_else(|| now.to_rfc3339());
                     result.push(GraphMemory {
@@ -400,15 +400,15 @@ async fn brain_graph(
                     .created_at
                     .as_deref()
                     .and_then(|s| {
-                        s.parse::<DateTime<Utc>>()
-                            .ok()
-                            .or_else(|| {
-                                chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
-                                    .ok()
-                                    .map(|dt| dt.and_utc())
-                            })
+                        s.parse::<DateTime<Utc>>().ok().or_else(|| {
+                            chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                                .ok()
+                                .map(|dt| dt.and_utc())
+                        })
                     })
-                    .map(|ts| ((now - ts).num_seconds().max(0) as f64 / max_age_secs).clamp(0.0, 1.0))
+                    .map(|ts| {
+                        ((now - ts).num_seconds().max(0) as f64 / max_age_secs).clamp(0.0, 1.0)
+                    })
                     .unwrap_or(0.5);
                 let timestamp = hit.created_at.clone().unwrap_or_else(|| now.to_rfc3339());
                 memories.push(GraphMemory {
@@ -431,50 +431,60 @@ async fn brain_graph(
     // Populate entity links from memory_annotations table
     if !memories.is_empty() {
         let memory_ids: Vec<String> = memories.iter().map(|m| m.id.clone()).collect();
-        let annotation_map = tokio::task::spawn_blocking(move || -> std::collections::HashMap<String, Vec<String>> {
-            let conn = match crate::brain_ops::read_only_brain_conn() {
-                Ok(c) => c,
-                Err(_) => return std::collections::HashMap::new(),
-            };
+        let annotation_map = tokio::task::spawn_blocking(
+            move || -> std::collections::HashMap<String, Vec<String>> {
+                let conn = match crate::brain_ops::read_only_brain_conn() {
+                    Ok(c) => c,
+                    Err(_) => return std::collections::HashMap::new(),
+                };
 
-            let placeholders: Vec<String> = (1..=memory_ids.len()).map(|i| format!("?{}", i)).collect();
-            let sql = format!(
-                "SELECT memory_id, who FROM memory_annotations WHERE memory_id IN ({})",
-                placeholders.join(", ")
-            );
+                let placeholders: Vec<String> =
+                    (1..=memory_ids.len()).map(|i| format!("?{}", i)).collect();
+                let sql = format!(
+                    "SELECT memory_id, who FROM memory_annotations WHERE memory_id IN ({})",
+                    placeholders.join(", ")
+                );
 
-            let mut stmt = match conn.prepare(&sql) {
-                Ok(s) => s,
-                Err(_) => return std::collections::HashMap::new(),
-            };
+                let mut stmt = match conn.prepare(&sql) {
+                    Ok(s) => s,
+                    Err(_) => return std::collections::HashMap::new(),
+                };
 
-            let params: Vec<&dyn rusqlite::types::ToSql> = memory_ids
-                .iter()
-                .map(|id| id as &dyn rusqlite::types::ToSql)
-                .collect();
+                let params: Vec<&dyn rusqlite::types::ToSql> = memory_ids
+                    .iter()
+                    .map(|id| id as &dyn rusqlite::types::ToSql)
+                    .collect();
 
-            let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+                let mut map: std::collections::HashMap<String, Vec<String>> =
+                    std::collections::HashMap::new();
 
-            if let Ok(rows) = stmt.query_map(params.as_slice(), |row| {
-                let memory_id: String = row.get(0)?;
-                let who_json: String = row.get(1)?;
-                Ok((memory_id, who_json))
-            }) {
-                for row_result in rows {
-                    if let Ok((mem_id, who_json)) = row_result {
-                        if let Ok(refs) = serde_json::from_str::<Vec<serde_json::Value>>(&who_json) {
-                            let ent_ids: Vec<String> = refs
-                                .iter()
-                                .filter_map(|r| r.get("canonical_id").and_then(|v| v.as_str()).map(String::from))
-                                .collect();
-                            map.entry(mem_id).or_default().extend(ent_ids);
+                if let Ok(rows) = stmt.query_map(params.as_slice(), |row| {
+                    let memory_id: String = row.get(0)?;
+                    let who_json: String = row.get(1)?;
+                    Ok((memory_id, who_json))
+                }) {
+                    for row_result in rows {
+                        if let Ok((mem_id, who_json)) = row_result {
+                            if let Ok(refs) =
+                                serde_json::from_str::<Vec<serde_json::Value>>(&who_json)
+                            {
+                                let ent_ids: Vec<String> = refs
+                                    .iter()
+                                    .filter_map(|r| {
+                                        r.get("canonical_id")
+                                            .and_then(|v| v.as_str())
+                                            .map(String::from)
+                                    })
+                                    .collect();
+                                map.entry(mem_id).or_default().extend(ent_ids);
+                            }
                         }
                     }
                 }
-            }
 
-            map
-        })
+                map
+            },
+        )
         .await
         .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?;
 
@@ -566,7 +576,14 @@ async fn brain_memories(
         let is_search = !q.is_empty();
 
         if is_search {
-            query_fts_memories(&conn, &q, params.offset.unwrap_or(0), limit, now, max_age_secs)
+            query_fts_memories(
+                &conn,
+                &q,
+                params.offset.unwrap_or(0),
+                limit,
+                now,
+                max_age_secs,
+            )
         } else {
             query_browse_memories(
                 &conn,
@@ -654,10 +671,9 @@ fn query_browse_memories(
 
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(
-            rusqlite::params_from_iter(params_vec.iter()),
-            |row| row_to_graph_memory(row, now, max_age_secs),
-        )
+        .query_map(rusqlite::params_from_iter(params_vec.iter()), |row| {
+            row_to_graph_memory(row, now, max_age_secs)
+        })
         .map_err(|e| e.to_string())?;
 
     let mut memories: Vec<GraphMemory> = rows.filter_map(|r| r.ok()).collect();
@@ -758,13 +774,11 @@ fn row_to_graph_memory(
     let age = created_at
         .as_deref()
         .and_then(|s| {
-            s.parse::<DateTime<Utc>>()
-                .ok()
-                .or_else(|| {
-                    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
-                        .ok()
-                        .map(|dt| dt.and_utc())
-                })
+            s.parse::<DateTime<Utc>>().ok().or_else(|| {
+                chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                    .ok()
+                    .map(|dt| dt.and_utc())
+            })
         })
         .map(|ts| ((now - ts).num_seconds().max(0) as f64 / max_age_secs).clamp(0.0, 1.0))
         .unwrap_or(0.5);

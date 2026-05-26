@@ -390,7 +390,8 @@ pub async fn describe_one(
             if emit_events {
                 let started_at = chrono::Utc::now().to_rfc3339();
                 crate::events::emit(crate::events::librarian_describe_started(
-                    &memory_key, &started_at,
+                    &memory_key,
+                    &started_at,
                 ));
             }
         } else {
@@ -399,7 +400,8 @@ pub async fn describe_one(
             }
             if emit_events {
                 crate::events::emit(crate::events::librarian_describe_retry(
-                    &memory_key, attempt,
+                    &memory_key,
+                    attempt,
                 ));
             }
             tracing::warn!(
@@ -409,9 +411,8 @@ pub async fn describe_one(
             );
         }
 
-        let raw = call_ollama_streaming(
-            OLLAMA_BASE_URL, &prompt, model, emit_events, &memory_key,
-        ).await?;
+        let raw = call_ollama_streaming(OLLAMA_BASE_URL, &prompt, model, emit_events, &memory_key)
+            .await?;
         let raw = raw.trim().to_string();
 
         if let Some(parsed) = parse_structured_description(&raw) {
@@ -452,12 +453,23 @@ pub async fn describe_one(
     {
         let content_lower = memory.content.to_lowercase();
         let stale_markers = [
-            "no longer", "used to", "changed from", "stopped",
-            "switched to", "moved from", "deprecated", "replaced by",
-            "was previously", "formerly", "old approach",
+            "no longer",
+            "used to",
+            "changed from",
+            "stopped",
+            "switched to",
+            "moved from",
+            "deprecated",
+            "replaced by",
+            "was previously",
+            "formerly",
+            "old approach",
         ];
         if stale_markers.iter().any(|m| content_lower.contains(m)) {
-            description = format!("{}\nSTALE_RISK: content contains temporal supersession markers", description);
+            description = format!(
+                "{}\nSTALE_RISK: content contains temporal supersession markers",
+                description
+            );
             tracing::debug!(
                 memory_id = %memory_id,
                 key = %memory.key,
@@ -474,13 +486,11 @@ pub async fn describe_one(
             .created_at
             .as_deref()
             .and_then(|s| {
-                s.parse::<chrono::DateTime<chrono::Utc>>()
-                    .ok()
-                    .or_else(|| {
-                        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
-                            .ok()
-                            .map(|dt| dt.and_utc())
-                    })
+                s.parse::<chrono::DateTime<chrono::Utc>>().ok().or_else(|| {
+                    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                        .ok()
+                        .map(|dt| dt.and_utc())
+                })
             })
             .unwrap_or_else(chrono::Utc::now);
 
@@ -508,7 +518,10 @@ pub async fn describe_one(
 
     if emit_events {
         crate::events::emit(crate::events::librarian_describe_completed(
-            &memory_key, &description, latency_ms as u64, quality,
+            &memory_key,
+            &description,
+            latency_ms as u64,
+            quality,
         ));
     }
 
@@ -682,9 +695,8 @@ async fn call_ollama_streaming(
     let mut saw_done = false;
 
     while let Some(chunk_result) = stream.next().await {
-        let chunk = chunk_result.map_err(|e| {
-            format!("Stream interrupted during description generation: {}", e)
-        })?;
+        let chunk = chunk_result
+            .map_err(|e| format!("Stream interrupted during description generation: {}", e))?;
 
         let chunk_str = String::from_utf8_lossy(&chunk);
         line_buffer.push_str(&chunk_str);
@@ -696,9 +708,8 @@ async fn call_ollama_streaming(
                 continue;
             }
 
-            let parsed: serde_json::Value = serde_json::from_str(line).map_err(|e| {
-                format!("Malformed NDJSON from Ollama: {} (line: {})", e, line)
-            })?;
+            let parsed: serde_json::Value = serde_json::from_str(line)
+                .map_err(|e| format!("Malformed NDJSON from Ollama: {} (line: {})", e, line))?;
 
             if let Some(token) = parsed.get("response").and_then(|v| v.as_str()) {
                 if !token.is_empty() {
@@ -711,7 +722,11 @@ async fn call_ollama_streaming(
                 }
             }
 
-            if parsed.get("done").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if parsed
+                .get("done")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
                 saw_done = true;
             }
 
@@ -735,7 +750,11 @@ async fn call_ollama_streaming(
                     }
                 }
             }
-            if parsed.get("done").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if parsed
+                .get("done")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
                 saw_done = true;
             }
         }
@@ -885,11 +904,8 @@ pub fn backfill_annotations() -> Result<usize> {
         [],
         |r| r.get(0),
     )?;
-    let annotation_count: usize = conn.query_row(
-        "SELECT COUNT(*) FROM memory_annotations",
-        [],
-        |r| r.get(0),
-    )?;
+    let annotation_count: usize =
+        conn.query_row("SELECT COUNT(*) FROM memory_annotations", [], |r| r.get(0))?;
 
     // Only backfill if annotations are significantly behind
     if annotation_count >= described_count.saturating_sub(5) {
@@ -940,13 +956,11 @@ pub fn backfill_annotations() -> Result<usize> {
         let created_at = created_at_str
             .as_deref()
             .and_then(|s| {
-                s.parse::<chrono::DateTime<chrono::Utc>>()
-                    .ok()
-                    .or_else(|| {
-                        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
-                            .ok()
-                            .map(|dt| dt.and_utc())
-                    })
+                s.parse::<chrono::DateTime<chrono::Utc>>().ok().or_else(|| {
+                    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                        .ok()
+                        .map(|dt| dt.and_utc())
+                })
             })
             .unwrap_or_else(chrono::Utc::now);
 
@@ -1142,7 +1156,9 @@ mod tests {
             .unwrap();
 
         // Force regenerate
-        let result = describe_one(&brain, id, true, DEFAULT_MODEL, false).await.unwrap();
+        let result = describe_one(&brain, id, true, DEFAULT_MODEL, false)
+            .await
+            .unwrap();
         assert!(!result.cached, "force=true should not return cached");
         assert!(result.latency_ms > 0, "Should have Ollama latency");
     }

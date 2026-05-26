@@ -145,10 +145,11 @@ pub fn record_describe_success(duration_secs: f64) {
 
     // Rolling average
     let n = state.session_stats.memories_described_this_session as f64;
-    state.session_stats.avg_seconds_per_memory = Some(match state.session_stats.avg_seconds_per_memory {
-        Some(prev) => prev + (duration_secs - prev) / n,
-        None => duration_secs,
-    });
+    state.session_stats.avg_seconds_per_memory =
+        Some(match state.session_stats.avg_seconds_per_memory {
+            Some(prev) => prev + (duration_secs - prev) / n,
+            None => duration_secs,
+        });
 }
 
 /// Called when describe_one fails for a memory.

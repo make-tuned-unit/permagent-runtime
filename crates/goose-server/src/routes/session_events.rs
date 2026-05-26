@@ -580,8 +580,7 @@ pub async fn session_reply(
         if let Some(brain) = task_state.brain.as_ref() {
             let user_query = user_message.as_concat_text();
             let recognition_ctx = task_state.build_recognition_context(Some(&task_session_id));
-            crate::brain_ops::inject_recall(brain, &agent, &user_query, recognition_ctx)
-                .await;
+            crate::brain_ops::inject_recall(brain, &agent, &user_query, recognition_ctx).await;
         }
 
         // ── Phase 3c: Inject app catalog + current UI state ──
@@ -594,9 +593,7 @@ pub async fn session_reply(
             if let Some(ref ctx) = app_context {
                 let tab_name = catalog
                     .find_by_name(&ctx.current_tab)
-                    .or_else(|| {
-                        catalog.tabs.iter().find(|e| e.tool_type == ctx.current_tab)
-                    })
+                    .or_else(|| catalog.tabs.iter().find(|e| e.tool_type == ctx.current_tab))
                     .map(|e| e.name.as_str())
                     .unwrap_or(&ctx.current_tab);
                 let mut block = format!("Current UI state: User is on the {} tab.", tab_name);

@@ -86,8 +86,7 @@ fn rustc_version() -> String {
 
 fn spectral_rev() -> String {
     // Parse Cargo.lock for spectral's git rev
-    let lock_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../Cargo.lock");
+    let lock_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.lock");
     if let Ok(contents) = std::fs::read_to_string(lock_path) {
         // Look for: name = "spectral"\nversion = ...\nsource = "git+...?rev=XXXX#full_hash"
         let mut in_spectral = false;

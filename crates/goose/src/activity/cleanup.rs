@@ -175,10 +175,7 @@ pub fn consolidate_clusters() -> Result<usize> {
             cluster.domain, cluster.count, cluster.first_seen, cluster.last_seen
         );
 
-        let summary_key = format!(
-            "activity:consolidated:browser_navigated:{}",
-            cluster.domain
-        );
+        let summary_key = format!("activity:consolidated:browser_navigated:{}", cluster.domain);
 
         // Create the consolidated memory
         let result = brain.remember_with(
@@ -313,7 +310,7 @@ fn ensure_migrations_table(conn: &rusqlite::Connection) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS _pm_migrations_applied ( \
            name TEXT PRIMARY KEY, \
            applied_at TEXT NOT NULL DEFAULT (datetime('now')) \
-         );"
+         );",
     )?;
     Ok(())
 }
@@ -429,7 +426,9 @@ pub fn migrate_consolidated_into_to_spectral(
          WHERE src._pm_consolidated_into IS NOT NULL",
     )?;
     let mappings: Vec<(String, String)> = stmt
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
         .filter_map(|r| r.ok())
         .collect();
     drop(stmt);
@@ -486,11 +485,8 @@ pub fn migrate_consolidated_into_to_spectral(
     conn.execute_batch("COMMIT;")?;
 
     // Step 3d: Cross-check via direct SQL
-    let edge_count: usize = conn.query_row(
-        "SELECT COUNT(*) FROM consolidation_edges",
-        [],
-        |r| r.get(0),
-    )?;
+    let edge_count: usize =
+        conn.query_row("SELECT COUNT(*) FROM consolidation_edges", [], |r| r.get(0))?;
 
     // We expect edge_count >= mappings.len() (could be > if some edges were already
     // present from a partial previous run or from Spectral's own consolidation calls).
@@ -568,9 +564,9 @@ pub fn migrate_consolidated_into_to_spectral(
     }
 
     // Step 3e: Drop the column
-    let column_dropped = match conn.execute_batch(
-        "ALTER TABLE memories DROP COLUMN _pm_consolidated_into;",
-    ) {
+    let column_dropped = match conn
+        .execute_batch("ALTER TABLE memories DROP COLUMN _pm_consolidated_into;")
+    {
         Ok(()) => {
             info!(target: "permagent::cleanup", "consolidate_into migration: _pm_consolidated_into column dropped");
             true
@@ -643,7 +639,9 @@ pub fn run_consolidate_into_migration_sql(
          WHERE src._pm_consolidated_into IS NOT NULL",
     )?;
     let mappings: Vec<(String, String)> = stmt
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
         .filter_map(|r| r.ok())
         .collect();
     drop(stmt);

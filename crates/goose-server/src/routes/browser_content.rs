@@ -100,16 +100,13 @@ async fn read_content(State(state): State<Arc<AppState>>) -> Result<Json<PageCon
                         let max = 2000;
                         let text = &content.content;
                         if text.len() > max {
-                            let cut = text[..max]
-                                .rfind('\n')
-                                .unwrap_or(max);
+                            let cut = text[..max].rfind('\n').unwrap_or(max);
                             format!("{}\n[truncated]", &text[..cut])
                         } else {
                             text.clone()
                         }
                     };
-                    let remember_content =
-                        format!("Page: {title}\nURL: {url}\n\n{mem_content}");
+                    let remember_content = format!("Page: {title}\nURL: {url}\n\n{mem_content}");
                     tokio::spawn(async move {
                         let url_for_key = url.clone();
                         let result = tokio::task::spawn_blocking(move || {

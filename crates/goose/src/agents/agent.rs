@@ -656,8 +656,11 @@ impl Agent {
 
                 // Auto-skills: check for repetition patterns after completion
                 let skills_config = crate::tasks::SkillsConfig::from_config();
-                if let Some(proposal_prompt) = logger.check_repetition_candidates(&skills_config).await {
-                    self.extend_system_prompt("skill_proposals".to_string(), proposal_prompt).await;
+                if let Some(proposal_prompt) =
+                    logger.check_repetition_candidates(&skills_config).await
+                {
+                    self.extend_system_prompt("skill_proposals".to_string(), proposal_prompt)
+                        .await;
                 }
             }
         }
@@ -731,10 +734,8 @@ impl Agent {
         session: &Session,
     ) -> Vec<ExtensionLoadResult> {
         let config = Config::global();
-        let enabled_configs = EnabledExtensionsState::extensions_or_default(
-            Some(&session.extension_data),
-            &config,
-        );
+        let enabled_configs =
+            EnabledExtensionsState::extensions_or_default(Some(&session.extension_data), &config);
 
         let session_id = session.id.clone();
 

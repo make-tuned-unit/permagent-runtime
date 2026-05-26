@@ -183,7 +183,12 @@ fn save_scheduler_state(state: &SchedulerState) {
         let _ = std::fs::create_dir_all(parent);
     }
     let tmp = path.with_extension("json.tmp");
-    if std::fs::write(&tmp, serde_json::to_string_pretty(state).unwrap_or_default()).is_ok() {
+    if std::fs::write(
+        &tmp,
+        serde_json::to_string_pretty(state).unwrap_or_default(),
+    )
+    .is_ok()
+    {
         let _ = std::fs::rename(&tmp, &path);
     }
 }
@@ -202,7 +207,12 @@ fn already_warmed_today() -> bool {
 
 fn mark_warmed_today() {
     let mut state = load_scheduler_state();
-    state.last_warmed_date = Some(chrono::Local::now().date_naive().format("%Y-%m-%d").to_string());
+    state.last_warmed_date = Some(
+        chrono::Local::now()
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string(),
+    );
     save_scheduler_state(&state);
 }
 
@@ -211,7 +221,9 @@ fn co_retrieval_rebuild_due() -> bool {
     match state.last_co_retrieval_rebuild {
         None => true,
         Some(ts) => chrono::DateTime::parse_from_rfc3339(&ts)
-            .map(|dt| chrono::Utc::now() - dt.with_timezone(&chrono::Utc) > chrono::Duration::hours(1))
+            .map(|dt| {
+                chrono::Utc::now() - dt.with_timezone(&chrono::Utc) > chrono::Duration::hours(1)
+            })
             .unwrap_or(true),
     }
 }
@@ -227,7 +239,9 @@ fn consolidation_due() -> bool {
     match state.last_consolidated {
         None => true,
         Some(ts) => chrono::DateTime::parse_from_rfc3339(&ts)
-            .map(|dt| chrono::Utc::now() - dt.with_timezone(&chrono::Utc) > chrono::Duration::days(1))
+            .map(|dt| {
+                chrono::Utc::now() - dt.with_timezone(&chrono::Utc) > chrono::Duration::days(1)
+            })
             .unwrap_or(true),
     }
 }
@@ -365,7 +379,8 @@ pub async fn librarian_scheduler_loop() {
         // Full recompute, atomic replace, idempotent. No Ollama needed.
         if co_retrieval_rebuild_due() {
             if let Some(brain) = permagent::agents::platform_extensions::get_global_brain() {
-                match tokio::task::spawn_blocking(move || brain.rebuild_co_retrieval_index()).await {
+                match tokio::task::spawn_blocking(move || brain.rebuild_co_retrieval_index()).await
+                {
                     Ok(Ok(n)) => {
                         mark_co_retrieval_rebuilt();
                         tracing::info!(
@@ -404,7 +419,9 @@ pub async fn librarian_scheduler_loop() {
                         0
                     };
                     consolidation.map(|(c, o)| (c, o, pruned))
-                }).await {
+                })
+                .await
+                {
                     Ok(Ok((clusters, originals, pruned))) => {
                         mark_consolidated();
                         tracing::info!(
@@ -457,9 +474,9 @@ pub(super) async fn get_librarian_status() -> Json<LibrarianStatusResponse> {
     let rt_state = librarian_state::get_state();
     let schedule = load_schedule();
 
-    let current_memory = rt_state.current_memory.map(|m| {
-        serde_json::json!({ "key": m.key, "content_preview": m.content_preview })
-    });
+    let current_memory = rt_state
+        .current_memory
+        .map(|m| serde_json::json!({ "key": m.key, "content_preview": m.content_preview }));
 
     let next_window = compute_next_window_start(&schedule);
 
@@ -518,7 +535,8 @@ fn compute_next_window_start(schedule: &LibrarianSchedule) -> Option<String> {
 
 /// POST /api/librarian/run-now — manual trigger for warm-load + run.
 /// Returns immediately with 409 if a batch is already running.
-pub(super) async fn run_librarian_now() -> Result<Json<super::ollama_types::WarmLoadResponse>, ErrorResponse> {
+pub(super) async fn run_librarian_now(
+) -> Result<Json<super::ollama_types::WarmLoadResponse>, ErrorResponse> {
     let guard = BATCH_MUTEX.try_lock();
     if guard.is_err() {
         return Err(ErrorResponse::conflict(

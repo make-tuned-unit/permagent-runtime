@@ -117,8 +117,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: browser::EXTENSION_NAME,
                 display_name: "Browser",
-                description:
-                    "Read content from the page currently open in the Permagent browser",
+                description: "Read content from the page currently open in the Permagent browser",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
@@ -303,8 +302,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: app_conductor::EXTENSION_NAME,
                 display_name: "App Conductor",
-                description:
-                    "Navigate the user to specific tabs and views in the Permagent app",
+                description: "Navigate the user to specific tabs and views in the Permagent app",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,

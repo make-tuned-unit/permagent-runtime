@@ -136,11 +136,7 @@ fn emit_category_complete(label: &str, findings: &[ScanFinding], run_id: &str) {
     ));
 }
 
-fn record_category(
-    map: &mut HashMap<String, CategoryStats>,
-    key: &str,
-    findings: &[ScanFinding],
-) {
+fn record_category(map: &mut HashMap<String, CategoryStats>, key: &str, findings: &[ScanFinding]) {
     let total: u64 = findings.iter().map(|f| f.size_bytes).sum();
     map.insert(
         key.to_string(),
