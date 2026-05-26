@@ -1,70 +1,27 @@
-use std::sync::Mutex;
-use tauri_plugin_shell::ShellExt;
-use tauri_plugin_shell::process::CommandChild;
-
-static DAEMON_CHILD: Mutex<Option<CommandChild>> = Mutex::new(None);
-
-/// Spawn the permagentd sidecar as a child process, then wait for it
-/// to become ready on port 3001. If a daemon is already running
-/// externally (e.g. via launchctl), we detect it and skip the spawn.
+/// Wait for the launchd-managed permagentd daemon to become ready
+/// on port 3001. The daemon is NOT spawned as a Tauri sidecar —
+/// it's owned by launchd via ~/Library/LaunchAgents/ai.permagent.daemon.plist
+/// and bundled into the .app at Contents/MacOS/permagentd (referenced
+/// by the launchd plist path).
 ///
-/// In dev mode the sidecar binary won't exist — we log a warning and
-/// expect the developer to run the daemon separately.
-pub fn start_daemon(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+/// Two spawners (Tauri sidecar + launchd) both binding port 3001
+/// caused a crash loop where the loser was respawned every ~10s
+/// by KeepAlive. Removed sidecar spawn so launchd is the single
+/// source of truth for daemon lifecycle.
+pub fn start_daemon(_app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     if is_daemon_running() {
-        eprintln!("[permagent-app] daemon already running on :3001, skipping spawn");
+        eprintln!("[permagent-app] daemon detected on :3001");
         return Ok(());
     }
 
-    let sidecar = app.shell().sidecar("permagentd");
-    match sidecar {
-        Ok(cmd) => {
-            let (mut rx, child) = cmd.args(["agent"]).spawn()?;
-
-            *DAEMON_CHILD.lock().unwrap() = Some(child);
-
-            // Pipe daemon stdout/stderr so crashes are visible in Console.app
-            tauri::async_runtime::spawn(async move {
-                use tauri_plugin_shell::process::CommandEvent;
-                while let Some(event) = rx.recv().await {
-                    match event {
-                        CommandEvent::Stdout(line) => {
-                            eprintln!("[permagentd] {}", String::from_utf8_lossy(&line));
-                        }
-                        CommandEvent::Stderr(line) => {
-                            eprintln!("[permagentd:err] {}", String::from_utf8_lossy(&line));
-                        }
-                        CommandEvent::Terminated(status) => {
-                            eprintln!("[permagentd] exited with {:?}", status);
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-            });
-
-            eprintln!("[permagent-app] daemon sidecar spawned, waiting for readiness...");
-
-            // Block until daemon is accepting connections (up to 10s)
-            wait_for_daemon();
-        }
-        Err(e) => {
-            eprintln!(
-                "[permagent-app] sidecar not available ({}), expecting external daemon",
-                e
-            );
-        }
-    }
-
+    eprintln!("[permagent-app] daemon not yet ready, waiting...");
+    wait_for_daemon();
     Ok(())
 }
 
-/// Kill the sidecar daemon when the app quits.
+/// No-op — launchd owns daemon lifecycle.
 pub fn stop_daemon(_app: &tauri::AppHandle) {
-    if let Some(child) = DAEMON_CHILD.lock().unwrap().take() {
-        eprintln!("[permagent-app] stopping daemon sidecar");
-        let _ = child.kill();
-    }
+    // Daemon is managed by launchd. The app should not stop it.
 }
 
 /// Poll port 3001 until the daemon is ready, up to 10 seconds.
