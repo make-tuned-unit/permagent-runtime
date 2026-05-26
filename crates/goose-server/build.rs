@@ -99,6 +99,8 @@ fn spectral_rev() -> String {
             if in_spectral && line.starts_with("source = ") {
                 // Extract short rev from the ?rev=XXX part
                 if let Some(rev_start) = line.find("?rev=") {
+                    // Safety: "?rev=" is pure ASCII so rev_start + 5 is always a valid UTF-8 boundary
+                    #[allow(clippy::string_slice)]
                     let after = &line[rev_start + 5..];
                     let rev = after.split('#').next().unwrap_or(after);
                     let rev = rev.trim_end_matches('"');

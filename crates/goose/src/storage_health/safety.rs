@@ -98,7 +98,6 @@ pub fn recommendation_for(finding_type: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[test]
     fn test_excludes_ssh() {
