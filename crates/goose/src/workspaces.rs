@@ -43,6 +43,14 @@ fn build_layout() -> serde_json::Value {
     })
 }
 
+fn projects_layout() -> serde_json::Value {
+    serde_json::json!({
+        "type": "panel",
+        "tool": "projects",
+        "config": {}
+    })
+}
+
 fn brain_layout() -> serde_json::Value {
     serde_json::json!({
         "type": "panel",
@@ -86,7 +94,8 @@ pub async fn seed_presets_if_empty(pool: &Pool<Sqlite>) -> Result<bool, String> 
         ("Automate", "layout-dashboard", 1, automate_layout(), false),
         ("World", "globe", 2, world_layout(), false),
         ("Build", "code", 3, build_layout(), false),
-        ("Brain", "brain", 4, brain_layout(), false),
+        ("Projects", "columns", 4, projects_layout(), false),
+        ("Brain", "brain", 5, brain_layout(), false),
     ];
 
     let mut first_id = String::new();
@@ -120,6 +129,47 @@ pub async fn seed_presets_if_empty(pool: &Pool<Sqlite>) -> Result<bool, String> 
         .map_err(|e| e.to_string())?;
 
     tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// Ensure the "Projects" workspace exists for existing users who were seeded
+/// before it was added. Inserts at sort_order 4 and bumps any existing rows
+/// at sort_order >= 4 (e.g., Brain from 4 to 5). Idempotent.
+pub async fn ensure_projects_workspace(pool: &Pool<Sqlite>) -> Result<bool, String> {
+    let has_projects: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM workspaces WHERE user_id = 'default' AND name = 'Projects')",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if has_projects {
+        return Ok(false);
+    }
+
+    // Bump sort_order for any workspaces at position 4+
+    sqlx::query(
+        "UPDATE workspaces SET sort_order = sort_order + 1
+         WHERE user_id = 'default' AND sort_order >= 4",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let id = Uuid::now_v7().to_string();
+    let layout = projects_layout();
+    let layout_str = serde_json::to_string(&layout).map_err(|e| e.to_string())?;
+
+    sqlx::query(
+        "INSERT INTO workspaces (id, user_id, name, icon, sort_order, layout_json, is_default)
+         VALUES (?, 'default', 'Projects', 'columns', 4, ?, 0)",
+    )
+    .bind(&id)
+    .bind(&layout_str)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
     Ok(true)
 }
 

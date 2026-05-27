@@ -11,6 +11,7 @@ pub mod agents;
 pub mod app_catalog;
 pub mod attachments;
 pub mod builtin_extension;
+pub mod cards;
 pub mod config;
 pub mod context_mgmt;
 pub mod conversation;
