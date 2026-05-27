@@ -31,13 +31,65 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Enable core dumps
+        if: runner.os == 'Linux'
+        run: |
+          echo "/tmp/cores/core.%e.%p.%t" | sudo tee /proc/sys/kernel/core_pattern
+          sudo mkdir -p /tmp/cores
+          sudo chmod 777 /tmp/cores
+          echo "Core dump pattern: $(cat /proc/sys/kernel/core_pattern)"
       - name: Unit and integration tests
-        run: cargo test --workspace --lib --tests
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            ulimit -c unlimited
+            echo "ulimit -c: $(ulimit -c)"
+          fi
+          cargo test --workspace --lib --tests
         env:
           RUST_BACKTRACE: ${{ matrix.os == 'ubuntu-latest' && 'full' || '0' }}
           RUST_LIB_BACKTRACE: ${{ matrix.os == 'ubuntu-latest' && 'full' || '0' }}
       - name: Doc tests
         run: cargo test --workspace --doc
+      - name: List core dumps
+        if: runner.os == 'Linux' && always()
+        run: |
+          ls -la /tmp/cores/ 2>/dev/null || echo "No cores directory"
+          ls -la /tmp/core.* 2>/dev/null || true
+          ls -la core* 2>/dev/null || true
+          find / -name 'core*' -size +1k 2>/dev/null | head -20 || true
+      - name: Extract backtrace from core dump
+        if: runner.os == 'Linux' && always()
+        run: |
+          sudo apt-get install -y gdb 2>/dev/null || true
+          CORE=$(find /tmp/cores/ -name 'core.*' -size +1k 2>/dev/null | head -1)
+          if [ -z "$CORE" ]; then
+            echo "No core dump found — SIGABRT may not have produced one"
+            echo "Checking systemd-coredump journal..."
+            coredumpctl list 2>/dev/null || echo "coredumpctl not available"
+            exit 0
+          fi
+          echo "=== Core dump found: $CORE ==="
+          ls -la "$CORE"
+          BINARY=$(find target/debug/deps -name 'permagent-*' -executable -not -name '*.d' | head -1)
+          if [ -z "$BINARY" ]; then
+            echo "No test binary found"
+            exit 0
+          fi
+          echo "=== Binary: $BINARY ==="
+          echo "=== Full backtrace ==="
+          gdb -batch \
+            -ex "set pagination off" \
+            -ex "thread apply all bt full" \
+            -ex "info threads" \
+            "$BINARY" "$CORE"
+      - name: Upload core dumps
+        if: runner.os == 'Linux' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-core-dumps
+          path: /tmp/cores/
+          retention-days: 5
+          if-no-files-found: warn
 
   lint:
     runs-on: ubuntu-latest
