@@ -10,7 +10,7 @@ use sqlx::{Pool, Sqlite};
 use tracing::{info, warn};
 
 /// Current Spectral schema version. Bump when adding migrations.
-pub const SPECTRAL_SCHEMA_VERSION: i32 = 7;
+pub const SPECTRAL_SCHEMA_VERSION: i32 = 8;
 
 /// Initialize the Spectral database schema from scratch.
 /// Creates all tables, indexes, FTS virtual tables, triggers, and views.
@@ -616,6 +616,82 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(&mut *tx)
     .await?;
 
+    // ── BOARD COLUMNS ──
+    sqlx::query(
+        "CREATE TABLE board_columns (
+            id              TEXT PRIMARY KEY,
+            project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            name            TEXT NOT NULL,
+            position        INTEGER NOT NULL,
+            column_kind     TEXT NOT NULL DEFAULT 'manual'
+                            CHECK (column_kind IN ('manual', 'state')),
+            state_binding   TEXT,
+            wip_limit       INTEGER,
+            created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query("CREATE INDEX idx_columns_project ON board_columns(project_id, position)")
+        .execute(&mut *tx)
+        .await?;
+
+    // ── CARDS ──
+    sqlx::query(
+        "CREATE TABLE cards (
+            id              TEXT PRIMARY KEY,
+            project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            card_type       TEXT NOT NULL DEFAULT 'standard'
+                            CHECK (card_type IN ('standard', 'goal', 'social_post')),
+            title           TEXT NOT NULL,
+            description     TEXT NOT NULL DEFAULT '',
+            column_id       TEXT NOT NULL REFERENCES board_columns(id),
+            position        INTEGER NOT NULL DEFAULT 0,
+            created_by      TEXT NOT NULL DEFAULT 'user'
+                            CHECK (created_by IN ('user', 'henry', 'hermes', 'codex', 'claude-code', 'librarian')),
+            assigned_to     TEXT,
+            metadata_json   TEXT NOT NULL DEFAULT '{}',
+            created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            archived_at     TEXT
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query("CREATE INDEX idx_cards_project ON cards(project_id, column_id, position)")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("CREATE INDEX idx_cards_type ON cards(project_id, card_type)")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("CREATE INDEX idx_cards_archived ON cards(archived_at) WHERE archived_at IS NULL")
+        .execute(&mut *tx)
+        .await?;
+
+    sqlx::query(
+        "CREATE TRIGGER trg_cards_updated_at
+            AFTER UPDATE ON cards
+            FOR EACH ROW
+            BEGIN
+                UPDATE cards SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                WHERE id = NEW.id;
+            END",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    // Seed default columns for Personal project
+    sqlx::query(
+        "INSERT INTO board_columns (id, project_id, name, position, column_kind) VALUES
+            ('col-personal-backlog', '00000000-0000-0000-0000-000000000001', 'Backlog', 0, 'manual'),
+            ('col-personal-doing',   '00000000-0000-0000-0000-000000000001', 'Doing',   1, 'manual'),
+            ('col-personal-done',    '00000000-0000-0000-0000-000000000001', 'Done',    2, 'manual')",
+    )
+    .execute(&mut *tx)
+    .await?;
+
     // ── VIEWS ──
     sqlx::query(
         "CREATE VIEW current_memories AS
@@ -967,6 +1043,131 @@ pub async fn migrate_v6_to_v7(pool: &Pool<Sqlite>) -> Result<()> {
         .await?;
 
     info!("Spectral schema migrated to v7");
+    Ok(())
+}
+
+/// Migrate from schema v7 to v8: add board_columns and cards tables.
+pub async fn migrate_v7_to_v8(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v7 -> v8");
+
+    let has_columns_table = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT name FROM sqlite_master WHERE type='table' AND name='board_columns')",
+    )
+    .fetch_one(pool)
+    .await?;
+
+    if !has_columns_table {
+        sqlx::query(
+            "CREATE TABLE board_columns (
+                id              TEXT PRIMARY KEY,
+                project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                name            TEXT NOT NULL,
+                position        INTEGER NOT NULL,
+                column_kind     TEXT NOT NULL DEFAULT 'manual'
+                                CHECK (column_kind IN ('manual', 'state')),
+                state_binding   TEXT,
+                wip_limit       INTEGER,
+                created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            )",
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query("CREATE INDEX idx_columns_project ON board_columns(project_id, position)")
+            .execute(pool)
+            .await?;
+    }
+
+    let has_cards_table = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT name FROM sqlite_master WHERE type='table' AND name='cards')",
+    )
+    .fetch_one(pool)
+    .await?;
+
+    if !has_cards_table {
+        sqlx::query(
+            "CREATE TABLE cards (
+                id              TEXT PRIMARY KEY,
+                project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                card_type       TEXT NOT NULL DEFAULT 'standard'
+                                CHECK (card_type IN ('standard', 'goal', 'social_post')),
+                title           TEXT NOT NULL,
+                description     TEXT NOT NULL DEFAULT '',
+                column_id       TEXT NOT NULL REFERENCES board_columns(id),
+                position        INTEGER NOT NULL DEFAULT 0,
+                created_by      TEXT NOT NULL DEFAULT 'user'
+                                CHECK (created_by IN ('user', 'henry', 'hermes', 'codex', 'claude-code', 'librarian')),
+                assigned_to     TEXT,
+                metadata_json   TEXT NOT NULL DEFAULT '{}',
+                created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                archived_at     TEXT
+            )",
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query("CREATE INDEX idx_cards_project ON cards(project_id, column_id, position)")
+            .execute(pool)
+            .await?;
+        sqlx::query("CREATE INDEX idx_cards_type ON cards(project_id, card_type)")
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "CREATE INDEX idx_cards_archived ON cards(archived_at) WHERE archived_at IS NULL",
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE TRIGGER trg_cards_updated_at
+                AFTER UPDATE ON cards
+                FOR EACH ROW
+                BEGIN
+                    UPDATE cards SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                    WHERE id = NEW.id;
+                END",
+        )
+        .execute(pool)
+        .await?;
+    }
+
+    // Seed default columns for Personal project if not present
+    let has_personal_cols: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM board_columns WHERE project_id = '00000000-0000-0000-0000-000000000001')",
+    )
+    .fetch_one(pool)
+    .await?;
+
+    if !has_personal_cols {
+        sqlx::query(
+            "INSERT INTO board_columns (id, project_id, name, position, column_kind) VALUES
+                ('col-personal-backlog', '00000000-0000-0000-0000-000000000001', 'Backlog', 0, 'manual'),
+                ('col-personal-doing',   '00000000-0000-0000-0000-000000000001', 'Doing',   1, 'manual'),
+                ('col-personal-done',    '00000000-0000-0000-0000-000000000001', 'Done',    2, 'manual')",
+        )
+        .execute(pool)
+        .await?;
+    }
+
+    // Seed default columns for any existing projects that don't have columns yet
+    let projects_without_cols: Vec<String> = sqlx::query_scalar(
+        "SELECT p.id FROM projects p
+         LEFT JOIN board_columns bc ON bc.project_id = p.id
+         WHERE bc.id IS NULL",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    for project_id in &projects_without_cols {
+        crate::cards::seed_default_columns(pool, project_id).await.map_err(|e| anyhow::anyhow!(e))?;
+    }
+
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (8)")
+        .execute(pool)
+        .await?;
+
+    info!("Spectral schema migrated to v8");
     Ok(())
 }
 

@@ -162,6 +162,9 @@ pub async fn create_project(pool: &Pool<Sqlite>, input: CreateProject) -> Result
         }
     }
 
+    // Seed default board columns for the new project
+    crate::cards::seed_default_columns(pool, &id).await?;
+
     get_project(pool, &id)
         .await?
         .ok_or_else(|| "Failed to read created project".to_string())

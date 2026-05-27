@@ -43,9 +43,15 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
     // Seed preset workspaces if user has none
     if let Ok(pool) = app_state.session_manager().pool_clone().await {
         match permagent::workspaces::seed_presets_if_empty(&pool).await {
-            Ok(true) => info!("Seeded 3 preset workspaces (Work, World, Build)"),
+            Ok(true) => info!("Seeded preset workspaces"),
             Ok(false) => {}
             Err(e) => tracing::warn!("Failed to seed workspaces: {}", e),
+        }
+        // Additive migration: ensure Projects workspace exists for existing users
+        match permagent::workspaces::ensure_projects_workspace(&pool).await {
+            Ok(true) => info!("Added Projects workspace for existing user"),
+            Ok(false) => {}
+            Err(e) => tracing::warn!("Failed to add Projects workspace: {}", e),
         }
     }
 

@@ -1,7 +1,7 @@
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
 use crate::agents::tool_execution::ToolCallContext;
-use crate::projects;
+use crate::{cards, projects};
 use anyhow::Result;
 use async_trait::async_trait;
 use indoc::indoc;
@@ -65,6 +65,62 @@ struct ProjectListParams {
     status: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct CardCreateParams {
+    /// Project ID (UUID) or slug
+    project_id_or_slug: String,
+    /// Card title (required)
+    title: String,
+    /// Card description (optional)
+    description: Option<String>,
+    /// Card type: standard, goal, or social_post (optional, defaults to standard)
+    card_type: Option<String>,
+    /// Column name or ID to place the card in (optional, defaults to first column)
+    column: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct CardMoveParams {
+    /// Card ID (UUID)
+    card_id: String,
+    /// Target column name or ID
+    column: String,
+    /// Position within the column (optional, defaults to end)
+    position: Option<i32>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct CardDeleteParams {
+    /// Card ID (UUID) to delete
+    card_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct CardListParams {
+    /// Project ID (UUID) or slug
+    project_id_or_slug: String,
+    /// Filter by card type: standard, goal, or social_post (optional)
+    card_type: Option<String>,
+    /// Filter by column name or ID (optional)
+    column: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct ColumnCreateParams {
+    /// Project ID (UUID) or slug
+    project_id_or_slug: String,
+    /// Column name
+    name: String,
+    /// Position in column order (optional, defaults to end)
+    position: Option<i32>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct ColumnDeleteParams {
+    /// Column ID (UUID) to delete. Cannot delete columns that contain cards.
+    column_id: String,
+}
+
 pub struct ProjectManagerClient {
     info: InitializeResult,
     context: PlatformExtensionContext,
@@ -79,12 +135,25 @@ impl ProjectManagerClient {
             )
             .with_instructions(
                 indoc! {r#"
-                Manage user projects. Projects organize work into named workspaces with
-                filesystem paths, URLs, and metadata. Each project has a slug (stable
-                identifier), name (display label), and optional root_path, site_url,
-                and repo_url.
+                Manage user projects and their Kanban boards. Projects organize work into
+                named workspaces with filesystem paths, URLs, and metadata. Each project
+                has a slug (stable identifier), name (display label), and optional
+                root_path, site_url, and repo_url.
 
                 The implicit "Personal" project always exists and cannot be deleted.
+
+                ## Cards
+
+                Projects contain cards organized into columns (Kanban-style). Three card
+                types exist:
+                  - 'standard': manual task or note, user-managed
+                  - 'goal': agentic goal routed to worker agents (future)
+                  - 'social_post': scheduled social media post (future)
+
+                When the user says "add a card", "create a task", "track this", or
+                similar, use card_create with card_type='standard'. Ask which project
+                if not clear from context — default to the active project if the user
+                is currently in one, otherwise Personal.
             "#}
                 .to_string(),
             );
@@ -246,11 +315,170 @@ impl ProjectManagerClient {
         ))])
     }
 
+    async fn resolve_project(&self, id_or_slug: &str) -> Result<(projects::Project, sqlx::Pool<sqlx::Sqlite>), String> {
+        let pool = self
+            .context
+            .session_manager
+            .pool_clone()
+            .await
+            .map_err(|e| e.to_string())?;
+        let project = projects::get_project_by_id_or_slug(&pool, id_or_slug)
+            .await?
+            .ok_or_else(|| format!("Project '{}' not found", id_or_slug))?;
+        Ok((project, pool))
+    }
+
+    async fn resolve_column(pool: &sqlx::Pool<sqlx::Sqlite>, project_id: &str, col_ref: &str) -> Result<cards::BoardColumn, String> {
+        // Try as ID first, then by name
+        if let Some(col) = cards::get_column(pool, col_ref).await? {
+            if col.project_id == project_id {
+                return Ok(col);
+            }
+        }
+        cards::get_column_by_name(pool, project_id, col_ref)
+            .await?
+            .ok_or_else(|| format!("Column '{}' not found in project", col_ref))
+    }
+
+    async fn handle_card_create(&self, arguments: Option<JsonObject>) -> Result<Vec<Content>, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let id_or_slug = args.get("project_id_or_slug").and_then(|v| v.as_str())
+            .ok_or("Missing required parameter: project_id_or_slug")?;
+        let title = args.get("title").and_then(|v| v.as_str())
+            .ok_or("Missing required parameter: title")?.to_string();
+        let (project, pool) = self.resolve_project(id_or_slug).await?;
+
+        let column_id = if let Some(col_ref) = args.get("column").and_then(|v| v.as_str()) {
+            Some(Self::resolve_column(&pool, &project.id, col_ref).await?.id)
+        } else {
+            None
+        };
+
+        let card = cards::create_card(&pool, cards::CreateCard {
+            project_id: project.id.clone(),
+            title,
+            description: args.get("description").and_then(|v| v.as_str()).map(String::from),
+            card_type: args.get("card_type").and_then(|v| v.as_str()).map(String::from),
+            column_id,
+            created_by: Some("user".to_string()),
+            metadata_json: None,
+        }).await?;
+
+        let json = serde_json::json!({
+            "id": card.id, "title": card.title, "card_type": card.card_type,
+            "column_id": card.column_id, "position": card.position,
+            "project": project.name,
+        });
+        Ok(vec![Content::text(format!(
+            "Created card \"{}\" in {} (column: {}, type: {})\n\n{}",
+            card.title, project.name, card.column_id, card.card_type,
+            serde_json::to_string_pretty(&json).unwrap_or_default()
+        ))])
+    }
+
+    async fn handle_card_move(&self, arguments: Option<JsonObject>) -> Result<Vec<Content>, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let card_id = args.get("card_id").and_then(|v| v.as_str())
+            .ok_or("Missing required parameter: card_id")?;
+        let col_ref = args.get("column").and_then(|v| v.as_str())
+            .ok_or("Missing required parameter: column")?;
+        let position = args.get("position").and_then(|v| v.as_i64()).map(|v| v as i32);
+
+        let pool = self.context.session_manager.pool_clone().await.map_err(|e| e.to_string())?;
+        let card = cards::get_card(&pool, card_id).await?
+            .ok_or_else(|| format!("Card '{}' not found", card_id))?;
+        let target_col = Self::resolve_column(&pool, &card.project_id, col_ref).await?;
+
+        let moved = cards::move_card(&pool, card_id, &target_col.id, position).await?
+            .ok_or("Card not found after move")?;
+
+        Ok(vec![Content::text(format!(
+            "Moved card \"{}\" to column \"{}\" (position {})",
+            moved.title, target_col.name, moved.position
+        ))])
+    }
+
+    async fn handle_card_delete(&self, arguments: Option<JsonObject>) -> Result<Vec<Content>, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let card_id = args.get("card_id").and_then(|v| v.as_str())
+            .ok_or("Missing required parameter: card_id")?;
+        let pool = self.context.session_manager.pool_clone().await.map_err(|e| e.to_string())?;
+        let card = cards::get_card(&pool, card_id).await?
+            .ok_or_else(|| format!("Card '{}' not found", card_id))?;
+        cards::delete_card(&pool, card_id).await?;
+        Ok(vec![Content::text(format!("Deleted card \"{}\" (id: {})", card.title, card.id))])
+    }
+
+    async fn handle_card_list(&self, arguments: Option<JsonObject>) -> Result<Vec<Content>, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let id_or_slug = args.get("project_id_or_slug").and_then(|v| v.as_str())
+            .ok_or("Missing required parameter: project_id_or_slug")?;
+        let (project, pool) = self.resolve_project(id_or_slug).await?;
+
+        let card_type = args.get("card_type").and_then(|v| v.as_str());
+        let column_id = if let Some(col_ref) = args.get("column").and_then(|v| v.as_str()) {
+            Some(Self::resolve_column(&pool, &project.id, col_ref).await?.id)
+        } else {
+            None
+        };
+
+        let items = cards::list_cards(&pool, &project.id, card_type, column_id.as_deref()).await?;
+        let json: Vec<serde_json::Value> = items.iter().map(|c| serde_json::json!({
+            "id": c.id, "title": c.title, "card_type": c.card_type,
+            "column_id": c.column_id, "position": c.position,
+            "assigned_to": c.assigned_to,
+        })).collect();
+
+        Ok(vec![Content::text(format!(
+            "{} card(s) in {}\n\n{}",
+            items.len(), project.name,
+            serde_json::to_string_pretty(&json).unwrap_or_default()
+        ))])
+    }
+
+    async fn handle_column_create(&self, arguments: Option<JsonObject>) -> Result<Vec<Content>, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let id_or_slug = args.get("project_id_or_slug").and_then(|v| v.as_str())
+            .ok_or("Missing required parameter: project_id_or_slug")?;
+        let name = args.get("name").and_then(|v| v.as_str())
+            .ok_or("Missing required parameter: name")?.to_string();
+        let position = args.get("position").and_then(|v| v.as_i64()).map(|v| v as i32);
+
+        let (project, pool) = self.resolve_project(id_or_slug).await?;
+        let col = cards::create_column(&pool, cards::CreateColumn {
+            project_id: project.id,
+            name,
+            position,
+        }).await?;
+
+        Ok(vec![Content::text(format!(
+            "Created column \"{}\" at position {} (id: {})",
+            col.name, col.position, col.id
+        ))])
+    }
+
+    async fn handle_column_delete(&self, arguments: Option<JsonObject>) -> Result<Vec<Content>, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let column_id = args.get("column_id").and_then(|v| v.as_str())
+            .ok_or("Missing required parameter: column_id")?;
+        let pool = self.context.session_manager.pool_clone().await.map_err(|e| e.to_string())?;
+        let col = cards::get_column(&pool, column_id).await?
+            .ok_or_else(|| format!("Column '{}' not found", column_id))?;
+        cards::delete_column(&pool, column_id).await?;
+        Ok(vec![Content::text(format!("Deleted column \"{}\" (id: {})", col.name, col.id))])
+    }
+
     fn get_tools() -> Vec<Tool> {
         let create_schema = serde_json::to_value(schema_for!(ProjectCreateParams)).unwrap();
         let update_schema = serde_json::to_value(schema_for!(ProjectUpdateParams)).unwrap();
         let delete_schema = serde_json::to_value(schema_for!(ProjectDeleteParams)).unwrap();
         let list_schema = serde_json::to_value(schema_for!(ProjectListParams)).unwrap();
+        let card_create_schema = serde_json::to_value(schema_for!(CardCreateParams)).unwrap();
+        let card_move_schema = serde_json::to_value(schema_for!(CardMoveParams)).unwrap();
+        let card_delete_schema = serde_json::to_value(schema_for!(CardDeleteParams)).unwrap();
+        let card_list_schema = serde_json::to_value(schema_for!(CardListParams)).unwrap();
+        let col_create_schema = serde_json::to_value(schema_for!(ColumnCreateParams)).unwrap();
+        let col_delete_schema = serde_json::to_value(schema_for!(ColumnDeleteParams)).unwrap();
 
         vec![
             Tool::new(
@@ -320,6 +548,104 @@ impl ProjectManagerClient {
                 Some(false),
                 Some(false),
             )),
+            // ── Card tools ──
+            Tool::new(
+                "card_create".to_string(),
+                indoc! {r#"
+                Create a card on a project's Kanban board. Use when the user says "add a card",
+                "create a task", "track this", etc. Defaults to card_type='standard' and places
+                the card in the first column (Backlog) unless specified.
+            "#}
+                .to_string(),
+                card_create_schema.as_object().unwrap().clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Create Card".to_string()),
+                Some(false),
+                Some(true),
+                Some(false),
+                Some(false),
+            )),
+            Tool::new(
+                "card_move".to_string(),
+                indoc! {r#"
+                Move a card to a different column on the Kanban board. Use when the user says
+                "move X to Doing", "mark X as done", etc. Accepts column name or ID.
+            "#}
+                .to_string(),
+                card_move_schema.as_object().unwrap().clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Move Card".to_string()),
+                Some(false),
+                Some(true),
+                Some(false),
+                Some(false),
+            )),
+            Tool::new(
+                "card_delete".to_string(),
+                indoc! {r#"
+                Delete a card from the Kanban board. Confirm with the user before deleting.
+            "#}
+                .to_string(),
+                card_delete_schema.as_object().unwrap().clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Delete Card".to_string()),
+                Some(true),
+                Some(true),
+                Some(false),
+                Some(false),
+            )),
+            Tool::new(
+                "card_list".to_string(),
+                indoc! {r#"
+                List cards in a project. Optionally filter by card_type or column.
+                Use when the user asks "what cards are in X?", "show my board", etc.
+            "#}
+                .to_string(),
+                card_list_schema.as_object().unwrap().clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("List Cards".to_string()),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+            )),
+            // ── Column tools ──
+            Tool::new(
+                "column_create".to_string(),
+                indoc! {r#"
+                Add a new column to a project's Kanban board. Use when the user wants
+                to customize their board layout, e.g. "add a Review column".
+            "#}
+                .to_string(),
+                col_create_schema.as_object().unwrap().clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Create Column".to_string()),
+                Some(false),
+                Some(true),
+                Some(false),
+                Some(false),
+            )),
+            Tool::new(
+                "column_delete".to_string(),
+                indoc! {r#"
+                Delete a column from a project's Kanban board. Fails if the column
+                still contains cards. Confirm with the user before deleting.
+            "#}
+                .to_string(),
+                col_delete_schema.as_object().unwrap().clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Delete Column".to_string()),
+                Some(true),
+                Some(true),
+                Some(false),
+                Some(false),
+            )),
         ]
     }
 }
@@ -351,6 +677,12 @@ impl McpClientTrait for ProjectManagerClient {
             "project_update" => self.handle_update(arguments).await,
             "project_delete" => self.handle_delete(arguments).await,
             "project_list" => self.handle_list(arguments).await,
+            "card_create" => self.handle_card_create(arguments).await,
+            "card_move" => self.handle_card_move(arguments).await,
+            "card_delete" => self.handle_card_delete(arguments).await,
+            "card_list" => self.handle_card_list(arguments).await,
+            "column_create" => self.handle_column_create(arguments).await,
+            "column_delete" => self.handle_column_delete(arguments).await,
             _ => Err(format!("Unknown tool: {}", name)),
         };
         match content {

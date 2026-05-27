@@ -109,12 +109,25 @@ Manage agent sessions: list, view, start, send messages, and interrupt agents.
 ## projectmanager
 
 ### Instructions
-Manage user projects. Projects organize work into named workspaces with
-filesystem paths, URLs, and metadata. Each project has a slug (stable
-identifier), name (display label), and optional root_path, site_url,
-and repo_url.
+Manage user projects and their Kanban boards. Projects organize work into
+named workspaces with filesystem paths, URLs, and metadata. Each project
+has a slug (stable identifier), name (display label), and optional
+root_path, site_url, and repo_url.
 
 The implicit "Personal" project always exists and cannot be deleted.
+
+## Cards
+
+Projects contain cards organized into columns (Kanban-style). Three card
+types exist:
+  - 'standard': manual task or note, user-managed
+  - 'goal': agentic goal routed to worker agents (future)
+  - 'social_post': scheduled social media post (future)
+
+When the user says "add a card", "create a task", "track this", or
+similar, use card_create with card_type='standard'. Ask which project
+if not clear from context — default to the active project if the user
+is currently in one, otherwise Personal.
 
 ## recipe_author
 

@@ -12,6 +12,7 @@ import { BrainView } from '../brain/BrainView';
 import { Dashboard } from '../dashboard/Dashboard';
 import { BuildView } from '../build/BuildView';
 import { AutomateView } from '../automate/AutomateView';
+import { ProjectsView } from '../projects/ProjectsView';
 
 const TOOL_COMPONENTS: Record<ToolType, React.ComponentType> = {
   chat: ChatView,
@@ -24,6 +25,7 @@ const TOOL_COMPONENTS: Record<ToolType, React.ComponentType> = {
   dashboard: Dashboard,
   build: BuildView,
   automate: AutomateView,
+  projects: ProjectsView,
 };
 
 function LayoutNodeRenderer({

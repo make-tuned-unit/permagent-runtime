@@ -10,6 +10,7 @@ const ICON_PATHS: Record<string, string> = {
   'layout-dashboard': 'M4 7h16M4 12h16M4 17h10',
   globe: 'M12 2a10 10 0 100 20 10 10 0 000-20zM2 12h20M12 2a15 15 0 014 10 15 15 0 01-4 10M12 2a15 15 0 00-4 10 15 15 0 004 10',
   code: 'M4 4h7v7H4zM13 4h7v4h-7zM13 10h7v10h-7zM4 13h7v7H4z',
+  columns: 'M4 3h4v18H4zM10 3h4v18h-4zM16 3h4v18h-4z',
   brain: 'M9 4a4 4 0 00-4 4 3 3 0 00-1 5.5A3 3 0 005 18a4 4 0 004 3M15 4a4 4 0 014 4 3 3 0 011 5.5A3 3 0 0119 18a4 4 0 01-4 3M9 4a3 3 0 013 3v14M15 4a3 3 0 00-3 3',
 };
 
