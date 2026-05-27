@@ -73,23 +73,18 @@ fn row_to_card(r: &sqlx::sqlite::SqliteRow) -> Card {
 // ── Default columns ────────────────────────────────────────────────────────
 
 /// The three default columns seeded for every new project.
-pub const DEFAULT_COLUMNS: &[(&str, &str)] = &[
-    ("backlog", "Backlog"),
-    ("doing", "Doing"),
-    ("done", "Done"),
-];
+pub const DEFAULT_COLUMNS: &[(&str, &str)] =
+    &[("backlog", "Backlog"), ("doing", "Doing"), ("done", "Done")];
 
 /// Seed default columns (Backlog/Doing/Done) for a project.
 /// Uses deterministic IDs for the Personal project, generated IDs for others.
 /// Idempotent — skips if columns already exist for this project.
 pub async fn seed_default_columns(pool: &Pool<Sqlite>, project_id: &str) -> Result<(), String> {
-    let count: i32 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM board_columns WHERE project_id = ?",
-    )
-    .bind(project_id)
-    .fetch_one(pool)
-    .await
-    .map_err(|e| e.to_string())?;
+    let count: i32 = sqlx::query_scalar("SELECT COUNT(*) FROM board_columns WHERE project_id = ?")
+        .bind(project_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| e.to_string())?;
 
     if count > 0 {
         return Ok(());
@@ -185,13 +180,12 @@ pub async fn create_column(
     let position = match input.position {
         Some(p) => p,
         None => {
-            let max: Option<i32> = sqlx::query_scalar(
-                "SELECT MAX(position) FROM board_columns WHERE project_id = ?",
-            )
-            .bind(&input.project_id)
-            .fetch_one(pool)
-            .await
-            .map_err(|e| e.to_string())?;
+            let max: Option<i32> =
+                sqlx::query_scalar("SELECT MAX(position) FROM board_columns WHERE project_id = ?")
+                    .bind(&input.project_id)
+                    .fetch_one(pool)
+                    .await
+                    .map_err(|e| e.to_string())?;
             max.unwrap_or(-1) + 1
         }
     };
@@ -253,12 +247,13 @@ pub async fn update_column(
 
 pub async fn delete_column(pool: &Pool<Sqlite>, column_id: &str) -> Result<bool, String> {
     // Refuse if cards are present
-    let card_count: i32 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM cards WHERE column_id = ? AND archived_at IS NULL")
-            .bind(column_id)
-            .fetch_one(pool)
-            .await
-            .map_err(|e| e.to_string())?;
+    let card_count: i32 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM cards WHERE column_id = ? AND archived_at IS NULL",
+    )
+    .bind(column_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
 
     if card_count > 0 {
         return Err(format!(
@@ -346,7 +341,16 @@ pub async fn create_card(pool: &Pool<Sqlite>, input: CreateCard) -> Result<Card,
     }
 
     let created_by = input.created_by.as_deref().unwrap_or("user");
-    if !["user", "henry", "hermes", "codex", "claude-code", "librarian"].contains(&created_by) {
+    if ![
+        "user",
+        "henry",
+        "hermes",
+        "codex",
+        "claude-code",
+        "librarian",
+    ]
+    .contains(&created_by)
+    {
         return Err(format!("Invalid created_by: {}", created_by));
     }
 
@@ -623,7 +627,9 @@ mod tests {
     async fn seed_columns_idempotent() {
         let pool = test_pool().await;
         // Already seeded by init; re-seed should be no-op
-        seed_default_columns(&pool, PERSONAL_PROJECT_ID).await.unwrap();
+        seed_default_columns(&pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
         let cols = list_columns(&pool, PERSONAL_PROJECT_ID).await.unwrap();
         assert_eq!(cols.len(), 3);
     }

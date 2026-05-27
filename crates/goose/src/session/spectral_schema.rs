@@ -1160,7 +1160,9 @@ pub async fn migrate_v7_to_v8(pool: &Pool<Sqlite>) -> Result<()> {
     .await?;
 
     for project_id in &projects_without_cols {
-        crate::cards::seed_default_columns(pool, project_id).await.map_err(|e| anyhow::anyhow!(e))?;
+        crate::cards::seed_default_columns(pool, project_id)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
     }
 
     sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (8)")

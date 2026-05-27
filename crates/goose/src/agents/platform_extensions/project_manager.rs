@@ -315,7 +315,10 @@ impl ProjectManagerClient {
         ))])
     }
 
-    async fn resolve_project(&self, id_or_slug: &str) -> Result<(projects::Project, sqlx::Pool<sqlx::Sqlite>), String> {
+    async fn resolve_project(
+        &self,
+        id_or_slug: &str,
+    ) -> Result<(projects::Project, sqlx::Pool<sqlx::Sqlite>), String> {
         let pool = self
             .context
             .session_manager
@@ -328,7 +331,11 @@ impl ProjectManagerClient {
         Ok((project, pool))
     }
 
-    async fn resolve_column(pool: &sqlx::Pool<sqlx::Sqlite>, project_id: &str, col_ref: &str) -> Result<cards::BoardColumn, String> {
+    async fn resolve_column(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        project_id: &str,
+        col_ref: &str,
+    ) -> Result<cards::BoardColumn, String> {
         // Try as ID first, then by name
         if let Some(col) = cards::get_column(pool, col_ref).await? {
             if col.project_id == project_id {
@@ -340,12 +347,20 @@ impl ProjectManagerClient {
             .ok_or_else(|| format!("Column '{}' not found in project", col_ref))
     }
 
-    async fn handle_card_create(&self, arguments: Option<JsonObject>) -> Result<Vec<Content>, String> {
+    async fn handle_card_create(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
         let args = arguments.ok_or("Missing arguments")?;
-        let id_or_slug = args.get("project_id_or_slug").and_then(|v| v.as_str())
+        let id_or_slug = args
+            .get("project_id_or_slug")
+            .and_then(|v| v.as_str())
             .ok_or("Missing required parameter: project_id_or_slug")?;
-        let title = args.get("title").and_then(|v| v.as_str())
-            .ok_or("Missing required parameter: title")?.to_string();
+        let title = args
+            .get("title")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing required parameter: title")?
+            .to_string();
         let (project, pool) = self.resolve_project(id_or_slug).await?;
 
         let column_id = if let Some(col_ref) = args.get("column").and_then(|v| v.as_str()) {
@@ -354,15 +369,25 @@ impl ProjectManagerClient {
             None
         };
 
-        let card = cards::create_card(&pool, cards::CreateCard {
-            project_id: project.id.clone(),
-            title,
-            description: args.get("description").and_then(|v| v.as_str()).map(String::from),
-            card_type: args.get("card_type").and_then(|v| v.as_str()).map(String::from),
-            column_id,
-            created_by: Some("user".to_string()),
-            metadata_json: None,
-        }).await?;
+        let card = cards::create_card(
+            &pool,
+            cards::CreateCard {
+                project_id: project.id.clone(),
+                title,
+                description: args
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                card_type: args
+                    .get("card_type")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                column_id,
+                created_by: Some("user".to_string()),
+                metadata_json: None,
+            },
+        )
+        .await?;
 
         let json = serde_json::json!({
             "id": card.id, "title": card.title, "card_type": card.card_type,
@@ -371,25 +396,45 @@ impl ProjectManagerClient {
         });
         Ok(vec![Content::text(format!(
             "Created card \"{}\" in {} (column: {}, type: {})\n\n{}",
-            card.title, project.name, card.column_id, card.card_type,
+            card.title,
+            project.name,
+            card.column_id,
+            card.card_type,
             serde_json::to_string_pretty(&json).unwrap_or_default()
         ))])
     }
 
-    async fn handle_card_move(&self, arguments: Option<JsonObject>) -> Result<Vec<Content>, String> {
+    async fn handle_card_move(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
         let args = arguments.ok_or("Missing arguments")?;
-        let card_id = args.get("card_id").and_then(|v| v.as_str())
+        let card_id = args
+            .get("card_id")
+            .and_then(|v| v.as_str())
             .ok_or("Missing required parameter: card_id")?;
-        let col_ref = args.get("column").and_then(|v| v.as_str())
+        let col_ref = args
+            .get("column")
+            .and_then(|v| v.as_str())
             .ok_or("Missing required parameter: column")?;
-        let position = args.get("position").and_then(|v| v.as_i64()).map(|v| v as i32);
+        let position = args
+            .get("position")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32);
 
-        let pool = self.context.session_manager.pool_clone().await.map_err(|e| e.to_string())?;
-        let card = cards::get_card(&pool, card_id).await?
+        let pool = self
+            .context
+            .session_manager
+            .pool_clone()
+            .await
+            .map_err(|e| e.to_string())?;
+        let card = cards::get_card(&pool, card_id)
+            .await?
             .ok_or_else(|| format!("Card '{}' not found", card_id))?;
         let target_col = Self::resolve_column(&pool, &card.project_id, col_ref).await?;
 
-        let moved = cards::move_card(&pool, card_id, &target_col.id, position).await?
+        let moved = cards::move_card(&pool, card_id, &target_col.id, position)
+            .await?
             .ok_or("Card not found after move")?;
 
         Ok(vec![Content::text(format!(
@@ -398,20 +443,39 @@ impl ProjectManagerClient {
         ))])
     }
 
-    async fn handle_card_delete(&self, arguments: Option<JsonObject>) -> Result<Vec<Content>, String> {
+    async fn handle_card_delete(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
         let args = arguments.ok_or("Missing arguments")?;
-        let card_id = args.get("card_id").and_then(|v| v.as_str())
+        let card_id = args
+            .get("card_id")
+            .and_then(|v| v.as_str())
             .ok_or("Missing required parameter: card_id")?;
-        let pool = self.context.session_manager.pool_clone().await.map_err(|e| e.to_string())?;
-        let card = cards::get_card(&pool, card_id).await?
+        let pool = self
+            .context
+            .session_manager
+            .pool_clone()
+            .await
+            .map_err(|e| e.to_string())?;
+        let card = cards::get_card(&pool, card_id)
+            .await?
             .ok_or_else(|| format!("Card '{}' not found", card_id))?;
         cards::delete_card(&pool, card_id).await?;
-        Ok(vec![Content::text(format!("Deleted card \"{}\" (id: {})", card.title, card.id))])
+        Ok(vec![Content::text(format!(
+            "Deleted card \"{}\" (id: {})",
+            card.title, card.id
+        ))])
     }
 
-    async fn handle_card_list(&self, arguments: Option<JsonObject>) -> Result<Vec<Content>, String> {
+    async fn handle_card_list(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
         let args = arguments.ok_or("Missing arguments")?;
-        let id_or_slug = args.get("project_id_or_slug").and_then(|v| v.as_str())
+        let id_or_slug = args
+            .get("project_id_or_slug")
+            .and_then(|v| v.as_str())
             .ok_or("Missing required parameter: project_id_or_slug")?;
         let (project, pool) = self.resolve_project(id_or_slug).await?;
 
@@ -423,33 +487,54 @@ impl ProjectManagerClient {
         };
 
         let items = cards::list_cards(&pool, &project.id, card_type, column_id.as_deref()).await?;
-        let json: Vec<serde_json::Value> = items.iter().map(|c| serde_json::json!({
-            "id": c.id, "title": c.title, "card_type": c.card_type,
-            "column_id": c.column_id, "position": c.position,
-            "assigned_to": c.assigned_to,
-        })).collect();
+        let json: Vec<serde_json::Value> = items
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "id": c.id, "title": c.title, "card_type": c.card_type,
+                    "column_id": c.column_id, "position": c.position,
+                    "assigned_to": c.assigned_to,
+                })
+            })
+            .collect();
 
         Ok(vec![Content::text(format!(
             "{} card(s) in {}\n\n{}",
-            items.len(), project.name,
+            items.len(),
+            project.name,
             serde_json::to_string_pretty(&json).unwrap_or_default()
         ))])
     }
 
-    async fn handle_column_create(&self, arguments: Option<JsonObject>) -> Result<Vec<Content>, String> {
+    async fn handle_column_create(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
         let args = arguments.ok_or("Missing arguments")?;
-        let id_or_slug = args.get("project_id_or_slug").and_then(|v| v.as_str())
+        let id_or_slug = args
+            .get("project_id_or_slug")
+            .and_then(|v| v.as_str())
             .ok_or("Missing required parameter: project_id_or_slug")?;
-        let name = args.get("name").and_then(|v| v.as_str())
-            .ok_or("Missing required parameter: name")?.to_string();
-        let position = args.get("position").and_then(|v| v.as_i64()).map(|v| v as i32);
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing required parameter: name")?
+            .to_string();
+        let position = args
+            .get("position")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32);
 
         let (project, pool) = self.resolve_project(id_or_slug).await?;
-        let col = cards::create_column(&pool, cards::CreateColumn {
-            project_id: project.id,
-            name,
-            position,
-        }).await?;
+        let col = cards::create_column(
+            &pool,
+            cards::CreateColumn {
+                project_id: project.id,
+                name,
+                position,
+            },
+        )
+        .await?;
 
         Ok(vec![Content::text(format!(
             "Created column \"{}\" at position {} (id: {})",
@@ -457,15 +542,29 @@ impl ProjectManagerClient {
         ))])
     }
 
-    async fn handle_column_delete(&self, arguments: Option<JsonObject>) -> Result<Vec<Content>, String> {
+    async fn handle_column_delete(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
         let args = arguments.ok_or("Missing arguments")?;
-        let column_id = args.get("column_id").and_then(|v| v.as_str())
+        let column_id = args
+            .get("column_id")
+            .and_then(|v| v.as_str())
             .ok_or("Missing required parameter: column_id")?;
-        let pool = self.context.session_manager.pool_clone().await.map_err(|e| e.to_string())?;
-        let col = cards::get_column(&pool, column_id).await?
+        let pool = self
+            .context
+            .session_manager
+            .pool_clone()
+            .await
+            .map_err(|e| e.to_string())?;
+        let col = cards::get_column(&pool, column_id)
+            .await?
             .ok_or_else(|| format!("Column '{}' not found", column_id))?;
         cards::delete_column(&pool, column_id).await?;
-        Ok(vec![Content::text(format!("Deleted column \"{}\" (id: {})", col.name, col.id))])
+        Ok(vec![Content::text(format!(
+            "Deleted column \"{}\" (id: {})",
+            col.name, col.id
+        ))])
     }
 
     fn get_tools() -> Vec<Tool> {
