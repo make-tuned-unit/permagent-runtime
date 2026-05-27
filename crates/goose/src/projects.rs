@@ -436,3 +436,204 @@ pub async fn remove_tag(pool: &Pool<Sqlite>, project_id: &str, tag: &str) -> Res
 pub async fn list_tags(pool: &Pool<Sqlite>, project_id: &str) -> Result<Vec<String>, String> {
     load_tags(pool, project_id).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slugify_basic() {
+        assert_eq!(slugify("Permagent Runtime"), "permagent-runtime");
+        assert_eq!(slugify("  My Cool App  "), "my-cool-app");
+        assert_eq!(slugify("hello---world"), "hello-world");
+        assert_eq!(slugify("UPPER CASE"), "upper-case");
+        assert_eq!(slugify("a.b.c"), "a-b-c");
+        assert_eq!(slugify("---"), "");
+    }
+
+    async fn test_pool() -> Pool<Sqlite> {
+        use crate::session::spectral_schema::init_spectral_db;
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        init_spectral_db(&pool).await.unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn personal_project_seeded() {
+        let pool = test_pool().await;
+        let personal = get_project(&pool, PERSONAL_PROJECT_ID).await.unwrap();
+        assert!(personal.is_some());
+        let p = personal.unwrap();
+        assert_eq!(p.slug, "personal");
+        assert_eq!(p.name, "Personal");
+        assert_eq!(p.status, "active");
+    }
+
+    #[tokio::test]
+    async fn create_and_get() {
+        let pool = test_pool().await;
+        let input = CreateProject {
+            name: "Test Project".to_string(),
+            ..Default::default()
+        };
+        let created = create_project(&pool, input).await.unwrap();
+        assert_eq!(created.slug, "test-project");
+        assert_eq!(created.status, "active");
+
+        let fetched = get_project(&pool, &created.id).await.unwrap().unwrap();
+        assert_eq!(fetched.name, "Test Project");
+    }
+
+    #[tokio::test]
+    async fn slug_collision_appends_suffix() {
+        let pool = test_pool().await;
+        let input1 = CreateProject { name: "Dup".to_string(), ..Default::default() };
+        let p1 = create_project(&pool, input1).await.unwrap();
+        assert_eq!(p1.slug, "dup");
+
+        let input2 = CreateProject { name: "Dup".to_string(), ..Default::default() };
+        let p2 = create_project(&pool, input2).await.unwrap();
+        assert_eq!(p2.slug, "dup-2");
+    }
+
+    #[tokio::test]
+    async fn list_filters_by_status() {
+        let pool = test_pool().await;
+        let _ = create_project(&pool, CreateProject { name: "Active".to_string(), ..Default::default() }).await.unwrap();
+        let p2 = create_project(&pool, CreateProject { name: "Paused".to_string(), ..Default::default() }).await.unwrap();
+        update_project(&pool, &p2.id, UpdateProject { status: Some("paused".to_string()), ..Default::default() }).await.unwrap();
+
+        let active = list_projects(&pool, Some("active")).await.unwrap();
+        // Personal + Active
+        assert!(active.iter().any(|p| p.name == "Active"));
+        assert!(!active.iter().any(|p| p.name == "Paused"));
+
+        let paused = list_projects(&pool, Some("paused")).await.unwrap();
+        assert_eq!(paused.len(), 1);
+        assert_eq!(paused[0].name, "Paused");
+    }
+
+    #[tokio::test]
+    async fn update_fields() {
+        let pool = test_pool().await;
+        let p = create_project(&pool, CreateProject { name: "Orig".to_string(), ..Default::default() }).await.unwrap();
+        let updated = update_project(&pool, &p.id, UpdateProject {
+            name: Some("New Name".to_string()),
+            root_path: Some(Some("/dev/myproject".to_string())),
+            ..Default::default()
+        }).await.unwrap().unwrap();
+        assert_eq!(updated.name, "New Name");
+        assert_eq!(updated.root_path.as_deref(), Some("/dev/myproject"));
+    }
+
+    #[tokio::test]
+    async fn personal_project_protections() {
+        let pool = test_pool().await;
+        // Cannot delete
+        let err = delete_project(&pool, PERSONAL_PROJECT_ID).await;
+        assert!(err.is_err());
+
+        // Cannot change slug
+        let err = update_project(&pool, PERSONAL_PROJECT_ID, UpdateProject {
+            slug: Some("new-slug".to_string()),
+            ..Default::default()
+        }).await;
+        assert!(err.is_err());
+
+        // Cannot change status
+        let err = update_project(&pool, PERSONAL_PROJECT_ID, UpdateProject {
+            status: Some("archived".to_string()),
+            ..Default::default()
+        }).await;
+        assert!(err.is_err());
+
+        // CAN change description
+        let updated = update_project(&pool, PERSONAL_PROJECT_ID, UpdateProject {
+            description: Some("My personal space".to_string()),
+            ..Default::default()
+        }).await.unwrap().unwrap();
+        assert_eq!(updated.description, "My personal space");
+    }
+
+    #[tokio::test]
+    async fn delete_cascades_tags() {
+        let pool = test_pool().await;
+        let p = create_project(&pool, CreateProject {
+            name: "Tagged".to_string(),
+            tags: Some(vec!["rust".to_string(), "saas".to_string()]),
+            ..Default::default()
+        }).await.unwrap();
+        assert_eq!(p.tags, vec!["rust", "saas"]);
+
+        let deleted = delete_project(&pool, &p.id).await.unwrap();
+        assert!(deleted);
+
+        let tags = list_tags(&pool, &p.id).await.unwrap();
+        assert!(tags.is_empty());
+    }
+
+    #[tokio::test]
+    async fn touch_updates_last_opened() {
+        let pool = test_pool().await;
+        let p = create_project(&pool, CreateProject { name: "Touchable".to_string(), ..Default::default() }).await.unwrap();
+        let before = p.last_opened_at.clone();
+
+        // Small delay to ensure timestamp differs
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        touch_project(&pool, &p.id).await.unwrap();
+
+        let after = get_project(&pool, &p.id).await.unwrap().unwrap();
+        assert!(after.last_opened_at >= before);
+    }
+
+    #[tokio::test]
+    async fn tag_add_remove() {
+        let pool = test_pool().await;
+        let p = create_project(&pool, CreateProject { name: "Taggable".to_string(), ..Default::default() }).await.unwrap();
+
+        add_tag(&pool, &p.id, "rust").await.unwrap();
+        add_tag(&pool, &p.id, "saas").await.unwrap();
+        // Duplicate add is idempotent
+        add_tag(&pool, &p.id, "rust").await.unwrap();
+
+        let tags = list_tags(&pool, &p.id).await.unwrap();
+        assert_eq!(tags, vec!["rust", "saas"]);
+
+        remove_tag(&pool, &p.id, "rust").await.unwrap();
+        let tags = list_tags(&pool, &p.id).await.unwrap();
+        assert_eq!(tags, vec!["saas"]);
+    }
+
+    #[tokio::test]
+    async fn resolve_by_id_or_slug() {
+        let pool = test_pool().await;
+        let p = create_project(&pool, CreateProject { name: "My App".to_string(), ..Default::default() }).await.unwrap();
+
+        // By ID
+        let by_id = get_project_by_id_or_slug(&pool, &p.id).await.unwrap();
+        assert!(by_id.is_some());
+
+        // By slug
+        let by_slug = get_project_by_id_or_slug(&pool, "my-app").await.unwrap();
+        assert!(by_slug.is_some());
+        assert_eq!(by_slug.unwrap().id, p.id);
+
+        // Not found
+        let missing = get_project_by_id_or_slug(&pool, "nonexistent").await.unwrap();
+        assert!(missing.is_none());
+    }
+
+    #[tokio::test]
+    async fn migration_idempotent() {
+        let pool = test_pool().await;
+        // Run migration again on already-initialized DB — should not error
+        crate::session::spectral_schema::migrate_v6_to_v7(&pool).await.unwrap();
+        // Personal project still exists, no duplicate
+        let projects = list_projects(&pool, None).await.unwrap();
+        let personal_count = projects.iter().filter(|p| p.id == PERSONAL_PROJECT_ID).count();
+        assert_eq!(personal_count, 1);
+    }
+}
