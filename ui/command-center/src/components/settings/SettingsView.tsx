@@ -542,7 +542,7 @@ function AppearancePanel() {
   const themes: Array<{ id: ThemeId; l: string; g: string }> = [
     { id: 'dark', l: 'Permagent dark', g: 'linear-gradient(135deg, #0B1220, #1E2433)' },
     { id: 'aurora', l: 'Aurora', g: 'linear-gradient(135deg, #0B1220 30%, #8D44AE)' },
-    { id: 'slate', l: 'Slate', g: 'linear-gradient(135deg, #161B26, #2A3040)' },
+    { id: 'silver', l: 'Silver', g: 'linear-gradient(135deg, #1A1C20, #3A3D44)' },
   ];
   const animOptions: IdleAnim[] = ['still', 'breathing', 'drifting'];
   const animLabels = ['Still', 'Breathing', 'Drifting'];
