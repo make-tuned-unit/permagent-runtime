@@ -159,7 +159,7 @@ pub fn record_describe_failure(error: &str) {
     state.retry_in_progress = false;
     // Don't change phase to error for individual failures — only if the whole batch errors.
     // Just log the error context for the current task display.
-    state.current_task = format!("Skipped memory (error) — continuing batch");
+    state.current_task = "Skipped memory (error) — continuing batch".to_string();
     state.error_message = Some(error.to_string());
 }
 

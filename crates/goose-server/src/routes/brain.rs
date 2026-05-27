@@ -463,21 +463,18 @@ async fn brain_graph(
                     let who_json: String = row.get(1)?;
                     Ok((memory_id, who_json))
                 }) {
-                    for row_result in rows {
-                        if let Ok((mem_id, who_json)) = row_result {
-                            if let Ok(refs) =
-                                serde_json::from_str::<Vec<serde_json::Value>>(&who_json)
-                            {
-                                let ent_ids: Vec<String> = refs
-                                    .iter()
-                                    .filter_map(|r| {
-                                        r.get("canonical_id")
-                                            .and_then(|v| v.as_str())
-                                            .map(String::from)
-                                    })
-                                    .collect();
-                                map.entry(mem_id).or_default().extend(ent_ids);
-                            }
+                    for (mem_id, who_json) in rows.flatten() {
+                        if let Ok(refs) = serde_json::from_str::<Vec<serde_json::Value>>(&who_json)
+                        {
+                            let ent_ids: Vec<String> = refs
+                                .iter()
+                                .filter_map(|r| {
+                                    r.get("canonical_id")
+                                        .and_then(|v| v.as_str())
+                                        .map(String::from)
+                                })
+                                .collect();
+                            map.entry(mem_id).or_default().extend(ent_ids);
                         }
                     }
                 }
@@ -598,7 +595,7 @@ async fn brain_memories(
     })
     .await
     .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?
-    .map_err(|e| crate::routes::errors::ErrorResponse::internal(e))?;
+    .map_err(crate::routes::errors::ErrorResponse::internal)?;
 
     Ok(Json(result))
 }
@@ -731,14 +728,13 @@ fn query_fts_memories(
         0 // subsequent pages don't recompute total
     };
 
-    let sql = format!(
-        "SELECT m.id, m.key, m.content, m.description, m.signal_score, m.created_at \
+    let sql = "SELECT m.id, m.key, m.content, m.description, m.signal_score, m.created_at \
          FROM memories_fts fts \
          JOIN memories m ON m.rowid = fts.rowid \
          WHERE memories_fts MATCH ?1 \
          ORDER BY bm25(memories_fts, 1.0, 1.0, 0.5) \
          LIMIT ?2 OFFSET ?3"
-    );
+        .to_string();
 
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt

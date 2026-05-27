@@ -392,6 +392,7 @@ mod tests {
 
     struct MockScheduler {
         jobs: Mutex<Vec<ScheduledJob>>,
+        #[allow(clippy::type_complexity)]
         update_calls: Mutex<Vec<(String, Option<String>, Option<String>, bool)>>,
     }
 

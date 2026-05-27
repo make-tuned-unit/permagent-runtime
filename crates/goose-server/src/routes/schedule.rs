@@ -612,7 +612,7 @@ async fn reset_to_default(
     let scheduler = state.scheduler();
     crate::automation::starters::reset_starter_to_default(scheduler.as_ref(), &id)
         .await
-        .map_err(|e| ErrorResponse::bad_request(e))?;
+        .map_err(ErrorResponse::bad_request)?;
     Ok(StatusCode::NO_CONTENT)
 }
 

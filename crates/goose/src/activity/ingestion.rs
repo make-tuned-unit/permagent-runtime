@@ -112,18 +112,15 @@ fn extract_domain_from_content(content: &str) -> Option<String> {
     // Find URL in parentheses: "(<url>)"
     let start = content.find("(http")?;
     let url_start = start + 1;
-    let end = content[url_start..].find(')')? + url_start;
-    let url = &content[url_start..end];
+    let rest = content.get(url_start..)?;
+    let end = rest.find(')')?;
+    let url = rest.get(..end)?;
 
     // Extract domain: skip scheme, take until '/' or end
-    let after_scheme = if let Some(pos) = url.find("://") {
-        &url[pos + 3..]
-    } else {
-        return None;
-    };
+    let after_scheme = url.find("://").and_then(|pos| url.get(pos + 3..))?;
 
     let domain_end = after_scheme.find('/').unwrap_or(after_scheme.len());
-    let domain = &after_scheme[..domain_end];
+    let domain = after_scheme.get(..domain_end)?;
 
     if domain.is_empty() {
         None

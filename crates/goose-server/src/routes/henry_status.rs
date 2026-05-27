@@ -99,7 +99,7 @@ async fn henry_status(State(state): State<Arc<AppState>>) -> Json<HenryStatusRes
         .map(|s| ActiveSession {
             id: s.id.clone(),
             name: if s.name.is_empty() || s.name == "New Chat" {
-                format!("Session {}", &s.id[..8.min(s.id.len())])
+                format!("Session {}", s.id.get(..8).unwrap_or(&s.id))
             } else {
                 s.name.clone()
             },
@@ -156,7 +156,7 @@ async fn henry_status(State(state): State<Arc<AppState>>) -> Json<HenryStatusRes
     let (total_memories, memories_today) =
         tokio::task::spawn_blocking(move || query_brain_memory_stats(&today_str2))
             .await
-            .unwrap_or_else(|_| (0, 0));
+            .unwrap_or((0, 0));
 
     Json(HenryStatusResponse {
         identity,

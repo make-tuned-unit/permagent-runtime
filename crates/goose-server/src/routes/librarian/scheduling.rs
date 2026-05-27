@@ -520,14 +520,12 @@ fn compute_next_window_start(schedule: &LibrarianSchedule) -> Option<String> {
 
     let naive_start = today.and_hms_opt(sh, sm, 0)?;
     let start_today = naive_start.and_local_timezone(tz).single()?;
-    let end_today = start_today + chrono::Duration::minutes(dur as i64);
+    let _end_today = start_today + chrono::Duration::minutes(dur as i64);
 
     if now < start_today {
         Some(start_today.to_rfc3339())
-    } else if now < end_today {
-        let tomorrow_start = start_today + chrono::Duration::days(1);
-        Some(tomorrow_start.to_rfc3339())
     } else {
+        // Window is active or already passed — next run is tomorrow
         let tomorrow_start = start_today + chrono::Duration::days(1);
         Some(tomorrow_start.to_rfc3339())
     }
