@@ -20,6 +20,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Unit and integration tests
         run: cargo test --workspace --lib --tests
+        env:
+          RUST_BACKTRACE: ${{ matrix.os == 'ubuntu-latest' && 'full' || '0' }}
+          RUST_LIB_BACKTRACE: ${{ matrix.os == 'ubuntu-latest' && 'full' || '0' }}
       - name: Doc tests
         run: cargo test --workspace --doc
 
