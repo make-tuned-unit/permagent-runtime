@@ -44,7 +44,7 @@ export const tokens = { color, font, ease, radius, shadow } as const;
 export type DesignTokens = typeof tokens;
 
 // ── Theme gradients ─────────────────────────────────────────────────
-export type ThemeId = 'dark' | 'aurora' | 'slate';
+export type ThemeId = 'dark' | 'aurora' | 'silver';
 
 export const THEME_GRADIENTS: Record<ThemeId, {
   workspace: string; card: string; label: string;
@@ -71,15 +71,15 @@ export const THEME_GRADIENTS: Record<ThemeId, {
     dropdownSolid: '#0e0a1e',
     label: 'Aurora',
   },
-  slate: {
-    workspace: 'radial-gradient(120% 80% at 50% 0%, #1e2430 0%, #161B26 50%, #0f1318 100%)',
-    card: 'linear-gradient(180deg, rgba(30,36,48,0.7), rgba(22,27,38,0.7))',
-    shell: '#13161e',
-    sidebar: 'rgba(19,22,30,0.7)',
-    navRail: 'rgba(19,22,30,0.5)',
-    dropdown: 'rgba(19,22,30,0.98)',
-    dropdownSolid: '#13161e',
-    label: 'Slate',
+  silver: {
+    workspace: 'radial-gradient(120% 80% at 50% 0%, #2A2D32 0%, #1A1C20 50%, #111214 100%)',
+    card: 'linear-gradient(180deg, rgba(48,50,56,0.7), rgba(30,32,36,0.7))',
+    shell: '#16171A',
+    sidebar: 'rgba(22,23,26,0.7)',
+    navRail: 'rgba(22,23,26,0.5)',
+    dropdown: 'rgba(22,23,26,0.98)',
+    dropdownSolid: '#16171A',
+    label: 'Silver',
   },
 };
 
@@ -98,6 +98,10 @@ function _set(key: string, value: string) {
 
 // Theme
 let _activeTheme: ThemeId = _get('permagent-theme', 'dark') as ThemeId;
+// Migrate 'slate' -> 'silver' (one-time, idempotent)
+if ((_activeTheme as string) === 'slate') {
+  _activeTheme = 'silver'; _set('permagent-theme', 'silver');
+}
 export function getTheme(): ThemeId { return _activeTheme; }
 export function getThemeGradient() { return THEME_GRADIENTS[_activeTheme]; }
 export function setTheme(id: ThemeId) { _activeTheme = id; _set('permagent-theme', id); }
