@@ -10,6 +10,7 @@ pub mod ext_manager;
 pub mod librarian;
 pub mod librarian_state;
 pub mod orchestrator;
+pub mod project_manager;
 pub mod recipe_author;
 pub mod skills;
 pub mod storage_health;
@@ -340,6 +341,22 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 client_factory: |ctx| {
                     Box::new(storage_health::StorageHealthClient::new(ctx).unwrap())
+                },
+            },
+        );
+
+        map.insert(
+            project_manager::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: project_manager::EXTENSION_NAME,
+                display_name: "Project Manager",
+                description:
+                    "Create, list, update, and delete projects — named workspaces with paths, URLs, and metadata",
+                default_enabled: true,
+                unprefixed_tools: true,
+                hidden: false,
+                client_factory: |ctx| {
+                    Box::new(project_manager::ProjectManagerClient::new(ctx).unwrap())
                 },
             },
         );

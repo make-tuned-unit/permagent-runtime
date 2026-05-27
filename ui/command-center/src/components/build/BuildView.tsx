@@ -1,3 +1,4 @@
+import { useCallback } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import { color, font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
@@ -5,6 +6,8 @@ import { Mobius } from '../mobius/Mobius';
 import { useDashboard } from '../dashboard/useDashboard';
 import { TerminalManager } from '../terminal/TerminalManager';
 import { Browser } from '../browser';
+import { ProjectChip } from './ProjectChip';
+import type { Project } from './useProjects';
 
 const ghostBtn: React.CSSProperties = {
   height: 30, padding: '0 12px', borderRadius: 8,
@@ -29,6 +32,16 @@ export function BuildView() {
   const hasActive = (data?.in_flight.length ?? 0) > 0;
   const activeTask = hasActive ? data!.in_flight[0] : null;
   const mobiusState = hasActive ? 'thinking' : 'idle';
+
+  const handleLaunch = useCallback((_project: Project, _agent: string) => {
+    // TODO: spawn PTY tab with cwd=project.rootPath, label=slug·agent
+    // For now this is a placeholder — terminal spawning with project affinity
+    // requires TerminalManager API extension (next iteration)
+  }, []);
+
+  const handleVisitSite = useCallback((url: string) => {
+    window.open(url, '_blank');
+  }, []);
 
   return (
     <div style={{
@@ -55,6 +68,7 @@ export function BuildView() {
             {agentName} · {hasActive ? 'thinking' : 'idle'}
           </div>
         </div>
+        <ProjectChip onLaunch={handleLaunch} onVisitSite={handleVisitSite} />
         <div style={{ flex: 1 }} />
 
         {/* Progress rail */}
