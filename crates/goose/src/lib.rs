@@ -33,6 +33,7 @@ pub mod otel;
 pub mod permission;
 #[cfg(feature = "telemetry")]
 pub mod posthog;
+pub mod projects;
 pub mod prompt_template;
 pub mod providers;
 pub mod recipe;

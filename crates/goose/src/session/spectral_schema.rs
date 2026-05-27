@@ -10,7 +10,7 @@ use sqlx::{Pool, Sqlite};
 use tracing::{info, warn};
 
 /// Current Spectral schema version. Bump when adding migrations.
-pub const SPECTRAL_SCHEMA_VERSION: i32 = 6;
+pub const SPECTRAL_SCHEMA_VERSION: i32 = 7;
 
 /// Initialize the Spectral database schema from scratch.
 /// Creates all tables, indexes, FTS virtual tables, triggers, and views.
@@ -547,6 +547,73 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
         .execute(&mut *tx)
         .await?;
 
+    // ── PROJECTS ──
+    sqlx::query(
+        "CREATE TABLE projects (
+            id              TEXT PRIMARY KEY,
+            user_id         TEXT NOT NULL DEFAULT 'default' REFERENCES users(id),
+            slug            TEXT NOT NULL,
+            name            TEXT NOT NULL,
+            description     TEXT NOT NULL DEFAULT '',
+            status          TEXT NOT NULL DEFAULT 'active'
+                            CHECK (status IN ('active', 'paused', 'archived')),
+            root_path       TEXT,
+            site_url        TEXT,
+            repo_url        TEXT,
+            notes           TEXT NOT NULL DEFAULT '',
+            created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            last_opened_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            UNIQUE(user_id, slug)
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query("CREATE INDEX idx_projects_recency ON projects(user_id, status, last_opened_at DESC)")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("CREATE INDEX idx_projects_slug ON projects(user_id, slug)")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("CREATE INDEX idx_projects_name ON projects(user_id, name)")
+        .execute(&mut *tx)
+        .await?;
+
+    sqlx::query(
+        "CREATE TRIGGER trg_projects_updated_at
+            AFTER UPDATE ON projects
+            FOR EACH ROW
+            BEGIN
+                UPDATE projects SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                WHERE id = NEW.id;
+            END",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE project_tags (
+            project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            tag             TEXT NOT NULL,
+            PRIMARY KEY (project_id, tag)
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query("CREATE INDEX idx_project_tags_tag ON project_tags(tag)")
+        .execute(&mut *tx)
+        .await?;
+
+    // Seed the implicit "personal" project
+    sqlx::query(
+        "INSERT INTO projects (id, user_id, slug, name, description, status)
+         VALUES ('00000000-0000-0000-0000-000000000001', 'default', 'personal', 'Personal', 'Default project for unscoped activity.', 'active')",
+    )
+    .execute(&mut *tx)
+    .await?;
+
     // ── VIEWS ──
     sqlx::query(
         "CREATE VIEW current_memories AS
@@ -794,6 +861,110 @@ pub async fn migrate_v5_to_v6(pool: &Pool<Sqlite>) -> Result<()> {
         .await?;
 
     info!("Spectral schema migrated to v6");
+    Ok(())
+}
+
+/// Migrate from schema v6 to v7: add projects and project_tags tables.
+pub async fn migrate_v6_to_v7(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v6 -> v7");
+
+    let has_table = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT name FROM sqlite_master WHERE type='table' AND name='projects')",
+    )
+    .fetch_one(pool)
+    .await?;
+
+    if !has_table {
+        sqlx::query(
+            "CREATE TABLE projects (
+                id              TEXT PRIMARY KEY,
+                user_id         TEXT NOT NULL DEFAULT 'default' REFERENCES users(id),
+                slug            TEXT NOT NULL,
+                name            TEXT NOT NULL,
+                description     TEXT NOT NULL DEFAULT '',
+                status          TEXT NOT NULL DEFAULT 'active'
+                                CHECK (status IN ('active', 'paused', 'archived')),
+                root_path       TEXT,
+                site_url        TEXT,
+                repo_url        TEXT,
+                notes           TEXT NOT NULL DEFAULT '',
+                created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                last_opened_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                UNIQUE(user_id, slug)
+            )",
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX idx_projects_recency ON projects(user_id, status, last_opened_at DESC)",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query("CREATE INDEX idx_projects_slug ON projects(user_id, slug)")
+            .execute(pool)
+            .await?;
+        sqlx::query("CREATE INDEX idx_projects_name ON projects(user_id, name)")
+            .execute(pool)
+            .await?;
+
+        sqlx::query(
+            "CREATE TRIGGER trg_projects_updated_at
+                AFTER UPDATE ON projects
+                FOR EACH ROW
+                BEGIN
+                    UPDATE projects SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                    WHERE id = NEW.id;
+                END",
+        )
+        .execute(pool)
+        .await?;
+    }
+
+    let has_tags_table = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT name FROM sqlite_master WHERE type='table' AND name='project_tags')",
+    )
+    .fetch_one(pool)
+    .await?;
+
+    if !has_tags_table {
+        sqlx::query(
+            "CREATE TABLE project_tags (
+                project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                tag             TEXT NOT NULL,
+                PRIMARY KEY (project_id, tag)
+            )",
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query("CREATE INDEX idx_project_tags_tag ON project_tags(tag)")
+            .execute(pool)
+            .await?;
+    }
+
+    // Seed the implicit "personal" project if it doesn't exist
+    let has_personal = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT 1 FROM projects WHERE id = '00000000-0000-0000-0000-000000000001')",
+    )
+    .fetch_one(pool)
+    .await?;
+
+    if !has_personal {
+        sqlx::query(
+            "INSERT INTO projects (id, user_id, slug, name, description, status)
+             VALUES ('00000000-0000-0000-0000-000000000001', 'default', 'personal', 'Personal', 'Default project for unscoped activity.', 'active')",
+        )
+        .execute(pool)
+        .await?;
+    }
+
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (7)")
+        .execute(pool)
+        .await?;
+
+    info!("Spectral schema migrated to v7");
     Ok(())
 }
 
