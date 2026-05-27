@@ -490,11 +490,17 @@ mod tests {
     #[tokio::test]
     async fn slug_collision_appends_suffix() {
         let pool = test_pool().await;
-        let input1 = CreateProject { name: "Dup".to_string(), ..Default::default() };
+        let input1 = CreateProject {
+            name: "Dup".to_string(),
+            ..Default::default()
+        };
         let p1 = create_project(&pool, input1).await.unwrap();
         assert_eq!(p1.slug, "dup");
 
-        let input2 = CreateProject { name: "Dup".to_string(), ..Default::default() };
+        let input2 = CreateProject {
+            name: "Dup".to_string(),
+            ..Default::default()
+        };
         let p2 = create_project(&pool, input2).await.unwrap();
         assert_eq!(p2.slug, "dup-2");
     }
@@ -502,9 +508,34 @@ mod tests {
     #[tokio::test]
     async fn list_filters_by_status() {
         let pool = test_pool().await;
-        let _ = create_project(&pool, CreateProject { name: "Active".to_string(), ..Default::default() }).await.unwrap();
-        let p2 = create_project(&pool, CreateProject { name: "Paused".to_string(), ..Default::default() }).await.unwrap();
-        update_project(&pool, &p2.id, UpdateProject { status: Some("paused".to_string()), ..Default::default() }).await.unwrap();
+        let _ = create_project(
+            &pool,
+            CreateProject {
+                name: "Active".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let p2 = create_project(
+            &pool,
+            CreateProject {
+                name: "Paused".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        update_project(
+            &pool,
+            &p2.id,
+            UpdateProject {
+                status: Some("paused".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
 
         let active = list_projects(&pool, Some("active")).await.unwrap();
         // Personal + Active
@@ -519,12 +550,27 @@ mod tests {
     #[tokio::test]
     async fn update_fields() {
         let pool = test_pool().await;
-        let p = create_project(&pool, CreateProject { name: "Orig".to_string(), ..Default::default() }).await.unwrap();
-        let updated = update_project(&pool, &p.id, UpdateProject {
-            name: Some("New Name".to_string()),
-            root_path: Some(Some("/dev/myproject".to_string())),
-            ..Default::default()
-        }).await.unwrap().unwrap();
+        let p = create_project(
+            &pool,
+            CreateProject {
+                name: "Orig".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let updated = update_project(
+            &pool,
+            &p.id,
+            UpdateProject {
+                name: Some("New Name".to_string()),
+                root_path: Some(Some("/dev/myproject".to_string())),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
         assert_eq!(updated.name, "New Name");
         assert_eq!(updated.root_path.as_deref(), Some("/dev/myproject"));
     }
@@ -537,35 +583,57 @@ mod tests {
         assert!(err.is_err());
 
         // Cannot change slug
-        let err = update_project(&pool, PERSONAL_PROJECT_ID, UpdateProject {
-            slug: Some("new-slug".to_string()),
-            ..Default::default()
-        }).await;
+        let err = update_project(
+            &pool,
+            PERSONAL_PROJECT_ID,
+            UpdateProject {
+                slug: Some("new-slug".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
         assert!(err.is_err());
 
         // Cannot change status
-        let err = update_project(&pool, PERSONAL_PROJECT_ID, UpdateProject {
-            status: Some("archived".to_string()),
-            ..Default::default()
-        }).await;
+        let err = update_project(
+            &pool,
+            PERSONAL_PROJECT_ID,
+            UpdateProject {
+                status: Some("archived".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
         assert!(err.is_err());
 
         // CAN change description
-        let updated = update_project(&pool, PERSONAL_PROJECT_ID, UpdateProject {
-            description: Some("My personal space".to_string()),
-            ..Default::default()
-        }).await.unwrap().unwrap();
+        let updated = update_project(
+            &pool,
+            PERSONAL_PROJECT_ID,
+            UpdateProject {
+                description: Some("My personal space".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
         assert_eq!(updated.description, "My personal space");
     }
 
     #[tokio::test]
     async fn delete_cascades_tags() {
         let pool = test_pool().await;
-        let p = create_project(&pool, CreateProject {
-            name: "Tagged".to_string(),
-            tags: Some(vec!["rust".to_string(), "saas".to_string()]),
-            ..Default::default()
-        }).await.unwrap();
+        let p = create_project(
+            &pool,
+            CreateProject {
+                name: "Tagged".to_string(),
+                tags: Some(vec!["rust".to_string(), "saas".to_string()]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(p.tags, vec!["rust", "saas"]);
 
         let deleted = delete_project(&pool, &p.id).await.unwrap();
@@ -578,7 +646,15 @@ mod tests {
     #[tokio::test]
     async fn touch_updates_last_opened() {
         let pool = test_pool().await;
-        let p = create_project(&pool, CreateProject { name: "Touchable".to_string(), ..Default::default() }).await.unwrap();
+        let p = create_project(
+            &pool,
+            CreateProject {
+                name: "Touchable".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         let before = p.last_opened_at.clone();
 
         // Small delay to ensure timestamp differs
@@ -592,7 +668,15 @@ mod tests {
     #[tokio::test]
     async fn tag_add_remove() {
         let pool = test_pool().await;
-        let p = create_project(&pool, CreateProject { name: "Taggable".to_string(), ..Default::default() }).await.unwrap();
+        let p = create_project(
+            &pool,
+            CreateProject {
+                name: "Taggable".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
 
         add_tag(&pool, &p.id, "rust").await.unwrap();
         add_tag(&pool, &p.id, "saas").await.unwrap();
@@ -610,7 +694,15 @@ mod tests {
     #[tokio::test]
     async fn resolve_by_id_or_slug() {
         let pool = test_pool().await;
-        let p = create_project(&pool, CreateProject { name: "My App".to_string(), ..Default::default() }).await.unwrap();
+        let p = create_project(
+            &pool,
+            CreateProject {
+                name: "My App".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
 
         // By ID
         let by_id = get_project_by_id_or_slug(&pool, &p.id).await.unwrap();
@@ -622,7 +714,9 @@ mod tests {
         assert_eq!(by_slug.unwrap().id, p.id);
 
         // Not found
-        let missing = get_project_by_id_or_slug(&pool, "nonexistent").await.unwrap();
+        let missing = get_project_by_id_or_slug(&pool, "nonexistent")
+            .await
+            .unwrap();
         assert!(missing.is_none());
     }
 
@@ -630,10 +724,15 @@ mod tests {
     async fn migration_idempotent() {
         let pool = test_pool().await;
         // Run migration again on already-initialized DB — should not error
-        crate::session::spectral_schema::migrate_v6_to_v7(&pool).await.unwrap();
+        crate::session::spectral_schema::migrate_v6_to_v7(&pool)
+            .await
+            .unwrap();
         // Personal project still exists, no duplicate
         let projects = list_projects(&pool, None).await.unwrap();
-        let personal_count = projects.iter().filter(|p| p.id == PERSONAL_PROJECT_ID).count();
+        let personal_count = projects
+            .iter()
+            .filter(|p| p.id == PERSONAL_PROJECT_ID)
+            .count();
         assert_eq!(personal_count, 1);
     }
 }

@@ -570,9 +570,11 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(&mut *tx)
     .await?;
 
-    sqlx::query("CREATE INDEX idx_projects_recency ON projects(user_id, status, last_opened_at DESC)")
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "CREATE INDEX idx_projects_recency ON projects(user_id, status, last_opened_at DESC)",
+    )
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("CREATE INDEX idx_projects_slug ON projects(user_id, slug)")
         .execute(&mut *tx)
         .await?;
