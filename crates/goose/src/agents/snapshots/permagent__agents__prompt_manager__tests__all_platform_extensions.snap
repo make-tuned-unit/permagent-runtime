@@ -47,11 +47,18 @@ Analyze code structure using tree-sitter AST parsing. Three auto-selected modes:
 
 For large codebases, delegate analysis to a subagent and retain only the summary.
 
+## app_conductor
+
+### Instructions
+Navigate the user to specific tabs in the Permagent app. Use navigate_app when the user asks where something is or you want to show them a specific view.
 ## apps
 
 apps supports resources.
 ### Instructions
 Use this extension to create, manage, and iterate on custom HTML/CSS/JavaScript apps.
+## browser
+
+
 ## chatrecall
 
 ### Instructions
@@ -99,6 +106,10 @@ The Librarian generates prose descriptions for memories stored in the Brain. Use
 
 ### Instructions
 Manage agent sessions: list, view, start, send messages, and interrupt agents.
+## recipe_author
+
+### Instructions
+Manage the user's automations (scheduled recipes) and saved skills. Use create_recipe when the user wants to set up a new scheduled task. Use list_recipes to show what automations exist. Use save_skill when the user asks to save a repeated behavior.
 ## skills
 
 ### Instructions
@@ -106,6 +117,10 @@ Manage agent sessions: list, view, start, send messages, and interrupt agents.
 
 You have these skills at your disposal, when it is clear they can help you solve a problem or you are asked to use them:
 • goose-doc-guide - Reference goose documentation to create, configure, or explain goose-specific features like recipes, extensions, sessions, and providers. You MUST fetch relevant goose docs before answering. You MUST NOT rely on training data or assumptions for any goose-specific fields, values, names, syntax, or commands.
+## storage_health
+
+### Instructions
+Scan the filesystem for storage cleanup opportunities. Use scan_storage_health when the user asks about disk space, cleanup, or storage. This is the ONLY mechanism for producing storage findings.
 ## summarize
 
 
