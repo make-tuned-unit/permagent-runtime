@@ -283,18 +283,11 @@ async fn reconcile_starter_recipes(scheduler: &dyn SchedulerTrait) {
         }
 
         // Pristine + content or version changed → UPGRADE
-        let old_version = stored_version
-            .as_deref()
-            .unwrap_or("1.0.0")
-            .to_string();
+        let old_version = stored_version.as_deref().unwrap_or("1.0.0").to_string();
 
         // Write new embedded content to disk
         if let Err(e) = std::fs::write(&job.source, starter.yaml) {
-            tracing::error!(
-                "Failed to write upgraded starter '{}': {}",
-                starter.id,
-                e
-            );
+            tracing::error!("Failed to write upgraded starter '{}': {}", starter.id, e);
             continue;
         }
 
@@ -344,8 +337,7 @@ pub async fn reset_starter_to_default(
         .ok_or_else(|| format!("Starter '{}' not installed", starter_id))?;
 
     // Write embedded YAML to disk
-    std::fs::write(&job.source, starter.yaml)
-        .map_err(|e| format!("Failed to write: {}", e))?;
+    std::fs::write(&job.source, starter.yaml).map_err(|e| format!("Failed to write: {}", e))?;
 
     let version = extract_version(starter.yaml);
     let hash = content_hash(starter.yaml);
@@ -400,6 +392,7 @@ mod tests {
 
     struct MockScheduler {
         jobs: Mutex<Vec<ScheduledJob>>,
+        #[allow(clippy::type_complexity)]
         update_calls: Mutex<Vec<(String, Option<String>, Option<String>, bool)>>,
     }
 
@@ -501,7 +494,13 @@ mod tests {
         }
     }
 
-    fn make_job(id: &str, source: &str, version: &str, hash: &str, customized: bool) -> ScheduledJob {
+    fn make_job(
+        id: &str,
+        source: &str,
+        version: &str,
+        hash: &str,
+        customized: bool,
+    ) -> ScheduledJob {
         ScheduledJob {
             id: id.to_string(),
             source: source.to_string(),
@@ -551,7 +550,10 @@ mod tests {
         // Metadata updated
         let jobs = scheduler.list_scheduled_jobs().await;
         let updated = jobs.iter().find(|j| j.id == "storage-insights").unwrap();
-        assert_eq!(updated.starter_version.as_deref(), Some(si_version().as_str()));
+        assert_eq!(
+            updated.starter_version.as_deref(),
+            Some(si_version().as_str())
+        );
         assert_eq!(
             updated.starter_content_hash.as_deref(),
             Some(content_hash(STORAGE_INSIGHTS_YAML).as_str())
@@ -560,7 +562,9 @@ mod tests {
 
         // update_starter_fields was called
         let calls = scheduler.update_calls.lock().await;
-        assert!(calls.iter().any(|(id, _, _, cust)| id == "storage-insights" && !cust));
+        assert!(calls
+            .iter()
+            .any(|(id, _, _, cust)| id == "storage-insights" && !cust));
     }
 
     // ── Test 2: customized starter is not upgraded ──
@@ -599,7 +603,9 @@ mod tests {
 
         // update_starter_fields called with user_customized=true
         let calls = scheduler.update_calls.lock().await;
-        assert!(calls.iter().any(|(id, _, _, cust)| id == "storage-insights" && *cust));
+        assert!(calls
+            .iter()
+            .any(|(id, _, _, cust)| id == "storage-insights" && *cust));
     }
 
     // ── Test 3: reset clears customized and restores embedded ──
@@ -630,7 +636,10 @@ mod tests {
         // Metadata updated
         let jobs = scheduler.list_scheduled_jobs().await;
         let updated = jobs.iter().find(|j| j.id == "storage-insights").unwrap();
-        assert_eq!(updated.starter_version.as_deref(), Some(si_version().as_str()));
+        assert_eq!(
+            updated.starter_version.as_deref(),
+            Some(si_version().as_str())
+        );
         assert_eq!(
             updated.starter_content_hash.as_deref(),
             Some(content_hash(STORAGE_INSIGHTS_YAML).as_str())
@@ -673,10 +682,8 @@ mod tests {
     #[tokio::test]
     async fn new_install_seeds_with_current_version_and_hash() {
         let tmp = TempDir::new().unwrap();
-        let _guard = env_lock::lock_env([(
-            "PERMAGENT_PATH_ROOT",
-            Some(tmp.path().to_str().unwrap()),
-        )]);
+        let _guard =
+            env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(tmp.path().to_str().unwrap()))]);
 
         let scheduler = MockScheduler::new(vec![]);
 
@@ -720,8 +727,14 @@ mod tests {
 
         // No upgrade applied
         let calls = scheduler.update_calls.lock().await;
-        let ws_calls: Vec<_> = calls.iter().filter(|(id, _, _, _)| id == "workspace-snapshot").collect();
-        assert!(ws_calls.is_empty(), "No update calls for workspace-snapshot");
+        let ws_calls: Vec<_> = calls
+            .iter()
+            .filter(|(id, _, _, _)| id == "workspace-snapshot")
+            .collect();
+        assert!(
+            ws_calls.is_empty(),
+            "No update calls for workspace-snapshot"
+        );
 
         // On-disk unchanged
         let on_disk = std::fs::read_to_string(&yaml_path).unwrap();
@@ -798,7 +811,11 @@ mod tests {
             Some("storage-insights".to_string()),
             "starter_id should be backfilled"
         );
-        assert_eq!(updated.user_customized, Some(true), "user_customized preserved");
+        assert_eq!(
+            updated.user_customized,
+            Some(true),
+            "user_customized preserved"
+        );
 
         // On-disk NOT overwritten
         let on_disk = std::fs::read_to_string(&yaml_path).unwrap();

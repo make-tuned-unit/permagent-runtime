@@ -162,7 +162,9 @@ impl AppState {
             })
             .await;
             match result {
-                Ok(Ok(n)) if n > 0 => tracing::info!(annotated = n, "Annotation backfill completed"),
+                Ok(Ok(n)) if n > 0 => {
+                    tracing::info!(annotated = n, "Annotation backfill completed")
+                }
                 Ok(Ok(_)) => {}
                 Ok(Err(e)) => tracing::warn!(error = %e, "Annotation backfill failed"),
                 Err(e) => tracing::warn!(error = %e, "Annotation backfill task panicked"),
@@ -182,7 +184,11 @@ impl AppState {
                 .await;
                 match result {
                     Ok(Ok((un, del))) if un > 0 || del > 0 => {
-                        tracing::info!(un_consolidated = un, deleted = del, "Buggy domain-cluster cleanup completed");
+                        tracing::info!(
+                            un_consolidated = un,
+                            deleted = del,
+                            "Buggy domain-cluster cleanup completed"
+                        );
                     }
                     Ok(Ok(_)) => {}
                     Ok(Err(e)) => {
@@ -214,8 +220,12 @@ impl AppState {
                             );
                         }
                         Ok(Ok(_)) => {}
-                        Ok(Err(e)) => tracing::warn!(error = %e, "consolidate_into migration failed"),
-                        Err(e) => tracing::warn!(error = %e, "consolidate_into migration task panicked"),
+                        Ok(Err(e)) => {
+                            tracing::warn!(error = %e, "consolidate_into migration failed")
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "consolidate_into migration task panicked")
+                        }
                     }
                 }
             });
@@ -242,7 +252,9 @@ impl AppState {
             })
             .await;
             match consolidate_result {
-                Ok(Ok(n)) if n > 0 => tracing::info!(consolidated = n, "Cluster consolidation completed"),
+                Ok(Ok(n)) if n > 0 => {
+                    tracing::info!(consolidated = n, "Cluster consolidation completed")
+                }
                 Ok(Ok(_)) => {}
                 Ok(Err(e)) => tracing::warn!(error = %e, "Cluster consolidation failed"),
                 Err(e) => tracing::warn!(error = %e, "Cluster consolidation task panicked"),
@@ -375,7 +387,9 @@ impl AppState {
             daemon_token,
             activity_ingester,
             context_builder,
-            browser_content_bridge: Arc::new(crate::routes::browser_content::BrowserContentBridge::new()),
+            browser_content_bridge: Arc::new(
+                crate::routes::browser_content::BrowserContentBridge::new(),
+            ),
             app_catalog,
         }))
     }
@@ -439,8 +453,7 @@ impl AppState {
             .and_then(|ing| ing.active_project())
             .map(|ap| ap.wing);
 
-        let mut ctx = spectral::graph::RecognitionContext::empty()
-            .with_persona("henry");
+        let mut ctx = spectral::graph::RecognitionContext::empty().with_persona("henry");
 
         if let Some(sid) = session_id {
             ctx = ctx.with_session(sid);

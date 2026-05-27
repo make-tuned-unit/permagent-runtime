@@ -19,7 +19,9 @@ pub fn find_exact_duplicate_clusters(
         )
         .map_err(|e| format!("Prepare failed: {e}"))?;
     let clusters: Vec<(String, usize)> = stmt
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, usize>(1)?)))
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, usize>(1)?))
+        })
         .map_err(|e| format!("Query failed: {e}"))?
         .filter_map(|r| r.ok())
         .collect();
@@ -71,8 +73,7 @@ pub fn find_domain_clusters(
 }
 
 pub(super) fn run_consolidation_scan(brain: &spectral::Brain) -> Result<(usize, usize), String> {
-    let conn = read_only_brain_conn()
-        .map_err(|e| format!("Failed to open brain DB: {e}"))?;
+    let conn = read_only_brain_conn().map_err(|e| format!("Failed to open brain DB: {e}"))?;
 
     let mut total_clusters = 0usize;
     let mut total_originals = 0usize;

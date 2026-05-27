@@ -29,9 +29,7 @@ fn default_limit() -> usize {
     50
 }
 
-async fn get_recent(
-    Query(params): Query<RecentQuery>,
-) -> Json<Vec<ActivityEvent>> {
+async fn get_recent(Query(params): Query<RecentQuery>) -> Json<Vec<ActivityEvent>> {
     let limit = params.limit.min(500);
     Json(activity::recent_activity(limit))
 }

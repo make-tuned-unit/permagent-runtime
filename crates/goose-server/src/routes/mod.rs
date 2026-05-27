@@ -15,9 +15,9 @@ pub mod gateway;
 pub mod henry_status;
 pub mod identity;
 pub mod integrations;
+pub mod librarian;
 #[cfg(feature = "local-inference")]
 pub mod local_inference;
-pub mod librarian;
 pub mod ollama;
 pub mod prompts;
 pub mod recipe;
@@ -100,10 +100,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         protected = protected.merge(local_inference::routes(state.clone()));
     }
 
-    protected = protected.layer(middleware::from_fn_with_state(
-        state,
-        require_bearer_token,
-    ));
+    protected = protected.layer(middleware::from_fn_with_state(state, require_bearer_token));
 
     public.merge(protected)
 }

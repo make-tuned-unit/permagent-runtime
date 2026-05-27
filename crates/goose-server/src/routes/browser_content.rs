@@ -19,11 +19,17 @@ pub struct BrowserContentBridge {
     pending: Mutex<HashMap<String, oneshot::Sender<PageContent>>>,
 }
 
-impl BrowserContentBridge {
-    pub fn new() -> Self {
+impl Default for BrowserContentBridge {
+    fn default() -> Self {
         Self {
             pending: Mutex::new(HashMap::new()),
         }
+    }
+}
+
+impl BrowserContentBridge {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub async fn request(&self) -> (String, oneshot::Receiver<PageContent>) {
@@ -96,20 +102,21 @@ async fn read_content(State(state): State<Arc<AppState>>) -> Result<Json<PageCon
                     let title = content.title.clone();
                     let url = content.url.clone();
                     // Truncate content for memory — store a readable summary, not the full page
+                    #[allow(clippy::string_slice)]
                     let mem_content = {
                         let max = 2000;
                         let text = &content.content;
                         if text.len() > max {
-                            let cut = text[..max]
-                                .rfind('\n')
-                                .unwrap_or(max);
+                            // max is always a char boundary since we only enter this
+                            // branch when len > max, and we immediately search backward
+                            // for '\n' which is a single-byte ASCII char.
+                            let cut = text[..max].rfind('\n').unwrap_or(max);
                             format!("{}\n[truncated]", &text[..cut])
                         } else {
                             text.clone()
                         }
                     };
-                    let remember_content =
-                        format!("Page: {title}\nURL: {url}\n\n{mem_content}");
+                    let remember_content = format!("Page: {title}\nURL: {url}\n\n{mem_content}");
                     tokio::spawn(async move {
                         let url_for_key = url.clone();
                         let result = tokio::task::spawn_blocking(move || {
@@ -117,7 +124,9 @@ async fn read_content(State(state): State<Arc<AppState>>) -> Result<Json<PageCon
                             let mut hasher = std::collections::hash_map::DefaultHasher::new();
                             url_for_key.hash(&mut hasher);
                             let hash = format!("{:x}", hasher.finish());
-                            let key = format!("browser:read:{}", &hash[..12]);
+                            // hash is hex-encoded (ASCII), so slicing at 12 is always safe
+                            let short_hash = hash.get(..12).unwrap_or(&hash);
+                            let key = format!("browser:read:{}", short_hash);
                             brain.remember_with(
                                 &key,
                                 &remember_content,

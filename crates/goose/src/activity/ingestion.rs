@@ -112,18 +112,15 @@ fn extract_domain_from_content(content: &str) -> Option<String> {
     // Find URL in parentheses: "(<url>)"
     let start = content.find("(http")?;
     let url_start = start + 1;
-    let end = content[url_start..].find(')')? + url_start;
-    let url = &content[url_start..end];
+    let rest = content.get(url_start..)?;
+    let end = rest.find(')')?;
+    let url = rest.get(..end)?;
 
     // Extract domain: skip scheme, take until '/' or end
-    let after_scheme = if let Some(pos) = url.find("://") {
-        &url[pos + 3..]
-    } else {
-        return None;
-    };
+    let after_scheme = url.find("://").and_then(|pos| url.get(pos + 3..))?;
 
     let domain_end = after_scheme.find('/').unwrap_or(after_scheme.len());
-    let domain = &after_scheme[..domain_end];
+    let domain = after_scheme.get(..domain_end)?;
 
     if domain.is_empty() {
         None
@@ -850,18 +847,42 @@ mod tests {
 
     #[test]
     fn filter_blocks_about_blank() {
-        assert!(!should_ingest_activity("Navigated to about:blank", "browser_navigated"));
+        assert!(!should_ingest_activity(
+            "Navigated to about:blank",
+            "browser_navigated"
+        ));
     }
 
     #[test]
     fn filter_blocks_ad_tracking() {
-        assert!(!should_ingest_activity("Navigated to Ad (https://doubleclick.net/ad) in tab t1.", "browser_navigated"));
-        assert!(!should_ingest_activity("Navigated to X (https://crwdcntrl.net/px) in tab t1.", "browser_navigated"));
-        assert!(!should_ingest_activity("Navigated to reCAPTCHA in tab t1.", "browser_navigated"));
-        assert!(!should_ingest_activity("Navigated to (https://ogs.google.com/u/0) in tab t1.", "browser_navigated"));
-        assert!(!should_ingest_activity("Navigated to (https://googleads.g.doubleclick.net) in tab t1.", "browser_navigated"));
-        assert!(!should_ingest_activity("Navigated to (https://www.google.com/ads/foo) in tab t1.", "browser_navigated"));
-        assert!(!should_ingest_activity("Navigated to (https://example.com/tracking/pixel) in tab t1.", "browser_navigated"));
+        assert!(!should_ingest_activity(
+            "Navigated to Ad (https://doubleclick.net/ad) in tab t1.",
+            "browser_navigated"
+        ));
+        assert!(!should_ingest_activity(
+            "Navigated to X (https://crwdcntrl.net/px) in tab t1.",
+            "browser_navigated"
+        ));
+        assert!(!should_ingest_activity(
+            "Navigated to reCAPTCHA in tab t1.",
+            "browser_navigated"
+        ));
+        assert!(!should_ingest_activity(
+            "Navigated to (https://ogs.google.com/u/0) in tab t1.",
+            "browser_navigated"
+        ));
+        assert!(!should_ingest_activity(
+            "Navigated to (https://googleads.g.doubleclick.net) in tab t1.",
+            "browser_navigated"
+        ));
+        assert!(!should_ingest_activity(
+            "Navigated to (https://www.google.com/ads/foo) in tab t1.",
+            "browser_navigated"
+        ));
+        assert!(!should_ingest_activity(
+            "Navigated to (https://example.com/tracking/pixel) in tab t1.",
+            "browser_navigated"
+        ));
     }
 
     #[test]
@@ -898,13 +919,19 @@ mod tests {
     #[test]
     fn extract_domain_from_navigation_content() {
         let content = "Navigated to GitHub (https://github.com/permagent) in tab t1.";
-        assert_eq!(extract_domain_from_content(content), Some("github.com".to_string()));
+        assert_eq!(
+            extract_domain_from_content(content),
+            Some("github.com".to_string())
+        );
     }
 
     #[test]
     fn extract_domain_with_path() {
         let content = "Navigated to Gmail (https://mail.google.com/mail/u/0) in tab t1.";
-        assert_eq!(extract_domain_from_content(content), Some("mail.google.com".to_string()));
+        assert_eq!(
+            extract_domain_from_content(content),
+            Some("mail.google.com".to_string())
+        );
     }
 
     #[test]

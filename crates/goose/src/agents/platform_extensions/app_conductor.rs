@@ -78,8 +78,8 @@ impl AppConductorClient {
             .map_err(|e| format!("Invalid arguments: {}", e))?
             .ok_or_else(|| "Missing arguments".to_string())?;
 
-        let catalog = get_global_catalog()
-            .ok_or_else(|| "App catalog not initialized".to_string())?;
+        let catalog =
+            get_global_catalog().ok_or_else(|| "App catalog not initialized".to_string())?;
 
         let entry = catalog.find_by_name(&args.tab).ok_or_else(|| {
             format!(

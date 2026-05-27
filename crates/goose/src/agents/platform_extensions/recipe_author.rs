@@ -104,8 +104,8 @@ impl RecipeAuthorClient {
         arguments: Option<JsonObject>,
     ) -> std::result::Result<CallToolResult, String> {
         let args = parse_args::<CreateRecipeParams>(arguments)?;
-        let scheduler = get_global_scheduler()
-            .ok_or_else(|| "Scheduler not initialized".to_string())?;
+        let scheduler =
+            get_global_scheduler().ok_or_else(|| "Scheduler not initialized".to_string())?;
 
         let id = args
             .title
@@ -182,8 +182,8 @@ impl RecipeAuthorClient {
         &self,
         _arguments: Option<JsonObject>,
     ) -> std::result::Result<CallToolResult, String> {
-        let scheduler = get_global_scheduler()
-            .ok_or_else(|| "Scheduler not initialized".to_string())?;
+        let scheduler =
+            get_global_scheduler().ok_or_else(|| "Scheduler not initialized".to_string())?;
 
         let jobs = scheduler.list_scheduled_jobs().await;
         if jobs.is_empty() {
@@ -225,8 +225,8 @@ impl RecipeAuthorClient {
         arguments: Option<JsonObject>,
     ) -> std::result::Result<CallToolResult, String> {
         let args = parse_args::<RecipeIdParams>(arguments)?;
-        let scheduler = get_global_scheduler()
-            .ok_or_else(|| "Scheduler not initialized".to_string())?;
+        let scheduler =
+            get_global_scheduler().ok_or_else(|| "Scheduler not initialized".to_string())?;
 
         let session_id = scheduler
             .run_now(&args.id)
@@ -244,8 +244,8 @@ impl RecipeAuthorClient {
         arguments: Option<JsonObject>,
     ) -> std::result::Result<CallToolResult, String> {
         let args = parse_args::<RecipeIdParams>(arguments)?;
-        let scheduler = get_global_scheduler()
-            .ok_or_else(|| "Scheduler not initialized".to_string())?;
+        let scheduler =
+            get_global_scheduler().ok_or_else(|| "Scheduler not initialized".to_string())?;
 
         scheduler
             .remove_scheduled_job(&args.id, true)
@@ -263,8 +263,8 @@ impl RecipeAuthorClient {
         arguments: Option<JsonObject>,
     ) -> std::result::Result<CallToolResult, String> {
         let args = parse_args::<RecipeIdParams>(arguments)?;
-        let scheduler = get_global_scheduler()
-            .ok_or_else(|| "Scheduler not initialized".to_string())?;
+        let scheduler =
+            get_global_scheduler().ok_or_else(|| "Scheduler not initialized".to_string())?;
 
         // Check current state to decide pause vs unpause
         let jobs = scheduler.list_scheduled_jobs().await;
@@ -272,7 +272,10 @@ impl RecipeAuthorClient {
             format!(
                 "Automation \"{}\" not found. Available: {}",
                 args.id,
-                jobs.iter().map(|j| j.id.as_str()).collect::<Vec<_>>().join(", ")
+                jobs.iter()
+                    .map(|j| j.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )
         })?;
 
@@ -321,10 +324,7 @@ impl RecipeAuthorClient {
 
         let mut lines = vec![format!("{} skill(s):\n", skills.len())];
         for s in &skills {
-            let desc = s
-                .description
-                .as_deref()
-                .unwrap_or("no description");
+            let desc = s.description.as_deref().unwrap_or("no description");
             lines.push(format!(
                 "- **{}** — {} (triggered {} time(s), status: {})",
                 s.name, desc, s.trigger_count, s.status

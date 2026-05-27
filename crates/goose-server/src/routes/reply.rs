@@ -425,8 +425,7 @@ pub async fn reply(
         if let Some(brain) = state.brain.as_ref() {
             let user_query = user_message.as_concat_text();
             let recognition_ctx = state.build_recognition_context(Some(&session_id));
-            crate::brain_ops::inject_recall(brain, &agent, &user_query, recognition_ctx)
-                .await;
+            crate::brain_ops::inject_recall(brain, &agent, &user_query, recognition_ctx).await;
         }
 
         let mut stream = match agent

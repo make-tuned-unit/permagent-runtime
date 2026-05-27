@@ -585,11 +585,11 @@ impl Agent {
                 if let Some(obj) = args.as_object() {
                     // For shell, include the command; for others, include first string arg
                     if let Some(cmd) = obj.get("command").and_then(|v| v.as_str()) {
-                        let short = if cmd.len() > 80 { &cmd[..80] } else { cmd };
+                        let short = cmd.get(..80).unwrap_or(cmd);
                         desc = format!("{}: {}", tool_name_str, short);
                     } else if let Some((key, val)) = obj.iter().find(|(_, v)| v.is_string()) {
                         if let Some(s) = val.as_str() {
-                            let short = if s.len() > 60 { &s[..60] } else { s };
+                            let short = s.get(..60).unwrap_or(s);
                             desc = format!("{}: {}={}", tool_name_str, key, short);
                         }
                     }
@@ -656,8 +656,11 @@ impl Agent {
 
                 // Auto-skills: check for repetition patterns after completion
                 let skills_config = crate::tasks::SkillsConfig::from_config();
-                if let Some(proposal_prompt) = logger.check_repetition_candidates(&skills_config).await {
-                    self.extend_system_prompt("skill_proposals".to_string(), proposal_prompt).await;
+                if let Some(proposal_prompt) =
+                    logger.check_repetition_candidates(&skills_config).await
+                {
+                    self.extend_system_prompt("skill_proposals".to_string(), proposal_prompt)
+                        .await;
                 }
             }
         }
@@ -731,10 +734,8 @@ impl Agent {
         session: &Session,
     ) -> Vec<ExtensionLoadResult> {
         let config = Config::global();
-        let enabled_configs = EnabledExtensionsState::extensions_or_default(
-            Some(&session.extension_data),
-            &config,
-        );
+        let enabled_configs =
+            EnabledExtensionsState::extensions_or_default(Some(&session.extension_data), config);
 
         let session_id = session.id.clone();
 

@@ -78,7 +78,10 @@ impl BrowserClient {
             ))]);
         }
 
-        let mut text = format!("Page: {}\nURL: {}\n\n{}", page.title, page.url, page.content);
+        let mut text = format!(
+            "Page: {}\nURL: {}\n\n{}",
+            page.title, page.url, page.content
+        );
         if page.truncated {
             text.push_str("\n\nNote: This page was long and the content above is truncated.");
         }

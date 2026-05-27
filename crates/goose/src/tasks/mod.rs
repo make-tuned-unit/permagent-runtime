@@ -195,9 +195,9 @@ impl TaskLogger {
 
             if skill_exists {
                 // Record execution for post-hoc matching
-                if let Err(e) = crate::skills::record_execution(
-                    &self.pool, &tool_used, &shape_hash, None,
-                ).await {
+                if let Err(e) =
+                    crate::skills::record_execution(&self.pool, &tool_used, &shape_hash, None).await
+                {
                     warn!("Failed to record skill execution: {}", e);
                 }
                 continue;

@@ -127,21 +127,12 @@ impl WorkerPersona {
 }
 
 /// Top-level agent.yaml schema.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentConfig {
     #[serde(default)]
     pub primary: PrimaryPersona,
     #[serde(default)]
     pub workers: HashMap<String, WorkerPersona>,
-}
-
-impl Default for AgentConfig {
-    fn default() -> Self {
-        Self {
-            primary: PrimaryPersona::default(),
-            workers: HashMap::new(),
-        }
-    }
 }
 
 /// Load agent config from ~/.permagent/agent.yaml.

@@ -220,7 +220,10 @@ pub async fn dismiss_skill(pool: &Pool<Sqlite>, argument_shape_hash: &str) -> Re
 
 /// List pending skill proposals (patterns detected but not yet saved or dismissed).
 /// Only returns patterns with 2-10 occurrences — above 10 is generic tool usage.
-pub async fn list_proposals(pool: &Pool<Sqlite>, threshold: i64) -> Result<Vec<SkillProposal>, String> {
+pub async fn list_proposals(
+    pool: &Pool<Sqlite>,
+    threshold: i64,
+) -> Result<Vec<SkillProposal>, String> {
     let rows = sqlx::query(
         "SELECT rc.tool_used, rc.argument_shape_hash, rc.occurrence_count, rc.latest_description
          FROM repetition_candidates rc
@@ -348,8 +351,10 @@ pub async fn build_skills_prompt(pool: &Pool<Sqlite>) -> Result<Option<String>, 
     let mut lines = vec![
         "## Saved Skills".to_string(),
         "You have the following saved approaches from patterns the user has confirmed.".to_string(),
-        "When the user's request matches one of these skills, use the saved approach and".to_string(),
-        "mention \"Using saved skill: [name]\" so the user knows you're reusing learned behavior.".to_string(),
+        "When the user's request matches one of these skills, use the saved approach and"
+            .to_string(),
+        "mention \"Using saved skill: [name]\" so the user knows you're reusing learned behavior."
+            .to_string(),
         String::new(),
     ];
 
@@ -361,11 +366,7 @@ pub async fn build_skills_prompt(pool: &Pool<Sqlite>) -> Result<Option<String>, 
         // Extract a brief summary from definition_json if it contains useful info
         let def_summary = if let Ok(def) = serde_json::from_str::<serde_json::Value>(&def_str) {
             if let Some(obj) = def.as_object() {
-                obj.keys()
-                    .take(3)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                obj.keys().take(3).cloned().collect::<Vec<_>>().join(", ")
             } else {
                 String::new()
             }

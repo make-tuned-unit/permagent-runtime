@@ -152,8 +152,8 @@ impl ContextBuilder {
         let recalled_memories = if let Some(ref query) = opts.include_recall_query {
             let brain = self.brain.clone();
             let q = query.clone();
-            let recognition_ctx = spectral::graph::RecognitionContext::empty()
-                .with_persona("henry");
+            let recognition_ctx =
+                spectral::graph::RecognitionContext::empty().with_persona("henry");
             match brain.recall_cascade(&q, &recognition_ctx, &Default::default()) {
                 Ok(result) => result
                     .merged_hits

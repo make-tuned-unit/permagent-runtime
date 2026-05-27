@@ -99,7 +99,7 @@ async fn henry_status(State(state): State<Arc<AppState>>) -> Json<HenryStatusRes
         .map(|s| ActiveSession {
             id: s.id.clone(),
             name: if s.name.is_empty() || s.name == "New Chat" {
-                format!("Session {}", &s.id[..8.min(s.id.len())])
+                format!("Session {}", s.id.get(..8).unwrap_or(&s.id))
             } else {
                 s.name.clone()
             },
@@ -122,20 +122,23 @@ async fn henry_status(State(state): State<Arc<AppState>>) -> Json<HenryStatusRes
 
     // Spectral DB queries (tasks, messages, session stats)
     let today_str = today_midnight.format("%Y-%m-%dT%H:%M:%S").to_string();
-    let (tasks_in_flight, recent_tasks, tasks_today, messages_today, first_active, total_sessions_all, days_active) =
-        tokio::task::spawn_blocking(move || query_spectral_stats(&today_str))
-            .await
-            .unwrap_or_else(|_| (0, vec![], 0, 0, None, 0, 0));
+    let (
+        tasks_in_flight,
+        recent_tasks,
+        tasks_today,
+        messages_today,
+        first_active,
+        total_sessions_all,
+        days_active,
+    ) = tokio::task::spawn_blocking(move || query_spectral_stats(&today_str))
+        .await
+        .unwrap_or_else(|_| (0, vec![], 0, 0, None, 0, 0));
 
     // Scheduled jobs
     let jobs = state.scheduler().list_scheduled_jobs().await;
     let scheduled_fires_today = jobs
         .iter()
-        .filter(|j| {
-            j.last_run
-                .map(|lr| lr >= today_midnight)
-                .unwrap_or(false)
-        })
+        .filter(|j| j.last_run.map(|lr| lr >= today_midnight).unwrap_or(false))
         .count();
 
     let next_scheduled = jobs
@@ -153,7 +156,7 @@ async fn henry_status(State(state): State<Arc<AppState>>) -> Json<HenryStatusRes
     let (total_memories, memories_today) =
         tokio::task::spawn_blocking(move || query_brain_memory_stats(&today_str2))
             .await
-            .unwrap_or_else(|_| (0, 0));
+            .unwrap_or((0, 0));
 
     Json(HenryStatusResponse {
         identity,
@@ -195,7 +198,15 @@ async fn find_current_tool(state: &AppState, active_sessions: &[ActiveSession]) 
 /// Runs on a blocking thread because rusqlite is synchronous.
 fn query_spectral_stats(
     today_str: &str,
-) -> (usize, Vec<RecentTask>, usize, usize, Option<String>, usize, usize) {
+) -> (
+    usize,
+    Vec<RecentTask>,
+    usize,
+    usize,
+    Option<String>,
+    usize,
+    usize,
+) {
     let db_path = permagent::config::paths::Paths::spectral_db();
     let conn = match rusqlite::Connection::open_with_flags(
         &db_path,

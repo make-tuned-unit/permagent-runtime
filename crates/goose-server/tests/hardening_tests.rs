@@ -185,8 +185,9 @@ mod consolidation_clusters {
                 consolidated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 UNIQUE(source_key, target_key)
             );
-            CREATE INDEX idx_consolidation_target ON consolidation_edges(target_key);"
-        ).unwrap();
+            CREATE INDEX idx_consolidation_target ON consolidation_edges(target_key);",
+        )
+        .unwrap();
         conn
     }
 
@@ -210,12 +211,20 @@ mod consolidation_clusters {
                 consolidated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 UNIQUE(source_key, target_key)
             );
-            CREATE INDEX idx_consolidation_target ON consolidation_edges(target_key);"
-        ).unwrap();
+            CREATE INDEX idx_consolidation_target ON consolidation_edges(target_key);",
+        )
+        .unwrap();
         conn
     }
 
-    fn insert_memory(conn: &rusqlite::Connection, id: &str, key: &str, content: &str, source: &str, created_at: &str) {
+    fn insert_memory(
+        conn: &rusqlite::Connection,
+        id: &str,
+        key: &str,
+        content: &str,
+        source: &str,
+        created_at: &str,
+    ) {
         conn.execute(
             "INSERT INTO memories (id, key, content, source, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params![id, key, content, source, created_at],
@@ -227,9 +236,30 @@ mod consolidation_clusters {
     #[test]
     fn identical_content_forms_cluster() {
         let conn = setup_db();
-        insert_memory(&conn, "m1", "k1", "Hello world", "test", "2026-01-01T00:00:00Z");
-        insert_memory(&conn, "m2", "k2", "Hello world", "test", "2026-01-02T00:00:00Z");
-        insert_memory(&conn, "m3", "k3", "Hello world", "test", "2026-01-03T00:00:00Z");
+        insert_memory(
+            &conn,
+            "m1",
+            "k1",
+            "Hello world",
+            "test",
+            "2026-01-01T00:00:00Z",
+        );
+        insert_memory(
+            &conn,
+            "m2",
+            "k2",
+            "Hello world",
+            "test",
+            "2026-01-02T00:00:00Z",
+        );
+        insert_memory(
+            &conn,
+            "m3",
+            "k3",
+            "Hello world",
+            "test",
+            "2026-01-03T00:00:00Z",
+        );
 
         let clusters = find_exact_duplicate_clusters(&conn).unwrap();
         assert_eq!(clusters.len(), 1);
@@ -251,7 +281,14 @@ mod consolidation_clusters {
     #[test]
     fn single_memory_no_cluster() {
         let conn = setup_db();
-        insert_memory(&conn, "m1", "k1", "Only one", "test", "2026-01-01T00:00:00Z");
+        insert_memory(
+            &conn,
+            "m1",
+            "k1",
+            "Only one",
+            "test",
+            "2026-01-01T00:00:00Z",
+        );
 
         let clusters = find_exact_duplicate_clusters(&conn).unwrap();
         assert!(clusters.is_empty());
@@ -260,16 +297,34 @@ mod consolidation_clusters {
     #[test]
     fn already_consolidated_excluded() {
         let conn = setup_db();
-        insert_memory(&conn, "m1", "k1", "Duplicate", "test", "2026-01-01T00:00:00Z");
-        insert_memory(&conn, "m2", "k2", "Duplicate", "test", "2026-01-02T00:00:00Z");
+        insert_memory(
+            &conn,
+            "m1",
+            "k1",
+            "Duplicate",
+            "test",
+            "2026-01-01T00:00:00Z",
+        );
+        insert_memory(
+            &conn,
+            "m2",
+            "k2",
+            "Duplicate",
+            "test",
+            "2026-01-02T00:00:00Z",
+        );
         // Mark k2 as consolidated into k1 via consolidation_edges
         conn.execute(
             "INSERT INTO consolidation_edges (source_key, target_key) VALUES ('k2', 'k1')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         let clusters = find_exact_duplicate_clusters(&conn).unwrap();
-        assert!(clusters.is_empty(), "Consolidated memories should be excluded");
+        assert!(
+            clusters.is_empty(),
+            "Consolidated memories should be excluded"
+        );
     }
 
     #[test]
@@ -290,9 +345,30 @@ mod consolidation_clusters {
     #[test]
     fn browser_domain_cluster_with_three_entries() {
         let conn = setup_db();
-        insert_memory(&conn, "m1", "k1", "Navigated to https://github.com/repo1", "permagent.activity", "2026-01-01T00:00:00Z");
-        insert_memory(&conn, "m2", "k2", "Navigated to https://github.com/repo2", "permagent.activity", "2026-01-02T00:00:00Z");
-        insert_memory(&conn, "m3", "k3", "Navigated to https://github.com/repo3", "permagent.activity", "2026-01-03T00:00:00Z");
+        insert_memory(
+            &conn,
+            "m1",
+            "k1",
+            "Navigated to https://github.com/repo1",
+            "permagent.activity",
+            "2026-01-01T00:00:00Z",
+        );
+        insert_memory(
+            &conn,
+            "m2",
+            "k2",
+            "Navigated to https://github.com/repo2",
+            "permagent.activity",
+            "2026-01-02T00:00:00Z",
+        );
+        insert_memory(
+            &conn,
+            "m3",
+            "k3",
+            "Navigated to https://github.com/repo3",
+            "permagent.activity",
+            "2026-01-03T00:00:00Z",
+        );
 
         let clusters = find_domain_clusters(&conn).unwrap();
         assert_eq!(clusters.len(), 1);
@@ -303,30 +379,92 @@ mod consolidation_clusters {
     #[test]
     fn browser_domain_two_entries_not_enough() {
         let conn = setup_db();
-        insert_memory(&conn, "m1", "k1", "Navigated to https://example.com/page1", "permagent.activity", "2026-01-01T00:00:00Z");
-        insert_memory(&conn, "m2", "k2", "Navigated to https://example.com/page2", "permagent.activity", "2026-01-02T00:00:00Z");
+        insert_memory(
+            &conn,
+            "m1",
+            "k1",
+            "Navigated to https://example.com/page1",
+            "permagent.activity",
+            "2026-01-01T00:00:00Z",
+        );
+        insert_memory(
+            &conn,
+            "m2",
+            "k2",
+            "Navigated to https://example.com/page2",
+            "permagent.activity",
+            "2026-01-02T00:00:00Z",
+        );
 
         let clusters = find_domain_clusters(&conn).unwrap();
-        assert!(clusters.is_empty(), "Need 3+ entries to form a domain cluster");
+        assert!(
+            clusters.is_empty(),
+            "Need 3+ entries to form a domain cluster"
+        );
     }
 
     #[test]
     fn non_activity_source_excluded() {
         let conn = setup_db();
-        insert_memory(&conn, "m1", "k1", "Navigated to https://test.com/a", "other.source", "2026-01-01T00:00:00Z");
-        insert_memory(&conn, "m2", "k2", "Navigated to https://test.com/b", "other.source", "2026-01-02T00:00:00Z");
-        insert_memory(&conn, "m3", "k3", "Navigated to https://test.com/c", "other.source", "2026-01-03T00:00:00Z");
+        insert_memory(
+            &conn,
+            "m1",
+            "k1",
+            "Navigated to https://test.com/a",
+            "other.source",
+            "2026-01-01T00:00:00Z",
+        );
+        insert_memory(
+            &conn,
+            "m2",
+            "k2",
+            "Navigated to https://test.com/b",
+            "other.source",
+            "2026-01-02T00:00:00Z",
+        );
+        insert_memory(
+            &conn,
+            "m3",
+            "k3",
+            "Navigated to https://test.com/c",
+            "other.source",
+            "2026-01-03T00:00:00Z",
+        );
 
         let clusters = find_domain_clusters(&conn).unwrap();
-        assert!(clusters.is_empty(), "Only permagent.activity source should be grouped");
+        assert!(
+            clusters.is_empty(),
+            "Only permagent.activity source should be grouped"
+        );
     }
 
     #[test]
     fn http_and_https_extract_different_domains() {
         let conn = setup_db();
-        insert_memory(&conn, "m1", "k1", "Navigated to http://local.dev/api", "permagent.activity", "2026-01-01T00:00:00Z");
-        insert_memory(&conn, "m2", "k2", "Navigated to http://local.dev/dashboard", "permagent.activity", "2026-01-02T00:00:00Z");
-        insert_memory(&conn, "m3", "k3", "Navigated to http://local.dev/settings", "permagent.activity", "2026-01-03T00:00:00Z");
+        insert_memory(
+            &conn,
+            "m1",
+            "k1",
+            "Navigated to http://local.dev/api",
+            "permagent.activity",
+            "2026-01-01T00:00:00Z",
+        );
+        insert_memory(
+            &conn,
+            "m2",
+            "k2",
+            "Navigated to http://local.dev/dashboard",
+            "permagent.activity",
+            "2026-01-02T00:00:00Z",
+        );
+        insert_memory(
+            &conn,
+            "m3",
+            "k3",
+            "Navigated to http://local.dev/settings",
+            "permagent.activity",
+            "2026-01-03T00:00:00Z",
+        );
 
         let clusters = find_domain_clusters(&conn).unwrap();
         assert_eq!(clusters.len(), 1);
@@ -344,22 +482,82 @@ mod consolidation_clusters {
         let conn = setup_legacy_db();
 
         // Insert the two buggy catchall cluster memories
-        insert_memory(&conn, "tps_cluster", "consolidated:browser:tps:", "tps: — visited 50 times", "librarian.consolidation", "2026-01-10T00:00:00Z");
-        insert_memory(&conn, "ttp_cluster", "consolidated:browser:ttp:", "ttp: — visited 20 times", "librarian.consolidation", "2026-01-10T00:00:00Z");
+        insert_memory(
+            &conn,
+            "tps_cluster",
+            "consolidated:browser:tps:",
+            "tps: — visited 50 times",
+            "librarian.consolidation",
+            "2026-01-10T00:00:00Z",
+        );
+        insert_memory(
+            &conn,
+            "ttp_cluster",
+            "consolidated:browser:ttp:",
+            "ttp: — visited 20 times",
+            "librarian.consolidation",
+            "2026-01-10T00:00:00Z",
+        );
 
         // 3 memories pointing to the https catchall
-        insert_memory(&conn, "m1", "k1", "Navigated to https://github.com/repo1", "permagent.activity", "2026-01-01T00:00:00Z");
-        insert_memory(&conn, "m2", "k2", "Navigated to https://github.com/repo2", "permagent.activity", "2026-01-02T00:00:00Z");
-        insert_memory(&conn, "m3", "k3", "Navigated to https://github.com/repo3", "permagent.activity", "2026-01-03T00:00:00Z");
+        insert_memory(
+            &conn,
+            "m1",
+            "k1",
+            "Navigated to https://github.com/repo1",
+            "permagent.activity",
+            "2026-01-01T00:00:00Z",
+        );
+        insert_memory(
+            &conn,
+            "m2",
+            "k2",
+            "Navigated to https://github.com/repo2",
+            "permagent.activity",
+            "2026-01-02T00:00:00Z",
+        );
+        insert_memory(
+            &conn,
+            "m3",
+            "k3",
+            "Navigated to https://github.com/repo3",
+            "permagent.activity",
+            "2026-01-03T00:00:00Z",
+        );
         conn.execute("UPDATE memories SET _pm_consolidated_into = 'tps_cluster' WHERE id IN ('m1','m2','m3')", []).unwrap();
 
         // 2 memories pointing to the http catchall
-        insert_memory(&conn, "m4", "k4", "Navigated to http://local.dev/api", "permagent.activity", "2026-01-04T00:00:00Z");
-        insert_memory(&conn, "m5", "k5", "Navigated to http://local.dev/dash", "permagent.activity", "2026-01-05T00:00:00Z");
-        conn.execute("UPDATE memories SET _pm_consolidated_into = 'ttp_cluster' WHERE id IN ('m4','m5')", []).unwrap();
+        insert_memory(
+            &conn,
+            "m4",
+            "k4",
+            "Navigated to http://local.dev/api",
+            "permagent.activity",
+            "2026-01-04T00:00:00Z",
+        );
+        insert_memory(
+            &conn,
+            "m5",
+            "k5",
+            "Navigated to http://local.dev/dash",
+            "permagent.activity",
+            "2026-01-05T00:00:00Z",
+        );
+        conn.execute(
+            "UPDATE memories SET _pm_consolidated_into = 'ttp_cluster' WHERE id IN ('m4','m5')",
+            [],
+        )
+        .unwrap();
 
         // 1 control memory — should not be touched
-        insert_memory(&conn, "ctrl", "k_ctrl", "Unrelated memory", "test", "2026-01-06T00:00:00Z");
+        insert_memory(
+            &conn,
+            "ctrl",
+            "k_ctrl",
+            "Unrelated memory",
+            "test",
+            "2026-01-06T00:00:00Z",
+        );
 
         // Migration not yet applied
         assert!(!ensure_and_check_migration(&conn, "domain_cluster_cleanup_v1").unwrap());
@@ -374,11 +572,13 @@ mod consolidation_clusters {
         assert_eq!(deleted, 2);
 
         // Verify: all 5 now have _pm_consolidated_into = NULL
-        let still_consolidated: usize = conn.query_row(
-            "SELECT COUNT(*) FROM memories WHERE _pm_consolidated_into IS NOT NULL",
-            [],
-            |r| r.get(0),
-        ).unwrap();
+        let still_consolidated: usize = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memories WHERE _pm_consolidated_into IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(still_consolidated, 0);
 
         // Verify: catchall clusters are gone
@@ -390,11 +590,11 @@ mod consolidation_clusters {
         assert_eq!(catchall_count, 0);
 
         // Verify: control memory unchanged
-        let ctrl_content: String = conn.query_row(
-            "SELECT content FROM memories WHERE id = 'ctrl'",
-            [],
-            |r| r.get(0),
-        ).unwrap();
+        let ctrl_content: String = conn
+            .query_row("SELECT content FROM memories WHERE id = 'ctrl'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(ctrl_content, "Unrelated memory");
 
         // Migration is now marked
@@ -417,24 +617,99 @@ mod consolidation_clusters {
         let conn = setup_legacy_db();
 
         // Cluster 1: 3 sources → 1 target
-        insert_memory(&conn, "t1", "target1", "Summary A", "test", "2026-01-01T00:00:00Z");
-        insert_memory(&conn, "s1", "src1", "Detail A1", "test", "2026-01-02T00:00:00Z");
-        insert_memory(&conn, "s2", "src2", "Detail A2", "test", "2026-01-03T00:00:00Z");
-        insert_memory(&conn, "s3", "src3", "Detail A3", "test", "2026-01-04T00:00:00Z");
-        conn.execute("UPDATE memories SET _pm_consolidated_into = 't1' WHERE id IN ('s1','s2','s3')", []).unwrap();
+        insert_memory(
+            &conn,
+            "t1",
+            "target1",
+            "Summary A",
+            "test",
+            "2026-01-01T00:00:00Z",
+        );
+        insert_memory(
+            &conn,
+            "s1",
+            "src1",
+            "Detail A1",
+            "test",
+            "2026-01-02T00:00:00Z",
+        );
+        insert_memory(
+            &conn,
+            "s2",
+            "src2",
+            "Detail A2",
+            "test",
+            "2026-01-03T00:00:00Z",
+        );
+        insert_memory(
+            &conn,
+            "s3",
+            "src3",
+            "Detail A3",
+            "test",
+            "2026-01-04T00:00:00Z",
+        );
+        conn.execute(
+            "UPDATE memories SET _pm_consolidated_into = 't1' WHERE id IN ('s1','s2','s3')",
+            [],
+        )
+        .unwrap();
 
         // Cluster 2: 2 sources → 1 target
-        insert_memory(&conn, "t2", "target2", "Summary B", "test", "2026-01-05T00:00:00Z");
-        insert_memory(&conn, "s4", "src4", "Detail B1", "test", "2026-01-06T00:00:00Z");
-        insert_memory(&conn, "s5", "src5", "Detail B2", "test", "2026-01-07T00:00:00Z");
-        conn.execute("UPDATE memories SET _pm_consolidated_into = 't2' WHERE id IN ('s4','s5')", []).unwrap();
+        insert_memory(
+            &conn,
+            "t2",
+            "target2",
+            "Summary B",
+            "test",
+            "2026-01-05T00:00:00Z",
+        );
+        insert_memory(
+            &conn,
+            "s4",
+            "src4",
+            "Detail B1",
+            "test",
+            "2026-01-06T00:00:00Z",
+        );
+        insert_memory(
+            &conn,
+            "s5",
+            "src5",
+            "Detail B2",
+            "test",
+            "2026-01-07T00:00:00Z",
+        );
+        conn.execute(
+            "UPDATE memories SET _pm_consolidated_into = 't2' WHERE id IN ('s4','s5')",
+            [],
+        )
+        .unwrap();
 
         // Control: not consolidated
-        insert_memory(&conn, "ctrl", "ctrl_key", "Not consolidated", "test", "2026-01-08T00:00:00Z");
+        insert_memory(
+            &conn,
+            "ctrl",
+            "ctrl_key",
+            "Not consolidated",
+            "test",
+            "2026-01-08T00:00:00Z",
+        );
 
         // Dangling reference: source points to non-existent target id
-        insert_memory(&conn, "orphan", "orphan_key", "Orphaned", "test", "2026-01-09T00:00:00Z");
-        conn.execute("UPDATE memories SET _pm_consolidated_into = 'nonexistent_id' WHERE id = 'orphan'", []).unwrap();
+        insert_memory(
+            &conn,
+            "orphan",
+            "orphan_key",
+            "Orphaned",
+            "test",
+            "2026-01-09T00:00:00Z",
+        );
+        conn.execute(
+            "UPDATE memories SET _pm_consolidated_into = 'nonexistent_id' WHERE id = 'orphan'",
+            [],
+        )
+        .unwrap();
 
         // Run migration
         let stats = run_consolidate_into_migration_sql(&conn).unwrap();
@@ -443,43 +718,49 @@ mod consolidation_clusters {
         assert_eq!(stats.rows_migrated, 5);
         assert_eq!(stats.distinct_targets, 2);
         assert_eq!(stats.orphans_skipped, 1);
-        assert!(stats.column_dropped, "Column should be dropped after successful cross-check");
+        assert!(
+            stats.column_dropped,
+            "Column should be dropped after successful cross-check"
+        );
 
         // Verify consolidation_edges has 5 rows
-        let edge_count: usize = conn.query_row(
-            "SELECT COUNT(*) FROM consolidation_edges",
-            [],
-            |r| r.get(0),
-        ).unwrap();
+        let edge_count: usize = conn
+            .query_row("SELECT COUNT(*) FROM consolidation_edges", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(edge_count, 5);
 
         // Verify correct source→target mappings
-        let t1_sources: usize = conn.query_row(
-            "SELECT COUNT(*) FROM consolidation_edges WHERE target_key = 'target1'",
-            [],
-            |r| r.get(0),
-        ).unwrap();
+        let t1_sources: usize = conn
+            .query_row(
+                "SELECT COUNT(*) FROM consolidation_edges WHERE target_key = 'target1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(t1_sources, 3);
 
-        let t2_sources: usize = conn.query_row(
-            "SELECT COUNT(*) FROM consolidation_edges WHERE target_key = 'target2'",
-            [],
-            |r| r.get(0),
-        ).unwrap();
+        let t2_sources: usize = conn
+            .query_row(
+                "SELECT COUNT(*) FROM consolidation_edges WHERE target_key = 'target2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(t2_sources, 2);
 
         // Verify column is dropped (querying it should fail)
         assert!(
-            conn.prepare("SELECT _pm_consolidated_into FROM memories LIMIT 0").is_err(),
+            conn.prepare("SELECT _pm_consolidated_into FROM memories LIMIT 0")
+                .is_err(),
             "_pm_consolidated_into column should be dropped"
         );
 
         // Verify control memory still exists and is unaffected
-        let ctrl_content: String = conn.query_row(
-            "SELECT content FROM memories WHERE id = 'ctrl'",
-            [],
-            |r| r.get(0),
-        ).unwrap();
+        let ctrl_content: String = conn
+            .query_row("SELECT content FROM memories WHERE id = 'ctrl'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(ctrl_content, "Not consolidated");
 
         // Migration is marked
@@ -525,7 +806,10 @@ mod auto_skill_hash {
         let args_number = serde_json::json!({"field": 42});
         let h1 = compute_argument_shape_hash(Some("tool"), Some(&args_string));
         let h2 = compute_argument_shape_hash(Some("tool"), Some(&args_number));
-        assert_ne!(h1, h2, "Different value types should produce different hashes");
+        assert_ne!(
+            h1, h2,
+            "Different value types should produce different hashes"
+        );
     }
 
     #[test]
@@ -562,7 +846,10 @@ mod auto_skill_hash {
         let args = serde_json::json!({"a": 1, "b": "hello", "c": true, "d": [1,2], "e": {"x": 1}});
         let h = compute_argument_shape_hash(Some("complex_tool_name"), Some(&args)).unwrap();
         assert_eq!(h.len(), 16, "Hash should be exactly 16 hex characters");
-        assert!(h.chars().all(|c| c.is_ascii_hexdigit()), "Should be valid hex");
+        assert!(
+            h.chars().all(|c| c.is_ascii_hexdigit()),
+            "Should be valid hex"
+        );
     }
 
     #[test]
@@ -572,7 +859,10 @@ mod auto_skill_hash {
         // detection will lose continuity with existing task data.
         let args = serde_json::json!({"query": "is:unread", "max_results": 10});
         let h = compute_argument_shape_hash(Some("gmail__search"), Some(&args)).unwrap();
-        assert_eq!(h, "cc604cbb3886e776", "Pinned hash — algorithm must not change");
+        assert_eq!(
+            h, "cc604cbb3886e776",
+            "Pinned hash — algorithm must not change"
+        );
     }
 
     #[test]
@@ -644,7 +934,13 @@ mod recall_filter {
     #[test]
     fn top_k_cap_respected() {
         let hits: Vec<_> = (0..10)
-            .map(|i| make_hit(&format!("m{i}"), &format!("hit {i}"), 0.8 + (i as f64) * 0.01))
+            .map(|i| {
+                make_hit(
+                    &format!("m{i}"),
+                    &format!("hit {i}"),
+                    0.8 + (i as f64) * 0.01,
+                )
+            })
             .collect();
         let filtered = filter_recall_hits(&hits);
         assert_eq!(filtered.len(), 3, "Should cap at RECALL_TOP_K=3");

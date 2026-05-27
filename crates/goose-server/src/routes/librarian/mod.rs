@@ -29,12 +29,21 @@ use crate::state::AppState;
 /// Register the 4 Librarian HTTP routes.
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/api/librarian/schedule", get(scheduling::get_librarian_schedule))
+        .route(
+            "/api/librarian/schedule",
+            get(scheduling::get_librarian_schedule),
+        )
         .route(
             "/api/librarian/schedule",
             axum::routing::put(scheduling::set_librarian_schedule),
         )
-        .route("/api/librarian/run-now", post(scheduling::run_librarian_now))
-        .route("/api/librarian/status", get(scheduling::get_librarian_status))
+        .route(
+            "/api/librarian/run-now",
+            post(scheduling::run_librarian_now),
+        )
+        .route(
+            "/api/librarian/status",
+            get(scheduling::get_librarian_status),
+        )
         .with_state(state)
 }
