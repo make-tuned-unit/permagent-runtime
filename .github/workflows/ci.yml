@@ -48,6 +48,8 @@ jobs:
         env:
           RUST_BACKTRACE: ${{ matrix.os == 'ubuntu-latest' && 'full' || '0' }}
           RUST_LIB_BACKTRACE: ${{ matrix.os == 'ubuntu-latest' && 'full' || '0' }}
+          CARGO_PROFILE_TEST_DEBUG: ${{ matrix.os == 'ubuntu-latest' && 'true' || '' }}
+          RUSTFLAGS: ${{ matrix.os == 'ubuntu-latest' && '-C force-frame-pointers=yes' || '' }}
       - name: Doc tests
         run: cargo test --workspace --doc
       - name: List core dumps
