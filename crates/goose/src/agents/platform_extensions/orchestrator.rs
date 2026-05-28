@@ -2,6 +2,8 @@ use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
 use crate::agents::tool_execution::ToolCallContext;
 use crate::agents::{AgentEvent, SessionConfig};
+use crate::config::agent_identity;
+use crate::config::worker_probe::{self, ProbeCache};
 use crate::config::{Config, ExtensionConfig, GooseMode};
 use crate::context_mgmt::format_message_for_compacting;
 use crate::conversation::message::Message;
@@ -103,9 +105,23 @@ struct InterruptAgentParams {
     session_id: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct ListWorkersParams {
+    /// Force re-probe of all workers, ignoring cache. Defaults to false.
+    #[serde(default)]
+    refresh: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct CheckWorkerParams {
+    /// The worker key from agent.yaml to check.
+    worker_key: String,
+}
+
 pub struct OrchestratorClient {
     info: InitializeResult,
     context: PlatformExtensionContext,
+    probe_cache: Arc<ProbeCache>,
 }
 
 impl OrchestratorClient {
@@ -118,7 +134,11 @@ impl OrchestratorClient {
                 "Manage agent sessions: list, view, start, send messages, and interrupt agents.",
             );
 
-        Ok(Self { info, context })
+        Ok(Self {
+            info,
+            context,
+            probe_cache: Arc::new(ProbeCache::new()),
+        })
     }
 
     async fn get_agent_manager(&self) -> Result<Arc<AgentManager>, String> {
@@ -565,6 +585,87 @@ impl OrchestratorClient {
         }
     }
 
+    async fn handle_list_workers(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<CallToolResult, String> {
+        let refresh = arguments
+            .as_ref()
+            .and_then(|a| a.get("refresh"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if refresh {
+            self.probe_cache.clear();
+        }
+
+        let config = agent_identity::load_agent_config();
+        let mut workers = Vec::new();
+
+        for (key, persona) in &config.workers {
+            let (available, reason) = match self.probe_cache.get(key) {
+                Some(cached) if !refresh => (cached.available, cached.reason),
+                _ => {
+                    let (ok, reason) = worker_probe::probe_worker(&persona.availability_check);
+                    self.probe_cache.set(key, ok, reason.clone());
+                    (ok, reason)
+                }
+            };
+
+            workers.push(serde_json::json!({
+                "key": key,
+                "display_name": persona.display_name(),
+                "role": persona.role,
+                "tool_kinds": persona.tool_kinds,
+                "cost_tier": persona.cost_tier,
+                "available": available,
+                "reason": reason,
+            }));
+        }
+
+        // Sort by key for stable output
+        workers.sort_by(|a, b| {
+            a.get("key")
+                .and_then(|v| v.as_str())
+                .cmp(&b.get("key").and_then(|v| v.as_str()))
+        });
+
+        let output = serde_json::to_string_pretty(&workers).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "{} worker(s) configured\n\n{}",
+            workers.len(),
+            output
+        ))]))
+    }
+
+    async fn handle_check_worker(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<CallToolResult, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let worker_key = extract_string(&args, "worker_key")?;
+
+        let config = agent_identity::load_agent_config();
+        let persona = config
+            .workers
+            .get(&worker_key)
+            .ok_or_else(|| format!("Worker '{}' not found in agent.yaml", worker_key))?;
+
+        // Always re-probe, ignoring cache
+        let (available, reason) = worker_probe::probe_worker(&persona.availability_check);
+        self.probe_cache.set(&worker_key, available, reason.clone());
+
+        let result = serde_json::json!({
+            "worker_key": worker_key,
+            "available": available,
+            "reason": reason,
+        });
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&result).unwrap_or_default(),
+        )]))
+    }
+
     async fn handle_interrupt_agent(
         &self,
         arguments: Option<JsonObject>,
@@ -625,6 +726,21 @@ impl McpClientTrait for OrchestratorClient {
                     .to_string(),
                 schema::<InterruptAgentParams>(),
             ),
+            Tool::new(
+                "list_workers".to_string(),
+                "List all configured workers from agent.yaml with their availability status. \
+                 Use this to inspect what workers are available before dispatching goals. \
+                 Set refresh=true to force re-probing all workers."
+                    .to_string(),
+                schema::<ListWorkersParams>(),
+            ),
+            Tool::new(
+                "check_worker".to_string(),
+                "Check a specific worker's availability by probing its detection method. \
+                 Always re-probes regardless of cache. Use before dispatching to a specific worker."
+                    .to_string(),
+                schema::<CheckWorkerParams>(),
+            ),
         ];
 
         Ok(ListToolsResult {
@@ -650,6 +766,8 @@ impl McpClientTrait for OrchestratorClient {
                     .await
             }
             "interrupt_agent" => self.handle_interrupt_agent(arguments).await,
+            "list_workers" => self.handle_list_workers(arguments).await,
+            "check_worker" => self.handle_check_worker(arguments).await,
             _ => Err(format!("Unknown tool: {}", name)),
         };
 
