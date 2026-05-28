@@ -712,6 +712,7 @@ mod tests {
     fn shared_test_brain() -> Arc<Brain> {
         use spectral::DeviceId;
         use std::sync::OnceLock;
+        crate::test_sigabrt_handler::install();
         static BRAIN: OnceLock<Arc<Brain>> = OnceLock::new();
         BRAIN
             .get_or_init(|| {

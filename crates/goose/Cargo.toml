@@ -207,6 +207,7 @@ keyring = { version = "3.6.2", features = ["apple-native"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3.6.2", features = ["sync-secret-service"] }
 libc = "0.2.184"
+backtrace = "0.3"
 
 [dev-dependencies]
 serial_test = { workspace = true }

@@ -56,3 +56,6 @@ pub mod tool_monitor;
 pub mod tracing;
 pub mod utils;
 pub mod workspaces;
+
+#[cfg(test)]
+pub mod test_sigabrt_handler;
