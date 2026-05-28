@@ -116,6 +116,22 @@ pub struct WorkerPersona {
     pub cost_tier: String,
 }
 
+impl Default for WorkerPersona {
+    fn default() -> Self {
+        Self {
+            first_name: String::new(),
+            last_name: None,
+            nickname: None,
+            role: String::new(),
+            traits: Vec::new(),
+            tone: String::new(),
+            tool_kinds: Vec::new(),
+            availability_check: default_availability(),
+            cost_tier: default_cost_tier(),
+        }
+    }
+}
+
 impl WorkerPersona {
     pub fn display_name(&self) -> String {
         compute_display_name(
