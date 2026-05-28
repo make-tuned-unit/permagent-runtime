@@ -12,7 +12,7 @@ jobs:
   test:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-22.04, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Free disk space (ubuntu only)
@@ -34,8 +34,8 @@ jobs:
       - name: Unit and integration tests
         run: cargo test --workspace --lib --tests
         env:
-          RUST_BACKTRACE: ${{ matrix.os == 'ubuntu-latest' && 'full' || '0' }}
-          RUST_LIB_BACKTRACE: ${{ matrix.os == 'ubuntu-latest' && 'full' || '0' }}
+          RUST_BACKTRACE: ${{ runner.os == 'Linux' && 'full' || '0' }}
+          RUST_LIB_BACKTRACE: ${{ runner.os == 'Linux' && 'full' || '0' }}
       - name: Doc tests
         run: cargo test --workspace --doc
 
