@@ -546,21 +546,30 @@ mod tests {
     use super::*;
     use crate::events::activity::{ActivityEvent, ActivityEventType, EventTier, SourceSurface};
 
-    fn build_test_brain() -> Arc<Brain> {
+    /// Shared Brain instance for all tests in this module.
+    /// See issue #190 — multiple Brain instances cause SIGABRT on Linux.
+    fn shared_test_brain() -> Arc<Brain> {
         use spectral::DeviceId;
-        let temp = tempfile::tempdir().expect("tempdir");
-        let brain_path = temp.path().join("brain");
-        let ontology_path = temp.path().join("ontology.toml");
-        std::fs::write(&ontology_path, include_str!("../../assets/ontology.toml")).unwrap();
-        let _ = Box::leak(Box::new(temp));
-        Arc::new(
-            Brain::builder()
-                .data_dir(&brain_path)
-                .ontology_path(&ontology_path)
-                .device_id(DeviceId::from_descriptor("test"))
-                .build()
-                .expect("test brain"),
-        )
+        use std::sync::OnceLock;
+        crate::test_sigabrt_handler::install();
+        static BRAIN: OnceLock<Arc<Brain>> = OnceLock::new();
+        BRAIN
+            .get_or_init(|| {
+                let temp = tempfile::tempdir().expect("tempdir");
+                let brain_path = temp.path().join("brain");
+                let ontology_path = temp.path().join("ontology.toml");
+                std::fs::write(&ontology_path, include_str!("../../assets/ontology.toml")).unwrap();
+                let _ = Box::leak(Box::new(temp));
+                Arc::new(
+                    Brain::builder()
+                        .data_dir(&brain_path)
+                        .ontology_path(&ontology_path)
+                        .device_id(DeviceId::from_descriptor("test-ingestion"))
+                        .build()
+                        .expect("test brain"),
+                )
+            })
+            .clone()
     }
 
     fn make_always_event() -> ActivityEvent {
@@ -657,7 +666,7 @@ mod tests {
 
     #[test]
     fn active_project_set_on_project_selected() {
-        let brain = build_test_brain();
+        let brain = shared_test_brain();
         let ingester = ActivityIngester::new(brain, "test-device".into());
 
         assert!(ingester.active_project().is_none());
@@ -673,7 +682,7 @@ mod tests {
 
     #[test]
     fn active_project_replaced_on_subsequent_project_selected() {
-        let brain = build_test_brain();
+        let brain = shared_test_brain();
         let ingester = ActivityIngester::new(brain, "test-device".into());
 
         ingester.handle_event(&make_project_selected("project:permagent", "Permagent"));
@@ -687,7 +696,7 @@ mod tests {
 
     #[test]
     fn active_project_unchanged_when_project_id_malformed() {
-        let brain = build_test_brain();
+        let brain = shared_test_brain();
         let ingester = ActivityIngester::new(brain, "test-device".into());
 
         ingester.handle_event(&make_project_selected("project:permagent", "Permagent"));
@@ -712,7 +721,7 @@ mod tests {
 
     #[test]
     fn wing_override_computed_during_ingestion() {
-        let brain = build_test_brain();
+        let brain = shared_test_brain();
         let ingester = ActivityIngester::new(brain, "test-device".into());
 
         // Set active project
@@ -733,7 +742,7 @@ mod tests {
 
     #[test]
     fn always_event_ingested_to_brain() {
-        let brain = build_test_brain();
+        let brain = shared_test_brain();
         let ingester = ActivityIngester::new(brain, "test-device".into());
         // Use a terminal command event (not filtered, unlike ChatTurnCompleted)
         ingester.handle_event(&make_terminal_event());
@@ -744,7 +753,7 @@ mod tests {
 
     #[test]
     fn aggregated_event_ingested_and_queued() {
-        let brain = build_test_brain();
+        let brain = shared_test_brain();
         let ingester = ActivityIngester::new(brain, "test-device".into());
         let event = ActivityEvent {
             event_id: uuid::Uuid::new_v4().to_string(),
@@ -764,7 +773,7 @@ mod tests {
 
     #[test]
     fn ephemeral_event_counted_not_ingested() {
-        let brain = build_test_brain();
+        let brain = shared_test_brain();
         let ingester = ActivityIngester::new(brain, "test-device".into());
         let event = ActivityEvent {
             event_id: "eph-1".into(),
@@ -942,7 +951,7 @@ mod tests {
 
     #[test]
     fn chat_turn_completed_filtered_by_ingester() {
-        let brain = build_test_brain();
+        let brain = shared_test_brain();
         let ingester = ActivityIngester::new(brain, "test-device".into());
         ingester.handle_event(&make_always_event()); // ChatTurnCompleted
         assert_eq!(ingester.always_count(), 1);

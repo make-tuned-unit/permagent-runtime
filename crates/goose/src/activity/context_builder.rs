@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn live_state_tracks_browser_url() {
-        let brain = build_test_brain();
+        let brain = shared_test_brain();
         let cb = ContextBuilder::new(brain);
 
         let event = make_event(
@@ -501,7 +501,7 @@ mod tests {
 
     #[test]
     fn live_state_tracks_terminal_command() {
-        let brain = build_test_brain();
+        let brain = shared_test_brain();
         let cb = ContextBuilder::new(brain);
 
         let event = make_event(
@@ -519,7 +519,7 @@ mod tests {
 
     #[test]
     fn live_state_tracks_project_selection() {
-        let brain = build_test_brain();
+        let brain = shared_test_brain();
         let cb = ContextBuilder::new(brain);
 
         let mut event = make_event(
@@ -540,7 +540,7 @@ mod tests {
 
     #[test]
     fn ring_buffer_bounded() {
-        let brain = build_test_brain();
+        let brain = shared_test_brain();
         let cb = ContextBuilder::new(brain);
 
         for _ in 0..1100 {
@@ -558,7 +558,7 @@ mod tests {
 
     #[test]
     fn current_digest_returns_recent_events() {
-        let brain = build_test_brain();
+        let brain = shared_test_brain();
         let cb = ContextBuilder::new(brain);
 
         for i in 0..5 {
@@ -580,7 +580,7 @@ mod tests {
 
     #[test]
     fn probe_results_sorted_by_relevance_descending() {
-        let brain = build_test_brain();
+        let brain = shared_test_brain();
 
         // Seed a few activity memories with different content
         brain
@@ -644,7 +644,7 @@ mod tests {
 
     #[test]
     fn probe_wing_filter_passes_through() {
-        let brain = build_test_brain();
+        let brain = shared_test_brain();
 
         // Seed memories in two different wings
         brain
@@ -705,23 +705,32 @@ mod tests {
         }
     }
 
-    fn build_test_brain() -> Arc<Brain> {
+    /// Shared Brain instance for all tests in this module.
+    /// Creating many Brain instances (each with its own kuzu Database and
+    /// tokio Runtime) causes a SIGABRT on Linux at process exit due to
+    /// C++ static destructor interactions. See issue #190.
+    fn shared_test_brain() -> Arc<Brain> {
         use spectral::DeviceId;
-        let temp = tempfile::tempdir().expect("tempdir");
-        let brain_path = temp.path().join("brain");
-        let ontology_path = temp.path().join("ontology.toml");
-        std::fs::write(&ontology_path, include_str!("../../assets/ontology.toml")).unwrap();
-
-        // Leak the tempdir so it persists for the test duration
-        let _ = Box::leak(Box::new(temp));
-
-        Arc::new(
-            Brain::builder()
-                .data_dir(&brain_path)
-                .ontology_path(&ontology_path)
-                .device_id(DeviceId::from_descriptor("test"))
-                .build()
-                .expect("test brain"),
-        )
+        use std::sync::OnceLock;
+        crate::test_sigabrt_handler::install();
+        static BRAIN: OnceLock<Arc<Brain>> = OnceLock::new();
+        BRAIN
+            .get_or_init(|| {
+                let temp = tempfile::tempdir().expect("tempdir");
+                let brain_path = temp.path().join("brain");
+                let ontology_path = temp.path().join("ontology.toml");
+                std::fs::write(&ontology_path, include_str!("../../assets/ontology.toml")).unwrap();
+                // Leak the tempdir so it persists for the process lifetime
+                let _ = Box::leak(Box::new(temp));
+                Arc::new(
+                    Brain::builder()
+                        .data_dir(&brain_path)
+                        .ontology_path(&ontology_path)
+                        .device_id(DeviceId::from_descriptor("test-context-builder"))
+                        .build()
+                        .expect("test brain"),
+                )
+            })
+            .clone()
     }
 }
