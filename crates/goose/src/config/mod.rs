@@ -11,6 +11,7 @@ pub mod search_path;
 pub mod signup_nanogpt;
 pub mod signup_openrouter;
 pub mod signup_tetrate;
+pub mod worker_probe;
 
 pub use crate::agents::ExtensionConfig;
 pub use base::{Config, ConfigError};

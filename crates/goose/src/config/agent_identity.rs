@@ -81,6 +81,14 @@ impl PrimaryPersona {
     }
 }
 
+fn default_availability() -> String {
+    "always".to_string()
+}
+
+fn default_cost_tier() -> String {
+    "local_free".to_string()
+}
+
 /// Worker persona configuration.
 /// Workers are specialized agents with a role instead of a greeting.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +104,32 @@ pub struct WorkerPersona {
     pub traits: Vec<String>,
     #[serde(default)]
     pub tone: String,
+    /// What this worker can do: code_edit, shell, web_search, memory_ops, etc.
+    #[serde(default)]
+    pub tool_kinds: Vec<String>,
+    /// How to check if this worker is available on this machine.
+    /// "bin_exists:<name>" | "api_credential:<env_var>" | "model_loaded:<model>" | "always"
+    #[serde(default = "default_availability")]
+    pub availability_check: String,
+    /// Cost classification: "local_free", "subscription", or "paid_api"
+    #[serde(default = "default_cost_tier")]
+    pub cost_tier: String,
+}
+
+impl Default for WorkerPersona {
+    fn default() -> Self {
+        Self {
+            first_name: String::new(),
+            last_name: None,
+            nickname: None,
+            role: String::new(),
+            traits: Vec::new(),
+            tone: String::new(),
+            tool_kinds: Vec::new(),
+            availability_check: default_availability(),
+            cost_tier: default_cost_tier(),
+        }
+    }
 }
 
 impl WorkerPersona {
@@ -179,4 +213,94 @@ pub fn load_shared_agent_config() -> SharedAgentConfig {
 pub fn load_shared_persona() -> SharedPersona {
     let config = load_agent_config();
     Arc::new(RwLock::new(config.primary))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worker_persona_backward_compat_without_new_fields() {
+        let yaml = r#"
+first_name: Codex
+role: "Fast parallel coding agent"
+traits: [fast, precise]
+tone: concise
+"#;
+        let persona: WorkerPersona = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(persona.first_name, "Codex");
+        assert_eq!(persona.role, "Fast parallel coding agent");
+        assert!(persona.tool_kinds.is_empty());
+        assert_eq!(persona.availability_check, "always");
+        assert_eq!(persona.cost_tier, "local_free");
+    }
+
+    #[test]
+    fn worker_persona_with_all_new_fields() {
+        let yaml = r#"
+first_name: Codex
+role: "Fast parallel coding agent"
+tool_kinds: [code_edit, shell, git]
+availability_check: "bin_exists:codex"
+cost_tier: subscription
+"#;
+        let persona: WorkerPersona = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(persona.tool_kinds, vec!["code_edit", "shell", "git"]);
+        assert_eq!(persona.availability_check, "bin_exists:codex");
+        assert_eq!(persona.cost_tier, "subscription");
+    }
+
+    #[test]
+    fn worker_persona_defaults_applied() {
+        let yaml = r#"
+first_name: Lib
+"#;
+        let persona: WorkerPersona = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(persona.availability_check, "always");
+        assert_eq!(persona.cost_tier, "local_free");
+        assert!(persona.tool_kinds.is_empty());
+        assert!(persona.role.is_empty());
+        assert!(persona.traits.is_empty());
+    }
+
+    #[test]
+    fn agent_config_backward_compat_no_workers() {
+        let yaml = r#"
+primary:
+  first_name: Henry
+  tone: friendly
+"#;
+        let config: AgentConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.primary.first_name, "Henry");
+        assert!(config.workers.is_empty());
+    }
+
+    #[test]
+    fn agent_config_with_mixed_workers() {
+        let yaml = r#"
+primary:
+  first_name: Henry
+workers:
+  codex:
+    first_name: Codex
+    role: coding
+    tool_kinds: [code_edit]
+    availability_check: "bin_exists:codex"
+    cost_tier: subscription
+  librarian:
+    first_name: Librarian
+    role: memory
+"#;
+        let config: AgentConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.workers.len(), 2);
+
+        let codex = &config.workers["codex"];
+        assert_eq!(codex.tool_kinds, vec!["code_edit"]);
+        assert_eq!(codex.cost_tier, "subscription");
+
+        let lib = &config.workers["librarian"];
+        assert!(lib.tool_kinds.is_empty());
+        assert_eq!(lib.availability_check, "always");
+        assert_eq!(lib.cost_tier, "local_free");
+    }
 }

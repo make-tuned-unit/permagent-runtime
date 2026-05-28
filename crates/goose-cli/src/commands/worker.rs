@@ -79,11 +79,10 @@ fn create(key: &str, first_name: &str, role: &str, tone: &str, traits: &str) -> 
         .collect();
     let worker = WorkerPersona {
         first_name: first_name.to_string(),
-        last_name: None,
-        nickname: None,
         role: role.to_string(),
         traits: trait_list,
         tone: tone.to_string(),
+        ..Default::default()
     };
     println!("Created worker '{}': {}", key, worker.display_name());
     config.workers.insert(key.to_string(), worker);
