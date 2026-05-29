@@ -1,0 +1,96 @@
+name: SIGABRT bisect
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+  RUST_LIB_BACKTRACE: full
+
+jobs:
+  # Technique A: which crate's test binary aborts?
+  crate-isolation:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - permagent
+          - permagent-daemon
+          - permagent-cli
+          - permagent-mcp
+          - goose-test-support
+          - goose-test
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc \
+            /usr/local/lib/android /usr/local/share/boost \
+            /opt/hostedtoolcache/CodeQL
+          sudo apt-get clean
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: bisect-${{ matrix.crate }}
+      - name: Test ${{ matrix.crate }}
+        run: |
+          echo "=== Testing crate: ${{ matrix.crate }} ==="
+          cargo test -p ${{ matrix.crate }} --lib -- --nocapture 2>&1 \
+            | tee /tmp/test-${{ matrix.crate }}.log
+          EXIT_CODE=${PIPESTATUS[0]}
+          echo "=== Exit code: $EXIT_CODE ==="
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-log-${{ matrix.crate }}
+          path: /tmp/test-${{ matrix.crate }}.log
+
+  # Technique B: feature bisect on permagent crate
+  feature-bisect:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: minimal (no code-mode, no local-inference)
+            features: "rustls-tls,telemetry,otel,aws-providers"
+          - name: code-mode only (V8)
+            features: "rustls-tls,telemetry,otel,aws-providers,code-mode"
+          - name: local-inference only (candle/llama)
+            features: "rustls-tls,telemetry,otel,aws-providers,local-inference"
+          - name: all defaults
+            features: "default"
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc \
+            /usr/local/lib/android /usr/local/share/boost \
+            /opt/hostedtoolcache/CodeQL
+          sudo apt-get clean
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: bisect-feat-${{ matrix.name }}
+      - name: "Test permagent (${{ matrix.name }})"
+        run: |
+          echo "=== Feature set: ${{ matrix.name }} ==="
+          echo "=== Features: ${{ matrix.features }} ==="
+          if [ "${{ matrix.features }}" = "default" ]; then
+            cargo test -p permagent --lib -- --nocapture 2>&1 \
+              | tee /tmp/test-features.log
+          else
+            cargo test -p permagent --no-default-features \
+              --features "${{ matrix.features }}" --lib \
+              -- --nocapture 2>&1 \
+              | tee /tmp/test-features.log
+          fi
+          EXIT_CODE=${PIPESTATUS[0]}
+          echo "=== Exit code: $EXIT_CODE ==="
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-log-feat-${{ matrix.name }}
+          path: /tmp/test-features.log
