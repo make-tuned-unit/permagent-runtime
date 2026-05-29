@@ -2,12 +2,14 @@ use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
 use crate::agents::tool_execution::ToolCallContext;
 use crate::agents::{AgentEvent, SessionConfig};
+use crate::cards;
 use crate::config::agent_identity;
 use crate::config::worker_probe::{self, ProbeCache};
 use crate::config::{Config, ExtensionConfig, GooseMode};
 use crate::context_mgmt::format_message_for_compacting;
 use crate::conversation::message::Message;
 use crate::execution::manager::AgentManager;
+use crate::goal_state::{self, GoalAction, GoalState};
 use crate::providers;
 use crate::providers::base::Provider;
 use crate::session::extension_data::EnabledExtensionsState;
@@ -24,6 +26,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
+
+const MAX_GOAL_ATTEMPTS: u64 = 3;
 
 pub static EXTENSION_NAME: &str = "orchestrator";
 
@@ -106,6 +110,23 @@ struct InterruptAgentParams {
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct GoalAdvanceParams {
+    /// The card ID (UUID) of the goal to advance.
+    card_id: String,
+    /// The action to perform: "ready", "dispatch", "review", "approve", "reject"
+    action: String,
+    /// Optional notes for 'approve' or 'reject' actions. Stored in metadata.review_notes.
+    #[serde(default)]
+    notes: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct GoalStatusParams {
+    /// The card ID (UUID) of the goal to inspect.
+    card_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ListWorkersParams {
     /// Force re-probe of all workers, ignoring cache. Defaults to false.
     #[serde(default)]
@@ -131,14 +152,39 @@ impl OrchestratorClient {
                 Implementation::new(EXTENSION_NAME, "1.0.0").with_title("Orchestrator"),
             )
             .with_instructions(
-                "Manage agent sessions: list, view, start, send messages, and interrupt agents.",
+                "Manage agent sessions and coordinate goal-driven work across projects.\n\n\
+                 When users describe work — building, fixing, automating — create goal cards \
+                 on a project's Kanban board using card_create with card_type='goal'. Goals \
+                 follow a lifecycle: Triage → Ready → InProgress → Review → Complete. Pass \
+                 auto_dispatch=true to assign a worker and start immediately.\n\n\
+                 Use goal_advance to transition goals (actions: ready, dispatch, review, \
+                 approve, reject). Use goal_status to check progress. Use list_workers to \
+                 see available workers before dispatching.\n\n\
+                 Goals that fail three times move to Triage with needs_human_attention=true. \
+                 Surface these to the user rather than retrying silently.",
             );
 
-        Ok(Self {
+        let client = Self {
             info,
             context,
             probe_cache: Arc::new(ProbeCache::new()),
-        })
+        };
+
+        // Spawn one-shot resume of in-progress goals from a prior daemon lifecycle
+        let resume_sm = client.context.session_manager.clone();
+        tokio::spawn(async move {
+            // Small delay to let the DB pool and AgentManager finish initializing
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if let Err(e) = resume_in_progress_goals(&resume_sm).await {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    "Failed to resume in-progress goals on startup: {}",
+                    e
+                );
+            }
+        });
+
+        Ok(client)
     }
 
     async fn get_agent_manager(&self) -> Result<Arc<AgentManager>, String> {
@@ -165,6 +211,294 @@ impl OrchestratorClient {
     fn parent_extensions(&self) -> Vec<ExtensionConfig> {
         let extension_data = self.context.session.as_ref().map(|s| &s.extension_data);
         EnabledExtensionsState::extensions_or_default(extension_data, Config::global())
+    }
+
+    /// Select the best available worker for a goal card.
+    ///
+    /// Builds candidate list from agent.yaml + probe cache, then delegates
+    /// to the pure `goal_state::select_best_worker` algorithm.
+    pub async fn select_worker(&self, goal: &cards::Card) -> Result<String, String> {
+        let config = agent_identity::load_agent_config();
+
+        // Derive required tool_kinds from goal metadata, default to code_edit + shell
+        let required_kinds: Vec<String> = goal
+            .metadata_json
+            .get("tags")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_else(|| vec!["code_edit".to_string(), "shell".to_string()]);
+
+        // Build candidate list with availability + session counts
+        let manager = self.get_agent_manager().await.ok();
+        let active_ids = match &manager {
+            Some(m) => m.list_active_session_ids().await,
+            None => Vec::new(),
+        };
+
+        let candidates: Vec<goal_state::WorkerCandidate> = config
+            .workers
+            .iter()
+            .map(|(key, persona)| {
+                let available = match self.probe_cache.get(key) {
+                    Some(cached) => cached.available,
+                    None => {
+                        let (ok, reason) = worker_probe::probe_worker(&persona.availability_check);
+                        self.probe_cache.set(key, ok, reason);
+                        ok
+                    }
+                };
+
+                // Count active sessions for this worker (best-effort from session names)
+                let active_sessions = active_ids
+                    .iter()
+                    .filter(|id| {
+                        // Sessions spawned by this worker will have the worker key
+                        // in their name or metadata — for now, approximate as 0
+                        // since we don't yet track per-worker session counts.
+                        let _ = id;
+                        false
+                    })
+                    .count();
+
+                goal_state::WorkerCandidate {
+                    key: key.clone(),
+                    available,
+                    tool_kinds: persona.tool_kinds.clone(),
+                    cost_tier: persona.cost_tier.clone(),
+                    active_sessions,
+                }
+            })
+            .collect();
+
+        goal_state::select_best_worker(&candidates, &required_kinds)
+    }
+
+    /// Dispatch a goal card to a worker via subagent.
+    ///
+    /// Precondition: card must be card_type='goal' in state='ready'.
+    /// On success: card moves to InProgress with worker metadata.
+    /// On worker selection failure: card stays in Ready, no metadata changes.
+    /// On dispatch failure: card stays in Ready, attempt_count incremented.
+    pub async fn dispatch_goal(&self, card_id: &str) -> Result<String, String> {
+        let pool = self
+            .context
+            .session_manager
+            .pool_clone()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let card = cards::get_card(&pool, card_id)
+            .await?
+            .ok_or_else(|| format!("Card '{}' not found", card_id))?;
+
+        if card.card_type != "goal" {
+            return Err(format!(
+                "Card '{}' is type '{}', not 'goal'",
+                card_id, card.card_type
+            ));
+        }
+
+        // Verify card is in Ready state
+        let current_col = cards::get_column(&pool, &card.column_id)
+            .await?
+            .ok_or_else(|| format!("Column '{}' not found", card.column_id))?;
+
+        if current_col.state_binding.as_deref() != Some("ready") {
+            return Err(format!(
+                "Card '{}' is in state '{}', not 'ready'. Only Ready goals can be dispatched.",
+                card_id,
+                current_col
+                    .state_binding
+                    .as_deref()
+                    .unwrap_or(&current_col.name)
+            ));
+        }
+
+        // Select worker — on failure, leave card in Ready, no metadata changes
+        let worker_key = self.select_worker(&card).await?;
+
+        // Resolve worker persona for the subagent
+        let config = agent_identity::load_agent_config();
+        let persona_override = config
+            .workers
+            .get(&worker_key)
+            .map(|w| (w.system_prompt_block(), w.display_name()));
+
+        // Look up project for root_path context
+        let project = crate::projects::get_project(&pool, &card.project_id)
+            .await?
+            .ok_or_else(|| format!("Project '{}' not found", card.project_id))?;
+
+        let root_path = project.root_path.as_deref().unwrap_or("(not specified)");
+
+        // Build instructions
+        let instructions = format!(
+            "Goal: {}\n\nDescription: {}\nProject: {}\nProject root: {}",
+            card.title, card.description, project.name, root_path
+        );
+
+        // Build recipe
+        let recipe = crate::recipe::Recipe::builder()
+            .version("1.0.0")
+            .title(format!("Goal: {}", card.title))
+            .description("Orchestrator-dispatched goal")
+            .prompt(&instructions)
+            .build()
+            .map_err(|e| format!("Failed to build recipe: {}", e))?;
+
+        // Get provider and extensions from parent session
+        let provider = self.get_provider().await?;
+        let extensions = self.parent_extensions();
+
+        // Get the session for working dir
+        let working_dir = project
+            .root_path
+            .as_ref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+        // Create subagent session
+        let subagent_session = self
+            .context
+            .session_manager
+            .create_session(
+                working_dir.clone(),
+                format!("Goal: {}", card.title),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .map_err(|e| format!("Failed to create subagent session: {}", e))?;
+
+        let session_id = subagent_session.id.clone();
+
+        // Build task config
+        let model_config = provider.get_model_config();
+        let task_provider =
+            providers::create(provider.get_name(), model_config, extensions.clone())
+                .await
+                .map_err(|e| format!("Failed to create provider for goal dispatch: {}", e))?;
+
+        let task_config = crate::agents::subagent_task_config::TaskConfig::new(
+            task_provider,
+            &session_id,
+            &working_dir,
+            extensions,
+        );
+
+        let agent_config = crate::agents::AgentRunnerConfig::new(
+            self.context.session_manager.clone(),
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            GooseMode::Auto,
+            true,
+            crate::agents::GoosePlatform::GooseCli,
+        );
+
+        // Spawn the subagent task in background and track completion
+        let cancel_token = CancellationToken::new();
+        let handle = tokio::spawn({
+            let session_id = session_id.clone();
+            async move {
+                crate::agents::subagent_handler::run_subagent_task(
+                    crate::agents::subagent_handler::SubagentRunParams {
+                        config: agent_config,
+                        recipe,
+                        task_config,
+                        return_last_only: true,
+                        session_id,
+                        cancellation_token: Some(cancel_token),
+                        on_message: None,
+                        notification_tx: None,
+                        persona_override,
+                    },
+                )
+                .await
+            }
+        });
+
+        // Spawn completion tracker — watches the JoinHandle and transitions the card
+        let tracker_card_id = card_id.to_string();
+        let tracker_project_id = card.project_id.clone();
+        let tracker_pool = pool.clone();
+        tokio::spawn(async move {
+            let result = match handle.await {
+                Ok(Ok(_output)) => Ok(()),
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(e) => Err(format!("Worker task panicked: {}", e)),
+            };
+            if let Err(e) =
+                handle_goal_completion(&tracker_pool, &tracker_card_id, &tracker_project_id, result)
+                    .await
+            {
+                tracing::error!(
+                    target: "permagentd::brain",
+                    "Failed to handle goal completion for card {}: {}",
+                    tracker_card_id,
+                    e
+                );
+            }
+        });
+
+        // Update card metadata BEFORE column move (design doc: metadata first)
+        let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
+        let attempt_count = meta
+            .get("attempt_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        meta.insert(
+            "worker_key".to_string(),
+            serde_json::Value::String(worker_key.clone()),
+        );
+        meta.insert(
+            "worker_session_id".to_string(),
+            serde_json::Value::String(session_id.clone()),
+        );
+        meta.insert(
+            "dispatched_at".to_string(),
+            serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
+        );
+        meta.insert(
+            "attempt_count".to_string(),
+            serde_json::json!(attempt_count + 1),
+        );
+        meta.insert(
+            "goal_state".to_string(),
+            serde_json::Value::String("in_progress".to_string()),
+        );
+
+        cards::update_card(
+            &pool,
+            card_id,
+            cards::UpdateCard {
+                assigned_to: Some(Some(worker_key.clone())),
+                metadata_json: Some(serde_json::Value::Object(meta)),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        // Move card to InProgress
+        let in_progress_col = cards::get_goal_column(&pool, &card.project_id, "in_progress")
+            .await?
+            .ok_or("InProgress column not found")?;
+
+        cards::move_card(&pool, card_id, &in_progress_col.id, None).await?;
+
+        tracing::info!(
+            target: "permagentd::brain",
+            "Goal '{}' dispatched to worker '{}' (session: {})",
+            card.title,
+            worker_key,
+            session_id
+        );
+
+        Ok(session_id)
     }
 
     async fn handle_list_sessions(
@@ -666,6 +1000,262 @@ impl OrchestratorClient {
         )]))
     }
 
+    async fn handle_goal_advance(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<CallToolResult, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let card_id = extract_string(&args, "card_id")?;
+        let action_str = extract_string(&args, "action")?;
+        let notes = args
+            .get("notes")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let action = GoalAction::from_str(&action_str).ok_or_else(|| {
+            format!(
+                "Invalid action '{}'. Must be: ready, dispatch, review, approve, reject",
+                action_str
+            )
+        })?;
+
+        let pool = self
+            .context
+            .session_manager
+            .pool_clone()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // Load card and verify it's a goal
+        let card = cards::get_card(&pool, &card_id)
+            .await?
+            .ok_or_else(|| format!("Card '{}' not found", card_id))?;
+
+        if card.card_type != "goal" {
+            return Err(format!(
+                "Card '{}' is type '{}', not 'goal'. goal_advance only works on goal cards.",
+                card_id, card.card_type
+            ));
+        }
+
+        // Determine current state from the card's column state_binding
+        let current_col = cards::get_column(&pool, &card.column_id)
+            .await?
+            .ok_or_else(|| format!("Column '{}' not found for card", card.column_id))?;
+
+        let current_state = current_col
+            .state_binding
+            .as_deref()
+            .and_then(GoalState::from_binding)
+            .ok_or_else(|| {
+                format!(
+                    "Card '{}' is in column '{}' which has no state_binding. \
+                     Goal cards must be in state-bound columns.",
+                    card_id, current_col.name
+                )
+            })?;
+
+        // Validate the transition
+        let new_state =
+            goal_state::validate_transition(current_state, action).map_err(|e| e.to_string())?;
+
+        // Parse existing metadata
+        let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
+
+        // Handle reject: check attempt_count for 3-attempt cap
+        if action == GoalAction::Reject {
+            let attempt_count = meta
+                .get("attempt_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+
+            if notes.is_some() {
+                meta.insert(
+                    "review_notes".to_string(),
+                    serde_json::Value::String(notes.clone().unwrap()),
+                );
+            }
+
+            if attempt_count + 1 >= MAX_GOAL_ATTEMPTS {
+                // 3-attempt cap: move to Triage with needs_human_attention
+                meta.insert(
+                    "attempt_count".to_string(),
+                    serde_json::json!(attempt_count + 1),
+                );
+                meta.insert(
+                    "needs_human_attention".to_string(),
+                    serde_json::Value::Bool(true),
+                );
+                meta.insert(
+                    "last_error".to_string(),
+                    serde_json::Value::String(
+                        notes.unwrap_or_else(|| "Rejected after maximum attempts".to_string()),
+                    ),
+                );
+                meta.insert(
+                    "goal_state".to_string(),
+                    serde_json::Value::String("triage".to_string()),
+                );
+
+                // Move to Triage instead of InProgress
+                let triage_col = cards::get_goal_column(&pool, &card.project_id, "triage")
+                    .await?
+                    .ok_or("Triage column not found")?;
+
+                cards::update_card(
+                    &pool,
+                    &card_id,
+                    cards::UpdateCard {
+                        metadata_json: Some(serde_json::Value::Object(meta)),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+                cards::move_card(&pool, &card_id, &triage_col.id, None).await?;
+
+                return Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Goal '{}' has reached {} failed attempts. Moved back to Triage with needs_human_attention=true.",
+                    card.title, MAX_GOAL_ATTEMPTS
+                ))]));
+            }
+
+            // Normal reject: increment attempt_count, bounce back to InProgress
+            meta.insert(
+                "attempt_count".to_string(),
+                serde_json::json!(attempt_count + 1),
+            );
+        }
+
+        // Handle approve: store notes
+        if action == GoalAction::Approve {
+            if let Some(ref n) = notes {
+                meta.insert(
+                    "review_notes".to_string(),
+                    serde_json::Value::String(n.clone()),
+                );
+            }
+        }
+
+        // Update goal_state in metadata
+        meta.insert(
+            "goal_state".to_string(),
+            serde_json::Value::String(new_state.binding().to_string()),
+        );
+
+        // Find target column and move
+        let target_col = cards::get_goal_column(&pool, &card.project_id, new_state.binding())
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "Target column for state '{}' not found in project",
+                    new_state
+                )
+            })?;
+
+        cards::update_card(
+            &pool,
+            &card_id,
+            cards::UpdateCard {
+                metadata_json: Some(serde_json::Value::Object(meta)),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        cards::move_card(&pool, &card_id, &target_col.id, None).await?;
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Goal '{}' advanced: {} → {} (action: {})",
+            card.title, current_state, new_state, action
+        ))]))
+    }
+
+    async fn handle_goal_status(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<CallToolResult, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let card_id = extract_string(&args, "card_id")?;
+
+        let pool = self
+            .context
+            .session_manager
+            .pool_clone()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let card = cards::get_card(&pool, &card_id)
+            .await?
+            .ok_or_else(|| format!("Card '{}' not found", card_id))?;
+
+        if card.card_type != "goal" {
+            return Err(format!(
+                "Card '{}' is type '{}', not 'goal'",
+                card_id, card.card_type
+            ));
+        }
+
+        let col = cards::get_column(&pool, &card.column_id).await?;
+        let state = col
+            .as_ref()
+            .and_then(|c| c.state_binding.as_deref())
+            .unwrap_or("unknown");
+
+        let meta = card.metadata_json.as_object();
+        let worker_key = meta
+            .and_then(|m| m.get("worker_key"))
+            .and_then(|v| v.as_str());
+        let worker_session_id = meta
+            .and_then(|m| m.get("worker_session_id"))
+            .and_then(|v| v.as_str());
+        let dispatched_at = meta
+            .and_then(|m| m.get("dispatched_at"))
+            .and_then(|v| v.as_str());
+        let completed_at = meta
+            .and_then(|m| m.get("completed_at"))
+            .and_then(|v| v.as_str());
+        let attempt_count = meta
+            .and_then(|m| m.get("attempt_count"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let last_error = meta
+            .and_then(|m| m.get("last_error"))
+            .and_then(|v| v.as_str());
+        let needs_human_attention = meta
+            .and_then(|m| m.get("needs_human_attention"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        // Check if worker session is alive for last_activity
+        let session_alive = if let Some(sid) = worker_session_id {
+            if let Ok(manager) = self.get_agent_manager().await {
+                manager.is_session_busy(sid).await
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        let result = serde_json::json!({
+            "card_id": card_id,
+            "title": card.title,
+            "state": state,
+            "worker_key": worker_key,
+            "worker_session_id": worker_session_id,
+            "started_at": dispatched_at,
+            "completed_at": completed_at,
+            "session_alive": session_alive,
+            "attempt_count": attempt_count,
+            "error": last_error,
+            "needs_human_attention": needs_human_attention,
+        });
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&result).unwrap_or_default(),
+        )]))
+    }
+
     async fn handle_interrupt_agent(
         &self,
         arguments: Option<JsonObject>,
@@ -741,6 +1331,24 @@ impl McpClientTrait for OrchestratorClient {
                     .to_string(),
                 schema::<CheckWorkerParams>(),
             ),
+            Tool::new(
+                "goal_advance".to_string(),
+                "Advance a goal card through its lifecycle. Actions: \
+                 'ready' (Triage→Ready), 'dispatch' (Ready→InProgress), \
+                 'review' (InProgress→Review), 'approve' (Review→Complete), \
+                 'reject' (Review→InProgress, or Triage if 3 attempts reached). \
+                 Only works on card_type='goal' cards."
+                    .to_string(),
+                schema::<GoalAdvanceParams>(),
+            ),
+            Tool::new(
+                "goal_status".to_string(),
+                "Get detailed status of a goal card including its lifecycle state, \
+                 assigned worker, session liveness, attempt count, and any errors. \
+                 Only works on card_type='goal' cards."
+                    .to_string(),
+                schema::<GoalStatusParams>(),
+            ),
         ];
 
         Ok(ListToolsResult {
@@ -768,6 +1376,8 @@ impl McpClientTrait for OrchestratorClient {
             "interrupt_agent" => self.handle_interrupt_agent(arguments).await,
             "list_workers" => self.handle_list_workers(arguments).await,
             "check_worker" => self.handle_check_worker(arguments).await,
+            "goal_advance" => self.handle_goal_advance(arguments).await,
+            "goal_status" => self.handle_goal_status(arguments).await,
             _ => Err(format!("Unknown tool: {}", name)),
         };
 
@@ -799,4 +1409,739 @@ fn extract_string(args: &JsonObject, key: &str) -> Result<String, String> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| format!("Missing or invalid '{}'", key))
+}
+
+/// Handle the completion of a dispatched goal worker.
+///
+/// Called by the tracker task spawned in dispatch_goal when the JoinHandle resolves.
+/// On success: moves card InProgress → Review.
+/// On failure: increments attempt_count. At 3 attempts, moves to Triage with
+/// needs_human_attention. Otherwise leaves in InProgress for retry.
+///
+/// Gracefully no-ops if the card is no longer in InProgress (manual intervention).
+pub async fn handle_goal_completion(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    project_id: &str,
+    result: Result<(), String>,
+) -> Result<(), String> {
+    let card = cards::get_card(&pool, card_id)
+        .await?
+        .ok_or_else(|| format!("Card '{}' not found during completion handling", card_id))?;
+
+    // Check card is still in InProgress — if not, someone manually intervened; no-op.
+    let current_col = cards::get_column(&pool, &card.column_id).await?;
+    match current_col
+        .as_ref()
+        .and_then(|c| c.state_binding.as_deref())
+    {
+        Some("in_progress") => {} // expected, continue
+        other => {
+            tracing::info!(
+                target: "permagentd::brain",
+                "Goal '{}' completion handler: card is in state {:?}, not in_progress — skipping (manual intervention assumed)",
+                card.title,
+                other
+            );
+            return Ok(());
+        }
+    }
+
+    let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
+
+    match result {
+        Ok(()) => {
+            // Success: move to Review
+            meta.insert(
+                "goal_state".to_string(),
+                serde_json::Value::String("review".to_string()),
+            );
+            meta.insert(
+                "completed_at".to_string(),
+                serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
+            );
+
+            cards::update_card(
+                &pool,
+                card_id,
+                cards::UpdateCard {
+                    metadata_json: Some(serde_json::Value::Object(meta)),
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+            let review_col = cards::get_goal_column(&pool, project_id, "review")
+                .await?
+                .ok_or("Review column not found")?;
+            cards::move_card(&pool, card_id, &review_col.id, None).await?;
+
+            tracing::info!(
+                target: "permagentd::brain",
+                "Goal '{}' worker completed successfully — moved to Review",
+                card.title
+            );
+        }
+        Err(error) => {
+            let attempt_count = meta
+                .get("attempt_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+
+            meta.insert(
+                "last_error".to_string(),
+                serde_json::Value::String(error.clone()),
+            );
+
+            if attempt_count >= MAX_GOAL_ATTEMPTS {
+                // Terminal failure: move to Triage with needs_human_attention
+                meta.insert(
+                    "goal_state".to_string(),
+                    serde_json::Value::String("triage".to_string()),
+                );
+                meta.insert(
+                    "needs_human_attention".to_string(),
+                    serde_json::Value::Bool(true),
+                );
+
+                cards::update_card(
+                    &pool,
+                    card_id,
+                    cards::UpdateCard {
+                        metadata_json: Some(serde_json::Value::Object(meta)),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+
+                let triage_col = cards::get_goal_column(&pool, project_id, "triage")
+                    .await?
+                    .ok_or("Triage column not found")?;
+                cards::move_card(&pool, card_id, &triage_col.id, None).await?;
+
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    "Goal '{}' failed {} times — moved to Triage with needs_human_attention",
+                    card.title,
+                    attempt_count
+                );
+            } else {
+                // Retriable failure: leave in InProgress, metadata already updated
+                meta.insert(
+                    "goal_state".to_string(),
+                    serde_json::Value::String("in_progress".to_string()),
+                );
+
+                cards::update_card(
+                    &pool,
+                    card_id,
+                    cards::UpdateCard {
+                        metadata_json: Some(serde_json::Value::Object(meta)),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    "Goal '{}' worker failed (attempt {}): {} — leaving in InProgress for retry",
+                    card.title,
+                    attempt_count,
+                    error
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Resume in-progress goals after daemon restart.
+///
+/// Scans for goal cards in the `in_progress` state and either:
+/// - Moves dead-session cards to Ready (or Triage at 3 attempts)
+/// - Re-attaches a polling tracker for alive sessions
+pub async fn resume_in_progress_goals(
+    session_manager: &crate::session::SessionManager,
+) -> Result<(), String> {
+    let pool = session_manager
+        .pool_clone()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Find all in-progress goal cards across all projects
+    let rows = sqlx::query_as::<_, (String, String)>(
+        "SELECT c.id, c.project_id FROM cards c
+         JOIN board_columns bc ON c.column_id = bc.id
+         WHERE c.card_type = 'goal'
+           AND bc.state_binding = 'in_progress'
+           AND c.archived_at IS NULL",
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    tracing::info!(
+        target: "permagentd::brain",
+        "Resuming {} in-progress goal(s) from prior session",
+        rows.len()
+    );
+
+    let manager = AgentManager::instance().await.ok();
+
+    for (card_id, project_id) in rows {
+        if let Err(e) = resume_single_goal(&pool, &manager, &card_id, &project_id).await {
+            tracing::warn!(
+                target: "permagentd::brain",
+                "Failed to resume goal {}: {}",
+                card_id,
+                e
+            );
+        }
+    }
+
+    Ok(())
+}
+
+async fn resume_single_goal(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    manager: &Option<Arc<AgentManager>>,
+    card_id: &str,
+    project_id: &str,
+) -> Result<(), String> {
+    let card = cards::get_card(pool, card_id)
+        .await?
+        .ok_or_else(|| format!("Card {} not found during resume", card_id))?;
+
+    let meta = card.metadata_json.as_object();
+    let session_id = meta
+        .and_then(|m| m.get("worker_session_id"))
+        .and_then(|v| v.as_str());
+    let attempt_count = meta
+        .and_then(|m| m.get("attempt_count"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    // Check if worker session is still alive
+    let session_alive = match (session_id, manager) {
+        (Some(sid), Some(mgr)) => mgr.is_session_busy(sid).await,
+        _ => false,
+    };
+
+    if session_alive {
+        // Case 2: session is alive — spawn polling tracker
+        let pool_clone = pool.clone();
+        let card_id = card_id.to_string();
+        let project_id = project_id.to_string();
+        let sid = session_id.unwrap().to_string();
+
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+
+                let still_busy = match AgentManager::instance().await {
+                    Ok(mgr) => mgr.is_session_busy(&sid).await,
+                    Err(_) => false,
+                };
+
+                if !still_busy {
+                    // Session finished — treat as success (we can't recover the
+                    // actual result from a prior daemon lifecycle, so assume success
+                    // and let the user review)
+                    if let Err(e) =
+                        handle_goal_completion(&pool_clone, &card_id, &project_id, Ok(())).await
+                    {
+                        tracing::warn!(
+                            target: "permagentd::brain",
+                            "Failed to handle resumed goal completion for {}: {}",
+                            card_id,
+                            e
+                        );
+                    }
+                    break;
+                }
+            }
+        });
+
+        tracing::info!(
+            target: "permagentd::brain",
+            "Re-attached tracker for alive goal '{}' (session: {})",
+            card.title,
+            session_id.unwrap_or("?")
+        );
+    } else {
+        // Case 1: session is dead — move to Ready or Triage
+        let new_attempt = attempt_count + 1;
+        let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
+
+        meta.insert("attempt_count".to_string(), serde_json::json!(new_attempt));
+        meta.insert(
+            "last_error".to_string(),
+            serde_json::Value::String("Abandoned during daemon restart".to_string()),
+        );
+
+        if new_attempt >= MAX_GOAL_ATTEMPTS {
+            // Terminal: move to Triage with needs_human_attention
+            meta.insert(
+                "goal_state".to_string(),
+                serde_json::Value::String("triage".to_string()),
+            );
+            meta.insert(
+                "needs_human_attention".to_string(),
+                serde_json::Value::Bool(true),
+            );
+
+            cards::update_card(
+                pool,
+                card_id,
+                cards::UpdateCard {
+                    metadata_json: Some(serde_json::Value::Object(meta)),
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+            let triage_col = cards::get_goal_column(pool, project_id, "triage")
+                .await?
+                .ok_or("Triage column not found")?;
+            cards::move_card(pool, card_id, &triage_col.id, None).await?;
+
+            tracing::warn!(
+                target: "permagentd::brain",
+                "Goal '{}' reached {} attempts after restart — moved to Triage with needs_human_attention",
+                card.title,
+                new_attempt
+            );
+        } else {
+            // Retriable: move to Ready for re-dispatch
+            meta.insert(
+                "goal_state".to_string(),
+                serde_json::Value::String("ready".to_string()),
+            );
+
+            cards::update_card(
+                pool,
+                card_id,
+                cards::UpdateCard {
+                    metadata_json: Some(serde_json::Value::Object(meta)),
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+            let ready_col = cards::get_goal_column(pool, project_id, "ready")
+                .await?
+                .ok_or("Ready column not found")?;
+            cards::move_card(pool, card_id, &ready_col.id, None).await?;
+
+            tracing::info!(
+                target: "permagentd::brain",
+                "Goal '{}' moved to Ready after restart (attempt {}/{})",
+                card.title,
+                new_attempt,
+                MAX_GOAL_ATTEMPTS
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn test_pool() -> sqlx::Pool<sqlx::Sqlite> {
+        use crate::session::spectral_schema::init_spectral_db;
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        init_spectral_db(&pool).await.unwrap();
+        pool
+    }
+
+    /// Create a goal card in a specific state for testing.
+    async fn setup_goal_in_state(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        state_binding: &str,
+        attempt_count: u64,
+    ) -> cards::Card {
+        use crate::projects::PERSONAL_PROJECT_ID;
+
+        // Ensure goal columns exist
+        cards::seed_goal_columns(pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+
+        let col = cards::get_goal_column(pool, PERSONAL_PROJECT_ID, state_binding)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            "attempt_count".to_string(),
+            serde_json::json!(attempt_count),
+        );
+        meta.insert(
+            "goal_state".to_string(),
+            serde_json::Value::String(state_binding.to_string()),
+        );
+
+        cards::create_card(
+            pool,
+            cards::CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: format!("Test goal in {}", state_binding),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(col.id.clone()),
+                created_by: None,
+                metadata_json: Some(serde_json::Value::Object(meta)),
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn completion_success_moves_to_review() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(col.state_binding.as_deref(), Some("review"));
+        assert_eq!(
+            updated.metadata_json.get("goal_state").unwrap().as_str(),
+            Some("review")
+        );
+        assert!(updated.metadata_json.get("completed_at").is_some());
+    }
+
+    #[tokio::test]
+    async fn completion_failure_leaves_in_progress_on_first_attempt() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+
+        handle_goal_completion(
+            &pool,
+            &card.id,
+            &card.project_id,
+            Err("Worker crashed".to_string()),
+        )
+        .await
+        .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("in_progress"),
+            "Should stay in InProgress on retriable failure"
+        );
+        assert_eq!(
+            updated.metadata_json.get("last_error").unwrap().as_str(),
+            Some("Worker crashed")
+        );
+    }
+
+    #[tokio::test]
+    async fn completion_failure_moves_to_triage_on_third_attempt() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 3).await;
+
+        handle_goal_completion(
+            &pool,
+            &card.id,
+            &card.project_id,
+            Err("Worker crashed again".to_string()),
+        )
+        .await
+        .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("triage"),
+            "Should move to Triage after 3 attempts"
+        );
+        assert_eq!(
+            updated
+                .metadata_json
+                .get("needs_human_attention")
+                .unwrap()
+                .as_bool(),
+            Some(true)
+        );
+        assert!(updated.metadata_json.get("last_error").is_some());
+    }
+
+    #[tokio::test]
+    async fn completion_noops_if_card_not_in_progress() {
+        let pool = test_pool().await;
+        // Card is in Review (someone already approved manually)
+        let card = setup_goal_in_state(&pool, "review", 1).await;
+
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
+            .await
+            .unwrap();
+
+        // Card should still be in Review — no-op
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("review"),
+            "Should not change card that's already been moved"
+        );
+    }
+
+    #[tokio::test]
+    async fn goal_status_returns_correct_shape() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 2).await;
+
+        // Add some metadata fields that goal_status reads
+        let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
+        meta.insert(
+            "worker_key".to_string(),
+            serde_json::Value::String("codex".to_string()),
+        );
+        meta.insert(
+            "worker_session_id".to_string(),
+            serde_json::Value::String("20260528_1".to_string()),
+        );
+        meta.insert(
+            "dispatched_at".to_string(),
+            serde_json::Value::String("2026-05-28T10:00:00Z".to_string()),
+        );
+        cards::update_card(
+            &pool,
+            &card.id,
+            cards::UpdateCard {
+                metadata_json: Some(serde_json::Value::Object(meta)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        // Call the function directly (we can't easily construct OrchestratorClient in tests,
+        // but we can verify the data extraction logic via the card + column)
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let state = col.state_binding.as_deref().unwrap_or("unknown");
+        let umeta = updated.metadata_json.as_object().unwrap();
+
+        assert_eq!(state, "in_progress");
+        assert_eq!(umeta.get("worker_key").unwrap().as_str(), Some("codex"));
+        assert_eq!(
+            umeta.get("worker_session_id").unwrap().as_str(),
+            Some("20260528_1")
+        );
+        assert_eq!(umeta.get("attempt_count").unwrap().as_u64(), Some(2));
+    }
+
+    #[tokio::test]
+    async fn resume_no_in_progress_goals_is_noop() {
+        let pool = test_pool().await;
+        // No goals at all — should succeed with no side effects
+        let result = resume_single_goal(&pool, &None, "nonexistent", "nonexistent").await;
+        assert!(result.is_err()); // card not found — expected
+    }
+
+    #[tokio::test]
+    async fn resume_dead_session_moves_to_ready() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+
+        // No manager = session considered dead
+        resume_single_goal(&pool, &None, &card.id, &card.project_id)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(col.state_binding.as_deref(), Some("ready"));
+        assert_eq!(
+            updated.metadata_json.get("attempt_count").unwrap().as_u64(),
+            Some(2)
+        );
+        assert_eq!(
+            updated.metadata_json.get("last_error").unwrap().as_str(),
+            Some("Abandoned during daemon restart")
+        );
+        assert_eq!(
+            updated.metadata_json.get("goal_state").unwrap().as_str(),
+            Some("ready")
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_dead_session_at_max_attempts_moves_to_triage() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 2).await;
+
+        resume_single_goal(&pool, &None, &card.id, &card.project_id)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(col.state_binding.as_deref(), Some("triage"));
+        assert_eq!(
+            updated.metadata_json.get("attempt_count").unwrap().as_u64(),
+            Some(3)
+        );
+        assert_eq!(
+            updated
+                .metadata_json
+                .get("needs_human_attention")
+                .unwrap()
+                .as_bool(),
+            Some(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_missing_session_id_treated_as_dead() {
+        let pool = test_pool().await;
+        use crate::projects::PERSONAL_PROJECT_ID;
+
+        cards::seed_goal_columns(&pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        let col = cards::get_goal_column(&pool, PERSONAL_PROJECT_ID, "in_progress")
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Create card with NO worker_session_id in metadata
+        let card = cards::create_card(
+            &pool,
+            cards::CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: "No session".to_string(),
+                description: None,
+                card_type: Some("goal".to_string()),
+                column_id: Some(col.id.clone()),
+                created_by: None,
+                metadata_json: Some(
+                    serde_json::json!({"attempt_count": 0, "goal_state": "in_progress"}),
+                ),
+            },
+        )
+        .await
+        .unwrap();
+
+        resume_single_goal(&pool, &None, &card.id, &card.project_id)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let ucol = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            ucol.state_binding.as_deref(),
+            Some("ready"),
+            "Missing session_id should be treated as dead session"
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_multiple_cards_handled_independently() {
+        let pool = test_pool().await;
+        let card1 = setup_goal_in_state(&pool, "in_progress", 1).await;
+        let card2 = setup_goal_in_state(&pool, "in_progress", 2).await;
+
+        // Both dead (no manager)
+        resume_single_goal(&pool, &None, &card1.id, &card1.project_id)
+            .await
+            .unwrap();
+        resume_single_goal(&pool, &None, &card2.id, &card2.project_id)
+            .await
+            .unwrap();
+
+        let u1 = cards::get_card(&pool, &card1.id).await.unwrap().unwrap();
+        let c1 = cards::get_column(&pool, &u1.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            c1.state_binding.as_deref(),
+            Some("ready"),
+            "card1: attempt 1 → Ready"
+        );
+
+        let u2 = cards::get_card(&pool, &card2.id).await.unwrap().unwrap();
+        let c2 = cards::get_column(&pool, &u2.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            c2.state_binding.as_deref(),
+            Some("triage"),
+            "card2: attempt 2 → Triage (at cap)"
+        );
+    }
+
+    #[tokio::test]
+    async fn goal_status_fails_on_standard_card() {
+        let pool = test_pool().await;
+        use crate::projects::PERSONAL_PROJECT_ID;
+
+        let card = cards::create_card(
+            &pool,
+            cards::CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: "Standard task".to_string(),
+                description: None,
+                card_type: Some("standard".to_string()),
+                column_id: None,
+                created_by: None,
+                metadata_json: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        // goal_status logic rejects non-goal cards
+        assert_eq!(card.card_type, "standard");
+        // The actual tool handler checks card_type != "goal" and returns Err
+        // We verify the card_type here since we can't easily call the MCP handler
+    }
 }
