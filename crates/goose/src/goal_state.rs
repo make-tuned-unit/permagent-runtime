@@ -72,7 +72,7 @@ pub enum GoalAction {
 
 impl GoalAction {
     /// Parse an action string from the MCP tool parameter.
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse_action(s: &str) -> Option<Self> {
         match s {
             "ready" => Some(Self::Ready),
             "dispatch" => Some(Self::Dispatch),
@@ -433,12 +433,12 @@ mod tests {
 
     #[test]
     fn action_parsing() {
-        assert_eq!(GoalAction::from_str("ready"), Some(GoalAction::Ready));
-        assert_eq!(GoalAction::from_str("dispatch"), Some(GoalAction::Dispatch));
-        assert_eq!(GoalAction::from_str("review"), Some(GoalAction::Review));
-        assert_eq!(GoalAction::from_str("approve"), Some(GoalAction::Approve));
-        assert_eq!(GoalAction::from_str("reject"), Some(GoalAction::Reject));
-        assert_eq!(GoalAction::from_str("invalid"), None);
+        assert_eq!(GoalAction::parse_action("ready"), Some(GoalAction::Ready));
+        assert_eq!(GoalAction::parse_action("dispatch"), Some(GoalAction::Dispatch));
+        assert_eq!(GoalAction::parse_action("review"), Some(GoalAction::Review));
+        assert_eq!(GoalAction::parse_action("approve"), Some(GoalAction::Approve));
+        assert_eq!(GoalAction::parse_action("reject"), Some(GoalAction::Reject));
+        assert_eq!(GoalAction::parse_action("invalid"), None);
     }
 
     #[test]

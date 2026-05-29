@@ -1012,7 +1012,7 @@ impl OrchestratorClient {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let action = GoalAction::from_str(&action_str).ok_or_else(|| {
+        let action = GoalAction::parse_action(&action_str).ok_or_else(|| {
             format!(
                 "Invalid action '{}'. Must be: ready, dispatch, review, approve, reject",
                 action_str
@@ -1425,12 +1425,12 @@ pub async fn handle_goal_completion(
     project_id: &str,
     result: Result<(), String>,
 ) -> Result<(), String> {
-    let card = cards::get_card(&pool, card_id)
+    let card = cards::get_card(pool, card_id)
         .await?
         .ok_or_else(|| format!("Card '{}' not found during completion handling", card_id))?;
 
     // Check card is still in InProgress — if not, someone manually intervened; no-op.
-    let current_col = cards::get_column(&pool, &card.column_id).await?;
+    let current_col = cards::get_column(pool, &card.column_id).await?;
     match current_col
         .as_ref()
         .and_then(|c| c.state_binding.as_deref())
@@ -1462,7 +1462,7 @@ pub async fn handle_goal_completion(
             );
 
             cards::update_card(
-                &pool,
+                pool,
                 card_id,
                 cards::UpdateCard {
                     metadata_json: Some(serde_json::Value::Object(meta)),
@@ -1471,10 +1471,10 @@ pub async fn handle_goal_completion(
             )
             .await?;
 
-            let review_col = cards::get_goal_column(&pool, project_id, "review")
+            let review_col = cards::get_goal_column(pool, project_id, "review")
                 .await?
                 .ok_or("Review column not found")?;
-            cards::move_card(&pool, card_id, &review_col.id, None).await?;
+            cards::move_card(pool, card_id, &review_col.id, None).await?;
 
             tracing::info!(
                 target: "permagentd::brain",
@@ -1505,7 +1505,7 @@ pub async fn handle_goal_completion(
                 );
 
                 cards::update_card(
-                    &pool,
+                    pool,
                     card_id,
                     cards::UpdateCard {
                         metadata_json: Some(serde_json::Value::Object(meta)),
@@ -1514,10 +1514,10 @@ pub async fn handle_goal_completion(
                 )
                 .await?;
 
-                let triage_col = cards::get_goal_column(&pool, project_id, "triage")
+                let triage_col = cards::get_goal_column(pool, project_id, "triage")
                     .await?
                     .ok_or("Triage column not found")?;
-                cards::move_card(&pool, card_id, &triage_col.id, None).await?;
+                cards::move_card(pool, card_id, &triage_col.id, None).await?;
 
                 tracing::warn!(
                     target: "permagentd::brain",
@@ -1533,7 +1533,7 @@ pub async fn handle_goal_completion(
                 );
 
                 cards::update_card(
-                    &pool,
+                    pool,
                     card_id,
                     cards::UpdateCard {
                         metadata_json: Some(serde_json::Value::Object(meta)),
