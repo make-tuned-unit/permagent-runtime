@@ -77,6 +77,11 @@ struct CardCreateParams {
     card_type: Option<String>,
     /// Column name or ID to place the card in (optional, defaults to first column)
     column: Option<String>,
+    /// For goal cards only: if true, immediately dispatch to a worker after creation.
+    /// The card will be moved from Triage → Ready → InProgress automatically.
+    /// Defaults to false.
+    #[serde(default)]
+    auto_dispatch: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -369,6 +374,15 @@ impl ProjectManagerClient {
             None
         };
 
+        let card_type_str = args
+            .get("card_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("standard");
+        let auto_dispatch = args
+            .get("auto_dispatch")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
         let card = cards::create_card(
             &pool,
             cards::CreateCard {
@@ -378,16 +392,67 @@ impl ProjectManagerClient {
                     .get("description")
                     .and_then(|v| v.as_str())
                     .map(String::from),
-                card_type: args
-                    .get("card_type")
-                    .and_then(|v| v.as_str())
-                    .map(String::from),
+                card_type: Some(card_type_str.to_string()),
                 column_id,
                 created_by: Some("user".to_string()),
                 metadata_json: None,
             },
         )
         .await?;
+
+        // Auto-dispatch: for goal cards, move Triage → Ready → InProgress via Orchestrator
+        if card_type_str == "goal" && auto_dispatch {
+            // Move to Ready
+            let ready_col = cards::get_goal_column(&pool, &project.id, "ready")
+                .await?
+                .ok_or("Ready column not found for auto-dispatch")?;
+            cards::move_card(&pool, &card.id, &ready_col.id, None).await?;
+
+            // Dispatch via a temporary OrchestratorClient
+            match super::orchestrator::OrchestratorClient::new(self.context.clone()) {
+                Ok(orch) => match orch.dispatch_goal(&card.id).await {
+                    Ok(session_id) => {
+                        let updated = cards::get_card(&pool, &card.id)
+                            .await?
+                            .unwrap_or(card.clone());
+                        let json = serde_json::json!({
+                            "id": updated.id, "title": updated.title, "card_type": updated.card_type,
+                            "column_id": updated.column_id, "assigned_to": updated.assigned_to,
+                            "worker_session_id": session_id,
+                            "project": project.name, "state": "in_progress",
+                        });
+                        return Ok(vec![Content::text(format!(
+                            "Created goal \"{}\" in {} and dispatched to worker (session: {})\n\n{}",
+                            updated.title,
+                            project.name,
+                            session_id,
+                            serde_json::to_string_pretty(&json).unwrap_or_default()
+                        ))]);
+                    }
+                    Err(e) => {
+                        // Dispatch failed — card is in Ready, user can retry manually
+                        let json = serde_json::json!({
+                            "id": card.id, "title": card.title, "card_type": card.card_type,
+                            "column_id": ready_col.id, "project": project.name,
+                            "state": "ready", "dispatch_error": e,
+                        });
+                        return Ok(vec![Content::text(format!(
+                            "Created goal \"{}\" in {} (moved to Ready) but dispatch failed: {}\n\n{}",
+                            card.title,
+                            project.name,
+                            e,
+                            serde_json::to_string_pretty(&json).unwrap_or_default()
+                        ))]);
+                    }
+                },
+                Err(e) => {
+                    return Err(format!(
+                        "Created goal but failed to initialize dispatch: {}",
+                        e
+                    ));
+                }
+            }
+        }
 
         let json = serde_json::json!({
             "id": card.id, "title": card.title, "card_type": card.card_type,
@@ -654,6 +719,10 @@ impl ProjectManagerClient {
                 Create a card on a project's Kanban board. Use when the user says "add a card",
                 "create a task", "track this", etc. Defaults to card_type='standard' and places
                 the card in the first column (Backlog) unless specified.
+
+                For goal cards (card_type='goal'): set auto_dispatch=true to immediately
+                assign a worker and begin execution. The card moves Triage → Ready → InProgress
+                automatically. If auto_dispatch is false or omitted, the goal stays in Triage.
             "#}
                 .to_string(),
                 card_create_schema.as_object().unwrap().clone(),

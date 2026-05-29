@@ -6943,6 +6943,7 @@ dependencies = [
  "aws-sdk-sagemakerruntime",
  "aws-smithy-types",
  "axum",
+ "backtrace",
  "base64 0.22.1",
  "blake3",
  "byteorder",
