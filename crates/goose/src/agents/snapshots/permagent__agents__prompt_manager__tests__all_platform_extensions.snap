@@ -105,7 +105,13 @@ The Librarian generates prose descriptions for memories stored in the Brain. Use
 ## orchestrator
 
 ### Instructions
-Manage agent sessions: list, view, start, send messages, and interrupt agents.
+Manage agent sessions and coordinate goal-driven work across projects.
+
+When users describe work — building, fixing, automating — create goal cards on a project's Kanban board using card_create with card_type='goal'. Goals follow a lifecycle: Triage → Ready → InProgress → Review → Complete. Pass auto_dispatch=true to assign a worker and start immediately.
+
+Use goal_advance to transition goals (actions: ready, dispatch, review, approve, reject). Use goal_status to check progress. Use list_workers to see available workers before dispatching.
+
+Goals that fail three times move to Triage with needs_human_attention=true. Surface these to the user rather than retrying silently.
 ## projectmanager
 
 ### Instructions

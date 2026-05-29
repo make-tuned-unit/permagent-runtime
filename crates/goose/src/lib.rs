@@ -21,6 +21,7 @@ pub mod download_manager;
 pub mod events;
 pub mod execution;
 pub mod gateway;
+pub mod goal_state;
 pub mod goose_apps;
 pub mod hints;
 pub mod identity;

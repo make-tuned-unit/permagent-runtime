@@ -113,6 +113,69 @@ pub async fn seed_default_columns(pool: &Pool<Sqlite>, project_id: &str) -> Resu
     Ok(())
 }
 
+/// The five lifecycle columns seeded for projects using goal cards.
+pub const GOAL_COLUMNS: &[(&str, &str, i32)] = &[
+    ("triage", "Triage", 100),
+    ("ready", "Ready", 101),
+    ("in_progress", "In Progress", 102),
+    ("review", "Review", 103),
+    ("complete", "Complete", 104),
+];
+
+/// Seed goal lifecycle columns (Triage/Ready/InProgress/Review/Complete) for a project.
+/// Idempotent — skips if state-bound columns already exist for this project.
+/// Called on the first card_create with card_type='goal' for a project.
+pub async fn seed_goal_columns(pool: &Pool<Sqlite>, project_id: &str) -> Result<(), String> {
+    let has_state_cols: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM board_columns WHERE project_id = ? AND column_kind = 'state')",
+    )
+    .bind(project_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if has_state_cols {
+        return Ok(());
+    }
+
+    for (state_binding, name, position) in GOAL_COLUMNS {
+        let id = Uuid::now_v7().to_string();
+        sqlx::query(
+            "INSERT INTO board_columns (id, project_id, name, position, column_kind, state_binding)
+             VALUES (?, ?, ?, ?, 'state', ?)",
+        )
+        .bind(&id)
+        .bind(project_id)
+        .bind(name)
+        .bind(position)
+        .bind(state_binding)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+/// Find the goal lifecycle column for a given state_binding in a project.
+pub async fn get_goal_column(
+    pool: &Pool<Sqlite>,
+    project_id: &str,
+    state_binding: &str,
+) -> Result<Option<BoardColumn>, String> {
+    let row = sqlx::query(
+        "SELECT id, project_id, name, position, column_kind, state_binding, wip_limit, created_at
+         FROM board_columns WHERE project_id = ? AND state_binding = ?",
+    )
+    .bind(project_id)
+    .bind(state_binding)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(row.as_ref().map(row_to_column))
+}
+
 // ── Column operations ──────────────────────────────────────────────────────
 
 pub async fn list_columns(
@@ -354,9 +417,21 @@ pub async fn create_card(pool: &Pool<Sqlite>, input: CreateCard) -> Result<Card,
         return Err(format!("Invalid created_by: {}", created_by));
     }
 
-    // Resolve column: use provided, or fall back to first column in project
+    // For goal cards: seed lifecycle columns if absent, default to Triage
+    if card_type == "goal" {
+        seed_goal_columns(pool, &input.project_id).await?;
+    }
+
+    // Resolve column: use provided, or fall back based on card type
     let column_id = match input.column_id {
         Some(cid) => cid,
+        None if card_type == "goal" => {
+            // Goal cards default to the Triage column
+            get_goal_column(pool, &input.project_id, "triage")
+                .await?
+                .map(|c| c.id)
+                .ok_or("Triage column not found after seeding goal columns")?
+        }
         None => {
             let first: Option<String> = sqlx::query_scalar(
                 "SELECT id FROM board_columns WHERE project_id = ? ORDER BY position ASC LIMIT 1",
@@ -953,5 +1028,108 @@ mod tests {
         assert_eq!(cards.len(), 2);
         assert_eq!(cards[0].title, "B");
         assert_eq!(cards[1].title, "A");
+    }
+
+    #[tokio::test]
+    async fn seed_goal_columns_creates_five_state_columns() {
+        let pool = test_pool().await;
+        seed_goal_columns(&pool, PERSONAL_PROJECT_ID).await.unwrap();
+
+        let cols = list_columns(&pool, PERSONAL_PROJECT_ID).await.unwrap();
+        let state_cols: Vec<_> = cols.iter().filter(|c| c.column_kind == "state").collect();
+        assert_eq!(state_cols.len(), 5);
+
+        let bindings: Vec<_> = state_cols
+            .iter()
+            .map(|c| c.state_binding.as_deref().unwrap_or(""))
+            .collect();
+        assert!(bindings.contains(&"triage"));
+        assert!(bindings.contains(&"ready"));
+        assert!(bindings.contains(&"in_progress"));
+        assert!(bindings.contains(&"review"));
+        assert!(bindings.contains(&"complete"));
+
+        // Verify positions are 100+
+        for col in &state_cols {
+            assert!(
+                col.position >= 100,
+                "State column position should be >= 100"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn seed_goal_columns_idempotent() {
+        let pool = test_pool().await;
+        seed_goal_columns(&pool, PERSONAL_PROJECT_ID).await.unwrap();
+        seed_goal_columns(&pool, PERSONAL_PROJECT_ID).await.unwrap();
+
+        let cols = list_columns(&pool, PERSONAL_PROJECT_ID).await.unwrap();
+        let state_cols: Vec<_> = cols.iter().filter(|c| c.column_kind == "state").collect();
+        assert_eq!(state_cols.len(), 5, "Idempotent: should still be 5, not 10");
+    }
+
+    #[tokio::test]
+    async fn create_goal_card_seeds_columns_and_places_in_triage() {
+        let pool = test_pool().await;
+
+        // No state columns before first goal
+        let cols = list_columns(&pool, PERSONAL_PROJECT_ID).await.unwrap();
+        assert!(
+            cols.iter().all(|c| c.column_kind != "state"),
+            "No state columns should exist before first goal"
+        );
+
+        let card = create_card(
+            &pool,
+            CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: "My Goal".to_string(),
+                description: Some("Build something".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: None,
+                created_by: None,
+                metadata_json: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(card.card_type, "goal");
+
+        // State columns should now exist
+        let cols = list_columns(&pool, PERSONAL_PROJECT_ID).await.unwrap();
+        let state_cols: Vec<_> = cols.iter().filter(|c| c.column_kind == "state").collect();
+        assert_eq!(state_cols.len(), 5);
+
+        // Card should be in the Triage column
+        let triage = cols
+            .iter()
+            .find(|c| c.state_binding.as_deref() == Some("triage"))
+            .expect("Triage column should exist");
+        assert_eq!(card.column_id, triage.id);
+    }
+
+    #[tokio::test]
+    async fn get_goal_column_returns_correct_column() {
+        let pool = test_pool().await;
+        seed_goal_columns(&pool, PERSONAL_PROJECT_ID).await.unwrap();
+
+        let triage = get_goal_column(&pool, PERSONAL_PROJECT_ID, "triage")
+            .await
+            .unwrap();
+        assert!(triage.is_some());
+        assert_eq!(triage.unwrap().name, "Triage");
+
+        let review = get_goal_column(&pool, PERSONAL_PROJECT_ID, "review")
+            .await
+            .unwrap();
+        assert!(review.is_some());
+        assert_eq!(review.unwrap().name, "Review");
+
+        let nonexistent = get_goal_column(&pool, PERSONAL_PROJECT_ID, "nonexistent")
+            .await
+            .unwrap();
+        assert!(nonexistent.is_none());
     }
 }
