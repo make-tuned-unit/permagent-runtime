@@ -434,9 +434,15 @@ mod tests {
     #[test]
     fn action_parsing() {
         assert_eq!(GoalAction::parse_action("ready"), Some(GoalAction::Ready));
-        assert_eq!(GoalAction::parse_action("dispatch"), Some(GoalAction::Dispatch));
+        assert_eq!(
+            GoalAction::parse_action("dispatch"),
+            Some(GoalAction::Dispatch)
+        );
         assert_eq!(GoalAction::parse_action("review"), Some(GoalAction::Review));
-        assert_eq!(GoalAction::parse_action("approve"), Some(GoalAction::Approve));
+        assert_eq!(
+            GoalAction::parse_action("approve"),
+            Some(GoalAction::Approve)
+        );
         assert_eq!(GoalAction::parse_action("reject"), Some(GoalAction::Reject));
         assert_eq!(GoalAction::parse_action("invalid"), None);
     }
