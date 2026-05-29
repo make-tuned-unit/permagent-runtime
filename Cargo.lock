@@ -7053,6 +7053,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "permagent-brain-tests"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "permagent",
+ "serde_json",
+ "spectral",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "permagent-cli"
 version = "1.31.0"
 dependencies = [
