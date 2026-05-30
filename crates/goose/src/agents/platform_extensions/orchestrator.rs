@@ -139,10 +139,46 @@ struct CheckWorkerParams {
     worker_key: String,
 }
 
+/// Keywords that trigger Kanban context injection (case-insensitive substring match).
+const BOARD_KEYWORDS: &[&str] = &[
+    "what", "status", "progress", "working", "stalled", "running", "doing", "stuck", "blocked",
+    "next", "todo", "task", "goal", "project", "board", "kanban",
+];
+
+/// How often the 5-turn floor fires (every Nth turn).
+const INJECTION_TURN_INTERVAL: u32 = 5;
+
+/// Cache TTL for the board summary.
+const KANBAN_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+pub struct KanbanContextCache {
+    cached_summary: Option<String>,
+    last_refreshed: Option<std::time::Instant>,
+    turn_count: u32,
+}
+
+impl KanbanContextCache {
+    fn new() -> Self {
+        Self {
+            cached_summary: None,
+            last_refreshed: None,
+            turn_count: 0,
+        }
+    }
+
+    fn is_stale(&self) -> bool {
+        match self.last_refreshed {
+            None => true,
+            Some(t) => t.elapsed() > KANBAN_CACHE_TTL,
+        }
+    }
+}
+
 pub struct OrchestratorClient {
     info: InitializeResult,
     context: PlatformExtensionContext,
     probe_cache: Arc<ProbeCache>,
+    kanban_cache: Arc<tokio::sync::Mutex<KanbanContextCache>>,
 }
 
 impl OrchestratorClient {
@@ -161,13 +197,19 @@ impl OrchestratorClient {
                  approve, reject). Use goal_status to check progress. Use list_workers to \
                  see available workers before dispatching.\n\n\
                  Goals that fail three times move to Triage with needs_human_attention=true. \
-                 Surface these to the user rather than retrying silently.",
+                 Surface these to the user rather than retrying silently.\n\n\
+                 You have ambient awareness of all project boards. The current board state \
+                 is injected into your context when the conversation turns toward work status. \
+                 When users ask about progress, what's stalled, or what's next — answer from \
+                 your injected context without calling tools. For detailed board queries beyond \
+                 the summary, use the board_summary tool.",
             );
 
         let client = Self {
             info,
             context,
             probe_cache: Arc::new(ProbeCache::new()),
+            kanban_cache: Arc::new(tokio::sync::Mutex::new(KanbanContextCache::new())),
         };
 
         // Spawn one-shot resume of in-progress goals from a prior daemon lifecycle
@@ -211,6 +253,31 @@ impl OrchestratorClient {
     fn parent_extensions(&self) -> Vec<ExtensionConfig> {
         let extension_data = self.context.session.as_ref().map(|s| &s.extension_data);
         EnabledExtensionsState::extensions_or_default(extension_data, Config::global())
+    }
+
+    /// Refresh the cached board summary from the database.
+    async fn refresh_kanban_context(&self) -> Result<String, String> {
+        let pool = self
+            .context
+            .session_manager
+            .pool_clone()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let summary = format_board_summary(&pool).await?;
+
+        let mut cache = self.kanban_cache.lock().await;
+        cache.cached_summary = Some(summary.clone());
+        cache.last_refreshed = Some(std::time::Instant::now());
+
+        Ok(summary)
+    }
+
+    /// Invalidate the Kanban context cache so the next get_moim refreshes.
+    /// Called after any board-state-changing operation (dispatch, advance, completion).
+    async fn invalidate_kanban_cache(&self) {
+        let mut cache = self.kanban_cache.lock().await;
+        cache.last_refreshed = None;
     }
 
     /// Select the best available worker for a goal card.
@@ -498,6 +565,7 @@ impl OrchestratorClient {
             session_id
         );
 
+        self.invalidate_kanban_cache().await;
         Ok(session_id)
     }
 
@@ -1113,6 +1181,7 @@ impl OrchestratorClient {
                 .await?;
                 cards::move_card(&pool, &card_id, &triage_col.id, None).await?;
 
+                self.invalidate_kanban_cache().await;
                 return Ok(CallToolResult::success(vec![Content::text(format!(
                     "Goal '{}' has reached {} failed attempts. Moved back to Triage with needs_human_attention=true.",
                     card.title, MAX_GOAL_ATTEMPTS
@@ -1164,6 +1233,7 @@ impl OrchestratorClient {
 
         cards::move_card(&pool, &card_id, &target_col.id, None).await?;
 
+        self.invalidate_kanban_cache().await;
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Goal '{}' advanced: {} → {} (action: {})",
             card.title, current_state, new_state, action
@@ -1393,6 +1463,51 @@ impl McpClientTrait for OrchestratorClient {
     fn get_info(&self) -> Option<&InitializeResult> {
         Some(&self.info)
     }
+
+    async fn get_moim(&self, session_id: &str) -> Option<String> {
+        let mut cache = self.kanban_cache.lock().await;
+        cache.turn_count += 1;
+        let turn = cache.turn_count;
+
+        // Get user's last message to check for keywords
+        let last_user_text = self
+            .context
+            .session_manager
+            .get_session(session_id, true)
+            .await
+            .ok()
+            .and_then(|s| s.conversation)
+            .and_then(|c| {
+                c.messages()
+                    .iter()
+                    .rev()
+                    .find(|m| m.role == rmcp::model::Role::User)
+                    .map(|m| m.as_concat_text())
+            })
+            .unwrap_or_default();
+
+        if !should_inject_kanban(&last_user_text, turn) {
+            return None;
+        }
+
+        // Refresh if stale or empty
+        if cache.is_stale() || cache.cached_summary.is_none() {
+            drop(cache); // release lock before async refresh
+            match self.refresh_kanban_context().await {
+                Ok(summary) => return Some(summary),
+                Err(e) => {
+                    tracing::debug!(
+                        target: "permagentd::brain",
+                        "Failed to refresh Kanban context: {}",
+                        e
+                    );
+                    return None;
+                }
+            }
+        }
+
+        cache.cached_summary.clone()
+    }
 }
 
 fn schema<T: JsonSchema>() -> JsonObject {
@@ -1409,6 +1524,143 @@ fn extract_string(args: &JsonObject, key: &str) -> Result<String, String> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| format!("Missing or invalid '{}'", key))
+}
+
+/// Check if Kanban context should be injected this turn.
+///
+/// Returns true if the user message contains a board-relevant keyword
+/// (case-insensitive) OR if it's a 5-turn interval.
+pub fn should_inject_kanban(user_message: &str, turn_count: u32) -> bool {
+    // 5-turn floor
+    if turn_count > 0 && turn_count.is_multiple_of(INJECTION_TURN_INTERVAL) {
+        return true;
+    }
+
+    // Keyword match (case-insensitive)
+    let lower = user_message.to_lowercase();
+    BOARD_KEYWORDS.iter().any(|kw| lower.contains(kw))
+}
+
+/// Format a compact board summary from the database.
+///
+/// Joins cards, board_columns, and projects to produce a text summary
+/// suitable for MOIM injection. Target: < 300 tokens.
+pub async fn format_board_summary(pool: &sqlx::Pool<sqlx::Sqlite>) -> Result<String, String> {
+    // Count active projects and cards
+    let project_count: i32 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM projects WHERE status = 'active'")
+            .fetch_one(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+
+    let total_cards: i32 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM cards c
+         JOIN projects p ON c.project_id = p.id
+         WHERE c.archived_at IS NULL AND p.status = 'active'",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let goal_count: i32 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM cards c
+         JOIN projects p ON c.project_id = p.id
+         WHERE c.card_type = 'goal' AND c.archived_at IS NULL AND p.status = 'active'",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let standard_count = total_cards - goal_count;
+
+    let mut lines = vec![format!(
+        "## Current Board State\nProjects: {} active | Cards: {} active ({} goals, {} standard)",
+        project_count, total_cards, goal_count, standard_count
+    )];
+
+    // Goals by state (only show non-empty states)
+    let goal_rows = sqlx::query_as::<_, (String, String, Option<String>, String, Option<String>)>(
+        "SELECT c.title, bc.state_binding, c.assigned_to, c.metadata_json, p.name
+         FROM cards c
+         JOIN board_columns bc ON c.column_id = bc.id
+         JOIN projects p ON c.project_id = p.id
+         WHERE c.card_type = 'goal'
+           AND c.archived_at IS NULL
+           AND p.status = 'active'
+           AND bc.column_kind = 'state'
+         ORDER BY bc.position, c.position",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if !goal_rows.is_empty() {
+        let mut in_flight = Vec::new();
+        let mut needs_attention = Vec::new();
+        let mut recent_complete = Vec::new();
+
+        for (title, state_binding, assigned_to, meta_str, _project_name) in &goal_rows {
+            let meta: serde_json::Value =
+                serde_json::from_str(meta_str).unwrap_or(serde_json::json!({}));
+
+            let needs_attn = meta
+                .get("needs_human_attention")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            if needs_attn {
+                let last_error = meta
+                    .get("last_error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown error");
+                let attempts = meta
+                    .get("attempt_count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                needs_attention.push(format!(
+                    "- \"{}\" — {} failed attempts (last: {})",
+                    title, attempts, last_error
+                ));
+                continue;
+            }
+
+            match state_binding.as_str() {
+                "in_progress" | "review" | "ready" => {
+                    let worker = assigned_to.as_deref().unwrap_or("unassigned");
+                    let state_label = match state_binding.as_str() {
+                        "in_progress" => "InProgress",
+                        "review" => "Review",
+                        "ready" => "Ready",
+                        _ => state_binding,
+                    };
+                    in_flight.push(format!("- [{}] \"{}\" → {}", state_label, title, worker));
+                }
+                "complete" => {
+                    recent_complete.push(format!("- \"{}\" completed", title));
+                }
+                _ => {} // triage goals not shown unless needs_attention
+            }
+        }
+
+        if !in_flight.is_empty() {
+            lines.push(format!("\nGoals in flight:\n{}", in_flight.join("\n")));
+        }
+
+        if !needs_attention.is_empty() {
+            lines.push(format!(
+                "\nNeeds attention:\n{}",
+                needs_attention.join("\n")
+            ));
+        }
+
+        if !recent_complete.is_empty() {
+            // Limit to 5 most recent
+            let shown: Vec<_> = recent_complete.iter().rev().take(5).cloned().collect();
+            lines.push(format!("\nRecent completions:\n{}", shown.join("\n")));
+        }
+    }
+
+    Ok(lines.join("\n"))
 }
 
 /// Handle the completion of a dispatched goal worker.
@@ -2143,5 +2395,126 @@ mod tests {
         assert_eq!(card.card_type, "standard");
         // The actual tool handler checks card_type != "goal" and returns Err
         // We verify the card_type here since we can't easily call the MCP handler
+    }
+
+    // ── Kanban context injection tests ────────────────────────────────
+
+    #[test]
+    fn should_inject_keyword_match() {
+        assert!(should_inject_kanban("What am I working on?", 1));
+        assert!(should_inject_kanban("check the STATUS", 2));
+        assert!(should_inject_kanban("anything stalled?", 3));
+        assert!(should_inject_kanban("show my board", 1));
+        assert!(should_inject_kanban("what's next", 1));
+        assert!(should_inject_kanban("any blocked tasks?", 1));
+        assert!(should_inject_kanban("how's progress on the goal?", 1));
+    }
+
+    #[test]
+    fn should_inject_no_keyword_no_interval() {
+        assert!(!should_inject_kanban("hello there", 1));
+        assert!(!should_inject_kanban("write a function", 2));
+        assert!(!should_inject_kanban("fix this bug", 3));
+        assert!(!should_inject_kanban("", 1));
+    }
+
+    #[test]
+    fn should_inject_five_turn_floor() {
+        assert!(should_inject_kanban("write a function", 5));
+        assert!(should_inject_kanban("", 10));
+        assert!(should_inject_kanban("random text", 15));
+        assert!(!should_inject_kanban("random text", 4));
+        assert!(!should_inject_kanban("random text", 6));
+    }
+
+    #[test]
+    fn should_inject_turn_zero_not_triggered() {
+        // turn_count 0 shouldn't fire the interval (0 % 5 == 0 but turn_count > 0 guard)
+        assert!(!should_inject_kanban("hello", 0));
+    }
+
+    #[tokio::test]
+    async fn format_board_summary_empty_board() {
+        let pool = test_pool().await;
+        let summary = format_board_summary(&pool).await.unwrap();
+        assert!(summary.contains("Projects:"));
+        assert!(summary.contains("Cards:"));
+        // Personal project is always seeded
+        assert!(summary.contains("1 active"));
+    }
+
+    #[tokio::test]
+    async fn format_board_summary_with_goals() {
+        let pool = test_pool().await;
+
+        // Create goals in various states
+        let _triage = setup_goal_in_state(&pool, "triage", 0).await;
+        let _in_progress = setup_goal_in_state(&pool, "in_progress", 1).await;
+
+        let summary = format_board_summary(&pool).await.unwrap();
+        assert!(
+            summary.contains("goals"),
+            "Should mention goals: {}",
+            summary
+        );
+        assert!(
+            summary.contains("InProgress"),
+            "Should show in-progress goals: {}",
+            summary
+        );
+    }
+
+    #[tokio::test]
+    async fn format_board_summary_shows_needs_attention() {
+        let pool = test_pool().await;
+
+        cards::seed_goal_columns(&pool, crate::projects::PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        let triage_col =
+            cards::get_goal_column(&pool, crate::projects::PERSONAL_PROJECT_ID, "triage")
+                .await
+                .unwrap()
+                .unwrap();
+
+        let _card = cards::create_card(
+            &pool,
+            cards::CreateCard {
+                project_id: crate::projects::PERSONAL_PROJECT_ID.to_string(),
+                title: "Broken goal".to_string(),
+                description: None,
+                card_type: Some("goal".to_string()),
+                column_id: Some(triage_col.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "needs_human_attention": true,
+                    "last_error": "SQL syntax error",
+                    "attempt_count": 3,
+                    "goal_state": "triage"
+                })),
+            },
+        )
+        .await
+        .unwrap();
+
+        let summary = format_board_summary(&pool).await.unwrap();
+        assert!(
+            summary.contains("Needs attention"),
+            "Should show needs_attention section: {}",
+            summary
+        );
+        assert!(
+            summary.contains("SQL syntax error"),
+            "Should show error: {}",
+            summary
+        );
+    }
+
+    #[test]
+    fn kanban_cache_starts_empty_and_stale() {
+        let cache = KanbanContextCache::new();
+        assert!(cache.cached_summary.is_none());
+        assert!(cache.is_stale());
+        assert_eq!(cache.turn_count, 0);
     }
 }
