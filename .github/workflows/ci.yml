@@ -36,6 +36,11 @@ jobs:
         env:
           RUST_BACKTRACE: ${{ matrix.os == 'ubuntu-latest' && 'full' || '0' }}
           RUST_LIB_BACKTRACE: ${{ matrix.os == 'ubuntu-latest' && 'full' || '0' }}
+      - name: Brain tests (V8-free, excluded from workspace)
+        run: cargo test --manifest-path crates/permagent-brain-tests/Cargo.toml
+        env:
+          RUST_BACKTRACE: ${{ matrix.os == 'ubuntu-latest' && 'full' || '0' }}
+          RUST_LIB_BACKTRACE: ${{ matrix.os == 'ubuntu-latest' && 'full' || '0' }}
       - name: Doc tests
         run: cargo test --workspace --doc
 
@@ -52,7 +57,9 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: Format
-        run: cargo fmt --all -- --check
+        run: |
+          cargo fmt --all -- --check
+          cargo fmt --manifest-path crates/permagent-brain-tests/Cargo.toml -- --check
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
