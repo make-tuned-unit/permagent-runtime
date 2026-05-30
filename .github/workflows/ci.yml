@@ -32,11 +32,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Unit and integration tests
-        run: cargo test --workspace --lib --tests
+        run: cargo test --workspace --exclude permagent-brain-tests --lib --tests
         env:
           RUST_BACKTRACE: ${{ matrix.os == 'ubuntu-latest' && 'full' || '0' }}
           RUST_LIB_BACKTRACE: ${{ matrix.os == 'ubuntu-latest' && 'full' || '0' }}
-      - name: Brain tests (V8-free crate)
+      - name: Brain tests (V8-free, isolated from workspace feature unification)
         run: cargo test -p permagent-brain-tests
         env:
           RUST_BACKTRACE: ${{ matrix.os == 'ubuntu-latest' && 'full' || '0' }}
