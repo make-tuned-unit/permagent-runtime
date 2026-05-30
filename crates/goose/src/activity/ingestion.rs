@@ -546,31 +546,7 @@ mod tests {
     use super::*;
     use crate::events::activity::{ActivityEvent, ActivityEventType, EventTier, SourceSurface};
 
-    /// Shared Brain instance for all tests in this module.
-    /// See issue #190 — multiple Brain instances cause SIGABRT on Linux.
-    fn shared_test_brain() -> Arc<Brain> {
-        use spectral::DeviceId;
-        use std::sync::OnceLock;
-        crate::test_sigabrt_handler::install();
-        static BRAIN: OnceLock<Arc<Brain>> = OnceLock::new();
-        BRAIN
-            .get_or_init(|| {
-                let temp = tempfile::tempdir().expect("tempdir");
-                let brain_path = temp.path().join("brain");
-                let ontology_path = temp.path().join("ontology.toml");
-                std::fs::write(&ontology_path, include_str!("../../assets/ontology.toml")).unwrap();
-                let _ = Box::leak(Box::new(temp));
-                Arc::new(
-                    Brain::builder()
-                        .data_dir(&brain_path)
-                        .ontology_path(&ontology_path)
-                        .device_id(DeviceId::from_descriptor("test-ingestion"))
-                        .build()
-                        .expect("test brain"),
-                )
-            })
-            .clone()
-    }
+    // Brain-dependent tests moved to crates/permagent-brain-tests/ (issue #190).
 
     fn make_always_event() -> ActivityEvent {
         ActivityEvent {
@@ -584,25 +560,6 @@ mod tests {
                 "duration_ms": 500,
                 "input_tokens": 100,
                 "output_tokens": 50,
-            }),
-            tier: EventTier::Always,
-        }
-    }
-
-    fn make_terminal_event() -> ActivityEvent {
-        ActivityEvent {
-            event_id: uuid::Uuid::new_v4().to_string(),
-            event_type: ActivityEventType::TerminalCommandCompleted,
-            source_surface: SourceSurface::Terminal,
-            timestamp: chrono::Utc::now(),
-            session_id: Some("s1".into()),
-            project_id: None,
-            payload: serde_json::json!({
-                "command": "cargo build",
-                "working_directory": "/home/user/project",
-                "exit_code": 0,
-                "duration_ms": 5000,
-                "stdout_summary": "Compiling...",
             }),
             tier: EventTier::Always,
         }
@@ -662,160 +619,8 @@ mod tests {
         assert_eq!(derive_wing_slug("project:"), None);
     }
 
-    // ── active project tracking tests ──
-
-    #[test]
-    fn active_project_set_on_project_selected() {
-        let brain = shared_test_brain();
-        let ingester = ActivityIngester::new(brain, "test-device".into());
-
-        assert!(ingester.active_project().is_none());
-
-        let event = make_project_selected("project:permagent", "Permagent");
-        ingester.handle_event(&event);
-
-        let ap = ingester.active_project().expect("should be set");
-        assert_eq!(ap.project_id, "project:permagent");
-        assert_eq!(ap.project_name, "Permagent");
-        assert_eq!(ap.wing, "permagent");
-    }
-
-    #[test]
-    fn active_project_replaced_on_subsequent_project_selected() {
-        let brain = shared_test_brain();
-        let ingester = ActivityIngester::new(brain, "test-device".into());
-
-        ingester.handle_event(&make_project_selected("project:permagent", "Permagent"));
-        assert_eq!(ingester.active_project().unwrap().wing, "permagent");
-
-        ingester.handle_event(&make_project_selected("project:get-ladle", "Get Ladle"));
-        let ap = ingester.active_project().unwrap();
-        assert_eq!(ap.wing, "get-ladle");
-        assert_eq!(ap.project_name, "Get Ladle");
-    }
-
-    #[test]
-    fn active_project_unchanged_when_project_id_malformed() {
-        let brain = shared_test_brain();
-        let ingester = ActivityIngester::new(brain, "test-device".into());
-
-        ingester.handle_event(&make_project_selected("project:permagent", "Permagent"));
-        assert_eq!(ingester.active_project().unwrap().wing, "permagent");
-
-        // Malformed: no "project:" prefix
-        let bad_event = ActivityEvent {
-            event_id: uuid::Uuid::new_v4().to_string(),
-            event_type: ActivityEventType::ProjectSelected,
-            source_surface: SourceSurface::ProjectPicker,
-            timestamp: chrono::Utc::now(),
-            session_id: None,
-            project_id: Some("permagent".into()), // missing prefix
-            payload: serde_json::json!({"project_id": "permagent", "project_name": "Bad"}),
-            tier: EventTier::Always,
-        };
-        ingester.handle_event(&bad_event);
-
-        // Should still be permagent, not replaced
-        assert_eq!(ingester.active_project().unwrap().wing, "permagent");
-    }
-
-    #[test]
-    fn wing_override_computed_during_ingestion() {
-        let brain = shared_test_brain();
-        let ingester = ActivityIngester::new(brain, "test-device".into());
-
-        // Set active project
-        ingester.handle_event(&make_project_selected("project:permagent", "Permagent"));
-
-        // Trigger an Always-tier ingestion with a terminal command (not filtered)
-        ingester.handle_event(&make_terminal_event());
-
-        // The active project should still be set (ingestion didn't clear it)
-        let ap = ingester.active_project().expect("should still be set");
-        assert_eq!(ap.wing, "permagent");
-        // wing_override is computed and passed to RememberOpts.wing inside
-        // ingest_to_brain — Brain writes get wing: Some("permagent").
-        assert_eq!(ingester.always_count(), 2); // ProjectSelected + TerminalCommandCompleted
-    }
-
-    // ── Brain write tests ──
-
-    #[test]
-    fn always_event_ingested_to_brain() {
-        let brain = shared_test_brain();
-        let ingester = ActivityIngester::new(brain, "test-device".into());
-        // Use a terminal command event (not filtered, unlike ChatTurnCompleted)
-        ingester.handle_event(&make_terminal_event());
-        assert_eq!(ingester.always_count(), 1);
-        assert_eq!(ingester.failure_count(), 0);
-        assert!(ingester.last_ingested_at().is_some());
-    }
-
-    #[test]
-    fn aggregated_event_ingested_and_queued() {
-        let brain = shared_test_brain();
-        let ingester = ActivityIngester::new(brain, "test-device".into());
-        let event = ActivityEvent {
-            event_id: uuid::Uuid::new_v4().to_string(),
-            event_type: ActivityEventType::BrowserNavigated,
-            source_surface: SourceSurface::Browser,
-            timestamp: chrono::Utc::now(),
-            session_id: None,
-            project_id: None,
-            payload: serde_json::json!({"url": "https://example.com", "title": "Example", "tab_id": "t1"}),
-            tier: EventTier::Aggregated,
-        };
-        ingester.handle_event(&event);
-        assert_eq!(ingester.aggregated_count(), 1);
-        assert_eq!(ingester.aggregation_queue_size(), 1);
-        assert_eq!(ingester.failure_count(), 0);
-    }
-
-    #[test]
-    fn ephemeral_event_counted_not_ingested() {
-        let brain = shared_test_brain();
-        let ingester = ActivityIngester::new(brain, "test-device".into());
-        let event = ActivityEvent {
-            event_id: "eph-1".into(),
-            event_type: ActivityEventType::ChatTurnStarted,
-            source_surface: SourceSurface::Chat,
-            timestamp: chrono::Utc::now(),
-            session_id: Some("s1".into()),
-            project_id: None,
-            payload: serde_json::json!({}),
-            tier: EventTier::Ephemeral,
-        };
-        ingester.handle_event(&event);
-        assert_eq!(ingester.ephemeral_count(), 1);
-        assert_eq!(ingester.always_count(), 0);
-        assert!(ingester.last_ingested_at().is_none());
-    }
-
-    /// Brain write failures must NOT crash the daemon.
-    #[test]
-    fn brain_failure_increments_counter_without_panic() {
-        use spectral::DeviceId;
-        let temp = tempfile::tempdir().expect("tempdir");
-        let brain_path = temp.path().join("brain");
-        let ontology_path = temp.path().join("ontology.toml");
-        std::fs::write(&ontology_path, include_str!("../../assets/ontology.toml")).unwrap();
-        let brain = Arc::new(
-            Brain::builder()
-                .data_dir(&brain_path)
-                .ontology_path(&ontology_path)
-                .device_id(DeviceId::from_descriptor("test"))
-                .build()
-                .expect("test brain"),
-        );
-        let ingester = ActivityIngester::new(brain, "test-device".into());
-        // Use terminal event (not filtered, unlike ChatTurnCompleted)
-        ingester.handle_event(&make_terminal_event());
-        assert_eq!(ingester.always_count(), 1);
-        assert_eq!(ingester.failure_count(), 0);
-        let _ = std::fs::remove_dir_all(&brain_path);
-        ingester.handle_event(&make_terminal_event());
-        assert_eq!(ingester.always_count(), 2, "both events should be counted");
-    }
+    // Brain-dependent tests (active_project_*, wing_override_*, Brain write tests)
+    // moved to crates/permagent-brain-tests/ (issue #190).
 
     // ── render tests ──
 
@@ -947,15 +752,5 @@ mod tests {
     fn extract_domain_no_url() {
         let content = "Navigated to local page in tab t1.";
         assert_eq!(extract_domain_from_content(content), None);
-    }
-
-    #[test]
-    fn chat_turn_completed_filtered_by_ingester() {
-        let brain = shared_test_brain();
-        let ingester = ActivityIngester::new(brain, "test-device".into());
-        ingester.handle_event(&make_always_event()); // ChatTurnCompleted
-        assert_eq!(ingester.always_count(), 1);
-        assert_eq!(ingester.filtered_count(), 1); // should be filtered
-        assert!(ingester.last_ingested_at().is_none()); // never actually ingested
     }
 }

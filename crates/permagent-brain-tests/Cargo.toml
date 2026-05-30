@@ -1,0 +1,18 @@
+[package]
+name = "permagent-brain-tests"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+# Brain-dependent tests live here to avoid V8 libc++abi symbol
+# collision on Linux. This crate depends on `permagent` WITHOUT
+# the code-mode feature, so V8 is not linked. See issue #190.
+
+[dev-dependencies]
+permagent = { path = "../goose", default-features = false, features = ["rustls-tls"] }
+spectral = { workspace = true }
+tokio = { workspace = true }
+tempfile = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
