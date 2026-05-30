@@ -120,6 +120,8 @@ When a user wants to set up a new project, guide them conversationally. Gather: 
 After creating a project, offer two ways forward:
 - Roadmap mode: help plan the work and decompose it into goal cards
 - Task mode: start with a single goal right away via card_create with card_type='goal'
+
+For roadmap mode: use decompose_roadmap to break the objective into goals with dependencies. Show the user the proposed plan and wait for their approval. After approval, call create_roadmap to create the goal cards — root goals dispatch automatically, and subsequent goals dispatch as dependencies complete. Users can pause_roadmap to stop auto-dispatch and resume_roadmap to continue.
 ## projectmanager
 
 ### Instructions

@@ -214,6 +214,176 @@ fn cost_tier_rank(tier: &str) -> u8 {
     }
 }
 
+// ── Roadmap decomposition (pure logic) ───────────────────────────────────
+
+/// Maximum number of goals in a single roadmap.
+pub const MAX_ROADMAP_GOALS: usize = 15;
+
+/// A goal proposed by the LLM decomposition, before card creation.
+/// Dependencies are index-based (referencing other goals in the same proposal).
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ProposedGoal {
+    pub title: String,
+    pub description: String,
+    #[serde(default)]
+    pub acceptance_criteria: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub depends_on: Vec<usize>,
+}
+
+/// Error from roadmap validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoadmapError {
+    pub message: String,
+}
+
+impl fmt::Display for RoadmapError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+/// Compute a topological dispatch order for proposed goals.
+///
+/// Takes goals with index-based dependencies and returns the indices
+/// in valid dispatch order (dependencies before dependents).
+///
+/// Rejects:
+/// - More than MAX_ROADMAP_GOALS goals
+/// - Dependency indices out of range
+/// - Cycles (with actionable error naming the cycle path)
+/// - Self-dependencies
+pub fn topological_order(goals: &[ProposedGoal]) -> Result<Vec<usize>, RoadmapError> {
+    if goals.is_empty() {
+        return Ok(vec![]);
+    }
+
+    if goals.len() > MAX_ROADMAP_GOALS {
+        return Err(RoadmapError {
+            message: format!(
+                "Roadmap has {} goals, exceeding the maximum of {}. \
+                 Please narrow the scope or break it into multiple roadmaps.",
+                goals.len(),
+                MAX_ROADMAP_GOALS
+            ),
+        });
+    }
+
+    let n = goals.len();
+
+    // Validate dependency indices and check for self-dependencies
+    for (i, goal) in goals.iter().enumerate() {
+        for &dep in &goal.depends_on {
+            if dep >= n {
+                return Err(RoadmapError {
+                    message: format!(
+                        "Goal {} ('{}') depends on index {}, but only {} goals exist (indices 0-{}).",
+                        i, goal.title, dep, n, n - 1
+                    ),
+                });
+            }
+            if dep == i {
+                return Err(RoadmapError {
+                    message: format!("Goal {} ('{}') depends on itself.", i, goal.title),
+                });
+            }
+        }
+    }
+
+    // Kahn's algorithm for topological sort with cycle detection
+    let mut in_degree = vec![0usize; n];
+    let mut adjacency: Vec<Vec<usize>> = vec![vec![]; n];
+
+    for (i, goal) in goals.iter().enumerate() {
+        for &dep in &goal.depends_on {
+            adjacency[dep].push(i);
+            in_degree[i] += 1;
+        }
+    }
+
+    let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+    for (i, &deg) in in_degree.iter().enumerate() {
+        if deg == 0 {
+            queue.push_back(i);
+        }
+    }
+
+    let mut order = Vec::with_capacity(n);
+    while let Some(node) = queue.pop_front() {
+        order.push(node);
+        for &dependent in &adjacency[node] {
+            in_degree[dependent] -= 1;
+            if in_degree[dependent] == 0 {
+                queue.push_back(dependent);
+            }
+        }
+    }
+
+    if order.len() != n {
+        // Cycle detected — find nodes in the cycle for an actionable error
+        let in_cycle: Vec<String> = in_degree
+            .iter()
+            .enumerate()
+            .filter(|(_, &deg)| deg > 0)
+            .map(|(i, _)| format!("'{}' (index {})", goals[i].title, i))
+            .collect();
+
+        return Err(RoadmapError {
+            message: format!(
+                "Dependency cycle detected among goals: {}. \
+                 Remove or reorder dependencies to break the cycle.",
+                in_cycle.join(", ")
+            ),
+        });
+    }
+
+    Ok(order)
+}
+
+/// Strip markdown fences and leading/trailing prose from an LLM response
+/// to extract the JSON content. Matches the Librarian's resilience pattern.
+#[allow(clippy::string_slice)]
+pub fn extract_json_from_response(response: &str) -> Option<&str> {
+    let trimmed = response.trim();
+
+    // Try to find JSON array or object directly
+    if (trimmed.starts_with('{') || trimmed.starts_with('['))
+        && (trimmed.ends_with('}') || trimmed.ends_with(']'))
+    {
+        return Some(trimmed);
+    }
+
+    // Strip markdown fences: ```json ... ``` or ``` ... ```
+    // Safe: fence markers (```) and newlines are single-byte ASCII
+    if let Some(start) = trimmed.find("```") {
+        let after_fence = &trimmed[start + 3..];
+        let content_start = after_fence.find('\n').map(|i| i + 1).unwrap_or(0);
+        let content = &after_fence[content_start..];
+        if let Some(end) = content.find("```") {
+            let json_str = content[..end].trim();
+            if !json_str.is_empty() {
+                return Some(json_str);
+            }
+        }
+    }
+
+    // Try to find a JSON object/array embedded in prose
+    // Safe: {, }, [, ] are single-byte ASCII
+    for (start_char, end_char) in [('{', '}'), ('[', ']')] {
+        if let Some(start) = trimmed.find(start_char) {
+            if let Some(end) = trimmed.rfind(end_char) {
+                if end > start {
+                    return Some(&trimmed[start..=end]);
+                }
+            }
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,5 +624,191 @@ mod tests {
         assert!(msg.contains("'reject'"), "Should name the action: {}", msg);
         assert!(msg.contains("Complete"), "Should name the state: {}", msg);
         assert!(msg.contains("terminal"), "Should explain why: {}", msg);
+    }
+
+    // ── Topological sort tests ────────────────────────────────────────
+
+    fn goal(title: &str, deps: &[usize]) -> ProposedGoal {
+        ProposedGoal {
+            title: title.to_string(),
+            description: format!("Do {}", title),
+            acceptance_criteria: vec![],
+            tags: vec![],
+            depends_on: deps.to_vec(),
+        }
+    }
+
+    #[test]
+    fn topo_linear_chain() {
+        // A → B → C
+        let goals = vec![goal("A", &[]), goal("B", &[0]), goal("C", &[1])];
+        let order = topological_order(&goals).unwrap();
+        assert_eq!(order, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn topo_diamond() {
+        // A → B, A → C, B → D, C → D
+        let goals = vec![
+            goal("A", &[]),
+            goal("B", &[0]),
+            goal("C", &[0]),
+            goal("D", &[1, 2]),
+        ];
+        let order = topological_order(&goals).unwrap();
+        // A must be first, D must be last, B and C can be in either order
+        assert_eq!(order[0], 0, "A first");
+        assert_eq!(order[3], 3, "D last");
+        assert!(order[1] == 1 || order[1] == 2);
+        assert!(order[2] == 1 || order[2] == 2);
+        assert_ne!(order[1], order[2]);
+    }
+
+    #[test]
+    fn topo_cycle_rejected() {
+        // A → B → A
+        let goals = vec![goal("A", &[1]), goal("B", &[0])];
+        let err = topological_order(&goals).unwrap_err();
+        assert!(
+            err.message.contains("cycle"),
+            "Should mention cycle: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("'A'") && err.message.contains("'B'"),
+            "Should name the goals in the cycle: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn topo_self_dependency_rejected() {
+        let goals = vec![goal("A", &[0])];
+        let err = topological_order(&goals).unwrap_err();
+        assert!(
+            err.message.contains("depends on itself"),
+            "Should say self-dependency: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn topo_cap_enforced() {
+        let goals: Vec<ProposedGoal> = (0..16).map(|i| goal(&format!("G{}", i), &[])).collect();
+        let err = topological_order(&goals).unwrap_err();
+        assert!(
+            err.message.contains("16") && err.message.contains("15"),
+            "Should mention count and cap: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("narrow"),
+            "Should suggest narrowing scope: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn topo_empty_roadmap() {
+        let order = topological_order(&[]).unwrap();
+        assert!(order.is_empty());
+    }
+
+    #[test]
+    fn topo_single_goal_no_deps() {
+        let goals = vec![goal("Solo", &[])];
+        let order = topological_order(&goals).unwrap();
+        assert_eq!(order, vec![0]);
+    }
+
+    #[test]
+    fn topo_out_of_range_index() {
+        let goals = vec![goal("A", &[99])];
+        let err = topological_order(&goals).unwrap_err();
+        assert!(
+            err.message.contains("index 99"),
+            "Should name the bad index: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("1 goals"),
+            "Should say how many exist: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn topo_multiple_independent_chains() {
+        // Chain 1: A → B, Chain 2: C → D (no cross-deps)
+        let goals = vec![
+            goal("A", &[]),
+            goal("B", &[0]),
+            goal("C", &[]),
+            goal("D", &[2]),
+        ];
+        let order = topological_order(&goals).unwrap();
+        assert_eq!(order.len(), 4);
+        // A before B, C before D
+        let pos_a = order.iter().position(|&x| x == 0).unwrap();
+        let pos_b = order.iter().position(|&x| x == 1).unwrap();
+        let pos_c = order.iter().position(|&x| x == 2).unwrap();
+        let pos_d = order.iter().position(|&x| x == 3).unwrap();
+        assert!(pos_a < pos_b, "A before B");
+        assert!(pos_c < pos_d, "C before D");
+    }
+
+    #[test]
+    fn topo_three_node_cycle() {
+        // A → B → C → A
+        let goals = vec![goal("A", &[2]), goal("B", &[0]), goal("C", &[1])];
+        let err = topological_order(&goals).unwrap_err();
+        assert!(err.message.contains("cycle"));
+        // All three should be named
+        assert!(err.message.contains("'A'"));
+        assert!(err.message.contains("'B'"));
+        assert!(err.message.contains("'C'"));
+    }
+
+    // ── JSON extraction tests ─────────────────────────────────────────
+
+    #[test]
+    fn extract_json_bare() {
+        let input = r#"{"goals": [{"title": "A"}]}"#;
+        assert_eq!(extract_json_from_response(input), Some(input));
+    }
+
+    #[test]
+    fn extract_json_with_fences() {
+        let input = "Here's the roadmap:\n```json\n{\"goals\": []}\n```\nDone.";
+        assert_eq!(extract_json_from_response(input), Some("{\"goals\": []}"));
+    }
+
+    #[test]
+    fn extract_json_with_prose() {
+        let input = "Sure! Here it is:\n{\"goals\": []}";
+        assert_eq!(extract_json_from_response(input), Some("{\"goals\": []}"));
+    }
+
+    #[test]
+    fn extract_json_array() {
+        let input = "[{\"title\": \"A\"}]";
+        assert_eq!(extract_json_from_response(input), Some(input));
+    }
+
+    #[test]
+    fn extract_json_no_json() {
+        assert_eq!(extract_json_from_response("just plain text"), None);
+    }
+
+    #[test]
+    fn extract_json_fences_win_over_prose_braces() {
+        // Prose has incidental braces BEFORE the real fenced JSON
+        let input = "I considered {option A} and {option B}.\n\n```json\n{\"goals\": [{\"title\": \"Real\"}]}\n```";
+        let result = extract_json_from_response(input).unwrap();
+        assert!(
+            result.contains("\"Real\""),
+            "Should extract the fenced JSON, not the prose braces: {}",
+            result
+        );
     }
 }
