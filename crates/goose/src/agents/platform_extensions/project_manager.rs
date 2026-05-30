@@ -111,6 +111,15 @@ struct CardListParams {
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct BoardSummaryParams {
+    /// Project ID (UUID) or slug. If omitted, returns summary for all active projects.
+    project_id_or_slug: Option<String>,
+    /// Include standard cards in addition to goals. Defaults to false (goals only).
+    #[serde(default)]
+    include_standard_cards: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ColumnCreateParams {
     /// Project ID (UUID) or slug
     project_id_or_slug: String,
@@ -632,6 +641,112 @@ impl ProjectManagerClient {
         ))])
     }
 
+    async fn handle_board_summary(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let project_filter = arguments
+            .as_ref()
+            .and_then(|a| a.get("project_id_or_slug"))
+            .and_then(|v| v.as_str());
+        let include_standard = arguments
+            .as_ref()
+            .and_then(|a| a.get("include_standard_cards"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let pool = self
+            .context
+            .session_manager
+            .pool_clone()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // Resolve project filter if provided
+        let project_id = if let Some(id_or_slug) = project_filter {
+            let p = projects::get_project_by_id_or_slug(&pool, id_or_slug)
+                .await?
+                .ok_or_else(|| format!("Project '{}' not found", id_or_slug))?;
+            Some(p.id)
+        } else {
+            None
+        };
+
+        // Build query with optional project filter
+        let mut sql = String::from(
+            "SELECT c.id, c.title, c.card_type, c.assigned_to, c.metadata_json,
+                    bc.name as column_name, bc.state_binding, bc.column_kind,
+                    p.name as project_name, p.slug as project_slug
+             FROM cards c
+             JOIN board_columns bc ON c.column_id = bc.id
+             JOIN projects p ON c.project_id = p.id
+             WHERE c.archived_at IS NULL AND p.status = 'active'",
+        );
+
+        if project_id.is_some() {
+            sql.push_str(" AND c.project_id = ?");
+        }
+        if !include_standard {
+            sql.push_str(" AND c.card_type = 'goal'");
+        }
+        sql.push_str(" ORDER BY p.name, bc.position, c.position");
+
+        let mut query = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                Option<String>,
+                String,
+                String,
+                Option<String>,
+                String,
+                String,
+                String,
+            ),
+        >(&sql);
+        if let Some(ref pid) = project_id {
+            query = query.bind(pid);
+        }
+
+        let rows = query.fetch_all(&pool).await.map_err(|e| e.to_string())?;
+
+        // Format as JSON array
+        let items: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(id, title, card_type, assigned_to, meta_str, col_name, state_binding, col_kind, project_name, project_slug)| {
+                let meta: serde_json::Value = serde_json::from_str(meta_str).unwrap_or_default();
+                serde_json::json!({
+                    "id": id,
+                    "title": title,
+                    "card_type": card_type,
+                    "assigned_to": assigned_to,
+                    "column": col_name,
+                    "state": state_binding.as_deref().unwrap_or(if col_kind == "state" { "unknown" } else { col_name.as_str() }),
+                    "project": project_name,
+                    "project_slug": project_slug,
+                    "attempt_count": meta.get("attempt_count").and_then(|v| v.as_u64()).unwrap_or(0),
+                    "needs_human_attention": meta.get("needs_human_attention").and_then(|v| v.as_bool()).unwrap_or(false),
+                    "last_error": meta.get("last_error").and_then(|v| v.as_str()),
+                })
+            })
+            .collect();
+
+        let scope = if let Some(ref slug) = project_filter {
+            format!("project '{}'", slug)
+        } else {
+            "all active projects".to_string()
+        };
+
+        Ok(vec![Content::text(format!(
+            "{} card(s) across {}\n\n{}",
+            items.len(),
+            scope,
+            serde_json::to_string_pretty(&items).unwrap_or_default()
+        ))])
+    }
+
     fn get_tools() -> Vec<Tool> {
         let create_schema = serde_json::to_value(schema_for!(ProjectCreateParams)).unwrap();
         let update_schema = serde_json::to_value(schema_for!(ProjectUpdateParams)).unwrap();
@@ -643,6 +758,7 @@ impl ProjectManagerClient {
         let card_list_schema = serde_json::to_value(schema_for!(CardListParams)).unwrap();
         let col_create_schema = serde_json::to_value(schema_for!(ColumnCreateParams)).unwrap();
         let col_delete_schema = serde_json::to_value(schema_for!(ColumnDeleteParams)).unwrap();
+        let board_summary_schema = serde_json::to_value(schema_for!(BoardSummaryParams)).unwrap();
 
         vec![
             Tool::new(
@@ -814,6 +930,25 @@ impl ProjectManagerClient {
                 Some(false),
                 Some(false),
             )),
+            // ── Board summary ──
+            Tool::new(
+                "board_summary".to_string(),
+                indoc! {r#"
+                Get a full board summary across all active projects (or a specific project).
+                Returns detailed card information including state, worker assignment, and errors.
+                By default shows goal cards only. Set include_standard_cards=true for all cards.
+                Use when you need more detail than the ambient board context provides.
+            "#}
+                .to_string(),
+                board_summary_schema.as_object().unwrap().clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Board Summary".to_string()),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+            )),
         ]
     }
 }
@@ -851,6 +986,7 @@ impl McpClientTrait for ProjectManagerClient {
             "card_list" => self.handle_card_list(arguments).await,
             "column_create" => self.handle_column_create(arguments).await,
             "column_delete" => self.handle_column_delete(arguments).await,
+            "board_summary" => self.handle_board_summary(arguments).await,
             _ => Err(format!("Unknown tool: {}", name)),
         };
         match content {
