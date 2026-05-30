@@ -202,7 +202,17 @@ impl OrchestratorClient {
                  is injected into your context when the conversation turns toward work status. \
                  When users ask about progress, what's stalled, or what's next — answer from \
                  your injected context without calling tools. For detailed board queries beyond \
-                 the summary, use the board_summary tool.",
+                 the summary, use the board_summary tool.\n\n\
+                 When a user wants to set up a new project, guide them conversationally. \
+                 Gather: name (required), root_path (suggest from current working directory), \
+                 repo_url (offer to detect via 'git remote get-url origin' at root_path), \
+                 site_url (optional), description, and tags. Don't interrogate — if the user \
+                 gives everything in one message, use it directly. Only ask for what's missing. \
+                 Then call project_create.\n\n\
+                 After creating a project, offer two ways forward:\n\
+                 - Roadmap mode: help plan the work and decompose it into goal cards\n\
+                 - Task mode: start with a single goal right away via card_create with \
+                 card_type='goal'",
             );
 
         let client = Self {
