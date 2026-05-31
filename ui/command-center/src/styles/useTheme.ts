@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react';
 import {
-  getTheme, getThemeGradient, onThemeChange,
+  getTheme, getThemeGradient, getThemedColors, onThemeChange,
   getMobiusGlow, getIdleAnim, getShowHeroMobius,
   getDensity, getReduceMotion,
-  type ThemeId, type IdleAnim, type UIDensity,
 } from './tokens';
+import type { ThemeId, ThemeColors, IdleAnim, UIDensity } from './tokens';
 
 export function useTheme() {
   const [, setTick] = useState(0);
@@ -12,6 +12,7 @@ export function useTheme() {
   return {
     theme: getTheme(),
     gradient: getThemeGradient(),
+    colors: getThemedColors(),
     mobiusGlow: getMobiusGlow(),
     idleAnim: getIdleAnim(),
     showHeroMobius: getShowHeroMobius(),
@@ -20,4 +21,4 @@ export function useTheme() {
   };
 }
 
-export type { ThemeId, IdleAnim, UIDensity };
+export type { ThemeId, ThemeColors, IdleAnim, UIDensity };
