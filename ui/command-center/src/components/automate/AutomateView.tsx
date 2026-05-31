@@ -276,7 +276,7 @@ export function AutomateView() {
                 placeholder="Filter..."
                 style={{
                   width: 180, padding: '5px 10px', borderRadius: radius.sm,
-                  background: 'rgba(20,28,48,0.6)', border: `1px solid ${colors.border}`,
+                  background: colors.surface, border: `1px solid ${colors.border}`,
                   color: colors.text, fontSize: 12, fontFamily: font.mono, outline: 'none',
                 }}
                 onKeyDown={e => { if (e.key === 'Escape') { setSearch(''); setShowSearch(false); } }}
@@ -312,7 +312,7 @@ export function AutomateView() {
         {trulyEmpty && jobs.length === 0 && (
           <div style={{
             padding: '32px 28px', borderRadius: radius.lg, marginBottom: 24,
-            background: 'rgba(20,28,48,0.5)', border: `1px solid ${colors.border}`, textAlign: 'center',
+            background: colors.surface, border: `1px solid ${colors.border}`, textAlign: 'center',
           }}>
             <div style={{ fontSize: 15, fontWeight: 600, fontFamily: font.display, marginBottom: 8 }}>
               Your agent can do a lot already
@@ -429,7 +429,7 @@ export function AutomateView() {
                   return (
                     <div key={skill.id} style={{
                       padding: '16px 20px', borderRadius: radius.lg, cursor: 'pointer',
-                      background: 'rgba(20,28,48,0.5)', border: `1px solid ${colors.border}`,
+                      background: colors.surface, border: `1px solid ${colors.border}`,
                       transition: 'border-color 150ms',
                     }} onClick={() => {}}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
@@ -467,7 +467,7 @@ export function AutomateView() {
                 {filteredExtensions.map(ext => (
                   <button key={ext.name} onClick={() => setDetail({ kind: 'extension', ext })} style={{
                     padding: '8px 14px', borderRadius: radius.md, cursor: 'pointer',
-                    background: detail?.kind === 'extension' && detail.ext.name === ext.name ? colors.cyanSoft : 'rgba(20,28,48,0.5)',
+                    background: detail?.kind === 'extension' && detail.ext.name === ext.name ? colors.cyanSoft : colors.surface,
                     border: `1px solid ${detail?.kind === 'extension' && detail.ext.name === ext.name ? colors.borderHi : colors.border}`,
                     color: colors.text, fontSize: 12, fontFamily: font.body, textAlign: 'left',
                     transition: 'border-color 150ms, background 150ms',
@@ -493,7 +493,7 @@ export function AutomateView() {
                     borderRadius: radius.sm, background: 'transparent', border: 'none',
                     cursor: 'pointer', textAlign: 'left', color: colors.text, fontFamily: font.body,
                     width: '100%', transition: 'background 100ms',
-                  }} onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.03)')}
+                  }} onMouseEnter={e => (e.currentTarget.style.background = colors.border)}
                      onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
                     <span style={{ fontSize: 11, color: '#5BD17F' }}>&#10003;</span>
                     <span style={{ fontSize: 12, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName}</span>
@@ -536,7 +536,7 @@ function Section({ title, count, accentColor, collapsed, children }: {
           {title}
         </div>
         {!collapsed && count > 0 && (
-          <span style={{ fontSize: 10, fontFamily: font.mono, color: colors.textDim, padding: '1px 6px', borderRadius: radius.sm, background: 'rgba(255,255,255,0.04)' }}>
+          <span style={{ fontSize: 10, fontFamily: font.mono, color: colors.textDim, padding: '1px 6px', borderRadius: radius.sm, background: colors.border }}>
             {count}
           </span>
         )}
@@ -575,7 +575,7 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
   return (
     <div onClick={onSelect} style={{
       padding: '16px 20px', borderRadius: radius.lg, cursor: 'pointer',
-      background: selected ? 'rgba(0,213,255,0.04)' : 'rgba(20,28,48,0.5)',
+      background: selected ? 'rgba(0,213,255,0.04)' : colors.surface,
       border: `1px solid ${selected ? colors.borderHi : colors.border}`,
       transition: 'border-color 150ms, background 150ms',
     }}>
@@ -586,7 +586,7 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
         }} />
         <div style={{ fontSize: 14, fontWeight: 600, fontFamily: font.display, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</div>
         {job.version && (
-          <span style={{ fontSize: 9, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: 'rgba(255,255,255,0.04)', color: colors.textDim }}>
+          <span style={{ fontSize: 9, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: colors.border, color: colors.textDim }}>
             v{job.version}
           </span>
         )}
@@ -731,7 +731,7 @@ function ExtensionDetail({ ext }: { ext: ExtensionInfo }) {
         {ext.available_tools.length > 0 ? (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
             {ext.available_tools.map(t => (
-              <span key={t} style={{ fontSize: 11, fontFamily: font.mono, padding: '3px 8px', borderRadius: radius.sm, background: 'rgba(255,255,255,0.04)', color: colors.textMuted }}>{t}</span>
+              <span key={t} style={{ fontSize: 11, fontFamily: font.mono, padding: '3px 8px', borderRadius: radius.sm, background: colors.border, color: colors.textMuted }}>{t}</span>
             ))}
           </div>
         ) : (
@@ -853,7 +853,7 @@ label, onClick, primary, danger, muted, actionState, successLabel, loadingLabel,
 
   const isLoading = phase === 'loading';
   const isSuccess = phase === 'success';
-  const bg = isSuccess ? 'rgba(91,209,127,0.15)' : isLoading ? 'rgba(255,255,255,0.03)' : primary ? colors.cyan : danger ? 'rgba(255,100,100,0.1)' : 'rgba(255,255,255,0.05)';
+  const bg = isSuccess ? 'rgba(91,209,127,0.15)' : isLoading ? colors.border : primary ? colors.cyan : danger ? 'rgba(255,100,100,0.1)' : colors.border;
   const fg = isSuccess ? '#5BD17F' : isLoading ? colors.textDim : primary ? '#000' : danger ? '#ff6b6b' : colors.textMuted;
   const bdr = isSuccess ? 'rgba(91,209,127,0.3)' : isLoading ? colors.border : primary ? 'transparent' : danger ? 'rgba(255,100,100,0.2)' : colors.border;
   const displayLabel = isSuccess ? `\u2713 ${successLabel || label}` : isLoading ? (loadingLabel || label) : label;
@@ -914,13 +914,13 @@ function RenderedReport({ text }: { text: string }) {
   return <div>{elements}</div>;
 }
 
-function renderInline(text: string, colors: { text: string; cyan: string }): React.ReactNode {
+function renderInline(text: string, colors: { text: string; cyan: string; border: string }): React.ReactNode {
   const parts: React.ReactNode[] = []; let remaining = text; let key = 0;
   while (remaining.length > 0) {
     const bold = remaining.match(/^(.*?)\*\*(.+?)\*\*(.*)/s);
     if (bold) { if (bold[1]) parts.push(<span key={key++}>{bold[1]}</span>); parts.push(<strong key={key++} style={{ color: colors.text, fontWeight: 600 }}>{bold[2]}</strong>); remaining = bold[3]; continue; }
     const code = remaining.match(/^(.*?)`(.+?)`(.*)/s);
-    if (code) { if (code[1]) parts.push(<span key={key++}>{code[1]}</span>); parts.push(<code key={key++} style={{ fontFamily: font.mono, fontSize: 11, padding: '1px 4px', borderRadius: 3, background: 'rgba(255,255,255,0.06)', color: colors.cyan }}>{code[2]}</code>); remaining = code[3]; continue; }
+    if (code) { if (code[1]) parts.push(<span key={key++}>{code[1]}</span>); parts.push(<code key={key++} style={{ fontFamily: font.mono, fontSize: 11, padding: '1px 4px', borderRadius: 3, background: colors.border, color: colors.cyan }}>{code[2]}</code>); remaining = code[3]; continue; }
     parts.push(<span key={key++}>{remaining}</span>); break;
   }
   return parts.length === 1 ? parts[0] : <>{parts}</>;
@@ -1036,10 +1036,10 @@ findings, actionInFlight, onAction, totalRecovered, allActioned }: {
           const isExpanded = expandedGroup === groupName;
           const allDone = pending.length === 0;
           return (
-            <div key={groupName} style={{ borderRadius: radius.lg, overflow: 'hidden', border: `1px solid ${allDone ? 'rgba(91,209,127,0.2)' : colors.border}`, background: allDone ? 'rgba(91,209,127,0.03)' : 'rgba(20,28,48,0.5)' }}>
+            <div key={groupName} style={{ borderRadius: radius.lg, overflow: 'hidden', border: `1px solid ${allDone ? 'rgba(91,209,127,0.2)' : colors.border}`, background: allDone ? 'rgba(91,209,127,0.03)' : colors.surface }}>
               <div style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 14 }}>
                 <button onClick={() => setExpandedGroup(isExpanded ? null : groupName)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, opacity: allDone ? 0.5 : 1 }}>
-                  <div style={{ width: 36, height: 36, borderRadius: 8, background: 'rgba(255,255,255,0.04)', display: 'grid', placeItems: 'center' }}>
+                  <div style={{ width: 36, height: 36, borderRadius: 8, background: colors.border, display: 'grid', placeItems: 'center' }}>
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={colors.textMuted} strokeWidth={1.8}><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
                   </div>
                 </button>
@@ -1071,14 +1071,14 @@ finding, loading, onAction }: { finding: Finding; loading: boolean; onAction: (a
   if (finding.action_taken === 'trashed') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: 'rgba(91,209,127,0.05)', border: '1px solid rgba(91,209,127,0.12)' }}><span style={{ fontSize: 12, color: '#5BD17F' }}>Trashed</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</span>{finding.size_recovered_bytes != null && <span style={{ fontSize: 11, color: '#5BD17F', fontFamily: font.mono }}>+{formatBytes(finding.size_recovered_bytes)}</span>}</div>;
   if (finding.action_taken) return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, opacity: 0.6 }}><span style={{ fontSize: 12, color: colors.textMuted }}>Kept</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1 }}>{fileName}</span></div>;
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: radius.sm, background: 'rgba(20,28,48,0.5)', border: `1px solid ${colors.border}`, marginTop: 4 }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: radius.sm, background: colors.surface, border: `1px solid ${colors.border}`, marginTop: 4 }}>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 12, fontWeight: 500, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</div>
         <div style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono, marginTop: 2 }}>{formatBytes(finding.size_bytes)}{finding.age_days != null && <> &middot; {finding.age_days}d old</>}</div>
       </div>
       <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
         <button onClick={() => onAction('trash')} disabled={loading} style={{ padding: '3px 8px', borderRadius: radius.sm, background: 'rgba(255,100,100,0.1)', border: '1px solid rgba(255,100,100,0.2)', color: '#ff6b6b', fontSize: 10, fontWeight: 600, cursor: loading ? 'wait' : 'pointer', fontFamily: font.body }}>{loading ? '...' : 'Trash'}</button>
-        <button onClick={() => onAction('keep')} disabled={loading} style={{ padding: '3px 8px', borderRadius: radius.sm, background: 'rgba(255,255,255,0.05)', border: `1px solid ${colors.border}`, color: colors.textMuted, fontSize: 10, cursor: loading ? 'wait' : 'pointer', fontFamily: font.body }}>Keep</button>
+        <button onClick={() => onAction('keep')} disabled={loading} style={{ padding: '3px 8px', borderRadius: radius.sm, background: colors.border, border: `1px solid ${colors.border}`, color: colors.textMuted, fontSize: 10, cursor: loading ? 'wait' : 'pointer', fontFamily: font.body }}>Keep</button>
       </div>
     </div>
   );
@@ -1124,7 +1124,7 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
 
         <label style={{ fontSize: 12, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: 6 }}>What should we call this?</label>
         <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g., Weekly Cleanup" style={{
-          width: '100%', padding: '8px 12px', borderRadius: radius.sm, background: 'rgba(20,28,48,0.4)',
+          width: '100%', padding: '8px 12px', borderRadius: radius.sm, background: colors.surface,
           border: `1px solid ${colors.border}`, color: colors.text, fontSize: 13, fontFamily: font.body,
           outline: 'none', marginBottom: 16, boxSizing: 'border-box',
         }} />
@@ -1132,7 +1132,7 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
         <label style={{ fontSize: 12, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: 6 }}>What should the agent do?</label>
         <textarea value={prompt} onChange={e => setPrompt(e.target.value)}
           placeholder="Scan my Downloads folder for files older than 30 days..." rows={4} style={{
-            width: '100%', padding: '8px 12px', borderRadius: radius.sm, background: 'rgba(20,28,48,0.4)',
+            width: '100%', padding: '8px 12px', borderRadius: radius.sm, background: colors.surface,
             border: `1px solid ${colors.border}`, color: colors.text, fontSize: 13, fontFamily: font.body,
             outline: 'none', resize: 'vertical', marginBottom: 16, boxSizing: 'border-box',
           }} />
@@ -1150,7 +1150,7 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
         {selectedPreset === CRON_PRESETS.length - 1 && (
           <div style={{ marginBottom: 16 }}>
             <input value={customCron} onChange={e => setCustomCron(e.target.value)} placeholder="0 9 * * 1-5" style={{
-              width: '100%', padding: '8px 12px', borderRadius: radius.sm, background: 'rgba(20,28,48,0.4)',
+              width: '100%', padding: '8px 12px', borderRadius: radius.sm, background: colors.surface,
               border: `1px solid ${colors.border}`, color: colors.text, fontSize: 13, fontFamily: font.mono,
               outline: 'none', boxSizing: 'border-box',
             }} />

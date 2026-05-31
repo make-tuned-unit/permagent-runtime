@@ -86,7 +86,7 @@ export function ChatLauncher() {
       position: 'fixed', bottom: 20, right: 20, zIndex: 9999,
       display: 'flex', alignItems: 'center', gap: 10,
       padding: '12px 20px', borderRadius: 999,
-      background: 'rgba(20,28,48,0.85)', backdropFilter: 'blur(16px)',
+      background: colors.surface, backdropFilter: 'blur(16px)',
       border: `1px solid ${colors.borderHi}`,
       color: colors.cyan, cursor: 'pointer',
       fontFamily: font.body, fontSize: 13, fontWeight: 600,

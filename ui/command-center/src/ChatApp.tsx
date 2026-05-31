@@ -195,7 +195,7 @@ export default function ChatApp() {
             title="What your agent sees"
             style={{
               width: 26, height: 26, borderRadius: 6,
-              background: inspectionOpen ? 'rgba(0,213,255,0.1)' : 'rgba(255,255,255,0.04)',
+              background: inspectionOpen ? colors.cyanSoft : colors.border,
               border: `1px solid ${inspectionOpen ? 'rgba(0,213,255,0.3)' : colors.border}`,
               color: inspectionOpen ? colors.cyan : colors.textMuted, cursor: 'pointer',
               display: 'grid', placeItems: 'center',

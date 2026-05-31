@@ -155,6 +155,24 @@ export function getTheme(): ThemeId { return _activeTheme; }
 export function getThemeGradient() { return THEME_GRADIENTS[_activeTheme]; }
 export function setTheme(id: ThemeId) { _activeTheme = id; _set('permagent-theme', id); }
 
+// Sync CSS custom properties for Tailwind theme-aware colors
+function _syncCssVars() {
+  if (typeof document === 'undefined') return;
+  const c = THEME_COLORS[_activeTheme];
+  const root = document.documentElement.style;
+  root.setProperty('--tw-dark-bg', c.bg);
+  root.setProperty('--tw-dark-surface', c.surface);
+  root.setProperty('--tw-dark-surface-2', c.surfaceHi);
+  root.setProperty('--tw-dark-border', c.border);
+  root.setProperty('--tw-dark-text', c.text);
+  root.setProperty('--tw-dark-muted', c.textMuted);
+  root.setProperty('--tw-accent', c.cyan);
+  root.setProperty('--tw-accent-dim', c.cyan);
+  root.setProperty('--tw-accent-glow', c.cyanSoft);
+}
+_syncCssVars(); // initial sync
+_listeners.add(_syncCssVars); // re-sync on theme change
+
 // Cross-window theme sync: listen for localStorage changes from other windows
 // (e.g., chat window picks up theme change made in main window's Settings)
 if (typeof window !== 'undefined') {

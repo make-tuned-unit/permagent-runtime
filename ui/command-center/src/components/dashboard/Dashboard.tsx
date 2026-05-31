@@ -80,7 +80,7 @@ export function Dashboard() {
           {/* Stats grid */}
           <div style={{
             padding: 24, borderRadius: radius.lg,
-            background: 'rgba(20,28,48,0.5)',
+            background: colors.surface,
             border: `1px solid ${colors.border}`,
             display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20,
           }}>
@@ -106,7 +106,7 @@ export function Dashboard() {
           <div>
             <SectionTitle title="Recent" right="last 24h" />
             <div style={{
-              borderRadius: radius.lg, background: 'rgba(20,28,48,0.4)',
+              borderRadius: radius.lg, background: colors.surface,
               border: `1px solid ${colors.border}`, overflow: 'hidden',
             }}>
               {recent.map((item, i) => (
@@ -127,7 +127,7 @@ function TaskCard({ task }: { task: InFlightSession }) {
   return (
     <div style={{
       padding: 18, borderRadius: radius.md,
-      background: 'rgba(20,28,48,0.55)',
+      background: colors.surface,
       border: `1px solid ${colors.border}`,
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
@@ -143,7 +143,7 @@ function TaskCard({ task }: { task: InFlightSession }) {
         </div>
       </div>
       <div style={{
-        height: 4, borderRadius: 999, background: 'rgba(255,255,255,0.06)',
+        height: 4, borderRadius: 999, background: colors.border,
         overflow: 'hidden',
       }}>
         <div style={{

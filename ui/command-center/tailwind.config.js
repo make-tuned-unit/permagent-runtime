@@ -9,17 +9,17 @@ export default {
     extend: {
       colors: {
         dark: {
-          bg: '#0a0e17',       // deep midnight - primary background
-          surface: '#111827',  // raised surfaces
-          'surface-2': '#1a2233', // secondary surface (cards)
-          border: '#1e293b',   // subtle borders
-          text: '#e2e8f0',     // primary text
-          muted: '#64748b',    // secondary text
+          bg: 'var(--tw-dark-bg, #0a0e17)',
+          surface: 'var(--tw-dark-surface, #111827)',
+          'surface-2': 'var(--tw-dark-surface-2, #1a2233)',
+          border: 'var(--tw-dark-border, #1e293b)',
+          text: 'var(--tw-dark-text, #e2e8f0)',
+          muted: 'var(--tw-dark-muted, #64748b)',
         },
         accent: {
-          DEFAULT: '#00D5FF',  // primary accent - cyan (matches design tokens)
-          dim: '#00B0D4',      // dimmed accent
-          glow: 'rgba(0, 213, 255, 0.15)', // glow effect
+          DEFAULT: 'var(--tw-accent, #00D5FF)',
+          dim: 'var(--tw-accent-dim, #00B0D4)',
+          glow: 'var(--tw-accent-glow, rgba(0, 213, 255, 0.15))',
         },
         status: {
           ok: '#22c55e',
