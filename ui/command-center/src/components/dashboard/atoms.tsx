@@ -1,10 +1,12 @@
-import { color, font } from '../../styles/tokens';
+import { font } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
 
 export function SectionTitle({ title, right }: { title: string; right?: string }) {
+  const { colors } = useTheme();
   return (
     <div style={{ display: 'flex', alignItems: 'baseline', marginBottom: 14 }}>
-      <h3 style={{ fontFamily: font.display, fontSize: 16, fontWeight: 600, color: color.text, margin: 0 }}>{title}</h3>
-      {right && <span style={{ fontFamily: font.body, fontSize: 11, color: color.textDim, marginLeft: 'auto' }}>{right}</span>}
+      <h3 style={{ fontFamily: font.display, fontSize: 16, fontWeight: 600, color: colors.text, margin: 0 }}>{title}</h3>
+      {right && <span style={{ fontFamily: font.body, fontSize: 11, color: colors.textDim, marginLeft: 'auto' }}>{right}</span>}
     </div>
   );
 }
@@ -12,15 +14,16 @@ export function SectionTitle({ title, right }: { title: string; right?: string }
 export function Stat({ label, value, suffix, delta, cyan }: {
   label: string; value: string | number; suffix?: string; delta?: string; cyan?: boolean;
 }) {
+  const { colors } = useTheme();
   return (
     <div>
       <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.10em',
-        textTransform: 'uppercase', color: color.textDim, marginBottom: 6 }}>{label}</div>
+        textTransform: 'uppercase', color: colors.textDim, marginBottom: 6 }}>{label}</div>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
         <div style={{ fontFamily: font.display, fontSize: 32, fontWeight: 600,
           letterSpacing: '-0.02em',
-          color: cyan ? color.cyan : color.text }}>
-          {value}<span style={{ fontSize: 18, color: color.textMuted, marginLeft: 2 }}>{suffix || ''}</span>
+          color: cyan ? colors.cyan : colors.text }}>
+          {value}<span style={{ fontSize: 18, color: colors.textMuted, marginLeft: 2 }}>{suffix || ''}</span>
         </div>
         {delta && (
           <div style={{ fontSize: 11, fontWeight: 600, color: '#5BD17F' }}>{delta}</div>
@@ -31,10 +34,11 @@ export function Stat({ label, value, suffix, delta, cyan }: {
 }
 
 export function StatusIcon({ state }: { state: string }) {
+  const { colors } = useTheme();
   const config: Record<string, { bg: string; color: string; icon: string }> = {
     completed: { bg: 'rgba(91,209,127,0.15)', color: '#5BD17F', icon: '✓' },
-    paused: { bg: 'rgba(255,180,162,0.12)', color: color.danger, icon: '⏸' },
-    awaiting_input: { bg: 'rgba(0,213,255,0.12)', color: color.cyan, icon: '?' },
+    paused: { bg: 'rgba(255,180,162,0.12)', color: colors.danger, icon: '⏸' },
+    awaiting_input: { bg: 'rgba(0,213,255,0.12)', color: colors.cyan, icon: '?' },
   };
   const c = config[state] || config.completed;
   return (

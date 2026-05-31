@@ -1,4 +1,4 @@
-import { color, font, ease, radius } from '../../styles/tokens';
+import { font, ease, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Mobius, type MobiusState } from '../mobius/Mobius';
 import { useDashboard, type InFlightSession, type RecentSession } from './useDashboard';
@@ -15,12 +15,12 @@ function timeAgo(iso: string): string {
 }
 
 export function Dashboard() {
-  const { gradient, showHeroMobius } = useTheme();
+  const { gradient, showHeroMobius, colors } = useTheme();
   const { data, loading } = useDashboard();
 
   if (loading || !data) {
     return (
-      <div style={{ width: '100%', height: '100%', background: color.bg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ width: '100%', height: '100%', background: colors.bg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <Mobius size={120} state="thinking" />
       </div>
     );
@@ -43,14 +43,14 @@ export function Dashboard() {
             position: 'relative', overflow: 'hidden',
             padding: 24, borderRadius: radius.lg,
             background: gradient.card,
-            border: `1px solid ${color.border}`, minHeight: 220,
+            border: `1px solid ${colors.border}`, minHeight: 220,
             display: 'flex', alignItems: 'center', gap: 24,
           }}>
             <div style={{ flex: 1 }}>
               <div style={{
                 fontFamily: font.body, fontSize: 11, fontWeight: 600,
                 letterSpacing: '0.14em', textTransform: 'uppercase',
-                color: color.cyan, marginBottom: 12,
+                color: colors.cyan, marginBottom: 12,
               }}>
                 Status — {agent.state}
               </div>
@@ -59,12 +59,12 @@ export function Dashboard() {
                 letterSpacing: '-0.02em', lineHeight: 1.2, marginBottom: 10,
               }}>
                 {agent.active_count > 0 ? (
-                  <>{agent.name} is working on<br /><span style={{ color: color.cyan }}>{agent.active_count} {agent.active_count === 1 ? 'thing' : 'things'}</span> for you</>
+                  <>{agent.name} is working on<br /><span style={{ color: colors.cyan }}>{agent.active_count} {agent.active_count === 1 ? 'thing' : 'things'}</span> for you</>
                 ) : (
                   <>{agent.name} is<br />ready</>
                 )}
               </div>
-              <div style={{ fontSize: 14, color: color.textMuted, lineHeight: 1.5, maxWidth: 360 }}>
+              <div style={{ fontSize: 14, color: colors.textMuted, lineHeight: 1.5, maxWidth: 360 }}>
                 {agent.active_count > 0
                   ? `Working across ${agent.active_count} session${agent.active_count > 1 ? 's' : ''}`
                   : 'Ready when you are.'}
@@ -81,7 +81,7 @@ export function Dashboard() {
           <div style={{
             padding: 24, borderRadius: radius.lg,
             background: 'rgba(20,28,48,0.5)',
-            border: `1px solid ${color.border}`,
+            border: `1px solid ${colors.border}`,
             display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20,
           }}>
             <Stat label="Sessions today" value={stats.sessions_today} />
@@ -107,7 +107,7 @@ export function Dashboard() {
             <SectionTitle title="Recent" right="last 24h" />
             <div style={{
               borderRadius: radius.lg, background: 'rgba(20,28,48,0.4)',
-              border: `1px solid ${color.border}`, overflow: 'hidden',
+              border: `1px solid ${colors.border}`, overflow: 'hidden',
             }}>
               {recent.map((item, i) => (
                 <ActivityItem key={item.id} item={item} isLast={i === recent.length - 1} />
@@ -122,21 +122,22 @@ export function Dashboard() {
 }
 
 function TaskCard({ task }: { task: InFlightSession }) {
+  const { colors } = useTheme();
   const mobiusState = (task.state === 'speaking' ? 'speaking' : 'thinking') as MobiusState;
   return (
     <div style={{
       padding: 18, borderRadius: radius.md,
       background: 'rgba(20,28,48,0.55)',
-      border: `1px solid ${color.border}`,
+      border: `1px solid ${colors.border}`,
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
         <Mobius size={36} state={mobiusState} logoMode />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{
-            fontFamily: font.body, fontSize: 13, fontWeight: 600, color: color.text,
+            fontFamily: font.body, fontSize: 13, fontWeight: 600, color: colors.text,
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>{task.title}</div>
-          <div style={{ fontFamily: font.mono, fontSize: 11, color: color.textDim }}>
+          <div style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim }}>
             Started {timeAgo(task.started_at)}
           </div>
         </div>
@@ -158,30 +159,31 @@ function TaskCard({ task }: { task: InFlightSession }) {
 }
 
 function ActivityItem({ item, isLast }: { item: RecentSession; isLast: boolean }) {
+  const { colors } = useTheme();
   const statusColor: Record<string, string> = {
     completed: '#5BD17F',
-    paused: color.danger,
-    awaiting_input: color.cyan,
+    paused: colors.danger,
+    awaiting_input: colors.cyan,
   };
   return (
     <div style={{
       display: 'flex', alignItems: 'center', gap: 16, padding: '14px 18px',
-      borderBottom: isLast ? 'none' : `1px solid ${color.border}`,
+      borderBottom: isLast ? 'none' : `1px solid ${colors.border}`,
     }}>
       <StatusIcon state={item.state} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{
-          fontFamily: font.body, fontSize: 14, fontWeight: 500, color: color.text,
+          fontFamily: font.body, fontSize: 14, fontWeight: 500, color: colors.text,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         }}>{item.title}</div>
-        <div style={{ fontSize: 12, color: color.textMuted, marginTop: 2 }}>
+        <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>
           {timeAgo(item.ended_at)}
         </div>
       </div>
       <span style={{
         fontFamily: font.body, fontSize: 11, fontWeight: 600,
         letterSpacing: '0.06em', textTransform: 'uppercase',
-        color: statusColor[item.state] || color.textMuted,
+        color: statusColor[item.state] || colors.textMuted,
       }}>{item.state.replace('_', ' ')}</span>
     </div>
   );

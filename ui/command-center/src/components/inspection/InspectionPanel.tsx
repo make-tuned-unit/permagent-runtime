@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback } from 'react';
-import { color, font, ease } from '../../styles/tokens';
+import { font, ease } from '../../styles/tokens';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
+import { useTheme } from '../../styles/useTheme';
 
 interface ActivityMemory {
   id: string;
@@ -49,6 +50,7 @@ interface Props {
 }
 
 export function InspectionPanel({ onClose }: Props) {
+  const { colors } = useTheme();
   const pushOverlay = useCommandCenter(s => s.pushBrowserOverlay);
   const popOverlay = useCommandCenter(s => s.popBrowserOverlay);
   useEffect(() => { pushOverlay(); return () => { popOverlay(); }; }, [pushOverlay, popOverlay]);
@@ -141,38 +143,38 @@ export function InspectionPanel({ onClose }: Props) {
       position: 'fixed', top: 0, right: 0, bottom: 0,
       width: 400, zIndex: 10000,
       background: 'rgba(8,14,26,0.98)', backdropFilter: 'blur(24px)',
-      borderLeft: `1px solid ${color.borderHi}`,
+      borderLeft: `1px solid ${colors.borderHi}`,
       display: 'flex', flexDirection: 'column',
       fontFamily: font.body, fontSize: 12,
       boxShadow: '-8px 0 32px rgba(0,0,0,0.4)',
     }}>
       {/* Header */}
       <div style={{
-        padding: '12px 16px', borderBottom: `1px solid ${color.border}`,
+        padding: '12px 16px', borderBottom: `1px solid ${colors.border}`,
         display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0,
       }}>
-        <span style={{ flex: 1, fontWeight: 600, fontSize: 13, color: color.text }}>
+        <span style={{ flex: 1, fontWeight: 600, fontSize: 13, color: colors.text }}>
           What your agent sees
         </span>
         <button onClick={togglePause} style={{
           padding: '4px 10px', borderRadius: 4, fontSize: 11, fontWeight: 500,
           background: paused ? 'rgba(255,180,0,0.12)' : 'rgba(0,213,255,0.08)',
-          border: `1px solid ${paused ? 'rgba(255,180,0,0.3)' : color.border}`,
-          color: paused ? '#ffb400' : color.cyan, cursor: 'pointer',
+          border: `1px solid ${paused ? 'rgba(255,180,0,0.3)' : colors.border}`,
+          color: paused ? '#ffb400' : colors.cyan, cursor: 'pointer',
         }}>
           {paused ? 'Resume' : 'Pause'}
         </button>
         <a href="/brain" target="_blank" rel="noopener" style={{
           padding: '4px 10px', borderRadius: 4, fontSize: 11, fontWeight: 500,
-          background: 'rgba(255,255,255,0.04)', border: `1px solid ${color.border}`,
-          color: color.textMuted, textDecoration: 'none', cursor: 'pointer',
+          background: 'rgba(255,255,255,0.04)', border: `1px solid ${colors.border}`,
+          color: colors.textMuted, textDecoration: 'none', cursor: 'pointer',
         }}>
           Open Brain
         </a>
         <button onClick={onClose} style={{
           width: 24, height: 24, borderRadius: 4,
-          background: 'rgba(255,255,255,0.04)', border: `1px solid ${color.border}`,
-          color: color.textMuted, cursor: 'pointer',
+          background: 'rgba(255,255,255,0.04)', border: `1px solid ${colors.border}`,
+          color: colors.textMuted, cursor: 'pointer',
           display: 'grid', placeItems: 'center',
         }}>
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round">
@@ -182,20 +184,20 @@ export function InspectionPanel({ onClose }: Props) {
       </div>
 
       {/* Active project */}
-      <div style={{ padding: '8px 16px', borderBottom: `1px solid ${color.border}`, flexShrink: 0 }}>
+      <div style={{ padding: '8px 16px', borderBottom: `1px solid ${colors.border}`, flexShrink: 0 }}>
         {status?.active_project ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ color: color.textMuted }}>Project:</span>
-            <span style={{ color: color.text, fontWeight: 500 }}>{status.active_project.project_name}</span>
+            <span style={{ color: colors.textMuted }}>Project:</span>
+            <span style={{ color: colors.text, fontWeight: 500 }}>{status.active_project.project_name}</span>
             <span style={{
               padding: '1px 6px', borderRadius: 3, fontSize: 10, fontWeight: 600,
-              background: 'rgba(0,213,255,0.1)', color: color.cyan,
+              background: 'rgba(0,213,255,0.1)', color: colors.cyan,
             }}>
               {status.active_project.wing}
             </span>
           </div>
         ) : (
-          <span style={{ color: color.textDim }}>No project selected</span>
+          <span style={{ color: colors.textDim }}>No project selected</span>
         )}
       </div>
 
@@ -205,13 +207,13 @@ export function InspectionPanel({ onClose }: Props) {
           <button key={key} onClick={() => toggleFilter(key)} style={{
             padding: '2px 8px', borderRadius: 3, fontSize: 10, fontWeight: 500,
             background: active ? 'rgba(0,213,255,0.08)' : 'rgba(255,255,255,0.02)',
-            border: `1px solid ${active ? 'rgba(0,213,255,0.2)' : color.border}`,
-            color: active ? color.cyan : color.textDim, cursor: 'pointer',
+            border: `1px solid ${active ? 'rgba(0,213,255,0.2)' : colors.border}`,
+            color: active ? colors.cyan : colors.textDim, cursor: 'pointer',
           }}>
             {key}
           </button>
         ))}
-        <span style={{ marginLeft: 'auto', color: color.textDim, fontSize: 10 }}>
+        <span style={{ marginLeft: 'auto', color: colors.textDim, fontSize: 10 }}>
           {filteredEvents.length} events
         </span>
       </div>
@@ -229,19 +231,19 @@ export function InspectionPanel({ onClose }: Props) {
               cursor: 'pointer',
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ color: color.textDim, fontFamily: font.mono, fontSize: 10, width: 56, flexShrink: 0 }}>{ts}</span>
+                <span style={{ color: colors.textDim, fontFamily: font.mono, fontSize: 10, width: 56, flexShrink: 0 }}>{ts}</span>
                 <span style={{
                   padding: '0 4px', borderRadius: 2, fontSize: 9, fontWeight: 600,
                   background: surfaceColor(surface), color: '#fff',
                 }}>
                   {surface.replace(/Picker$/, '')}
                 </span>
-                <span style={{ color: color.textMuted, fontSize: 11, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <span style={{ color: colors.textMuted, fontSize: 11, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {type}
                 </span>
               </div>
               {isExpanded && (
-                <pre style={{ margin: '4px 0 4px 62px', fontSize: 10, color: color.textDim, fontFamily: font.mono, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                <pre style={{ margin: '4px 0 4px 62px', fontSize: 10, color: colors.textDim, fontFamily: font.mono, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
                   {JSON.stringify(event.payload, null, 2)}
                 </pre>
               )}
@@ -251,10 +253,10 @@ export function InspectionPanel({ onClose }: Props) {
       </div>
 
       {/* Recent memories (collapsible) */}
-      <div style={{ borderTop: `1px solid ${color.border}`, flexShrink: 0 }}>
+      <div style={{ borderTop: `1px solid ${colors.border}`, flexShrink: 0 }}>
         <button onClick={() => setMemoriesOpen(!memoriesOpen)} style={{
           width: '100%', padding: '8px 16px', display: 'flex', alignItems: 'center', gap: 6,
-          background: 'transparent', border: 'none', cursor: 'pointer', color: color.textMuted, fontSize: 11, fontWeight: 600,
+          background: 'transparent', border: 'none', cursor: 'pointer', color: colors.textMuted, fontSize: 11, fontWeight: 600,
         }}>
           <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3}
             style={{ transform: memoriesOpen ? 'rotate(90deg)' : 'rotate(0deg)', transition: `transform 150ms ${ease.out}` }}>
@@ -270,16 +272,16 @@ export function InspectionPanel({ onClose }: Props) {
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   {m.wing && (
-                    <span style={{ padding: '0 4px', borderRadius: 2, fontSize: 9, background: 'rgba(0,213,255,0.1)', color: color.cyan }}>
+                    <span style={{ padding: '0 4px', borderRadius: 2, fontSize: 9, background: 'rgba(0,213,255,0.1)', color: colors.cyan }}>
                       {m.wing}
                     </span>
                   )}
-                  <span style={{ color: color.textMuted, fontSize: 11, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <span style={{ color: colors.textMuted, fontSize: 11, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {m.content.split('\n')[0]}
                   </span>
                 </div>
                 {expandedMemory === m.id && (
-                  <pre style={{ margin: '4px 0 4px 0', fontSize: 10, color: color.textDim, fontFamily: font.mono, whiteSpace: 'pre-wrap' }}>
+                  <pre style={{ margin: '4px 0 4px 0', fontSize: 10, color: colors.textDim, fontFamily: font.mono, whiteSpace: 'pre-wrap' }}>
                     {m.content}
                   </pre>
                 )}
@@ -290,10 +292,10 @@ export function InspectionPanel({ onClose }: Props) {
       </div>
 
       {/* Current digest (collapsible) */}
-      <div style={{ borderTop: `1px solid ${color.border}`, flexShrink: 0 }}>
+      <div style={{ borderTop: `1px solid ${colors.border}`, flexShrink: 0 }}>
         <button onClick={() => setDigestOpen(!digestOpen)} style={{
           width: '100%', padding: '8px 16px', display: 'flex', alignItems: 'center', gap: 6,
-          background: 'transparent', border: 'none', cursor: 'pointer', color: color.textMuted, fontSize: 11, fontWeight: 600,
+          background: 'transparent', border: 'none', cursor: 'pointer', color: colors.textMuted, fontSize: 11, fontWeight: 600,
         }}>
           <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3}
             style={{ transform: digestOpen ? 'rotate(90deg)' : 'rotate(0deg)', transition: `transform 150ms ${ease.out}` }}>
@@ -302,22 +304,22 @@ export function InspectionPanel({ onClose }: Props) {
           Current Digest
         </button>
         {digestOpen && digest && (
-          <div style={{ maxHeight: 200, overflow: 'auto', padding: '0 16px 8px', fontSize: 10, color: color.textDim }}>
+          <div style={{ maxHeight: 200, overflow: 'auto', padding: '0 16px 8px', fontSize: 10, color: colors.textDim }}>
             <div style={{ marginBottom: 4 }}>
-              <strong style={{ color: color.textMuted }}>Live State:</strong>
+              <strong style={{ color: colors.textMuted }}>Live State:</strong>
               <pre style={{ fontFamily: font.mono, whiteSpace: 'pre-wrap', margin: '2px 0' }}>
                 {JSON.stringify(digest.live_state, null, 2)}
               </pre>
             </div>
             <div style={{ marginBottom: 4 }}>
-              <strong style={{ color: color.textMuted }}>Recent Events:</strong> {digest.recent_events.length}
+              <strong style={{ color: colors.textMuted }}>Recent Events:</strong> {digest.recent_events.length}
             </div>
             {digest.probed_memories.length > 0 && (
               <div style={{ marginBottom: 4 }}>
-                <strong style={{ color: color.textMuted }}>Probed Memories ({digest.probed_memories.length}):</strong>
+                <strong style={{ color: colors.textMuted }}>Probed Memories ({digest.probed_memories.length}):</strong>
                 {digest.probed_memories.map((m, i) => (
                   <div key={i} style={{ padding: '2px 0', borderBottom: '1px solid rgba(255,255,255,0.02)' }}>
-                    <span style={{ color: color.cyan, fontSize: 9 }}>relevance: {m.relevance?.toFixed(2)}</span>{' '}
+                    <span style={{ color: colors.cyan, fontSize: 9 }}>relevance: {m.relevance?.toFixed(2)}</span>{' '}
                     {m.content?.slice(0, 120)}
                   </div>
                 ))}

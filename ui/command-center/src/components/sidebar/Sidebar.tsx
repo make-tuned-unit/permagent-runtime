@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useCommandCenter } from '../../lib/store';
-import { color, font, ease } from '../../styles/tokens';
+import { font, ease } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 
@@ -22,6 +22,7 @@ function SidebarRow({
   icon: string; label: string; active: boolean; open: boolean;
   onClick: () => void; title?: string;
 }) {
+  const { colors } = useTheme();
   return (
     <button onClick={onClick} title={open ? title : label} style={{
       width: open ? 'calc(100% - 16px)' : 40,
@@ -31,8 +32,8 @@ function SidebarRow({
       justifyContent: open ? 'flex-start' : 'center',
       margin: open ? '0 8px' : '0 auto',
       background: active ? 'rgba(0,213,255,0.10)' : 'transparent',
-      border: active ? `1px solid ${color.borderHi}` : '1px solid transparent',
-      color: active ? color.cyan : color.textMuted,
+      border: active ? `1px solid ${colors.borderHi}` : '1px solid transparent',
+      color: active ? colors.cyan : colors.textMuted,
       cursor: 'pointer', transition: `all 200ms ${ease.out}`,
       fontFamily: font.body, fontSize: 13, fontWeight: active ? 600 : 500,
       textAlign: 'left',
@@ -49,7 +50,7 @@ function SidebarRow({
 }
 
 export function Sidebar() {
-  const { gradient } = useTheme();
+  const { gradient, colors } = useTheme();
   const [open, setOpen] = useState(true);
   const workspaces = useCommandCenter(s => s.workspaces);
   const activeWorkspaceId = useCommandCenter(s => s.activeWorkspaceId);
@@ -85,7 +86,7 @@ export function Sidebar() {
   return (
     <div style={{
       width: W, height: '100%', flexShrink: 0,
-      borderRight: `1px solid ${color.border}`,
+      borderRight: `1px solid ${colors.border}`,
       background: gradient.sidebar,
       display: 'flex', flexDirection: 'column',
       padding: '14px 0', gap: 4,
@@ -135,7 +136,7 @@ export function Sidebar() {
         <button onClick={() => setOpen(false)} title="Collapse" style={{
           width: 'calc(100% - 16px)', height: 32, borderRadius: 8,
           margin: '4px 8px 0', background: 'transparent',
-          border: 'none', color: color.textDim, cursor: 'pointer',
+          border: 'none', color: colors.textDim, cursor: 'pointer',
           display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
           fontFamily: font.body, fontSize: 11, fontWeight: 500,
           transition: `all 200ms ${ease.out}`,
@@ -150,7 +151,7 @@ export function Sidebar() {
         <button onClick={() => setOpen(true)} title="Expand" style={{
           width: 40, height: 32, margin: '4px auto 0',
           borderRadius: 8, background: 'transparent',
-          border: 'none', color: color.textDim, cursor: 'pointer',
+          border: 'none', color: colors.textDim, cursor: 'pointer',
           display: 'grid', placeItems: 'center',
         }}>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">

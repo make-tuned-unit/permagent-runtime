@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
-import { color, font } from '../../styles/tokens';
+import { font } from '../../styles/tokens';
 import { useProjects, Project } from './useProjects';
+import { useTheme } from '../../styles/useTheme';
 
 const PERSONAL_ID = '00000000-0000-0000-0000-000000000001';
 
@@ -10,6 +11,7 @@ interface Props {
 }
 
 export function ProjectChip({ onLaunch, onVisitSite }: Props) {
+  const { colors } = useTheme();
   const { projects, loading, touch } = useProjects();
   const [open, setOpen] = useState(false);
   const [sortMode, setSortMode] = useState<'recent' | 'az'>('recent');
@@ -55,9 +57,9 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
         onClick={() => setOpen(!open)}
         style={{
           height: 28, padding: '0 10px', borderRadius: 6,
-          background: 'rgba(255,255,255,0.06)', border: `1px solid ${color.border}`,
+          background: 'rgba(255,255,255,0.06)', border: `1px solid ${colors.border}`,
           fontFamily: font.body, fontSize: 11, fontWeight: 500,
-          color: color.textMuted, cursor: 'pointer',
+          color: colors.textMuted, cursor: 'pointer',
           display: 'inline-flex', alignItems: 'center', gap: 5,
         }}
       >
@@ -75,14 +77,14 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
         <div style={{
           position: 'absolute', top: '100%', left: 0, marginTop: 4,
           minWidth: 280, maxHeight: 360, overflowY: 'auto',
-          background: '#0F1729', border: `1px solid ${color.border}`,
+          background: '#0F1729', border: `1px solid ${colors.border}`,
           borderRadius: 8, boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
           zIndex: 50, padding: '4px 0',
         }}>
           {/* Sort toggle */}
           <div style={{
             padding: '6px 10px', display: 'flex', gap: 8,
-            borderBottom: `1px solid ${color.border}`, marginBottom: 2,
+            borderBottom: `1px solid ${colors.border}`, marginBottom: 2,
           }}>
             {(['recent', 'az'] as const).map(mode => (
               <button
@@ -92,7 +94,7 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
                   fontSize: 10, fontFamily: font.body, fontWeight: 500,
                   padding: '2px 6px', borderRadius: 4, cursor: 'pointer',
                   background: sortMode === mode ? 'rgba(255,255,255,0.1)' : 'transparent',
-                  color: sortMode === mode ? color.text : color.textDim,
+                  color: sortMode === mode ? colors.text : colors.textDim,
                   border: 'none',
                 }}
               >
@@ -115,11 +117,13 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
   );
 }
 
-function ProjectRow({ project, onLaunch, onVisit }: {
+function ProjectRow({
+project, onLaunch, onVisit }: {
   project: Project;
   onLaunch: (p: Project, agent: string) => void;
   onVisit: (p: Project) => void;
 }) {
+  const { colors } = useTheme();
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -131,7 +135,7 @@ function ProjectRow({ project, onLaunch, onVisit }: {
           background: expanded ? 'rgba(255,255,255,0.05)' : 'transparent',
           border: 'none', cursor: 'pointer', textAlign: 'left',
           display: 'flex', alignItems: 'center', gap: 8,
-          fontFamily: font.body, fontSize: 12, color: color.text,
+          fontFamily: font.body, fontSize: 12, color: colors.text,
         }}
       >
         <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -139,7 +143,7 @@ function ProjectRow({ project, onLaunch, onVisit }: {
         </span>
         <svg
           width="8" height="8" viewBox="0 0 24 24" fill="none"
-          stroke={color.textDim} strokeWidth={2.5}
+          stroke={colors.textDim} strokeWidth={2.5}
           style={{ transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }}
         >
           <polyline points="6 9 12 15 18 9" />
@@ -172,9 +176,11 @@ function ProjectRow({ project, onLaunch, onVisit }: {
   );
 }
 
-function ActionBtn({ label, disabled, tooltip, onClick }: {
+function ActionBtn({
+label, disabled, tooltip, onClick }: {
   label: string; disabled?: boolean; tooltip?: string; onClick: () => void;
 }) {
+  const { colors } = useTheme();
   return (
     <button
       onClick={disabled ? undefined : onClick}
@@ -184,7 +190,7 @@ function ActionBtn({ label, disabled, tooltip, onClick }: {
         background: disabled ? 'rgba(255,255,255,0.03)' : 'rgba(0,217,255,0.1)',
         border: `1px solid ${disabled ? 'rgba(255,255,255,0.06)' : 'rgba(0,217,255,0.25)'}`,
         fontFamily: font.body, fontSize: 10, fontWeight: 500,
-        color: disabled ? color.textDim : color.cyan,
+        color: disabled ? colors.textDim : colors.cyan,
         cursor: disabled ? 'not-allowed' : 'pointer',
         opacity: disabled ? 0.5 : 1,
       }}

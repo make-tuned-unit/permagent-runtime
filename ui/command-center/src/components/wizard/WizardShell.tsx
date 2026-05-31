@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { color, ease } from '../../styles/tokens';
+import { ease } from '../../styles/tokens';
 import { ProgressDots, BackChevron } from './atoms';
 import { MomentWelcome } from './MomentWelcome';
 import { MomentCalibration } from './MomentCalibration';
@@ -7,6 +7,7 @@ import { MomentIntent } from './MomentIntent';
 import { MomentMeet } from './MomentMeet';
 import { MomentChat } from './MomentChat';
 import { api, apiFetch } from '../../lib/api';
+import { useTheme } from '../../styles/useTheme';
 
 interface Persona {
   name: string;
@@ -20,6 +21,7 @@ interface Props {
 }
 
 export function WizardShell({ onComplete }: Props) {
+  const { colors } = useTheme();
   const [step, setStep] = useState(0);
   const [intent, setIntent] = useState('');
   const [persona, setPersona] = useState<Persona>({
@@ -86,7 +88,7 @@ export function WizardShell({ onComplete }: Props) {
   return (
     <div style={{
       position: 'fixed', inset: 0,
-      background: `radial-gradient(ellipse 80% 60% at 50% 40%, rgba(0,213,255,0.06) 0%, ${color.bg} 70%)`,
+      background: `radial-gradient(ellipse 80% 60% at 50% 40%, rgba(0,213,255,0.06) 0%, ${colors.bg} 70%)`,
       display: 'flex', flexDirection: 'column',
       overflow: 'hidden',
     }}>

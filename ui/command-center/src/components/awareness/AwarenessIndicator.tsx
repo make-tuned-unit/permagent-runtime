@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback } from 'react';
 import { api } from '../../lib/api';
 import { relativeTimeAgo } from '../../lib/time-decay';
-import { color, font } from '../../styles/tokens';
+import { font } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
 
 interface DigestSummary {
   project_name: string | null;
@@ -15,6 +16,7 @@ interface Props {
 }
 
 export function AwarenessIndicator({ onOpenInspection }: Props) {
+  const { colors } = useTheme();
   const [summary, setSummary] = useState<DigestSummary | null>(null);
 
   const fetchDigest = useCallback(async () => {
@@ -56,7 +58,7 @@ export function AwarenessIndicator({ onOpenInspection }: Props) {
     return (
       <div onClick={onOpenInspection} style={containerStyle}>
         <span style={dotStyle('#64748b')} />
-        <span style={textStyle}>No recent activity</span>
+        <span style={textStyle(colors)}>No recent activity</span>
       </div>
     );
   }
@@ -73,8 +75,8 @@ export function AwarenessIndicator({ onOpenInspection }: Props) {
 
   return (
     <div onClick={onOpenInspection} style={containerStyle}>
-      <span style={dotStyle(isActive ? color.cyan : '#64748b')} />
-      <span style={textStyle}>{label}</span>
+      <span style={dotStyle(isActive ? colors.cyan : '#64748b')} />
+      <span style={textStyle(colors)}>{label}</span>
     </div>
   );
 }
@@ -97,11 +99,11 @@ const dotStyle = (bg: string): React.CSSProperties => ({
   flexShrink: 0,
 });
 
-const textStyle: React.CSSProperties = {
+const textStyle = (colors: { textDim: string }): React.CSSProperties => ({
   fontSize: 10,
   fontFamily: font.body,
-  color: color.textDim,
+  color: colors.textDim,
   overflow: 'hidden',
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
-};
+});

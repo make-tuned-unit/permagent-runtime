@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { color, font } from '../../styles/tokens';
+import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { apiFetch } from '../../lib/api';
 
@@ -49,7 +49,7 @@ const LS_KEY = 'permagent-projects-last-opened';
 // ── Main component ─────────────────────────────────────────────────────────
 
 export function ProjectsView() {
-  const { gradient } = useTheme();
+  const { gradient, colors } = useTheme();
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -67,6 +67,11 @@ export function ProjectsView() {
 
   useEffect(() => {
     loadProjects();
+    // Poll for new projects every 5s + refetch on window focus
+    const interval = setInterval(loadProjects, 5000);
+    const onFocus = () => loadProjects();
+    window.addEventListener('focus', onFocus);
+    return () => { clearInterval(interval); window.removeEventListener('focus', onFocus); };
   }, [loadProjects]);
 
   // On first load, restore last-opened project
@@ -102,7 +107,7 @@ export function ProjectsView() {
 
   if (loading) {
     return (
-      <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', background: gradient.workspace, color: color.textMuted, fontFamily: font.body, fontSize: 13 }}>
+      <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', background: gradient.workspace, color: colors.textMuted, fontFamily: font.body, fontSize: 13 }}>
         Loading projects...
       </div>
     );
@@ -128,11 +133,13 @@ const STATUS_COLUMNS = [
   { key: 'archived', label: 'Archived' },
 ];
 
-function AllProjectsView({ projects, onOpenProject, onStatusChange }: {
+function AllProjectsView({
+projects, onOpenProject, onStatusChange }: {
   projects: Project[];
   onOpenProject: (id: string) => void;
   onStatusChange: (id: string, status: string) => void;
 }) {
+  const { colors } = useTheme();
   const { gradient } = useTheme();
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
 
@@ -159,11 +166,11 @@ function AllProjectsView({ projects, onOpenProject, onStatusChange }: {
   };
 
   return (
-    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: gradient.workspace, color: color.text, fontFamily: font.body }}>
+    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: gradient.workspace, color: colors.text, fontFamily: font.body }}>
       {/* Header */}
-      <div style={{ padding: '16px 24px', borderBottom: `1px solid ${color.border}`, flexShrink: 0 }}>
+      <div style={{ padding: '16px 24px', borderBottom: `1px solid ${colors.border}`, flexShrink: 0 }}>
         <div style={{ fontFamily: font.display, fontSize: 16, fontWeight: 600, letterSpacing: '-0.01em' }}>Projects</div>
-        <div style={{ fontSize: 11, color: color.textMuted, marginTop: 2 }}>
+        <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2 }}>
           {projects.length} project{projects.length !== 1 ? 's' : ''} — drag to change status
         </div>
       </div>
@@ -189,11 +196,11 @@ function AllProjectsView({ projects, onOpenProject, onStatusChange }: {
               }}
             >
               {/* Column header */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 4px 10px', borderBottom: `1px solid ${color.border}` }}>
-                <span style={{ fontSize: 12, fontWeight: 600, color: color.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 4px 10px', borderBottom: `1px solid ${colors.border}` }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                   {col.label}
                 </span>
-                <span style={{ fontSize: 10, color: color.textDim, background: 'rgba(255,255,255,0.06)', padding: '1px 6px', borderRadius: 8 }}>
+                <span style={{ fontSize: 10, color: colors.textDim, background: 'rgba(255,255,255,0.06)', padding: '1px 6px', borderRadius: 8 }}>
                   {colProjects.length}
                 </span>
               </div>
@@ -223,11 +230,13 @@ function AllProjectsView({ projects, onOpenProject, onStatusChange }: {
   );
 }
 
-function ProjectCard({ project, onOpen, onDragStart }: {
+function ProjectCard({
+project, onOpen, onDragStart }: {
   project: Project;
   onOpen: () => void;
   onDragStart: (e: React.DragEvent) => void;
 }) {
+  const { colors } = useTheme();
   const isPersonal = project.id === PERSONAL_ID;
 
   return (
@@ -238,16 +247,16 @@ function ProjectCard({ project, onOpen, onDragStart }: {
       style={{
         padding: '10px 12px', borderRadius: 8,
         background: 'rgba(255,255,255,0.04)',
-        border: `1px solid ${color.border}`,
+        border: `1px solid ${colors.border}`,
         cursor: 'pointer',
         transition: 'all 150ms',
       }}
       onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = 'rgba(0,213,255,0.3)'; }}
-      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = color.border; }}
+      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         {isPersonal && (
-          <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 4, background: 'rgba(0,213,255,0.1)', color: color.cyan, fontWeight: 600 }}>
+          <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 4, background: 'rgba(0,213,255,0.1)', color: colors.cyan, fontWeight: 600 }}>
             DEFAULT
           </span>
         )}
@@ -256,14 +265,14 @@ function ProjectCard({ project, onOpen, onDragStart }: {
         </span>
       </div>
       {project.description && (
-        <div style={{ fontSize: 11, color: color.textMuted, marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {project.description}
         </div>
       )}
       {project.tags.length > 0 && (
         <div style={{ display: 'flex', gap: 4, marginTop: 6, flexWrap: 'wrap' }}>
           {project.tags.slice(0, 3).map(tag => (
-            <span key={tag} style={{ fontSize: 9, padding: '1px 5px', borderRadius: 4, background: 'rgba(255,255,255,0.06)', color: color.textDim }}>
+            <span key={tag} style={{ fontSize: 9, padding: '1px 5px', borderRadius: 4, background: 'rgba(255,255,255,0.06)', color: colors.textDim }}>
               {tag}
             </span>
           ))}
@@ -275,10 +284,12 @@ function ProjectCard({ project, onOpen, onDragStart }: {
 
 // ── Project Detail View (cards inside a project) ───────────────────────────
 
-function ProjectDetailView({ project, onBack }: {
+function ProjectDetailView({
+project, onBack }: {
   project: Project;
   onBack: () => void;
 }) {
+  const { colors } = useTheme();
   const { gradient } = useTheme();
   const [columns, setColumns] = useState<BoardColumn[]>([]);
   const [cards, setCards] = useState<Card[]>([]);
@@ -362,35 +373,35 @@ function ProjectDetailView({ project, onBack }: {
 
   if (loading) {
     return (
-      <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', background: gradient.workspace, color: color.textMuted, fontFamily: font.body, fontSize: 13 }}>
+      <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', background: gradient.workspace, color: colors.textMuted, fontFamily: font.body, fontSize: 13 }}>
         Loading board...
       </div>
     );
   }
 
   return (
-    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: gradient.workspace, color: color.text, fontFamily: font.body }}>
+    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: gradient.workspace, color: colors.text, fontFamily: font.body }}>
       {/* Header */}
-      <div style={{ padding: '12px 24px', borderBottom: `1px solid ${color.border}`, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 12 }}>
+      <div style={{ padding: '12px 24px', borderBottom: `1px solid ${colors.border}`, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 12 }}>
         <button onClick={onBack} style={{
-          background: 'none', border: 'none', color: color.textMuted, cursor: 'pointer',
+          background: 'none', border: 'none', color: colors.textMuted, cursor: 'pointer',
           padding: '4px 8px', borderRadius: 6, fontSize: 12, fontFamily: font.body,
           display: 'flex', alignItems: 'center', gap: 4,
         }}
-          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = color.text; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = color.textMuted; }}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = colors.text; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = colors.textMuted; }}
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
             <path d="M19 12H5M12 19l-7-7 7-7" />
           </svg>
           All Projects
         </button>
-        <div style={{ width: 1, height: 16, background: color.border }} />
+        <div style={{ width: 1, height: 16, background: colors.border }} />
         <div>
           <div style={{ fontFamily: font.display, fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em' }}>
             {project.name}
           </div>
-          <div style={{ fontSize: 10, color: color.textMuted, marginTop: 1 }}>
+          <div style={{ fontSize: 10, color: colors.textMuted, marginTop: 1 }}>
             {project.slug} · {cards.length} card{cards.length !== 1 ? 's' : ''}
           </div>
         </div>
@@ -417,11 +428,11 @@ function ProjectDetailView({ project, onBack }: {
               }}
             >
               {/* Column header */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 4px 10px', borderBottom: `1px solid ${color.border}` }}>
-                <span style={{ fontSize: 12, fontWeight: 600, color: color.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', flex: 1 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 4px 10px', borderBottom: `1px solid ${colors.border}` }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', flex: 1 }}>
                   {col.name}
                 </span>
-                <span style={{ fontSize: 10, color: color.textDim, background: 'rgba(255,255,255,0.06)', padding: '1px 6px', borderRadius: 8 }}>
+                <span style={{ fontSize: 10, color: colors.textDim, background: 'rgba(255,255,255,0.06)', padding: '1px 6px', borderRadius: 8 }}>
                   {colCards.length}
                 </span>
               </div>
@@ -453,8 +464,8 @@ function ProjectDetailView({ project, onBack }: {
                     style={{
                       padding: '6px 8px', borderRadius: 6,
                       background: 'rgba(255,255,255,0.06)',
-                      border: `1px solid ${color.border}`,
-                      color: color.text, fontFamily: font.body, fontSize: 12,
+                      border: `1px solid ${colors.border}`,
+                      color: colors.text, fontFamily: font.body, fontSize: 12,
                       outline: 'none',
                     }}
                   />
@@ -464,7 +475,7 @@ function ProjectDetailView({ project, onBack }: {
                       style={{
                         flex: 1, padding: '4px 0', borderRadius: 5,
                         background: 'rgba(0,213,255,0.15)', border: `1px solid rgba(0,213,255,0.3)`,
-                        color: color.cyan, fontSize: 11, fontFamily: font.body, fontWeight: 600, cursor: 'pointer',
+                        color: colors.cyan, fontSize: 11, fontFamily: font.body, fontWeight: 600, cursor: 'pointer',
                       }}
                     >
                       Add
@@ -473,8 +484,8 @@ function ProjectDetailView({ project, onBack }: {
                       onClick={() => { setAddingCardCol(null); setNewCardTitle(''); }}
                       style={{
                         padding: '4px 8px', borderRadius: 5,
-                        background: 'transparent', border: `1px solid ${color.border}`,
-                        color: color.textMuted, fontSize: 11, fontFamily: font.body, cursor: 'pointer',
+                        background: 'transparent', border: `1px solid ${colors.border}`,
+                        color: colors.textMuted, fontSize: 11, fontFamily: font.body, cursor: 'pointer',
                       }}
                     >
                       Cancel
@@ -486,12 +497,12 @@ function ProjectDetailView({ project, onBack }: {
                   onClick={() => setAddingCardCol(col.id)}
                   style={{
                     marginTop: 8, padding: '6px 0', borderRadius: 6,
-                    background: 'transparent', border: `1px dashed ${color.border}`,
-                    color: color.textDim, fontSize: 11, fontFamily: font.body,
+                    background: 'transparent', border: `1px dashed ${colors.border}`,
+                    color: colors.textDim, fontSize: 11, fontFamily: font.body,
                     cursor: 'pointer', transition: 'all 150ms',
                   }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = 'rgba(0,213,255,0.3)'; (e.currentTarget as HTMLElement).style.color = color.textMuted; }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = color.border; (e.currentTarget as HTMLElement).style.color = color.textDim; }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = 'rgba(0,213,255,0.3)'; (e.currentTarget as HTMLElement).style.color = colors.textMuted; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; (e.currentTarget as HTMLElement).style.color = colors.textDim; }}
                 >
                   + Add card
                 </button>
@@ -504,11 +515,13 @@ function ProjectDetailView({ project, onBack }: {
   );
 }
 
-function CardItem({ card, onDragStart, onDelete }: {
+function CardItem({
+card, onDragStart, onDelete }: {
   card: Card;
   onDragStart: (e: React.DragEvent) => void;
   onDelete: () => void;
 }) {
+  const { colors } = useTheme();
   const [showMenu, setShowMenu] = useState(false);
 
   return (
@@ -519,15 +532,15 @@ function CardItem({ card, onDragStart, onDelete }: {
       style={{
         padding: '8px 10px', borderRadius: 7,
         background: 'rgba(255,255,255,0.04)',
-        border: `1px solid ${color.border}`,
+        border: `1px solid ${colors.border}`,
         cursor: 'grab', position: 'relative',
       }}
       onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = 'rgba(255,255,255,0.12)'; }}
-      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = color.border; setShowMenu(false); }}
+      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; setShowMenu(false); }}
     >
       <div style={{ fontSize: 12, fontWeight: 500 }}>{card.title}</div>
       {card.description && (
-        <div style={{ fontSize: 10, color: color.textMuted, marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <div style={{ fontSize: 10, color: colors.textMuted, marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {card.description}
         </div>
       )}
@@ -543,7 +556,7 @@ function CardItem({ card, onDragStart, onDelete }: {
       {showMenu && (
         <div style={{
           position: 'absolute', top: '100%', right: 0, marginTop: 2, zIndex: 10,
-          background: '#0F1729', border: `1px solid ${color.border}`, borderRadius: 6,
+          background: '#0F1729', border: `1px solid ${colors.border}`, borderRadius: 6,
           boxShadow: '0 4px 16px rgba(0,0,0,0.4)', padding: 2, minWidth: 100,
         }}>
           <button

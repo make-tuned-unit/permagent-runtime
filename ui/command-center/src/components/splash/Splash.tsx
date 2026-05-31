@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react';
-import { color, font, ease } from '../../styles/tokens';
+import { font, ease } from '../../styles/tokens';
 import { Mobius } from '../mobius/Mobius';
+import { useTheme } from '../../styles/useTheme';
 
 interface Props {
   onDone: () => void;
 }
 
 export function Splash({ onDone }: Props) {
+  const { colors } = useTheme();
   const [phase, setPhase] = useState<'in' | 'out'>('in');
   const [showLine1, setShowLine1] = useState(false);
   const [showLine2, setShowLine2] = useState(false);
@@ -30,7 +32,7 @@ export function Splash({ onDone }: Props) {
       onClick={() => setPhase('out')}
       style={{
         position: 'fixed', inset: 0,
-        background: `radial-gradient(ellipse 70% 50% at 50% 45%, rgba(0,213,255,0.05) 0%, ${color.bg} 70%)`,
+        background: `radial-gradient(ellipse 70% 50% at 50% 45%, rgba(0,213,255,0.05) 0%, ${colors.bg} 70%)`,
         display: 'flex', flexDirection: 'column',
         alignItems: 'center', justifyContent: 'center',
         cursor: 'pointer',
@@ -50,7 +52,7 @@ export function Splash({ onDone }: Props) {
         * ========================= */}
       <p style={{
         fontFamily: font.display, fontSize: 15, fontWeight: 600,
-        color: color.textMuted, letterSpacing: '0.08em',
+        color: colors.textMuted, letterSpacing: '0.08em',
         textTransform: 'none',
         marginTop: 28,
         opacity: 0.7,

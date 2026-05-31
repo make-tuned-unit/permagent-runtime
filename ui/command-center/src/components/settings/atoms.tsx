@@ -1,30 +1,34 @@
-import { color, font, ease, radius } from '../../styles/tokens';
+import { font, ease, radius } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
 
 export function H1({ children, sub }: { children: React.ReactNode; sub?: string }) {
+  const { colors } = useTheme();
   return (
     <div style={{ marginBottom: 28 }}>
-      <div style={{ fontFamily: font.display, fontSize: 24, fontWeight: 600, letterSpacing: '-0.02em', color: color.text }}>{children}</div>
-      {sub && <div style={{ fontSize: 13, color: color.textMuted, marginTop: 6, maxWidth: 580, lineHeight: 1.55 }}>{sub}</div>}
+      <div style={{ fontFamily: font.display, fontSize: 24, fontWeight: 600, letterSpacing: '-0.02em', color: colors.text }}>{children}</div>
+      {sub && <div style={{ fontSize: 13, color: colors.textMuted, marginTop: 6, maxWidth: 580, lineHeight: 1.55 }}>{sub}</div>}
     </div>
   );
 }
 
 export function Section({ title, sub, children }: { title: string; sub?: string; children: React.ReactNode }) {
+  const { colors } = useTheme();
   return (
-    <div style={{ marginBottom: 28, padding: 24, borderRadius: radius.md, background: 'rgba(20,28,48,0.4)', border: `1px solid ${color.border}` }}>
+    <div style={{ marginBottom: 28, padding: 24, borderRadius: radius.md, background: 'rgba(20,28,48,0.4)', border: `1px solid ${colors.border}` }}>
       <div style={{ fontFamily: font.display, fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em', marginBottom: sub ? 4 : 16 }}>{title}</div>
-      {sub && <div style={{ fontSize: 12, color: color.textMuted, marginBottom: 18, lineHeight: 1.5 }}>{sub}</div>}
+      {sub && <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 18, lineHeight: 1.5 }}>{sub}</div>}
       {children}
     </div>
   );
 }
 
 export function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  const { colors } = useTheme();
   return (
-    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 24, padding: '14px 0', borderTop: `1px solid ${color.border}` }}>
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 24, padding: '14px 0', borderTop: `1px solid ${colors.border}` }}>
       <div style={{ width: 200, flexShrink: 0, paddingTop: 6 }}>
-        <div style={{ fontSize: 13, fontWeight: 500, color: color.text }}>{label}</div>
-        {hint && <div style={{ fontSize: 11, color: color.textMuted, marginTop: 4, lineHeight: 1.5 }}>{hint}</div>}
+        <div style={{ fontSize: 13, fontWeight: 500, color: colors.text }}>{label}</div>
+        {hint && <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 4, lineHeight: 1.5 }}>{hint}</div>}
       </div>
       <div style={{ flex: 1 }}>{children}</div>
     </div>
@@ -34,6 +38,7 @@ export function Row({ label, hint, children }: { label: string; hint?: string; c
 export function TextInput({ value, onChange, placeholder, mono, multi }: {
   value: string; onChange?: (v: string) => void; placeholder?: string; mono?: boolean; multi?: boolean;
 }) {
+  const { colors } = useTheme();
   const Tag = multi ? 'textarea' : 'input';
   return (
     <Tag
@@ -41,8 +46,8 @@ export function TextInput({ value, onChange, placeholder, mono, multi }: {
       onChange={e => onChange?.(e.target.value)}
       style={{
         width: '100%', padding: multi ? 12 : '8px 12px',
-        background: 'rgba(7,11,20,0.5)', border: `1px solid ${color.border}`,
-        borderRadius: 8, color: color.text,
+        background: 'rgba(7,11,20,0.5)', border: `1px solid ${colors.border}`,
+        borderRadius: 8, color: colors.text,
         fontFamily: mono ? font.mono : font.body,
         fontSize: mono ? 12 : 13, outline: 'none',
         minHeight: multi ? 80 : 'auto', resize: multi ? 'vertical' : 'none',
@@ -52,25 +57,27 @@ export function TextInput({ value, onChange, placeholder, mono, multi }: {
 }
 
 export function Chip({ on, onClick, children }: { on: boolean; onClick?: () => void; children: React.ReactNode }) {
+  const { colors } = useTheme();
   return (
     <button onClick={onClick} style={{
       padding: '6px 12px', borderRadius: 999, cursor: 'pointer',
       fontFamily: font.body, fontSize: 12, fontWeight: 500,
       background: on ? 'rgba(0,213,255,0.12)' : 'transparent',
-      border: `1px solid ${on ? color.borderHi : color.border}`,
-      color: on ? color.cyan : color.textMuted,
+      border: `1px solid ${on ? colors.borderHi : colors.border}`,
+      color: on ? colors.cyan : colors.textMuted,
     }}>{children}</button>
   );
 }
 
 export function Toggle({ on, onChange }: { on: boolean; onChange?: (v: boolean) => void }) {
+  const { colors } = useTheme();
   return (
     <button onClick={() => onChange?.(!on)} style={{
       width: 36, height: 22, borderRadius: 999, padding: 2,
-      background: on ? color.cyan : 'rgba(255,255,255,0.10)',
+      background: on ? colors.cyan : 'rgba(255,255,255,0.10)',
       border: 'none', cursor: 'pointer', position: 'relative',
       transition: `background 160ms ${ease.out}`,
-      boxShadow: on ? `0 0 8px ${color.cyanGlow}` : 'none',
+      boxShadow: on ? `0 0 8px ${colors.cyanGlow}` : 'none',
     }}>
       <div style={{
         width: 18, height: 18, borderRadius: '50%', background: '#fff',
@@ -84,23 +91,25 @@ export function Toggle({ on, onChange }: { on: boolean; onChange?: (v: boolean) 
 export function Slider({ value, onChange, min = 0, max = 100, suffix }: {
   value: number; onChange?: (v: number) => void; min?: number; max?: number; suffix?: string;
 }) {
+  const { colors } = useTheme();
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
       <input type="range" min={min} max={max} value={value}
         onChange={e => onChange?.(Number(e.target.value))}
-        style={{ flex: 1, accentColor: color.cyan }} />
-      <span style={{ fontFamily: font.mono, fontSize: 12, color: color.textMuted, minWidth: 50, textAlign: 'right' }}>{value}{suffix}</span>
+        style={{ flex: 1, accentColor: colors.cyan }} />
+      <span style={{ fontFamily: font.mono, fontSize: 12, color: colors.textMuted, minWidth: 50, textAlign: 'right' }}>{value}{suffix}</span>
     </div>
   );
 }
 
 export function Kbd({ children }: { children: React.ReactNode }) {
+  const { colors } = useTheme();
   return (
     <span style={{
       display: 'inline-block', padding: '2px 7px',
-      fontFamily: font.mono, fontSize: 11, color: color.text,
+      fontFamily: font.mono, fontSize: 11, color: colors.text,
       background: 'rgba(255,255,255,0.04)',
-      border: `1px solid ${color.border}`,
+      border: `1px solid ${colors.border}`,
       borderRadius: 5, minWidth: 22, textAlign: 'center',
     }}>{children}</span>
   );
@@ -109,12 +118,13 @@ export function Kbd({ children }: { children: React.ReactNode }) {
 export function SaveButton({ onClick, disabled, saving }: {
   onClick: () => void; disabled: boolean; saving: boolean;
 }) {
+  const { colors } = useTheme();
   return (
     <button onClick={onClick} disabled={disabled} style={{
       fontFamily: font.body, fontSize: 13, fontWeight: 600,
       padding: '8px 20px', borderRadius: radius.md,
-      background: disabled ? 'rgba(0,213,255,0.08)' : color.cyan,
-      color: disabled ? color.textDim : '#000',
+      background: disabled ? 'rgba(0,213,255,0.08)' : colors.cyan,
+      color: disabled ? colors.textDim : '#000',
       border: 'none', cursor: disabled ? 'default' : 'pointer',
       transition: `all 200ms ${ease.out}`,
       opacity: disabled ? 0.5 : 1,

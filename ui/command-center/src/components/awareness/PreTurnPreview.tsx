@@ -1,12 +1,14 @@
 import { useEffect, useState, useCallback } from 'react';
 import { api } from '../../lib/api';
-import { color, font, ease } from '../../styles/tokens';
+import { font, ease } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
 
 interface Props {
   visible: boolean;
 }
 
 export function PreTurnPreview({ visible }: Props) {
+  const { colors } = useTheme();
   const [label, setLabel] = useState<string | null>(null);
 
   const fetchPreview = useCallback(async () => {
@@ -50,7 +52,7 @@ export function PreTurnPreview({ visible }: Props) {
       fontSize: 10,
       fontFamily: font.body,
       fontStyle: 'italic',
-      color: color.textDim,
+      color: colors.textDim,
       opacity: 0.8,
       transition: `opacity 200ms ${ease.out}`,
       overflow: 'hidden',
