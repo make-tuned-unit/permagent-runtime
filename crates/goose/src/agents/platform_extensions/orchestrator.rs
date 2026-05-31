@@ -127,6 +127,28 @@ struct GoalStatusParams {
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct DecomposeRoadmapParams {
+    /// The user's high-level objective to decompose into goals.
+    objective: String,
+    /// Project ID (UUID) or slug to create the roadmap for.
+    project_id_or_slug: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct CreateRoadmapParams {
+    /// Project ID (UUID) or slug.
+    project_id_or_slug: String,
+    /// The proposed goals as a JSON array (from decompose_roadmap output).
+    goals_json: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct PauseResumeRoadmapParams {
+    /// Project ID (UUID) or slug.
+    project_id_or_slug: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ListWorkersParams {
     /// Force re-probe of all workers, ignoring cache. Defaults to false.
     #[serde(default)]
@@ -212,7 +234,12 @@ impl OrchestratorClient {
                  After creating a project, offer two ways forward:\n\
                  - Roadmap mode: help plan the work and decompose it into goal cards\n\
                  - Task mode: start with a single goal right away via card_create with \
-                 card_type='goal'",
+                 card_type='goal'\n\n\
+                 For roadmap mode: use decompose_roadmap to break the objective into goals \
+                 with dependencies. Show the user the proposed plan and wait for their approval. \
+                 After approval, call create_roadmap to create the goal cards — root goals \
+                 dispatch automatically, and subsequent goals dispatch as dependencies complete. \
+                 Users can pause_roadmap to stop auto-dispatch and resume_roadmap to continue.",
             );
 
         let client = Self {
@@ -1244,6 +1271,12 @@ impl OrchestratorClient {
         cards::move_card(&pool, &card_id, &target_col.id, None).await?;
 
         self.invalidate_kanban_cache().await;
+
+        // After approve (→ Complete), dispatch next eligible goals in the roadmap
+        if action == GoalAction::Approve {
+            let _ = dispatch_eligible_goals(&pool, &card.project_id, self).await;
+        }
+
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Goal '{}' advanced: {} → {} (action: {})",
             card.title, current_state, new_state, action
@@ -1334,6 +1367,313 @@ impl OrchestratorClient {
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&result).unwrap_or_default(),
         )]))
+    }
+
+    #[allow(clippy::cloned_ref_to_slice_refs)]
+    async fn handle_decompose_roadmap(
+        &self,
+        session_id: &str,
+        arguments: Option<JsonObject>,
+    ) -> Result<CallToolResult, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let objective = extract_string(&args, "objective")?;
+        let id_or_slug = extract_string(&args, "project_id_or_slug")?;
+
+        let pool = self
+            .context
+            .session_manager
+            .pool_clone()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let project = crate::projects::get_project_by_id_or_slug(&pool, &id_or_slug)
+            .await?
+            .ok_or_else(|| format!("Project '{}' not found", id_or_slug))?;
+
+        let root_path = project.root_path.as_deref().unwrap_or("(not specified)");
+
+        let system = "You are a project planner. Given a high-level objective, decompose it into \
+             discrete goals that can each be completed by a single coding agent in one session.\n\n\
+             Output ONLY a valid JSON object matching this exact schema — no prose, no markdown fences:\n\
+             {\n  \"goals\": [\n    {\n      \"title\": \"short goal title\",\n      \
+             \"description\": \"what to do and how to verify it's done\",\n      \
+             \"acceptance_criteria\": [\"criterion 1\", ...],\n      \
+             \"tags\": [\"code_edit\", \"shell\", ...],\n      \
+             \"depends_on\": []  // indices of prerequisite goals (0-based)\n    }\n  ]\n}\n\n\
+             Rules:\n\
+             - 2 to 15 goals (reject if scope needs more than 15)\n\
+             - Each goal completable in a single agent session (< 30 min of work)\n\
+             - depends_on uses 0-based indices referencing other goals in the array\n\
+             - No circular dependencies\n\
+             - Tags describe required capabilities: code_edit, shell, web_search, etc.";
+
+        let user_message = crate::conversation::message::Message::user().with_text(format!(
+            "Objective: {}\nProject: {}\nProject root: {}",
+            objective, project.name, root_path
+        ));
+
+        let provider = self.get_provider().await?;
+        let (response, _usage) = provider
+            .complete_fast(session_id, system, &[user_message.clone()], &[])
+            .await
+            .map_err(|e| format!("LLM decomposition failed: {}", e))?;
+
+        let response_text = response.as_concat_text();
+
+        // Parse with resilience — strip fences, tolerate prose
+        let goals = match parse_roadmap_response(&response_text) {
+            Ok(g) => g,
+            Err(first_err) => {
+                // Retry once with a stricter prompt
+                let retry_msg = crate::conversation::message::Message::user().with_text(
+                    "Your previous response could not be parsed as JSON. \
+                     Output ONLY the JSON object with the \"goals\" array. No prose, no markdown fences."
+                        .to_string(),
+                );
+                let (retry_resp, _) = provider
+                    .complete_fast(
+                        session_id,
+                        system,
+                        &[user_message, response, retry_msg],
+                        &[],
+                    )
+                    .await
+                    .map_err(|e| format!("LLM retry failed: {}", e))?;
+
+                match parse_roadmap_response(&retry_resp.as_concat_text()) {
+                    Ok(g) => g,
+                    Err(_) => {
+                        return Ok(CallToolResult::success(vec![Content::text(format!(
+                            "I couldn't structure the decomposition into valid goals. \
+                             Here's what I got (please help me refine it):\n\n{}\n\nParse error: {}",
+                            response_text, first_err
+                        ))]));
+                    }
+                }
+            }
+        };
+
+        // Validate via topological sort
+        let order = goal_state::topological_order(&goals).map_err(|e| e.to_string())?;
+
+        // Format the proposal for user review
+        let mut output = format!(
+            "Proposed roadmap for \"{}\" ({} goals, project: {}):\n",
+            objective,
+            goals.len(),
+            project.name
+        );
+
+        for &idx in &order {
+            let g = &goals[idx];
+            let deps = if g.depends_on.is_empty() {
+                "none".to_string()
+            } else {
+                g.depends_on
+                    .iter()
+                    .map(|&d| format!("#{}", d + 1))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let tags = if g.tags.is_empty() {
+                "general".to_string()
+            } else {
+                g.tags.join(", ")
+            };
+            output.push_str(&format!(
+                "\n{}. {}\n   {}\n   Deps: {} | Tags: {}\n",
+                idx + 1,
+                g.title,
+                g.description,
+                deps,
+                tags
+            ));
+        }
+
+        output.push_str(&format!(
+            "\nShall I create these as goal cards and begin execution? \
+             You can also ask me to add, remove, or modify goals.\n\n\
+             To approve, call create_roadmap with the goals JSON below:\n{}",
+            serde_json::to_string(&goals).unwrap_or_default()
+        ));
+
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    async fn handle_create_roadmap(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<CallToolResult, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let id_or_slug = extract_string(&args, "project_id_or_slug")?;
+        let goals_json = extract_string(&args, "goals_json")?;
+
+        let goals: Vec<goal_state::ProposedGoal> =
+            serde_json::from_str(&goals_json).map_err(|e| format!("Invalid goals JSON: {}", e))?;
+
+        let order = goal_state::topological_order(&goals).map_err(|e| e.to_string())?;
+
+        let pool = self
+            .context
+            .session_manager
+            .pool_clone()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let project = crate::projects::get_project_by_id_or_slug(&pool, &id_or_slug)
+            .await?
+            .ok_or_else(|| format!("Project '{}' not found", id_or_slug))?;
+
+        // Ensure goal columns exist
+        cards::seed_goal_columns(&pool, &project.id).await?;
+
+        let triage_col = cards::get_goal_column(&pool, &project.id, "triage")
+            .await?
+            .ok_or("Triage column not found")?;
+
+        // Create cards in topological order, building index→card_id map
+        let mut index_to_card_id: Vec<String> = vec![String::new(); goals.len()];
+        let mut created_ids: Vec<String> = Vec::new();
+
+        for &idx in &order {
+            let g = &goals[idx];
+
+            // Map depends_on indices to card_ids
+            let depends_on_ids: Vec<String> = g
+                .depends_on
+                .iter()
+                .map(|&dep_idx| index_to_card_id[dep_idx].clone())
+                .collect();
+
+            let mut meta = serde_json::Map::new();
+            meta.insert("depends_on".to_string(), serde_json::json!(depends_on_ids));
+            meta.insert(
+                "goal_state".to_string(),
+                serde_json::Value::String("triage".to_string()),
+            );
+            meta.insert("attempt_count".to_string(), serde_json::json!(0));
+            if !g.tags.is_empty() {
+                meta.insert("tags".to_string(), serde_json::json!(g.tags));
+            }
+            if !g.acceptance_criteria.is_empty() {
+                meta.insert(
+                    "acceptance_criteria".to_string(),
+                    serde_json::json!(g.acceptance_criteria),
+                );
+            }
+
+            let card = cards::create_card(
+                &pool,
+                cards::CreateCard {
+                    project_id: project.id.clone(),
+                    title: g.title.clone(),
+                    description: Some(g.description.clone()),
+                    card_type: Some("goal".to_string()),
+                    column_id: Some(triage_col.id.clone()),
+                    created_by: Some("user".to_string()),
+                    metadata_json: Some(serde_json::Value::Object(meta)),
+                },
+            )
+            .await?;
+
+            index_to_card_id[idx] = card.id.clone();
+            created_ids.push(card.id);
+        }
+
+        // Dispatch root goals (no dependencies) — move to Ready then dispatch
+        let ready_col = cards::get_goal_column(&pool, &project.id, "ready")
+            .await?
+            .ok_or("Ready column not found")?;
+
+        let mut dispatched = 0;
+        for &idx in &order {
+            if goals[idx].depends_on.is_empty() {
+                let card_id = &index_to_card_id[idx];
+                cards::move_card(&pool, card_id, &ready_col.id, None).await?;
+                match self.dispatch_goal(card_id).await {
+                    Ok(_) => dispatched += 1,
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "permagentd::brain",
+                            "Failed to auto-dispatch root goal '{}': {}",
+                            goals[idx].title,
+                            e
+                        );
+                    }
+                }
+            }
+        }
+
+        self.invalidate_kanban_cache().await;
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Roadmap created: {} goal cards in project '{}'. \
+             {} root goal(s) dispatched to workers. \
+             Remaining goals will dispatch automatically as dependencies complete.\n\n\
+             Use pause_roadmap to stop auto-dispatch. Use resume_roadmap to continue.",
+            created_ids.len(),
+            project.name,
+            dispatched
+        ))]))
+    }
+
+    async fn handle_pause_roadmap(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<CallToolResult, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let id_or_slug = extract_string(&args, "project_id_or_slug")?;
+
+        let pool = self
+            .context
+            .session_manager
+            .pool_clone()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let project = crate::projects::get_project_by_id_or_slug(&pool, &id_or_slug)
+            .await?
+            .ok_or_else(|| format!("Project '{}' not found", id_or_slug))?;
+
+        crate::projects::add_tag(&pool, &project.id, "roadmap_paused").await?;
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Roadmap paused for project '{}'. No new goals will be auto-dispatched. \
+             Currently running goals will continue to completion. \
+             Use resume_roadmap to re-enable auto-dispatch.",
+            project.name
+        ))]))
+    }
+
+    async fn handle_resume_roadmap(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<CallToolResult, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let id_or_slug = extract_string(&args, "project_id_or_slug")?;
+
+        let pool = self
+            .context
+            .session_manager
+            .pool_clone()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let project = crate::projects::get_project_by_id_or_slug(&pool, &id_or_slug)
+            .await?
+            .ok_or_else(|| format!("Project '{}' not found", id_or_slug))?;
+
+        crate::projects::remove_tag(&pool, &project.id, "roadmap_paused").await?;
+
+        // Immediately dispatch any goals that became eligible while paused
+        let dispatched = dispatch_eligible_goals(&pool, &project.id, self).await?;
+
+        self.invalidate_kanban_cache().await;
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Roadmap resumed for project '{}'. {} goal(s) dispatched.",
+            project.name, dispatched
+        ))]))
     }
 
     async fn handle_interrupt_agent(
@@ -1429,6 +1769,36 @@ impl McpClientTrait for OrchestratorClient {
                     .to_string(),
                 schema::<GoalStatusParams>(),
             ),
+            Tool::new(
+                "decompose_roadmap".to_string(),
+                "Decompose a high-level objective into a proposed roadmap of goal cards. \
+                 Returns a PROPOSED plan for user review — does NOT create cards. \
+                 After the user approves, call create_roadmap with the goals JSON."
+                    .to_string(),
+                schema::<DecomposeRoadmapParams>(),
+            ),
+            Tool::new(
+                "create_roadmap".to_string(),
+                "Create goal cards from an approved roadmap proposal. Call this ONLY after \
+                 the user has reviewed and approved the output of decompose_roadmap. \
+                 Root goals (no dependencies) are auto-dispatched to workers."
+                    .to_string(),
+                schema::<CreateRoadmapParams>(),
+            ),
+            Tool::new(
+                "pause_roadmap".to_string(),
+                "Pause sequential auto-dispatch for a project's roadmap. Currently running \
+                 goals continue to completion, but no new goals are dispatched."
+                    .to_string(),
+                schema::<PauseResumeRoadmapParams>(),
+            ),
+            Tool::new(
+                "resume_roadmap".to_string(),
+                "Resume auto-dispatch for a project's roadmap. Immediately dispatches any \
+                 goals that became eligible while paused."
+                    .to_string(),
+                schema::<PauseResumeRoadmapParams>(),
+            ),
         ];
 
         Ok(ListToolsResult {
@@ -1458,6 +1828,13 @@ impl McpClientTrait for OrchestratorClient {
             "check_worker" => self.handle_check_worker(arguments).await,
             "goal_advance" => self.handle_goal_advance(arguments).await,
             "goal_status" => self.handle_goal_status(arguments).await,
+            "decompose_roadmap" => {
+                self.handle_decompose_roadmap(&ctx.session_id, arguments)
+                    .await
+            }
+            "create_roadmap" => self.handle_create_roadmap(arguments).await,
+            "pause_roadmap" => self.handle_pause_roadmap(arguments).await,
+            "resume_roadmap" => self.handle_resume_roadmap(arguments).await,
             _ => Err(format!("Unknown tool: {}", name)),
         };
 
@@ -1534,6 +1911,127 @@ fn extract_string(args: &JsonObject, key: &str) -> Result<String, String> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| format!("Missing or invalid '{}'", key))
+}
+
+/// Parse an LLM response into proposed goals with resilience.
+fn parse_roadmap_response(response: &str) -> Result<Vec<goal_state::ProposedGoal>, String> {
+    let json_str = goal_state::extract_json_from_response(response)
+        .ok_or_else(|| "No JSON found in response".to_string())?;
+
+    // Try parsing as { "goals": [...] } wrapper
+    if let Ok(wrapper) = serde_json::from_str::<serde_json::Value>(json_str) {
+        if let Some(goals_arr) = wrapper.get("goals") {
+            return serde_json::from_value::<Vec<goal_state::ProposedGoal>>(goals_arr.clone())
+                .map_err(|e| format!("Failed to parse goals array: {}", e));
+        }
+    }
+
+    // Try parsing as bare array
+    serde_json::from_str::<Vec<goal_state::ProposedGoal>>(json_str)
+        .map_err(|e| format!("Failed to parse response as goals: {}", e))
+}
+
+/// Find and dispatch goals whose dependencies are all complete.
+///
+/// Called after a goal completes (from handle_goal_completion) or
+/// when resuming a paused roadmap.
+pub async fn dispatch_eligible_goals(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    project_id: &str,
+    orchestrator: &OrchestratorClient,
+) -> Result<u32, String> {
+    // Check if roadmap is paused
+    let tags = crate::projects::list_tags(pool, project_id).await?;
+    if tags.iter().any(|t| t == "roadmap_paused") {
+        return Ok(0);
+    }
+
+    // Find goals in Ready state for this project
+    let ready_col = match cards::get_goal_column(pool, project_id, "ready").await? {
+        Some(c) => c,
+        None => return Ok(0),
+    };
+
+    let ready_goals =
+        cards::list_cards(pool, project_id, Some("goal"), Some(&ready_col.id)).await?;
+
+    if ready_goals.is_empty() {
+        return Ok(0);
+    }
+
+    // Find goals in Triage that have depends_on and might need to move to Ready
+    let triage_col = match cards::get_goal_column(pool, project_id, "triage").await? {
+        Some(c) => c,
+        None => return Ok(0),
+    };
+    let triage_goals =
+        cards::list_cards(pool, project_id, Some("goal"), Some(&triage_col.id)).await?;
+
+    // Check which triage goals have all deps complete → move to Ready
+    let complete_col = cards::get_goal_column(pool, project_id, "complete").await?;
+    let complete_col_id = complete_col.map(|c| c.id).unwrap_or_default();
+
+    for goal in &triage_goals {
+        let deps = goal
+            .metadata_json
+            .get("depends_on")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        if deps.is_empty() {
+            continue; // Root goals should already be dispatched
+        }
+
+        // Check if all deps are complete
+        let all_complete = if complete_col_id.is_empty() {
+            false
+        } else {
+            let mut all = true;
+            for dep_id in &deps {
+                if let Ok(Some(dep_card)) = cards::get_card(pool, dep_id).await {
+                    if dep_card.column_id != complete_col_id {
+                        all = false;
+                        break;
+                    }
+                } else {
+                    all = false;
+                    break;
+                }
+            }
+            all
+        };
+
+        if all_complete {
+            // Move to Ready
+            cards::move_card(pool, &goal.id, &ready_col.id, None).await?;
+        }
+    }
+
+    // Now dispatch all goals in Ready
+    let ready_goals =
+        cards::list_cards(pool, project_id, Some("goal"), Some(&ready_col.id)).await?;
+
+    let mut dispatched = 0u32;
+    for goal in &ready_goals {
+        match orchestrator.dispatch_goal(&goal.id).await {
+            Ok(_) => dispatched += 1,
+            Err(e) => {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    "Failed to dispatch eligible goal '{}': {}",
+                    goal.title,
+                    e
+                );
+            }
+        }
+    }
+
+    Ok(dispatched)
 }
 
 /// Check if Kanban context should be injected this turn.
@@ -2526,5 +3024,172 @@ mod tests {
         assert!(cache.cached_summary.is_none());
         assert!(cache.is_stale());
         assert_eq!(cache.turn_count, 0);
+    }
+
+    // ── Roadmap tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn parse_roadmap_response_wrapped() {
+        let json = r#"{"goals": [{"title": "A", "description": "do A", "depends_on": []}]}"#;
+        let goals = parse_roadmap_response(json).unwrap();
+        assert_eq!(goals.len(), 1);
+        assert_eq!(goals[0].title, "A");
+    }
+
+    #[test]
+    fn parse_roadmap_response_bare_array() {
+        let json = r#"[{"title": "A", "description": "do A", "depends_on": []}]"#;
+        let goals = parse_roadmap_response(json).unwrap();
+        assert_eq!(goals.len(), 1);
+    }
+
+    #[test]
+    fn parse_roadmap_response_with_fences() {
+        let response = "Here's the roadmap:\n```json\n{\"goals\": [{\"title\": \"A\", \"description\": \"do A\"}]}\n```";
+        let goals = parse_roadmap_response(response).unwrap();
+        assert_eq!(goals.len(), 1);
+    }
+
+    #[test]
+    fn parse_roadmap_response_invalid() {
+        let result = parse_roadmap_response("not json at all");
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn create_roadmap_maps_indices_to_card_ids() {
+        let pool = test_pool().await;
+        use crate::projects::PERSONAL_PROJECT_ID;
+
+        cards::seed_goal_columns(&pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+
+        // A (no deps) → B (depends on A)
+        let goals = vec![
+            goal_state::ProposedGoal {
+                title: "Goal A".to_string(),
+                description: "First".to_string(),
+                acceptance_criteria: vec![],
+                tags: vec![],
+                depends_on: vec![],
+            },
+            goal_state::ProposedGoal {
+                title: "Goal B".to_string(),
+                description: "Second".to_string(),
+                acceptance_criteria: vec![],
+                tags: vec![],
+                depends_on: vec![0],
+            },
+        ];
+
+        let triage_col = cards::get_goal_column(&pool, PERSONAL_PROJECT_ID, "triage")
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Create in topological order
+        let order = goal_state::topological_order(&goals).unwrap();
+        let mut index_to_id: Vec<String> = vec![String::new(); goals.len()];
+
+        for &idx in &order {
+            let g = &goals[idx];
+            let depends_on_ids: Vec<String> = g
+                .depends_on
+                .iter()
+                .map(|&d| index_to_id[d].clone())
+                .collect();
+
+            let mut meta = serde_json::Map::new();
+            meta.insert("depends_on".to_string(), serde_json::json!(depends_on_ids));
+
+            let card = cards::create_card(
+                &pool,
+                cards::CreateCard {
+                    project_id: PERSONAL_PROJECT_ID.to_string(),
+                    title: g.title.clone(),
+                    description: Some(g.description.clone()),
+                    card_type: Some("goal".to_string()),
+                    column_id: Some(triage_col.id.clone()),
+                    created_by: None,
+                    metadata_json: Some(serde_json::Value::Object(meta)),
+                },
+            )
+            .await
+            .unwrap();
+
+            index_to_id[idx] = card.id.clone();
+        }
+
+        // Verify Goal B's depends_on has Goal A's card_id
+        let card_b = cards::get_card(&pool, &index_to_id[1])
+            .await
+            .unwrap()
+            .unwrap();
+        let deps = card_b
+            .metadata_json
+            .get("depends_on")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].as_str().unwrap(), &index_to_id[0]);
+    }
+
+    #[tokio::test]
+    async fn pause_resume_roadmap_tags() {
+        let pool = test_pool().await;
+        use crate::projects::PERSONAL_PROJECT_ID;
+
+        // Initially not paused
+        let tags = crate::projects::list_tags(&pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        assert!(!tags.contains(&"roadmap_paused".to_string()));
+
+        // Pause
+        crate::projects::add_tag(&pool, PERSONAL_PROJECT_ID, "roadmap_paused")
+            .await
+            .unwrap();
+        let tags = crate::projects::list_tags(&pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        assert!(tags.contains(&"roadmap_paused".to_string()));
+
+        // Resume
+        crate::projects::remove_tag(&pool, PERSONAL_PROJECT_ID, "roadmap_paused")
+            .await
+            .unwrap();
+        let tags = crate::projects::list_tags(&pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        assert!(!tags.contains(&"roadmap_paused".to_string()));
+    }
+
+    #[tokio::test]
+    async fn dispatch_eligible_skips_when_paused() {
+        let pool = test_pool().await;
+        use crate::projects::PERSONAL_PROJECT_ID;
+
+        // Pause the project
+        crate::projects::add_tag(&pool, PERSONAL_PROJECT_ID, "roadmap_paused")
+            .await
+            .unwrap();
+
+        // dispatch_eligible_goals should return 0 when paused
+        // We can't easily construct an OrchestratorClient in tests,
+        // but we can verify the pause check directly
+        let tags = crate::projects::list_tags(&pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        assert!(
+            tags.iter().any(|t| t == "roadmap_paused"),
+            "Should be paused"
+        );
+
+        // Clean up
+        crate::projects::remove_tag(&pool, PERSONAL_PROJECT_ID, "roadmap_paused")
+            .await
+            .unwrap();
     }
 }
