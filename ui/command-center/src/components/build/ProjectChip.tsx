@@ -57,7 +57,7 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
         onClick={() => setOpen(!open)}
         style={{
           height: 28, padding: '0 10px', borderRadius: 6,
-          background: 'rgba(255,255,255,0.06)', border: `1px solid ${colors.border}`,
+          background: colors.cyanSoft, border: `1px solid ${colors.border}`,
           fontFamily: font.body, fontSize: 11, fontWeight: 500,
           color: colors.textMuted, cursor: 'pointer',
           display: 'inline-flex', alignItems: 'center', gap: 5,
@@ -77,8 +77,8 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
         <div style={{
           position: 'absolute', top: '100%', left: 0, marginTop: 4,
           minWidth: 280, maxHeight: 360, overflowY: 'auto',
-          background: '#0F1729', border: `1px solid ${colors.border}`,
-          borderRadius: 8, boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+          background: colors.surface, border: `1px solid ${colors.border}`,
+          borderRadius: 8, boxShadow: colors.cardShadow,
           zIndex: 50, padding: '4px 0',
         }}>
           {/* Sort toggle */}
@@ -93,7 +93,7 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
                 style={{
                   fontSize: 10, fontFamily: font.body, fontWeight: 500,
                   padding: '2px 6px', borderRadius: 4, cursor: 'pointer',
-                  background: sortMode === mode ? 'rgba(255,255,255,0.1)' : 'transparent',
+                  background: sortMode === mode ? colors.cyanSoft : 'transparent',
                   color: sortMode === mode ? colors.text : colors.textDim,
                   border: 'none',
                 }}
@@ -132,7 +132,7 @@ project, onLaunch, onVisit }: {
         onClick={() => setExpanded(!expanded)}
         style={{
           width: '100%', padding: '7px 8px', borderRadius: 6,
-          background: expanded ? 'rgba(255,255,255,0.05)' : 'transparent',
+          background: expanded ? colors.cyanSoft : 'transparent',
           border: 'none', cursor: 'pointer', textAlign: 'left',
           display: 'flex', alignItems: 'center', gap: 8,
           fontFamily: font.body, fontSize: 12, color: colors.text,
@@ -187,8 +187,8 @@ label, disabled, tooltip, onClick }: {
       title={tooltip}
       style={{
         height: 24, padding: '0 8px', borderRadius: 5,
-        background: disabled ? 'rgba(255,255,255,0.03)' : 'rgba(0,217,255,0.1)',
-        border: `1px solid ${disabled ? 'rgba(255,255,255,0.06)' : 'rgba(0,217,255,0.25)'}`,
+        background: disabled ? colors.border : colors.cyanSoft,
+        border: `1px solid ${disabled ? colors.border : colors.borderHi}`,
         fontFamily: font.body, fontSize: 10, fontWeight: 500,
         color: disabled ? colors.textDim : colors.cyan,
         cursor: disabled ? 'not-allowed' : 'pointer',

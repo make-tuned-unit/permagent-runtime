@@ -142,11 +142,11 @@ export function InspectionPanel({ onClose }: Props) {
     <div style={{
       position: 'fixed', top: 0, right: 0, bottom: 0,
       width: 400, zIndex: 10000,
-      background: 'rgba(8,14,26,0.98)', backdropFilter: 'blur(24px)',
+      background: colors.surface, backdropFilter: 'blur(24px)',
       borderLeft: `1px solid ${colors.borderHi}`,
       display: 'flex', flexDirection: 'column',
       fontFamily: font.body, fontSize: 12,
-      boxShadow: '-8px 0 32px rgba(0,0,0,0.4)',
+      boxShadow: colors.cardShadow,
     }}>
       {/* Header */}
       <div style={{
@@ -158,7 +158,7 @@ export function InspectionPanel({ onClose }: Props) {
         </span>
         <button onClick={togglePause} style={{
           padding: '4px 10px', borderRadius: 4, fontSize: 11, fontWeight: 500,
-          background: paused ? 'rgba(255,180,0,0.12)' : 'rgba(0,213,255,0.08)',
+          background: paused ? 'rgba(255,180,0,0.12)' : colors.cyanSoft,
           border: `1px solid ${paused ? 'rgba(255,180,0,0.3)' : colors.border}`,
           color: paused ? '#ffb400' : colors.cyan, cursor: 'pointer',
         }}>
@@ -166,14 +166,14 @@ export function InspectionPanel({ onClose }: Props) {
         </button>
         <a href="/brain" target="_blank" rel="noopener" style={{
           padding: '4px 10px', borderRadius: 4, fontSize: 11, fontWeight: 500,
-          background: 'rgba(255,255,255,0.04)', border: `1px solid ${colors.border}`,
+          background: colors.surfaceHi, border: `1px solid ${colors.border}`,
           color: colors.textMuted, textDecoration: 'none', cursor: 'pointer',
         }}>
           Open Brain
         </a>
         <button onClick={onClose} style={{
           width: 24, height: 24, borderRadius: 4,
-          background: 'rgba(255,255,255,0.04)', border: `1px solid ${colors.border}`,
+          background: colors.surfaceHi, border: `1px solid ${colors.border}`,
           color: colors.textMuted, cursor: 'pointer',
           display: 'grid', placeItems: 'center',
         }}>
@@ -191,7 +191,7 @@ export function InspectionPanel({ onClose }: Props) {
             <span style={{ color: colors.text, fontWeight: 500 }}>{status.active_project.project_name}</span>
             <span style={{
               padding: '1px 6px', borderRadius: 3, fontSize: 10, fontWeight: 600,
-              background: 'rgba(0,213,255,0.1)', color: colors.cyan,
+              background: colors.cyanSoft, color: colors.cyan,
             }}>
               {status.active_project.wing}
             </span>
@@ -206,8 +206,8 @@ export function InspectionPanel({ onClose }: Props) {
         {Object.entries(sourceFilters).map(([key, active]) => (
           <button key={key} onClick={() => toggleFilter(key)} style={{
             padding: '2px 8px', borderRadius: 3, fontSize: 10, fontWeight: 500,
-            background: active ? 'rgba(0,213,255,0.08)' : 'rgba(255,255,255,0.02)',
-            border: `1px solid ${active ? 'rgba(0,213,255,0.2)' : colors.border}`,
+            background: active ? colors.cyanSoft : 'transparent',
+            border: `1px solid ${active ? colors.borderHi : colors.border}`,
             color: active ? colors.cyan : colors.textDim, cursor: 'pointer',
           }}>
             {key}
@@ -227,7 +227,7 @@ export function InspectionPanel({ onClose }: Props) {
           const isExpanded = expandedEvent === i;
           return (
             <div key={i} onClick={() => setExpandedEvent(isExpanded ? null : i)} style={{
-              padding: '4px 0', borderBottom: `1px solid rgba(255,255,255,0.03)`,
+              padding: '4px 0', borderBottom: `1px solid ${colors.border}`,
               cursor: 'pointer',
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -268,11 +268,11 @@ export function InspectionPanel({ onClose }: Props) {
           <div style={{ maxHeight: 200, overflow: 'auto', padding: '0 16px 8px' }}>
             {memories.map(m => (
               <div key={m.id} onClick={() => setExpandedMemory(expandedMemory === m.id ? null : m.id)} style={{
-                padding: '4px 0', borderBottom: `1px solid rgba(255,255,255,0.03)`, cursor: 'pointer',
+                padding: '4px 0', borderBottom: `1px solid ${colors.border}`, cursor: 'pointer',
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   {m.wing && (
-                    <span style={{ padding: '0 4px', borderRadius: 2, fontSize: 9, background: 'rgba(0,213,255,0.1)', color: colors.cyan }}>
+                    <span style={{ padding: '0 4px', borderRadius: 2, fontSize: 9, background: colors.cyanSoft, color: colors.cyan }}>
                       {m.wing}
                     </span>
                   )}
@@ -318,7 +318,7 @@ export function InspectionPanel({ onClose }: Props) {
               <div style={{ marginBottom: 4 }}>
                 <strong style={{ color: colors.textMuted }}>Probed Memories ({digest.probed_memories.length}):</strong>
                 {digest.probed_memories.map((m, i) => (
-                  <div key={i} style={{ padding: '2px 0', borderBottom: '1px solid rgba(255,255,255,0.02)' }}>
+                  <div key={i} style={{ padding: '2px 0', borderBottom: `1px solid ${colors.border}` }}>
                     <span style={{ color: colors.cyan, fontSize: 9 }}>relevance: {m.relevance?.toFixed(2)}</span>{' '}
                     {m.content?.slice(0, 120)}
                   </div>

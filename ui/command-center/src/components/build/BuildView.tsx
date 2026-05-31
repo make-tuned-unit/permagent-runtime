@@ -22,7 +22,7 @@ export function BuildView() {
 
   const primaryBtn: React.CSSProperties = {
     height: 30, padding: '0 14px', borderRadius: 8,
-    background: colors.cyan, color: '#0B1220', border: 'none',
+    background: colors.cyan, color: colors.bg, border: 'none',
     fontFamily: font.body, fontSize: 12, fontWeight: 600,
     cursor: 'pointer', boxShadow: `0 0 14px ${colors.cyanGlow}`,
   };
@@ -78,7 +78,7 @@ export function BuildView() {
             return (
               <div key={n} style={{
                 width: 26, height: 4, borderRadius: 2,
-                background: n < step ? '#5BD17F' : n === step ? colors.cyan : 'rgba(255,255,255,0.08)',
+                background: n < step ? '#5BD17F' : n === step ? colors.cyan : colors.border,
                 boxShadow: n === step ? `0 0 6px ${colors.cyanGlow}` : 'none',
               }} />
             );

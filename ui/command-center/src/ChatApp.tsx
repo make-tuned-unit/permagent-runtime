@@ -168,7 +168,7 @@ export default function ChatApp() {
                     onClick={() => handleSelectSession(s.id)}
                     style={{
                       width: '100%', padding: '6px 12px', display: 'flex', flexDirection: 'column', gap: 1,
-                      background: s.id === chatSessionId ? 'rgba(0,213,255,0.06)' : 'transparent',
+                      background: s.id === chatSessionId ? colors.cyanSoft : 'transparent',
                       border: 'none', cursor: 'pointer', textAlign: 'left',
                     }}
                   >

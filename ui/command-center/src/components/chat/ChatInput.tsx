@@ -81,7 +81,7 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
   }, [addFiles]);
 
   return (
-    <div className="border-t border-slate-800 bg-[#0C1019] p-3">
+    <div className="border-t border-dark-border bg-dark-surface p-3">
       {pendingFiles.length > 0 && (
         <div className="flex flex-wrap gap-1.5 mb-2">
           {pendingFiles.map((f, i) => (
@@ -93,7 +93,7 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
         <button
           onClick={() => fileInputRef.current?.click()}
           disabled={disabled}
-          className="rounded-lg border border-slate-700/60 bg-[#111827] px-2 py-2 text-dark-muted hover:text-dark-text transition disabled:opacity-30"
+          className="rounded-lg border border-dark-border bg-dark-surface-2 px-2 py-2 text-dark-muted hover:text-dark-text transition disabled:opacity-30"
           title="Attach files"
         >
           <FiPaperclip size={14} />
@@ -119,13 +119,13 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
           placeholder={disabled ? 'Agent is responding...' : 'Message your agent...'}
           disabled={disabled}
           rows={1}
-          className="flex-1 resize-none rounded-lg border border-slate-700/60 bg-[#111827] px-4 py-2 font-mono text-[13px] text-white caret-accent outline-none focus:border-accent/50 focus:shadow-[0_0_8px_rgba(0,213,255,0.1)] placeholder:text-slate-600 transition disabled:opacity-40"
+          className="flex-1 resize-none rounded-lg border border-dark-border bg-dark-surface-2 px-4 py-2 font-mono text-[13px] text-dark-text caret-accent outline-none focus:border-accent/50 focus:shadow-[0_0_8px_rgba(0,213,255,0.1)] placeholder:text-dark-muted transition disabled:opacity-40"
           style={{ minHeight: '36px', maxHeight: '120px' }}
         />
         <button
           onClick={handleSend}
           disabled={(!input.trim() && pendingFiles.length === 0) || disabled}
-          className="rounded-lg bg-accent/80 px-3 py-2 text-dark-bg font-semibold transition hover:bg-accent hover:shadow-[0_0_12px_rgba(0,213,255,0.2)] disabled:opacity-30 disabled:hover:shadow-none"
+          className="rounded-lg bg-accent px-3 py-2 text-dark-bg font-semibold transition hover:bg-accent hover:shadow-[0_0_12px_rgba(0,213,255,0.2)] disabled:opacity-30 disabled:hover:shadow-none"
         >
           {isStreaming ? <FiLoader size={14} className="animate-spin" /> : <FiSend size={14} />}
         </button>

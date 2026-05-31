@@ -76,7 +76,7 @@ const SILVER_COLORS: ThemeColors = {
   bgDeeper: '#c8cad2',     // deeper cool tone
   surface: '#e4e6ec',       // raised card surface (lighter, cool undertone)
   surfaceHi: '#eceef4',    // elevated highlight
-  border: 'rgba(50,70,110,0.14)', // cool hairline border
+  border: 'rgba(50,70,110,0.20)', // cool hairline border
   borderHi: 'rgba(0,140,200,0.30)', // cyan accent border
   cyan: '#0088aa',          // primary accent (AA on light)
   cyanSoft: 'rgba(0,136,170,0.10)',
@@ -86,10 +86,10 @@ const SILVER_COLORS: ThemeColors = {
   purpleSoft: 'rgba(123,63,160,0.10)',
   purpleGlow: 'rgba(155,82,204,0.30)',
   text: '#1a1c22',          // near-black with cool tint
-  textMuted: '#4a4e5a',    // cool mid-grey (AA on #e4e6ec)
-  textDim: '#6e7280',      // lighter cool grey (AA on #e4e6ec)
+  textMuted: '#3e424e',    // cool mid-grey (AA on #e4e6ec)
+  textDim: '#5e6270',      // lighter cool grey (AA on #e4e6ec)
   danger: '#b82e2e',
-  cardShadow: '0 1px 3px rgba(40,50,80,0.08), 0 1px 2px rgba(40,50,80,0.05)',
+  cardShadow: '0 2px 6px rgba(40,50,80,0.10), 0 1px 2px rgba(40,50,80,0.06)',
   cardHighlight: 'inset 0 1px 0 rgba(255,255,255,0.6)',
 };
 
