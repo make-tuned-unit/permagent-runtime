@@ -54,6 +54,10 @@ export interface ThemeColors {
   purple: string; purpleBright: string; purpleSoft: string; purpleGlow: string;
   text: string; textMuted: string; textDim: string;
   danger: string;
+  /** Card elevation shadow (cool-tinted on silver) */
+  cardShadow: string;
+  /** Top-edge highlight for metallic cards (empty string on dark themes) */
+  cardHighlight: string;
 }
 
 const DARK_COLORS: ThemeColors = {
@@ -63,26 +67,30 @@ const DARK_COLORS: ThemeColors = {
   purple: color.purple, purpleBright: color.purpleBright, purpleSoft: color.purpleSoft, purpleGlow: color.purpleGlow,
   text: color.text, textMuted: color.textMuted, textDim: color.textDim,
   danger: color.danger,
+  cardShadow: '0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04)',
+  cardHighlight: '',
 };
 const AURORA_COLORS: ThemeColors = { ...DARK_COLORS };
 const SILVER_COLORS: ThemeColors = {
-  bg: '#d5d5d7',
-  bgDeeper: '#c8c8ca',
-  surface: '#e0e0e2',
-  surfaceHi: '#eaeaec',
-  border: 'rgba(0,0,0,0.10)',
-  borderHi: 'rgba(0,100,136,0.25)',
-  cyan: '#0077aa',
-  cyanSoft: 'rgba(0,119,170,0.12)',
-  cyanGlow: 'rgba(0,119,170,0.30)',
-  purple: '#7733a0',
-  purpleBright: '#9244bb',
-  purpleSoft: 'rgba(119,51,160,0.12)',
-  purpleGlow: 'rgba(119,51,160,0.30)',
-  text: '#1a1a1c',
-  textMuted: '#5a5a5e',
-  textDim: '#8a8a8e',
-  danger: '#c0392b',
+  bg: '#d4d6dc',            // cool blue-grey base
+  bgDeeper: '#c8cad2',     // deeper cool tone
+  surface: '#e4e6ec',       // raised card surface (lighter, cool undertone)
+  surfaceHi: '#eceef4',    // elevated highlight
+  border: 'rgba(50,70,110,0.14)', // cool hairline border
+  borderHi: 'rgba(0,140,200,0.30)', // cyan accent border
+  cyan: '#0088aa',          // primary accent (AA on light)
+  cyanSoft: 'rgba(0,136,170,0.10)',
+  cyanGlow: 'rgba(0,168,204,0.35)',
+  purple: '#7B3FA0',        // secondary accent
+  purpleBright: '#9B52CC',
+  purpleSoft: 'rgba(123,63,160,0.10)',
+  purpleGlow: 'rgba(155,82,204,0.30)',
+  text: '#1a1c22',          // near-black with cool tint
+  textMuted: '#4a4e5a',    // cool mid-grey (AA on #e4e6ec)
+  textDim: '#6e7280',      // lighter cool grey (AA on #e4e6ec)
+  danger: '#b82e2e',
+  cardShadow: '0 1px 3px rgba(40,50,80,0.08), 0 1px 2px rgba(40,50,80,0.05)',
+  cardHighlight: 'inset 0 1px 0 rgba(255,255,255,0.6)',
 };
 
 export interface ThemeGradients {
@@ -113,13 +121,13 @@ export const THEME_GRADIENTS: Record<ThemeId, ThemeGradients> = {
     label: 'Aurora',
   },
   silver: {
-    workspace: 'linear-gradient(135deg, #e2e2e4 0%, #d5d5d7 50%, #c8c8ca 100%)',
-    card: 'linear-gradient(180deg, rgba(230,230,232,0.9), rgba(215,215,218,0.9))',
-    shell: '#d0d0d2',
-    sidebar: 'rgba(210,210,214,0.85)',
-    navRail: 'rgba(210,210,214,0.6)',
-    dropdown: 'rgba(228,228,230,0.98)',
-    dropdownSolid: '#e0e0e2',
+    workspace: 'linear-gradient(180deg, #e0e2e8 0%, #d4d6dc 40%, #caced6 100%)',
+    card: 'linear-gradient(180deg, #eceef4 0%, #e4e6ec 100%)',
+    shell: '#d0d2d8',
+    sidebar: 'rgba(208,210,216,0.90)',
+    navRail: 'rgba(208,210,216,0.65)',
+    dropdown: 'rgba(232,234,240,0.98)',
+    dropdownSolid: '#e8eaf0',
     label: 'Silver',
   },
 };

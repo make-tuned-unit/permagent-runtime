@@ -82,6 +82,7 @@ export function Dashboard() {
             padding: 24, borderRadius: radius.lg,
             background: colors.surface,
             border: `1px solid ${colors.border}`,
+            boxShadow: [colors.cardShadow, colors.cardHighlight].filter(Boolean).join(', '),
             display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20,
           }}>
             <Stat label="Sessions today" value={stats.sessions_today} />
@@ -108,6 +109,7 @@ export function Dashboard() {
             <div style={{
               borderRadius: radius.lg, background: colors.surface,
               border: `1px solid ${colors.border}`, overflow: 'hidden',
+              boxShadow: [colors.cardShadow, colors.cardHighlight].filter(Boolean).join(', '),
             }}>
               {recent.map((item, i) => (
                 <ActivityItem key={item.id} item={item} isLast={i === recent.length - 1} />
@@ -129,6 +131,7 @@ function TaskCard({ task }: { task: InFlightSession }) {
       padding: 18, borderRadius: radius.md,
       background: colors.surface,
       border: `1px solid ${colors.border}`,
+      boxShadow: [colors.cardShadow, colors.cardHighlight].filter(Boolean).join(', '),
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
         <Mobius size={36} state={mobiusState} logoMode />

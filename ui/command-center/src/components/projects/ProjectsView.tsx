@@ -246,7 +246,7 @@ project, onOpen, onDragStart }: {
       onClick={onOpen}
       style={{
         padding: '10px 12px', borderRadius: 8,
-        background: 'rgba(255,255,255,0.04)',
+        background: colors.surface,
         border: `1px solid ${colors.border}`,
         cursor: 'pointer',
         transition: 'all 150ms',
@@ -531,7 +531,7 @@ card, onDragStart, onDelete }: {
       onContextMenu={e => { e.preventDefault(); setShowMenu(!showMenu); }}
       style={{
         padding: '8px 10px', borderRadius: 7,
-        background: 'rgba(255,255,255,0.04)',
+        background: colors.surface,
         border: `1px solid ${colors.border}`,
         cursor: 'grab', position: 'relative',
       }}
