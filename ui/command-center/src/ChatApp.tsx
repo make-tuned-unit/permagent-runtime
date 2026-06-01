@@ -30,7 +30,8 @@ function timeAgo(dateStr: string): string {
 
 export default function ChatApp() {
   const { gradient, colors, theme } = useTheme();
-  const [agentName, setAgentName] = useState('Agent');
+  const agentName = useCommandCenter(s => s.agentName);
+  const setAgentName = useCommandCenter(s => s.setAgentName);
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [inspectionOpen, setInspectionOpen] = useState(false);
   const [inputFocused, setInputFocused] = useState(false);
