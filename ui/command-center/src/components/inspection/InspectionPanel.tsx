@@ -158,9 +158,9 @@ export function InspectionPanel({ onClose }: Props) {
         </span>
         <button onClick={togglePause} style={{
           padding: '4px 10px', borderRadius: 4, fontSize: 11, fontWeight: 500,
-          background: paused ? 'rgba(255,180,0,0.12)' : colors.cyanSoft,
-          border: `1px solid ${paused ? 'rgba(255,180,0,0.3)' : colors.border}`,
-          color: paused ? '#ffb400' : colors.cyan, cursor: 'pointer',
+          background: paused ? `${colors.warning}1f` : colors.cyanSoft,
+          border: `1px solid ${paused ? `${colors.warning}4d` : colors.border}`,
+          color: paused ? colors.warning : colors.cyan, cursor: 'pointer',
         }}>
           {paused ? 'Resume' : 'Pause'}
         </button>
@@ -234,7 +234,7 @@ export function InspectionPanel({ onClose }: Props) {
                 <span style={{ color: colors.textDim, fontFamily: font.mono, fontSize: 10, width: 56, flexShrink: 0 }}>{ts}</span>
                 <span style={{
                   padding: '0 4px', borderRadius: 2, fontSize: 9, fontWeight: 600,
-                  background: surfaceColor(surface), color: '#fff',
+                  background: surfaceColor(surface, colors), color: colors.textOnAccent,
                 }}>
                   {surface.replace(/Picker$/, '')}
                 </span>
@@ -332,12 +332,12 @@ export function InspectionPanel({ onClose }: Props) {
   );
 }
 
-function surfaceColor(surface: string): string {
+function surfaceColor(surface: string, colors: { cyan: string; purple: string; success: string; warning: string; danger: string; textDim: string }): string {
   const s = surface.toLowerCase();
-  if (s.includes('chat')) return 'rgba(0,180,255,0.6)';
-  if (s.includes('browser')) return 'rgba(180,80,255,0.6)';
-  if (s.includes('terminal')) return 'rgba(0,200,100,0.6)';
-  if (s.includes('project')) return 'rgba(255,180,0,0.6)';
-  if (s.includes('skill')) return 'rgba(255,100,100,0.6)';
-  return 'rgba(100,100,100,0.6)';
+  if (s.includes('chat')) return colors.cyan;
+  if (s.includes('browser')) return colors.purple;
+  if (s.includes('terminal')) return colors.success;
+  if (s.includes('project')) return colors.warning;
+  if (s.includes('skill')) return colors.danger;
+  return colors.textDim;
 }

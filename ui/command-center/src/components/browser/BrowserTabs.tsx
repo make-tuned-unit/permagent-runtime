@@ -1,4 +1,5 @@
 import { FiPlus, FiX, FiGlobe } from 'react-icons/fi';
+import { useTheme } from '../../styles/useTheme';
 
 export interface BrowserTab {
   id: string;
@@ -25,8 +26,9 @@ export function BrowserTabs({
   onCloseTab,
   onNewTab,
 }: BrowserTabsProps) {
+  const { colors } = useTheme();
   return (
-    <div className="flex items-center border-b border-dark-border bg-[#0B1120]">
+    <div className="flex items-center border-b border-dark-border" style={{ backgroundColor: colors.bg }}>
       <div className="flex flex-1 items-center overflow-x-auto">
         {tabs.map((tab) => (
           <button
@@ -34,9 +36,10 @@ export function BrowserTabs({
             onClick={() => onSelectTab(tab.id)}
             className={`group flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-mono border-r border-dark-border transition-colors shrink-0 ${
               tab.id === activeTabId
-                ? 'bg-[#0A0E17] text-accent'
+                ? 'text-accent'
                 : 'text-dark-muted hover:text-dark-text hover:bg-white/5'
             }`}
+            style={tab.id === activeTabId ? { backgroundColor: colors.surface } : undefined}
           >
             <FiGlobe size={11} className={tab.loading ? 'animate-spin' : ''} />
             <span className="truncate max-w-[120px]">

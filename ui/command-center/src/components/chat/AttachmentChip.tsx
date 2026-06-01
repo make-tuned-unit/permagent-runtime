@@ -1,4 +1,5 @@
 import { FiX, FiFile } from 'react-icons/fi';
+import { useTheme } from '../../styles/useTheme';
 
 interface AttachmentChipProps {
   filename: string;
@@ -6,8 +7,9 @@ interface AttachmentChipProps {
 }
 
 export function AttachmentChip({ filename, onRemove }: AttachmentChipProps) {
+  const { colors } = useTheme();
   return (
-    <div className="flex items-center gap-1.5 rounded-md bg-[#161b22] border border-dark-border px-2 py-1 text-[11px] font-mono text-dark-text max-w-[200px]">
+    <div className="flex items-center gap-1.5 rounded-md border border-dark-border px-2 py-1 text-[11px] font-mono text-dark-text max-w-[200px]" style={{ backgroundColor: colors.surface }}>
       <FiFile size={12} className="text-dark-muted shrink-0" />
       <span className="truncate">{filename}</span>
       <button

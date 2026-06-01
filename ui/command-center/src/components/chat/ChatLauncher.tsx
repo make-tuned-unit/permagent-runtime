@@ -6,7 +6,7 @@ import { useTheme } from '../../styles/useTheme';
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 export function ChatLauncher() {
-  const { colors } = useTheme();
+  const { colors, theme } = useTheme();
   const [agentName, setAgentName] = useState('Agent');
   const [chatWindowOpen, setChatWindowOpen] = useState(false);
 
@@ -63,6 +63,7 @@ export function ChatLauncher() {
         decorations: true,
         resizable: true,
         focus: true,
+        theme: theme === 'silver' ? 'light' : 'dark',
       });
 
       chatWindow.once('tauri://created', async () => {

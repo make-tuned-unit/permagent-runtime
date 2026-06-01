@@ -3,6 +3,7 @@ import { FiX, FiEye, FiEyeOff } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import type { ProviderInfo } from '../../lib/store';
+import { useTheme } from '../../styles/useTheme';
 
 interface Props {
   provider: ProviderInfo;
@@ -10,6 +11,7 @@ interface Props {
 }
 
 export function ConfigureProviderModal({ provider, onClose }: Props) {
+  const { colors } = useTheme();
   const setDefaultProvider = useCommandCenter(s => s.setDefaultProvider);
 
   const secretKey = provider.configKeys.find(k => k.secret);
@@ -77,7 +79,7 @@ export function ConfigureProviderModal({ provider, onClose }: Props) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
-      <div className="bg-[#111827] rounded-xl border border-dark-border w-full max-w-md p-5 shadow-2xl" onClick={e => e.stopPropagation()}>
+      <div className="rounded-xl border border-dark-border w-full max-w-md p-5 shadow-2xl" style={{ backgroundColor: colors.surface }} onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-semibold">Configure {provider.displayName}</h2>
           <button onClick={onClose} className="text-dark-muted hover:text-dark-text transition">
@@ -97,7 +99,8 @@ export function ConfigureProviderModal({ provider, onClose }: Props) {
                   value={apiKey}
                   onChange={e => setApiKey(e.target.value)}
                   placeholder={provider.isConfigured ? '(key stored, enter new to replace)' : 'Enter API key'}
-                  className="w-full px-3 py-2 pr-10 rounded bg-[#0B1120] border border-dark-border text-sm text-dark-text placeholder:text-dark-muted/40 focus:outline-none focus:border-accent/50"
+                  className="w-full px-3 py-2 pr-10 rounded border border-dark-border text-sm text-dark-text placeholder:text-dark-muted/40 focus:outline-none focus:border-accent/50"
+                  style={{ backgroundColor: colors.inputBg }}
                 />
                 <button
                   type="button"
@@ -115,7 +118,8 @@ export function ConfigureProviderModal({ provider, onClose }: Props) {
             <select
               value={selectedModel}
               onChange={e => setSelectedModel(e.target.value)}
-              className="w-full px-3 py-2 rounded bg-[#0B1120] border border-dark-border text-sm text-dark-text focus:outline-none focus:border-accent/50"
+              className="w-full px-3 py-2 rounded border border-dark-border text-sm text-dark-text focus:outline-none focus:border-accent/50"
+              style={{ backgroundColor: colors.inputBg }}
             >
               {models.map(m => (
                 <option key={m} value={m}>{m}</option>
@@ -161,7 +165,8 @@ export function ConfigureProviderModal({ provider, onClose }: Props) {
             <button
               onClick={handleSave}
               disabled={saving}
-              className="px-4 py-1.5 text-sm rounded bg-accent text-[#0B1120] font-semibold hover:bg-accent/80 transition disabled:opacity-50"
+              className="px-4 py-1.5 text-sm rounded bg-accent font-semibold hover:bg-accent/80 transition disabled:opacity-50"
+              style={{ color: colors.textOnAccent }}
             >
               {saving ? 'Saving...' : 'Save'}
             </button>

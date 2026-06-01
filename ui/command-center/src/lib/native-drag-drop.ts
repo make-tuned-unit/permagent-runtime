@@ -59,7 +59,11 @@ async function ensureNativeListener(): Promise<void> {
       if (event.payload.type === 'enter') {
         const paths: string[] = (event.payload as { type: string; paths: string[] }).paths;
         console.log('[drag-drop] enter, paths:', paths);
-        handlers.onEnter();
+        // Only show file-drop overlay for external file drags (paths non-empty).
+        // Internal HTML5 card drags within the webview can trigger this event with empty paths.
+        if (paths.length > 0) {
+          handlers.onEnter();
+        }
       } else if (event.payload.type === 'leave') {
         console.log('[drag-drop] leave');
         handlers.onLeave();

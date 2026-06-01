@@ -1,8 +1,10 @@
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { CodeBlock } from './CodeBlock';
+import { useTheme } from '../../styles/useTheme';
 
 export function MarkdownContent({ content }: { content: string }) {
+  const { colors } = useTheme();
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -37,7 +39,7 @@ export function MarkdownContent({ content }: { content: string }) {
           );
         },
         th({ children }) {
-          return <th className="border border-dark-border bg-[#0D1424] px-2 py-1 text-left font-semibold text-dark-muted">{children}</th>;
+          return <th className="border border-dark-border px-2 py-1 text-left font-semibold text-dark-muted" style={{ backgroundColor: colors.surface }}>{children}</th>;
         },
         td({ children }) {
           return <td className="border border-dark-border px-2 py-1">{children}</td>;

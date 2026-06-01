@@ -1,5 +1,6 @@
 import { FiZap, FiClock } from 'react-icons/fi';
 import type { SkillState } from '../../lib/store';
+import { useTheme } from '../../styles/useTheme';
 
 interface SkillCardProps {
   skill: SkillState;
@@ -8,6 +9,7 @@ interface SkillCardProps {
 }
 
 export function SkillCard({ skill, isSelected, onSelect }: SkillCardProps) {
+  const { colors } = useTheme();
   const isActive = skill.status === 'active';
 
   return (
@@ -16,8 +18,9 @@ export function SkillCard({ skill, isSelected, onSelect }: SkillCardProps) {
       className={`w-full text-left rounded-lg border p-4 transition cursor-pointer ${
         isSelected
           ? 'border-accent/50 bg-accent/5'
-          : 'border-dark-border bg-[#0D1424] hover:border-accent/30'
+          : 'border-dark-border hover:border-accent/30'
       }`}
+      style={!isSelected ? { backgroundColor: colors.surface } : undefined}
     >
       <div className="flex items-start gap-3">
         <div className="flex-1 min-w-0">

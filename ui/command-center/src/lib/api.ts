@@ -341,12 +341,12 @@ export const api = {
     first_name: string; last_name: string | null; nickname: string | null;
     display_name: string; traits: string[]; tone: string;
     opening_greeting: string; voice_id: string | null;
-  }>('/agent/identity'),
+  }>('/api/agent/identity'),
 
   putIdentity: (update: {
     first_name: string; last_name?: string | null; nickname?: string | null;
     traits: string[]; tone: string; opening_greeting: string; voice_id?: string | null;
-  }) => apiFetch<{ first_name: string; display_name: string }>('/agent/identity', {
+  }) => apiFetch<{ first_name: string; display_name: string }>('/api/agent/identity', {
     method: 'PUT', body: JSON.stringify(update),
   }),
 

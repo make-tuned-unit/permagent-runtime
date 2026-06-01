@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { FiChevronRight, FiChevronDown, FiCheck, FiX, FiCopy } from 'react-icons/fi';
 import type { ToolCall } from '../../lib/store';
+import { useTheme } from '../../styles/useTheme';
 import { GmailSearchResult } from './GmailSearchResult';
 import { GmailReadResult } from './GmailReadResult';
 import { FileReadResult } from './FileReadResult';
@@ -91,6 +92,7 @@ function TypedResultBody({ name, data }: { name: string; data: unknown }) {
 }
 
 export function ToolResult({ call }: { call: ToolCall }) {
+  const { colors } = useTheme();
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const hasResult = call.result !== undefined;
@@ -106,7 +108,7 @@ export function ToolResult({ call }: { call: ToolCall }) {
   }, [call]);
 
   return (
-    <div className="mt-1.5 rounded-lg border border-dark-border bg-[#0D1424]">
+    <div className="mt-1.5 rounded-lg border border-dark-border" style={{ backgroundColor: colors.surface }}>
       <button
         onClick={() => setExpanded(!expanded)}
         className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] font-mono hover:bg-white/[0.03] transition"

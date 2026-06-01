@@ -1,10 +1,12 @@
 import { useEffect, useState, useMemo } from 'react';
 import { FiLoader, FiZap, FiSearch, FiGrid, FiList } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
+import { useTheme } from '../../styles/useTheme';
 import { SkillCard } from './SkillCard';
 import { SkillDetailPanel } from './SkillDetailPanel';
 
 export function SkillsPanel() {
+  const { colors } = useTheme();
   const skills = useCommandCenter(s => s.skills);
   const skillsLoading = useCommandCenter(s => s.skillsLoading);
   const loadSkills = useCommandCenter(s => s.loadSkills);
@@ -32,7 +34,7 @@ export function SkillsPanel() {
     : null;
 
   return (
-    <div className="flex h-full bg-[#0A0E17]">
+    <div className="flex h-full" style={{ backgroundColor: colors.bg }}>
       {/* Left: Skills list */}
       <div className={`flex flex-col ${selectedSkill ? 'w-1/2 border-r border-dark-border' : 'w-full'}`}>
         {/* Header */}

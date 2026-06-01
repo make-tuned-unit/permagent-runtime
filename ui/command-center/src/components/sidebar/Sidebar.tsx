@@ -31,7 +31,7 @@ function SidebarRow({
       padding: open ? '0 12px' : 0,
       justifyContent: open ? 'flex-start' : 'center',
       margin: open ? '0 8px' : '0 auto',
-      background: active ? 'rgba(0,213,255,0.10)' : 'transparent',
+      background: active ? colors.cyanSoft : 'transparent',
       border: active ? `1px solid ${colors.borderHi}` : '1px solid transparent',
       color: active ? colors.cyan : colors.textMuted,
       cursor: 'pointer', transition: `all 200ms ${ease.out}`,

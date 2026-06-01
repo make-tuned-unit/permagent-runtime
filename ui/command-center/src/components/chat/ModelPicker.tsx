@@ -1,8 +1,10 @@
 import { useState, useRef, useEffect } from 'react';
 import { FiChevronDown } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
+import { useTheme } from '../../styles/useTheme';
 
 export function ModelPicker() {
+  const { colors } = useTheme();
   const providers = useCommandCenter(s => s.providers);
   const storeModel = useCommandCenter(s => s.currentModel);
   const loadProviders = useCommandCenter(s => s.loadProviders);
@@ -43,14 +45,14 @@ export function ModelPicker() {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-1 z-50 w-64 rounded-lg border border-dark-border bg-[#111827] shadow-2xl overflow-hidden">
+        <div className="absolute right-0 top-full mt-1 z-50 w-64 rounded-lg border border-dark-border shadow-2xl overflow-hidden" style={{ backgroundColor: colors.surface }}>
           <div className="max-h-[300px] overflow-y-auto">
             {configured.length === 0 && (
               <div className="px-3 py-4 text-xs text-dark-muted text-center">No configured providers</div>
             )}
             {configured.map(p => (
               <div key={p.name}>
-                <div className="px-3 py-1.5 text-[9px] font-mono uppercase tracking-wider text-dark-muted bg-[#0B1120]">
+                <div className="px-3 py-1.5 text-[9px] font-mono uppercase tracking-wider text-dark-muted" style={{ backgroundColor: colors.bg }}>
                   {p.displayName}
                 </div>
                 {p.knownModels.map(model => {

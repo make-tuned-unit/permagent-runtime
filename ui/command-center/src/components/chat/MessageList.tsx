@@ -1,10 +1,12 @@
 import { useRef, useEffect, useMemo, useState, useCallback } from 'react';
 import { FiChevronDown, FiMessageSquare } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
+import { useTheme } from '../../styles/useTheme';
 import { MessageBubble } from './MessageBubble';
 import { StreamingIndicator } from './StreamingIndicator';
 
 export function MessageList() {
+  const { colors } = useTheme();
   const chatMessages = useCommandCenter(s => s.chatMessages);
   const isStreaming = useCommandCenter(s => s.isStreaming);
   const streamingMessageId = useCommandCenter(s => s._streamingMessageId);
@@ -70,7 +72,8 @@ export function MessageList() {
         <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10">
           <button
             onClick={jumpToBottom}
-            className="flex items-center gap-1 rounded-full bg-[#0F1520] shadow-lg shadow-accent/5 border border-accent/20 px-3 py-1 text-[11px] text-accent font-mono hover:bg-[#151D2C] transition"
+            className="flex items-center gap-1 rounded-full shadow-lg shadow-accent/5 border border-accent/20 px-3 py-1 text-[11px] text-accent font-mono transition"
+            style={{ backgroundColor: colors.surface }}
           >
             <FiChevronDown size={12} /> Jump to latest
           </button>

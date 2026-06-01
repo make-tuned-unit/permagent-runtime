@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from 'react';
 import { FiPlus, FiTrash2, FiMessageSquare } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
 import { api } from '../../lib/api';
+import { useTheme } from '../../styles/useTheme';
 
 function timeAgo(dateStr: string): string {
   const now = Date.now();
@@ -58,6 +59,7 @@ function EditableName({ value, onSave }: { value: string; onSave: (name: string)
 }
 
 export function SessionsList() {
+  const { colors } = useTheme();
   const sessions = useCommandCenter(s => s.sessions);
   const chatSessionId = useCommandCenter(s => s.chatSessionId);
   const loadSessions = useCommandCenter(s => s.loadSessions);
@@ -90,7 +92,7 @@ export function SessionsList() {
   };
 
   return (
-    <div className="flex flex-col h-full bg-[#0B1120] text-dark-text">
+    <div className="flex flex-col h-full text-dark-text" style={{ backgroundColor: colors.bg }}>
       <div className="flex items-center justify-between border-b border-dark-border px-4 py-2.5">
         <span className="text-[11px] font-mono uppercase tracking-wider text-dark-muted">Sessions</span>
         <button
@@ -159,7 +161,7 @@ export function SessionsList() {
       {/* Delete confirmation */}
       {confirmDelete && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setConfirmDelete(null)}>
-          <div className="bg-[#111827] rounded-xl border border-dark-border p-5 max-w-sm shadow-2xl" onClick={e => e.stopPropagation()}>
+          <div className="rounded-xl border border-dark-border p-5 max-w-sm shadow-2xl" style={{ backgroundColor: colors.surface }} onClick={e => e.stopPropagation()}>
             <h3 className="font-semibold mb-2">Delete session?</h3>
             <p className="text-xs text-dark-muted mb-4">This will permanently delete this session and its messages.</p>
             <div className="flex justify-end gap-2">

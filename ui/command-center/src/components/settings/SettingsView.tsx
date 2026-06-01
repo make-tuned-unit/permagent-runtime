@@ -31,7 +31,7 @@ const ghost = (colors: C): React.CSSProperties => ({
 });
 const selectStyle = (colors: C): React.CSSProperties => ({
   height: 34, padding: '0 12px', borderRadius: 8,
-  background: 'rgba(7,11,20,0.5)', border: `1px solid ${colors.border}`,
+  background: colors.inputBg, border: `1px solid ${colors.border}`,
   color: colors.text, fontFamily: font.body, fontSize: 13,
   minWidth: 240, cursor: 'pointer',
 });
@@ -216,7 +216,7 @@ function AutonomyPanel() {
             {trustLevels.map((opt, i) => (
               <button key={opt.l} onClick={() => setTrust(i)} style={{
                 padding: 12, borderRadius: 10, cursor: 'pointer',
-                background: trust === i ? 'rgba(0,213,255,0.10)' : 'rgba(20,28,48,0.4)',
+                background: trust === i ? colors.cyanSoft : colors.bgDeeper,
                 border: trust === i ? `1px solid ${colors.borderHi}` : `1px solid ${colors.border}`,
                 color: colors.text, textAlign: 'left', flex: 1, fontFamily: font.body,
               }}>
@@ -268,7 +268,7 @@ function ToolsPanel() {
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
           {extensions.map(ext => (
-            <div key={ext.name} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: 14, borderRadius: 10, background: 'rgba(20,28,48,0.4)', border: `1px solid ${colors.border}` }}>
+            <div key={ext.name} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: 14, borderRadius: 10, background: colors.bgDeeper, border: `1px solid ${colors.border}` }}>
               <div style={{ width: 32, height: 32, borderRadius: 8, background: ext.enabled ? 'rgba(0,213,255,0.08)' : 'rgba(255,255,255,0.04)', border: `1px solid ${ext.enabled ? colors.borderHi : colors.border}`, display: 'grid', placeItems: 'center', fontFamily: font.display, fontSize: 13, fontWeight: 700, color: ext.enabled ? colors.cyan : colors.textMuted }}>{ext.display_name[0]?.toUpperCase()}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13, fontWeight: 600 }}>{ext.display_name}</div>
@@ -547,7 +547,7 @@ function AppearancePanel() {
   const themes: Array<{ id: ThemeId; l: string; g: string }> = [
     { id: 'dark', l: 'Permagent dark', g: 'linear-gradient(135deg, #0B1220, #1E2433)' },
     { id: 'aurora', l: 'Aurora', g: 'linear-gradient(135deg, #0B1220 30%, #8D44AE)' },
-    { id: 'silver', l: 'Silver', g: 'linear-gradient(135deg, #1A1C20, #3A3D44)' },
+    { id: 'silver', l: 'Silver', g: 'linear-gradient(135deg, #F8FAFC 0%, #D8DEE8 70%, #00BFEF 85%, #8B5CFF 100%)' },
   ];
   const animOptions: IdleAnim[] = ['still', 'breathing', 'drifting'];
   const animLabels = ['Still', 'Breathing', 'Drifting'];

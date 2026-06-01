@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useCommandCenter } from '../../lib/store';
+import { useTheme } from '../../styles/useTheme';
 import { useBrowserContentBridge } from '../../hooks/useBrowserContentBridge';
 import {
   FiArrowLeft,
@@ -84,6 +85,7 @@ let persistedTabs: BrowserTab[] | null = null;
 let persistedActiveTabId: string | null = null;
 
 export function Browser() {
+  const { colors } = useTheme();
   const overlayBlocking = useCommandCenter(s => s.overlayBlockingBrowser);
 
   const [tabs, setTabs] = useState<BrowserTab[]>(() => {
@@ -538,7 +540,7 @@ export function Browser() {
   const protocol = activeTab?.url ? getUrlProtocol(activeTab.url) : 'other';
 
   return (
-    <div className="flex h-full flex-col bg-[#0A0E17]">
+    <div className="flex h-full flex-col" style={{ backgroundColor: colors.bg }}>
       {/* Tab bar */}
       <BrowserTabs
         tabs={tabs}
@@ -550,7 +552,7 @@ export function Browser() {
       />
 
       {/* URL bar */}
-      <div className="flex items-center gap-2 border-b border-dark-border bg-[#0B1120] px-3 py-2">
+      <div className="flex items-center gap-2 border-b border-dark-border px-3 py-2" style={{ backgroundColor: colors.surface }}>
         {/* Nav buttons */}
         <div className="flex items-center gap-1">
           <button
@@ -578,7 +580,7 @@ export function Browser() {
         </div>
 
         {/* Address bar */}
-        <div className="flex-1 flex items-center bg-[#0A0E17] rounded-md border border-dark-border focus-within:border-accent transition-colors">
+        <div className="flex-1 flex items-center rounded-md border border-dark-border focus-within:border-accent transition-colors" style={{ backgroundColor: colors.bgDeeper }}>
           <span className="pl-2.5 pr-1">
             {protocol === 'https' ? (
               <FiLock size={12} className="text-accent" />
@@ -644,7 +646,7 @@ export function Browser() {
       </div>
 
       {/* Status bar */}
-      <div className="flex items-center gap-3 border-t border-dark-border bg-[#0B1120] px-3 py-1">
+      <div className="flex items-center gap-3 border-t border-dark-border px-3 py-1" style={{ backgroundColor: colors.surface }}>
         <span className="text-[10px] font-mono text-dark-muted flex-1 truncate">
           {activeTab?.loading
             ? 'Loading...'

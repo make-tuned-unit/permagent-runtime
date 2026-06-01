@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import { FiX, FiCopy, FiCheck } from 'react-icons/fi';
 import type { EventRecord } from '../../lib/store';
+import { useTheme } from '../../styles/useTheme';
 import { TYPE_COLORS, DEFAULT_COLOR } from './EventRow';
 
 interface EventDetailProps {
@@ -32,6 +33,7 @@ function highlightJson(json: string): JSX.Element[] {
 }
 
 export function EventDetail({ event, onClose }: EventDetailProps) {
+  const { colors } = useTheme();
   const [copied, setCopied] = useState(false);
   const color = TYPE_COLORS[event.event_type] || DEFAULT_COLOR;
 
@@ -51,7 +53,7 @@ export function EventDetail({ event, onClose }: EventDetailProps) {
   };
 
   return (
-    <div className="border-t border-dark-border bg-[#0D1424] max-h-[40%] overflow-y-auto">
+    <div className="border-t border-dark-border max-h-[40%] overflow-y-auto" style={{ backgroundColor: colors.surface }}>
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-dark-border/50">
         <div className="flex items-center gap-2">

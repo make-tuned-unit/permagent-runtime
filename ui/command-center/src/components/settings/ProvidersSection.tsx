@@ -2,9 +2,11 @@ import { useEffect, useState } from 'react';
 import { FiCheck, FiSettings, FiStar } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
 import type { ProviderInfo } from '../../lib/store';
+import { useTheme } from '../../styles/useTheme';
 import { ConfigureProviderModal } from './ConfigureProviderModal';
 
 export function ProvidersSection() {
+  const { colors } = useTheme();
   const providers = useCommandCenter(s => s.providers);
   const loadProviders = useCommandCenter(s => s.loadProviders);
   const setDefaultProvider = useCommandCenter(s => s.setDefaultProvider);
@@ -21,7 +23,7 @@ export function ProvidersSection() {
       )}
 
       {providers.map(p => (
-        <div key={p.name} className="rounded-lg border border-dark-border bg-[#111827] p-4">
+        <div key={p.name} className="rounded-lg border border-dark-border p-4" style={{ backgroundColor: colors.surface }}>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded bg-accent/10 flex items-center justify-center text-accent text-xs font-bold uppercase">

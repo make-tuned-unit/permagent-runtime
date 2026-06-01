@@ -5,8 +5,10 @@ import { ChatInput } from './ChatInput';
 import type { ChatInputHandle } from './ChatInput';
 import { SkillPromptBanner } from './SkillPromptBanner';
 import { ModelPicker } from './ModelPicker';
+import { useTheme } from '../../styles/useTheme';
 
 export function ChatView() {
+  const { colors } = useTheme();
   const loadSessionMessages = useCommandCenter(s => s.loadSessionMessages);
   const ensureSession = useCommandCenter(s => s.ensureSession);
   const connectSession = useCommandCenter(s => s.connectSession);
@@ -28,7 +30,7 @@ export function ChatView() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className="flex h-full flex-col bg-[#0A0E17]">
+    <div className="flex h-full flex-col" style={{ backgroundColor: colors.bg }}>
       {/* Header */}
       <div className="flex items-center justify-between border-b border-dark-border px-4 py-2.5">
         <span className="text-[11px] font-mono uppercase tracking-wider text-dark-muted">Chat</span>

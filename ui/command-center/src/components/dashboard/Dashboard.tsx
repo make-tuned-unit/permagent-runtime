@@ -57,6 +57,7 @@ export function Dashboard() {
               <div style={{
                 fontFamily: font.display, fontSize: 24, fontWeight: 600,
                 letterSpacing: '-0.02em', lineHeight: 1.2, marginBottom: 10,
+                color: colors.text,
               }}>
                 {agent.active_count > 0 ? (
                   <>{agent.name} is working on<br /><span style={{ color: colors.cyan }}>{agent.active_count} {agent.active_count === 1 ? 'thing' : 'things'}</span> for you</>
@@ -164,7 +165,7 @@ function TaskCard({ task }: { task: InFlightSession }) {
 function ActivityItem({ item, isLast }: { item: RecentSession; isLast: boolean }) {
   const { colors } = useTheme();
   const statusColor: Record<string, string> = {
-    completed: '#5BD17F',
+    completed: colors.success,
     paused: colors.danger,
     awaiting_input: colors.cyan,
   };

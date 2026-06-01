@@ -19,7 +19,12 @@ interface HoverInfo { id: string; kind: string; label: string; note: string; x: 
 interface SelectedInfo { id: string; kind: string; label: string; note: string; data: any }
 
 export function BrainView() {
-  const { gradient, colors } = useTheme();
+  const { gradient, colors, theme } = useTheme();
+
+  // Glass overlay style: white translucent for silver, dark for dark themes
+  const glass = theme === 'silver'
+    ? { bg: 'rgba(255,255,255,0.88)', border: 'rgba(167,176,190,0.35)' }
+    : { bg: 'rgba(20,28,48,0.75)', border: 'rgba(255,255,255,0.06)' };
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<BrainScene | null>(null);
 
@@ -144,8 +149,8 @@ export function BrainView() {
         {/* Mind label */}
         <div style={{
           display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px',
-          background: 'rgba(20,28,48,0.75)', backdropFilter: 'blur(16px)',
-          border: '1px solid rgba(0,213,255,0.12)', borderRadius: 999,
+          background: glass.bg, backdropFilter: 'blur(16px)',
+          border: `1px solid ${theme === 'silver' ? colors.cyan + '20' : 'rgba(0,213,255,0.12)'}`, borderRadius: 999,
         }}>
           <Mobius size={28} state="idle" logoMode />
           <span style={{ fontFamily: font.display, fontSize: 13, fontWeight: 700, color: colors.text }}>
@@ -160,8 +165,8 @@ export function BrainView() {
             placeholder="search the shape of what we've built..."
             style={{
               width: '100%', fontFamily: font.body, fontSize: 13, color: colors.text,
-              background: 'rgba(20,28,48,0.65)', backdropFilter: 'blur(12px)',
-              border: '1px solid rgba(255,255,255,0.06)', borderRadius: 999,
+              background: theme === 'silver' ? 'rgba(255,255,255,0.92)' : 'rgba(20,28,48,0.65)', backdropFilter: 'blur(12px)',
+              border: `1px solid ${glass.border}`, borderRadius: 999,
               padding: '9px 16px', outline: 'none',
             }}
           />
@@ -170,15 +175,15 @@ export function BrainView() {
         {/* Filter chips */}
         <div style={{
           display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px',
-          background: 'rgba(20,28,48,0.75)', backdropFilter: 'blur(16px)',
-          border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10,
+          background: glass.bg, backdropFilter: 'blur(16px)',
+          border: `1px solid ${glass.border}`, borderRadius: 10,
         }}>
           <span style={{ fontFamily: font.body, fontSize: 10, color: colors.textDim, marginRight: 4 }}>show</span>
           {FILTERS.map(f => (
             <button key={f.key} onClick={() => toggleFilter(f.key)} style={{
               fontFamily: font.body, fontSize: 11, fontWeight: 500,
               color: filters[f.key] ? colors.text : colors.textDim,
-              background: filters[f.key] ? 'rgba(0,213,255,0.10)' : 'transparent',
+              background: filters[f.key] ? colors.cyanSoft : 'transparent',
               border: 'none', borderRadius: 6, padding: '4px 8px', cursor: 'pointer',
               transition: `all 160ms ${ease.out}`,
             }}>
@@ -190,14 +195,14 @@ export function BrainView() {
         {/* Graph / List toggle */}
         <div style={{
           display: 'flex', alignItems: 'center', gap: 2, padding: '4px 6px',
-          background: 'rgba(20,28,48,0.75)', backdropFilter: 'blur(16px)',
-          border: '1px solid rgba(255,255,255,0.06)', borderRadius: 8,
+          background: glass.bg, backdropFilter: 'blur(16px)',
+          border: `1px solid ${glass.border}`, borderRadius: 8,
         }}>
           {(['graph', 'list'] as const).map(mode => (
             <button key={mode} onClick={() => setViewMode(mode)} style={{
               fontFamily: font.mono, fontSize: 10, fontWeight: 600,
               color: viewMode === mode ? colors.text : colors.textDim,
-              background: viewMode === mode ? 'rgba(0,213,255,0.12)' : 'transparent',
+              background: viewMode === mode ? colors.cyanSoft : 'transparent',
               border: 'none', borderRadius: 6, padding: '4px 10px', cursor: 'pointer',
               textTransform: 'uppercase', letterSpacing: '0.05em',
               transition: `all 160ms ${ease.out}`,
@@ -213,8 +218,9 @@ export function BrainView() {
         <div style={{
           position: 'fixed', left: hover.x + 14, top: hover.y + 14, zIndex: 20,
           maxWidth: 280, padding: '8px 12px',
-          background: 'rgba(20,28,48,0.9)', backdropFilter: 'blur(12px)',
+          background: theme === 'silver' ? 'rgba(255,255,255,0.95)' : 'rgba(20,28,48,0.9)', backdropFilter: 'blur(12px)',
           border: `1px solid ${colors.borderHi}`, borderRadius: 8,
+          boxShadow: theme === 'silver' ? '0 2px 12px rgba(30,37,48,0.10)' : 'none',
           fontFamily: font.body, fontSize: 12, color: colors.text,
           pointerEvents: 'none',
         }}>
@@ -234,12 +240,14 @@ export function BrainView() {
       }}>
         <div style={{
           height: '100%', overflow: 'hidden',
-          background: 'rgba(20,28,48,0.78)',
+          background: theme === 'silver' ? 'rgba(255,255,255,0.92)' : 'rgba(20,28,48,0.78)',
           backdropFilter: 'blur(24px) saturate(140%)',
           WebkitBackdropFilter: 'blur(24px) saturate(140%)',
-          border: '1px solid rgba(0,213,255,0.16)',
+          border: `1px solid ${theme === 'silver' ? 'rgba(167,176,190,0.35)' : 'rgba(0,213,255,0.16)'}`,
           borderRadius: 16, padding: 24,
-          boxShadow: '0 24px 60px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.06)',
+          boxShadow: theme === 'silver'
+            ? '0 24px 60px rgba(30,37,48,0.12), inset 0 1px 0 rgba(255,255,255,0.8)'
+            : '0 24px 60px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.06)',
           display: 'flex', flexDirection: 'column',
         }}>
           {selected && (<>
@@ -284,7 +292,7 @@ export function BrainView() {
                     )}
                     <p style={{
                       fontFamily: font.mono, fontSize: 11, color: colors.textMuted, lineHeight: 1.6, margin: 0,
-                      padding: '10px 12px', background: 'rgba(0,0,0,0.2)', borderRadius: 8,
+                      padding: '10px 12px', background: theme === 'silver' ? 'rgba(30,37,48,0.04)' : 'rgba(0,0,0,0.2)', borderRadius: 8,
                       whiteSpace: 'pre-wrap', wordBreak: 'break-word',
                     }}>
                       {mem.text}
@@ -317,8 +325,8 @@ export function BrainView() {
       <div style={{
         position: 'absolute', bottom: 16, left: 16, right: selected ? 376 : 16, zIndex: 10,
         display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px',
-        background: 'rgba(20,28,48,0.75)', backdropFilter: 'blur(16px)',
-        border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10,
+        background: glass.bg, backdropFilter: 'blur(16px)',
+        border: `1px solid ${glass.border}`, borderRadius: 10,
       }}>
         <span style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim }}>today</span>
         <input type="range" min={0} max={1} step={0.01} value={timeValue}

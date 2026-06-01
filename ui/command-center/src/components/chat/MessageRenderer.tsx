@@ -3,6 +3,7 @@ import { MarkdownContent } from './MarkdownContent';
 import { ImageMessage } from './ImageMessage';
 import { AudioMessage } from './AudioMessage';
 import { ToolResult } from '../tool-results/ToolResult';
+import { useTheme } from '../../styles/useTheme';
 
 interface Attachment {
   id: string;
@@ -18,6 +19,7 @@ interface MessageRendererProps {
 }
 
 export function MessageRenderer({ message, attachments, allImages }: MessageRendererProps) {
+  const { colors } = useTheme();
   const isUser = message.role === 'user';
 
   // Separate attachments by type
@@ -44,7 +46,7 @@ export function MessageRenderer({ message, attachments, allImages }: MessageRend
       {/* Text content */}
       {message.content && (
         isUser ? (
-          <div className="font-mono text-[13px] leading-relaxed text-blue-200 whitespace-pre-wrap">
+          <div className="font-mono text-[13px] leading-relaxed whitespace-pre-wrap" style={{ color: colors.userBubbleText }}>
             {message.content}
           </div>
         ) : (

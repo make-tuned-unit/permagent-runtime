@@ -11,6 +11,7 @@
     "core:window:allow-show",
     "core:window:allow-close",
     "core:window:allow-center",
+    "core:window:allow-set-theme",
     "core:webview:default",
     "core:webview:allow-create-webview-window",
     "shell:allow-open",

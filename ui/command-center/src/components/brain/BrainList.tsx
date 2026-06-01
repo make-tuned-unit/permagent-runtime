@@ -241,7 +241,11 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
   highlightTerms: string[];
   onClick: () => void;
 }) {
-  const { colors } = useTheme();
+  const { colors, theme } = useTheme();
+  const rowBg = selected
+    ? colors.cyanSoft
+    : theme === 'silver' ? 'rgba(255,255,255,0.7)' : 'rgba(20,28,48,0.4)';
+  const rowHoverBg = theme === 'silver' ? 'rgba(255,255,255,0.9)' : 'rgba(20,28,48,0.65)';
   const title = deriveTitle(memory);
   const preview = memory.text.slice(0, 100) + (memory.text.length > 100 ? '...' : '');
   const descPreview = memory.description
@@ -254,12 +258,12 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
       style={{
         padding: '10px 14px', marginBottom: 2, cursor: 'pointer',
         borderRadius: 8,
-        background: selected ? 'rgba(0,213,255,0.08)' : 'rgba(20,28,48,0.4)',
-        border: selected ? `1px solid rgba(0,213,255,0.25)` : '1px solid transparent',
+        background: rowBg,
+        border: selected ? `1px solid ${colors.cyan}40` : '1px solid transparent',
         transition: `all 160ms ${ease.out}`,
       }}
-      onMouseEnter={e => { if (!selected) (e.currentTarget as HTMLDivElement).style.background = 'rgba(20,28,48,0.65)'; }}
-      onMouseLeave={e => { if (!selected) (e.currentTarget as HTMLDivElement).style.background = 'rgba(20,28,48,0.4)'; }}
+      onMouseEnter={e => { if (!selected) (e.currentTarget as HTMLDivElement).style.background = rowHoverBg; }}
+      onMouseLeave={e => { if (!selected) (e.currentTarget as HTMLDivElement).style.background = rowBg; }}
     >
       {/* Title row */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>

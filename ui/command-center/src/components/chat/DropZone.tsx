@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { FiUpload } from 'react-icons/fi';
 import { setDropHandlers } from '../../lib/native-drag-drop';
+import { useTheme } from '../../styles/useTheme';
 
 interface DropZoneProps {
   onDrop: (files: File[]) => void;
@@ -11,6 +12,7 @@ interface DropZoneProps {
 const isTauri = '__TAURI_INTERNALS__' in window;
 
 export function DropZone({ onDrop, children, disabled = false }: DropZoneProps) {
+  const { colors } = useTheme();
   const [dragging, setDragging] = useState(false);
   const counter = useRef(0);
 
@@ -89,7 +91,7 @@ export function DropZone({ onDrop, children, disabled = false }: DropZoneProps) 
     >
       {children}
       {dragging && (
-        <div className="absolute inset-0 z-40 flex flex-col items-center justify-center bg-[#0A0E17]/90 border-2 border-dashed border-accent/50 rounded-xl m-2 pointer-events-none">
+        <div className="absolute inset-0 z-40 flex flex-col items-center justify-center border-2 border-dashed border-accent/50 rounded-xl m-2 pointer-events-none" style={{ backgroundColor: colors.bg, opacity: 0.93 }}>
           <FiUpload size={32} className="text-accent/60 mb-2" />
           <span className="text-accent/80 font-mono text-sm">Drop files to send to chat</span>
         </div>

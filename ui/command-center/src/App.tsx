@@ -65,7 +65,18 @@ function App() {
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
   const activePanel = useCommandCenter(s => s.activePanel);
   const activeWorkspace = useCommandCenter(s => s.workspaces.find(w => w.id === s.activeWorkspaceId));
-  const { gradient, density } = useTheme();
+  const { gradient, density, theme } = useTheme();
+
+  // Sync native window titlebar appearance with theme
+  useEffect(() => {
+    if (!('__TAURI_INTERNALS__' in window)) return;
+    (async () => {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        await getCurrentWindow().setTheme(theme === 'silver' ? 'light' : 'dark');
+      } catch { /* older Tauri or permission not available */ }
+    })();
+  }, [theme]);
 
   const [phase, setPhase] = useState<'splash' | 'loading' | 'wizard' | 'app'>('splash');
 
@@ -150,7 +161,7 @@ function App() {
   }
 
   if (phase === 'loading') {
-    return <div style={{ background: '#0B1220', width: '100vw', height: '100vh' }} />;
+    return <div style={{ background: gradient.shell, width: '100vw', height: '100vh' }} />;
   }
 
   if (phase === 'wizard') {

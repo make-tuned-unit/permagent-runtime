@@ -1,11 +1,13 @@
 import { useCommandCenter } from '../../lib/store';
+import { useTheme } from '../../styles/useTheme';
 
 export function ExecutionTrace() {
+  const { colors } = useTheme();
   const events = useCommandCenter(s => s.events);
   const recentEvents = events.slice(0, 50);
 
   return (
-    <div className="flex h-full flex-col bg-[#0A0E17] overflow-hidden">
+    <div className="flex h-full flex-col overflow-hidden" style={{ backgroundColor: colors.bg }}>
       <div className="border-b border-dark-border px-4 py-2">
         <h2 className="text-xs font-mono font-semibold text-dark-text tracking-wider">TRACE</h2>
       </div>

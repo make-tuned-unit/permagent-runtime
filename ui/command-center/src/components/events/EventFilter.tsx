@@ -1,5 +1,6 @@
 import { FiX } from 'react-icons/fi';
 import type { PermagentEventType } from '../../lib/store';
+import { useTheme } from '../../styles/useTheme';
 
 // All known event types for the multi-select
 const ALL_EVENT_TYPES: PermagentEventType[] = [
@@ -52,10 +53,11 @@ export function EventFilter({
   onDatePresetChange,
   onClearAll,
 }: EventFilterProps) {
+  const { colors } = useTheme();
   const hasFilters = selectedTypes.length > 0 || datePreset !== 'all';
 
   return (
-    <div className="border-b border-dark-border bg-[#080d18] px-3 py-2 space-y-2">
+    <div className="border-b border-dark-border px-3 py-2 space-y-2" style={{ backgroundColor: colors.bgDeeper }}>
       {/* Date range presets */}
       <div className="flex items-center gap-1.5">
         <span className="text-[9px] font-mono uppercase text-dark-muted mr-1">Range</span>

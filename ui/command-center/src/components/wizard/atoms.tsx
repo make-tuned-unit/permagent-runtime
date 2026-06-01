@@ -14,14 +14,14 @@ children, disabled, onClick, full, style = {} }: {
       onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
       style={{
         fontFamily: font.body, fontSize: 14, fontWeight: 600, letterSpacing: '-0.01em',
-        color: disabled ? 'rgba(255,255,255,0.5)' : '#FFFFFF',
-        background: disabled ? 'rgba(141,68,174,0.35)' : hover ? colors.purpleBright : colors.purple,
+        color: disabled ? colors.textDim : colors.textOnAccent,
+        background: disabled ? colors.purpleSoft : hover ? colors.purpleBright : colors.purple,
         border: 'none', borderRadius: radius.md, padding: '12px 20px', height: 44,
         minWidth: 140, width: full ? '100%' : 'auto',
         cursor: disabled ? 'not-allowed' : 'pointer',
         boxShadow: disabled ? 'none' : hover
-          ? '0 0 0 4px rgba(141,68,174,0.18), 0 8px 24px rgba(141,68,174,0.45)'
-          : '0 4px 14px rgba(141,68,174,0.32)',
+          ? `0 0 0 4px ${colors.purpleSoft}, 0 8px 24px ${colors.purpleGlow}`
+          : `0 4px 14px ${colors.purpleGlow}`,
         transition: `all 200ms ${ease.out}`, ...style,
       }}
     >{children}</button>
@@ -62,10 +62,10 @@ value, onChange, placeholder, type = 'text', style = {} }: {
       style={{
         width: '100%', fontFamily: font.body, fontSize: 14, fontWeight: 400,
         color: colors.text,
-        background: focus ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.02)',
-        border: focus ? `1px solid ${colors.cyan}` : '1px solid rgba(255,255,255,0.08)',
+        background: colors.inputBg,
+        border: focus ? `1px solid ${colors.cyan}` : `1px solid ${colors.border}`,
         borderRadius: radius.md, padding: '13px 14px', outline: 'none',
-        boxShadow: focus ? '0 0 0 3px rgba(0,213,255,0.12)' : 'none',
+        boxShadow: focus ? `0 0 0 3px ${colors.cyanGlow}` : 'none',
         transition: `all 160ms ${ease.out}`, ...style,
       }}
     />
@@ -93,10 +93,10 @@ value, onChange, options, style = {} }: {
       <button onClick={() => setOpen(x => !x)} style={{
         width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         fontFamily: font.body, fontSize: 14, fontWeight: 500, color: colors.text,
-        background: open ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.02)',
-        border: open ? `1px solid ${colors.cyan}` : '1px solid rgba(255,255,255,0.08)',
+        background: colors.inputBg,
+        border: open ? `1px solid ${colors.cyan}` : `1px solid ${colors.border}`,
         borderRadius: radius.md, padding: '13px 14px', cursor: 'pointer',
-        boxShadow: open ? '0 0 0 3px rgba(0,213,255,0.12)' : 'none',
+        boxShadow: open ? `0 0 0 3px ${colors.cyanGlow}` : 'none',
         transition: `all 160ms ${ease.out}`,
       }}>
         <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -110,17 +110,17 @@ value, onChange, options, style = {} }: {
       {open && (
         <div style={{
           position: 'absolute', top: 'calc(100% + 6px)', left: 0, right: 0,
-          background: '#11182B', border: '1px solid rgba(255,255,255,0.08)',
-          borderRadius: radius.md, padding: 6, boxShadow: '0 16px 40px rgba(0,0,0,0.5)', zIndex: 30,
+          background: colors.surface, border: `1px solid ${colors.border}`,
+          borderRadius: radius.md, padding: 6, boxShadow: colors.cardShadow, zIndex: 30,
         }}>
           {options.map(o => (
             <div key={o.value} onClick={() => { onChange(o.value); setOpen(false); }}
               style={{
                 display: 'flex', alignItems: 'center', gap: 10, padding: '10px 10px', borderRadius: 6,
                 fontFamily: font.body, fontSize: 13, color: colors.text,
-                background: o.value === value ? 'rgba(0,213,255,0.10)' : 'transparent', cursor: 'pointer',
+                background: o.value === value ? colors.cyanSoft : 'transparent', cursor: 'pointer',
               }}
-              onMouseEnter={e => { if (o.value !== value) (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.04)'; }}
+              onMouseEnter={e => { if (o.value !== value) (e.currentTarget as HTMLElement).style.background = colors.surfaceHi; }}
               onMouseLeave={e => { if (o.value !== value) (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
             >
               {o.dot && <span style={{ width: 8, height: 8, borderRadius: '50%', background: o.dot }} />}
@@ -144,8 +144,8 @@ export function ProgressDots({ count = 4, current = 0, style = {} }: {
       {Array.from({ length: count }).map((_, i) => (
         <div key={i} style={{
           width: i === current ? 18 : 6, height: 6, borderRadius: 999,
-          background: i === current ? colors.cyan : 'rgba(255,255,255,0.16)',
-          boxShadow: i === current ? '0 0 12px rgba(0,213,255,0.6)' : 'none',
+          background: i === current ? colors.cyan : colors.textDim,
+          boxShadow: i === current ? `0 0 12px ${colors.cyanGlow}` : 'none',
           transition: `all 320ms ${ease.out}`,
         }} />
       ))}
@@ -178,6 +178,7 @@ onClick }: { onClick: () => void }) {
 
 // ── Particles ──────────────────────────────────────────────────────────
 export function Particles({ density = 28 }: { density?: number }) {
+  const { colors } = useTheme();
   const seeds = useMemo(() => Array.from({ length: density }).map((_, i) => ({
     i, x: Math.random() * 100, y: Math.random() * 100,
     r: 0.5 + Math.random() * 1.6, d: 18 + Math.random() * 28,
@@ -200,7 +201,7 @@ export function Particles({ density = 28 }: { density?: number }) {
           <div key={s.i} style={{
             position: 'absolute', left: `${s.x}%`, top: `${s.y}%`,
             width: s.r * 2, height: s.r * 2, borderRadius: '50%',
-            background: s.hue === 'cyan' ? '#00D5FF' : '#A855F7',
+            background: s.hue === 'cyan' ? colors.cyan : colors.purple,
             filter: 'blur(0.4px)',
             // @ts-expect-error CSS custom properties
             '--pa-dx': `${s.drift}vw`,
@@ -217,15 +218,16 @@ export function Particles({ density = 28 }: { density?: number }) {
 export function Glass({ children, r = 14, padding = 18, style = {} }: {
   children: ReactNode; r?: number; padding?: number; style?: CSSProperties;
 }) {
+  const { colors } = useTheme();
   return (
     <div style={{
       position: 'relative',
-      background: 'rgba(20,28,48,0.78)',
+      background: colors.surface,
       backdropFilter: 'blur(24px) saturate(140%)',
       WebkitBackdropFilter: 'blur(24px) saturate(140%)',
-      border: '1px solid rgba(0,213,255,0.16)',
+      border: `1px solid ${colors.borderHi}`,
       borderRadius: r, padding,
-      boxShadow: '0 24px 60px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.06)',
+      boxShadow: colors.cardShadow,
       ...style,
     }}>
       {children}

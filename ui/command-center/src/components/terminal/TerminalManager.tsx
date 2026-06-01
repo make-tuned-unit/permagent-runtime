@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { FiPlus, FiX, FiTerminal } from 'react-icons/fi';
 import { Terminal } from './Terminal';
+import { useTheme } from '../../styles/useTheme';
 
 interface TerminalTab {
   id: string;
@@ -37,6 +38,7 @@ let persistedTabs: TerminalTab[] | null = null;
 let persistedActiveTabId: string | null = null;
 
 export function TerminalManager() {
+  const { colors } = useTheme();
   const [tabs, setTabs] = useState<TerminalTab[]>(() => {
     if (persistedTabs) return persistedTabs;
     return [createTab()];
@@ -160,8 +162,8 @@ export function TerminalManager() {
   }, [handleNewTab, handleCloseTab]);
 
   return (
-    <div className="flex h-full flex-col bg-[#0A0E17]">
-      <div className="flex items-center border-b border-dark-border bg-[#0B1120]">
+    <div className="flex h-full flex-col" style={{ backgroundColor: colors.bg }}>
+      <div className="flex items-center border-b border-dark-border" style={{ backgroundColor: colors.surface }}>
         <div className="flex flex-1 items-center overflow-x-auto">
           {tabs.map(tab => (
             <button
@@ -169,9 +171,10 @@ export function TerminalManager() {
               onClick={() => setActiveTabId(tab.id)}
               className={`group flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-mono border-r border-dark-border transition-colors shrink-0 ${
                 tab.id === activeTabId
-                  ? 'bg-[#0A0E17] text-accent'
+                  ? 'text-accent'
                   : 'text-dark-muted hover:text-dark-text hover:bg-white/5'
               }`}
+              style={tab.id === activeTabId ? { backgroundColor: colors.bg } : undefined}
             >
               <FiTerminal size={11} />
               <span className="truncate max-w-[140px]">{tab.label}</span>

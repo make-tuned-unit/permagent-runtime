@@ -26,7 +26,7 @@ export function Stat({ label, value, suffix, delta, cyan }: {
           {value}<span style={{ fontSize: 18, color: colors.textMuted, marginLeft: 2 }}>{suffix || ''}</span>
         </div>
         {delta && (
-          <div style={{ fontSize: 11, fontWeight: 600, color: '#5BD17F' }}>{delta}</div>
+          <div style={{ fontSize: 11, fontWeight: 600, color: colors.success }}>{delta}</div>
         )}
       </div>
     </div>
@@ -35,10 +35,12 @@ export function Stat({ label, value, suffix, delta, cyan }: {
 
 export function StatusIcon({ state }: { state: string }) {
   const { colors } = useTheme();
+  const successBg = colors.success + '26'; // ~15% opacity
+  const dangerBg = colors.danger + '1f'; // ~12% opacity
   const config: Record<string, { bg: string; color: string; icon: string }> = {
-    completed: { bg: 'rgba(91,209,127,0.15)', color: '#5BD17F', icon: '✓' },
-    paused: { bg: 'rgba(255,180,162,0.12)', color: colors.danger, icon: '⏸' },
-    awaiting_input: { bg: 'rgba(0,213,255,0.12)', color: colors.cyan, icon: '?' },
+    completed: { bg: successBg, color: colors.success, icon: '✓' },
+    paused: { bg: dangerBg, color: colors.danger, icon: '⏸' },
+    awaiting_input: { bg: colors.cyanSoft, color: colors.cyan, icon: '?' },
   };
   const c = config[state] || config.completed;
   return (

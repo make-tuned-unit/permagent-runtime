@@ -58,6 +58,20 @@ export interface ThemeColors {
   cardShadow: string;
   /** Top-edge highlight for metallic cards (empty string on dark themes) */
   cardHighlight: string;
+  /** Brand ribbon gradient for primary buttons / AI moments */
+  ribbonGradient: string;
+  /** User chat bubble surface */
+  userBubble: string;
+  /** User chat bubble text */
+  userBubbleText: string;
+  /** Inset surface for inputs */
+  inputBg: string;
+  /** On-accent text (white on gradient/cyan buttons) */
+  textOnAccent: string;
+  /** Success semantic */
+  success: string;
+  /** Warning semantic */
+  warning: string;
 }
 
 const DARK_COLORS: ThemeColors = {
@@ -69,28 +83,52 @@ const DARK_COLORS: ThemeColors = {
   danger: color.danger,
   cardShadow: '0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04)',
   cardHighlight: '',
+  ribbonGradient: 'linear-gradient(135deg, #00D5FF 0%, #6366F1 50%, #8D44AE 100%)',
+  userBubble: 'rgba(141,68,174,0.18)',
+  userBubbleText: '#FFFFFF',
+  inputBg: '#1E2433',
+  textOnAccent: '#FFFFFF',
+  success: '#34D399',
+  warning: '#FBBF24',
 };
-const AURORA_COLORS: ThemeColors = { ...DARK_COLORS };
+const AURORA_COLORS: ThemeColors = {
+  ...DARK_COLORS,
+  ribbonGradient: 'linear-gradient(135deg, #00D5FF 0%, #6366F1 50%, #A855CC 100%)',
+};
 const SILVER_COLORS: ThemeColors = {
-  bg: '#d4d6dc',            // cool blue-grey base
-  bgDeeper: '#c8cad2',     // deeper cool tone
-  surface: '#e4e6ec',       // raised card surface (lighter, cool undertone)
-  surfaceHi: '#eceef4',    // elevated highlight
-  border: 'rgba(50,70,110,0.20)', // cool hairline border
-  borderHi: 'rgba(0,140,200,0.30)', // cyan accent border
-  cyan: '#0088aa',          // primary accent (AA on light)
-  cyanSoft: 'rgba(0,136,170,0.10)',
-  cyanGlow: 'rgba(0,168,204,0.35)',
-  purple: '#7B3FA0',        // secondary accent
-  purpleBright: '#9B52CC',
-  purpleSoft: 'rgba(123,63,160,0.10)',
-  purpleGlow: 'rgba(155,82,204,0.30)',
-  text: '#1a1c22',          // near-black with cool tint
-  textMuted: '#3e424e',    // cool mid-grey (AA on #e4e6ec)
-  textDim: '#5e6270',      // lighter cool grey (AA on #e4e6ec)
-  danger: '#b82e2e',
-  cardShadow: '0 2px 6px rgba(40,50,80,0.10), 0 1px 2px rgba(40,50,80,0.06)',
-  cardHighlight: 'inset 0 1px 0 rgba(255,255,255,0.6)',
+  // Surfaces — Pearl White base, white glass cards
+  bg: '#F8FAFC',             // Pearl White (page background)
+  bgDeeper: '#EEF2F7',      // Chrome Mist (secondary/inset bg)
+  surface: '#FFFFFF',        // Pure white glass cards
+  surfaceHi: '#F8FAFC',     // Elevated (modals, popovers)
+  // Borders — Titanium Gray hairline
+  border: 'rgba(167,176,190,0.35)',
+  borderHi: 'rgba(0,191,239,0.40)',  // Cyan focus
+  // Accents — brand cyan/violet
+  cyan: '#00BFEF',           // Cyan Intelligence
+  cyanSoft: 'rgba(0,191,239,0.10)',
+  cyanGlow: 'rgba(0,191,239,0.25)',
+  purple: '#8B5CFF',         // Violet Memory
+  purpleBright: '#9B6FFF',
+  purpleSoft: 'rgba(139,92,255,0.10)',
+  purpleGlow: 'rgba(139,92,255,0.25)',
+  // Text — Graphite
+  text: '#1E2530',           // Graphite Text (primary)
+  textMuted: '#5A6577',      // Cool grey (AA 5.2:1 on white)
+  textDim: '#A7B0BE',        // Titanium Gray (placeholders)
+  // Semantic
+  danger: '#DC2626',
+  // Elevation — soft shadow + glass edge (cards MUST float via shadow, not color)
+  cardShadow: '0 2px 12px rgba(30,37,48,0.10), 0 1px 4px rgba(30,37,48,0.06)',
+  cardHighlight: 'inset 0 1px 0 rgba(255,255,255,0.9)',
+  // Brand ribbon — weighted so text sits over blue→violet (AA large text)
+  ribbonGradient: 'linear-gradient(135deg, #00BFEF 0%, #3A7BFF 30%, #8B5CFF 100%)',
+  userBubble: '#DCCBFF',     // Soft Lavender
+  userBubbleText: '#1E2530', // Graphite (BLACK text)
+  inputBg: '#EEF2F7',       // Chrome Mist (recessed)
+  textOnAccent: '#FFFFFF',
+  success: '#059669',
+  warning: '#D97706',
 };
 
 export interface ThemeGradients {
@@ -121,13 +159,13 @@ export const THEME_GRADIENTS: Record<ThemeId, ThemeGradients> = {
     label: 'Aurora',
   },
   silver: {
-    workspace: 'linear-gradient(180deg, #e0e2e8 0%, #d4d6dc 40%, #caced6 100%)',
-    card: 'linear-gradient(180deg, #eceef4 0%, #e4e6ec 100%)',
-    shell: '#d0d2d8',
-    sidebar: 'rgba(208,210,216,0.90)',
-    navRail: 'rgba(208,210,216,0.65)',
-    dropdown: 'rgba(232,234,240,0.98)',
-    dropdownSolid: '#e8eaf0',
+    workspace: 'linear-gradient(180deg, #F8FAFC 0%, #F2F5F9 100%)',
+    card: 'linear-gradient(180deg, #FFFFFF 0%, #FAFBFD 100%)',
+    shell: '#D8DEE8',        // Liquid Silver (window chrome / headers)
+    sidebar: 'rgba(238,242,247,0.92)',
+    navRail: 'rgba(238,242,247,0.75)',
+    dropdown: 'rgba(255,255,255,0.98)',
+    dropdownSolid: '#FFFFFF',
     label: 'Silver',
   },
 };
@@ -177,6 +215,10 @@ function _syncCssVars() {
   root.setProperty('--tw-accent', c.cyan);
   root.setProperty('--tw-accent-dim', c.cyan);
   root.setProperty('--tw-accent-glow', c.cyanSoft);
+  root.setProperty('--tw-input-bg', c.inputBg);
+  root.setProperty('--tw-danger', c.danger);
+  root.setProperty('--tw-success', c.success);
+  root.setProperty('--tw-warning', c.warning);
 }
 _syncCssVars(); // initial sync
 _listeners.add(_syncCssVars); // re-sync on theme change

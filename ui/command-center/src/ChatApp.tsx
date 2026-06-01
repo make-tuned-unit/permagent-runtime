@@ -29,11 +29,22 @@ function timeAgo(dateStr: string): string {
 }
 
 export default function ChatApp() {
-  const { gradient, colors } = useTheme();
+  const { gradient, colors, theme } = useTheme();
   const [agentName, setAgentName] = useState('Agent');
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [inspectionOpen, setInspectionOpen] = useState(false);
   const [inputFocused, setInputFocused] = useState(false);
+
+  // Sync native window titlebar appearance with theme
+  useEffect(() => {
+    if (!('__TAURI_INTERNALS__' in window)) return;
+    (async () => {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        await getCurrentWindow().setTheme(theme === 'silver' ? 'light' : 'dark');
+      } catch { /* ignore */ }
+    })();
+  }, [theme]);
 
   const ensureSession = useCommandCenter(s => s.ensureSession);
   const connectSession = useCommandCenter(s => s.connectSession);

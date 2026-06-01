@@ -1,21 +1,21 @@
 import type { ChatMessage } from '../../lib/store';
 import { MessageRenderer } from './MessageRenderer';
 import { CitationMarker } from '../awareness/CitationMarker';
+import { useTheme } from '../../styles/useTheme';
 
 export function MessageBubble({ message }: { message: ChatMessage }) {
+  const { colors } = useTheme();
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
   const ctx = message.context_attached;
 
+  const bubbleStyle = isUser
+    ? { backgroundColor: colors.userBubble, border: `1px solid ${colors.purple}30` }
+    : { backgroundColor: colors.surface };
+
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div className={`max-w-[85%] rounded-xl px-3.5 py-2.5 ${
-        isUser
-          ? 'bg-[rgba(141,68,174,0.16)] border border-[rgba(141,68,174,0.30)]'
-          : isSystem
-          ? 'bg-dark-surface'
-          : 'bg-dark-surface'
-      }`}>
+      <div className="max-w-[85%] rounded-xl px-3.5 py-2.5" style={bubbleStyle}>
         <div className="flex items-center gap-2 mb-1">
           <span className="text-[10px] font-mono text-dark-muted">
             {isUser ? 'You' : isSystem ? 'System' : 'Agent'}

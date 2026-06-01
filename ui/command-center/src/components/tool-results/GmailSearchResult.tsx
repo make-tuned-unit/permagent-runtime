@@ -1,4 +1,5 @@
 import { FiMail } from 'react-icons/fi';
+import { useTheme } from '../../styles/useTheme';
 
 interface EmailEntry {
   id?: string;
@@ -14,6 +15,7 @@ interface GmailSearchResultProps {
 }
 
 export function GmailSearchResult({ emails }: GmailSearchResultProps) {
+  const { colors } = useTheme();
   if (!emails || emails.length === 0) {
     return <div className="text-[11px] text-dark-muted font-mono">No emails found.</div>;
   }
@@ -23,9 +25,8 @@ export function GmailSearchResult({ emails }: GmailSearchResultProps) {
       {emails.map((email, i) => (
         <div
           key={email.id || i}
-          className={`flex items-start gap-2 rounded-md px-2 py-1.5 border border-dark-border/50 ${
-            email.unread ? 'bg-[#0D1424]' : 'bg-transparent'
-          }`}
+          className="flex items-start gap-2 rounded-md px-2 py-1.5 border border-dark-border/50"
+          style={{ backgroundColor: email.unread ? colors.surface : 'transparent' }}
         >
           <div className="mt-0.5 shrink-0">
             <FiMail size={13} className={email.unread ? 'text-accent' : 'text-dark-muted'} />

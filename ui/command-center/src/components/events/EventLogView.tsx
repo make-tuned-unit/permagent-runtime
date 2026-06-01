@@ -4,6 +4,7 @@ import { useCommandCenter, type EventRecord, type PermagentEventType } from '../
 import { EventRow } from './EventRow';
 import { EventFilter, getDateCutoff, type DatePreset } from './EventFilter';
 import { EventDetail } from './EventDetail';
+import { useTheme } from '../../styles/useTheme';
 
 export function EventLogView() {
   const events = useCommandCenter(s => s.events);
@@ -66,8 +67,10 @@ export function EventLogView() {
     setDatePreset('all');
   };
 
+  const { colors } = useTheme();
+
   return (
-    <div className="flex h-full flex-col bg-[#0A0E17] text-gray-300">
+    <div className="flex h-full flex-col" style={{ backgroundColor: colors.bg, color: colors.text }}>
       {/* Header */}
       <div className="flex items-center justify-between border-b border-dark-border px-4 py-2.5">
         <div className="flex items-center gap-2">

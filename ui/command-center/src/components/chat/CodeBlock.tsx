@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import { FiCopy, FiCheck } from 'react-icons/fi';
+import { useTheme } from '../../styles/useTheme';
 
 export function CodeBlock({ language, code }: { language: string; code: string }) {
+  const { colors } = useTheme();
   const [html, setHtml] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -27,8 +29,8 @@ export function CodeBlock({ language, code }: { language: string; code: string }
   }, [code]);
 
   return (
-    <div className="relative group rounded-lg bg-[#0d1117] border border-dark-border my-2 overflow-hidden">
-      <div className="flex items-center justify-between px-3 py-1 bg-[#161b22] border-b border-dark-border">
+    <div className="relative group rounded-lg border border-dark-border my-2 overflow-hidden" style={{ backgroundColor: colors.bg }}>
+      <div className="flex items-center justify-between px-3 py-1 border-b border-dark-border" style={{ backgroundColor: colors.surface }}>
         <span className="text-[10px] font-mono text-dark-muted">{language}</span>
         <button
           onClick={handleCopy}
@@ -43,7 +45,7 @@ export function CodeBlock({ language, code }: { language: string; code: string }
           dangerouslySetInnerHTML={{ __html: html }}
         />
       ) : (
-        <pre className="overflow-x-auto p-3 text-[12px] leading-relaxed font-mono text-slate-300">
+        <pre className="overflow-x-auto p-3 text-[12px] leading-relaxed font-mono" style={{ color: colors.text }}>
           <code>{code}</code>
         </pre>
       )}
