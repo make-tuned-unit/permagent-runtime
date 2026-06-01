@@ -1,10 +1,11 @@
-import { useCallback } from 'react';
+import { useCallback, useRef } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import { useDashboard } from '../dashboard/useDashboard';
 import { TerminalManager } from '../terminal/TerminalManager';
+import type { TerminalManagerHandle } from '../terminal/TerminalManager';
 import { Browser } from '../browser';
 import { ProjectChip } from './ProjectChip';
 import type { Project } from './useProjects';
@@ -27,16 +28,17 @@ export function BuildView() {
     cursor: 'pointer', boxShadow: `0 0 14px ${colors.cyanGlow}`,
   };
   const { data } = useDashboard();
+  const terminalRef = useRef<TerminalManagerHandle>(null);
 
   const agentName = data?.agent.name ?? 'Agent';
   const hasActive = (data?.in_flight.length ?? 0) > 0;
   const activeTask = hasActive ? data!.in_flight[0] : null;
   const mobiusState = hasActive ? 'thinking' : 'idle';
 
-  const handleLaunch = useCallback((_project: Project, _agent: string) => {
-    // TODO: spawn PTY tab with cwd=project.rootPath, label=slug·agent
-    // For now this is a placeholder — terminal spawning with project affinity
-    // requires TerminalManager API extension (next iteration)
+  const handleLaunch = useCallback((project: Project, agent: string) => {
+    if (!project.rootPath) return;
+    const label = `${project.slug} · ${agent}`;
+    terminalRef.current?.createProjectTab(project.rootPath, label, agent);
   }, []);
 
   const handleVisitSite = useCallback((url: string) => {
@@ -102,7 +104,7 @@ export function BuildView() {
         <Group orientation="horizontal">
           <Panel id="build-terminal" defaultSize={50} minSize={20}>
             <div style={{ height: '100%', borderRadius: radius.md, overflow: 'hidden', border: `1px solid ${colors.border}` }}>
-              <TerminalManager />
+              <TerminalManager ref={terminalRef} />
             </div>
           </Panel>
           <Separator className="group relative flex items-center justify-center w-1">

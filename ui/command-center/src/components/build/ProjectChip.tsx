@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { font } from '../../styles/tokens';
 import { useProjects, Project } from './useProjects';
 import { useTheme } from '../../styles/useTheme';
+import { useCommandCenter } from '../../lib/store';
 
 const PERSONAL_ID = '00000000-0000-0000-0000-000000000001';
 
@@ -16,6 +17,13 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
   const [open, setOpen] = useState(false);
   const [sortMode, setSortMode] = useState<'recent' | 'az'>('recent');
   const ref = useRef<HTMLDivElement>(null);
+  const pushOverlay = useCommandCenter(s => s.pushBrowserOverlay);
+  const popOverlay = useCommandCenter(s => s.popBrowserOverlay);
+
+  // Hide native browser webview while dropdown is open (z-index fix)
+  useEffect(() => {
+    if (open) { pushOverlay(); return () => { popOverlay(); }; }
+  }, [open, pushOverlay, popOverlay]);
 
   // Close dropdown on outside click
   useEffect(() => {

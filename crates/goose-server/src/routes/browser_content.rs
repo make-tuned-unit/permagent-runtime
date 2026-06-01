@@ -94,78 +94,9 @@ async fn read_content(State(state): State<Arc<AppState>>) -> Result<Json<PageCon
 
     match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
         Ok(Ok(content)) => {
-            // Persist successful reads to Spectral as a background task.
-            // Key: browser:read:<sha256(url)> — deduplicates by URL.
-            if content.status == "ok" && !content.content.is_empty() {
-                if let Some(brain) = state.brain.as_ref() {
-                    let brain = brain.clone();
-                    let title = content.title.clone();
-                    let url = content.url.clone();
-                    // Truncate content for memory — store a readable summary, not the full page
-                    #[allow(clippy::string_slice)]
-                    let mem_content = {
-                        let max = 2000;
-                        let text = &content.content;
-                        if text.len() > max {
-                            // max is always a char boundary since we only enter this
-                            // branch when len > max, and we immediately search backward
-                            // for '\n' which is a single-byte ASCII char.
-                            let cut = text[..max].rfind('\n').unwrap_or(max);
-                            format!("{}\n[truncated]", &text[..cut])
-                        } else {
-                            text.clone()
-                        }
-                    };
-                    let remember_content = format!("Page: {title}\nURL: {url}\n\n{mem_content}");
-                    tokio::spawn(async move {
-                        let url_for_key = url.clone();
-                        let result = tokio::task::spawn_blocking(move || {
-                            use std::hash::{Hash, Hasher};
-                            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                            url_for_key.hash(&mut hasher);
-                            let hash = format!("{:x}", hasher.finish());
-                            // hash is hex-encoded (ASCII), so slicing at 12 is always safe
-                            let short_hash = hash.get(..12).unwrap_or(&hash);
-                            let key = format!("browser:read:{}", short_hash);
-                            brain.remember_with(
-                                &key,
-                                &remember_content,
-                                spectral::RememberOpts {
-                                    source: Some("browser".into()),
-                                    visibility: spectral::Visibility::Private,
-                                    ..Default::default()
-                                },
-                            )
-                        })
-                        .await;
-                        match result {
-                            Ok(Ok(r)) => {
-                                tracing::info!(
-                                    target: "permagentd::brain",
-                                    memory_id = r.memory_id,
-                                    url,
-                                    "Browser page read persisted to Spectral"
-                                );
-                            }
-                            Ok(Err(e)) => {
-                                tracing::warn!(
-                                    target: "permagentd::brain",
-                                    error = %e,
-                                    url,
-                                    "Failed to persist browser page read"
-                                );
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    target: "permagentd::brain",
-                                    error = %e,
-                                    "Browser page persist panicked"
-                                );
-                            }
-                        }
-                    });
-                }
-            }
+            // Transient only: page content is returned to the agent for the
+            // current turn and is NOT persisted to Brain/Spectral. Reading a
+            // private email must not silently write its contents anywhere.
             Ok(Json(content))
         }
         Ok(Err(_)) => Err(StatusCode::INTERNAL_SERVER_ERROR),

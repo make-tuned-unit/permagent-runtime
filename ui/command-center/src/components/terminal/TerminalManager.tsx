@@ -1,13 +1,18 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
 import { FiPlus, FiX, FiTerminal } from 'react-icons/fi';
 import { Terminal } from './Terminal';
 import { useTheme } from '../../styles/useTheme';
+
+export interface TerminalManagerHandle {
+  createProjectTab: (cwd: string, label: string, initialCommand?: string) => void;
+}
 
 interface TerminalTab {
   id: string;
   label: string;
   sessionId: string | null;
   cwd?: string;
+  initialCommand?: string;
 }
 
 let tabCounter = 0;
@@ -37,7 +42,7 @@ function createTab(cwd?: string): TerminalTab {
 let persistedTabs: TerminalTab[] | null = null;
 let persistedActiveTabId: string | null = null;
 
-export function TerminalManager() {
+export const TerminalManager = forwardRef<TerminalManagerHandle>(function TerminalManager(_props, ref) {
   const { colors } = useTheme();
   const [tabs, setTabs] = useState<TerminalTab[]>(() => {
     if (persistedTabs) return persistedTabs;
@@ -145,6 +150,18 @@ export function TerminalManager() {
     );
   }, []);
 
+  const createProjectTab = useCallback((cwd: string, label: string, initialCommand?: string) => {
+    const tab: TerminalTab = {
+      ...createTab(cwd),
+      label,
+      initialCommand,
+    };
+    setTabs(prev => [...prev, tab]);
+    setActiveTabId(tab.id);
+  }, []);
+
+  useImperativeHandle(ref, () => ({ createProjectTab }), [createProjectTab]);
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey) {
@@ -213,6 +230,7 @@ export function TerminalManager() {
               onTitleChange={(title) => handleTitleChange(tab.id, title)}
               onCwdChange={(cwd) => handleCwdChange(tab.id, cwd)}
               cwd={tab.cwd}
+              initialCommand={tab.initialCommand}
               isVisible={tab.id === activeTabId}
             />
           </div>
@@ -220,4 +238,4 @@ export function TerminalManager() {
       </div>
     </div>
   );
-}
+});

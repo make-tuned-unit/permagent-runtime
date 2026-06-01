@@ -93,10 +93,11 @@ interface TerminalProps {
   onTitleChange?: (title: string) => void;
   onCwdChange?: (cwd: string) => void;
   cwd?: string;
+  initialCommand?: string;
   isVisible: boolean;
 }
 
-export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChange, cwd, isVisible }: TerminalProps) {
+export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChange, cwd, initialCommand, isVisible }: TerminalProps) {
   const { theme } = useTheme();
   const containerRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
@@ -108,6 +109,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
   const onTitleChangeRef = useRef(onTitleChange);
   const onCwdChangeRef = useRef(onCwdChange);
   const cwdRef = useRef(cwd);
+  const initialCommandRef = useRef(initialCommand);
   const isVisibleRef = useRef(isVisible);
 
   sessionIdRef.current = sessionId;
@@ -115,6 +117,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
   onTitleChangeRef.current = onTitleChange;
   onCwdChangeRef.current = onCwdChange;
   cwdRef.current = cwd;
+  initialCommandRef.current = initialCommand;
   isVisibleRef.current = isVisible;
 
   // ── Single setup effect — runs once on mount, cleans up on unmount ──
@@ -184,6 +187,18 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
             session_id: null,
             project_id: null,
           }).catch((err: unknown) => console.debug('[activity] terminal_session_started emission failed:', err));
+
+          // Send initial command (e.g. "claude" or "codex") after shell is ready
+          if (initialCommandRef.current) {
+            const cmd = initialCommandRef.current;
+            initialCommandRef.current = undefined; // fire once
+            setTimeout(() => {
+              api.invoke('write_to_pty', {
+                sessionId: result.session_id,
+                data: cmd + '\n',
+              }).catch(() => {});
+            }, 300);
+          }
         } catch (err) {
           term.writeln('\r\n\x1b[31mFailed to spawn terminal: ' + err + '\x1b[0m\r\n');
           return;
