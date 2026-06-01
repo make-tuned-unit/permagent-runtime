@@ -150,6 +150,7 @@ projects, onOpenProject, onStatusChange }: {
 
   const handleDragOver = (e: React.DragEvent, status: string) => {
     e.preventDefault();
+    e.stopPropagation();
     e.dataTransfer.dropEffect = 'move';
     setDragOverCol(status);
   };
@@ -158,6 +159,7 @@ projects, onOpenProject, onStatusChange }: {
 
   const handleDrop = (e: React.DragEvent, status: string) => {
     e.preventDefault();
+    e.stopPropagation();
     setDragOverCol(null);
     const projectId = e.dataTransfer.getData('text/plain');
     if (projectId && projectId !== PERSONAL_ID) {
@@ -299,6 +301,22 @@ project, onBack }: {
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Pointer-based card drag (bypasses HTML5 DnD which Tauri's native layer consumes)
+  const [draggingCard, setDraggingCard] = useState<string | null>(null);
+  const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null);
+  const [ghostLabel, setGhostLabel] = useState('');
+  const colRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+
+  const getColumnAtPoint = useCallback((x: number, y: number): string | null => {
+    for (const [colId, el] of colRefs.current.entries()) {
+      const rect = el.getBoundingClientRect();
+      if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+        return colId;
+      }
+    }
+    return null;
+  }, []);
+
   const loadBoard = useCallback(async () => {
     try {
       const [cols, cds] = await Promise.all([
@@ -316,6 +334,47 @@ project, onBack }: {
 
   useEffect(() => { loadBoard(); }, [loadBoard]);
   useEffect(() => { if (addingCardCol && inputRef.current) inputRef.current.focus(); }, [addingCardCol]);
+
+  // Pointer drag: track move + handle drop on pointerup
+  useEffect(() => {
+    if (!draggingCard) return;
+    const onMove = (e: PointerEvent) => {
+      setGhostPos({ x: e.clientX, y: e.clientY });
+      setDragOverCol(getColumnAtPoint(e.clientX, e.clientY));
+    };
+    const onUp = async (e: PointerEvent) => {
+      const targetCol = getColumnAtPoint(e.clientX, e.clientY);
+      const cardId = draggingCard;
+      setDraggingCard(null);
+      setGhostPos(null);
+      setDragOverCol(null);
+      if (targetCol && cardId) {
+        const card = cards.find(c => c.id === cardId);
+        if (card && card.columnId !== targetCol) {
+          try {
+            await apiFetch(`/api/projects/${project.id}/cards/${cardId}`, {
+              method: 'PATCH',
+              body: JSON.stringify({ columnId: targetCol }),
+            });
+            loadBoard();
+          } catch { /* silently fail */ }
+        }
+      }
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+  }, [draggingCard, cards, project.id, loadBoard, getColumnAtPoint]);
+
+  const handleCardPointerDown = (e: React.PointerEvent, cardId: string, title: string) => {
+    e.preventDefault();
+    setDraggingCard(cardId);
+    setGhostPos({ x: e.clientX, y: e.clientY });
+    setGhostLabel(title);
+  };
 
   const handleAddCard = async (columnId: string) => {
     if (!newCardTitle.trim()) return;
@@ -341,35 +400,7 @@ project, onBack }: {
     }
   };
 
-  // Drag and drop for cards between columns
-  const handleCardDragStart = (e: React.DragEvent, cardId: string) => {
-    e.dataTransfer.setData('text/plain', cardId);
-    e.dataTransfer.effectAllowed = 'move';
-  };
-
-  const handleColDragOver = (e: React.DragEvent, colId: string) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    setDragOverCol(colId);
-  };
-
-  const handleColDragLeave = () => setDragOverCol(null);
-
-  const handleColDrop = async (e: React.DragEvent, colId: string) => {
-    e.preventDefault();
-    setDragOverCol(null);
-    const cardId = e.dataTransfer.getData('text/plain');
-    if (!cardId) return;
-    try {
-      await apiFetch(`/api/projects/${project.id}/cards/${cardId}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ columnId: colId }),
-      });
-      loadBoard();
-    } catch {
-      // silently fail
-    }
-  };
+  // (Card drag handled by pointer events above — no HTML5 DnD)
 
   if (loading) {
     return (
@@ -416,9 +447,7 @@ project, onBack }: {
           return (
             <div
               key={col.id}
-              onDragOver={(e) => handleColDragOver(e, col.id)}
-              onDragLeave={handleColDragLeave}
-              onDrop={(e) => handleColDrop(e, col.id)}
+              ref={(el) => { if (el) colRefs.current.set(col.id, el); else colRefs.current.delete(col.id); }}
               style={{
                 flex: 1, minWidth: 200, display: 'flex', flexDirection: 'column',
                 background: isOver ? 'rgba(0,213,255,0.04)' : 'rgba(255,255,255,0.02)',
@@ -443,7 +472,8 @@ project, onBack }: {
                   <CardItem
                     key={card.id}
                     card={card}
-                    onDragStart={(e) => handleCardDragStart(e, card.id)}
+                    onPointerDown={(e) => handleCardPointerDown(e, card.id, card.title)}
+                    isDragging={draggingCard === card.id}
                     onDelete={() => handleDeleteCard(card.id)}
                   />
                 ))}
@@ -511,14 +541,30 @@ project, onBack }: {
           );
         })}
       </div>
+
+      {/* Drag ghost — follows pointer during card drag */}
+      {draggingCard && ghostPos && (
+        <div style={{
+          position: 'fixed', left: ghostPos.x + 8, top: ghostPos.y - 12,
+          padding: '6px 10px', borderRadius: 6,
+          background: colors.surface, border: `1px solid ${colors.cyan}`,
+          boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
+          fontSize: 12, fontWeight: 500, color: colors.text,
+          pointerEvents: 'none', zIndex: 9999, maxWidth: 200,
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>
+          {ghostLabel}
+        </div>
+      )}
     </div>
   );
 }
 
 function CardItem({
-card, onDragStart, onDelete }: {
+card, onPointerDown, isDragging, onDelete }: {
   card: Card;
-  onDragStart: (e: React.DragEvent) => void;
+  onPointerDown: (e: React.PointerEvent) => void;
+  isDragging: boolean;
   onDelete: () => void;
 }) {
   const { colors } = useTheme();
@@ -526,14 +572,15 @@ card, onDragStart, onDelete }: {
 
   return (
     <div
-      draggable
-      onDragStart={onDragStart}
+      onPointerDown={onPointerDown}
       onContextMenu={e => { e.preventDefault(); setShowMenu(!showMenu); }}
       style={{
         padding: '8px 10px', borderRadius: 7,
         background: colors.surface,
         border: `1px solid ${colors.border}`,
         cursor: 'grab', position: 'relative',
+        opacity: isDragging ? 0.4 : 1,
+        transition: 'opacity 150ms',
       }}
       onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = 'rgba(255,255,255,0.12)'; }}
       onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; setShowMenu(false); }}
