@@ -2,7 +2,6 @@ import { useState, useRef, useEffect } from 'react';
 import { font } from '../../styles/tokens';
 import { useProjects, Project } from './useProjects';
 import { useTheme } from '../../styles/useTheme';
-import { useCommandCenter } from '../../lib/store';
 
 const PERSONAL_ID = '00000000-0000-0000-0000-000000000001';
 
@@ -17,13 +16,6 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
   const [open, setOpen] = useState(false);
   const [sortMode, setSortMode] = useState<'recent' | 'az'>('recent');
   const ref = useRef<HTMLDivElement>(null);
-  const pushOverlay = useCommandCenter(s => s.pushBrowserOverlay);
-  const popOverlay = useCommandCenter(s => s.popBrowserOverlay);
-
-  // Hide native browser webview while dropdown is open (z-index fix)
-  useEffect(() => {
-    if (open) { pushOverlay(); return () => { popOverlay(); }; }
-  }, [open, pushOverlay, popOverlay]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -83,7 +75,7 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
       {/* Dropdown */}
       {open && (
         <div style={{
-          position: 'absolute', top: '100%', left: 0, marginTop: 4,
+          position: 'absolute', top: '100%', right: 0, marginTop: 4,
           minWidth: 280, maxHeight: 360, overflowY: 'auto',
           background: colors.surface, border: `1px solid ${colors.border}`,
           borderRadius: 8, boxShadow: colors.cardShadow,
