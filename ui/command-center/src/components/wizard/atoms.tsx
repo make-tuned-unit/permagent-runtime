@@ -1,10 +1,13 @@
 import { useState, useRef, useEffect, useMemo, type CSSProperties, type ReactNode } from 'react';
-import { color, font, ease, radius } from '../../styles/tokens';
+import { font, ease, radius } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
 
 // ── PrimaryButton ──────────────────────────────────────────────────────
-export function PrimaryButton({ children, disabled, onClick, full, style = {} }: {
+export function PrimaryButton({
+children, disabled, onClick, full, style = {} }: {
   children: ReactNode; disabled?: boolean; onClick?: () => void; full?: boolean; style?: CSSProperties;
 }) {
+  const { colors } = useTheme();
   const [hover, setHover] = useState(false);
   return (
     <button onClick={onClick} disabled={disabled}
@@ -12,7 +15,7 @@ export function PrimaryButton({ children, disabled, onClick, full, style = {} }:
       style={{
         fontFamily: font.body, fontSize: 14, fontWeight: 600, letterSpacing: '-0.01em',
         color: disabled ? 'rgba(255,255,255,0.5)' : '#FFFFFF',
-        background: disabled ? 'rgba(141,68,174,0.35)' : hover ? color.purpleBright : color.purple,
+        background: disabled ? 'rgba(141,68,174,0.35)' : hover ? colors.purpleBright : colors.purple,
         border: 'none', borderRadius: radius.md, padding: '12px 20px', height: 44,
         minWidth: 140, width: full ? '100%' : 'auto',
         cursor: disabled ? 'not-allowed' : 'pointer',
@@ -26,16 +29,18 @@ export function PrimaryButton({ children, disabled, onClick, full, style = {} }:
 }
 
 // ── GhostLink ──────────────────────────────────────────────────────────
-export function GhostLink({ children, onClick, style = {} }: {
+export function GhostLink({
+children, onClick, style = {} }: {
   children: ReactNode; onClick?: () => void; style?: CSSProperties;
 }) {
+  const { colors } = useTheme();
   const [hover, setHover] = useState(false);
   return (
     <button onClick={onClick}
       onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
       style={{
         fontFamily: font.body, fontSize: 13, fontWeight: 500,
-        color: hover ? color.text : color.textMuted,
+        color: hover ? colors.text : colors.textMuted,
         background: 'transparent', border: 'none', padding: '6px 2px',
         cursor: 'pointer', transition: `color 160ms ${ease.out}`, ...style,
       }}
@@ -44,9 +49,11 @@ export function GhostLink({ children, onClick, style = {} }: {
 }
 
 // ── Input ──────────────────────────────────────────────────────────────
-export function Input({ value, onChange, placeholder, type = 'text', style = {} }: {
+export function Input({
+value, onChange, placeholder, type = 'text', style = {} }: {
   value: string; onChange: (v: string) => void; placeholder?: string; type?: string; style?: CSSProperties;
 }) {
+  const { colors } = useTheme();
   const [focus, setFocus] = useState(false);
   return (
     <input type={type} value={value} onChange={e => onChange(e.target.value)}
@@ -54,9 +61,9 @@ export function Input({ value, onChange, placeholder, type = 'text', style = {} 
       onFocus={() => setFocus(true)} onBlur={() => setFocus(false)}
       style={{
         width: '100%', fontFamily: font.body, fontSize: 14, fontWeight: 400,
-        color: color.text,
+        color: colors.text,
         background: focus ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.02)',
-        border: focus ? `1px solid ${color.cyan}` : '1px solid rgba(255,255,255,0.08)',
+        border: focus ? `1px solid ${colors.cyan}` : '1px solid rgba(255,255,255,0.08)',
         borderRadius: radius.md, padding: '13px 14px', outline: 'none',
         boxShadow: focus ? '0 0 0 3px rgba(0,213,255,0.12)' : 'none',
         transition: `all 160ms ${ease.out}`, ...style,
@@ -68,9 +75,11 @@ export function Input({ value, onChange, placeholder, type = 'text', style = {} 
 // ── Select ─────────────────────────────────────────────────────────────
 export interface SelectOption { value: string; label: string; dot?: string; note?: string }
 
-export function Select({ value, onChange, options, style = {} }: {
+export function Select({
+value, onChange, options, style = {} }: {
   value: string; onChange: (v: string) => void; options: SelectOption[]; style?: CSSProperties;
 }) {
+  const { colors } = useTheme();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -83,9 +92,9 @@ export function Select({ value, onChange, options, style = {} }: {
     <div ref={ref} style={{ position: 'relative', ...style }}>
       <button onClick={() => setOpen(x => !x)} style={{
         width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        fontFamily: font.body, fontSize: 14, fontWeight: 500, color: color.text,
+        fontFamily: font.body, fontSize: 14, fontWeight: 500, color: colors.text,
         background: open ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.02)',
-        border: open ? `1px solid ${color.cyan}` : '1px solid rgba(255,255,255,0.08)',
+        border: open ? `1px solid ${colors.cyan}` : '1px solid rgba(255,255,255,0.08)',
         borderRadius: radius.md, padding: '13px 14px', cursor: 'pointer',
         boxShadow: open ? '0 0 0 3px rgba(0,213,255,0.12)' : 'none',
         transition: `all 160ms ${ease.out}`,
@@ -108,7 +117,7 @@ export function Select({ value, onChange, options, style = {} }: {
             <div key={o.value} onClick={() => { onChange(o.value); setOpen(false); }}
               style={{
                 display: 'flex', alignItems: 'center', gap: 10, padding: '10px 10px', borderRadius: 6,
-                fontFamily: font.body, fontSize: 13, color: color.text,
+                fontFamily: font.body, fontSize: 13, color: colors.text,
                 background: o.value === value ? 'rgba(0,213,255,0.10)' : 'transparent', cursor: 'pointer',
               }}
               onMouseEnter={e => { if (o.value !== value) (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.04)'; }}
@@ -116,7 +125,7 @@ export function Select({ value, onChange, options, style = {} }: {
             >
               {o.dot && <span style={{ width: 8, height: 8, borderRadius: '50%', background: o.dot }} />}
               <span style={{ flex: 1 }}>{o.label}</span>
-              {o.note && <span style={{ fontSize: 11, color: color.textMuted }}>{o.note}</span>}
+              {o.note && <span style={{ fontSize: 11, color: colors.textMuted }}>{o.note}</span>}
             </div>
           ))}
         </div>
@@ -129,12 +138,13 @@ export function Select({ value, onChange, options, style = {} }: {
 export function ProgressDots({ count = 4, current = 0, style = {} }: {
   count?: number; current?: number; style?: CSSProperties;
 }) {
+  const { colors } = useTheme();
   return (
     <div style={{ display: 'flex', gap: 8, alignItems: 'center', ...style }}>
       {Array.from({ length: count }).map((_, i) => (
         <div key={i} style={{
           width: i === current ? 18 : 6, height: 6, borderRadius: 999,
-          background: i === current ? color.cyan : 'rgba(255,255,255,0.16)',
+          background: i === current ? colors.cyan : 'rgba(255,255,255,0.16)',
           boxShadow: i === current ? '0 0 12px rgba(0,213,255,0.6)' : 'none',
           transition: `all 320ms ${ease.out}`,
         }} />
@@ -144,14 +154,16 @@ export function ProgressDots({ count = 4, current = 0, style = {} }: {
 }
 
 // ── BackChevron ────────────────────────────────────────────────────────
-export function BackChevron({ onClick }: { onClick: () => void }) {
+export function BackChevron({
+onClick }: { onClick: () => void }) {
+  const { colors } = useTheme();
   const [hover, setHover] = useState(false);
   return (
     <button onClick={onClick}
       onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
       style={{
         background: 'transparent', border: 'none', padding: '6px 10px 6px 6px',
-        color: hover ? color.text : color.textMuted,
+        color: hover ? colors.text : colors.textMuted,
         fontFamily: font.body, fontSize: 13, fontWeight: 500,
         cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
         borderRadius: 8, transition: `color 160ms ${ease.out}`,

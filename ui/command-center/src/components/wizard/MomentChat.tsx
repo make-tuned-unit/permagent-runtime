@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
-import { color, font } from '../../styles/tokens';
+import { font } from '../../styles/tokens';
 import { Mobius } from '../mobius/Mobius';
 import { Particles } from './atoms';
+import { useTheme } from '../../styles/useTheme';
 
 interface Persona {
   name: string;
@@ -16,6 +17,7 @@ interface Props {
 }
 
 export function MomentChat({ persona, onComplete }: Props) {
+  const { colors } = useTheme();
   const [streamed, setStreamed] = useState('');
   const [done, setDone] = useState(false);
   const streamRef = useRef<ReturnType<typeof setInterval>>();
@@ -49,15 +51,15 @@ export function MomentChat({ persona, onComplete }: Props) {
       }}>
         <Mobius size={29} state={isSpeaking ? 'speaking' : 'idle'} logoMode />
         <div>
-          <div style={{ fontFamily: font.display, fontSize: 16, fontWeight: 700, color: color.text }}>
+          <div style={{ fontFamily: font.display, fontSize: 16, fontWeight: 700, color: colors.text }}>
             {persona.name}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <div style={{
               width: 6, height: 6, borderRadius: '50%',
-              background: isSpeaking ? color.cyan : '#22c55e',
+              background: isSpeaking ? colors.cyan : '#22c55e',
             }} />
-            <span style={{ fontFamily: font.body, fontSize: 11, color: color.textMuted }}>
+            <span style={{ fontFamily: font.body, fontSize: 11, color: colors.textMuted }}>
               {isSpeaking ? 'Speaking...' : 'Online'}
             </span>
           </div>
@@ -67,11 +69,11 @@ export function MomentChat({ persona, onComplete }: Props) {
       {/* Conversation */}
       <div style={{ flex: 1, padding: '28px 24px', overflowY: 'auto' }}>
         <div style={{
-          fontFamily: font.body, fontSize: 14, color: color.text, lineHeight: 1.7,
+          fontFamily: font.body, fontSize: 14, color: colors.text, lineHeight: 1.7,
           maxWidth: 560,
         }}>
           {streamed}
-          {!done && <span style={{ animation: 'pa-caret 0.9s steps(1) infinite', borderLeft: `2px solid ${color.cyan}`, marginLeft: 1 }}>&nbsp;</span>}
+          {!done && <span style={{ animation: 'pa-caret 0.9s steps(1) infinite', borderLeft: `2px solid ${colors.cyan}`, marginLeft: 1 }}>&nbsp;</span>}
         </div>
       </div>
 
@@ -82,7 +84,7 @@ export function MomentChat({ persona, onComplete }: Props) {
       }}>
         <button onClick={onComplete} style={{
           fontFamily: font.body, fontSize: 14, fontWeight: 600,
-          color: color.text, background: color.purple,
+          color: colors.text, background: colors.purple,
           border: 'none', borderRadius: 10, padding: '12px 32px',
           cursor: 'pointer', boxShadow: '0 4px 14px rgba(141,68,174,0.32)',
         }}>

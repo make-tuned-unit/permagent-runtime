@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { ProbedMemoryRef, RecalledMemoryRef } from '../../lib/store';
-import { color, font, ease } from '../../styles/tokens';
+import { font, ease } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
 
 interface Props {
   probed: ProbedMemoryRef[];
@@ -8,6 +9,7 @@ interface Props {
 }
 
 export function CitationMarker({ probed, recalled }: Props) {
+  const { colors } = useTheme();
   const [expanded, setExpanded] = useState(false);
   const total = probed.length + recalled.length;
   if (total === 0) return null;
@@ -21,7 +23,7 @@ export function CitationMarker({ probed, recalled }: Props) {
           padding: '2px 8px', borderRadius: 10,
           background: expanded ? 'rgba(0,213,255,0.1)' : 'rgba(255,255,255,0.04)',
           border: `1px solid ${expanded ? 'rgba(0,213,255,0.25)' : 'rgba(255,255,255,0.06)'}`,
-          color: expanded ? color.cyan : color.textDim,
+          color: expanded ? colors.cyan : colors.textDim,
           fontSize: 10, fontFamily: font.body, cursor: 'pointer',
           transition: `all 150ms ${ease.out}`,
         }}
@@ -38,45 +40,45 @@ export function CitationMarker({ probed, recalled }: Props) {
           position: 'absolute', bottom: '100%', right: 0,
           marginBottom: 6, width: 320,
           background: 'rgba(8,14,26,0.98)', backdropFilter: 'blur(16px)',
-          border: `1px solid ${color.borderHi}`,
+          border: `1px solid ${colors.borderHi}`,
           borderRadius: 8, padding: '8px 0',
           boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
           zIndex: 100,
           maxHeight: 280, overflow: 'auto',
         }}>
           {probed.length > 0 && (
-            <div style={{ padding: '4px 12px 2px', fontSize: 9, fontWeight: 600, color: color.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+            <div style={{ padding: '4px 12px 2px', fontSize: 9, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
               Probed memories
             </div>
           )}
           {probed.map((m, i) => (
             <div key={m.id || i} style={{ padding: '4px 12px', borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-                <span style={{ fontSize: 10, fontFamily: font.mono, color: color.cyan }}>
+                <span style={{ fontSize: 10, fontFamily: font.mono, color: colors.cyan }}>
                   {m.relevance.toFixed(2)}
                 </span>
                 {m.wing && (
-                  <span style={{ padding: '0 4px', borderRadius: 3, fontSize: 9, background: 'rgba(0,213,255,0.08)', color: color.cyan }}>
+                  <span style={{ padding: '0 4px', borderRadius: 3, fontSize: 9, background: 'rgba(0,213,255,0.08)', color: colors.cyan }}>
                     {m.wing}
                   </span>
                 )}
               </div>
-              <div style={{ fontSize: 11, color: color.textMuted, lineHeight: 1.3 }}>
+              <div style={{ fontSize: 11, color: colors.textMuted, lineHeight: 1.3 }}>
                 {m.content_summary}
               </div>
             </div>
           ))}
           {recalled.length > 0 && (
-            <div style={{ padding: '4px 12px 2px', fontSize: 9, fontWeight: 600, color: color.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+            <div style={{ padding: '4px 12px 2px', fontSize: 9, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
               Recalled memories
             </div>
           )}
           {recalled.map((m, i) => (
             <div key={m.id || i} style={{ padding: '4px 12px', borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
-              <div style={{ fontSize: 10, fontFamily: font.mono, color: color.purple, marginBottom: 2 }}>
+              <div style={{ fontSize: 10, fontFamily: font.mono, color: colors.purple, marginBottom: 2 }}>
                 score: {m.signal_score.toFixed(2)}
               </div>
-              <div style={{ fontSize: 11, color: color.textMuted, lineHeight: 1.3 }}>
+              <div style={{ fontSize: 11, color: colors.textMuted, lineHeight: 1.3 }}>
                 {m.content_summary}
               </div>
             </div>

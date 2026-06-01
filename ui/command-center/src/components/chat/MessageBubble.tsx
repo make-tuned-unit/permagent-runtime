@@ -13,7 +13,7 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
         isUser
           ? 'bg-[rgba(141,68,174,0.16)] border border-[rgba(141,68,174,0.30)]'
           : isSystem
-          ? 'bg-slate-800/30'
+          ? 'bg-dark-surface'
           : 'bg-dark-surface'
       }`}>
         <div className="flex items-center gap-2 mb-1">
@@ -26,7 +26,7 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
         </div>
 
         {isSystem ? (
-          <div className="font-mono text-[11px] leading-relaxed text-slate-500 whitespace-pre-wrap">
+          <div className="font-mono text-[11px] leading-relaxed text-dark-muted whitespace-pre-wrap">
             {message.content}
           </div>
         ) : (

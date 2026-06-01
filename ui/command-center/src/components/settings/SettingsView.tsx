@@ -1,12 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useCommandCenter } from '../../lib/store';
 import { api } from '../../lib/api';
-import {
-  color, font, ease,
-  setTheme as setThemeFn, setMobiusGlow, setIdleAnim, setShowHeroMobius,
-  setDensity as setDensityFn, setReduceMotion as setReduceMotionFn,
-  type ThemeId, type IdleAnim, type UIDensity,
-} from '../../styles/tokens';
+import { font, ease, setTheme as setThemeFn, setMobiusGlow, setIdleAnim, setShowHeroMobius, setDensity as setDensityFn, setReduceMotion as setReduceMotionFn, type ThemeId, type IdleAnim, type UIDensity } from '../../styles/tokens';
 import { useTheme as useThemeHook } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import { ProvidersSection } from './ProvidersSection';
@@ -24,21 +19,22 @@ function PreviewBadge() {
   );
 }
 
-// ── Shared button styles ─────────────────────────────────────────────
+// ── Shared button styles (theme-aware via colors param) ─────────────
+type C = ReturnType<typeof useThemeHook>['colors'];
 
-const ghost: React.CSSProperties = {
+const ghost = (colors: C): React.CSSProperties => ({
   height: 32, padding: '0 14px', borderRadius: 8,
-  background: 'transparent', border: `1px solid ${color.border}`,
-  color: color.text, cursor: 'pointer',
+  background: 'transparent', border: `1px solid ${colors.border}`,
+  color: colors.text, cursor: 'pointer',
   fontFamily: font.body, fontSize: 12, fontWeight: 500,
   display: 'inline-flex', alignItems: 'center', gap: 6,
-};
-const selectStyle: React.CSSProperties = {
+});
+const selectStyle = (colors: C): React.CSSProperties => ({
   height: 34, padding: '0 12px', borderRadius: 8,
-  background: 'rgba(7,11,20,0.5)', border: `1px solid ${color.border}`,
-  color: color.text, fontFamily: font.body, fontSize: 13,
+  background: 'rgba(7,11,20,0.5)', border: `1px solid ${colors.border}`,
+  color: colors.text, fontFamily: font.body, fontSize: 13,
   minWidth: 240, cursor: 'pointer',
-};
+});
 
 // ── Nav rail categories ──────────────────────────────────────────────
 
@@ -67,6 +63,7 @@ const CATEGORIES = [
 // ── Panels ───────────────────────────────────────────────────────────
 
 function PersonaPanel() {
+  const { colors } = useThemeHook();
   const { data, loading, saving, error, save } = usePersona();
   const [name, setName] = useState('');
   const [greeting, setGreeting] = useState('');
@@ -89,7 +86,7 @@ function PersonaPanel() {
     setDirty(false);
   };
 
-  if (loading) return <div style={{ color: color.textDim, fontSize: 13 }}>Loading persona...</div>;
+  if (loading) return <div style={{ color: colors.textDim, fontSize: 13 }}>Loading persona...</div>;
   return (
     <div>
       <H1 sub="Shape how your agent thinks, talks, and decides. Changes take effect at the start of the next conversation.">Persona</H1>
@@ -111,7 +108,7 @@ function PersonaPanel() {
         </Row>
       </Section>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12 }}>
-        {error && <span style={{ fontSize: 12, color: color.danger }}>{error}</span>}
+        {error && <span style={{ fontSize: 12, color: colors.danger }}>{error}</span>}
         <SaveButton onClick={handleSave} disabled={!dirty || saving} saving={saving} />
       </div>
     </div>
@@ -137,13 +134,14 @@ function ProfilePanel() {
 }
 
 function PreferencesPanel() {
+  const { colors } = useThemeHook();
   const [prefs, setPrefs] = useState([false, true, true, true]);
   return (
     <div>
       <H1 sub="Defaults that follow you across sessions. Changes saved locally."><>Preferences<PreviewBadge /></></H1>
       <Section title="Defaults">
         <Row label="Open on launch" hint="Where Permagent lands when you open the app.">
-          <select style={selectStyle}><option>Mission control</option><option>Last open task</option><option>Build</option><option>Brain</option></select>
+          <select style={selectStyle(colors)}><option>Mission control</option><option>Last open task</option><option>Build</option><option>Brain</option></select>
         </Row>
         <Row label="When you ask, agent should…">
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -157,14 +155,15 @@ function PreferencesPanel() {
         </Row>
       </Section>
       <Section title="Notifications">
-        <Row label="When agent finishes a task"><select style={selectStyle}><option>Desktop notification</option><option>In-app only</option><option>Silent</option></select></Row>
-        <Row label="When agent needs your input"><select style={selectStyle}><option>Desktop + sound</option><option>Desktop only</option><option>Silent</option></select></Row>
+        <Row label="When agent finishes a task"><select style={selectStyle(colors)}><option>Desktop notification</option><option>In-app only</option><option>Silent</option></select></Row>
+        <Row label="When agent needs your input"><select style={selectStyle(colors)}><option>Desktop + sound</option><option>Desktop only</option><option>Silent</option></select></Row>
       </Section>
     </div>
   );
 }
 
 function MemoryPanel() {
+  const { colors } = useThemeHook();
   const [maxMem, setMaxMem] = useState(1200);
   const [forget, setForget] = useState(45);
   const [rememberFlags, setRememberFlags] = useState([true, true, true, true, false]);
@@ -178,7 +177,7 @@ function MemoryPanel() {
       </Section>
       <Section title="What to remember">
         {rememberItems.map((l, i) => (
-          <div key={l} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '10px 0', borderTop: `1px solid ${color.border}` }}>
+          <div key={l} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '10px 0', borderTop: `1px solid ${colors.border}` }}>
             <Toggle on={rememberFlags[i]} onChange={v => setRememberFlags(p => { const n = [...p]; n[i] = v; return n; })} />
             <span style={{ fontSize: 13, flex: 1 }}>{l}</span>
           </div>
@@ -186,9 +185,9 @@ function MemoryPanel() {
       </Section>
       <Section title="Manage">
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button style={ghost}>Open Brain view</button>
-          <button style={ghost}>Export memory</button>
-          <button style={{ ...ghost, color: color.danger, borderColor: 'rgba(255,180,162,0.30)' }}>Forget everything</button>
+          <button style={ghost(colors)}>Open Brain view</button>
+          <button style={ghost(colors)}>Export memory</button>
+          <button style={{ ...ghost(colors), color: colors.danger, borderColor: 'rgba(255,180,162,0.30)' }}>Forget everything</button>
         </div>
       </Section>
     </div>
@@ -196,6 +195,7 @@ function MemoryPanel() {
 }
 
 function AutonomyPanel() {
+  const { colors } = useThemeHook();
   const [trust, setTrust] = useState(1);
   const [confirms, setConfirms] = useState([true, true, true, true, false]);
   const [perSession, setPerSession] = useState(5);
@@ -217,11 +217,11 @@ function AutonomyPanel() {
               <button key={opt.l} onClick={() => setTrust(i)} style={{
                 padding: 12, borderRadius: 10, cursor: 'pointer',
                 background: trust === i ? 'rgba(0,213,255,0.10)' : 'rgba(20,28,48,0.4)',
-                border: trust === i ? `1px solid ${color.borderHi}` : `1px solid ${color.border}`,
-                color: color.text, textAlign: 'left', flex: 1, fontFamily: font.body,
+                border: trust === i ? `1px solid ${colors.borderHi}` : `1px solid ${colors.border}`,
+                color: colors.text, textAlign: 'left', flex: 1, fontFamily: font.body,
               }}>
-                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4, color: trust === i ? color.cyan : color.text }}>{opt.l}</div>
-                <div style={{ fontSize: 11, color: color.textMuted }}>{opt.d}</div>
+                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4, color: trust === i ? colors.cyan : colors.text }}>{opt.l}</div>
+                <div style={{ fontSize: 11, color: colors.textMuted }}>{opt.d}</div>
               </button>
             ))}
           </div>
@@ -229,7 +229,7 @@ function AutonomyPanel() {
       </Section>
       <Section title="Always confirm before…">
         {confirmItems.map((l, i) => (
-          <div key={l} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '10px 0', borderTop: `1px solid ${color.border}` }}>
+          <div key={l} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '10px 0', borderTop: `1px solid ${colors.border}` }}>
             <Toggle on={confirms[i]} onChange={v => setConfirms(p => { const n = [...p]; n[i] = v; return n; })} />
             <span style={{ fontSize: 13, flex: 1 }}>{l}</span>
           </div>
@@ -244,6 +244,7 @@ function AutonomyPanel() {
 }
 
 function ToolsPanel() {
+  const { colors } = useThemeHook();
   const [extensions, setExtensions] = useState<Array<{ enabled: boolean; type: string; name: string; description: string; display_name: string; bundled: boolean; available_tools: string[] }>>([]);
   const [loading, setLoading] = useState(true);
 
@@ -258,22 +259,22 @@ function ToolsPanel() {
       <H1 sub="Tools your agent can use. These follow the Model Context Protocol — connect a server and the agent can call into it.">Tools &amp; MCPs</H1>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
         <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 12, color: color.textMuted }}>{enabledCount} of {extensions.length} enabled</span>
+        <span style={{ fontSize: 12, color: colors.textMuted }}>{enabledCount} of {extensions.length} enabled</span>
       </div>
       {loading ? (
-        <div style={{ color: color.textDim, fontSize: 13 }}>Loading extensions...</div>
+        <div style={{ color: colors.textDim, fontSize: 13 }}>Loading extensions...</div>
       ) : extensions.length === 0 ? (
-        <Section title="No extensions"><div style={{ color: color.textMuted, fontSize: 13 }}>No MCP tools or extensions configured.</div></Section>
+        <Section title="No extensions"><div style={{ color: colors.textMuted, fontSize: 13 }}>No MCP tools or extensions configured.</div></Section>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
           {extensions.map(ext => (
-            <div key={ext.name} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: 14, borderRadius: 10, background: 'rgba(20,28,48,0.4)', border: `1px solid ${color.border}` }}>
-              <div style={{ width: 32, height: 32, borderRadius: 8, background: ext.enabled ? 'rgba(0,213,255,0.08)' : 'rgba(255,255,255,0.04)', border: `1px solid ${ext.enabled ? color.borderHi : color.border}`, display: 'grid', placeItems: 'center', fontFamily: font.display, fontSize: 13, fontWeight: 700, color: ext.enabled ? color.cyan : color.textMuted }}>{ext.display_name[0]?.toUpperCase()}</div>
+            <div key={ext.name} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: 14, borderRadius: 10, background: 'rgba(20,28,48,0.4)', border: `1px solid ${colors.border}` }}>
+              <div style={{ width: 32, height: 32, borderRadius: 8, background: ext.enabled ? 'rgba(0,213,255,0.08)' : 'rgba(255,255,255,0.04)', border: `1px solid ${ext.enabled ? colors.borderHi : colors.border}`, display: 'grid', placeItems: 'center', fontFamily: font.display, fontSize: 13, fontWeight: 700, color: ext.enabled ? colors.cyan : colors.textMuted }}>{ext.display_name[0]?.toUpperCase()}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13, fontWeight: 600 }}>{ext.display_name}</div>
-                <div style={{ fontSize: 11, color: color.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ext.type}{ext.bundled ? ' · bundled' : ''} · {ext.available_tools.length} tools</div>
+                <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ext.type}{ext.bundled ? ' · bundled' : ''} · {ext.available_tools.length} tools</div>
               </div>
-              <div style={{ width: 8, height: 8, borderRadius: '50%', background: ext.enabled ? '#5BD17F' : color.textDim, flexShrink: 0 }} />
+              <div style={{ width: 8, height: 8, borderRadius: '50%', background: ext.enabled ? '#5BD17F' : colors.textDim, flexShrink: 0 }} />
             </div>
           ))}
         </div>
@@ -310,10 +311,11 @@ function nextRunText(sched: LibSchedule): string {
 }
 
 function ModelStateBadge({ state }: { state: 'running' | 'installed' | 'missing' }) {
+  const { colors } = useThemeHook();
   const styles: Record<string, { bg: string; text: string; label: string }> = {
-    running: { bg: 'rgba(0,213,255,0.12)', text: color.cyan, label: 'Loaded' },
-    installed: { bg: 'rgba(255,255,255,0.06)', text: color.textMuted, label: 'Installed' },
-    missing: { bg: 'rgba(255,180,162,0.1)', text: color.danger, label: 'Not installed' },
+    running: { bg: 'rgba(0,213,255,0.12)', text: colors.cyan, label: 'Loaded' },
+    installed: { bg: 'rgba(255,255,255,0.06)', text: colors.textMuted, label: 'Installed' },
+    missing: { bg: 'rgba(255,180,162,0.1)', text: colors.danger, label: 'Not installed' },
   };
   const s = styles[state];
   return (
@@ -324,6 +326,7 @@ function ModelStateBadge({ state }: { state: 'running' | 'installed' | 'missing'
 }
 
 function ModelsPanel() {
+  const { colors } = useThemeHook();
   const [ollama, setOllama] = useState<OllamaStatus | null>(null);
   const [schedule, setSchedule] = useState<LibSchedule | null>(null);
   const [saving, setSaving] = useState(false);
@@ -372,9 +375,9 @@ function ModelsPanel() {
         <ProvidersSection />
       </Section>
       <Section title="Routing">
-        <Row label="Primary" hint="Used for thinking, planning, and replies."><select style={selectStyle}><option>Claude Sonnet 4.5</option><option>Claude Opus 4.5</option><option>GPT-5</option><option>Gemini 2.5 Pro</option></select></Row>
-        <Row label="Quick" hint="Used for short tools, classification, and summaries."><select style={selectStyle}><option>Claude Haiku 4.5</option><option>GPT-5 mini</option><option>Llama 4 70B</option></select></Row>
-        <Row label="Reasoning" hint="Used for hard plans, math, and code review."><select style={selectStyle}><option>o3</option><option>Claude Opus 4.5</option></select></Row>
+        <Row label="Primary" hint="Used for thinking, planning, and replies."><select style={selectStyle(colors)}><option>Claude Sonnet 4.5</option><option>Claude Opus 4.5</option><option>GPT-5</option><option>Gemini 2.5 Pro</option></select></Row>
+        <Row label="Quick" hint="Used for short tools, classification, and summaries."><select style={selectStyle(colors)}><option>Claude Haiku 4.5</option><option>GPT-5 mini</option><option>Llama 4 70B</option></select></Row>
+        <Row label="Reasoning" hint="Used for hard plans, math, and code review."><select style={selectStyle(colors)}><option>o3</option><option>Claude Opus 4.5</option></select></Row>
       </Section>
       <Section title="Behavior">
         <Row label="Temperature" hint="Higher = more wandering. Lower = more grounded."><Slider value={50} suffix="%" /></Row>
@@ -384,19 +387,19 @@ function ModelsPanel() {
       {/* ── Ollama Status ────────────────────────────────────────── */}
       <Section title="Local models (Ollama)">
         {!ollama ? (
-          <Row label="Status" hint="Checking..."><span style={{ fontSize: 12, color: color.textDim }}>Loading...</span></Row>
+          <Row label="Status" hint="Checking..."><span style={{ fontSize: 12, color: colors.textDim }}>Loading...</span></Row>
         ) : !ollama.reachable ? (
           <Row label="Status" hint="Ollama is not running. Install from ollama.com and run 'ollama serve'.">
-            <span style={{ fontSize: 12, color: color.danger }}>Ollama not running</span>
+            <span style={{ fontSize: 12, color: colors.danger }}>Ollama not running</span>
           </Row>
         ) : (
           <>
             <Row label="Connection" hint="Ollama at localhost:11434">
-              <span style={{ fontSize: 12, color: color.cyan }}>Connected</span>
+              <span style={{ fontSize: 12, color: colors.cyan }}>Connected</span>
             </Row>
             {ollama.installed.length === 0 ? (
               <Row label="Models" hint="No models installed. Run 'ollama pull qwen2.5:3b' to get started.">
-                <span style={{ fontSize: 12, color: color.textDim }}>None</span>
+                <span style={{ fontSize: 12, color: colors.textDim }}>None</span>
               </Row>
             ) : (
               ollama.installed.map(m => {
@@ -406,7 +409,7 @@ function ModelsPanel() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <ModelStateBadge state={running ? 'running' : 'installed'} />
                       {running?.expires_at && (
-                        <span style={{ fontSize: 10, color: color.textDim }}>
+                        <span style={{ fontSize: 10, color: colors.textDim }}>
                           unloads {new Date(running.expires_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                         </span>
                       )}
@@ -444,16 +447,16 @@ function ModelsPanel() {
                   onChange={e => handleScheduleChange({ duration_minutes: Math.max(15, Math.min(720, parseInt(e.target.value) || 15)) })}
                   style={{ ...selectStyle, minWidth: 100, width: 'auto' }}
                 />
-                <span style={{ fontSize: 11, color: color.textDim, marginLeft: 6 }}>min</span>
+                <span style={{ fontSize: 11, color: colors.textDim, marginLeft: 6 }}>min</span>
               </Row>
               <Row label="Model" hint="Ollama model used by the Librarian.">
-                <span style={{ fontSize: 13, color: color.text, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 13, color: colors.text, display: 'flex', alignItems: 'center', gap: 8 }}>
                   {schedule.model}
                   <ModelStateBadge state={modelState(schedule.model)} />
                 </span>
               </Row>
               <Row label="Next run" hint={nextRunText(schedule)}>
-                <span style={{ fontSize: 12, color: color.textMuted }}>{nextRunText(schedule)}</span>
+                <span style={{ fontSize: 12, color: colors.textMuted }}>{nextRunText(schedule)}</span>
               </Row>
             </>
           )}
@@ -464,8 +467,8 @@ function ModelsPanel() {
               style={{
                 height: 30, padding: '0 14px', borderRadius: 6,
                 background: runningNow ? 'rgba(0,213,255,0.08)' : 'rgba(0,213,255,0.12)',
-                border: `1px solid ${color.borderHi}`,
-                color: runningNow ? color.textDim : color.cyan,
+                border: `1px solid ${colors.borderHi}`,
+                color: runningNow ? colors.textDim : colors.cyan,
                 fontSize: 12, fontWeight: 600, fontFamily: font.body,
                 cursor: runningNow || modelState(schedule.model) === 'missing' ? 'not-allowed' : 'pointer',
                 transition: `all 150ms ${ease.out}`,
@@ -474,7 +477,7 @@ function ModelsPanel() {
               {runningNow ? 'Warming...' : 'Run Librarian now'}
             </button>
           </Row>
-          {saving && <div style={{ fontSize: 10, color: color.textDim, textAlign: 'right', padding: '4px 0' }}>Saving...</div>}
+          {saving && <div style={{ fontSize: 10, color: colors.textDim, textAlign: 'right', padding: '4px 0' }}>Saving...</div>}
         </Section>
       )}
     </div>
@@ -482,6 +485,7 @@ function ModelsPanel() {
 }
 
 function KeysPanel() {
+  const { colors } = useThemeHook();
   const providers = useCommandCenter(s => s.providers);
   const loadProviders = useCommandCenter(s => s.loadProviders);
   const [maskedKeys, setMaskedKeys] = useState<Record<string, string>>({});
@@ -516,10 +520,10 @@ function KeysPanel() {
       <H1 sub="Bring your own keys for the providers you use. Keys are encrypted and never leave your device.">API keys</H1>
       <Section title="Providers">
         {providersWithKeys.length === 0 && providers.length === 0 && (
-          <div style={{ color: color.textDim, fontSize: 13 }}>Loading providers...</div>
+          <div style={{ color: colors.textDim, fontSize: 13 }}>Loading providers...</div>
         )}
         {providersWithKeys.length === 0 && providers.length > 0 && (
-          <div style={{ color: color.textMuted, fontSize: 13 }}>Configure providers in the Models panel to manage API keys.</div>
+          <div style={{ color: colors.textMuted, fontSize: 13 }}>Configure providers in the Models panel to manage API keys.</div>
         )}
         {providersWithKeys.map(p => (
           <Row key={p.name} label={p.displayName}>
@@ -527,7 +531,7 @@ function KeysPanel() {
               <TextInput mono value={maskedKeys[`${p.name.toUpperCase()}_API_KEY`] || (p.isConfigured ? '••••••••' : '')} placeholder={p.isConfigured ? '' : 'paste key…'} />
               <span style={{
                 fontSize: 10, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase',
-                color: p.isConfigured ? '#5BD17F' : color.textDim,
+                color: p.isConfigured ? '#5BD17F' : colors.textDim,
               }}>{p.isConfigured ? 'set' : 'missing'}</span>
             </div>
           </Row>
@@ -538,6 +542,7 @@ function KeysPanel() {
 }
 
 function AppearancePanel() {
+  const { colors } = useThemeHook();
   const prefs = useThemeHook();
   const themes: Array<{ id: ThemeId; l: string; g: string }> = [
     { id: 'dark', l: 'Permagent dark', g: 'linear-gradient(135deg, #0B1220, #1E2433)' },
@@ -558,11 +563,11 @@ function AppearancePanel() {
             return (
               <div key={th.id} onClick={() => setThemeFn(th.id)} style={{
                 padding: 4, borderRadius: 12, cursor: 'pointer',
-                border: on ? `2px solid ${color.cyan}` : '2px solid transparent',
-                boxShadow: on ? `0 0 14px ${color.cyanGlow}` : 'none',
+                border: on ? `2px solid ${colors.cyan}` : '2px solid transparent',
+                boxShadow: on ? `0 0 14px ${colors.cyanGlow}` : 'none',
               }}>
-                <div style={{ height: 96, borderRadius: 8, background: th.g, border: `1px solid ${color.border}` }} />
-                <div style={{ fontSize: 12, padding: '8px 4px', textAlign: 'center', color: on ? color.cyan : color.text }}>{th.l}</div>
+                <div style={{ height: 96, borderRadius: 8, background: th.g, border: `1px solid ${colors.border}` }} />
+                <div style={{ fontSize: 12, padding: '8px 4px', textAlign: 'center', color: on ? colors.cyan : colors.text }}>{th.l}</div>
               </div>
             );
           })}
@@ -584,6 +589,7 @@ function AppearancePanel() {
 }
 
 function ShortcutsPanel() {
+  const { colors } = useThemeHook();
   const groups = [
     { g: 'Global', items: [['Open command palette', ['⌘', 'K']], ['Quick task', ['⌘', 'N']], ['Toggle sidebar', ['⌘', 'B']], ['Search everything', ['⌘', '/']]] },
     { g: 'Navigation', items: [['Go to Home', ['G', 'H']], ['Go to Automate', ['G', 'W']], ['Go to Build', ['G', 'B']], ['Go to Brain', ['G', 'M']]] },
@@ -595,7 +601,7 @@ function ShortcutsPanel() {
       {groups.map(grp => (
         <Section key={grp.g} title={grp.g}>
           {grp.items.map(([l, keys]) => (
-            <div key={l as string} style={{ display: 'flex', alignItems: 'center', padding: '12px 0', borderTop: `1px solid ${color.border}` }}>
+            <div key={l as string} style={{ display: 'flex', alignItems: 'center', padding: '12px 0', borderTop: `1px solid ${colors.border}` }}>
               <span style={{ fontSize: 13, flex: 1 }}>{l as string}</span>
               <div style={{ display: 'flex', gap: 4 }}>{(keys as string[]).map((k, i) => <Kbd key={i}>{k}</Kbd>)}</div>
             </div>
@@ -607,6 +613,7 @@ function ShortcutsPanel() {
 }
 
 function DataPanel() {
+  const { colors } = useThemeHook();
   const [localFirst, setLocalFirst] = useState(true);
   const [e2e, setE2e] = useState(true);
   const [diagnostics, setDiagnostics] = useState(true);
@@ -624,9 +631,9 @@ function DataPanel() {
       </Section>
       <Section title="Manage">
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button style={ghost}>Export workspace</button>
-          <button style={ghost}>Download memory</button>
-          <button style={{ ...ghost, color: color.danger, borderColor: 'rgba(255,180,162,0.30)' }}>Delete workspace</button>
+          <button style={ghost(colors)}>Export workspace</button>
+          <button style={ghost(colors)}>Download memory</button>
+          <button style={{ ...ghost(colors), color: colors.danger, borderColor: 'rgba(255,180,162,0.30)' }}>Delete workspace</button>
         </div>
       </Section>
     </div>
@@ -656,23 +663,23 @@ export function SettingsView() {
   }, [dismiss]);
 
   const Panel = PANELS[section];
-  const { gradient } = useThemeHook();
+  const { gradient, colors } = useThemeHook();
 
   return (
-    <div style={{ width: '100%', height: '100%', display: 'flex', background: gradient.shell, color: color.text, fontFamily: font.body }}>
-      <div style={{ width: 240, borderRight: `1px solid ${color.border}`, background: gradient.navRail, padding: '24px 14px', overflow: 'auto', flexShrink: 0 }}>
+    <div style={{ width: '100%', height: '100%', display: 'flex', background: gradient.shell, color: colors.text, fontFamily: font.body }}>
+      <div style={{ width: 240, borderRight: `1px solid ${colors.border}`, background: gradient.navRail, padding: '24px 14px', overflow: 'auto', flexShrink: 0 }}>
         <div style={{ fontFamily: font.display, fontSize: 18, fontWeight: 700, letterSpacing: '-0.01em', padding: '0 10px 18px' }}>Settings</div>
         {CATEGORIES.map(cat => (
           <div key={cat.group} style={{ marginBottom: 16 }}>
-            <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.10em', textTransform: 'uppercase', color: color.textDim, padding: '0 10px 6px' }}>{cat.group}</div>
+            <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.10em', textTransform: 'uppercase', color: colors.textDim, padding: '0 10px 6px' }}>{cat.group}</div>
             {cat.items.map(it => {
               const on = section === it.key;
               return (
                 <button key={it.key} onClick={() => setSection(it.key)} style={{
                   display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '8px 10px', borderRadius: 8,
                   background: on ? 'rgba(0,213,255,0.08)' : 'transparent',
-                  border: on ? `1px solid ${color.borderHi}` : '1px solid transparent',
-                  color: on ? color.cyan : color.textMuted, cursor: 'pointer', textAlign: 'left',
+                  border: on ? `1px solid ${colors.borderHi}` : '1px solid transparent',
+                  color: on ? colors.cyan : colors.textMuted, cursor: 'pointer', textAlign: 'left',
                   fontFamily: font.body, fontSize: 13, fontWeight: on ? 600 : 500,
                   transition: `all 140ms ${ease.out}`,
                 }}>

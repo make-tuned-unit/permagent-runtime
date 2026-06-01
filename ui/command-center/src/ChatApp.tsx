@@ -4,7 +4,7 @@
  * All state flows through the daemon (HTTP/SSE), not the main window.
  */
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { color, font, ease } from './styles/tokens';
+import { font, ease } from './styles/tokens';
 import { useTheme } from './styles/useTheme';
 import { Mobius } from './components/mobius/Mobius';
 import { useCommandCenter } from './lib/store';
@@ -29,7 +29,7 @@ function timeAgo(dateStr: string): string {
 }
 
 export default function ChatApp() {
-  const { gradient } = useTheme();
+  const { gradient, colors } = useTheme();
   const [agentName, setAgentName] = useState('Agent');
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [inspectionOpen, setInspectionOpen] = useState(false);
@@ -123,7 +123,7 @@ export default function ChatApp() {
         height: 36, flexShrink: 0,
         display: 'flex', alignItems: 'center',
         padding: '0 12px', gap: 8,
-        borderBottom: `1px solid ${color.border}`,
+        borderBottom: `1px solid ${colors.border}`,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
           <Mobius size={16} state="idle" glow={0.6} />
@@ -135,7 +135,7 @@ export default function ChatApp() {
               style={{
                 display: 'flex', alignItems: 'center', gap: 4,
                 background: 'transparent', border: 'none', cursor: 'pointer',
-                color: color.text, fontSize: 13, fontWeight: 600, fontFamily: font.body,
+                color: colors.text, fontSize: 13, fontWeight: 600, fontFamily: font.body,
               }}
             >
               {agentName}
@@ -147,7 +147,7 @@ export default function ChatApp() {
                 position: 'absolute', top: '100%', left: 0, marginTop: 4,
                 width: 260, maxHeight: 300, overflow: 'auto',
                 background: gradient.dropdown, backdropFilter: 'blur(16px)',
-                border: `1px solid ${color.borderHi}`, borderRadius: 8,
+                border: `1px solid ${colors.borderHi}`, borderRadius: 8,
                 boxShadow: '0 12px 40px rgba(0,0,0,0.6)', zIndex: 100,
                 padding: '4px 0',
               }}>
@@ -156,8 +156,8 @@ export default function ChatApp() {
                   style={{
                     width: '100%', padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 6,
                     background: 'transparent', border: 'none', cursor: 'pointer',
-                    color: color.cyan, fontSize: 12, fontFamily: font.body, fontWeight: 500,
-                    borderBottom: `1px solid ${color.border}`,
+                    color: colors.cyan, fontSize: 12, fontFamily: font.body, fontWeight: 500,
+                    borderBottom: `1px solid ${colors.border}`,
                   }}
                 >
                   + New session
@@ -168,15 +168,15 @@ export default function ChatApp() {
                     onClick={() => handleSelectSession(s.id)}
                     style={{
                       width: '100%', padding: '6px 12px', display: 'flex', flexDirection: 'column', gap: 1,
-                      background: s.id === chatSessionId ? 'rgba(0,213,255,0.06)' : 'transparent',
+                      background: s.id === chatSessionId ? colors.cyanSoft : 'transparent',
                       border: 'none', cursor: 'pointer', textAlign: 'left',
                     }}
                   >
-                    <span style={{ fontSize: 12, color: s.id === chatSessionId ? color.cyan : color.text, fontFamily: font.body }}>
+                    <span style={{ fontSize: 12, color: s.id === chatSessionId ? colors.cyan : colors.text, fontFamily: font.body }}>
                       {s.name || `Session ${s.id}`}
                     </span>
                     {s.updated_at && (
-                      <span style={{ fontSize: 10, color: color.textDim, fontFamily: font.mono }}>
+                      <span style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono }}>
                         {s.message_count} msgs · {timeAgo(s.updated_at)}
                       </span>
                     )}
@@ -195,9 +195,9 @@ export default function ChatApp() {
             title="What your agent sees"
             style={{
               width: 26, height: 26, borderRadius: 6,
-              background: inspectionOpen ? 'rgba(0,213,255,0.1)' : 'rgba(255,255,255,0.04)',
-              border: `1px solid ${inspectionOpen ? 'rgba(0,213,255,0.3)' : color.border}`,
-              color: inspectionOpen ? color.cyan : color.textMuted, cursor: 'pointer',
+              background: inspectionOpen ? colors.cyanSoft : colors.border,
+              border: `1px solid ${inspectionOpen ? 'rgba(0,213,255,0.3)' : colors.border}`,
+              color: inspectionOpen ? colors.cyan : colors.textMuted, cursor: 'pointer',
               display: 'grid', placeItems: 'center',
               transition: `all 150ms ${ease.out}`,
             }}

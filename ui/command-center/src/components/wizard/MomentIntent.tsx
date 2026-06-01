@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { color, font, ease } from '../../styles/tokens';
+import { font, ease } from '../../styles/tokens';
 import { Mobius } from '../mobius/Mobius';
 import { PrimaryButton, Particles } from './atoms';
+import { useTheme } from '../../styles/useTheme';
 
 const PLACEHOLDERS = [
   'Build a SaaS product from scratch...',
@@ -19,6 +20,7 @@ interface Props {
 }
 
 export function MomentIntent({ intent, setIntent, onAdvance }: Props) {
+  const { colors } = useTheme();
   const [placeholderIdx, setPlaceholderIdx] = useState(0);
 
   useEffect(() => {
@@ -31,10 +33,10 @@ export function MomentIntent({ intent, setIntent, onAdvance }: Props) {
       <Particles density={16} />
       <Mobius size={140} state="idle" />
 
-      <h1 style={{ fontFamily: font.display, fontSize: 28, fontWeight: 700, color: color.text, margin: '28px 0 8px', letterSpacing: '-0.02em' }}>
+      <h1 style={{ fontFamily: font.display, fontSize: 28, fontWeight: 700, color: colors.text, margin: '28px 0 8px', letterSpacing: '-0.02em' }}>
         What will you build together?
       </h1>
-      <p style={{ fontFamily: font.body, fontSize: 14, color: color.textMuted, marginBottom: 28, textAlign: 'center', maxWidth: 380 }}>
+      <p style={{ fontFamily: font.body, fontSize: 14, color: colors.textMuted, marginBottom: 28, textAlign: 'center', maxWidth: 380 }}>
         Tell your agent what you're working on. This helps it prepare context for your first conversation.
       </p>
 
@@ -45,14 +47,14 @@ export function MomentIntent({ intent, setIntent, onAdvance }: Props) {
           placeholder={PLACEHOLDERS[placeholderIdx]}
           rows={4}
           style={{
-            width: '100%', fontFamily: font.body, fontSize: 14, color: color.text,
+            width: '100%', fontFamily: font.body, fontSize: 14, color: colors.text,
             background: 'rgba(255,255,255,0.02)',
             border: '1px solid rgba(255,255,255,0.08)',
             borderRadius: 12, padding: '14px 16px', outline: 'none', resize: 'none',
             lineHeight: 1.6,
             transition: `border-color 160ms ${ease.out}`,
           }}
-          onFocus={e => { e.currentTarget.style.borderColor = color.cyan; e.currentTarget.style.boxShadow = '0 0 0 3px rgba(0,213,255,0.12)'; }}
+          onFocus={e => { e.currentTarget.style.borderColor = colors.cyan; e.currentTarget.style.boxShadow = '0 0 0 3px rgba(0,213,255,0.12)'; }}
           onBlur={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; e.currentTarget.style.boxShadow = 'none'; }}
         />
       </div>

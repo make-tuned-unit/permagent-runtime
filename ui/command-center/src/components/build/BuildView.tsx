@@ -1,6 +1,6 @@
 import { useCallback } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
-import { color, font, radius } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import { useDashboard } from '../dashboard/useDashboard';
@@ -9,23 +9,23 @@ import { Browser } from '../browser';
 import { ProjectChip } from './ProjectChip';
 import type { Project } from './useProjects';
 
-const ghostBtn: React.CSSProperties = {
-  height: 30, padding: '0 12px', borderRadius: 8,
-  background: 'transparent', border: `1px solid ${color.border}`,
-  fontFamily: font.body, fontSize: 12, fontWeight: 500,
-  color: color.text, cursor: 'pointer',
-  display: 'inline-flex', alignItems: 'center', gap: 6,
-};
-
-const primaryBtn: React.CSSProperties = {
-  height: 30, padding: '0 14px', borderRadius: 8,
-  background: color.cyan, color: '#0B1220', border: 'none',
-  fontFamily: font.body, fontSize: 12, fontWeight: 600,
-  cursor: 'pointer', boxShadow: `0 0 14px ${color.cyanGlow}`,
-};
-
 export function BuildView() {
-  const { gradient } = useTheme();
+  const { gradient, colors } = useTheme();
+
+  const ghostBtn: React.CSSProperties = {
+    height: 30, padding: '0 12px', borderRadius: 8,
+    background: 'transparent', border: `1px solid ${colors.border}`,
+    fontFamily: font.body, fontSize: 12, fontWeight: 500,
+    color: colors.text, cursor: 'pointer',
+    display: 'inline-flex', alignItems: 'center', gap: 6,
+  };
+
+  const primaryBtn: React.CSSProperties = {
+    height: 30, padding: '0 14px', borderRadius: 8,
+    background: colors.cyan, color: colors.bg, border: 'none',
+    fontFamily: font.body, fontSize: 12, fontWeight: 600,
+    cursor: 'pointer', boxShadow: `0 0 14px ${colors.cyanGlow}`,
+  };
   const { data } = useDashboard();
 
   const agentName = data?.agent.name ?? 'Agent';
@@ -47,22 +47,22 @@ export function BuildView() {
     <div style={{
       width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
       background: gradient.workspace,
-      color: color.text, fontFamily: font.body,
+      color: colors.text, fontFamily: font.body,
     }}>
       {/* Title strip */}
       <div style={{
         padding: '14px 24px', display: 'flex', alignItems: 'center', gap: 14,
-        borderBottom: `1px solid ${color.border}`, flexShrink: 0,
+        borderBottom: `1px solid ${colors.border}`, flexShrink: 0,
       }}>
         <Mobius size={36} state={mobiusState as any} glow={0.9} />
         <div style={{ minWidth: 0 }}>
           <div style={{ fontFamily: font.display, fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em' }}>
             {activeTask ? activeTask.title : 'Build'}
           </div>
-          <div style={{ fontSize: 11, color: color.textMuted, marginTop: 2, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2, display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{
               width: 5, height: 5, borderRadius: '50%',
-              background: hasActive ? color.cyan : color.textDim,
+              background: hasActive ? colors.cyan : colors.textDim,
               boxShadow: hasActive ? '0 0 6px rgba(0,213,255,0.7)' : 'none',
             }} />
             {agentName} · {hasActive ? 'thinking' : 'idle'}
@@ -78,8 +78,8 @@ export function BuildView() {
             return (
               <div key={n} style={{
                 width: 26, height: 4, borderRadius: 2,
-                background: n < step ? '#5BD17F' : n === step ? color.cyan : 'rgba(255,255,255,0.08)',
-                boxShadow: n === step ? `0 0 6px ${color.cyanGlow}` : 'none',
+                background: n < step ? '#5BD17F' : n === step ? colors.cyan : colors.border,
+                boxShadow: n === step ? `0 0 6px ${colors.cyanGlow}` : 'none',
               }} />
             );
           })}
@@ -101,7 +101,7 @@ export function BuildView() {
       <div style={{ flex: 1, minHeight: 0, padding: '12px 18px' }}>
         <Group orientation="horizontal">
           <Panel id="build-terminal" defaultSize={50} minSize={20}>
-            <div style={{ height: '100%', borderRadius: radius.md, overflow: 'hidden', border: `1px solid ${color.border}` }}>
+            <div style={{ height: '100%', borderRadius: radius.md, overflow: 'hidden', border: `1px solid ${colors.border}` }}>
               <TerminalManager />
             </div>
           </Panel>
@@ -109,7 +109,7 @@ export function BuildView() {
             <div className="bg-dark-border group-hover:bg-accent/50 group-active:bg-accent transition-colors w-px h-full" />
           </Separator>
           <Panel id="build-browser" defaultSize={50} minSize={20}>
-            <div style={{ height: '100%', borderRadius: radius.md, overflow: 'hidden', border: `1px solid ${color.border}` }}>
+            <div style={{ height: '100%', borderRadius: radius.md, overflow: 'hidden', border: `1px solid ${colors.border}` }}>
               <Browser />
             </div>
           </Panel>

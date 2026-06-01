@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
-import { color, font } from '../../styles/tokens';
+import { font } from '../../styles/tokens';
 import { useCommandCenter } from '../../lib/store';
 import { Mobius } from '../mobius/Mobius';
 import { PrimaryButton, GhostLink, Input, Select, Glass, Particles, type SelectOption } from './atoms';
 import { api } from '../../lib/api';
+import { useTheme } from '../../styles/useTheme';
 
 const PROVIDERS: SelectOption[] = [
   { value: 'anthropic', label: 'Anthropic (Claude)', dot: '#00D5FF' },
@@ -19,6 +20,7 @@ interface Props {
 }
 
 export function MomentWelcome({ onAdvance }: Props) {
+  const { colors } = useTheme();
   const pushOverlay = useCommandCenter(s => s.pushBrowserOverlay);
   const popOverlay = useCommandCenter(s => s.popBrowserOverlay);
   useEffect(() => { pushOverlay(); return () => { popOverlay(); }; }, [pushOverlay, popOverlay]);
@@ -63,10 +65,10 @@ export function MomentWelcome({ onAdvance }: Props) {
       <Particles density={24} />
       <Mobius size={160} state="idle" />
 
-      <h1 style={{ fontFamily: font.display, fontSize: 32, fontWeight: 700, color: color.text, margin: '32px 0 10px', letterSpacing: '-0.02em' }}>
+      <h1 style={{ fontFamily: font.display, fontSize: 32, fontWeight: 700, color: colors.text, margin: '32px 0 10px', letterSpacing: '-0.02em' }}>
         Welcome to Permagent
       </h1>
-      <p style={{ fontFamily: font.body, fontSize: 14, color: color.textMuted, marginBottom: 32, textAlign: 'center', maxWidth: 380 }}>
+      <p style={{ fontFamily: font.body, fontSize: 14, color: colors.textMuted, marginBottom: 32, textAlign: 'center', maxWidth: 380 }}>
         Connect a model provider to power your agent. You can change this later in Settings.
       </p>
 
@@ -75,7 +77,7 @@ export function MomentWelcome({ onAdvance }: Props) {
         {!isLocal && (
           <Input value={key} onChange={setKey} placeholder="Paste your API key" type="password" />
         )}
-        {error && <p style={{ fontFamily: font.body, fontSize: 12, color: color.danger, margin: 0 }}>{error}</p>}
+        {error && <p style={{ fontFamily: font.body, fontSize: 12, color: colors.danger, margin: 0 }}>{error}</p>}
         <PrimaryButton onClick={handleSubmit} disabled={!canContinue || validating} full>
           {validating ? 'Connecting...' : 'Continue'}
         </PrimaryButton>
@@ -90,11 +92,11 @@ export function MomentWelcome({ onAdvance }: Props) {
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }}
           onClick={() => setShowHelp(false)}>
           <Glass r={16} padding={28} style={{ maxWidth: 420, width: '90%' }}>
-            <h3 style={{ fontFamily: font.display, fontSize: 18, color: color.text, margin: '0 0 12px' }}>Finding your API key</h3>
-            <p style={{ fontFamily: font.body, fontSize: 13, color: color.textMuted, lineHeight: 1.6 }}>
+            <h3 style={{ fontFamily: font.display, fontSize: 18, color: colors.text, margin: '0 0 12px' }}>Finding your API key</h3>
+            <p style={{ fontFamily: font.body, fontSize: 13, color: colors.textMuted, lineHeight: 1.6 }}>
               Visit your provider's dashboard to create an API key:
             </p>
-            <ul style={{ fontFamily: font.mono, fontSize: 12, color: color.cyan, lineHeight: 2, paddingLeft: 18 }}>
+            <ul style={{ fontFamily: font.mono, fontSize: 12, color: colors.cyan, lineHeight: 2, paddingLeft: 18 }}>
               <li>Anthropic: console.anthropic.com</li>
               <li>OpenAI: platform.openai.com</li>
               <li>Moonshot: platform.moonshot.ai</li>

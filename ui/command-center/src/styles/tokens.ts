@@ -43,14 +43,63 @@ export const shadow = {
 export const tokens = { color, font, ease, radius, shadow } as const;
 export type DesignTokens = typeof tokens;
 
-// ── Theme gradients ─────────────────────────────────────────────────
+// ── Theme gradients + colors ────────────────────────────────────────
 export type ThemeId = 'dark' | 'aurora' | 'silver';
 
-export const THEME_GRADIENTS: Record<ThemeId, {
+/** Per-theme color overrides. Components use useTheme().colors for theme-aware colors. */
+export interface ThemeColors {
+  bg: string; bgDeeper: string; surface: string; surfaceHi: string;
+  border: string; borderHi: string;
+  cyan: string; cyanSoft: string; cyanGlow: string;
+  purple: string; purpleBright: string; purpleSoft: string; purpleGlow: string;
+  text: string; textMuted: string; textDim: string;
+  danger: string;
+  /** Card elevation shadow (cool-tinted on silver) */
+  cardShadow: string;
+  /** Top-edge highlight for metallic cards (empty string on dark themes) */
+  cardHighlight: string;
+}
+
+const DARK_COLORS: ThemeColors = {
+  bg: color.bg, bgDeeper: color.bgDeeper, surface: color.surface, surfaceHi: color.surfaceHi,
+  border: color.border, borderHi: color.borderHi,
+  cyan: color.cyan, cyanSoft: color.cyanSoft, cyanGlow: color.cyanGlow,
+  purple: color.purple, purpleBright: color.purpleBright, purpleSoft: color.purpleSoft, purpleGlow: color.purpleGlow,
+  text: color.text, textMuted: color.textMuted, textDim: color.textDim,
+  danger: color.danger,
+  cardShadow: '0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04)',
+  cardHighlight: '',
+};
+const AURORA_COLORS: ThemeColors = { ...DARK_COLORS };
+const SILVER_COLORS: ThemeColors = {
+  bg: '#d4d6dc',            // cool blue-grey base
+  bgDeeper: '#c8cad2',     // deeper cool tone
+  surface: '#e4e6ec',       // raised card surface (lighter, cool undertone)
+  surfaceHi: '#eceef4',    // elevated highlight
+  border: 'rgba(50,70,110,0.20)', // cool hairline border
+  borderHi: 'rgba(0,140,200,0.30)', // cyan accent border
+  cyan: '#0088aa',          // primary accent (AA on light)
+  cyanSoft: 'rgba(0,136,170,0.10)',
+  cyanGlow: 'rgba(0,168,204,0.35)',
+  purple: '#7B3FA0',        // secondary accent
+  purpleBright: '#9B52CC',
+  purpleSoft: 'rgba(123,63,160,0.10)',
+  purpleGlow: 'rgba(155,82,204,0.30)',
+  text: '#1a1c22',          // near-black with cool tint
+  textMuted: '#3e424e',    // cool mid-grey (AA on #e4e6ec)
+  textDim: '#5e6270',      // lighter cool grey (AA on #e4e6ec)
+  danger: '#b82e2e',
+  cardShadow: '0 2px 6px rgba(40,50,80,0.10), 0 1px 2px rgba(40,50,80,0.06)',
+  cardHighlight: 'inset 0 1px 0 rgba(255,255,255,0.6)',
+};
+
+export interface ThemeGradients {
   workspace: string; card: string; label: string;
   shell: string; sidebar: string; navRail: string;
   dropdown: string; dropdownSolid: string;
-}> = {
+}
+
+export const THEME_GRADIENTS: Record<ThemeId, ThemeGradients> = {
   dark: {
     workspace: 'radial-gradient(120% 80% at 50% 0%, #142035 0%, #0B1220 50%, #050810 100%)',
     card: 'linear-gradient(180deg, rgba(20,28,48,0.7), rgba(11,18,32,0.7))',
@@ -72,16 +121,24 @@ export const THEME_GRADIENTS: Record<ThemeId, {
     label: 'Aurora',
   },
   silver: {
-    workspace: 'radial-gradient(120% 80% at 50% 0%, #2A2D32 0%, #1A1C20 50%, #111214 100%)',
-    card: 'linear-gradient(180deg, rgba(48,50,56,0.7), rgba(30,32,36,0.7))',
-    shell: '#16171A',
-    sidebar: 'rgba(22,23,26,0.7)',
-    navRail: 'rgba(22,23,26,0.5)',
-    dropdown: 'rgba(22,23,26,0.98)',
-    dropdownSolid: '#16171A',
+    workspace: 'linear-gradient(180deg, #e0e2e8 0%, #d4d6dc 40%, #caced6 100%)',
+    card: 'linear-gradient(180deg, #eceef4 0%, #e4e6ec 100%)',
+    shell: '#d0d2d8',
+    sidebar: 'rgba(208,210,216,0.90)',
+    navRail: 'rgba(208,210,216,0.65)',
+    dropdown: 'rgba(232,234,240,0.98)',
+    dropdownSolid: '#e8eaf0',
     label: 'Silver',
   },
 };
+
+const THEME_COLORS: Record<ThemeId, ThemeColors> = {
+  dark: DARK_COLORS,
+  aurora: AURORA_COLORS,
+  silver: SILVER_COLORS,
+};
+
+export function getThemedColors(): ThemeColors { return THEME_COLORS[_activeTheme]; }
 
 // ── Reactive appearance prefs ────────────────────────────────────────
 // Persisted to localStorage, reactive via listener set.
@@ -105,6 +162,35 @@ if ((_activeTheme as string) === 'slate') {
 export function getTheme(): ThemeId { return _activeTheme; }
 export function getThemeGradient() { return THEME_GRADIENTS[_activeTheme]; }
 export function setTheme(id: ThemeId) { _activeTheme = id; _set('permagent-theme', id); }
+
+// Sync CSS custom properties for Tailwind theme-aware colors
+function _syncCssVars() {
+  if (typeof document === 'undefined') return;
+  const c = THEME_COLORS[_activeTheme];
+  const root = document.documentElement.style;
+  root.setProperty('--tw-dark-bg', c.bg);
+  root.setProperty('--tw-dark-surface', c.surface);
+  root.setProperty('--tw-dark-surface-2', c.surfaceHi);
+  root.setProperty('--tw-dark-border', c.border);
+  root.setProperty('--tw-dark-text', c.text);
+  root.setProperty('--tw-dark-muted', c.textMuted);
+  root.setProperty('--tw-accent', c.cyan);
+  root.setProperty('--tw-accent-dim', c.cyan);
+  root.setProperty('--tw-accent-glow', c.cyanSoft);
+}
+_syncCssVars(); // initial sync
+_listeners.add(_syncCssVars); // re-sync on theme change
+
+// Cross-window theme sync: listen for localStorage changes from other windows
+// (e.g., chat window picks up theme change made in main window's Settings)
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (e.key === 'permagent-theme' && e.newValue) {
+      _activeTheme = e.newValue as ThemeId;
+      _notify();
+    }
+  });
+}
 
 // Möbius glow (0-100)
 export function getMobiusGlow(): number { return parseInt(_get('permagent-mobius-glow', '70'), 10); }
