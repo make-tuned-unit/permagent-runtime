@@ -329,7 +329,13 @@ impl MessageContent {
                     metadata: res.metadata.clone(),
                 }))
             }
-            MessageContent::Thinking(_) | MessageContent::RedactedThinking(_) => None,
+            MessageContent::Thinking(_) | MessageContent::RedactedThinking(_) => {
+                if audience == Role::Assistant {
+                    Some(self.clone())
+                } else {
+                    None
+                }
+            }
             _ => Some(self.clone()),
         }
     }
@@ -1634,5 +1640,57 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_agent_visible_content_preserves_thinking() {
+        let mut msg = Message::assistant();
+        msg.content = vec![
+            MessageContent::thinking("step by step reasoning", "sig123"),
+            MessageContent::tool_request(
+                "call_1",
+                Ok(CallToolRequestParams::new("read_file")
+                    .with_arguments(object!({"path": "/tmp/test"}))),
+            ),
+        ];
+
+        let filtered = msg.agent_visible_content();
+        assert_eq!(
+            filtered.content.len(),
+            2,
+            "thinking + tool_request must both survive agent_visible_content"
+        );
+        assert!(
+            filtered.content[0].as_thinking().is_some(),
+            "first block must be Thinking"
+        );
+        assert!(
+            matches!(&filtered.content[1], MessageContent::ToolRequest(_)),
+            "second block must be ToolRequest"
+        );
+    }
+
+    #[test]
+    fn test_user_visible_content_hides_thinking() {
+        let mut msg = Message::assistant();
+        msg.content = vec![
+            MessageContent::thinking("secret reasoning", "sig123"),
+            MessageContent::text("visible answer"),
+        ];
+
+        let filtered_content: Vec<MessageContent> = msg
+            .content
+            .iter()
+            .filter_map(|c| c.filter_for_audience(Role::User))
+            .collect();
+        assert_eq!(
+            filtered_content.len(),
+            1,
+            "thinking must be hidden from user"
+        );
+        assert!(
+            matches!(&filtered_content[0], MessageContent::Text(_)),
+            "only text should remain"
+        );
     }
 }
