@@ -5,6 +5,7 @@ use permagent::providers::base::Provider;
 use permagent::providers::openai::OpenAiProvider;
 use permagent::session_context::SESSION_ID_HEADER;
 use serde_json::json;
+use serial_test::serial;
 use std::sync::Arc;
 use std::sync::Mutex;
 use wiremock::matchers::{method, path};
@@ -143,6 +144,7 @@ async fn test_session_id_propagates_to_log_records() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_session_id_propagation_to_llm() {
     let (_, capture, provider) = setup_mock_server().await;
 
@@ -155,6 +157,7 @@ async fn test_session_id_propagation_to_llm() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_session_id_always_present() {
     let (_, capture, provider) = setup_mock_server().await;
 
@@ -167,6 +170,7 @@ async fn test_session_id_always_present() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_session_id_matches_across_calls() {
     let (_, capture, provider) = setup_mock_server().await;
 
@@ -182,6 +186,7 @@ async fn test_session_id_matches_across_calls() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_different_sessions_have_different_ids() {
     let (_, capture, provider) = setup_mock_server().await;
 
