@@ -75,7 +75,7 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
       {/* Dropdown */}
       {open && (
         <div style={{
-          position: 'absolute', top: '100%', left: 0, marginTop: 4,
+          position: 'absolute', top: '100%', right: 0, marginTop: 4,
           minWidth: 280, maxHeight: 360, overflowY: 'auto',
           background: colors.surface, border: `1px solid ${colors.border}`,
           borderRadius: 8, boxShadow: colors.cardShadow,

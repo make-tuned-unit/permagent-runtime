@@ -201,6 +201,10 @@ interface CommandCenterStore {
   spendToday: number;
   spendMonth: number;
 
+  // --- Agent identity ---
+  agentName: string;
+  setAgentName: (name: string) => void;
+
   // --- Chat state ---
   chatMessages: ChatMessage[];
   chatSessionId: string | null;
@@ -322,6 +326,10 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   // Panel routing
   activePanel: 'chat',
   setActivePanel: (panel) => set({ activePanel: panel }),
+
+  // Agent identity
+  agentName: 'Agent',
+  setAgentName: (name) => set({ agentName: name }),
 
   // Workspaces
   workspaces: [],
