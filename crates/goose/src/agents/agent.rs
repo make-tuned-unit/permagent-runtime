@@ -1571,27 +1571,50 @@ impl Agent {
                                     }
                                 }
 
-                                // Preserve thinking/reasoning content from the original response
-                                // Gemini (and other thinking models) require thinking to be echoed back
-                                // Kimi/DeepSeek require reasoning_content on assistant tool call messages
-                                let thinking_content: Vec<MessageContent> = response.content.iter()
-                                    .filter(|c| matches!(c, MessageContent::Thinking(_)))
-                                    .cloned()
-                                    .collect();
-                                if !thinking_content.is_empty() {
-                                    let thinking_msg = Message::new(
-                                        response.role.clone(),
-                                        response.created,
-                                        thinking_content,
-                                    ).with_id(format!("msg_{}", Uuid::new_v4()));
-                                    messages_to_add.push(thinking_msg);
-                                }
+                                // Collect thinking/reasoning content for tool request messages.
+                                // When extended thinking is enabled, providers (Anthropic, Kimi,
+                                // DeepSeek, Gemini) require thinking blocks on assistant messages
+                                // that contain tool_use. The streaming parser yields thinking and
+                                // tool_use as separate Messages, so the thinking was already pushed
+                                // to messages_to_add as a standalone message. We pull it out of
+                                // messages_to_add and attach it to the per-tool messages instead,
+                                // avoiding both duplication and the "reasoning_content is missing"
+                                // 400 error.
+                                let mut reasoning_content: Vec<MessageContent> = Vec::new();
 
-                                // Collect reasoning content to attach to tool request messages
-                                let reasoning_content: Vec<MessageContent> = response.content.iter()
-                                    .filter(|c| matches!(c, MessageContent::Thinking(_)))
-                                    .cloned()
-                                    .collect();
+                                // First check the current response (non-streaming or combined)
+                                reasoning_content.extend(
+                                    response.content.iter()
+                                        .filter(|c| matches!(c, MessageContent::Thinking(_) | MessageContent::RedactedThinking(_)))
+                                        .cloned()
+                                );
+
+                                // Then harvest thinking from earlier messages in this turn that
+                                // were pushed by the streaming loop (standalone thinking chunks).
+                                let mut harvested_indices = Vec::new();
+                                for (idx, msg) in messages_to_add.messages().iter().enumerate() {
+                                    if msg.role == rmcp::model::Role::Assistant {
+                                        let thinking_blocks: Vec<_> = msg.content.iter()
+                                            .filter(|c| matches!(c, MessageContent::Thinking(_) | MessageContent::RedactedThinking(_)))
+                                            .cloned()
+                                            .collect();
+                                        if !thinking_blocks.is_empty()
+                                            && msg.content.iter().all(|c| matches!(c, MessageContent::Thinking(_) | MessageContent::RedactedThinking(_)))
+                                        {
+                                            // Pure thinking message — harvest and mark for removal
+                                            reasoning_content.extend(thinking_blocks);
+                                            harvested_indices.push(idx);
+                                        }
+                                    }
+                                }
+                                // Remove harvested standalone thinking messages
+                                if !harvested_indices.is_empty() {
+                                    let kept: Vec<Message> = messages_to_add.messages().iter().enumerate()
+                                        .filter(|(i, _)| !harvested_indices.contains(i))
+                                        .map(|(_, m)| m.clone())
+                                        .collect();
+                                    messages_to_add = Conversation::new_unvalidated(kept);
+                                }
 
                                 for request in frontend_requests.iter().chain(remaining_requests.iter()) {
                                     if request.tool_call.is_ok() {
