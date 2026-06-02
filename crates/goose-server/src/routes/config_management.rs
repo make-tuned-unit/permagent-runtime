@@ -919,6 +919,71 @@ pub async fn configure_provider_oauth(
     Ok(Json("OAuth configuration completed".to_string()))
 }
 
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReloadResponse {
+    pub provider: String,
+    pub key_tail: String,
+}
+
+#[utoipa::path(
+    post,
+    path = "/config/reload",
+    responses(
+        (status = 200, description = "Provider reloaded with fresh credentials", body = ReloadResponse),
+        (status = 400, description = "Provider not configured or reload failed"),
+        (status = 500, description = "Internal server error")
+    )
+)]
+pub async fn reload_config(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> Result<Json<ReloadResponse>, ErrorResponse> {
+    let config = Config::global();
+
+    let provider_name = config
+        .get_goose_provider()
+        .map_err(|_| ErrorResponse::bad_request("No default provider configured".to_string()))?;
+
+    // Re-create the provider, which re-reads credentials from config (keychain + env)
+    let provider_arc = create_with_default_model(&provider_name, Vec::new())
+        .await
+        .map_err(|err| {
+            ErrorResponse::bad_request(format!(
+                "Failed to reload provider '{}': {}",
+                provider_name, err
+            ))
+        })?;
+
+    // Hot-swap the in-memory provider so new sessions use fresh credentials
+    state.agent_manager.set_default_provider(provider_arc).await;
+
+    // Read the key tail for confirmation (last 4 chars only)
+    let key_tail = {
+        let key_name = format!("{}_API_KEY", provider_name.to_uppercase().replace('-', "_"));
+        match config.get_secret::<String>(&key_name) {
+            Ok(secret) => {
+                let chars: Vec<char> = secret.chars().collect();
+                if chars.len() >= 4 {
+                    format!("...{}", chars[chars.len() - 4..].iter().collect::<String>())
+                } else {
+                    "****".to_string()
+                }
+            }
+            Err(_) => "(no key)".to_string(),
+        }
+    };
+
+    tracing::info!(
+        provider = %provider_name,
+        "Provider reloaded with fresh credentials"
+    );
+
+    Ok(Json(ReloadResponse {
+        provider: provider_name,
+        key_tail,
+    }))
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/config", get(read_all_config))
@@ -958,6 +1023,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/config/custom-providers/{id}", get(get_custom_provider))
         .route("/config/check_provider", post(check_provider))
         .route("/config/set_provider", post(set_config_provider))
+        .route("/config/reload", post(reload_config))
         .route(
             "/config/providers/{name}/oauth",
             post(configure_provider_oauth),

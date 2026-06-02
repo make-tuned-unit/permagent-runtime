@@ -816,33 +816,49 @@ impl Config {
     /// - The value cannot be deserialized into the requested type
     /// - There is an error accessing the keyring
     pub fn get_secret<T: for<'de> Deserialize<'de>>(&self, key: &str) -> Result<T, ConfigError> {
-        // First check environment variables (convert to uppercase)
+        // Keychain is checked FIRST — it's the authoritative store for user-set
+        // secrets (e.g. API keys saved via the Settings UI). Env vars serve only
+        // as a bootstrap fallback for initial setup (plist, CI, etc.).
+        let values = self.all_secrets()?;
+        if let Some(v) = values.get(key) {
+            // Only use keychain value if it's non-empty (empty string = removed)
+            let is_empty = v.as_str().is_some_and(|s| s.is_empty());
+            if !is_empty {
+                return Ok(serde_json::from_value(v.clone())?);
+            }
+        }
+
+        // Fall back to environment variable
         let env_key = key.to_uppercase();
         if let Ok(val) = env::var(&env_key) {
             let value = Self::parse_env_value(&val)?;
             return Ok(serde_json::from_value(value)?);
         }
 
-        // Then check keyring
-        let values = self.all_secrets()?;
-        values
-            .get(key)
-            .ok_or_else(|| ConfigError::NotFound(key.to_string()))
-            .and_then(|v| Ok(serde_json::from_value(v.clone())?))
+        Err(ConfigError::NotFound(key.to_string()))
     }
 
-    /// Get secrets. If primary is in env, use env for all keys. Otherwise, use secret storage.
+    /// Get secrets. Checks keychain first (authoritative), then env vars as fallback.
+    /// If primary is resolved from env, secondary keys also use env for consistency.
     pub fn get_secrets(
         &self,
         primary: &str,
         maybe_secret: &[&str],
     ) -> Result<HashMap<String, String>, ConfigError> {
-        let use_env = env::var(primary.to_uppercase()).is_ok();
+        // Try keychain first for the primary key
+        let keychain_values = self.all_secrets().unwrap_or_default();
+        let primary_in_keychain = keychain_values
+            .get(primary)
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.is_empty());
+
         let get_value = |key: &str| -> Result<String, ConfigError> {
-            if use_env {
-                env::var(key.to_uppercase()).map_err(|_| ConfigError::NotFound(key.to_string()))
-            } else {
+            if primary_in_keychain {
+                // Primary is in keychain — prefer keychain for all keys
                 self.get_secret(key)
+            } else {
+                // Primary not in keychain — fall back to env for all keys
+                env::var(key.to_uppercase()).map_err(|_| ConfigError::NotFound(key.to_string()))
             }
         };
 
@@ -1224,10 +1240,10 @@ mod tests {
         let value: String = config.get_secret("api_key")?;
         assert_eq!(value, "secret123");
 
-        // Test environment variable override
+        // Keychain takes priority over env var (env is fallback only)
         std::env::set_var("API_KEY", "env_secret");
         let value: String = config.get_secret("api_key")?;
-        assert_eq!(value, "env_secret");
+        assert_eq!(value, "secret123");
         std::env::remove_var("API_KEY");
 
         // Test deleting a secret
@@ -1881,6 +1897,42 @@ mod tests {
         let result = config.get_secrets("TEST_PRIMARY", &[]);
 
         assert!(matches!(result, Err(ConfigError::NotFound(_))));
+    }
+
+    #[test]
+    fn get_secret_keychain_wins_over_env() {
+        let _guard = env_lock::lock_env([("MY_API_KEY", Some("env_value"))]);
+        let config = new_test_config();
+        config.set_secret("MY_API_KEY", &"keychain_value").unwrap();
+
+        let value: String = config.get_secret("MY_API_KEY").unwrap();
+        assert_eq!(
+            value, "keychain_value",
+            "keychain should take priority over env var"
+        );
+    }
+
+    #[test]
+    fn get_secret_falls_back_to_env_when_keychain_empty() {
+        let _guard = env_lock::lock_env([("MY_API_KEY", Some("env_value"))]);
+        let config = new_test_config();
+        // No keychain entry → env var should be returned
+
+        let value: String = config.get_secret("MY_API_KEY").unwrap();
+        assert_eq!(value, "env_value");
+    }
+
+    #[test]
+    fn get_secret_skips_empty_keychain_value() {
+        let _guard = env_lock::lock_env([("MY_API_KEY", Some("env_value"))]);
+        let config = new_test_config();
+        config.set_secret("MY_API_KEY", &"").unwrap();
+
+        let value: String = config.get_secret("MY_API_KEY").unwrap();
+        assert_eq!(
+            value, "env_value",
+            "empty keychain entry should fall back to env var"
+        );
     }
 
     fn new_test_config() -> Config {

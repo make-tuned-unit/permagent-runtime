@@ -38,7 +38,9 @@ export function ConfigureProviderModal({ provider, onClose }: Props) {
   }, [onClose]);
 
   const handleSave = async () => {
-    if (secretKey && apiKey.trim()) {
+    const keyChanged = secretKey && apiKey.trim();
+
+    if (keyChanged) {
       setSaving(true);
       setError(null);
       try {
@@ -60,6 +62,16 @@ export function ConfigureProviderModal({ provider, onClose }: Props) {
         setError(e instanceof Error ? e.message : 'Failed to set default');
         setSaving(false);
         return;
+      }
+    }
+
+    // Reload the provider so fresh credentials take effect without daemon restart
+    if (keyChanged) {
+      try {
+        await api.reloadConfig();
+      } catch {
+        // Key saved to keychain — reload failed, but not fatal.
+        // Next daemon restart will pick it up.
       }
     }
 
