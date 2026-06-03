@@ -176,36 +176,90 @@ Categorically different from both whisper-rs AND the community sherpa-rs.
 - Prebuilt `sherpa-onnx-v1.13.2-linux-x64-shared-lib` downloaded and linked.
 - Binary built and ran successfully.
 
-### GPL status: RELEASE-BLOCKING, UNRESOLVED
+### GPL status and shipping TTS path: RESOLVED
 
 **espeak-ng (GPLv3) is baked into libsherpa-onnx-c-api UNCONDITIONALLY.**
 Confirmed by `nm` symbol inspection on both macOS and Linux prebuilt
 shared libraries: `espeak_Initialize`, `espeak_ng_Initialize`,
 `piper::phonemize_eSpeak`, and related symbols are present as local (`t`)
-code symbols regardless of which model is loaded at runtime.
+code symbols regardless of which model is loaded at runtime. Option b
+(swap to a non-espeak TTS model) is eliminated: even if the runtime model
+does not call espeak-ng, the distributed library contains GPLv3 object
+code.
 
-**Option b (swap to a non-espeak TTS model) is ELIMINATED.** Even if the
-runtime model does not call espeak-ng, the distributed library contains
-GPLv3 object code. The GPL obligation attaches to distribution, not
-execution. Static-vs-shared linking does not change this because
-espeak-ng is statically compiled into the shared library itself.
+**Shipping TTS path: standalone Kokoro + `ort` + `misaki-rs`. DECIDED.**
 
-**Chosen shipping direction (under separate investigation):** Decoupled
-standalone Kokoro-via-ONNX + misaki (Apache 2.0) G2P path. This uses
-the same Kokoro model but loads it through raw ONNX Runtime (`ort` crate)
-with misaki for phonemization, bypassing the sherpa-onnx library and its
-baked-in espeak-ng entirely. Custom from-source sherpa builds and
-hosted/paid TTS are both ruled out by product constraints
-(maintainability and free-respectively).
+The shipping TTS backend bypasses sherpa-onnx for TTS entirely, using:
 
-**This does not block Phase 1.** Phase 1 is internal development only.
-The provider abstraction ensures the shipping TTS backend
-(standalone-Kokoro-ONNX + misaki) can replace the development backend
-(sherpa-onnx-Kokoro) as a config change, not a refactor.
+- **`ort`** (v2.0.0-rc.12, MIT/Apache-2.0) — ONNX Runtime with prebuilt
+  binaries including CoreML on macOS. No bindgen, no cmake, no libclang.
+- **`misaki-rs`** (v0.3.0, MIT, `default-features = false` to exclude
+  espeak) — native Rust G2P engine for Kokoro. Self-contained: all
+  lexicons and POS tagger weights embedded at compile time.
+- **Kokoro model** (Apache 2.0) — same `model.onnx` and `voices-v1.0.bin`
+  (~54 voices) as the sherpa-onnx path. Same quality, same voices.
 
-**Upstream misaki integration:** No PRs, issues, or maintainer signal in
-k2-fsa/sherpa-onnx. Issue #2534 (custom G2P) is open since Sept 2025
-with no planned work. Upstream contribution is not a near-term path.
+**GPL-clean confirmed.** With `misaki-rs` espeak feature disabled, the
+full transitive dependency tree is MIT/Apache-2.0. No GPLv3 code anywhere
+in the shipped binary. Verified by auditing `misaki-rs` Cargo.toml deps:
+fancy-regex, language-tokenizer, num2words, regex, serde, log, thiserror
+— all permissive.
+
+**Accepted costs:**
+1. We own ~100 lines of Kokoro ONNX model load/decode that sherpa-onnx
+   did for us (load ONNX via `ort`, run phoneme tokens through it, decode
+   audio output). Well-documented in kokoro-onnx Python package.
+2. `misaki-rs` is a young single-maintainer crate (v0.3.0, ~4.7K
+   downloads/month). Posture: pin the version and be willing to
+   vendor/fork if it goes stale (it is small MIT code, ~164K SLoC).
+
+**OOV handling:** With espeak disabled, misaki-rs spells unknown words
+letter-by-letter. For conversational English this rarely matters. Mitigated
+by the pronunciation lexicon (see below) and the seeded project lexicon.
+
+**Parked fallback:** piper-plus (MIT, espeak-free fork of Piper TTS) if
+the Kokoro+misaki path proves problematic. Lower quality but GPL-clean.
+
+**Phase 1 uses sherpa-onnx-Kokoro** as the development backend behind the
+provider abstraction. The ort+misaki-rs backend is the shipping swap — a
+trait implementation change, not a refactor.
+
+### Pronunciation lexicon seam (designed in Phase 1, built in Phase 2+)
+
+The TTS provider trait includes a **pronunciation lexicon injection point**
+in the G2P step: a mapping from surface-form words to their phoneme/token
+representation, consulted BEFORE misaki-rs's default dictionary lookup.
+This seam is designed into the provider trait in Phase 1 so it is not
+bolted on later. The full pronunciation feature (seeded lexicon,
+conversational teaching, proactive detection) is Phase 2+.
+
+### Pronunciation feature (Phase 2+ — tracked, design pending review)
+
+Goal: the agent rarely mispronounces words, and fixing a mispronunciation
+is trivial for the user. Three layers, cheapest first:
+
+**Layer 1 — Seeded project lexicon (ship from the start of voice).**
+A curated pronunciation dictionary of coined/proper terms that misaki-rs
+will otherwise spell letter-by-letter: Permagent, Spectral, Henry, Chitin,
+Mesh, Tauri, Kokoro, Orchestrator, Librarian, and similar. Pre-seeded so
+the user never has to correct known terms.
+
+**Layer 2 — Conversational teaching (primary user-facing mechanism).**
+The user corrects a pronunciation in plain conversation ("say Permagent as
+per-ma-gent") and the agent persists it so it never recurs. Requirements:
+- Input is HUMAN-FRIENDLY, never IPA. Accept plain-English respelling
+  (e.g. "per-ma-gent") and/or the user saying the word aloud. Convert to
+  phoneme/token form internally. Phoneme machinery is hidden from the user.
+- Persist to a user-editable pronunciation store (storage choice: TBD —
+  Permagent DB or simple lexicon file; design call pending review).
+- Correction takes effect immediately for subsequent speech.
+
+**Layer 3 — Proactive detection.**
+misaki-rs falling back to letter-by-letter spelling is a detectable state.
+When it happens, the agent proactively asks "I'm not sure how to say X —
+how should I pronounce it?" rather than waiting for the user to notice.
+Depends on whether misaki-rs exposes a fallback signal (to be investigated
+in Phase 2 design).
 
 ### Default model picks (explicitly swappable)
 
@@ -239,13 +293,11 @@ means they are replaced by changing config, not code.
    redistribution rights before treating Parakeet as usable for STT. If it
    does not clearly clear, default to Moonshine.
 
-2. **Kokoro G2P / espeak-ng license (RELEASE-BLOCKING, UNRESOLVED).**
-   espeak-ng (GPLv3) is a compiled C library statically linked into the
-   sherpa-onnx prebuilt shared library. Confirmed by nm symbols on both
-   platforms. Option b (swap models) eliminated: espeak-ng is baked in
-   unconditionally. Shipping direction: standalone Kokoro-via-ONNX +
-   misaki (Apache 2.0 G2P), bypassing sherpa-onnx for TTS entirely.
-   Under investigation. See "GPL status" section above.
+2. **Kokoro G2P / espeak-ng license — RESOLVED.**
+   Shipping TTS path uses standalone Kokoro + ort + misaki-rs
+   (default-features=false), bypassing sherpa-onnx for TTS entirely.
+   GPL-clean: all-MIT/Apache transitive tree. See "GPL status and
+   shipping TTS path" section above.
 
 ### Cloud as optional fallback
 
