@@ -54,7 +54,10 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(status::routes(state.clone()))
         .merge(version::routes(state.clone()))
         .merge(events::routes(state.clone()))
-        .merge(session_events::routes(state.clone()));
+        .merge(session_events::routes(state.clone()))
+        // Browser content bridge: unauthenticated, localhost-only.
+        // Called by the in-process MCP tool (no access to daemon token).
+        .merge(browser_content::routes(state.clone()));
 
     // Static UI assets
     let ui_dir = ui_dist_path();
@@ -85,7 +88,6 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(workspaces::routes(state.clone()))
         .merge(attachments::routes(state.clone()))
         .merge(brain::routes(state.clone()))
-        .merge(browser_content::routes(state.clone()))
         .merge(dashboard::routes(state.clone()))
         .merge(identity::routes(state.clone()))
         .merge(workers::routes(state.clone()))
