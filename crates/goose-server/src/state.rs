@@ -48,6 +48,10 @@ pub struct AppState {
     pub browser_content_bridge: Arc<crate::routes::browser_content::BrowserContentBridge>,
     /// App catalog — static tab/view descriptions for agent navigation.
     pub app_catalog: Arc<permagent::app_catalog::AppCatalog>,
+    /// Voice STT provider (Moonshine via sherpa-onnx in dev, swappable).
+    pub voice_stt: Option<Arc<dyn crate::voice::SpeechToText>>,
+    /// Voice TTS provider (Kokoro via sherpa-onnx in dev, swappable).
+    pub voice_tts: Option<Arc<dyn crate::voice::TextToSpeech>>,
 }
 
 impl AppState {
@@ -371,6 +375,10 @@ impl AppState {
         // Load app catalog (static tab/view descriptions for agent navigation).
         let app_catalog = crate::app_catalog::init();
 
+        // Initialize voice providers (STT + TTS) if model files are present.
+        let voice_paths = crate::voice::sherpa_backend::VoiceModelPaths::default_paths();
+        let (voice_stt, voice_tts) = init_voice_providers(&voice_paths);
+
         Ok(Arc::new(Self {
             agent_manager,
             recipe_file_hash_map: Arc::new(Mutex::new(HashMap::new())),
@@ -391,6 +399,8 @@ impl AppState {
                 crate::routes::browser_content::BrowserContentBridge::new(),
             ),
             app_catalog,
+            voice_stt,
+            voice_tts,
         }))
     }
 
@@ -514,6 +524,26 @@ impl AppState {
             tracing::error!("Failed to get agent: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         })
+    }
+}
+
+type VoiceProviders = (
+    Option<Arc<dyn crate::voice::SpeechToText>>,
+    Option<Arc<dyn crate::voice::TextToSpeech>>,
+);
+
+fn init_voice_providers(paths: &crate::voice::sherpa_backend::VoiceModelPaths) -> VoiceProviders {
+    match crate::voice::sherpa_backend::create_providers(paths, 4) {
+        Ok(Some((stt, tts))) => (Some(Arc::from(stt)), Some(Arc::from(tts))),
+        Ok(None) => (None, None),
+        Err(e) => {
+            tracing::error!(
+                target: "permagentd::voice",
+                "Failed to initialize voice providers: {}",
+                e
+            );
+            (None, None)
+        }
     }
 }
 

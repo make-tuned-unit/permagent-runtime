@@ -37,6 +37,7 @@ pub mod telemetry;
 pub mod tunnel;
 pub mod utils;
 pub mod version;
+pub mod voice;
 pub mod workers;
 pub mod workspaces;
 
@@ -99,7 +100,8 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(projects::routes(state.clone()))
         .merge(cards::routes(state.clone()))
         .merge(agents::routes(state.clone()))
-        .merge(crate::app_catalog::routes(state.clone()));
+        .merge(crate::app_catalog::routes(state.clone()))
+        .merge(voice::routes(state.clone()));
 
     #[cfg(feature = "local-inference")]
     {
