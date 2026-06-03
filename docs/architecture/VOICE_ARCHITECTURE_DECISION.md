@@ -3,7 +3,7 @@
 Epic: #198 — Voice and Screen-Grounded Companion
 Phase: 0 (architecture spike and decision)
 Date: 2026-06-03
-Status: Draft — awaiting product call on Decision 2
+Status: All five decisions resolved
 
 ---
 
@@ -88,76 +88,119 @@ shipping. The evidence above is drawn from production code, not paraphrase.
 
 ## Decision 2: Local versus cloud STT and TTS
 
-**Question:** Default to local (whisper.cpp / whisper-rs) or cloud
-(AssemblyAI, ElevenLabs, or OpenAI) for STT and TTS?
+**Question:** Default to local or cloud for STT and TTS?
 
-**Recommendation: ESCALATED — this is a product call.** Options and costs
-below.
+**Decision: LOCAL-FIRST.** Cloud is an optional brokered fallback behind
+the provider abstraction, off by default. No paid cloud provider
+(ElevenLabs, AssemblyAI, OpenAI TTS) is on the Phase 1 path.
 
-### Option A: Cloud-first with local fallback
+### Premise corrections from the Phase 0 draft
 
-Start with cloud STT (OpenAI Whisper API or AssemblyAI) and cloud TTS
-(ElevenLabs or OpenAI). Route through the daemon as a proxy (like Clicky's
-Cloudflare Worker). Add local as a fallback later behind a feature flag.
+The original Phase 0 analysis rested on two premises that were wrong.
+Recording the corrections here so they are not reintroduced later:
 
-**Pros:**
-- Zero CI cost — no native C++ dependencies added.
-- Faster time-to-voice: API integration is days, not weeks.
-- Higher quality out of the box (ElevenLabs voices, Whisper large-v3).
-- Sidesteps the triple-CMake problem (llama-cpp-2 + kuzu + whisper.cpp).
+1. **"Local TTS quality is far behind" — INCORRECT.** Open TTS models now
+   match or beat ElevenLabs in blind tests. Chatterbox-Turbo won a
+   vendor-run blind test over ElevenLabs. Local TTS quality is not a reason
+   to default to cloud. The Phase 0 draft's recommendation of "cloud TTS is
+   almost certainly correct for Phase 1" was based on stale information.
 
-**Cons:**
-- Contradicts the local-first privacy thesis.
-- Requires API keys and ongoing cloud cost.
-- Adds latency for the network round-trip (~200-500ms per call).
+2. **"Local STT requires whisper-rs and its bindgen/clang CI cost" —
+   INCORRECT framing.** whisper-rs compiles whisper.cpp from source, which
+   is the exact bindgen/clang surface that broke CI twice (`bd2e7e755`,
+   `f33c4e988`). But whisper-rs is one path, not the path. The clean path
+   is ONNX Runtime, which ships prebuilt binaries and has no C++ source-
+   compile step. We route around the CI cost rather than accepting it.
+   **Do not pull whisper-rs or any from-source C++ speech crate into the
+   build graph.**
 
-### Option B: Local-first with cloud brokered fallback
+### Substrate-first principle (DURABLE DECISION)
 
-Default to whisper-rs (local STT) and a local TTS engine. Cloud is a
-brokered fallback configured through provider routing.
+> **We integrate against an ONNX-based substrate plus the provider
+> abstraction, NOT against any single model. The specific TTS and STT
+> models are hot-swappable config (a model file and a small adapter),
+> never hard-coded into the architecture.**
 
-**Pros:**
-- Consistent with the privacy thesis and local-first brand.
-- No ongoing cloud cost or API key requirement.
-- Lower latency for STT once the model is loaded (~100-300ms on M-series).
+**Rationale:** The durable, improving layer is the substrate. The field
+improves fast; individual models, especially small single-maintainer ones,
+may plateau. We buy the field's trajectory by integrating the substrate and
+treating models as swappable. We expect to replace the TTS model within
+roughly a year as the field moves, and that swap must be a config change,
+not a refactor. A future session must not collapse the abstraction by
+wiring one model in directly.
 
-**Cons — the CI cost is real:**
-- whisper-rs adds `whisper-cpp-sys` which requires CMake + bindgen + clang.
-  This is the **same build surface** that broke Ubuntu CI twice in the last
-  week:
-  - `bd2e7e755`: free-disk-space action removed clang-16/17/18, breaking
-    llama-cpp-sys-2 bindgen (`stdbool.h not found`).
-  - `f33c4e988`: kuzu + V8 + ML static archives exhausted Ubuntu runner disk
-    during parallel linking.
-- Estimated incremental build time: **+3-5 min** (ubuntu), +1-2 min (macOS).
-- Estimated disk overhead: **+200-300 MB** on an already-tight Ubuntu runner
-  (25-30 GB reclaimed by jlumbroso/free-disk-space, currently at the margin).
-- This would be the **third** heavy CMake-based C++ dependency in the
-  workspace (after llama-cpp-2 and kuzu/Spectral).
-- Local TTS quality is significantly behind ElevenLabs. No Rust-native TTS
-  engine approaches cloud quality today.
+**What this means in practice:**
+- The daemon exposes a `VoiceProvider` trait with `transcribe()` and
+  `synthesize()` methods.
+- Local providers load ONNX models from a configurable path.
+- Cloud providers are an alternative implementation behind the same trait,
+  off by default.
+- Swapping a model means changing a config entry (model path + adapter),
+  not touching Rust code.
 
-### Option C: Abstract the provider boundary now, decide default later
+### Substrate: ONNX Runtime via sherpa-onnx
 
-Define a `VoiceProvider` trait in the daemon with `transcribe()` and
-`synthesize()` methods. Implement cloud first (lowest risk, fastest
-iteration). Gate local behind `local-speech` Cargo feature flag (parallel
-to existing `local-inference` for llama). Ship Phase 1 with cloud, add
-local in a follow-up when CI headroom exists.
+**Primary integration:** `sherpa-rs` Rust bindings to sherpa-onnx, using
+its `download-binaries` feature. This pulls prebuilt ONNX Runtime libraries
+— no CMake, no bindgen, no clang, no source compilation. sherpa-onnx covers
+both STT and TTS, runs on macOS with CoreML acceleration, and actively adds
+new SOTA models (it added Cohere Transcribe in April 2026), which is what
+makes the swappability real in practice.
 
-**This is the recommended technical approach regardless of the default.**
-The principled long-term answer from the Mesh vision doc is routing voice
-through the inference routing interface (Phase 3 there). Option C is the
-stepping stone.
+**Acceptable alternative:** The `ort` crate (ONNX Runtime Rust bindings)
+directly, if sherpa-rs does not fit. Same prebuilt-binary model, same CI
+cost profile (near zero).
 
-### What I need from you
+**CI cost:** Near zero incremental. Prebuilt binaries add download time
+(~50-100 MB one-time) but no compile time, no disk pressure from static
+archives, and no bindgen/clang dependency. This is categorically different
+from whisper-rs.
 
-1. **Default for Phase 1:** Cloud or local STT? Cloud TTS is almost
-   certainly correct for Phase 1 given local TTS quality.
-2. **Are you willing to accept the CI cost of whisper-rs now**, or should
-   it be deferred behind a feature flag for a later phase?
-3. **Provider preference:** OpenAI (Whisper API + TTS), AssemblyAI +
-   ElevenLabs (Clicky's stack), or mix?
+### Default model picks (explicitly swappable)
+
+These are starting defaults, not commitments. The substrate-first principle
+means they are replaced by changing config, not code.
+
+**STT default: Moonshine**
+- License: MIT
+- Streaming capable, small footprint, clean license
+- Good fit for push-to-talk latency requirements
+- Reachable through sherpa-onnx
+
+**STT alternative (max accuracy): NVIDIA Parakeet**
+- Only if license clears (see verification items below)
+- Also reachable through sherpa-onnx
+
+**TTS default: Kokoro-82M**
+- License: Apache 2.0 (commercial OK)
+- Real-time on Apple Silicon, streaming capable
+- Treat as a default we expect to replace, not a commitment
+
+**TTS alternative (premium slot): Chatterbox**
+- License: MIT
+- Won blind test over ElevenLabs
+- Slot in behind the same abstraction when ready
+
+### License verification items (MUST verify before Phase 1 implementation)
+
+1. **NVIDIA Parakeet / Nemotron license.** These models are under NVIDIA's
+   Community / Open Model License, not MIT/Apache. Confirm commercial
+   redistribution rights before treating Parakeet as usable for STT. If it
+   does not clearly clear, default to Moonshine.
+
+2. **Kokoro G2P license.** Kokoro requires a grapheme-to-phoneme step. Some
+   Rust wrappers use espeak-ng, which is GPLv3 — a concern for linking into
+   a closed commercial binary. sherpa-onnx bundles its own phonemization
+   path. Confirm the G2P mechanism and its license for whichever integration
+   we choose (sherpa-rs vs direct ort).
+
+### Cloud as optional fallback
+
+Cloud STT and TTS providers (OpenAI, AssemblyAI, ElevenLabs, etc.) are
+implemented as alternative `VoiceProvider` trait implementations, behind
+the same abstraction. They are off by default and available as user-
+configured opt-in through the provider routing interface. No paid provider
+API key is required for the default experience.
 
 ---
 
@@ -298,14 +341,14 @@ conversational, the full loop should target:
 
 | Stage | Budget | Notes |
 |-------|--------|-------|
-| STT (cloud) | 500ms | AssemblyAI/OpenAI streaming |
-| STT (local) | 200ms | whisper.cpp on M-series, small model |
+| STT (local, default) | 200ms | Moonshine via sherpa-onnx on M-series |
+| STT (cloud fallback) | 500ms | Optional, adds network round-trip |
 | Intent routing | 50ms | Heuristic pre-filter |
 | recall() | 300ms | Single injection, cached |
 | LLM inference | 1000-2000ms | First token; streaming after |
-| TTS (cloud) | 300ms | ElevenLabs streaming |
-| TTS (local) | 200ms | Lower quality |
-| **Total** | **2.4-3.4s** | Acceptable for interactive use |
+| TTS (local, default) | 200ms | Kokoro-82M via sherpa-onnx, streaming |
+| TTS (cloud fallback) | 300ms | Optional, adds network round-trip |
+| **Total (local)** | **1.8-2.8s** | Local-first is faster than cloud |
 
 ### Mitigation strategies
 
@@ -332,7 +375,8 @@ conversational, the full loop should target:
 | # | Decision | Recommendation | Status |
 |---|----------|----------------|--------|
 | 1 | Sidecar boundary | Defer native sidecar; Tauri + daemon handles Phases 1-5 | **Decided** |
-| 2 | Local vs cloud STT/TTS | Abstract provider boundary now; **default needs product call** | **Escalated** |
+| 2 | Local vs cloud STT/TTS | Local-first via ONNX substrate; cloud as opt-in fallback | **Decided** |
+| — | Substrate-first principle | ONNX substrate + provider abstraction; models are swappable config | **Decided (durable)** |
 | 3 | Transport | Dedicated `/voice` WebSocket with Bearer auth and binary frames | **Decided** |
 | 4 | Intent routing | Heuristic pre-filter + LLM tool selection; add `create_goal` tool | **Decided** |
 | 5 | recall() latency | 300ms per-recall budget; cache, batch, pre-warm | **Decided** |
