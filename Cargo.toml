@@ -98,6 +98,9 @@ tree-sitter-rust = "0.24"
 tree-sitter-swift = "0.7"
 tree-sitter-typescript = "0.23"
 
+[profile.test]
+debug = "line-tables-only"
+
 [patch.crates-io]
 v8 = { path = "vendor/v8" }
 # TODO: switch to crates.io release once it includes the unstable feature and updates org from symposium-dev to agentclientprotocol
