@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>New Window Test Page</title>
+  <style>
+    body { font-family: system-ui; max-width: 600px; margin: 40px auto; background: #1a1a2e; color: #e0e0e0; }
+    h1 { color: #00bfef; }
+    .test { margin: 20px 0; padding: 16px; border: 1px solid #333; border-radius: 8px; }
+    .test h3 { margin-top: 0; color: #8b5cff; }
+    a { color: #3a7bff; }
+    button { background: #3a7bff; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; margin: 4px; }
+    button:hover { background: #2a6bef; }
+    .same-page { color: #00ffb4; }
+    #log { background: #0d0d1a; padding: 12px; border-radius: 4px; font-family: monospace; font-size: 12px; max-height: 200px; overflow-y: auto; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>Browser New-Window Test</h1>
+
+  <div class="test">
+    <h3>Test 1: target=_blank link</h3>
+    <a href="https://example.com" target="_blank" rel="noopener">Open example.com in new tab (target=_blank)</a>
+  </div>
+
+  <div class="test">
+    <h3>Test 2: window.open()</h3>
+    <button onclick="testWindowOpen()">window.open('https://example.org')</button>
+    <p id="open-result" style="font-size: 12px; color: #888;"></p>
+  </div>
+
+  <div class="test">
+    <h3>Test 3: Rapid-fire window.open (3 calls)</h3>
+    <button onclick="testRapidFire()">Fire 3 window.open calls</button>
+    <p id="rapid-result" style="font-size: 12px; color: #888;"></p>
+  </div>
+
+  <div class="test">
+    <h3>Test 4: Same-page navigation (regression)</h3>
+    <a href="https://httpbin.org/html" class="same-page">Same-window link to httpbin.org/html</a>
+  </div>
+
+  <div class="test">
+    <h3>Log</h3>
+    <div id="log"></div>
+  </div>
+
+  <script>
+    function log(msg) {
+      const el = document.getElementById('log');
+      el.textContent += new Date().toISOString().slice(11, 23) + ' ' + msg + '\n';
+      el.scrollTop = el.scrollHeight;
+    }
+
+    function testWindowOpen() {
+      log('Calling window.open("https://example.org")...');
+      const w = window.open('https://example.org');
+      const result = w === null ? 'returned null (expected with Deny)' : 'returned window ref';
+      document.getElementById('open-result').textContent = 'Result: ' + result;
+      log('window.open result: ' + result);
+    }
+
+    function testRapidFire() {
+      log('Firing 3 rapid window.open calls...');
+      const results = [];
+      for (let i = 1; i <= 3; i++) {
+        const w = window.open('https://httpbin.org/status/' + (200 + i));
+        results.push('call ' + i + ': ' + (w === null ? 'null' : 'ref'));
+        log('  call ' + i + ' fired');
+      }
+      document.getElementById('rapid-result').textContent = results.join(', ');
+    }
+
+    log('Test page loaded. Ready for testing.');
+  </script>
+</body>
+</html>
