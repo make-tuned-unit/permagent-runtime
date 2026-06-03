@@ -114,7 +114,8 @@ pub async fn spawn_pty_session(
                 Ok(0) => break,
                 Ok(n) => {
                     let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                    let _ = app_handle.emit(
+                    let _ = app_handle.emit_to(
+                        "main",
                         "pty_data",
                         PtyDataPayload {
                             session_id: sid.clone(),
@@ -125,7 +126,8 @@ pub async fn spawn_pty_session(
                 Err(_) => break,
             }
         }
-        let _ = app_handle.emit(
+        let _ = app_handle.emit_to(
+            "main",
             "pty_exit",
             PtyExitPayload {
                 session_id: sid,
