@@ -138,50 +138,57 @@ wiring one model in directly.
 - Swapping a model means changing a config entry (model path + adapter),
   not touching Rust code.
 
-### Substrate: ONNX Runtime via sherpa-onnx
+### Substrate: Official sherpa-onnx crate (k2-fsa)
 
-**Primary integration:** `sherpa-rs` Rust bindings to sherpa-onnx, using
-its `download-binaries` feature. This pulls prebuilt ONNX Runtime libraries
-— no CMake and no C++ source compilation (the failure modes that broke CI).
-sherpa-onnx covers both STT and TTS, runs on macOS with CoreML acceleration,
-and actively adds new SOTA models (it added Cohere Transcribe in April
-2026), which is what makes the swappability real in practice.
+**Crate:** `sherpa-onnx` v1.13.2, published by k2-fsa (the sherpa-onnx
+project itself). Apache-2.0 licensed. This is the OFFICIAL Rust API,
+not the deprecated community `sherpa-rs` crate.
 
-**Acceptable alternative:** The `ort` crate (ONNX Runtime Rust bindings)
-directly, if sherpa-rs does not fit. Same prebuilt-binary model.
+**Why the official crate, not sherpa-rs:** The community `sherpa-rs` crate
+(thewh1teagle) was deprecated in March 2026. It uses build-time bindgen
+against the C API header, which requires libclang — the same surface that
+broke CI twice (bd2e7e755, f33c4e988). The official `sherpa-onnx-sys`
+crate ships hand-written `extern "C"` FFI bindings with no bindgen, no
+cmake, no cc, and no libclang dependency at build time. Its only build
+dependencies are `bzip2`, `tar`, and `ureq` (for downloading prebuilt
+libraries). This resolves the bindgen/libclang concern completely: **the
+voice substrate no longer touches the libclang surface that broke CI.**
 
-**Build-time libclang coupling (under investigation):** sherpa-rs-sys
-invokes bindgen against the sherpa-onnx C API header at build time, which
-requires libclang. This is the same libclang surface shared with
-llama-cpp-sys-2 — the surface that broke CI twice (bd2e7e755, f33c4e988).
-The long-term goal is committed pre-generated bindings to remove the
-build-time libclang coupling entirely. Investigation pending on whether
-this is supported upstream, requires a small contribution, or requires a
-maintained fork.
+**Build behavior:** The build.rs downloads prebuilt sherpa-onnx libraries
+from GitHub releases (versioned to match the crate version) and emits
+link directives. No compilation of any kind occurs. Supports static
+(default) and shared linking via feature flags.
 
-**CI cost:** Prebuilt sherpa-onnx libraries add download time (~50-100 MB
-one-time) but no C++ compile time and no disk pressure from static
-archives. This is categorically different from whisper-rs. The residual CI
-cost is the bindgen/libclang requirement, shared with llama-cpp-sys-2.
+**CI cost:** Download time for prebuilt libs (~50-100 MB one-time). Zero
+compile time. Zero disk pressure from static archives or C++ toolchain.
+Categorically different from both whisper-rs AND the community sherpa-rs.
 
-### Gate A validation results (2026-06-03)
+### Validation status (2026-06-03)
 
-**macOS Apple Silicon (aarch64-apple-darwin) — PROVEN:**
-- Prebuilt sherpa-onnx v1.12.9 universal2 shared libraries downloaded and
-  linked (libonnxruntime.1.17.1.dylib, libsherpa-onnx-c-api.dylib).
-- CoreML framework linked for hardware acceleration.
-- No cmake invocation, no C++ source compilation.
-- Kokoro TTS: synthesized test sentence in 1.84s, valid WAV output at 24kHz.
-- Moonshine STT: transcribed sample audio in 346ms.
-- Round-trip TTS→STT: character-perfect ("Hello, I am Henry, your voice
-  assistant. How can I help you today?").
+**macOS Apple Silicon — validated on sherpa-rs 0.6.8 (Gate A), must be
+re-validated on official sherpa-onnx 1.13.2:**
+- Gate A proved Kokoro TTS (1.84s synth) and Moonshine STT (346ms
+  transcribe) with character-perfect round-trip on the community crate.
+- Must be re-run on the official crate's API surface to count.
 
 **Ubuntu CI (x86_64-unknown-linux-gnu) — NOT YET PROVEN:**
-- dist.json confirms prebuilt binaries exist for this target.
-- Build.rs analysis confirms no cmake invocation would occur.
-- Not tested in real CI — no local container runtime was available during
-  the Gate A spike. Must be validated before sherpa-rs is added to the
+- The official crate's build.rs has prebuilt archives for linux-x64.
+- Must be validated in real CI before sherpa-onnx is added to the
   workspace.
+
+### Open pre-ship decisions
+
+**Static vs shared linking:** The official crate defaults to static
+linking. Static linking bundles espeak-ng (GPLv3) into the binary, which
+is the most fraught form of that dependency for a closed commercial
+product. Shared linking avoids the static-GPL entanglement but requires
+shipping dylibs in the app bundle. Current lean: shared, pending
+investigation of whether a non-GPL G2P path exists for Kokoro that would
+make the question moot.
+
+**espeak-ng GPLv3 G2P dependency:** Kokoro uses espeak-ng-data for
+phonemization (confirmed in Gate A). The static-vs-shared decision and
+the existence of any non-GPL G2P alternative are under investigation.
 
 ### Default model picks (explicitly swappable)
 
