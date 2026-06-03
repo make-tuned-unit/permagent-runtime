@@ -165,30 +165,47 @@ Categorically different from both whisper-rs AND the community sherpa-rs.
 
 ### Validation status (2026-06-03)
 
-**macOS Apple Silicon — validated on sherpa-rs 0.6.8 (Gate A), must be
-re-validated on official sherpa-onnx 1.13.2:**
-- Gate A proved Kokoro TTS (1.84s synth) and Moonshine STT (346ms
-  transcribe) with character-perfect round-trip on the community crate.
-- Must be re-run on the official crate's API surface to count.
+**macOS Apple Silicon (aarch64-apple-darwin) — PROVEN on sherpa-onnx 1.13.2:**
+- Zero-toolchain build: no bindgen, no cmake, no cc/clang, no libclang.
+- Prebuilt `sherpa-onnx-v1.13.2-osx-arm64-shared-lib` downloaded and linked.
+- Kokoro TTS + Moonshine STT round-trip: character-perfect.
 
-**Ubuntu CI (x86_64-unknown-linux-gnu) — NOT YET PROVEN:**
-- The official crate's build.rs has prebuilt archives for linux-x64.
-- Must be validated in real CI before sherpa-onnx is added to the
-  workspace.
+**Ubuntu CI (x86_64-unknown-linux-gnu) — PROVEN on sherpa-onnx 1.13.2:**
+- CI run 26905502075 on ubuntu-latest: passed.
+- Zero-toolchain build confirmed by grep: no bindgen, no cmake, no libclang.
+- Prebuilt `sherpa-onnx-v1.13.2-linux-x64-shared-lib` downloaded and linked.
+- Binary built and ran successfully.
 
-### Open pre-ship decisions
+### GPL status: RELEASE-BLOCKING, UNRESOLVED
 
-**Static vs shared linking:** The official crate defaults to static
-linking. Static linking bundles espeak-ng (GPLv3) into the binary, which
-is the most fraught form of that dependency for a closed commercial
-product. Shared linking avoids the static-GPL entanglement but requires
-shipping dylibs in the app bundle. Current lean: shared, pending
-investigation of whether a non-GPL G2P path exists for Kokoro that would
-make the question moot.
+**espeak-ng (GPLv3) is baked into libsherpa-onnx-c-api UNCONDITIONALLY.**
+Confirmed by `nm` symbol inspection on both macOS and Linux prebuilt
+shared libraries: `espeak_Initialize`, `espeak_ng_Initialize`,
+`piper::phonemize_eSpeak`, and related symbols are present as local (`t`)
+code symbols regardless of which model is loaded at runtime.
 
-**espeak-ng GPLv3 G2P dependency:** Kokoro uses espeak-ng-data for
-phonemization (confirmed in Gate A). The static-vs-shared decision and
-the existence of any non-GPL G2P alternative are under investigation.
+**Option b (swap to a non-espeak TTS model) is ELIMINATED.** Even if the
+runtime model does not call espeak-ng, the distributed library contains
+GPLv3 object code. The GPL obligation attaches to distribution, not
+execution. Static-vs-shared linking does not change this because
+espeak-ng is statically compiled into the shared library itself.
+
+**Chosen shipping direction (under separate investigation):** Decoupled
+standalone Kokoro-via-ONNX + misaki (Apache 2.0) G2P path. This uses
+the same Kokoro model but loads it through raw ONNX Runtime (`ort` crate)
+with misaki for phonemization, bypassing the sherpa-onnx library and its
+baked-in espeak-ng entirely. Custom from-source sherpa builds and
+hosted/paid TTS are both ruled out by product constraints
+(maintainability and free-respectively).
+
+**This does not block Phase 1.** Phase 1 is internal development only.
+The provider abstraction ensures the shipping TTS backend
+(standalone-Kokoro-ONNX + misaki) can replace the development backend
+(sherpa-onnx-Kokoro) as a config change, not a refactor.
+
+**Upstream misaki integration:** No PRs, issues, or maintainer signal in
+k2-fsa/sherpa-onnx. Issue #2534 (custom G2P) is open since Sept 2025
+with no planned work. Upstream contribution is not a near-term path.
 
 ### Default model picks (explicitly swappable)
 
@@ -222,17 +239,13 @@ means they are replaced by changing config, not code.
    redistribution rights before treating Parakeet as usable for STT. If it
    does not clearly clear, default to Moonshine.
 
-2. **Kokoro G2P / espeak-ng license (MUST resolve before release).**
-   Gate A confirmed that the Kokoro TTS model uses espeak-ng-data for
-   phonemization — the smoke test loaded `espeak-ng-data/` as the
-   `data_dir` parameter. espeak-ng is GPLv3, which is a concern for
-   linking or bundling with a closed commercial binary. This does not
-   block the substrate decision or Phase 1 development, but MUST be
-   resolved before any release that ships Kokoro as the default TTS.
-   Options: (a) confirm sherpa-onnx's bundled espeak-ng-data is data-only
-   and not a linked library (data may not trigger GPL copyleft),
-   (b) replace with a non-GPL G2P path, (c) switch the default TTS model
-   to one that does not require espeak-ng.
+2. **Kokoro G2P / espeak-ng license (RELEASE-BLOCKING, UNRESOLVED).**
+   espeak-ng (GPLv3) is a compiled C library statically linked into the
+   sherpa-onnx prebuilt shared library. Confirmed by nm symbols on both
+   platforms. Option b (swap models) eliminated: espeak-ng is baked in
+   unconditionally. Shipping direction: standalone Kokoro-via-ONNX +
+   misaki (Apache 2.0 G2P), bypassing sherpa-onnx for TTS entirely.
+   Under investigation. See "GPL status" section above.
 
 ### Cloud as optional fallback
 
