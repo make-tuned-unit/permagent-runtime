@@ -142,19 +142,46 @@ wiring one model in directly.
 
 **Primary integration:** `sherpa-rs` Rust bindings to sherpa-onnx, using
 its `download-binaries` feature. This pulls prebuilt ONNX Runtime libraries
-— no CMake, no bindgen, no clang, no source compilation. sherpa-onnx covers
-both STT and TTS, runs on macOS with CoreML acceleration, and actively adds
-new SOTA models (it added Cohere Transcribe in April 2026), which is what
-makes the swappability real in practice.
+— no CMake and no C++ source compilation (the failure modes that broke CI).
+sherpa-onnx covers both STT and TTS, runs on macOS with CoreML acceleration,
+and actively adds new SOTA models (it added Cohere Transcribe in April
+2026), which is what makes the swappability real in practice.
 
 **Acceptable alternative:** The `ort` crate (ONNX Runtime Rust bindings)
-directly, if sherpa-rs does not fit. Same prebuilt-binary model, same CI
-cost profile (near zero).
+directly, if sherpa-rs does not fit. Same prebuilt-binary model.
 
-**CI cost:** Near zero incremental. Prebuilt binaries add download time
-(~50-100 MB one-time) but no compile time, no disk pressure from static
-archives, and no bindgen/clang dependency. This is categorically different
-from whisper-rs.
+**Build-time libclang coupling (under investigation):** sherpa-rs-sys
+invokes bindgen against the sherpa-onnx C API header at build time, which
+requires libclang. This is the same libclang surface shared with
+llama-cpp-sys-2 — the surface that broke CI twice (bd2e7e755, f33c4e988).
+The long-term goal is committed pre-generated bindings to remove the
+build-time libclang coupling entirely. Investigation pending on whether
+this is supported upstream, requires a small contribution, or requires a
+maintained fork.
+
+**CI cost:** Prebuilt sherpa-onnx libraries add download time (~50-100 MB
+one-time) but no C++ compile time and no disk pressure from static
+archives. This is categorically different from whisper-rs. The residual CI
+cost is the bindgen/libclang requirement, shared with llama-cpp-sys-2.
+
+### Gate A validation results (2026-06-03)
+
+**macOS Apple Silicon (aarch64-apple-darwin) — PROVEN:**
+- Prebuilt sherpa-onnx v1.12.9 universal2 shared libraries downloaded and
+  linked (libonnxruntime.1.17.1.dylib, libsherpa-onnx-c-api.dylib).
+- CoreML framework linked for hardware acceleration.
+- No cmake invocation, no C++ source compilation.
+- Kokoro TTS: synthesized test sentence in 1.84s, valid WAV output at 24kHz.
+- Moonshine STT: transcribed sample audio in 346ms.
+- Round-trip TTS→STT: character-perfect ("Hello, I am Henry, your voice
+  assistant. How can I help you today?").
+
+**Ubuntu CI (x86_64-unknown-linux-gnu) — NOT YET PROVEN:**
+- dist.json confirms prebuilt binaries exist for this target.
+- Build.rs analysis confirms no cmake invocation would occur.
+- Not tested in real CI — no local container runtime was available during
+  the Gate A spike. Must be validated before sherpa-rs is added to the
+  workspace.
 
 ### Default model picks (explicitly swappable)
 
@@ -188,11 +215,17 @@ means they are replaced by changing config, not code.
    redistribution rights before treating Parakeet as usable for STT. If it
    does not clearly clear, default to Moonshine.
 
-2. **Kokoro G2P license.** Kokoro requires a grapheme-to-phoneme step. Some
-   Rust wrappers use espeak-ng, which is GPLv3 — a concern for linking into
-   a closed commercial binary. sherpa-onnx bundles its own phonemization
-   path. Confirm the G2P mechanism and its license for whichever integration
-   we choose (sherpa-rs vs direct ort).
+2. **Kokoro G2P / espeak-ng license (MUST resolve before release).**
+   Gate A confirmed that the Kokoro TTS model uses espeak-ng-data for
+   phonemization — the smoke test loaded `espeak-ng-data/` as the
+   `data_dir` parameter. espeak-ng is GPLv3, which is a concern for
+   linking or bundling with a closed commercial binary. This does not
+   block the substrate decision or Phase 1 development, but MUST be
+   resolved before any release that ships Kokoro as the default TTS.
+   Options: (a) confirm sherpa-onnx's bundled espeak-ng-data is data-only
+   and not a linked library (data may not trigger GPL copyleft),
+   (b) replace with a non-GPL G2P path, (c) switch the default TTS model
+   to one that does not require espeak-ng.
 
 ### Cloud as optional fallback
 
