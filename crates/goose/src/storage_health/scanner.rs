@@ -307,7 +307,7 @@ pub fn scan_stale_downloads(counter: &mut u32) -> Vec<ScanFinding> {
             continue;
         }
         let path = entry.path();
-        if safety::is_excluded(path) || safety::is_icloud_dataless(path) {
+        if safety::is_excluded(path) || safety::is_icloud_evicted(path) {
             continue;
         }
 
@@ -367,7 +367,7 @@ pub fn scan_large_user_files(counter: &mut u32) -> Vec<ScanFinding> {
                 continue;
             }
             let path = entry.path();
-            if safety::is_excluded(path) || safety::is_icloud_dataless(path) {
+            if safety::is_excluded(path) || safety::is_icloud_evicted(path) {
                 continue;
             }
 
