@@ -205,17 +205,41 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         }
       }
 
+      // Track whether the PTY has echo enabled. When echo is off (password
+      // prompts, ssh), we must NOT local-echo to avoid flashing plaintext.
+      let echoEnabled = true;
+
+      // Pending local echo queue: characters we've already rendered locally.
+      // When the authoritative PTY echo arrives, we strip matching leading
+      // characters to avoid rendering them twice.
+      const pendingEchos: { char: string; time: number }[] = [];
+
       // Set up PTY data/exit listeners
       let unlistenData: (() => void) | null = null;
       let unlistenExit: (() => void) | null = null;
+      let unlistenEcho: (() => void) | null = null;
 
       if (api) {
         unlistenData =
           (await api.listen('pty_data', (e) => {
             const payload = e.payload as { session_id: string; data: string };
             if (payload.session_id === sessionIdRef.current) {
-              term.write(payload.data);
-              // Parse OSC 7 (CWD reporting): \e]7;file://host/path\a or \e]7;file://host/path\e\\
+              // Strip leading characters that match pending local echoes
+              // to prevent duplicate rendering. Expire stale entries (>2s).
+              const now = performance.now();
+              while (pendingEchos.length > 0 && now - pendingEchos[0].time > 2000) {
+                pendingEchos.shift();
+              }
+              let output = payload.data;
+              while (pendingEchos.length > 0 && output.length > 0 && output[0] === pendingEchos[0].char) {
+                pendingEchos.shift();
+                output = output.substring(1);
+              }
+              if (output.length > 0) {
+                term.write(output);
+              }
+
+              // Parse OSC 7 (CWD reporting) from the full data, not the stripped output
               const osc7 = payload.data.match(/\x1b\]7;file:\/\/[^/]*([^\x07\x1b]+)/);
               if (osc7) {
                 try {
@@ -233,12 +257,28 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
               term.writeln('\r\n\x1b[33m[Process exited]\x1b[0m');
             }
           })) ?? null;
+
+        unlistenEcho =
+          (await api.listen('pty_echo_state', (e) => {
+            const payload = e.payload as { session_id: string; echo_enabled: boolean };
+            if (payload.session_id === sessionIdRef.current) {
+              echoEnabled = payload.echo_enabled;
+            }
+          })) ?? null;
       }
 
       // Forward keystrokes to PTY
       let inputBuffer = '';
 
       const onDataDisposable = term.onData((data) => {
+        // Local echo: render printable ASCII immediately for instant feedback.
+        // Gated on PTY ECHO flag — suppressed during password prompts and
+        // other echo-off modes to avoid flashing plaintext.
+        if (echoEnabled && data.length === 1 && data >= ' ' && data <= '~') {
+          term.write(data);
+          pendingEchos.push({ char: data, time: performance.now() });
+        }
+
         if (api && sessionIdRef.current) {
           api.invoke('write_to_pty', {
             sessionId: sessionIdRef.current,
@@ -330,6 +370,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         onResizeDisposable.dispose();
         unlistenData?.();
         unlistenExit?.();
+        unlistenEcho?.();
         if (resizeTimer) clearTimeout(resizeTimer);
         resizeObserver.disconnect();
         term.dispose();
