@@ -976,11 +976,9 @@ impl SessionStorage {
                    s.accumulated_total_tokens, s.accumulated_input_tokens, s.accumulated_output_tokens,
                    s.schedule_id, s.recipe_json, s.user_recipe_values_json,
                    s.provider_name, s.model_config_json, s.goose_mode, s.thread_id,
-                   COUNT(m.id) as message_count
+                   (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) as message_count
             FROM sessions s
-            LEFT JOIN messages m ON s.id = m.session_id
             {}
-            GROUP BY s.id
             ORDER BY s.updated_at DESC
             "#,
             where_clause
