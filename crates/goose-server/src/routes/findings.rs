@@ -219,7 +219,10 @@ async fn perform_action(
                 }
             }
 
-            let size = std::fs::metadata(file_path).map(|m| m.len()).unwrap_or(0);
+            // Use the scan-time size_bytes (recursive for directories) rather
+            // than re-computing from metadata — metadata.len() on a directory
+            // returns only the inode size (~256 bytes), not its content.
+            let size = data.findings[idx].size_bytes;
             let file_name = file_path
                 .file_name()
                 .and_then(|n| n.to_str())
