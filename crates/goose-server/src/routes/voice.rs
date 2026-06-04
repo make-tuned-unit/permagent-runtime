@@ -25,6 +25,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use subtle;
 
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new().route("/voice", get(voice_ws_handler).with_state(state))
@@ -33,14 +34,22 @@ pub fn routes(state: Arc<AppState>) -> Router {
 #[derive(Deserialize)]
 struct VoiceQuery {
     session_id: Option<String>,
+    token: Option<String>,
 }
 
 async fn voice_ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
     Query(query): Query<VoiceQuery>,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_voice_socket(socket, state, query.session_id))
+) -> Result<impl IntoResponse, axum::http::StatusCode> {
+    // Manual token validation — WebSocket upgrade can't use Bearer middleware.
+    if let Some(ref expected) = state.daemon_token {
+        match &query.token {
+            Some(t) if subtle::ConstantTimeEq::ct_eq(t.as_bytes(), expected.as_bytes()).into() => {}
+            _ => return Err(axum::http::StatusCode::UNAUTHORIZED),
+        }
+    }
+    Ok(ws.on_upgrade(move |socket| handle_voice_socket(socket, state, query.session_id)))
 }
 
 #[derive(Deserialize)]
@@ -205,16 +214,11 @@ async fn handle_voice_socket(
 
                         match audio {
                             Ok(Ok(audio)) => {
-                                let _ = socket
-                                    .send(send_json(&ServerMessage::ReplyStart))
-                                    .await;
+                                let _ = socket.send(send_json(&ServerMessage::ReplyStart)).await;
 
                                 // Send audio as binary (f32le PCM)
-                                let bytes: Vec<u8> = audio
-                                    .samples
-                                    .iter()
-                                    .flat_map(|s| s.to_le_bytes())
-                                    .collect();
+                                let bytes: Vec<u8> =
+                                    audio.samples.iter().flat_map(|s| s.to_le_bytes()).collect();
                                 let _ = socket.send(Message::Binary(bytes.into())).await;
 
                                 let _ = socket

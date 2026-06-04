@@ -17,6 +17,7 @@ import { ModelPicker } from './components/chat/ModelPicker';
 import { InspectionPanel } from './components/inspection/InspectionPanel';
 import { AwarenessIndicator } from './components/awareness/AwarenessIndicator';
 import { PreTurnPreview } from './components/awareness/PreTurnPreview';
+import { VoiceButton } from './components/voice/VoiceButton';
 
 function timeAgo(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -200,6 +201,7 @@ export default function ChatApp() {
 
           <div style={{ flex: 1 }} />
 
+          <VoiceButton />
           <ModelPicker />
 
           <button

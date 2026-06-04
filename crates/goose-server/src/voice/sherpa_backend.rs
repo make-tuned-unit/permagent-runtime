@@ -7,7 +7,7 @@
 use super::provider::{AudioOutput, SpeechToText, SttConfig, TextToSpeech, TtsConfig};
 use anyhow::Context;
 use sherpa_onnx::{
-    GenerationConfig, OfflineMoonshineModelConfig, OfflineModelConfig, OfflineRecognizer,
+    GenerationConfig, OfflineModelConfig, OfflineMoonshineModelConfig, OfflineRecognizer,
     OfflineRecognizerConfig, OfflineTts, OfflineTtsConfig, OfflineTtsKokoroModelConfig,
     OfflineTtsModelConfig,
 };
@@ -49,8 +49,8 @@ impl SherpaMoonshineStt {
             ..Default::default()
         };
 
-        let recognizer = OfflineRecognizer::create(&config)
-            .context("Failed to create Moonshine recognizer")?;
+        let recognizer =
+            OfflineRecognizer::create(&config).context("Failed to create Moonshine recognizer")?;
         Ok(Self { recognizer })
     }
 }
