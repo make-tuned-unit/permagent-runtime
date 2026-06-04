@@ -124,7 +124,11 @@ pub async fn spawn_pty_session(
     let app_handle = app.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
-        let mut echo_on = true; // login shells start with ECHO enabled
+        // Start with echo_on=false so we don't emit a false pty_echo_state(false)
+        // during shell initialization (which briefly runs with ECHO off).
+        // JS initializes echoEnabled=true, so local echo works immediately.
+        // The reader detects ECHO=true on the first user keystroke echo.
+        let mut echo_on = false;
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
