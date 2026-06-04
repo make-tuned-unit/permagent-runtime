@@ -2491,6 +2491,7 @@ version = "1.31.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
+ "libc",
  "portable-pty",
  "reqwest 0.12.28",
  "serde",

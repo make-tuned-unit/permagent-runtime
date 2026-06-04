@@ -38,6 +38,12 @@ struct PtyExitPayload {
     code: Option<u32>,
 }
 
+#[derive(Clone, Serialize)]
+struct PtyEchoStatePayload {
+    session_id: String,
+    echo_enabled: bool,
+}
+
 #[tauri::command]
 pub async fn spawn_pty_session(
     app: AppHandle,
@@ -105,16 +111,52 @@ pub async fn spawn_pty_session(
         .try_clone_reader()
         .map_err(|e| format!("Failed to get PTY reader: {e}"))?;
 
+    // Dup the master fd so the reader thread can check termios ECHO state
+    // independently, without locking the sessions mutex.
+    let master_fd = pair.master.as_raw_fd().unwrap_or(-1);
+    let echo_fd = if master_fd >= 0 {
+        unsafe { libc::dup(master_fd) }
+    } else {
+        -1
+    };
+
     let sid = session_id.clone();
     let app_handle = app.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
+        // Start with echo_on=false so we don't emit a false pty_echo_state(false)
+        // during shell initialization (which briefly runs with ECHO off).
+        // JS initializes echoEnabled=true, so local echo works immediately.
+        // The reader detects ECHO=true on the first user keystroke echo.
+        let mut echo_on = false;
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    // Check whether the PTY ECHO flag changed (e.g. password prompt).
+                    // Emit state change BEFORE pty_data so JS receives the update
+                    // before rendering the prompt that triggered it.
+                    if echo_fd >= 0 {
+                        let mut t: libc::termios = unsafe { std::mem::zeroed() };
+                        if unsafe { libc::tcgetattr(echo_fd, &mut t) } == 0 {
+                            let new_echo = (t.c_lflag & libc::ECHO) != 0;
+                            if new_echo != echo_on {
+                                echo_on = new_echo;
+                                let _ = app_handle.emit_to(
+                                    "main",
+                                    "pty_echo_state",
+                                    PtyEchoStatePayload {
+                                        session_id: sid.clone(),
+                                        echo_enabled: echo_on,
+                                    },
+                                );
+                            }
+                        }
+                    }
+
                     let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                    let _ = app_handle.emit(
+                    let _ = app_handle.emit_to(
+                        "main",
                         "pty_data",
                         PtyDataPayload {
                             session_id: sid.clone(),
@@ -125,7 +167,12 @@ pub async fn spawn_pty_session(
                 Err(_) => break,
             }
         }
-        let _ = app_handle.emit(
+        // Clean up the dup'd fd
+        if echo_fd >= 0 {
+            unsafe { libc::close(echo_fd) };
+        }
+        let _ = app_handle.emit_to(
+            "main",
             "pty_exit",
             PtyExitPayload {
                 session_id: sid,
