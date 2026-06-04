@@ -5,7 +5,7 @@
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",
-    "build:ui": "cd ../command-center && npm run build",
+    "build:ui": "cd ../command-center && npm ci && npm run build",
     "build:daemon": "cd ../.. && cargo build --release --bin permagentd",
     "build:sidecar": "scripts/copy-sidecar.sh",
     "build:icons": "cd ../.. && bash scripts/generate_icons.sh",
