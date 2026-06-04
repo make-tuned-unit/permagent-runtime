@@ -326,7 +326,7 @@ impl TextToSpeech for OrtKokoroTts {
         // Use (shape, Vec<T>) form to avoid ndarray version mismatch with ort's pinned ndarray.
         let token_val = Tensor::from_array(([1usize, token_count], tokens))
             .map_err(|e| anyhow::anyhow!("ort token tensor: {}", e))?;
-        let style_val = Tensor::from_array(([style.len()], style))
+        let style_val = Tensor::from_array(([1usize, style.len()], style))
             .map_err(|e| anyhow::anyhow!("ort style tensor: {}", e))?;
         let speed_val = Tensor::from_array(([1usize], vec![config.speed]))
             .map_err(|e| anyhow::anyhow!("ort speed tensor: {}", e))?;
