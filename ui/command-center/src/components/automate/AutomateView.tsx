@@ -48,6 +48,7 @@ interface Finding {
   action_taken: string | null;
   actioned_at: string | null;
   size_recovered_bytes: number | null;
+  error_message?: string | null;
 }
 
 interface ExtensionInfo {
@@ -778,8 +779,10 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
         method: 'POST', body: JSON.stringify({ action, run_id: run.id }),
       });
       setFindings(prev => prev.map(f => f.id === findingId ? { ...f, action_taken: result.action_taken, actioned_at: result.timestamp, size_recovered_bytes: result.size_recovered_bytes ?? null } : f));
-    } catch {
-      setFindings(prev => prev.map(f => f.id === findingId ? { ...f, action_taken: 'skipped', actioned_at: new Date().toISOString() } : f));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[cleanup] Action "${action}" failed for ${findingId}: ${msg}`);
+      setFindings(prev => prev.map(f => f.id === findingId ? { ...f, action_taken: 'error', actioned_at: new Date().toISOString(), error_message: msg } : f));
     }
     setActionInFlight(null);
   };
@@ -1069,6 +1072,7 @@ finding, loading, onAction }: { finding: Finding; loading: boolean; onAction: (a
   const { colors } = useTheme();
   const fileName = finding.path.split('/').pop() || finding.path;
   if (finding.action_taken === 'trashed') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: 'rgba(91,209,127,0.05)', border: '1px solid rgba(91,209,127,0.12)' }}><span style={{ fontSize: 12, color: '#5BD17F' }}>Trashed</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</span>{finding.size_recovered_bytes != null && <span style={{ fontSize: 11, color: '#5BD17F', fontFamily: font.mono }}>+{formatBytes(finding.size_recovered_bytes)}</span>}</div>;
+  if (finding.action_taken === 'error') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: 'rgba(255,100,100,0.06)', border: '1px solid rgba(255,100,100,0.15)' }}><span style={{ fontSize: 12, color: '#ff6b6b', fontWeight: 600, flexShrink: 0 }}>Failed</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={finding.error_message || undefined}>{finding.error_message || fileName}</span><button onClick={() => onAction('trash')} style={{ padding: '2px 6px', borderRadius: radius.sm, background: 'rgba(255,100,100,0.1)', border: '1px solid rgba(255,100,100,0.2)', color: '#ff6b6b', fontSize: 9, cursor: 'pointer', fontFamily: font.body, flexShrink: 0 }}>Retry</button></div>;
   if (finding.action_taken) return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, opacity: 0.6 }}><span style={{ fontSize: 12, color: colors.textMuted }}>Kept</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1 }}>{fileName}</span></div>;
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: radius.sm, background: colors.surface, border: `1px solid ${colors.border}`, marginTop: 4 }}>

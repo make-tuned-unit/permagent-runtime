@@ -21,6 +21,63 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::AppState;
 
+// ── iCloud eviction check (NSURL API) ─────────────────────────────
+
+/// Check if a file is an iCloud-evicted stub using the authoritative
+/// NSURLUbiquitousItemDownloadingStatusKey API.
+///
+/// Returns true when the file is ubiquitous AND its downloading status
+/// is NotDownloaded — meaning content lives only in iCloud with zero
+/// local disk allocation. This is consistent with the blocks()-based
+/// `is_icloud_evicted` in safety.rs but uses the OS-level API as the
+/// authoritative source for the delete guard.
+#[cfg(target_os = "macos")]
+fn is_icloud_evicted_nsurl(path: &Path) -> bool {
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::{NSString, NSURL};
+
+    let path_str = match path.to_str() {
+        Some(s) => s,
+        None => return false,
+    };
+
+    let ns_path = NSString::from_str(path_str);
+    let url = NSURL::fileURLWithPath(&ns_path);
+
+    // NSURLIsUbiquitousItemKey — is this file managed by iCloud?
+    let is_ubiquitous_key = NSString::from_str("NSURLIsUbiquitousItemKey");
+    let mut ubiq_val: Option<Retained<AnyObject>> = None;
+    let got_ubiq = unsafe { url.getResourceValue_forKey_error(&mut ubiq_val, &is_ubiquitous_key) };
+
+    match (got_ubiq.is_ok(), &ubiq_val) {
+        (true, Some(val)) => {
+            let is_ubiq: bool = unsafe { objc2::msg_send![val, boolValue] };
+            if !is_ubiq {
+                return false; // Not an iCloud-managed file — allow trash
+            }
+        }
+        _ => return false,
+    }
+
+    // NSURLUbiquitousItemDownloadingStatusKey
+    let status_key = NSString::from_str("NSURLUbiquitousItemDownloadingStatusKey");
+    let mut status_val: Option<Retained<AnyObject>> = None;
+    let got_status = unsafe { url.getResourceValue_forKey_error(&mut status_val, &status_key) };
+
+    match (got_status.is_ok(), status_val) {
+        (true, Some(val)) => {
+            // The value is an NSString; cast and compare
+            // SAFETY: the NSURL API returns an NSString for this key
+            let status_str: Retained<NSString> = unsafe { Retained::cast_unchecked(val) };
+            let not_downloaded =
+                NSString::from_str("NSURLUbiquitousItemDownloadingStatusNotDownloaded");
+            status_str.isEqualToString(&not_downloaded)
+        }
+        _ => false, // Can't determine — allow trash
+    }
+}
+
 // ── Sensitive path validation ──────────────────────────────────────
 
 fn is_sensitive_path(path: &Path) -> bool {
@@ -192,34 +249,30 @@ async fn perform_action(
                 ));
             }
 
-            // Check for iCloud-evicted (dataless) files. These exist on disk
-            // but their content is in iCloud — macOS Finder refuses to trash
-            // them without downloading first. Skip gracefully.
+            // Block iCloud-evicted files whose content is not locally present.
+            // Uses the authoritative NSURL downloadingStatus API rather than
+            // raw st_flags, consistent with safety::is_icloud_evicted in the
+            // scanner.
             #[cfg(target_os = "macos")]
             {
-                use std::os::unix::fs::MetadataExt;
-                if let Ok(meta) = std::fs::metadata(file_path) {
-                    let _flags = meta.mode(); // st_flags via MetadataExt
-                                              // SF_DATALESS = 0x40000000 — file content is in iCloud
-                    let raw_flags = unsafe {
-                        let mut stat_buf: libc::stat = std::mem::zeroed();
-                        libc::stat(
-                            std::ffi::CString::new(file_path.to_str().unwrap_or(""))
-                                .unwrap_or_default()
-                                .as_ptr(),
-                            &mut stat_buf,
-                        );
-                        stat_buf.st_flags
-                    };
-                    if raw_flags & 0x40000000 != 0 {
-                        return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(ErrorBody {
-                            error: format!("Skipped — file is stored in iCloud and needs to be downloaded first: {}", finding_path),
-                        })));
-                    }
+                if is_icloud_evicted_nsurl(file_path) {
+                    return Err((
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        Json(ErrorBody {
+                            error: format!(
+                                "File content is in iCloud only (not downloaded locally). \
+                             No local disk space to recover: {}",
+                                finding_path
+                            ),
+                        }),
+                    ));
                 }
             }
 
-            let size = std::fs::metadata(file_path).map(|m| m.len()).unwrap_or(0);
+            // Use the scan-time size_bytes (recursive for directories) rather
+            // than re-computing from metadata — metadata.len() on a directory
+            // returns only the inode size (~256 bytes), not its content.
+            let size = data.findings[idx].size_bytes;
             let file_name = file_path
                 .file_name()
                 .and_then(|n| n.to_str())

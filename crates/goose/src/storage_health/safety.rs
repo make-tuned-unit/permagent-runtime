@@ -73,17 +73,30 @@ pub fn is_excluded(path: &Path) -> bool {
     false
 }
 
-/// Check if a file is likely an iCloud-evicted dataless placeholder.
-/// Uses heuristic: files in iCloud-managed paths with 0 bytes are likely evicted.
-/// The full SF_DATALESS flag check happens in findings.rs at trash time.
-pub fn is_icloud_dataless(path: &Path) -> bool {
-    let path_str = path.to_string_lossy();
-    // Files in Mobile Documents (iCloud Drive) that are 0 bytes are likely evicted
-    if path_str.contains("/Library/Mobile Documents/") {
-        if let Ok(meta) = std::fs::metadata(path) {
-            return meta.len() == 0;
-        }
+/// Check if a file is an iCloud-evicted stub with no local content.
+///
+/// An evicted file still reports its full logical size via `metadata.len()`
+/// (e.g. 462 MB), but has zero disk-allocated blocks because the actual
+/// content lives only in iCloud. Trashing such a file would either fail or
+/// silently trigger a download — neither is the right cleanup behavior.
+///
+/// Detection: `blocks() == 0 && len() > 0` on macOS. This matches the
+/// NSURL `fileAllocatedSize == 0` signal measured in the Step 1 experiment.
+/// On non-macOS, this always returns false.
+#[cfg(target_os = "macos")]
+pub fn is_icloud_evicted(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    if let Ok(meta) = std::fs::metadata(path) {
+        // A file with logical size > 0 but zero allocated 512-byte blocks
+        // is an iCloud stub whose content is not locally present.
+        meta.len() > 0 && meta.blocks() == 0
+    } else {
+        false
     }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn is_icloud_evicted(_path: &Path) -> bool {
     false
 }
 
