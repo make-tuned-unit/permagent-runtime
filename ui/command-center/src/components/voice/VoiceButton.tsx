@@ -35,7 +35,7 @@ const STATE_COLORS: Record<VoiceState, string> = {
 };
 
 export function VoiceButton() {
-  const { colors, theme } = useTheme();
+  const { colors } = useTheme();
   const chatSessionId = useCommandCenter(s => s.chatSessionId);
   const {
     state,
@@ -177,7 +177,20 @@ export function VoiceButton() {
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
         }}>
-          You: "{lastTranscript}"
+          You: &ldquo;{lastTranscript}&rdquo;
+        </div>
+      )}
+      {state === 'playing' && lastReply && (
+        <div style={{
+          fontSize: 10,
+          color: colors.text,
+          maxWidth: 220,
+          textAlign: 'center',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}>
+          {lastReply}
         </div>
       )}
     </div>
