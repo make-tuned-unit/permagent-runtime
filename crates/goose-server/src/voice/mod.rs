@@ -5,6 +5,7 @@
 //! backends can be swapped via config, not code. This is load-bearing:
 //! the shipping TTS backend will differ from the development backend.
 
+pub mod ort_kokoro_backend;
 pub mod provider;
 pub mod sherpa_backend;
 

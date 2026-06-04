@@ -87,6 +87,9 @@ dirs = { workspace = true }
 urlencoding = { workspace = true }
 sherpa-onnx = { version = "1.13.2", default-features = false, features = ["shared"] }
 hound = "3.5"
+ort = { version = "2.0.0-rc.12", features = ["download-binaries"] }
+misaki-rs = { version = "0.3", default-features = false }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

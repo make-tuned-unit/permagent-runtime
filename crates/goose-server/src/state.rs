@@ -532,19 +532,49 @@ type VoiceProviders = (
     Option<Arc<dyn crate::voice::TextToSpeech>>,
 );
 
-fn init_voice_providers(paths: &crate::voice::sherpa_backend::VoiceModelPaths) -> VoiceProviders {
-    match crate::voice::sherpa_backend::create_providers(paths, 4) {
-        Ok(Some((stt, tts))) => (Some(Arc::from(stt)), Some(Arc::from(tts))),
-        Ok(None) => (None, None),
-        Err(e) => {
-            tracing::error!(
-                target: "permagentd::voice",
-                "Failed to initialize voice providers: {}",
-                e
-            );
-            (None, None)
+fn init_voice_providers(
+    stt_paths: &crate::voice::sherpa_backend::VoiceModelPaths,
+) -> VoiceProviders {
+    // STT: sherpa-onnx Moonshine (no espeak dependency for recognition)
+    let stt: Option<Arc<dyn crate::voice::SpeechToText>> = if stt_paths.models_exist() {
+        match crate::voice::sherpa_backend::SherpaMoonshineStt::new(&stt_paths.stt_model_dir, 4) {
+            Ok(s) => {
+                tracing::info!(target: "permagentd::voice", "STT loaded: Moonshine via sherpa-onnx");
+                Some(Arc::new(s))
+            }
+            Err(e) => {
+                tracing::error!(target: "permagentd::voice", "STT load failed: {}", e);
+                None
+            }
         }
-    }
+    } else {
+        tracing::info!(target: "permagentd::voice", "STT models not found — voice STT disabled");
+        None
+    };
+
+    // TTS: standalone Kokoro via ort + misaki-rs (GPL-clean shipping backend)
+    let tts_paths = crate::voice::ort_kokoro_backend::OrtKokoroModelPaths::default_paths();
+    let tts: Option<Arc<dyn crate::voice::TextToSpeech>> = if tts_paths.models_exist() {
+        match crate::voice::ort_kokoro_backend::OrtKokoroTts::new(
+            &tts_paths.model_path,
+            &tts_paths.voices_path,
+            "bm_lewis",
+        ) {
+            Ok(t) => {
+                tracing::info!(target: "permagentd::voice", "TTS loaded: Kokoro via ort+misaki-rs (GPL-clean)");
+                Some(Arc::new(t))
+            }
+            Err(e) => {
+                tracing::error!(target: "permagentd::voice", "TTS load failed: {}", e);
+                None
+            }
+        }
+    } else {
+        tracing::info!(target: "permagentd::voice", "TTS models not found — voice TTS disabled");
+        None
+    };
+
+    (stt, tts)
 }
 
 /// Sanitize hostname for use as device_id: lowercase, replace dots/whitespace

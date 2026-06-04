@@ -75,5 +75,6 @@ pub trait TextToSpeech: Send + Sync {
     fn synthesize(&self, text: &str, config: &TtsConfig) -> anyhow::Result<AudioOutput>;
 
     /// The native sample rate of this TTS backend.
+    #[allow(dead_code)]
     fn sample_rate(&self) -> u32;
 }
