@@ -7311,6 +7311,8 @@ dependencies = [
  "hex",
  "http 1.4.1",
  "libc",
+ "objc2",
+ "objc2-foundation",
  "openssl",
  "pem",
  "permagent",
