@@ -262,6 +262,15 @@ export function Browser() {
       unlistenTitle = fn;
     });
 
+    // Listen for new-window requests (target=_blank, window.open) from child webviews
+    let unlistenNewWindow: (() => void) | null = null;
+    api.listen('browser_new_window_request', (e) => {
+      const payload = e.payload as { source_webview_id: string; url: string };
+      handleOpenUrl(payload.url);
+    }).then((fn) => {
+      unlistenNewWindow = fn;
+    });
+
     // Listen for OAuth URL open events
     let unlistenOAuth: (() => void) | null = null;
     api.listen('browser_open_url', (e) => {
@@ -299,6 +308,7 @@ export function Browser() {
     return () => {
       unlisten?.();
       unlistenTitle?.();
+      unlistenNewWindow?.();
       unlistenOAuth?.();
       unlistenOAuthComplete?.();
     };

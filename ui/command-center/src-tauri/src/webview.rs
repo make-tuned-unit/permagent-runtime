@@ -2,11 +2,18 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, WebviewBuilder, WebviewUrl};
+use tauri::webview::NewWindowResponse;
 
 #[derive(Serialize, Clone)]
 pub struct BrowserNavigatedEvent {
     pub webview_id: String,
     pub url: String,
+}
+
+#[derive(Serialize, Clone)]
+struct BrowserNewWindowRequestEvent {
+    source_webview_id: String,
+    url: String,
 }
 
 pub struct BrowserState {
@@ -45,6 +52,9 @@ pub fn create_browser_webview(
     let app_clone = app.clone();
     let wv_id = id.clone();
 
+    let app_new_window = app.clone();
+    let wv_id_new_window = id.clone();
+
     let builder = WebviewBuilder::new(&id, WebviewUrl::External(parsed_url))
         .auto_resize()
         .on_navigation(move |nav_url| {
@@ -57,6 +67,16 @@ pub fn create_browser_webview(
             );
             let scheme = nav_url.scheme();
             matches!(scheme, "https" | "http" | "about" | "data" | "blob")
+        })
+        .on_new_window(move |url, _features| {
+            let _ = app_new_window.emit(
+                "browser_new_window_request",
+                BrowserNewWindowRequestEvent {
+                    source_webview_id: wv_id_new_window.clone(),
+                    url: url.to_string(),
+                },
+            );
+            NewWindowResponse::Deny
         });
 
     // Attach the child webview to the main application window.
