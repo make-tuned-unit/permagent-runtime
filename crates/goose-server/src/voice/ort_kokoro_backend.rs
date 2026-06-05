@@ -234,21 +234,19 @@ impl VoiceStyles {
         })
     }
 
-    /// Get the style vector for a voice at a given token count.
-    /// Shape: [510, 1, 256] flattened → index by token_count * 256.
-    fn get_style(&self, voice: &str, token_count: usize) -> anyhow::Result<Vec<f32>> {
+    /// Get the style vector for a voice at a given style index.
+    /// NPZ shape: [510, 1, 256] flattened → index by style_index * 256.
+    fn get_style(&self, voice: &str, style_index: usize) -> anyhow::Result<Vec<f32>> {
         let data = self
             .styles
             .get(voice)
             .ok_or_else(|| anyhow::anyhow!("Voice '{}' not found", voice))?;
 
-        // Style shape is [510, 1, 256] = 510*256 = 130560 floats
-        let offset = token_count * self.style_dim;
+        let offset = style_index * self.style_dim;
         if offset + self.style_dim > data.len() {
             bail!(
-                "Style vector out of range: token_count={}, data_len={}",
-                token_count,
-                data.len()
+                "Style vector out of range: voice={}, style_index={}, offset={}, data_len={}, style_dim={}",
+                voice, style_index, offset, data.len(), self.style_dim
             );
         }
         Ok(data[offset..offset + self.style_dim].to_vec())
@@ -318,17 +316,19 @@ impl TextToSpeech for OrtKokoroTts {
 
         // Step 2: Tokenize — IPA phonemes to Kokoro token IDs
         let tokens = phonemes_to_tokens(&phonemes, &self.vocab);
-        let token_count = tokens.len();
+        // Style vector is indexed by UNPADDED token count (exclude the two 0-pad tokens).
+        // Clamped to 509 (max valid index in the 510-entry style array).
+        let style_index = (tokens.len().saturating_sub(2)).min(509);
 
         // Step 3: Get voice style vector
         let voice_name = config.voice_id.as_deref().unwrap_or(&self.default_voice);
-        let style = self.voices.get_style(voice_name, token_count)?;
+        let style = self.voices.get_style(voice_name, style_index)?;
 
         // Step 4: Run ONNX inference
         use ort::value::Tensor;
 
         // Use (shape, Vec<T>) form to avoid ndarray version mismatch with ort's pinned ndarray.
-        let token_val = Tensor::from_array(([1usize, token_count], tokens))
+        let token_val = Tensor::from_array(([1usize, tokens.len()], tokens))
             .map_err(|e| anyhow::anyhow!("ort token tensor: {}", e))?;
         let style_val = Tensor::from_array(([1usize, style.len()], style))
             .map_err(|e| anyhow::anyhow!("ort style tensor: {}", e))?;
