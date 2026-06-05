@@ -42,6 +42,7 @@ export function VoiceButton() {
     lastTranscript,
     lastReply,
     error,
+    debugError,
     connect,
     disconnect,
     startRecording,
@@ -106,67 +107,83 @@ export function VoiceButton() {
   const stateColor = STATE_COLORS[state];
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
-      <button
-        onClick={handleToggle}
-        onPointerDown={state === 'ready' ? handlePointerDown : undefined}
-        onPointerUp={state === 'recording' ? handlePointerUp : undefined}
-        onPointerLeave={state === 'recording' ? handlePointerUp : undefined}
-        title={
-          isActive
-            ? state === 'ready' ? 'Hold to talk (or Cmd+Shift+V)' : STATE_LABELS[state]
-            : 'Enable voice (Cmd+Shift+V)'
-        }
-        style={{
-          width: 22,
-          height: 22,
-          flexShrink: 0,
-          borderRadius: '50%',
-          border: `1.5px solid ${stateColor}`,
-          background: state === 'recording'
-            ? 'rgba(255, 68, 68, 0.2)'
-            : isActive
-              ? `${stateColor}22`
-              : 'transparent',
-          cursor: 'pointer',
-          display: 'grid',
-          placeItems: 'center',
-          padding: 0,
-          transition: 'all 150ms ease-out',
-        }}
-      >
-        <svg
-          width="11"
-          height="11"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke={stateColor}
-          strokeWidth={2.2}
-          strokeLinecap="round"
-          strokeLinejoin="round"
+    <>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 3, minWidth: 0 }}>
+        <button
+          onClick={handleToggle}
+          onPointerDown={state === 'ready' ? handlePointerDown : undefined}
+          onPointerUp={state === 'recording' ? handlePointerUp : undefined}
+          onPointerLeave={state === 'recording' ? handlePointerUp : undefined}
+          title={
+            isActive
+              ? state === 'ready' ? 'Hold to talk (or Cmd+Shift+V)' : STATE_LABELS[state]
+              : 'Enable voice (Cmd+Shift+V)'
+          }
+          style={{
+            width: 18,
+            height: 18,
+            flexShrink: 0,
+            borderRadius: '50%',
+            border: `1.5px solid ${stateColor}`,
+            background: state === 'recording'
+              ? 'rgba(255, 68, 68, 0.2)'
+              : isActive
+                ? `${stateColor}22`
+                : 'transparent',
+            cursor: 'pointer',
+            display: 'grid',
+            placeItems: 'center',
+            padding: 0,
+            transition: 'all 150ms ease-out',
+          }}
         >
-          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-          <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-          <line x1="12" y1="19" x2="12" y2="23" />
-          <line x1="8" y1="23" x2="16" y2="23" />
-        </svg>
-      </button>
+          <svg
+            width="9"
+            height="9"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke={stateColor}
+            strokeWidth={2.5}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+            <line x1="12" y1="19" x2="12" y2="23" />
+            <line x1="8" y1="23" x2="16" y2="23" />
+          </svg>
+        </button>
 
-      {/* State label — hidden at very narrow widths via overflow */}
-      {(error || state === 'recording' || state === 'processing' || state === 'playing') && (
-        <span style={{
-          fontSize: 10,
-          color: error ? '#FF4444' : colors.textDim,
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-          maxWidth: 120,
-          minWidth: 0,
-          flexShrink: 1,
+        {/* State label — compact, hidden at very narrow widths */}
+        {(error || state === 'recording' || state === 'processing' || state === 'playing') && (
+          <span style={{
+            fontSize: 10,
+            color: error ? '#FF4444' : colors.textDim,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            maxWidth: 100,
+            minWidth: 0,
+            flexShrink: 1,
+          }}>
+            {error || (lastTranscript && state === 'playing' ? lastReply || STATE_LABELS[state] : STATE_LABELS[state])}
+          </span>
+        )}
+      </div>
+
+      {/* DEBUG: full error + stack trace — visible overlay for diagnosis.
+          Remove once the runtime crash is confirmed fixed. */}
+      {debugError && (
+        <div style={{
+          position: 'fixed', bottom: 8, left: 8, right: 8, zIndex: 9999,
+          background: 'rgba(0,0,0,0.92)', color: '#FF4444',
+          padding: '8px 12px', borderRadius: 6, fontSize: 10,
+          fontFamily: 'monospace', whiteSpace: 'pre-wrap', maxHeight: 200,
+          overflow: 'auto', border: '1px solid #FF4444',
         }}>
-          {error || (lastTranscript && state === 'playing' ? lastReply || STATE_LABELS[state] : STATE_LABELS[state])}
-        </span>
+          <strong>Voice debug error:</strong>{'\n'}{debugError}
+        </div>
       )}
-    </div>
+    </>
   );
 }

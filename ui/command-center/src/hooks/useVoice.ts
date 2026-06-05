@@ -47,6 +47,9 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const [lastTranscript, setLastTranscript] = useState('');
   const [lastReply, setLastReply] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // Debug: full error + stack trace, visible in the UI for diagnosis.
+  // Remove once the runtime crash is resolved.
+  const [debugError, setDebugError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -55,6 +58,15 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const pendingAudioRef = useRef(false);
   const onEventRef = useRef(onEvent);
   onEventRef.current = onEvent;
+
+  // Capture any error with full stack for debugging
+  const captureError = useCallback((label: string, err: unknown) => {
+    const msg = err instanceof Error
+      ? `${label}: ${err.message}\n${err.stack ?? '(no stack)'}`
+      : `${label}: ${String(err)}`;
+    console.error('[useVoice]', msg);
+    setDebugError(msg);
+  }, []);
 
   const emit = useCallback((event: VoiceEvent) => {
     onEventRef.current?.(event);
@@ -126,8 +138,8 @@ export function useVoice(options: UseVoiceOptions = {}) {
               }, 2000);
               break;
           }
-        } catch {
-          // Ignore parse errors
+        } catch (parseErr) {
+          captureError('ws.onmessage parse', parseErr);
         }
       } else if (event.data instanceof ArrayBuffer) {
         // Binary: TTS audio (f32le PCM)
@@ -141,7 +153,8 @@ export function useVoice(options: UseVoiceOptions = {}) {
       }
     };
 
-    ws.onerror = () => {
+    ws.onerror = (ev) => {
+      captureError('ws.onerror', ev);
       setError('WebSocket connection failed');
       setStateAndEmit('error');
     };
@@ -200,6 +213,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
       source.connect(processor);
       processor.connect(audioCtx.destination);
     } catch (err: unknown) {
+      captureError('startRecording', err);
       const message = err instanceof Error ? err.message : 'Microphone access failed';
       if (message.includes('Permission') || message.includes('NotAllowed')) {
         setError('Microphone permission denied. Grant access in System Settings > Privacy & Security > Microphone.');
@@ -254,7 +268,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
       };
       source.start();
     } catch (err) {
-      console.error('playAudio failed:', err);
+      captureError('playAudio', err);
       pendingAudioRef.current = false;
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         setStateAndEmit('ready');
@@ -275,6 +289,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     lastTranscript,
     lastReply,
     error,
+    debugError,
     connect,
     disconnect,
     startRecording,
