@@ -83,13 +83,23 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
     setStateAndEmit('connecting');
     setError(null);
+    setDebugError(null);
 
-    const token = await getDaemonToken();
+    let token: string | null = null;
+    try {
+      token = await getDaemonToken();
+    } catch (e) {
+      captureError('getDaemonToken', e);
+    }
+
     const base = getApiBaseUrl().replace(/^http/, 'ws');
     const params = new URLSearchParams();
     if (sessionId) params.set('session_id', sessionId);
     if (token) params.set('token', token);
     const url = `${base}/voice?${params}`;
+
+    // Diagnostic: log connection details
+    console.log(`[useVoice] connecting: url=${url.replace(/token=[^&]+/, 'token=***')}, hasToken=${!!token}`);
 
     const ws = new WebSocket(url);
     // Force binary frames to arrive as ArrayBuffer (not Blob).
@@ -153,14 +163,24 @@ export function useVoice(options: UseVoiceOptions = {}) {
       }
     };
 
-    ws.onerror = (ev) => {
-      captureError('ws.onerror', ev);
-      setError('WebSocket connection failed');
-      setStateAndEmit('error');
+    ws.onerror = () => {
+      // WebSocket error events are opaque — the real reason comes from onclose.
+      // Don't set error here; let onclose handle it with the close code/reason.
     };
 
-    ws.onclose = () => {
-      if (state !== 'idle') {
+    ws.onclose = (ev) => {
+      const detail = `code=${ev.code} reason=${ev.reason || '(none)'} wasClean=${ev.wasClean} hasToken=${!!token}`;
+      console.log(`[useVoice] ws.onclose: ${detail}`);
+      if (ev.code !== 1000 && ev.code !== 1005) {
+        // Abnormal close — surface the reason
+        let msg = 'Voice connection failed';
+        if (ev.code === 1006) msg = `Connection refused (${token ? 'token sent' : 'NO TOKEN'})`;
+        if (ev.reason) msg = ev.reason;
+        setError(msg);
+        setDebugError(`ws.onclose: ${detail}`);
+        setStateAndEmit('error');
+        setTimeout(() => setStateAndEmit('idle'), 3000);
+      } else if (state !== 'idle') {
         setStateAndEmit('idle');
       }
     };
