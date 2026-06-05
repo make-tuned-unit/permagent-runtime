@@ -13,18 +13,22 @@ mod terminal;
 /// WKWebView does not expose navigator.mediaDevices by default; we set the
 /// private `_mediaCaptureEnabled` preference via the ObjC runtime.
 ///
-/// SAFETY: wrapped in catch_unwind so a failure can never abort the app.
-/// If anything goes wrong, media capture is simply unavailable (graceful).
+/// Uses objc2::exception::catch to handle ObjC NSExceptions (not just Rust
+/// panics). A failure degrades gracefully — mic capture unavailable, app runs.
 #[cfg(target_os = "macos")]
 fn enable_media_capture(window: &tauri::WebviewWindow) {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = window.with_webview(|webview| {
-            unsafe {
+    let _ = window.with_webview(|webview| {
+        // Wrap in both ObjC exception catch AND Rust catch_unwind.
+        // objc2::exception::catch handles NSException.
+        // catch_unwind handles Rust panics.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            objc2::exception::catch(std::panic::AssertUnwindSafe(|| unsafe {
                 use objc2::msg_send;
                 use objc2::runtime::AnyObject;
-                use objc2_foundation::NSString;
+                use objc2_foundation::{NSNumber, NSString};
 
-                let wk_webview: *mut AnyObject = webview.inner() as *mut _ as *mut AnyObject;
+                let wk_webview: *mut AnyObject =
+                    webview.inner() as *mut _ as *mut AnyObject;
                 if wk_webview.is_null() {
                     return;
                 }
@@ -39,26 +43,33 @@ fn enable_media_capture(window: &tauri::WebviewWindow) {
                     return;
                 }
 
-                // Create NSNumber(YES) for the value
-                let yes: *mut AnyObject =
-                    msg_send![objc2::class!(NSNumber), numberWithBool: true];
-                if yes.is_null() {
-                    return;
-                }
-
-                // Set _mediaCaptureEnabled = YES via KVC
+                // Box the boolean as NSNumber (the ObjC object type setValue:forKey: expects)
+                let yes = NSNumber::new_bool(true);
                 let key = NSString::from_str("_mediaCaptureEnabled");
-                let _: () = msg_send![prefs, setValue: yes, forKey: &*key];
-            }
-        });
-    }));
 
-    if let Err(e) = result {
-        eprintln!(
-            "enable_media_capture: caught panic (mic capture unavailable): {:?}",
-            e
-        );
-    }
+                // Use setValue:forKey: (KVC) — prefs is an NSObject subclass
+                let _: () = msg_send![prefs, setValue: &*yes, forKey: &*key];
+            }))
+        }));
+
+        match result {
+            Ok(Ok(())) => {
+                eprintln!("enable_media_capture: success");
+            }
+            Ok(Err(objc_exception)) => {
+                eprintln!(
+                    "enable_media_capture: ObjC exception (mic capture unavailable): {:?}",
+                    objc_exception
+                );
+            }
+            Err(rust_panic) => {
+                eprintln!(
+                    "enable_media_capture: Rust panic (mic capture unavailable): {:?}",
+                    rust_panic
+                );
+            }
+        }
+    });
 }
 
 /// Tauri command: enable media capture on the calling webview window.
