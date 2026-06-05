@@ -1,8 +1,9 @@
 # Build artifacts
 target/
 
-# Sidecar binaries (built, not committed — 200MB+)
+# Sidecar binaries and dylibs (built, not committed — 200MB+)
 binaries/permagentd-*
+binaries/*.dylib
 
 # Node
 node_modules/

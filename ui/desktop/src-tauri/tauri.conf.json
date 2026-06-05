@@ -40,7 +40,11 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "frameworks": [],
+      "frameworks": [
+        "binaries/libsherpa-onnx-c-api.dylib",
+        "binaries/libonnxruntime.1.24.4.dylib",
+        "binaries/libonnxruntime.dylib"
+      ],
       "minimumSystemVersion": "10.15",
       "signingIdentity": null,
       "entitlements": null
