@@ -87,10 +87,22 @@ async fn handle_voice_socket(
     state: Arc<AppState>,
     session_id: Option<String>,
 ) {
+    tracing::info!(
+        target: "permagentd::voice",
+        "Voice WebSocket connected (session_id={:?}, stt={}, tts={})",
+        session_id,
+        state.voice_stt.is_some(),
+        state.voice_tts.is_some()
+    );
+
     // Check voice providers are available
     let (stt, tts) = match (&state.voice_stt, &state.voice_tts) {
         (Some(stt), Some(tts)) => (stt.clone(), tts.clone()),
         _ => {
+            tracing::warn!(
+                target: "permagentd::voice",
+                "Voice providers not loaded — closing WebSocket"
+            );
             let _ = socket
                 .send(send_json(&ServerMessage::Error {
                     message: "Voice providers not available — models not loaded".into(),
@@ -101,7 +113,9 @@ async fn handle_voice_socket(
     };
 
     // Signal ready
+    tracing::info!(target: "permagentd::voice", "Sending ready signal to client");
     if socket.send(send_json(&ServerMessage::Ready)).await.is_err() {
+        tracing::warn!(target: "permagentd::voice", "Failed to send ready — client disconnected");
         return;
     }
 
@@ -109,16 +123,25 @@ async fn handle_voice_socket(
     let mut recording = false;
     let mut client_sample_rate: u32 = 16000;
 
-    while let Some(Ok(msg)) = socket.recv().await {
+    tracing::info!(target: "permagentd::voice", "Entering message loop");
+    while let Some(result) = socket.recv().await {
+        let msg = match result {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(target: "permagentd::voice", "WebSocket recv error: {}", e);
+                break;
+            }
+        };
         match msg {
             Message::Text(text) => {
                 let text_str: &str = &text;
+                tracing::debug!(target: "permagentd::voice", "Received text: {}", &text_str[..text_str.len().min(100)]);
                 match serde_json::from_str::<ClientMessage>(text_str) {
                     Ok(ClientMessage::Start { sample_rate }) => {
                         audio_buffer.clear();
                         recording = true;
                         client_sample_rate = sample_rate.unwrap_or(16000);
-                        tracing::debug!(target: "permagentd::voice", "Recording started, sample_rate={}", client_sample_rate);
+                        tracing::info!(target: "permagentd::voice", "Recording started, sample_rate={}", client_sample_rate);
                     }
                     Ok(ClientMessage::Stop) if recording => {
                         recording = false;
@@ -250,17 +273,33 @@ async fn handle_voice_socket(
                 }
             }
             Message::Binary(data) if recording => {
-                // PCM f32le audio chunk
                 let chunk: Vec<f32> = data
                     .chunks_exact(4)
                     .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                     .collect();
                 audio_buffer.extend_from_slice(&chunk);
+                if audio_buffer.len() % 16000 < chunk.len() {
+                    tracing::debug!(
+                        target: "permagentd::voice",
+                        "Audio buffer: {} samples ({:.1}s)",
+                        audio_buffer.len(),
+                        audio_buffer.len() as f32 / client_sample_rate as f32
+                    );
+                }
             }
-            Message::Close(_) => break,
-            _ => {}
+            Message::Close(frame) => {
+                tracing::info!(target: "permagentd::voice", "Client sent Close frame: {:?}", frame);
+                break;
+            }
+            Message::Ping(_) => {
+                let _ = socket.send(Message::Pong(vec![].into())).await;
+            }
+            _ => {
+                tracing::debug!(target: "permagentd::voice", "Received other message type");
+            }
         }
     }
+    tracing::info!(target: "permagentd::voice", "Voice WebSocket handler exiting");
 }
 
 /// Feed a voice transcript into the existing chat reply path and collect
