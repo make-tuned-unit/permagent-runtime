@@ -52,6 +52,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
+  const pendingAudioRef = useRef(false);
   const onEventRef = useRef(onEvent);
   onEventRef.current = onEvent;
 
@@ -79,6 +80,9 @@ export function useVoice(options: UseVoiceOptions = {}) {
     const url = `${base}/voice?${params}`;
 
     const ws = new WebSocket(url);
+    // Force binary frames to arrive as ArrayBuffer (not Blob).
+    // WKWebView in Tauri may not support Blob binary frames reliably.
+    ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
 
     ws.onopen = () => {
@@ -94,25 +98,27 @@ export function useVoice(options: UseVoiceOptions = {}) {
               setStateAndEmit('ready');
               break;
             case 'transcript':
-              setLastTranscript(msg.text);
-              emit({ type: 'transcript', text: msg.text });
+              setLastTranscript(msg.text ?? '');
+              emit({ type: 'transcript', text: msg.text ?? '' });
               break;
             case 'reply_text':
-              setLastReply(msg.text);
-              emit({ type: 'reply_text', text: msg.text });
+              setLastReply(msg.text ?? '');
+              emit({ type: 'reply_text', text: msg.text ?? '' });
               break;
             case 'reply_start':
               setStateAndEmit('playing');
               break;
             case 'reply_end':
-              // Audio playback handled when binary data arrives
-              setStateAndEmit('ready');
+              // State transition handled by playAudio's onended callback.
+              // If no audio was received, fall back to ready here.
+              if (!pendingAudioRef.current) {
+                setStateAndEmit('ready');
+              }
               break;
             case 'error':
-              setError(msg.message);
-              emit({ type: 'error', error: msg.message });
+              setError(msg.message ?? 'Unknown voice error');
+              emit({ type: 'error', error: msg.message ?? 'Unknown voice error' });
               setStateAndEmit('error');
-              // Auto-recover to ready after a moment
               setTimeout(() => {
                 if (wsRef.current?.readyState === WebSocket.OPEN) {
                   setStateAndEmit('ready');
@@ -123,14 +129,15 @@ export function useVoice(options: UseVoiceOptions = {}) {
         } catch {
           // Ignore parse errors
         }
-      } else if (event.data instanceof Blob) {
+      } else if (event.data instanceof ArrayBuffer) {
         // Binary: TTS audio (f32le PCM)
-        event.data.arrayBuffer().then((buf) => {
+        const buf = event.data as ArrayBuffer;
+        if (buf.byteLength > 0) {
           const samples = new Float32Array(buf);
-          const sr = 24000; // Kokoro default, also sent in reply_end
-          playAudio(samples, sr);
-          emit({ type: 'reply_audio', audio: { samples, sampleRate: sr } });
-        });
+          pendingAudioRef.current = true;
+          playAudio(samples, 24000);
+          emit({ type: 'reply_audio', audio: { samples, sampleRate: 24000 } });
+        }
       }
     };
 
@@ -146,9 +153,12 @@ export function useVoice(options: UseVoiceOptions = {}) {
     };
   }, [sessionId, setStateAndEmit, emit, state]);
 
-  // Disconnect
+  // Disconnect — uses a ref to avoid stale closure on stopRecording
+  // (stopRecording is defined below but the ref is updated after each render).
+  const stopRecordingRef = useRef<() => void>(() => {});
+
   const disconnect = useCallback(() => {
-    stopRecording();
+    stopRecordingRef.current();
     wsRef.current?.close();
     wsRef.current = null;
     setStateAndEmit('idle');
@@ -209,32 +219,47 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const stopRecording = useCallback(() => {
     processorRef.current?.disconnect();
     processorRef.current = null;
-    audioCtxRef.current?.close();
+    audioCtxRef.current?.close().catch(() => {});
     audioCtxRef.current = null;
     mediaStreamRef.current?.getTracks().forEach(t => t.stop());
     mediaStreamRef.current = null;
+    pendingAudioRef.current = false;
 
     if (wsRef.current?.readyState === WebSocket.OPEN && state === 'recording') {
       wsRef.current.send(JSON.stringify({ type: 'stop' }));
       setStateAndEmit('processing');
     }
   }, [state, setStateAndEmit]);
+  stopRecordingRef.current = stopRecording;
 
   // Play TTS audio
   const playAudio = useCallback((samples: Float32Array, sr: number) => {
-    const ctx = new AudioContext({ sampleRate: sr });
-    const buffer = ctx.createBuffer(1, samples.length, sr);
-    buffer.getChannelData(0).set(samples);
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    source.connect(ctx.destination);
-    source.onended = () => {
-      ctx.close();
+    if (!samples || samples.length === 0) {
+      pendingAudioRef.current = false;
+      return;
+    }
+    try {
+      const ctx = new AudioContext({ sampleRate: sr });
+      const buffer = ctx.createBuffer(1, samples.length, sr);
+      buffer.getChannelData(0).set(samples);
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(ctx.destination);
+      source.onended = () => {
+        pendingAudioRef.current = false;
+        ctx.close().catch(() => {});
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          setStateAndEmit('ready');
+        }
+      };
+      source.start();
+    } catch (err) {
+      console.error('playAudio failed:', err);
+      pendingAudioRef.current = false;
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         setStateAndEmit('ready');
       }
-    };
-    source.start();
+    }
   }, [setStateAndEmit]);
 
   // Cleanup on unmount

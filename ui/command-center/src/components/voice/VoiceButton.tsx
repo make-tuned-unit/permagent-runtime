@@ -106,92 +106,66 @@ export function VoiceButton() {
   const stateColor = STATE_COLORS[state];
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-      {/* Main voice button */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <button
-          onClick={handleToggle}
-          onPointerDown={state === 'ready' ? handlePointerDown : undefined}
-          onPointerUp={state === 'recording' ? handlePointerUp : undefined}
-          onPointerLeave={state === 'recording' ? handlePointerUp : undefined}
-          title={
-            isActive
-              ? state === 'ready' ? 'Hold to talk (or Cmd+Shift+V)' : STATE_LABELS[state]
-              : 'Enable voice (Cmd+Shift+V)'
-          }
-          style={{
-            width: 28,
-            height: 28,
-            borderRadius: '50%',
-            border: `2px solid ${stateColor}`,
-            background: state === 'recording'
-              ? 'rgba(255, 68, 68, 0.2)'
-              : isActive
-                ? `${stateColor}22`
-                : 'transparent',
-            cursor: 'pointer',
-            display: 'grid',
-            placeItems: 'center',
-            transition: 'all 150ms ease-out',
-          }}
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
+      <button
+        onClick={handleToggle}
+        onPointerDown={state === 'ready' ? handlePointerDown : undefined}
+        onPointerUp={state === 'recording' ? handlePointerUp : undefined}
+        onPointerLeave={state === 'recording' ? handlePointerUp : undefined}
+        title={
+          isActive
+            ? state === 'ready' ? 'Hold to talk (or Cmd+Shift+V)' : STATE_LABELS[state]
+            : 'Enable voice (Cmd+Shift+V)'
+        }
+        style={{
+          width: 22,
+          height: 22,
+          flexShrink: 0,
+          borderRadius: '50%',
+          border: `1.5px solid ${stateColor}`,
+          background: state === 'recording'
+            ? 'rgba(255, 68, 68, 0.2)'
+            : isActive
+              ? `${stateColor}22`
+              : 'transparent',
+          cursor: 'pointer',
+          display: 'grid',
+          placeItems: 'center',
+          padding: 0,
+          transition: 'all 150ms ease-out',
+        }}
+      >
+        <svg
+          width="11"
+          height="11"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke={stateColor}
+          strokeWidth={2.2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
         >
-          {/* Mic icon */}
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke={stateColor}
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-            <line x1="12" y1="19" x2="12" y2="23" />
-            <line x1="8" y1="23" x2="16" y2="23" />
-          </svg>
-        </button>
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+          <line x1="12" y1="19" x2="12" y2="23" />
+          <line x1="8" y1="23" x2="16" y2="23" />
+        </svg>
+      </button>
 
-        {/* State label */}
+      {/* State label — hidden at very narrow widths via overflow */}
+      {(error || state === 'recording' || state === 'processing' || state === 'playing') && (
         <span style={{
-          fontSize: 11,
+          fontSize: 10,
           color: error ? '#FF4444' : colors.textDim,
-          maxWidth: 180,
           overflow: 'hidden',
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
+          maxWidth: 120,
+          minWidth: 0,
+          flexShrink: 1,
         }}>
-          {error || STATE_LABELS[state]}
+          {error || (lastTranscript && state === 'playing' ? lastReply || STATE_LABELS[state] : STATE_LABELS[state])}
         </span>
-      </div>
-
-      {/* Transcript / reply preview (minimal, shown briefly) */}
-      {(state === 'processing' || state === 'playing') && lastTranscript && (
-        <div style={{
-          fontSize: 10,
-          color: colors.textDim,
-          maxWidth: 220,
-          textAlign: 'center',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}>
-          You: &ldquo;{lastTranscript}&rdquo;
-        </div>
-      )}
-      {state === 'playing' && lastReply && (
-        <div style={{
-          fontSize: 10,
-          color: colors.text,
-          maxWidth: 220,
-          textAlign: 'center',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}>
-          {lastReply}
-        </div>
       )}
     </div>
   );
