@@ -2,12 +2,54 @@
 
 use tauri::Manager;
 
+/// Enable media capture (microphone getUserMedia) on a Tauri webview window.
+/// WKWebView does not expose navigator.mediaDevices by default; we need to set
+/// the private `_mediaCaptureEnabled` preference via the ObjC runtime.
+#[cfg(target_os = "macos")]
+fn enable_media_capture(window: &tauri::WebviewWindow) {
+    // Use the with_webview API to access the underlying WKWebView directly.
+    let _ = window.with_webview(|webview| {
+        #[cfg(target_os = "macos")]
+        unsafe {
+            use objc2::msg_send;
+            use objc2::runtime::AnyObject;
+            use objc2_foundation::NSString;
+
+            let wk_webview: *mut AnyObject = webview.inner() as *mut _ as *mut AnyObject;
+            if wk_webview.is_null() { return; }
+
+            let config: *mut AnyObject = msg_send![wk_webview, configuration];
+            if config.is_null() { return; }
+
+            let prefs: *mut AnyObject = msg_send![config, preferences];
+            if prefs.is_null() { return; }
+
+            // setValue:forKey: with NSNumber(YES) for "_mediaCaptureEnabled"
+            let yes: *mut AnyObject = msg_send![
+                objc2::class!(NSNumber), numberWithBool: true
+            ];
+            let key = NSString::from_str("_mediaCaptureEnabled");
+            let _: () = msg_send![prefs, setValue: yes forKey: &*key];
+        }
+    });
+}
+
+
 mod activity;
 mod browser;
 mod daemon;
 mod files;
 mod menu;
 mod terminal;
+
+/// Tauri command to enable media capture on the calling webview window.
+/// Called from JS after dynamically creating windows (e.g. the chat window).
+#[tauri::command]
+fn enable_media_capture_cmd(window: tauri::WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    enable_media_capture(&window);
+    let _ = window; // suppress unused on non-macOS
+}
 
 fn main() {
     let builder = tauri::Builder::default()
@@ -36,9 +78,19 @@ fn main() {
             files::read_dropped_file,
             daemon::get_daemon_token,
             activity::emit_activity,
+            enable_media_capture_cmd,
         ])
         .setup(|app| {
             daemon::start_daemon(app.handle())?;
+
+            // Enable microphone capture (getUserMedia) in all webviews.
+            // WKWebView requires mediaCaptureEnabled = true on its preferences
+            // for navigator.mediaDevices to be available.
+            #[cfg(target_os = "macos")]
+            for (_label, window) in app.webview_windows() {
+                enable_media_capture(&window);
+            }
+
             Ok(())
         })
         .on_window_event(|window, event| {

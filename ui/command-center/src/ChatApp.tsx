@@ -83,6 +83,13 @@ export default function ChatApp() {
 
   useEffect(() => {
     api.getIdentity().then(id => setAgentName(id.first_name)).catch(() => {});
+    // Enable media capture (getUserMedia) on this webview window.
+    // WKWebView doesn't expose navigator.mediaDevices by default.
+    if ('__TAURI_INTERNALS__' in window) {
+      import('@tauri-apps/api/core').then(({ invoke }) => {
+        invoke('enable_media_capture_cmd').catch(() => {});
+      });
+    }
   }, []);
 
   // Connect on mount
