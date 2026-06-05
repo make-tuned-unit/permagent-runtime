@@ -75,6 +75,11 @@ function App() {
         const { getCurrentWindow } = await import('@tauri-apps/api/window');
         await getCurrentWindow().setTheme(theme === 'silver' ? 'light' : 'dark');
       } catch { /* older Tauri or permission not available */ }
+      // Enable media capture (getUserMedia) on this window's WKWebView.
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('enable_media_capture_cmd');
+      } catch { /* voice mic capture unavailable — graceful */ }
     })();
   }, [theme]);
 
