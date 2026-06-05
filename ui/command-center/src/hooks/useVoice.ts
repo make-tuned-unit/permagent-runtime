@@ -6,7 +6,7 @@
  * When the shipping backend swaps to ort+misaki-rs, the frontend stays unchanged.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getApiBaseUrl } from '../lib/api';
+import { getApiBaseUrl, loadDaemonToken } from '../lib/api';
 
 export type VoiceState =
   | 'idle'          // No voice activity
@@ -32,14 +32,7 @@ interface UseVoiceOptions {
   onEvent?: (event: VoiceEvent) => void;
 }
 
-async function getDaemonToken(): Promise<string | null> {
-  try {
-    const { invoke } = await import('@tauri-apps/api/core');
-    return invoke<string>('get_daemon_token');
-  } catch {
-    return null;
-  }
-}
+// Token is loaded via api.ts's loadDaemonToken (proven, cached, loaded at app init).
 
 export function useVoice(options: UseVoiceOptions = {}) {
   const { sessionId, sampleRate = 16000, onEvent } = options;
@@ -85,11 +78,12 @@ export function useVoice(options: UseVoiceOptions = {}) {
     setError(null);
     setDebugError(null);
 
+    // Use the api module's proven cached token (loaded at app init).
     let token: string | null = null;
     try {
-      token = await getDaemonToken();
+      token = await loadDaemonToken();
     } catch (e) {
-      captureError('getDaemonToken', e);
+      captureError('loadDaemonToken', e);
     }
 
     const base = getApiBaseUrl().replace(/^http/, 'ws');
@@ -98,8 +92,8 @@ export function useVoice(options: UseVoiceOptions = {}) {
     if (token) params.set('token', token);
     const url = `${base}/voice?${params}`;
 
-    // Diagnostic: log connection details
-    console.log(`[useVoice] connecting: url=${url.replace(/token=[^&]+/, 'token=***')}, hasToken=${!!token}`);
+    // Diagnostic: log connection details (full URL for debugging)
+    console.log(`[useVoice] connecting: url=${url}, hasToken=${!!token}, tokenLen=${token?.length ?? 0}, base=${base}`);
 
     const ws = new WebSocket(url);
     // Force binary frames to arrive as ArrayBuffer (not Blob).

@@ -18,7 +18,7 @@ const SECRET_KEY = (import.meta.env.VITE_SECRET_KEY as string | undefined) || ''
 let _daemonToken: string | null = null;
 let _daemonTokenPromise: Promise<string | null> | null = null;
 
-function loadDaemonToken(): Promise<string | null> {
+export function loadDaemonToken(): Promise<string | null> {
   if (_daemonToken) return Promise.resolve(_daemonToken);
   if (!isTauri) return Promise.resolve(null);
   if (!_daemonTokenPromise) {
