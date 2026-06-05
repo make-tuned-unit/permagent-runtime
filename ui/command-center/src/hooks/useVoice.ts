@@ -193,35 +193,42 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
   // Start recording (push-to-talk pressed)
   const startRecording = useCallback(async () => {
-    if (wsRef.current?.readyState !== WebSocket.OPEN) return;
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
     if (state !== 'ready') return;
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { sampleRate, channelCount: 1, echoCancellation: true },
       });
+
+      // Re-check after await — WS may have closed during mic permission prompt.
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        stream.getTracks().forEach(t => t.stop());
+        return;
+      }
+
       mediaStreamRef.current = stream;
 
       const audioCtx = new AudioContext({ sampleRate });
       audioCtxRef.current = audioCtx;
       const source = audioCtx.createMediaStreamSource(stream);
 
-      // Use ScriptProcessorNode for PCM access (deprecated but reliable in WKWebView)
       const processor = audioCtx.createScriptProcessor(4096, 1, 1);
       processorRef.current = processor;
 
-      // Tell server we're starting
-      wsRef.current!.send(JSON.stringify({ type: 'start', sample_rate: sampleRate }));
+      // Tell server we're starting (safe — re-checked above)
+      wsRef.current.send(JSON.stringify({ type: 'start', sample_rate: sampleRate }));
       setStateAndEmit('recording');
 
       processor.onaudioprocess = (e) => {
-        if (wsRef.current?.readyState !== WebSocket.OPEN) return;
+        const sock = wsRef.current;
+        if (!sock || sock.readyState !== WebSocket.OPEN) return;
         const input = e.inputBuffer.getChannelData(0);
-        // Send as f32le binary
         const buffer = new ArrayBuffer(input.length * 4);
         const view = new Float32Array(buffer);
         view.set(input);
-        wsRef.current!.send(buffer);
+        sock.send(buffer);
       };
 
       source.connect(processor);
@@ -253,8 +260,9 @@ export function useVoice(options: UseVoiceOptions = {}) {
     mediaStreamRef.current = null;
     pendingAudioRef.current = false;
 
-    if (wsRef.current?.readyState === WebSocket.OPEN && state === 'recording') {
-      wsRef.current.send(JSON.stringify({ type: 'stop' }));
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN && state === 'recording') {
+      ws.send(JSON.stringify({ type: 'stop' }));
       setStateAndEmit('processing');
     }
   }, [state, setStateAndEmit]);
