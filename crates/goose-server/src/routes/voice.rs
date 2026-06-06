@@ -289,6 +289,8 @@ async fn stream_reply_with_tts(
     use permagent::agents::{AgentEvent, SessionConfig};
     use permagent::conversation::message::{Message as ChatMessage, MessageContent};
 
+    let t_setup = std::time::Instant::now();
+
     let sid = if let Some(id) = session_id {
         id.to_string()
     } else {
@@ -316,12 +318,15 @@ async fn stream_reply_with_tts(
         )
         .await;
 
-    let t = std::time::Instant::now();
+    let setup_ms = t_setup.elapsed().as_millis();
+
+    let t_recall = std::time::Instant::now();
     if let Some(ref brain) = state.brain {
         let recognition_ctx = state.build_recognition_context(Some(&sid));
         let n = crate::brain_ops::inject_recall(brain, &agent, transcript, recognition_ctx).await;
-        tracing::info!(target: "permagentd::voice", "  recall: {}ms ({} hits)", t.elapsed().as_millis(), n);
+        tracing::info!(target: "permagentd::voice", "  recall: {}ms ({} hits)", t_recall.elapsed().as_millis(), n);
     }
+    let recall_ms = t_recall.elapsed().as_millis();
 
     let session_config = SessionConfig {
         id: sid.clone(),
@@ -330,15 +335,24 @@ async fn stream_reply_with_tts(
         retry_config: None,
     };
 
-    let reply_start = std::time::Instant::now();
+    let t_reply = std::time::Instant::now();
     let mut stream = agent.reply(user_msg, session_config, None).await?;
+    let reply_setup_ms = t_reply.elapsed().as_millis();
+    tracing::info!(
+        target: "permagentd::voice",
+        "  pipeline: setup={}ms recall={}ms reply_setup={}ms (total pre-stream={}ms)",
+        setup_ms, recall_ms, reply_setup_ms,
+        pipeline_start.elapsed().as_millis()
+    );
 
-    // Accumulate text, detect sentence boundaries, synthesize + send each sentence
+    // Accumulate text, detect phrase/sentence boundaries, synthesize + send each chunk
     let mut text_buf = String::new();
     let mut full_reply = String::new();
     let mut sentence_num = 0u32;
     let mut total_tts_ms: u128 = 0;
     let mut first_audio_sent = false;
+    let mut first_token_logged = false;
+    let stream_start = std::time::Instant::now();
 
     while let Some(event) = stream.next().await {
         if let Ok(AgentEvent::Message(msg)) = event {
@@ -347,11 +361,19 @@ async fn stream_reply_with_tts(
             }
             for content in &msg.content {
                 if let MessageContent::Text(text_content) = content {
+                    if !first_token_logged {
+                        tracing::info!(
+                            target: "permagentd::voice",
+                            "  TTFT: {}ms after stream start",
+                            stream_start.elapsed().as_millis()
+                        );
+                        first_token_logged = true;
+                    }
                     text_buf.push_str(&text_content.text);
                     full_reply.push_str(&text_content.text);
 
-                    // Check for sentence boundary
-                    while let Some(pos) = find_sentence_end(&text_buf) {
+                    // Check for speakable boundary (clause or sentence)
+                    while let Some(pos) = find_speakable_boundary(&text_buf) {
                         let sentence = text_buf[..=pos].trim().to_string();
                         text_buf = text_buf[pos + 1..].to_string();
 
@@ -445,7 +467,7 @@ async fn stream_reply_with_tts(
         }))
         .await;
 
-    let reply_ms = reply_start.elapsed().as_millis();
+    let reply_ms = t_reply.elapsed().as_millis();
     let _ = socket
         .send(send_json(&ServerMessage::ReplyEnd {
             sample_rate: tts.sample_rate(),
@@ -462,16 +484,49 @@ async fn stream_reply_with_tts(
     Ok(())
 }
 
-/// Find the end of a sentence in the buffer (position of .!? followed by space or end).
-fn find_sentence_end(text: &str) -> Option<usize> {
+/// Find the earliest speakable boundary in the buffer.
+///
+/// Priority: sentence boundaries (.!?) first, then clause boundaries (, ; — :)
+/// once enough text has accumulated. This lets TTS start on the first natural
+/// pause rather than waiting for a full sentence.
+///
+/// Minimum lengths prevent choppy fragments:
+/// - Sentence boundary (.!?): 6+ chars (same as before)
+/// - Clause boundary (, ; — :): 25+ chars (enough for natural prosody)
+fn find_speakable_boundary(text: &str) -> Option<usize> {
+    // First pass: sentence boundary (strongest break, lowest minimum)
     for (i, ch) in text.char_indices() {
         if (ch == '.' || ch == '!' || ch == '?') && i > 5 {
-            // Check that next char is whitespace or end of string
             let next = text[i + ch.len_utf8()..].chars().next();
             if next.is_none() || next == Some(' ') || next == Some('\n') {
                 return Some(i);
             }
         }
     }
+
+    // Second pass: clause boundary (weaker break, higher minimum)
+    // Only triggers if we have enough text for natural-sounding TTS
+    for (i, ch) in text.char_indices() {
+        if i < 25 {
+            continue;
+        }
+        let is_clause = match ch {
+            ',' | ';' => {
+                let next = text[i + ch.len_utf8()..].chars().next();
+                next == Some(' ') || next == Some('\n')
+            }
+            '\u{2014}' => true, // em dash
+            ':' => {
+                // Colon is a clause break only if followed by space (not in URLs/times)
+                let next = text[i + ch.len_utf8()..].chars().next();
+                next == Some(' ')
+            }
+            _ => false,
+        };
+        if is_clause {
+            return Some(i);
+        }
+    }
+
     None
 }
