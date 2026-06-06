@@ -122,6 +122,10 @@ async fn handle_voice_socket(
     let mut audio_buffer: Vec<f32> = Vec::new();
     let mut recording = false;
     let mut client_sample_rate: u32 = 16000;
+    // Cancellation flag: set when the socket closes to abort in-flight TTS work.
+    // Prevents a stale handler from holding the TTS mutex while a new handler
+    // starts on a reconnected socket.
+    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     tracing::info!(target: "permagentd::voice", "Entering message loop");
     while let Some(result) = socket.recv().await {
@@ -226,6 +230,7 @@ async fn handle_voice_socket(
                             &mut socket,
                             pipeline_start,
                             stt_ms,
+                            cancelled.clone(),
                         )
                         .await;
 
@@ -270,7 +275,9 @@ async fn handle_voice_socket(
             }
         }
     }
-    tracing::info!(target: "permagentd::voice", "Voice WebSocket handler exiting");
+    // Signal cancellation so any in-flight TTS spawn_blocking tasks skip the mutex
+    cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+    tracing::info!(target: "permagentd::voice", "Voice WebSocket handler exiting (cancelled=true)");
 }
 
 /// Stream the LLM reply, synthesize each sentence as it completes, and send
@@ -284,6 +291,7 @@ async fn stream_reply_with_tts(
     socket: &mut WebSocket,
     pipeline_start: std::time::Instant,
     stt_ms: u128,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> anyhow::Result<()> {
     use futures::StreamExt;
     use permagent::agents::{AgentEvent, SessionConfig};
@@ -382,15 +390,35 @@ async fn stream_reply_with_tts(
                         }
 
                         sentence_num += 1;
+
+                        // Guard: skip TTS if the socket closed (prevents
+                        // stale handlers from holding the TTS mutex while
+                        // a new handler starts on a reconnected socket).
+                        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                            tracing::info!(target: "permagentd::voice", "TTS cancelled — skipping sentence {}", sentence_num);
+                            return Ok(());
+                        }
+
                         let tts_ref = tts.clone();
                         let sent = sentence.clone();
+                        let cancel_flag = cancelled.clone();
                         let tts_start = std::time::Instant::now();
                         let audio = tokio::task::spawn_blocking(move || {
+                            // Check cancellation before acquiring the mutex
+                            if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                                return Err(anyhow::anyhow!("cancelled"));
+                            }
                             tts_ref.synthesize(&sent, &TtsConfig::default())
                         })
                         .await;
                         let chunk_tts_ms = tts_start.elapsed().as_millis();
                         total_tts_ms += chunk_tts_ms;
+
+                        // Check cancellation after TTS (socket may have closed during synthesis)
+                        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                            tracing::info!(target: "permagentd::voice", "TTS cancelled after sentence {}", sentence_num);
+                            return Ok(());
+                        }
 
                         match audio {
                             Ok(Ok(audio)) => {
@@ -421,6 +449,11 @@ async fn stream_reply_with_tts(
                                 }
                             }
                             Ok(Err(e)) => {
+                                let msg = e.to_string();
+                                if msg == "cancelled" {
+                                    tracing::info!(target: "permagentd::voice", "TTS cancelled (pre-mutex)");
+                                    return Ok(());
+                                }
                                 tracing::warn!(target: "permagentd::voice", "TTS chunk failed: {}", e);
                             }
                             Err(e) => {
@@ -435,11 +468,15 @@ async fn stream_reply_with_tts(
 
     // Synthesize any remaining text after the stream ends
     let remainder = text_buf.trim().to_string();
-    if !remainder.is_empty() {
+    if !remainder.is_empty() && !cancelled.load(std::sync::atomic::Ordering::Relaxed) {
         sentence_num += 1;
         let tts_ref = tts.clone();
+        let cancel_flag = cancelled.clone();
         let tts_start = std::time::Instant::now();
         let audio = tokio::task::spawn_blocking(move || {
+            if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(anyhow::anyhow!("cancelled"));
+            }
             tts_ref.synthesize(&remainder, &TtsConfig::default())
         })
         .await;

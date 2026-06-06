@@ -64,18 +64,14 @@ export function VoiceButton() {
       if (isRecordingRef.current) return; // already recording
 
       const s = stateRef.current;
-      // Only trigger on ready or idle (idle will auto-connect)
-      if (s !== 'ready' && s !== 'idle') return;
+      // Only trigger when socket is connected and ready — NOT during
+      // processing/playing (prevents overlapping exchanges that contend
+      // on the TTS mutex). First activation requires clicking the mic button.
+      if (s !== 'ready') return;
 
       e.preventDefault(); // prevent page scroll
       isRecordingRef.current = true;
-
-      if (s === 'idle') {
-        // First use: activate then record
-        activate().then(() => startRecording());
-      } else {
-        startRecording();
-      }
+      startRecording();
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
@@ -99,9 +95,10 @@ export function VoiceButton() {
   const handleClick = useCallback(() => {
     if (state === 'idle' || state === 'error') {
       activate();
-    } else if (state === 'ready' || state === 'playing') {
+    } else if (state === 'ready') {
       deactivate();
     }
+    // During processing/playing: click does nothing (wait for reply to finish)
   }, [state, activate, deactivate]);
 
   const handlePointerDown = useCallback(() => {

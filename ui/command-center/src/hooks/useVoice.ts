@@ -295,15 +295,10 @@ export function useVoice(options: UseVoiceOptions = {}) {
     setStateAndEmit('idle');
   }, [setStateAndEmit]);
 
-  /** Start recording. Auto-connects if needed. */
+  /** Start recording. Only works when socket is already open and state is 'ready'.
+   *  Does NOT auto-reconnect — prevents overlapping exchanges from creating
+   *  concurrent backend handlers that contend on the TTS session mutex. */
   const startRecording = useCallback(async () => {
-    // Ensure connection is ready before recording
-    try {
-      await ensureReady();
-    } catch {
-      return; // connection failed, error already set
-    }
-
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     if (stateRef.current !== 'ready') return;
