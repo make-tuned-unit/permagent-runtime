@@ -106,6 +106,10 @@ path = "src/main.rs"
 name = "generate_schema"
 path = "src/bin/generate_schema.rs"
 
+[[bin]]
+name = "tts_bench"
+path = "src/bin/tts_bench.rs"
+
 [dev-dependencies]
 tower = "0.5.2"
 tempfile = { workspace = true }

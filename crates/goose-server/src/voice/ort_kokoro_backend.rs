@@ -350,6 +350,7 @@ impl TextToSpeech for OrtKokoroTts {
             let chunk_start = std::time::Instant::now();
 
             // G2P
+            let t_g2p = std::time::Instant::now();
             let phonemes = {
                 let g2p = self
                     .g2p
@@ -358,34 +359,38 @@ impl TextToSpeech for OrtKokoroTts {
                 let (phonemes, _tokens) = g2p.g2p(sentence)?;
                 phonemes
             };
+            let g2p_ms = t_g2p.elapsed().as_millis();
 
             // Tokenize
+            let t_tok = std::time::Instant::now();
             let tokens = phonemes_to_tokens(&phonemes, &self.vocab);
             let style_index = (tokens.len().saturating_sub(2)).min(509);
-
-            tracing::debug!(
-                target: "permagentd::voice",
-                "TTS chunk {}/{}: \"{}\" → {} tokens",
-                i + 1, sentences.len(), &sentence[..sentence.len().min(40)], tokens.len()
-            );
+            let tok_ms = t_tok.elapsed().as_millis();
 
             // Style vector
+            let t_style = std::time::Instant::now();
             let style = self.voices.get_style(voice_name, style_index)?;
+            let style_ms = t_style.elapsed().as_millis();
 
             // ONNX inference
             use ort::value::Tensor;
+            let t_tensor = std::time::Instant::now();
             let token_val = Tensor::from_array(([1usize, tokens.len()], tokens))
                 .map_err(|e| anyhow::anyhow!("ort token tensor: {}", e))?;
             let style_val = Tensor::from_array(([1usize, style.len()], style))
                 .map_err(|e| anyhow::anyhow!("ort style tensor: {}", e))?;
             let speed_val = Tensor::from_array(([1usize], vec![config.speed]))
                 .map_err(|e| anyhow::anyhow!("ort speed tensor: {}", e))?;
+            let tensor_ms = t_tensor.elapsed().as_millis();
 
+            let t_lock = std::time::Instant::now();
             let mut session = self
                 .session
                 .lock()
                 .map_err(|e| anyhow::anyhow!("Session lock: {}", e))?;
+            let lock_ms = t_lock.elapsed().as_millis();
 
+            let t_run = std::time::Instant::now();
             let outputs = session
                 .run(ort::inputs![
                     "tokens" => token_val,
@@ -393,19 +398,27 @@ impl TextToSpeech for OrtKokoroTts {
                     "speed" => speed_val,
                 ])
                 .map_err(|e| anyhow::anyhow!("ort run: {}", e))?;
+            let run_ms = t_run.elapsed().as_millis();
 
+            let t_extract = std::time::Instant::now();
             let (_shape, raw_data) = outputs[0]
                 .try_extract_tensor::<f32>()
                 .map_err(|e| anyhow::anyhow!("extract tensor: {}", e))?;
             let chunk_samples: Vec<f32> = raw_data.to_vec();
+            let extract_ms = t_extract.elapsed().as_millis();
 
             let chunk_ms = chunk_start.elapsed().as_millis();
             let chunk_dur = chunk_samples.len() as f32 / SAMPLE_RATE as f32;
-            tracing::debug!(
+            let rtf = chunk_ms as f32 / 1000.0 / chunk_dur.max(0.01);
+            tracing::info!(
                 target: "permagentd::voice",
-                "TTS chunk {}/{}: {}ms ({:.1}s audio, {:.2}x realtime)",
-                i + 1, sentences.len(), chunk_ms, chunk_dur,
-                chunk_ms as f32 / 1000.0 / chunk_dur.max(0.01)
+                "TTS chunk {}/{}: {}ms ({:.1}s audio, {:.2}x RTF) | \
+                 g2p={}ms tok={}ms style={}ms tensor={}ms lock={}ms RUN={}ms extract={}ms | \
+                 {} tokens \"{}\"",
+                i + 1, sentences.len(), chunk_ms, chunk_dur, rtf,
+                g2p_ms, tok_ms, style_ms, tensor_ms, lock_ms, run_ms, extract_ms,
+                0, // token count consumed by Tensor::from_array
+                &sentence[..sentence.len().min(40)]
             );
 
             all_samples.extend_from_slice(&chunk_samples);

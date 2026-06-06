@@ -136,7 +136,7 @@ fn generate_plist(binary_path: &str, port: u16) -> String {
     </dict>
 
     <key>ProcessType</key>
-    <string>Background</string>
+    <string>Standard</string>
 </dict>
 </plist>
 "#
