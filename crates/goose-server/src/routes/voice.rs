@@ -376,6 +376,19 @@ async fn feed_transcript_to_chat(
         .map_err(|e| anyhow::anyhow!("Failed to get agent for session {}: {}", sid, e))?;
     tracing::info!(target: "permagentd::voice", "  reply: get_agent {}ms", t.elapsed().as_millis());
 
+    // Inject voice-conditioned system prompt so the agent replies in natural speech.
+    // Applied ONLY to voice-originated queries, not text chat.
+    agent
+        .extend_system_prompt(
+            "voice_reply_style".to_string(),
+            "The user is speaking to you by voice. Reply in natural conversational speech: \
+             short sentences, contractions, concise and direct. No markdown, no bullet points, \
+             no numbered lists, no code blocks. Keep replies brief — 1-3 sentences for simple \
+             questions. Speak as you would in a real conversation."
+                .to_string(),
+        )
+        .await;
+
     // Inject recall (uses spawn_blocking internally)
     let t = std::time::Instant::now();
     if let Some(ref brain) = state.brain {
