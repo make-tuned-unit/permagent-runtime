@@ -271,10 +271,26 @@ async fn handle_voice_socket(
                                     tts_ms, audio_dur, tts_ms as f32 / 1000.0 / audio_dur
                                 );
 
-                                let _ = socket.send(send_json(&ServerMessage::ReplyStart)).await;
+                                if socket
+                                    .send(send_json(&ServerMessage::ReplyStart))
+                                    .await
+                                    .is_err()
+                                {
+                                    tracing::warn!(target: "permagentd::voice", "Client disconnected before audio send");
+                                    return;
+                                }
                                 let bytes: Vec<u8> =
                                     audio.samples.iter().flat_map(|s| s.to_le_bytes()).collect();
-                                let _ = socket.send(Message::Binary(bytes.into())).await;
+                                let byte_count = bytes.len();
+                                if socket.send(Message::Binary(bytes.into())).await.is_err() {
+                                    tracing::warn!(target: "permagentd::voice", "Audio send failed (client disconnected)");
+                                    return;
+                                }
+                                tracing::info!(
+                                    target: "permagentd::voice",
+                                    "Audio sent: {} bytes ({:.1}s @ {}Hz)",
+                                    byte_count, audio_dur, audio.sample_rate
+                                );
                                 let _ = socket
                                     .send(send_json(&ServerMessage::ReplyEnd {
                                         sample_rate: audio.sample_rate,

@@ -139,6 +139,29 @@ fn build_vocab() -> HashMap<char, i64> {
     .collect()
 }
 
+/// Split text into sentences for chunked TTS synthesis.
+/// Splits on sentence-ending punctuation (.!?) followed by whitespace.
+fn split_sentences(text: &str) -> Vec<String> {
+    let mut sentences = Vec::new();
+    let mut current = String::new();
+
+    for ch in text.chars() {
+        current.push(ch);
+        if (ch == '.' || ch == '!' || ch == '?') && current.len() > 5 {
+            // Look for sentence boundary (punct followed by space or end)
+            sentences.push(current.trim().to_string());
+            current = String::new();
+        }
+    }
+    if !current.trim().is_empty() {
+        sentences.push(current.trim().to_string());
+    }
+    if sentences.is_empty() {
+        sentences.push(text.to_string());
+    }
+    sentences
+}
+
 fn phonemes_to_tokens(phonemes: &str, vocab: &HashMap<char, i64>) -> Vec<i64> {
     let mut tokens: Vec<i64> = Vec::new();
     tokens.push(0); // start pad
@@ -304,58 +327,92 @@ impl OrtKokoroTts {
 
 impl TextToSpeech for OrtKokoroTts {
     fn synthesize(&self, text: &str, config: &TtsConfig) -> anyhow::Result<AudioOutput> {
-        // Step 1: G2P — text to IPA phonemes via misaki-rs
-        let phonemes = {
-            let g2p = self
-                .g2p
-                .lock()
-                .map_err(|e| anyhow::anyhow!("G2P lock: {}", e))?;
-            let (phonemes, _tokens) = g2p.g2p(text)?;
-            phonemes
-        };
+        // Split text into sentences and synthesize each separately.
+        // Kokoro inference time scales superlinearly with token count —
+        // 300 tokens takes ~25s vs 116 tokens at ~2s. Chunking keeps
+        // each piece in the fast (<2s) regime.
+        let sentences = split_sentences(text);
+        tracing::debug!(
+            target: "permagentd::voice",
+            "TTS: text_len={} sentences={}",
+            text.len(),
+            sentences.len()
+        );
 
-        // Step 2: Tokenize — IPA phonemes to Kokoro token IDs
-        let tokens = phonemes_to_tokens(&phonemes, &self.vocab);
-        // Style vector is indexed by UNPADDED token count (exclude the two 0-pad tokens).
-        // Clamped to 509 (max valid index in the 510-entry style array).
-        let style_index = (tokens.len().saturating_sub(2)).min(509);
-
-        // Step 3: Get voice style vector
+        let mut all_samples: Vec<f32> = Vec::new();
         let voice_name = config.voice_id.as_deref().unwrap_or(&self.default_voice);
-        let style = self.voices.get_style(voice_name, style_index)?;
 
-        // Step 4: Run ONNX inference
-        use ort::value::Tensor;
+        for (i, sentence) in sentences.iter().enumerate() {
+            if sentence.trim().is_empty() {
+                continue;
+            }
 
-        // Use (shape, Vec<T>) form to avoid ndarray version mismatch with ort's pinned ndarray.
-        let token_val = Tensor::from_array(([1usize, tokens.len()], tokens))
-            .map_err(|e| anyhow::anyhow!("ort token tensor: {}", e))?;
-        let style_val = Tensor::from_array(([1usize, style.len()], style))
-            .map_err(|e| anyhow::anyhow!("ort style tensor: {}", e))?;
-        let speed_val = Tensor::from_array(([1usize], vec![config.speed]))
-            .map_err(|e| anyhow::anyhow!("ort speed tensor: {}", e))?;
+            let chunk_start = std::time::Instant::now();
 
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Session lock: {}", e))?;
+            // G2P
+            let phonemes = {
+                let g2p = self
+                    .g2p
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("G2P lock: {}", e))?;
+                let (phonemes, _tokens) = g2p.g2p(sentence)?;
+                phonemes
+            };
 
-        let outputs = session
-            .run(ort::inputs![
-                "tokens" => token_val,
-                "style" => style_val,
-                "speed" => speed_val,
-            ])
-            .map_err(|e| anyhow::anyhow!("ort run: {}", e))?;
+            // Tokenize
+            let tokens = phonemes_to_tokens(&phonemes, &self.vocab);
+            let style_index = (tokens.len().saturating_sub(2)).min(509);
 
-        // Step 5: Extract audio samples from the first output
-        let (_shape, raw_data) = outputs[0]
-            .try_extract_tensor::<f32>()
-            .map_err(|e| anyhow::anyhow!("extract tensor: {}", e))?;
-        let samples: Vec<f32> = raw_data.to_vec();
+            tracing::debug!(
+                target: "permagentd::voice",
+                "TTS chunk {}/{}: \"{}\" → {} tokens",
+                i + 1, sentences.len(), &sentence[..sentence.len().min(40)], tokens.len()
+            );
+
+            // Style vector
+            let style = self.voices.get_style(voice_name, style_index)?;
+
+            // ONNX inference
+            use ort::value::Tensor;
+            let token_val = Tensor::from_array(([1usize, tokens.len()], tokens))
+                .map_err(|e| anyhow::anyhow!("ort token tensor: {}", e))?;
+            let style_val = Tensor::from_array(([1usize, style.len()], style))
+                .map_err(|e| anyhow::anyhow!("ort style tensor: {}", e))?;
+            let speed_val = Tensor::from_array(([1usize], vec![config.speed]))
+                .map_err(|e| anyhow::anyhow!("ort speed tensor: {}", e))?;
+
+            let mut session = self
+                .session
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Session lock: {}", e))?;
+
+            let outputs = session
+                .run(ort::inputs![
+                    "tokens" => token_val,
+                    "style" => style_val,
+                    "speed" => speed_val,
+                ])
+                .map_err(|e| anyhow::anyhow!("ort run: {}", e))?;
+
+            let (_shape, raw_data) = outputs[0]
+                .try_extract_tensor::<f32>()
+                .map_err(|e| anyhow::anyhow!("extract tensor: {}", e))?;
+            let chunk_samples: Vec<f32> = raw_data.to_vec();
+
+            let chunk_ms = chunk_start.elapsed().as_millis();
+            let chunk_dur = chunk_samples.len() as f32 / SAMPLE_RATE as f32;
+            tracing::debug!(
+                target: "permagentd::voice",
+                "TTS chunk {}/{}: {}ms ({:.1}s audio, {:.2}x realtime)",
+                i + 1, sentences.len(), chunk_ms, chunk_dur,
+                chunk_ms as f32 / 1000.0 / chunk_dur.max(0.01)
+            );
+
+            all_samples.extend_from_slice(&chunk_samples);
+        }
 
         Ok(AudioOutput {
-            samples,
+            samples: all_samples,
             sample_rate: SAMPLE_RATE,
         })
     }
