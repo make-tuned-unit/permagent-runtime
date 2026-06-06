@@ -209,120 +209,32 @@ async fn handle_voice_socket(
                             return;
                         }
 
-                        // --- Feed transcript into chat reply path ---
-                        let reply_start = std::time::Instant::now();
-                        let reply_text =
-                            feed_transcript_to_chat(&state, &transcript, session_id.as_deref())
-                                .await;
-
-                        let reply_ms = reply_start.elapsed().as_millis();
-
-                        let reply_text = match reply_text {
-                            Ok(t) => {
-                                tracing::info!(
-                                    target: "permagentd::voice",
-                                    "TIMING Reply: {}ms | {} chars | \"{}...\"",
-                                    reply_ms, t.len(), &t[..t.len().min(60)]
-                                );
-                                t
-                            }
-                            Err(e) => {
-                                tracing::info!(
-                                    target: "permagentd::voice",
-                                    "TIMING Reply: {}ms | FAILED: {}",
-                                    reply_ms, e
-                                );
-                                let _ = socket
-                                    .send(send_json(&ServerMessage::Error {
-                                        message: format!("Chat reply failed: {}", e),
-                                    }))
-                                    .await;
-                                continue;
-                            }
-                        };
-
+                        // --- Streaming reply + TTS: synthesize and send each sentence as it completes ---
                         if socket
-                            .send(send_json(&ServerMessage::ReplyText {
-                                text: reply_text.clone(),
-                            }))
+                            .send(send_json(&ServerMessage::ReplyStart))
                             .await
                             .is_err()
                         {
                             return;
                         }
 
-                        // --- TTS ---
-                        let tts_start = std::time::Instant::now();
-                        let tts_ref = tts.clone();
-                        let text_for_tts = reply_text;
-                        let audio = tokio::task::spawn_blocking(move || {
-                            tts_ref.synthesize(&text_for_tts, &TtsConfig::default())
-                        })
+                        let stream_result = stream_reply_with_tts(
+                            &state,
+                            &transcript,
+                            session_id.as_deref(),
+                            &tts,
+                            &mut socket,
+                            pipeline_start,
+                            stt_ms,
+                        )
                         .await;
-                        let tts_ms = tts_start.elapsed().as_millis();
 
-                        match audio {
-                            Ok(Ok(audio)) => {
-                                let audio_dur =
-                                    audio.samples.len() as f32 / audio.sample_rate as f32;
-                                tracing::info!(
-                                    target: "permagentd::voice",
-                                    "TIMING TTS: {}ms | {:.1}s audio | {:.2}x realtime",
-                                    tts_ms, audio_dur, tts_ms as f32 / 1000.0 / audio_dur
-                                );
-
-                                if socket
-                                    .send(send_json(&ServerMessage::ReplyStart))
-                                    .await
-                                    .is_err()
-                                {
-                                    tracing::warn!(target: "permagentd::voice", "Client disconnected before audio send");
-                                    return;
-                                }
-                                let bytes: Vec<u8> =
-                                    audio.samples.iter().flat_map(|s| s.to_le_bytes()).collect();
-                                let byte_count = bytes.len();
-                                if socket.send(Message::Binary(bytes.into())).await.is_err() {
-                                    tracing::warn!(target: "permagentd::voice", "Audio send failed (client disconnected)");
-                                    return;
-                                }
-                                tracing::info!(
-                                    target: "permagentd::voice",
-                                    "Audio sent: {} bytes ({:.1}s @ {}Hz)",
-                                    byte_count, audio_dur, audio.sample_rate
-                                );
-                                let _ = socket
-                                    .send(send_json(&ServerMessage::ReplyEnd {
-                                        sample_rate: audio.sample_rate,
-                                    }))
-                                    .await;
-
-                                let total_ms = pipeline_start.elapsed().as_millis();
-                                tracing::info!(
-                                    target: "permagentd::voice",
-                                    "TIMING Total: {}ms (STT={}ms Reply={}ms TTS={}ms)",
-                                    total_ms, stt_ms, reply_ms, tts_ms
-                                );
-                            }
-                            Ok(Err(e)) => {
-                                tracing::info!(
-                                    target: "permagentd::voice",
-                                    "TIMING TTS: {}ms | FAILED: {}",
-                                    tts_ms, e
-                                );
-                                let _ = socket
-                                    .send(send_json(&ServerMessage::Error {
-                                        message: format!("TTS failed: {}", e),
-                                    }))
-                                    .await;
-                            }
-                            Err(e) => {
-                                let _ = socket
-                                    .send(send_json(&ServerMessage::Error {
-                                        message: format!("TTS task panicked: {}", e),
-                                    }))
-                                    .await;
-                            }
+                        if let Err(e) = stream_result {
+                            let _ = socket
+                                .send(send_json(&ServerMessage::Error {
+                                    message: format!("Voice reply failed: {}", e),
+                                }))
+                                .await;
                         }
                     }
                     Ok(ClientMessage::Stop) => {} // Not recording, ignore
@@ -361,18 +273,22 @@ async fn handle_voice_socket(
     tracing::info!(target: "permagentd::voice", "Voice WebSocket handler exiting");
 }
 
-/// Feed a voice transcript into the existing chat reply path and collect
-/// the text response. Uses the same session/agent infrastructure as text chat.
-async fn feed_transcript_to_chat(
+/// Stream the LLM reply, synthesize each sentence as it completes, and send
+/// audio chunks to the client immediately. This way the client starts playing
+/// sentence 1 while sentence 2 is still generating.
+async fn stream_reply_with_tts(
     state: &AppState,
     transcript: &str,
     session_id: Option<&str>,
-) -> anyhow::Result<String> {
+    tts: &Arc<dyn crate::voice::TextToSpeech>,
+    socket: &mut WebSocket,
+    pipeline_start: std::time::Instant,
+    stt_ms: u128,
+) -> anyhow::Result<()> {
     use futures::StreamExt;
     use permagent::agents::{AgentEvent, SessionConfig};
     use permagent::conversation::message::{Message as ChatMessage, MessageContent};
 
-    // Resolve session ID
     let sid = if let Some(id) = session_id {
         id.to_string()
     } else {
@@ -380,20 +296,15 @@ async fn feed_transcript_to_chat(
         sessions
             .first()
             .map(|s| s.id.clone())
-            .ok_or_else(|| anyhow::anyhow!("No session available for voice — create one first"))?
+            .ok_or_else(|| anyhow::anyhow!("No session available for voice"))?
     };
 
     let user_msg = ChatMessage::user().with_text(transcript);
-
-    let t = std::time::Instant::now();
     let agent = state
         .get_agent(sid.clone())
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to get agent for session {}: {}", sid, e))?;
-    tracing::info!(target: "permagentd::voice", "  reply: get_agent {}ms", t.elapsed().as_millis());
+        .map_err(|e| anyhow::anyhow!("Failed to get agent: {}", e))?;
 
-    // Inject voice-conditioned system prompt so the agent replies in natural speech.
-    // Applied ONLY to voice-originated queries, not text chat.
     agent
         .extend_system_prompt(
             "voice_reply_style".to_string(),
@@ -405,14 +316,11 @@ async fn feed_transcript_to_chat(
         )
         .await;
 
-    // Inject recall (uses spawn_blocking internally)
     let t = std::time::Instant::now();
     if let Some(ref brain) = state.brain {
         let recognition_ctx = state.build_recognition_context(Some(&sid));
         let n = crate::brain_ops::inject_recall(brain, &agent, transcript, recognition_ctx).await;
-        tracing::info!(target: "permagentd::voice", "  reply: recall {}ms ({} hits)", t.elapsed().as_millis(), n);
-    } else {
-        tracing::info!(target: "permagentd::voice", "  reply: recall skipped (no Brain)");
+        tracing::info!(target: "permagentd::voice", "  recall: {}ms ({} hits)", t.elapsed().as_millis(), n);
     }
 
     let session_config = SessionConfig {
@@ -422,34 +330,147 @@ async fn feed_transcript_to_chat(
         retry_config: None,
     };
 
-    // Stream the reply — this is the LLM network call (likely the bottleneck)
-    let t = std::time::Instant::now();
+    let reply_start = std::time::Instant::now();
     let mut stream = agent.reply(user_msg, session_config, None).await?;
-    tracing::info!(target: "permagentd::voice", "  reply: stream opened {}ms", t.elapsed().as_millis());
 
-    let t = std::time::Instant::now();
-    let mut reply_text = String::new();
-    let mut first_token = true;
+    // Accumulate text, detect sentence boundaries, synthesize + send each sentence
+    let mut text_buf = String::new();
+    let mut full_reply = String::new();
+    let mut sentence_num = 0u32;
+    let mut total_tts_ms: u128 = 0;
+    let mut first_audio_sent = false;
+
     while let Some(event) = stream.next().await {
         if let Ok(AgentEvent::Message(msg)) = event {
-            if msg.role == rmcp::model::Role::Assistant {
-                if first_token {
-                    tracing::info!(target: "permagentd::voice", "  reply: first token {}ms", t.elapsed().as_millis());
-                    first_token = false;
-                }
-                for content in &msg.content {
-                    if let MessageContent::Text(text) = content {
-                        reply_text.push_str(&text.text);
+            if msg.role != rmcp::model::Role::Assistant {
+                continue;
+            }
+            for content in &msg.content {
+                if let MessageContent::Text(text_content) = content {
+                    text_buf.push_str(&text_content.text);
+                    full_reply.push_str(&text_content.text);
+
+                    // Check for sentence boundary
+                    while let Some(pos) = find_sentence_end(&text_buf) {
+                        let sentence = text_buf[..=pos].trim().to_string();
+                        text_buf = text_buf[pos + 1..].to_string();
+
+                        if sentence.is_empty() {
+                            continue;
+                        }
+
+                        sentence_num += 1;
+                        let tts_ref = tts.clone();
+                        let sent = sentence.clone();
+                        let tts_start = std::time::Instant::now();
+                        let audio = tokio::task::spawn_blocking(move || {
+                            tts_ref.synthesize(&sent, &TtsConfig::default())
+                        })
+                        .await;
+                        let chunk_tts_ms = tts_start.elapsed().as_millis();
+                        total_tts_ms += chunk_tts_ms;
+
+                        match audio {
+                            Ok(Ok(audio)) => {
+                                let dur = audio.samples.len() as f32 / audio.sample_rate as f32;
+                                tracing::info!(
+                                    target: "permagentd::voice",
+                                    "STREAM sentence {}: TTS {}ms ({:.1}s audio) | \"{}\"",
+                                    sentence_num, chunk_tts_ms, dur,
+                                    &sentence[..sentence.len().min(50)]
+                                );
+
+                                if !first_audio_sent {
+                                    let first_audio_ms = pipeline_start.elapsed().as_millis();
+                                    tracing::info!(
+                                        target: "permagentd::voice",
+                                        "TIMING first audio: {}ms after speech-end",
+                                        first_audio_ms
+                                    );
+                                    first_audio_sent = true;
+                                }
+
+                                let bytes: Vec<u8> =
+                                    audio.samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+                                if socket.send(Message::Binary(bytes.into())).await.is_err() {
+                                    tracing::warn!(target: "permagentd::voice", "Client disconnected during streaming");
+                                    return Ok(());
+                                }
+                            }
+                            Ok(Err(e)) => {
+                                tracing::warn!(target: "permagentd::voice", "TTS chunk failed: {}", e);
+                            }
+                            Err(e) => {
+                                tracing::warn!(target: "permagentd::voice", "TTS task panicked: {}", e);
+                            }
+                        }
                     }
                 }
             }
         }
     }
+
+    // Synthesize any remaining text after the stream ends
+    let remainder = text_buf.trim().to_string();
+    if !remainder.is_empty() {
+        sentence_num += 1;
+        let tts_ref = tts.clone();
+        let tts_start = std::time::Instant::now();
+        let audio = tokio::task::spawn_blocking(move || {
+            tts_ref.synthesize(&remainder, &TtsConfig::default())
+        })
+        .await;
+        let chunk_tts_ms = tts_start.elapsed().as_millis();
+        total_tts_ms += chunk_tts_ms;
+
+        if let Ok(Ok(audio)) = audio {
+            if !first_audio_sent {
+                let first_audio_ms = pipeline_start.elapsed().as_millis();
+                tracing::info!(
+                    target: "permagentd::voice",
+                    "TIMING first audio: {}ms after speech-end",
+                    first_audio_ms
+                );
+            }
+            let bytes: Vec<u8> = audio.samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+            let _ = socket.send(Message::Binary(bytes.into())).await;
+        }
+    }
+
+    // Send reply text and end marker
+    let _ = socket
+        .send(send_json(&ServerMessage::ReplyText {
+            text: full_reply.clone(),
+        }))
+        .await;
+
+    let reply_ms = reply_start.elapsed().as_millis();
+    let _ = socket
+        .send(send_json(&ServerMessage::ReplyEnd {
+            sample_rate: tts.sample_rate(),
+        }))
+        .await;
+
+    let total_ms = pipeline_start.elapsed().as_millis();
     tracing::info!(
         target: "permagentd::voice",
-        "  reply: stream complete {}ms | {} chars",
-        t.elapsed().as_millis(), reply_text.len()
+        "TIMING Total: {}ms (STT={}ms Reply+TTS={}ms, TTS_total={}ms, {} sentences)",
+        total_ms, stt_ms, reply_ms, total_tts_ms, sentence_num
     );
 
-    Ok(reply_text)
+    Ok(())
+}
+
+/// Find the end of a sentence in the buffer (position of .!? followed by space or end).
+fn find_sentence_end(text: &str) -> Option<usize> {
+    for (i, ch) in text.char_indices() {
+        if (ch == '.' || ch == '!' || ch == '?') && i > 5 {
+            // Check that next char is whitespace or end of string
+            let next = text[i + ch.len_utf8()..].chars().next();
+            if next.is_none() || next == Some(' ') || next == Some('\n') {
+                return Some(i);
+            }
+        }
+    }
+    None
 }

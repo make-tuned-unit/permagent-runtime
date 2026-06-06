@@ -49,6 +49,9 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const pendingAudioRef = useRef(false);
+  const audioQueueRef = useRef<Float32Array[]>([]);
+  const playingRef = useRef(false);
+  const playbackCtxRef = useRef<AudioContext | null>(null);
   const onEventRef = useRef(onEvent);
   onEventRef.current = onEvent;
 
@@ -125,11 +128,13 @@ export function useVoice(options: UseVoiceOptions = {}) {
               setStateAndEmit('playing');
               break;
             case 'reply_end':
-              // State transition handled by playAudio's onended callback.
-              // If no audio was received, fall back to ready here.
-              if (!pendingAudioRef.current) {
+              // Mark that no more audio chunks are coming.
+              pendingAudioRef.current = false;
+              // If nothing is playing and queue is empty, go to ready.
+              if (!playingRef.current && audioQueueRef.current.length === 0) {
                 setStateAndEmit('ready');
               }
+              // Otherwise playNextChunk's onended will handle the transition.
               break;
             case 'error':
               setError(msg.message ?? 'Unknown voice error');
@@ -146,12 +151,14 @@ export function useVoice(options: UseVoiceOptions = {}) {
           captureError('ws.onmessage parse', parseErr);
         }
       } else if (event.data instanceof ArrayBuffer) {
-        // Binary: TTS audio (f32le PCM)
+        // Binary: TTS audio chunk (f32le PCM) — queue for sequential playback
         const buf = event.data as ArrayBuffer;
         if (buf.byteLength > 0) {
           const samples = new Float32Array(buf);
           pendingAudioRef.current = true;
-          playAudio(samples, 24000);
+          setStateAndEmit('playing');
+          audioQueueRef.current.push(samples);
+          playNextChunk();
           emit({ type: 'reply_audio', audio: { samples, sampleRate: 24000 } });
         }
       }
@@ -268,35 +275,44 @@ export function useVoice(options: UseVoiceOptions = {}) {
   }, [state, setStateAndEmit]);
   stopRecordingRef.current = stopRecording;
 
-  // Play TTS audio
-  const playAudio = useCallback((samples: Float32Array, sr: number) => {
-    if (!samples || samples.length === 0) {
-      pendingAudioRef.current = false;
+  // Queue-based audio playback: plays chunks in order as they arrive.
+  const playNextChunk = useCallback(() => {
+    if (playingRef.current) return; // already playing
+    const next = audioQueueRef.current.shift();
+    if (!next || next.length === 0) {
+      // Queue empty — check if more chunks are coming
+      if (!pendingAudioRef.current) {
+        // All done
+        playbackCtxRef.current?.close().catch(() => {});
+        playbackCtxRef.current = null;
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          setStateAndEmit('ready');
+        }
+      }
       return;
     }
+    playingRef.current = true;
     try {
-      const ctx = new AudioContext({ sampleRate: sr });
-      const buffer = ctx.createBuffer(1, samples.length, sr);
-      buffer.getChannelData(0).set(samples);
+      if (!playbackCtxRef.current || playbackCtxRef.current.state === 'closed') {
+        playbackCtxRef.current = new AudioContext({ sampleRate: 24000 });
+      }
+      const ctx = playbackCtxRef.current;
+      const buffer = ctx.createBuffer(1, next.length, 24000);
+      buffer.getChannelData(0).set(next);
       const source = ctx.createBufferSource();
       source.buffer = buffer;
       source.connect(ctx.destination);
       source.onended = () => {
-        pendingAudioRef.current = false;
-        ctx.close().catch(() => {});
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
-          setStateAndEmit('ready');
-        }
+        playingRef.current = false;
+        playNextChunk(); // play next in queue
       };
       source.start();
     } catch (err) {
-      captureError('playAudio', err);
+      captureError('playNextChunk', err);
+      playingRef.current = false;
       pendingAudioRef.current = false;
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        setStateAndEmit('ready');
-      }
     }
-  }, [setStateAndEmit]);
+  }, [setStateAndEmit, captureError]);
 
   // Cleanup on unmount
   useEffect(() => {
