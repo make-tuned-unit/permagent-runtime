@@ -2,8 +2,9 @@
  * useVoice — push-to-talk voice hook for the Chat window.
  *
  * Connection model: persistent socket, opened once and kept alive.
+ * Mic: acquired at activation, released at deactivation. Recording start/stop
+ *       is synchronous (no getUserMedia race on quick press-and-release).
  * State machine: idle → connecting → ready → recording → processing → playing → ready
- * Auto-reconnects on abnormal close. No .send() on non-OPEN sockets, ever.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getApiBaseUrl, loadDaemonToken } from '../lib/api';
@@ -39,6 +40,8 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const [error, setError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
+  // Persistent mic stream — acquired at activation, released at deactivation.
+  // Eliminates the getUserMedia async gap that caused the press-release race.
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -48,15 +51,13 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const playbackCtxRef = useRef<AudioContext | null>(null);
   const onEventRef = useRef(onEvent);
   onEventRef.current = onEvent;
-  // Track the intended active state (user wants voice on)
   const activeRef = useRef(false);
-  // Prevent concurrent connect attempts
   const connectingRef = useRef(false);
-  // Resolve/reject for ensureReady waiters
   const readyResolveRef = useRef<(() => void) | null>(null);
   const readyRejectRef = useRef<((err: Error) => void) | null>(null);
-  // Stable ref for current state (avoids stale closures)
   const stateRef = useRef<VoiceState>('idle');
+  // Frame counter for diagnostics
+  const frameCountRef = useRef(0);
 
   const emit = useCallback((event: VoiceEvent) => {
     onEventRef.current?.(event);
@@ -104,7 +105,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     }
   }, [setStateAndEmit]);
 
-  // --- WebSocket message handler (stable, uses refs) ---
+  // --- WebSocket message handler ---
   const handleWsMessage = useCallback((event: MessageEvent) => {
     if (typeof event.data === 'string') {
       try {
@@ -160,11 +161,10 @@ export function useVoice(options: UseVoiceOptions = {}) {
     }
   }, [setStateAndEmit, emit, playNextChunk]);
 
-  // --- Core connect: creates a WebSocket, returns promise that resolves on ready ---
+  // --- Core connect ---
   const connectSocket = useCallback(async (): Promise<void> => {
-    // Clean up any existing socket
     if (wsRef.current) {
-      wsRef.current.onclose = null; // prevent reconnect loop
+      wsRef.current.onclose = null;
       wsRef.current.close();
       wsRef.current = null;
     }
@@ -194,14 +194,13 @@ export function useVoice(options: UseVoiceOptions = {}) {
       wsRef.current = ws;
 
       ws.onmessage = handleWsMessage;
-      ws.onerror = () => {}; // real info comes from onclose
+      ws.onerror = () => {};
 
       ws.onclose = (ev) => {
         const detail = `code=${ev.code} reason=${ev.reason || '(none)'} wasClean=${ev.wasClean}`;
         console.log(`[useVoice] ws.onclose: ${detail}`);
         wsRef.current = null;
 
-        // Reject any pending ensureReady waiter
         if (readyRejectRef.current) {
           readyRejectRef.current(new Error(`WebSocket closed: ${detail}`));
           readyResolveRef.current = null;
@@ -215,11 +214,9 @@ export function useVoice(options: UseVoiceOptions = {}) {
           setError(msg);
           setStateAndEmit('error');
 
-          // Auto-reconnect if the user still wants voice active
           if (activeRef.current) {
             setTimeout(() => {
               if (activeRef.current && !connectingRef.current) {
-                console.log('[useVoice] auto-reconnecting...');
                 connectingRef.current = true;
                 connectSocket()
                   .catch(() => {})
@@ -238,13 +235,11 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
   // --- Public API ---
 
-  /** Ensure the socket is open and server-ready. Connects if needed. */
   const ensureReady = useCallback(async (): Promise<void> => {
     if (wsRef.current?.readyState === WebSocket.OPEN && stateRef.current === 'ready') {
-      return; // already ready
+      return;
     }
     if (connectingRef.current) {
-      // Already connecting — wait for it
       return new Promise<void>((resolve, reject) => {
         const prev = readyResolveRef.current;
         readyResolveRef.current = () => { prev?.(); resolve(); };
@@ -260,24 +255,50 @@ export function useVoice(options: UseVoiceOptions = {}) {
     }
   }, [connectSocket]);
 
-  /** Activate voice: connect and stay connected. */
+  /** Activate voice: acquire mic + connect socket. */
   const activate = useCallback(async () => {
     activeRef.current = true;
+
+    // Acquire mic ONCE at activation (persistent until deactivate).
+    // This makes startRecording synchronous — no getUserMedia race.
+    if (!mediaStreamRef.current) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: { sampleRate, channelCount: 1, echoCancellation: true },
+        });
+        mediaStreamRef.current = stream;
+        console.log('[useVoice] mic acquired');
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : 'Microphone access failed';
+        if (message.includes('Permission') || message.includes('NotAllowed')) {
+          setError('Mic permission denied. Grant access in System Settings > Privacy > Microphone.');
+        } else if (message.includes('NotFound') || message.includes('DevicesNotFound')) {
+          setError('No microphone found.');
+        } else {
+          setError(message);
+        }
+        setStateAndEmit('error');
+        activeRef.current = false;
+        return;
+      }
+    }
+
     try {
       await ensureReady();
     } catch (e) {
       console.error('[useVoice] activate failed:', e);
     }
-  }, [ensureReady]);
+  }, [sampleRate, ensureReady, setStateAndEmit]);
 
-  /** Deactivate voice: disconnect and go idle. */
+  /** Deactivate voice: release mic + disconnect socket. */
   const deactivate = useCallback(() => {
     activeRef.current = false;
-    // Stop any recording
+    // Stop recording
     processorRef.current?.disconnect();
     processorRef.current = null;
     audioCtxRef.current?.close().catch(() => {});
     audioCtxRef.current = null;
+    // Release mic
     mediaStreamRef.current?.getTracks().forEach(t => t.stop());
     mediaStreamRef.current = null;
     // Stop playback
@@ -295,61 +316,42 @@ export function useVoice(options: UseVoiceOptions = {}) {
     setStateAndEmit('idle');
   }, [setStateAndEmit]);
 
-  /** Start recording. Only works when socket is already open and state is 'ready'.
-   *  Does NOT auto-reconnect — prevents overlapping exchanges from creating
-   *  concurrent backend handlers that contend on the TTS session mutex. */
-  const startRecording = useCallback(async () => {
+  /** Start recording. SYNCHRONOUS — no async gaps, no press-release race.
+   *  Only works when socket is open, state is 'ready', and mic is acquired. */
+  const startRecording = useCallback(() => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     if (stateRef.current !== 'ready') return;
 
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { sampleRate, channelCount: 1, echoCancellation: true },
-      });
-
-      // Re-check after await — socket may have closed during mic prompt
-      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-        stream.getTracks().forEach(t => t.stop());
-        return;
-      }
-
-      mediaStreamRef.current = stream;
-      const audioCtx = new AudioContext({ sampleRate });
-      audioCtxRef.current = audioCtx;
-      const source = audioCtx.createMediaStreamSource(stream);
-      const processor = audioCtx.createScriptProcessor(4096, 1, 1);
-      processorRef.current = processor;
-
-      wsRef.current.send(JSON.stringify({ type: 'start', sample_rate: sampleRate }));
-      setStateAndEmit('recording');
-
-      processor.onaudioprocess = (e) => {
-        const sock = wsRef.current;
-        if (!sock || sock.readyState !== WebSocket.OPEN) return;
-        const input = e.inputBuffer.getChannelData(0);
-        const buffer = new ArrayBuffer(input.length * 4);
-        new Float32Array(buffer).set(input);
-        sock.send(buffer);
-      };
-
-      source.connect(processor);
-      processor.connect(audioCtx.destination);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Microphone access failed';
-      if (message.includes('Permission') || message.includes('NotAllowed')) {
-        setError('Mic permission denied. Grant access in System Settings > Privacy > Microphone.');
-      } else if (message.includes('NotFound') || message.includes('DevicesNotFound')) {
-        setError('No microphone found.');
-      } else {
-        setError(message);
-      }
-      setStateAndEmit('error');
-      setTimeout(() => {
-        if (wsRef.current?.readyState === WebSocket.OPEN) setStateAndEmit('ready');
-      }, 3000);
+    const stream = mediaStreamRef.current;
+    if (!stream) {
+      console.warn('[useVoice] startRecording: no mic stream (not activated?)');
+      return;
     }
-  }, [sampleRate, setStateAndEmit, ensureReady]);
+
+    const audioCtx = new AudioContext({ sampleRate });
+    audioCtxRef.current = audioCtx;
+    const source = audioCtx.createMediaStreamSource(stream);
+    const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+    processorRef.current = processor;
+    frameCountRef.current = 0;
+
+    ws.send(JSON.stringify({ type: 'start', sample_rate: sampleRate }));
+    setStateAndEmit('recording');
+
+    processor.onaudioprocess = (e) => {
+      const sock = wsRef.current;
+      if (!sock || sock.readyState !== WebSocket.OPEN) return;
+      const input = e.inputBuffer.getChannelData(0);
+      const buffer = new ArrayBuffer(input.length * 4);
+      new Float32Array(buffer).set(input);
+      sock.send(buffer);
+      frameCountRef.current++;
+    };
+
+    source.connect(processor);
+    processor.connect(audioCtx.destination);
+  }, [sampleRate, setStateAndEmit]);
 
   /** Stop recording and send audio for processing. */
   const stopRecording = useCallback(() => {
@@ -357,16 +359,19 @@ export function useVoice(options: UseVoiceOptions = {}) {
     processorRef.current = null;
     audioCtxRef.current?.close().catch(() => {});
     audioCtxRef.current = null;
-    mediaStreamRef.current?.getTracks().forEach(t => t.stop());
-    mediaStreamRef.current = null;
+    // Do NOT stop mediaStream tracks — mic stays alive for next recording
     pendingAudioRef.current = false;
+
+    const frames = frameCountRef.current;
+    frameCountRef.current = 0;
+    console.log(`[useVoice] stopRecording: sent ${frames} frames (${(frames * 4096 / sampleRate).toFixed(1)}s)`);
 
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN && stateRef.current === 'recording') {
       ws.send(JSON.stringify({ type: 'stop' }));
       setStateAndEmit('processing');
     }
-  }, [setStateAndEmit]);
+  }, [sampleRate, setStateAndEmit]);
 
   // Cleanup on unmount
   useEffect(() => {

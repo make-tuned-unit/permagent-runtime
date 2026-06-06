@@ -129,16 +129,19 @@ export function VoiceButton() {
         title={
           state === 'idle' ? 'Enable voice (spacebar to talk)'
           : state === 'ready' ? 'Hold to talk (spacebar)'
+          : state === 'processing' || state === 'playing' ? 'Busy — wait for reply'
           : STATE_LABELS[state]
         }
         className={`rounded-lg border px-2 py-2 transition ${
           state === 'recording'
             ? 'border-red-500 bg-red-500/20 text-red-400'
+            : state === 'processing' || state === 'playing'
+              ? 'border-dark-border bg-dark-surface-2 text-dark-muted opacity-50 cursor-wait'
             : isActive
               ? 'border-accent/50 bg-accent/10 text-accent'
               : 'border-dark-border bg-dark-surface-2 text-dark-muted hover:text-dark-text'
         }`}
-        style={{ flexShrink: 0 }}
+        style={{ flexShrink: 0, display: 'grid', placeItems: 'center' }}
       >
         <svg
           width="14"
@@ -149,6 +152,7 @@ export function VoiceButton() {
           strokeWidth={2}
           strokeLinecap="round"
           strokeLinejoin="round"
+          style={{ display: 'block' }}
         >
           <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
           <path d="M19 10v2a7 7 0 0 1-14 0v-2" />

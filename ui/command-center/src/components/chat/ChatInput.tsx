@@ -99,6 +99,7 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
         >
           <FiPaperclip size={14} />
         </button>
+        <VoiceButton />
         <input
           ref={fileInputRef}
           type="file"
@@ -123,7 +124,6 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
           className="flex-1 resize-none rounded-lg border border-dark-border bg-dark-surface-2 px-4 py-2 font-mono text-[13px] text-dark-text caret-accent outline-none focus:border-accent/50 focus:shadow-[0_0_8px_rgba(0,213,255,0.1)] placeholder:text-dark-muted transition disabled:opacity-40"
           style={{ minHeight: '36px', maxHeight: '120px' }}
         />
-        <VoiceButton />
         <button
           onClick={handleSend}
           disabled={(!input.trim() && pendingFiles.length === 0) || disabled}

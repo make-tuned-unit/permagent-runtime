@@ -158,7 +158,17 @@ async fn handle_voice_socket(
                             audio_buffer.len(), audio_duration_s
                         );
 
-                        if audio_buffer.is_empty() {
+                        // Skip STT for empty or too-short buffers (< 0.3s).
+                        // Prevents wasting 25s running STT on silence from
+                        // quick press-release or capture failures.
+                        let min_samples = (client_sample_rate as f32 * 0.3) as usize;
+                        if audio_buffer.len() < min_samples {
+                            tracing::info!(
+                                target: "permagentd::voice",
+                                "Skipping STT: buffer too short ({} samples, {:.2}s < 0.3s minimum)",
+                                audio_buffer.len(), audio_duration_s
+                            );
+                            audio_buffer.clear();
                             continue;
                         }
 
