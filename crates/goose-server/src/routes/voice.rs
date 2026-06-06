@@ -373,11 +373,12 @@ async fn stream_reply_with_tts(
                         match audio {
                             Ok(Ok(audio)) => {
                                 let dur = audio.samples.len() as f32 / audio.sample_rate as f32;
+                                let rtf = chunk_tts_ms as f32 / 1000.0 / dur.max(0.01);
                                 tracing::info!(
                                     target: "permagentd::voice",
-                                    "STREAM sentence {}: TTS {}ms ({:.1}s audio) | \"{}\"",
-                                    sentence_num, chunk_tts_ms, dur,
-                                    &sentence[..sentence.len().min(50)]
+                                    "STREAM sentence {}: {}chars TTS={}ms audio={:.1}s RTF={:.2}x | \"{}\"",
+                                    sentence_num, sentence.len(), chunk_tts_ms, dur, rtf,
+                                    &sentence[..sentence.len().min(60)]
                                 );
 
                                 if !first_audio_sent {

@@ -310,7 +310,7 @@ impl OrtKokoroTts {
 
         tracing::info!(
             target: "permagentd::voice",
-            "OrtKokoroTts: loaded model, {} voices, default={}",
+            "OrtKokoroTts: loaded model, {} voices, default={}, threads=inter:4/intra:4, provider=CPU",
             voices.voice_names().len(),
             default_voice
         );
