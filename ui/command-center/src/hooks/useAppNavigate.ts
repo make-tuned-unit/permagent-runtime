@@ -4,7 +4,7 @@ import { useCommandCenter } from '../lib/store';
 import type { ActivePanel } from '../lib/store';
 
 const VALID_TOOL_TYPES = new Set<string>([
-  'chat', 'skills', 'trace', 'world', 'terminal', 'browser', 'memory', 'dashboard', 'build', 'automate',
+  'chat', 'skills', 'trace', 'world', 'terminal', 'browser', 'memory', 'dashboard', 'build', 'automate', 'projects',
 ]);
 
 /**
