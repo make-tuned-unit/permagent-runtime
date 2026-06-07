@@ -339,7 +339,9 @@ pub async fn reply(
         // ── Phase 3b: Ambient context from ContextBuilder ──
         {
             let user_text = user_message.as_concat_text();
-            if let Some(digest) = crate::brain_ops::inject_ambient_context(&state, &agent, &user_text).await {
+            if let Some(digest) =
+                crate::brain_ops::inject_ambient_context(&state, &agent, &user_text).await
+            {
                 // Emit ContextAttached so the frontend can show citation markers
                 if !digest.probed_memories.is_empty() || !digest.recalled_memories.is_empty() {
                     let probed: Vec<ProbedMemoryRef> = digest
