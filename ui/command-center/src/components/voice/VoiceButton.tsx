@@ -132,7 +132,7 @@ export function VoiceButton() {
           : state === 'processing' || state === 'playing' ? 'Busy — wait for reply'
           : STATE_LABELS[state]
         }
-        className={`rounded-lg border transition ${
+        className={`border transition ${
           state === 'recording'
             ? 'border-red-500 bg-red-500/20 text-red-400'
             : state === 'processing' || state === 'playing'
@@ -141,11 +141,11 @@ export function VoiceButton() {
               ? 'border-accent/50 bg-accent/10 text-accent'
               : 'border-dark-border bg-dark-surface-2 text-dark-muted hover:text-dark-text'
         }`}
-        style={{ width: 34, height: 34, flexShrink: 0, display: 'grid', placeItems: 'center' }}
+        style={{ width: 28, height: 28, borderRadius: 6, flexShrink: 0, display: 'grid', placeItems: 'center' }}
       >
         <svg
-          width="14"
-          height="14"
+          width="12"
+          height="12"
           viewBox="0 0 24 24"
           fill="none"
           stroke={isActive ? stateColor : 'currentColor'}
