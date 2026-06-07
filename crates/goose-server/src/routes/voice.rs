@@ -338,6 +338,11 @@ async fn stream_reply_with_tts(
 
     let setup_ms = t_setup.elapsed().as_millis();
 
+    // Ambient context — same as text chat (project focus, probed/recalled memories)
+    let t_ctx = std::time::Instant::now();
+    crate::brain_ops::inject_ambient_context(state, &agent, transcript).await;
+    let ctx_ms = t_ctx.elapsed().as_millis();
+
     let t_recall = std::time::Instant::now();
     if let Some(ref brain) = state.brain {
         let recognition_ctx = state.build_recognition_context(Some(&sid));
@@ -358,8 +363,8 @@ async fn stream_reply_with_tts(
     let reply_setup_ms = t_reply.elapsed().as_millis();
     tracing::info!(
         target: "permagentd::voice",
-        "  pipeline: setup={}ms recall={}ms reply_setup={}ms (total pre-stream={}ms)",
-        setup_ms, recall_ms, reply_setup_ms,
+        "  pipeline: setup={}ms ctx={}ms recall={}ms reply_setup={}ms (total pre-stream={}ms)",
+        setup_ms, ctx_ms, recall_ms, reply_setup_ms,
         pipeline_start.elapsed().as_millis()
     );
 
@@ -527,6 +532,25 @@ async fn stream_reply_with_tts(
         "TIMING Total: {}ms (STT={}ms Reply+TTS={}ms, TTS_total={}ms, {} sentences)",
         total_ms, stt_ms, reply_ms, total_tts_ms, sentence_num
     );
+
+    // Persist voice turn to Brain — same as text chat, so future recall
+    // can surface what was discussed via voice.
+    if let Some(ref brain) = state.brain {
+        if !transcript.is_empty() && !full_reply.is_empty() {
+            // Use a simple turn index based on timestamp (voice doesn't track conversation length)
+            let turn_idx = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as usize)
+                .unwrap_or(0);
+            crate::brain_ops::spawn_persist_chat_turn(
+                brain.clone(),
+                sid.to_string(),
+                turn_idx,
+                transcript.to_string(),
+                full_reply,
+            );
+        }
+    }
 
     Ok(())
 }
