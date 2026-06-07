@@ -50,7 +50,7 @@ export function MessageRenderer({ message, attachments, allImages }: MessageRend
             {message.content}
           </div>
         ) : (
-          <div className="font-mono text-[13px] leading-relaxed text-dark-text">
+          <div className="font-mono text-[13px] leading-relaxed text-dark-text" style={{ overflowWrap: 'break-word', wordBreak: 'break-word' }}>
             <MarkdownContent content={message.content} />
           </div>
         )
