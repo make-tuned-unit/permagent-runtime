@@ -169,9 +169,9 @@ export const THEME_GRADIENTS: Record<ThemeId, ThemeGradients> = {
   silver: {
     workspace: 'linear-gradient(180deg, #F8FAFC 0%, #F2F5F9 100%)',
     card: 'linear-gradient(180deg, #FFFFFF 0%, #FAFBFD 100%)',
-    shell: '#D8DEE8',        // Liquid Silver (window chrome / headers)
-    sidebar: 'rgba(238,242,247,0.92)',
-    navRail: 'rgba(238,242,247,0.75)',
+    shell: '#FFFFFF',         // Pure white header (matches content, separated by border)
+    sidebar: 'rgba(248,250,252,0.95)',
+    navRail: 'rgba(248,250,252,0.85)',
     dropdown: 'rgba(255,255,255,0.98)',
     dropdownSolid: '#FFFFFF',
     label: 'Silver',
