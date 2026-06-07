@@ -648,7 +648,7 @@ detail, onClose, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefaul
   return (
     <div style={{
       width: '50%', minWidth: 480, maxWidth: 640, height: '100%',
-      borderLeft: `1px solid ${colors.border}`, background: 'rgba(11,18,32,0.95)',
+      borderLeft: `1px solid ${colors.border}`, background: colors.bg,
       overflowY: 'auto', padding: '20px 24px', flexShrink: 0,
     }}>
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
@@ -1026,7 +1026,7 @@ findings, actionInFlight, onAction, totalRecovered, allActioned }: {
       {cleaning && (
         <div style={{ marginBottom: 16, padding: '16px 20px', borderRadius: radius.lg, background: 'rgba(0,213,255,0.06)', border: `1px solid ${colors.borderHi}` }}>
           <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>Cleaning... {cleanProgress}/{cleanTotal}</div>
-          <div style={{ marginTop: 8, height: 4, borderRadius: 2, background: 'rgba(255,255,255,0.1)', overflow: 'hidden' }}>
+          <div style={{ marginTop: 8, height: 4, borderRadius: 2, background: colors.border, overflow: 'hidden' }}>
             <div style={{ height: '100%', borderRadius: 2, background: colors.cyan, width: `${(cleanProgress / cleanTotal) * 100}%`, transition: 'width 200ms' }} />
           </div>
         </div>
