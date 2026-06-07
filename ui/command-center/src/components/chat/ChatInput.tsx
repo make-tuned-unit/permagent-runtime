@@ -94,9 +94,9 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
         <button
           onClick={() => fileInputRef.current?.click()}
           disabled={disabled}
-          className="rounded-lg border border-dark-border bg-dark-surface-2 px-2 py-2 text-dark-muted hover:text-dark-text transition disabled:opacity-30"
+          className="rounded-lg border border-dark-border bg-dark-surface-2 text-dark-muted hover:text-dark-text transition disabled:opacity-30"
           title="Attach files"
-          style={{ display: 'grid', placeItems: 'center' }}
+          style={{ width: 34, height: 34, flexShrink: 0, display: 'grid', placeItems: 'center' }}
         >
           <FiPaperclip size={14} style={{ display: 'block' }} />
         </button>

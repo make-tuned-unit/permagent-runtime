@@ -53,6 +53,8 @@ export function InspectionPanel({ onClose }: Props) {
   const { colors } = useTheme();
   const pushOverlay = useCommandCenter(s => s.pushBrowserOverlay);
   const popOverlay = useCommandCenter(s => s.popBrowserOverlay);
+  const switchWorkspace = useCommandCenter(s => s.switchWorkspace);
+  const workspaces = useCommandCenter(s => s.workspaces);
   useEffect(() => { pushOverlay(); return () => { popOverlay(); }; }, [pushOverlay, popOverlay]);
 
   const [status, setStatus] = useState<IngestStatus | null>(null);
@@ -164,13 +166,16 @@ export function InspectionPanel({ onClose }: Props) {
         }}>
           {paused ? 'Resume' : 'Pause'}
         </button>
-        <a href="/brain" target="_blank" rel="noopener" style={{
+        <button onClick={() => {
+          const memoryWs = workspaces.find(w => hasToolType(w.layoutJson, 'memory'));
+          if (memoryWs) { switchWorkspace(memoryWs.id); onClose(); }
+        }} style={{
           padding: '4px 10px', borderRadius: 4, fontSize: 11, fontWeight: 500,
           background: colors.surfaceHi, border: `1px solid ${colors.border}`,
-          color: colors.textMuted, textDecoration: 'none', cursor: 'pointer',
+          color: colors.textMuted, cursor: 'pointer',
         }}>
           Open Brain
-        </a>
+        </button>
         <button onClick={onClose} style={{
           width: 24, height: 24, borderRadius: 4,
           background: colors.surfaceHi, border: `1px solid ${colors.border}`,
@@ -340,4 +345,13 @@ function surfaceColor(surface: string, colors: { cyan: string; purple: string; s
   if (s.includes('project')) return colors.warning;
   if (s.includes('skill')) return colors.danger;
   return colors.textDim;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function hasToolType(node: any, toolType: string): boolean {
+  if (node?.type === 'panel') return node.tool === toolType;
+  if (node?.type === 'split' && Array.isArray(node.children)) {
+    return node.children.some((c: any) => hasToolType(c, toolType));
+  }
+  return false;
 }

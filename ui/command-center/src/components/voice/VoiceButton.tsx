@@ -132,7 +132,7 @@ export function VoiceButton() {
           : state === 'processing' || state === 'playing' ? 'Busy — wait for reply'
           : STATE_LABELS[state]
         }
-        className={`rounded-lg border px-2 py-2 transition ${
+        className={`rounded-lg border transition ${
           state === 'recording'
             ? 'border-red-500 bg-red-500/20 text-red-400'
             : state === 'processing' || state === 'playing'
@@ -141,7 +141,7 @@ export function VoiceButton() {
               ? 'border-accent/50 bg-accent/10 text-accent'
               : 'border-dark-border bg-dark-surface-2 text-dark-muted hover:text-dark-text'
         }`}
-        style={{ flexShrink: 0, display: 'grid', placeItems: 'center' }}
+        style={{ width: 34, height: 34, flexShrink: 0, display: 'grid', placeItems: 'center' }}
       >
         <svg
           width="14"
