@@ -418,7 +418,7 @@ impl TextToSpeech for OrtKokoroTts {
                 i + 1, sentences.len(), chunk_ms, chunk_dur, rtf,
                 g2p_ms, tok_ms, style_ms, tensor_ms, lock_ms, run_ms, extract_ms,
                 0, // token count consumed by Tensor::from_array
-                &sentence[..sentence.len().min(40)]
+                &sentence.chars().take(40).collect::<String>()
             );
 
             all_samples.extend_from_slice(&chunk_samples);

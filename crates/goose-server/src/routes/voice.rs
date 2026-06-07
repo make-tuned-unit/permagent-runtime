@@ -139,7 +139,7 @@ async fn handle_voice_socket(
         match msg {
             Message::Text(text) => {
                 let text_str: &str = &text;
-                tracing::debug!(target: "permagentd::voice", "Received text: {}", &text_str[..text_str.len().min(100)]);
+                tracing::debug!(target: "permagentd::voice", "Received text: {}", truncate_str(text_str, 100));
                 match serde_json::from_str::<ClientMessage>(text_str) {
                     Ok(ClientMessage::Start { sample_rate }) => {
                         audio_buffer.clear();
@@ -213,7 +213,7 @@ async fn handle_voice_socket(
                         tracing::info!(
                             target: "permagentd::voice",
                             "TIMING STT: {}ms | transcript: \"{}\"",
-                            stt_ms, &transcript[..transcript.len().min(80)]
+                            stt_ms, truncate_str(&transcript, 80)
                         );
 
                         if transcript.is_empty() {
@@ -245,17 +245,16 @@ async fn handle_voice_socket(
                             return;
                         }
 
-                        let stream_result = stream_reply_with_tts(
-                            &state,
-                            &transcript,
-                            session_id.as_deref(),
-                            &tts,
-                            &mut socket,
+                        let reply_ctx = VoiceReplyCtx {
+                            state: &state,
+                            transcript: &transcript,
+                            session_id: session_id.as_deref(),
+                            tts: &tts,
                             pipeline_start,
                             stt_ms,
-                            cancelled.clone(),
-                        )
-                        .await;
+                            cancelled: cancelled.clone(),
+                        };
+                        let stream_result = stream_reply_with_tts(&reply_ctx, &mut socket).await;
 
                         if let Err(e) = stream_result {
                             let _ = socket
@@ -303,26 +302,46 @@ async fn handle_voice_socket(
     tracing::info!(target: "permagentd::voice", "Voice WebSocket handler exiting (cancelled=true)");
 }
 
+/// Truncate a string at a char boundary for safe logging.
+fn truncate_str(s: &str, max_chars: usize) -> &str {
+    match s.char_indices().nth(max_chars) {
+        Some((i, _)) => s.get(..i).unwrap_or(s),
+        None => s,
+    }
+}
+
+/// Context for a voice reply exchange (reduces arg count for stream_reply_with_tts).
+struct VoiceReplyCtx<'a> {
+    state: &'a AppState,
+    transcript: &'a str,
+    session_id: Option<&'a str>,
+    tts: &'a Arc<dyn crate::voice::TextToSpeech>,
+    pipeline_start: std::time::Instant,
+    stt_ms: u128,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
 /// Stream the LLM reply, synthesize each sentence as it completes, and send
 /// audio chunks to the client immediately. This way the client starts playing
 /// sentence 1 while sentence 2 is still generating.
 async fn stream_reply_with_tts(
-    state: &AppState,
-    transcript: &str,
-    session_id: Option<&str>,
-    tts: &Arc<dyn crate::voice::TextToSpeech>,
+    ctx: &VoiceReplyCtx<'_>,
     socket: &mut WebSocket,
-    pipeline_start: std::time::Instant,
-    stt_ms: u128,
-    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> anyhow::Result<()> {
     use futures::StreamExt;
     use permagent::agents::{AgentEvent, SessionConfig};
     use permagent::conversation::message::{Message as ChatMessage, MessageContent};
 
+    let state = ctx.state;
+    let transcript = ctx.transcript;
+    let tts = ctx.tts;
+    let pipeline_start = ctx.pipeline_start;
+    let stt_ms = ctx.stt_ms;
+    let cancelled = &ctx.cancelled;
+
     let t_setup = std::time::Instant::now();
 
-    let sid = if let Some(id) = session_id {
+    let sid = if let Some(id) = ctx.session_id {
         id.to_string()
     } else {
         let sessions = state.session_manager().list_sessions().await?;
@@ -409,9 +428,15 @@ async fn stream_reply_with_tts(
                     full_reply.push_str(&text_content.text);
 
                     // Check for speakable boundary (clause or sentence)
-                    while let Some(pos) = find_speakable_boundary(&text_buf) {
-                        let sentence = text_buf[..=pos].trim().to_string();
-                        text_buf = text_buf[pos + 1..].to_string();
+                    // find_speakable_boundary returns (byte_end_inclusive, byte_start_of_next)
+                    while let Some((end_inclusive, next_start)) = find_speakable_boundary(&text_buf)
+                    {
+                        let sentence = text_buf
+                            .get(..=end_inclusive)
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        text_buf = text_buf.get(next_start..).unwrap_or("").to_string();
 
                         if sentence.is_empty() {
                             continue;
@@ -456,7 +481,7 @@ async fn stream_reply_with_tts(
                                     target: "permagentd::voice",
                                     "STREAM sentence {}: {}chars TTS={}ms audio={:.1}s RTF={:.2}x | \"{}\"",
                                     sentence_num, sentence.len(), chunk_tts_ms, dur, rtf,
-                                    &sentence[..sentence.len().min(60)]
+                                    truncate_str(&sentence, 60)
                                 );
 
                                 if !first_audio_sent {
@@ -570,45 +595,49 @@ async fn stream_reply_with_tts(
 
 /// Find the earliest speakable boundary in the buffer.
 ///
+/// Returns `(end_inclusive, next_start)` — both valid byte indices.
+/// `end_inclusive` is the last byte of the boundary char (for `text[..=end]`).
+/// `next_start` is the first byte after the boundary char (for `text[next..]`).
+///
 /// Priority: sentence boundaries (.!?) first, then clause boundaries (, ; — :)
-/// once enough text has accumulated. This lets TTS start on the first natural
-/// pause rather than waiting for a full sentence.
+/// once enough text has accumulated.
 ///
 /// Minimum lengths prevent choppy fragments:
-/// - Sentence boundary (.!?): 6+ chars (same as before)
-/// - Clause boundary (, ; — :): 25+ chars (enough for natural prosody)
-fn find_speakable_boundary(text: &str) -> Option<usize> {
+/// - Sentence boundary (.!?): 6+ chars
+/// - Clause boundary (, ; — :): 25+ chars
+fn find_speakable_boundary(text: &str) -> Option<(usize, usize)> {
     // First pass: sentence boundary (strongest break, lowest minimum)
-    for (i, ch) in text.char_indices() {
+    let mut iter = text.char_indices().peekable();
+    while let Some((i, ch)) = iter.next() {
         if (ch == '.' || ch == '!' || ch == '?') && i > 5 {
-            let next = text[i + ch.len_utf8()..].chars().next();
-            if next.is_none() || next == Some(' ') || next == Some('\n') {
-                return Some(i);
+            let after = iter.peek().map(|(_, c)| *c);
+            if after.is_none() || after == Some(' ') || after == Some('\n') {
+                return Some((i, i + ch.len_utf8()));
             }
         }
     }
 
     // Second pass: clause boundary (weaker break, higher minimum)
-    // Only triggers if we have enough text for natural-sounding TTS
-    for (i, ch) in text.char_indices() {
+    let mut iter = text.char_indices().peekable();
+    while let Some((i, ch)) = iter.next() {
         if i < 25 {
             continue;
         }
+        let next_byte = i + ch.len_utf8();
         let is_clause = match ch {
             ',' | ';' => {
-                let next = text[i + ch.len_utf8()..].chars().next();
-                next == Some(' ') || next == Some('\n')
+                let after = iter.peek().map(|(_, c)| *c);
+                after == Some(' ') || after == Some('\n')
             }
             '\u{2014}' => true, // em dash
             ':' => {
-                // Colon is a clause break only if followed by space (not in URLs/times)
-                let next = text[i + ch.len_utf8()..].chars().next();
-                next == Some(' ')
+                let after = iter.peek().map(|(_, c)| *c);
+                after == Some(' ')
             }
             _ => false,
         };
         if is_clause {
-            return Some(i);
+            return Some((i, next_byte));
         }
     }
 
