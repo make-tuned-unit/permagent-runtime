@@ -169,6 +169,13 @@ async fn handle_voice_socket(
                                 audio_buffer.len(), audio_duration_s
                             );
                             audio_buffer.clear();
+                            // Tell the client the exchange is done so it returns to 'ready'
+                            // (without this, the client hangs in 'processing' forever).
+                            let _ = socket
+                                .send(send_json(&ServerMessage::Error {
+                                    message: "Recording too short — hold longer to speak".into(),
+                                }))
+                                .await;
                             continue;
                         }
 
@@ -210,6 +217,12 @@ async fn handle_voice_socket(
                         );
 
                         if transcript.is_empty() {
+                            // Tell the client so it returns to 'ready'
+                            let _ = socket
+                                .send(send_json(&ServerMessage::Error {
+                                    message: "No speech detected — try again".into(),
+                                }))
+                                .await;
                             continue;
                         }
 
