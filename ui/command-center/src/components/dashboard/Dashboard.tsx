@@ -1,6 +1,3 @@
-import { GridLayout, noCompactor, verticalCompactor, type Layout } from 'react-grid-layout';
-import 'react-grid-layout/css/styles.css';
-import 'react-resizable/css/styles.css';
 import { FiEdit2, FiCheck, FiX, FiPlus, FiRotateCcw } from 'react-icons/fi';
 
 import { font, radius } from '../../styles/tokens';
@@ -12,7 +9,7 @@ import { CARD_REGISTRY } from './cards/registry';
 import { AddCardPicker } from './AddCardPicker';
 import { DashboardOverflowMenu } from './DashboardOverflowMenu';
 import { ResetConfirmModal } from './ResetConfirmModal';
-import React, { useRef, useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useRef } from 'react';
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 
@@ -28,55 +25,51 @@ function persistAndNotify(
     .catch(() => { setSaveState('error'); setTimeout(() => setSaveState('idle'), 2000); });
 }
 
+/** Recompute grid positions from array order, packing cards into rows. */
+function reflow(cards: DashboardCardLayout[]): DashboardCardLayout[] {
+  let x = 0;
+  let y = 0;
+  let rowHeight = 0;
+  return cards.map(card => {
+    const w = card.size.w;
+    const h = card.size.h;
+    if (x + w > 12) {
+      x = 0;
+      y += rowHeight;
+      rowHeight = 0;
+    }
+    const placed = { ...card, position: { x, y } };
+    x += w;
+    rowHeight = Math.max(rowHeight, h);
+    return placed;
+  });
+}
+
+const ROW_HEIGHT = 60;
+const GAP = 16;
+
 export function Dashboard() {
   const { gradient, colors } = useTheme();
   const { data, loading } = useDashboard();
   const { layout, persistLayout } = useLayout();
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(0);
-  const mounted = width > 0;
-
-  useEffect(() => {
-    const node = containerRef.current;
-    if (!node) return;
-
-    const measure = () => {
-      const w = node.offsetWidth;
-      if (w > 0) setWidth(w);
-    };
-    measure();
-
-    const observer = new ResizeObserver(() => measure());
-    observer.observe(node);
-
-    // After any CSS transition in our ancestry (e.g. sidebar width)
-    // completes, re-measure to ensure we have the final resting width.
-    const onTransitionEnd = (e: TransitionEvent) => {
-      if (e.propertyName === 'width') requestAnimationFrame(measure);
-    };
-    window.addEventListener('transitionend', onTransitionEnd);
-
-    return () => {
-      observer.disconnect();
-      window.removeEventListener('transitionend', onTransitionEnd);
-    };
-  }, []);
-
   const [isEditMode, setIsEditMode] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [showPicker, setShowPicker] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [dragSrcId, setDragSrcId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
-  const handleLayoutChange = useCallback((newGridLayout: Layout) => {
-    if (!isEditMode) return;
-    const compacted = verticalCompactor.compact(newGridLayout, 12);
-    const updatedCards: DashboardCardLayout[] = layout.cards.map(card => {
-      const item = compacted.find((l: any) => l.i === card.id);
-      if (!item) return card;
-      return { ...card, position: { x: item.x, y: item.y }, size: { w: item.w, h: item.h } };
-    });
-    persistAndNotify(persistLayout, { cards: updatedCards }, setSaveState);
-  }, [isEditMode, layout.cards, persistLayout]);
+  const reorderCards = useCallback((srcId: string, targetId: string) => {
+    if (srcId === targetId) return;
+    const cards = [...layout.cards];
+    const srcIdx = cards.findIndex(c => c.id === srcId);
+    const tgtIdx = cards.findIndex(c => c.id === targetId);
+    if (srcIdx === -1 || tgtIdx === -1) return;
+    const [moved] = cards.splice(srcIdx, 1);
+    cards.splice(tgtIdx, 0, moved);
+    persistAndNotify(persistLayout, { cards: reflow(cards) }, setSaveState);
+  }, [layout.cards, persistLayout]);
 
   const removeCard = useCallback((id: string) => {
     const remaining = layout.cards.filter(c => c.id !== id);
@@ -87,21 +80,53 @@ export function Dashboard() {
   const addCard = useCallback((type: string) => {
     const entry = CARD_REGISTRY[type];
     if (!entry) return;
-    const maxY = layout.cards.reduce((max, c) => Math.max(max, c.position.y + c.size.h), 0);
     const newCard: DashboardCardLayout = {
       id: type,
       type,
-      position: { x: 0, y: maxY },
+      position: { x: 0, y: 0 },
       size: { w: entry.defaultSize.w, h: entry.defaultSize.h },
       visible: true,
     };
-    persistAndNotify(persistLayout, { cards: [...layout.cards, newCard] }, setSaveState);
+    persistAndNotify(persistLayout, { cards: reflow([...layout.cards, newCard]) }, setSaveState);
   }, [layout.cards, persistLayout]);
 
   const resetToDefault = useCallback(() => {
     setShowResetConfirm(false);
     persistAndNotify(persistLayout, DEFAULT_LAYOUT, setSaveState);
   }, [persistLayout]);
+
+  // Pointer-event drag: find which card the pointer is over
+  const findCardAtPoint = useCallback((clientX: number, clientY: number): string | null => {
+    for (const [id, el] of cardRefs.current) {
+      const rect = el.getBoundingClientRect();
+      if (clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom) {
+        return id;
+      }
+    }
+    return null;
+  }, []);
+
+  const handlePointerDown = useCallback((cardId: string, e: React.PointerEvent) => {
+    if (!isEditMode) return;
+    // Ignore clicks on the remove button
+    if ((e.target as HTMLElement).closest('button')) return;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    setDragSrcId(cardId);
+  }, [isEditMode]);
+
+  const handlePointerMove = useCallback((e: React.PointerEvent) => {
+    if (!dragSrcId) return;
+    const over = findCardAtPoint(e.clientX, e.clientY);
+    setDragOverId(over && over !== dragSrcId ? over : null);
+  }, [dragSrcId, findCardAtPoint]);
+
+  const handlePointerUp = useCallback(() => {
+    if (dragSrcId && dragOverId) {
+      reorderCards(dragSrcId, dragOverId);
+    }
+    setDragSrcId(null);
+    setDragOverId(null);
+  }, [dragSrcId, dragOverId, reorderCards]);
 
   if (loading || !data) {
     return (
@@ -119,9 +144,6 @@ export function Dashboard() {
   };
 
   const visibleCards = layout.cards.filter(c => c.visible);
-  const gridLayout = visibleCards.map(card => ({
-    i: card.id, x: card.position.x, y: card.position.y, w: card.size.w, h: card.size.h,
-  }));
   const canRemove = visibleCards.length > 1;
   const currentTypes = layout.cards.map(c => c.type);
 
@@ -131,7 +153,6 @@ export function Dashboard() {
         width: '100%', height: '100%', overflowY: 'auto', overflowX: 'hidden',
         background: gradient.workspace,
         padding: '28px 32px 40px',
-        position: 'relative',
       }}
     >
       {/* Edit mode toolbar */}
@@ -164,38 +185,47 @@ export function Dashboard() {
         </button>
       </div>
 
-      {/* Width-measurement wrapper — no padding so offsetWidth === available grid width */}
-      <div ref={containerRef as React.RefObject<HTMLDivElement>} className={isEditMode ? undefined : 'dashboard-grid-static'} style={{ width: '100%', position: 'relative', overflow: 'hidden' }}>
-      {mounted && <GridLayout
-        layout={gridLayout}
-        width={width}
-        gridConfig={{
-          cols: 12, rowHeight: 60,
-          margin: [16, 16] as const,
-          containerPadding: [0, 0] as const,
+      {/* CSS Grid — reflows natively with the container, no JS width measurement */}
+      <div
+        onPointerMove={dragSrcId ? handlePointerMove : undefined}
+        onPointerUp={dragSrcId ? handlePointerUp : undefined}
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(12, 1fr)',
+          gridAutoRows: ROW_HEIGHT,
+          gap: GAP,
+          touchAction: isEditMode ? 'none' : 'auto',
         }}
-        dragConfig={{ enabled: isEditMode, bounded: false, threshold: 3 }}
-        resizeConfig={{ enabled: isEditMode, handles: ['se'] }}
-        compactor={noCompactor}
-        onDragStop={handleLayoutChange}
-        onResizeStop={handleLayoutChange}
       >
         {visibleCards.map(card => {
           const entry = CARD_REGISTRY[card.type];
-          if (!entry) return <div key={card.id} />;
+          if (!entry) return null;
           const Component = entry.component;
           const props = cardDataMap[card.type] || {};
+          const { x, y } = card.position;
+          const { w, h } = card.size;
+          const isDragging = dragSrcId === card.id;
+          const isDragTarget = dragOverId === card.id && !isDragging;
           return (
             <div
               key={card.id}
+              ref={el => { if (el) cardRefs.current.set(card.id, el); else cardRefs.current.delete(card.id); }}
+              onPointerDown={isEditMode ? (e) => handlePointerDown(card.id, e) : undefined}
               style={{
-                cursor: isEditMode ? 'move' : 'default',
+                gridColumn: `${x + 1} / span ${w}`,
+                gridRow: `${y + 1} / span ${h}`,
+                cursor: isEditMode ? (isDragging ? 'grabbing' : 'grab') : 'default',
                 borderRadius: radius.lg,
-                outline: isEditMode ? `1px solid ${colors.cyanSoft}` : 'none',
+                outline: isDragTarget
+                  ? `2px solid ${colors.cyan}`
+                  : isEditMode ? `1px solid ${colors.cyanSoft}` : 'none',
                 outlineOffset: -1,
                 boxShadow: isEditMode ? `0 0 12px ${colors.cyanGlow}` : 'none',
-                transition: 'outline 200ms ease, box-shadow 200ms ease',
+                opacity: isDragging ? 0.5 : 1,
+                transition: 'outline 150ms ease, box-shadow 200ms ease, opacity 150ms ease',
                 position: 'relative',
+                minHeight: 0,
+                userSelect: isEditMode ? 'none' : 'auto',
               }}
             >
               <Component {...props} />
@@ -208,7 +238,6 @@ export function Dashboard() {
             </div>
           );
         })}
-      </GridLayout>}
       </div>
 
       {/* Add card placeholder — edit mode only */}
