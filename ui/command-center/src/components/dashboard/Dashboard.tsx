@@ -1,4 +1,4 @@
-import { GridLayout, noCompactor, verticalCompactor, type Layout } from 'react-grid-layout';
+import { GridLayout, useContainerWidth, noCompactor, verticalCompactor, type Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import { FiEdit2, FiCheck, FiX, FiPlus, FiRotateCcw } from 'react-icons/fi';
@@ -12,7 +12,7 @@ import { CARD_REGISTRY } from './cards/registry';
 import { AddCardPicker } from './AddCardPicker';
 import { DashboardOverflowMenu } from './DashboardOverflowMenu';
 import { ResetConfirmModal } from './ResetConfirmModal';
-import { useRef, useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 
@@ -32,21 +32,11 @@ export function Dashboard() {
   const { gradient, colors } = useTheme();
   const { data, loading } = useDashboard();
   const { layout, persistLayout } = useLayout();
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(1200);
+  const { width, mounted, containerRef } = useContainerWidth({ measureBeforeMount: true });
   const [isEditMode, setIsEditMode] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [showPicker, setShowPicker] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
-
-  useEffect(() => {
-    if (!containerRef.current) return;
-    const observer = new ResizeObserver(entries => {
-      for (const entry of entries) setWidth(entry.contentRect.width);
-    });
-    observer.observe(containerRef.current);
-    return () => observer.disconnect();
-  }, []);
 
   const handleLayoutChange = useCallback((newGridLayout: Layout) => {
     if (!isEditMode) return;
@@ -108,9 +98,8 @@ export function Dashboard() {
 
   return (
     <div
-      ref={containerRef}
       style={{
-        width: '100%', height: '100%', overflowY: 'auto',
+        width: '100%', height: '100%', overflowY: 'auto', overflowX: 'hidden',
         background: gradient.workspace,
         padding: '28px 32px 40px',
         position: 'relative',
@@ -146,9 +135,11 @@ export function Dashboard() {
         </button>
       </div>
 
-      <GridLayout
+      {/* Width-measurement wrapper — no padding so offsetWidth === available grid width */}
+      <div ref={containerRef as React.RefObject<HTMLDivElement>} className={isEditMode ? undefined : 'dashboard-grid-static'} style={{ width: '100%', overflow: 'hidden' }}>
+      {mounted && <GridLayout
         layout={gridLayout}
-        width={width - 64}
+        width={width}
         gridConfig={{
           cols: 12, rowHeight: 60,
           margin: [16, 16] as const,
@@ -188,7 +179,8 @@ export function Dashboard() {
             </div>
           );
         })}
-      </GridLayout>
+      </GridLayout>}
+      </div>
 
       {/* Add card placeholder — edit mode only */}
       {isEditMode && (

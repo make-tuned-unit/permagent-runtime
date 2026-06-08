@@ -31,6 +31,12 @@ body {
     #0a0e17;
 }
 
+/* Dashboard grid: disable item transitions when not editing so cards
+   snap immediately during sidebar resize instead of lagging 200ms */
+.dashboard-grid-static .react-grid-item {
+  transition: none !important;
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 6px;
