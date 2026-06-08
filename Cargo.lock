@@ -7490,6 +7490,7 @@ dependencies = [
  "sherpa-onnx",
  "socket2",
  "spectral",
+ "strsim",
  "subtle",
  "tempfile",
  "thiserror 1.0.69",

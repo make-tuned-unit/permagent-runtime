@@ -90,6 +90,7 @@ hound = "3.5"
 ort = { version = "2.0.0-rc.12", features = ["download-binaries"] }
 misaki-rs = { version = "0.3", default-features = false }
 zip = { version = "2", default-features = false, features = ["deflate"] }
+strsim = "0.11"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
