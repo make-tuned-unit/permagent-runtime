@@ -1,4 +1,4 @@
-import { GridLayout, useContainerWidth, noCompactor, verticalCompactor, type Layout } from 'react-grid-layout';
+import { GridLayout, noCompactor, verticalCompactor, type Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import { FiEdit2, FiCheck, FiX, FiPlus, FiRotateCcw } from 'react-icons/fi';
@@ -12,7 +12,7 @@ import { CARD_REGISTRY } from './cards/registry';
 import { AddCardPicker } from './AddCardPicker';
 import { DashboardOverflowMenu } from './DashboardOverflowMenu';
 import { ResetConfirmModal } from './ResetConfirmModal';
-import React, { useState, useCallback } from 'react';
+import React, { useRef, useState, useCallback, useEffect } from 'react';
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 
@@ -32,7 +32,36 @@ export function Dashboard() {
   const { gradient, colors } = useTheme();
   const { data, loading } = useDashboard();
   const { layout, persistLayout } = useLayout();
-  const { width, mounted, containerRef } = useContainerWidth({ measureBeforeMount: true });
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(0);
+  const mounted = width > 0;
+
+  useEffect(() => {
+    const node = containerRef.current;
+    if (!node) return;
+
+    const measure = () => {
+      const w = node.offsetWidth;
+      if (w > 0) setWidth(w);
+    };
+    measure();
+
+    const observer = new ResizeObserver(() => measure());
+    observer.observe(node);
+
+    // After any CSS transition in our ancestry (e.g. sidebar width)
+    // completes, re-measure to ensure we have the final resting width.
+    const onTransitionEnd = (e: TransitionEvent) => {
+      if (e.propertyName === 'width') requestAnimationFrame(measure);
+    };
+    window.addEventListener('transitionend', onTransitionEnd);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('transitionend', onTransitionEnd);
+    };
+  }, []);
+
   const [isEditMode, setIsEditMode] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [showPicker, setShowPicker] = useState(false);
@@ -136,7 +165,7 @@ export function Dashboard() {
       </div>
 
       {/* Width-measurement wrapper — no padding so offsetWidth === available grid width */}
-      <div ref={containerRef as React.RefObject<HTMLDivElement>} className={isEditMode ? undefined : 'dashboard-grid-static'} style={{ width: '100%', overflow: 'hidden' }}>
+      <div ref={containerRef as React.RefObject<HTMLDivElement>} className={isEditMode ? undefined : 'dashboard-grid-static'} style={{ width: '100%', position: 'relative', overflow: 'hidden' }}>
       {mounted && <GridLayout
         layout={gridLayout}
         width={width}
