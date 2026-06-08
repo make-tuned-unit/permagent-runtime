@@ -37,6 +37,7 @@ pub mod telemetry;
 pub mod tunnel;
 pub mod utils;
 pub mod version;
+pub mod voice;
 pub mod workers;
 pub mod workspaces;
 
@@ -57,7 +58,10 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(session_events::routes(state.clone()))
         // Browser content bridge: unauthenticated, localhost-only.
         // Called by the in-process MCP tool (no access to daemon token).
-        .merge(browser_content::routes(state.clone()));
+        .merge(browser_content::routes(state.clone()))
+        // Voice WebSocket: does its own token validation via query param
+        // (WebSocket upgrade can't use the Bearer middleware).
+        .merge(voice::routes(state.clone()));
 
     // Static UI assets
     let ui_dir = ui_dist_path();

@@ -18,6 +18,7 @@ pub mod state;
 #[cfg(any(feature = "rustls-tls", feature = "native-tls"))]
 pub mod tls;
 pub mod tunnel;
+pub mod voice;
 
 // Re-export commonly used items
 pub use openapi::*;

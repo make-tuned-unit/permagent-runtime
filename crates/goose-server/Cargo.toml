@@ -85,6 +85,11 @@ openssl = { version = "0.10", optional = true }
 pem = "3.0.6"
 dirs = { workspace = true }
 urlencoding = { workspace = true }
+sherpa-onnx = { version = "1.13.2", default-features = false, features = ["shared"] }
+hound = "3.5"
+ort = { version = "2.0.0-rc.12", features = ["download-binaries"] }
+misaki-rs = { version = "0.3", default-features = false }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
@@ -100,6 +105,10 @@ path = "src/main.rs"
 [[bin]]
 name = "generate_schema"
 path = "src/bin/generate_schema.rs"
+
+[[bin]]
+name = "tts_bench"
+path = "src/bin/tts_bench.rs"
 
 [dev-dependencies]
 tower = "0.5.2"

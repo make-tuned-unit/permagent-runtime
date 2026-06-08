@@ -11,6 +11,7 @@ mod routes;
 mod session_event_bus;
 mod state;
 mod tunnel;
+mod voice;
 
 use std::path::PathBuf;
 

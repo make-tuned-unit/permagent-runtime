@@ -72,6 +72,10 @@ export interface ThemeColors {
   success: string;
   /** Warning semantic */
   warning: string;
+  /** Inline code background */
+  codeBg: string;
+  /** Inline code text */
+  codeText: string;
 }
 
 const DARK_COLORS: ThemeColors = {
@@ -90,6 +94,8 @@ const DARK_COLORS: ThemeColors = {
   textOnAccent: '#FFFFFF',
   success: '#34D399',
   warning: '#FBBF24',
+  codeBg: 'rgba(0,0,0,0.30)',
+  codeText: '#00D5FF',
 };
 const AURORA_COLORS: ThemeColors = {
   ...DARK_COLORS,
@@ -113,9 +119,9 @@ const SILVER_COLORS: ThemeColors = {
   purpleSoft: 'rgba(139,92,255,0.10)',
   purpleGlow: 'rgba(139,92,255,0.25)',
   // Text — Graphite
-  text: '#1E2530',           // Graphite Text (primary)
-  textMuted: '#5A6577',      // Cool grey (AA 5.2:1 on white)
-  textDim: '#A7B0BE',        // Titanium Gray (placeholders)
+  text: '#1E2530',           // Graphite Text (primary) — 14.5:1 on white
+  textMuted: '#4B5563',      // Cool grey — 7.0:1 on white (AA)
+  textDim: '#6B7585',        // Titanium Gray — 4.9:1 on white (AA body text)
   // Semantic
   danger: '#DC2626',
   // Elevation — soft shadow + glass edge (cards MUST float via shadow, not color)
@@ -129,6 +135,8 @@ const SILVER_COLORS: ThemeColors = {
   textOnAccent: '#FFFFFF',
   success: '#059669',
   warning: '#D97706',
+  codeBg: '#EEF2F7',          // Chrome Mist — 1.1:1 vs white (subtle tint)
+  codeText: '#0369A1',        // Sky-700 — 5.5:1 on Chrome Mist (AA)
 };
 
 export interface ThemeGradients {
@@ -161,9 +169,9 @@ export const THEME_GRADIENTS: Record<ThemeId, ThemeGradients> = {
   silver: {
     workspace: 'linear-gradient(180deg, #F8FAFC 0%, #F2F5F9 100%)',
     card: 'linear-gradient(180deg, #FFFFFF 0%, #FAFBFD 100%)',
-    shell: '#D8DEE8',        // Liquid Silver (window chrome / headers)
-    sidebar: 'rgba(238,242,247,0.92)',
-    navRail: 'rgba(238,242,247,0.75)',
+    shell: '#FFFFFF',         // Pure white header (matches content, separated by border)
+    sidebar: 'rgba(248,250,252,0.95)',
+    navRail: 'rgba(248,250,252,0.85)',
     dropdown: 'rgba(255,255,255,0.98)',
     dropdownSolid: '#FFFFFF',
     label: 'Silver',

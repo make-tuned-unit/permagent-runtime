@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback, useImperativeHandle, forwardR
 import { FiSend, FiLoader, FiPaperclip } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
 import { AttachmentChip } from './AttachmentChip';
+import { VoiceButton } from '../voice/VoiceButton';
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
 
@@ -89,15 +90,17 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
           ))}
         </div>
       )}
-      <div className="flex items-end gap-2">
+      <div className="flex items-end" style={{ gap: 8 }}>
         <button
           onClick={() => fileInputRef.current?.click()}
           disabled={disabled}
-          className="rounded-lg border border-dark-border bg-dark-surface-2 px-2 py-2 text-dark-muted hover:text-dark-text transition disabled:opacity-30"
+          className="border border-dark-border bg-dark-surface-2 text-dark-muted hover:text-dark-text transition disabled:opacity-30"
           title="Attach files"
+          style={{ width: 28, height: 28, borderRadius: 6, flexShrink: 0, display: 'grid', placeItems: 'center' }}
         >
-          <FiPaperclip size={14} />
+          <FiPaperclip size={12} style={{ display: 'block' }} />
         </button>
+        <VoiceButton />
         <input
           ref={fileInputRef}
           type="file"
@@ -125,9 +128,10 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
         <button
           onClick={handleSend}
           disabled={(!input.trim() && pendingFiles.length === 0) || disabled}
-          className="rounded-lg bg-accent px-3 py-2 text-dark-bg font-semibold transition hover:bg-accent hover:shadow-[0_0_12px_rgba(0,213,255,0.2)] disabled:opacity-30 disabled:hover:shadow-none"
+          className="bg-accent text-dark-bg font-semibold transition hover:bg-accent hover:shadow-[0_0_12px_rgba(0,213,255,0.2)] disabled:opacity-30 disabled:hover:shadow-none"
+          style={{ width: 28, height: 28, borderRadius: 6, flexShrink: 0, display: 'grid', placeItems: 'center' }}
         >
-          {isStreaming ? <FiLoader size={14} className="animate-spin" /> : <FiSend size={14} />}
+          {isStreaming ? <FiLoader size={12} className="animate-spin" /> : <FiSend size={12} />}
         </button>
       </div>
     </div>

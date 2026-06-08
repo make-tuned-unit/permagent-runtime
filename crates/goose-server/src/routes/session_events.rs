@@ -492,86 +492,42 @@ pub async fn session_reply(
         all_messages.push(user_message.clone());
 
         // ── Phase 3b: Ambient context from ContextBuilder ──
-        if let Some(ref context_builder) = task_state.context_builder {
+        {
             let user_text = user_message.as_concat_text();
-            let focus_wing = task_state
-                .activity_ingester
-                .as_ref()
-                .and_then(|ing| ing.active_project())
-                .map(|ap| ap.wing.clone());
-
-            let recall_query = if user_text.len() > 20 {
-                Some(user_text.clone())
-            } else {
-                None
-            };
-
-            let digest_opts = permagent::activity::context_builder::DigestOpts {
-                include_probe: true,
-                focus_wing,
-                include_recall_query: recall_query,
-                ..Default::default()
-            };
-
-            let cb = context_builder.clone();
-            let digest_result = tokio::task::spawn_blocking(move || cb.current_digest(digest_opts))
-                .await
-                .unwrap_or_else(|e| Err(anyhow::anyhow!("spawn_blocking: {}", e)));
-            match digest_result {
-                Ok(digest) => {
-                    let ambient_block =
-                        permagent::activity::context_builder::render_ambient_context(&digest);
-                    if !ambient_block.is_empty() {
-                        tracing::debug!(
-                            target: "permagentd::activity",
-                            probed = digest.probed_memories.len(),
-                            recalled = digest.recalled_memories.len(),
-                            "Injecting ambient context into system prompt"
-                        );
-                        agent
-                            .extend_system_prompt("ambient_context".to_string(), ambient_block)
-                            .await;
-                    }
-
-                    // Emit ContextAttached so the frontend can show citation markers
-                    if !digest.probed_memories.is_empty() || !digest.recalled_memories.is_empty() {
-                        use crate::routes::reply::{ProbedMemoryRef, RecalledMemoryRef};
-                        let probed: Vec<ProbedMemoryRef> = digest
-                            .probed_memories
-                            .iter()
-                            .map(|m| ProbedMemoryRef {
-                                id: m.id.clone(),
-                                key: m.key.clone(),
-                                content_summary: m.content.chars().take(200).collect(),
-                                relevance: m.relevance,
-                                wing: m.wing.clone(),
-                            })
-                            .collect();
-                        let recalled: Vec<RecalledMemoryRef> = digest
-                            .recalled_memories
-                            .iter()
-                            .map(|m| RecalledMemoryRef {
-                                id: m.source.clone().unwrap_or_default(),
-                                signal_score: m.signal_score,
-                                content_summary: m.content.chars().take(200).collect(),
-                            })
-                            .collect();
-                        publish(
-                            Some(task_request_id.clone()),
-                            MessageEvent::ContextAttached {
-                                probed_memories: probed,
-                                recalled_memories: recalled,
-                            },
-                        )
-                        .await;
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        target: "permagentd::activity",
-                        "ContextBuilder digest failed, proceeding without ambient context: {}",
-                        e
-                    );
+            if let Some(digest) =
+                crate::brain_ops::inject_ambient_context(&task_state, &agent, &user_text).await
+            {
+                // Emit ContextAttached so the frontend can show citation markers
+                if !digest.probed_memories.is_empty() || !digest.recalled_memories.is_empty() {
+                    use crate::routes::reply::{ProbedMemoryRef, RecalledMemoryRef};
+                    let probed: Vec<ProbedMemoryRef> = digest
+                        .probed_memories
+                        .iter()
+                        .map(|m| ProbedMemoryRef {
+                            id: m.id.clone(),
+                            key: m.key.clone(),
+                            content_summary: m.content.chars().take(200).collect(),
+                            relevance: m.relevance,
+                            wing: m.wing.clone(),
+                        })
+                        .collect();
+                    let recalled: Vec<RecalledMemoryRef> = digest
+                        .recalled_memories
+                        .iter()
+                        .map(|m| RecalledMemoryRef {
+                            id: m.source.clone().unwrap_or_default(),
+                            signal_score: m.signal_score,
+                            content_summary: m.content.chars().take(200).collect(),
+                        })
+                        .collect();
+                    publish(
+                        Some(task_request_id.clone()),
+                        MessageEvent::ContextAttached {
+                            probed_memories: probed,
+                            recalled_memories: recalled,
+                        },
+                    )
+                    .await;
                 }
             }
         }

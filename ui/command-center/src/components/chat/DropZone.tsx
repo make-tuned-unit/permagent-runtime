@@ -1,6 +1,7 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { FiUpload } from 'react-icons/fi';
 import { useTheme } from '../../styles/useTheme';
+import { setDropHandlers } from '../../lib/native-drag-drop';
 
 interface DropZoneProps {
   onDrop: (files: File[]) => void;
@@ -9,10 +10,13 @@ interface DropZoneProps {
 }
 
 /**
- * File drop zone that wraps workspace content. Uses HTML5 drag-and-drop events
- * exclusively (fileDropEnabled=false in Tauri config disables native interception).
+ * File drop zone that wraps workspace content.
  *
- * Only reacts to drags containing Files (external file drops from Finder).
+ * In Tauri v2, native drag-drop intercepts Finder file drops before HTML5 events
+ * fire, so we register a Tauri onDragDropEvent handler (via native-drag-drop.ts)
+ * that reads file paths through a Tauri command and converts them to File objects.
+ * HTML5 drag handlers remain as a fallback for browser environments.
+ *
  * Internal drags (e.g. Kanban card DnD) are ignored — their events pass through
  * to inner handlers without interference.
  */
@@ -20,9 +24,27 @@ export function DropZone({ onDrop, children, disabled = false }: DropZoneProps) 
   const { colors } = useTheme();
   const [dragging, setDragging] = useState(false);
   const counter = useRef(0);
+  const onDropRef = useRef(onDrop);
+  onDropRef.current = onDrop;
+
+  // Register Tauri native drag-drop handler (for Finder file drops).
+  // In non-Tauri environments this is a no-op.
+  useEffect(() => {
+    if (disabled) return;
+    setDropHandlers({
+      onEnter: () => setDragging(true),
+      onLeave: () => setDragging(false),
+      onDrop: (files) => {
+        setDragging(false);
+        onDropRef.current(files);
+      },
+    });
+    return () => setDropHandlers(null);
+  }, [disabled]);
 
   const isFileDrag = (e: React.DragEvent) => e.dataTransfer.types.includes('Files');
 
+  // HTML5 handlers: fallback for browser environments (Tauri intercepts these)
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     if (disabled) return;
     e.preventDefault();
@@ -39,15 +61,12 @@ export function DropZone({ onDrop, children, disabled = false }: DropZoneProps) 
   }, []);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
-    // Only accept file drags at this level. For internal drags (card DnD),
-    // let the inner element's preventDefault() handle drop-target validation.
     if (isFileDrag(e)) {
       e.preventDefault();
     }
   }, []);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
-    // Only process if there are actual files; internal card drops have no files.
     const files = Array.from(e.dataTransfer.files);
     if (files.length > 0) {
       e.preventDefault();
@@ -55,8 +74,6 @@ export function DropZone({ onDrop, children, disabled = false }: DropZoneProps) 
       setDragging(false);
       onDrop(files);
     } else {
-      // Not a file drop — reset overlay state but let the event propagate
-      // to inner handlers (already handled by bubbling order).
       counter.current = 0;
       setDragging(false);
     }

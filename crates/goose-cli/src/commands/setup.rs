@@ -519,7 +519,7 @@ fn register_launchd_daemon() -> Result<()> {
     </dict>
 
     <key>ProcessType</key>
-    <string>Background</string>
+    <string>Standard</string>
 </dict>
 </plist>
 "#,

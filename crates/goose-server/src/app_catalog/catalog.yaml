@@ -71,6 +71,20 @@ tabs:
       - User asks how to configure a provider, change model, or adjust the Librarian
     customizable_layout: false
 
+  - name: Projects
+    tool_type: projects
+    panel_type: workspace
+    description: >-
+      The Projects tab shows all of the user's projects — codebases, repos,
+      and workspaces the agent can operate in.
+    affords:
+      - Browse and open projects
+      - See project status and recent activity
+    suggest_when:
+      - User asks about their projects, repos, or codebases
+      - User wants to open or switch to a specific project
+    customizable_layout: false
+
   - name: Dashboard
     tool_type: dashboard
     panel_type: workspace

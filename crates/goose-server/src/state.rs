@@ -48,6 +48,10 @@ pub struct AppState {
     pub browser_content_bridge: Arc<crate::routes::browser_content::BrowserContentBridge>,
     /// App catalog — static tab/view descriptions for agent navigation.
     pub app_catalog: Arc<permagent::app_catalog::AppCatalog>,
+    /// Voice STT provider (Moonshine via sherpa-onnx in dev, swappable).
+    pub voice_stt: Option<Arc<dyn crate::voice::SpeechToText>>,
+    /// Voice TTS provider (Kokoro via sherpa-onnx in dev, swappable).
+    pub voice_tts: Option<Arc<dyn crate::voice::TextToSpeech>>,
 }
 
 impl AppState {
@@ -371,6 +375,10 @@ impl AppState {
         // Load app catalog (static tab/view descriptions for agent navigation).
         let app_catalog = crate::app_catalog::init();
 
+        // Initialize voice providers (STT + TTS) if model files are present.
+        let voice_paths = crate::voice::sherpa_backend::VoiceModelPaths::default_paths();
+        let (voice_stt, voice_tts) = init_voice_providers(&voice_paths);
+
         Ok(Arc::new(Self {
             agent_manager,
             recipe_file_hash_map: Arc::new(Mutex::new(HashMap::new())),
@@ -391,6 +399,8 @@ impl AppState {
                 crate::routes::browser_content::BrowserContentBridge::new(),
             ),
             app_catalog,
+            voice_stt,
+            voice_tts,
         }))
     }
 
@@ -515,6 +525,56 @@ impl AppState {
             StatusCode::INTERNAL_SERVER_ERROR
         })
     }
+}
+
+type VoiceProviders = (
+    Option<Arc<dyn crate::voice::SpeechToText>>,
+    Option<Arc<dyn crate::voice::TextToSpeech>>,
+);
+
+fn init_voice_providers(
+    stt_paths: &crate::voice::sherpa_backend::VoiceModelPaths,
+) -> VoiceProviders {
+    // STT: sherpa-onnx Moonshine (no espeak dependency for recognition)
+    let stt: Option<Arc<dyn crate::voice::SpeechToText>> = if stt_paths.models_exist() {
+        match crate::voice::sherpa_backend::SherpaMoonshineStt::new(&stt_paths.stt_model_dir, 4) {
+            Ok(s) => {
+                tracing::info!(target: "permagentd::voice", "STT loaded: Moonshine via sherpa-onnx");
+                Some(Arc::new(s))
+            }
+            Err(e) => {
+                tracing::error!(target: "permagentd::voice", "STT load failed: {}", e);
+                None
+            }
+        }
+    } else {
+        tracing::info!(target: "permagentd::voice", "STT models not found — voice STT disabled");
+        None
+    };
+
+    // TTS: standalone Kokoro via ort + misaki-rs (GPL-clean shipping backend)
+    let tts_paths = crate::voice::ort_kokoro_backend::OrtKokoroModelPaths::default_paths();
+    let tts: Option<Arc<dyn crate::voice::TextToSpeech>> = if tts_paths.models_exist() {
+        match crate::voice::ort_kokoro_backend::OrtKokoroTts::new(
+            &tts_paths.model_path,
+            &tts_paths.voices_path,
+            "bm_lewis",
+        ) {
+            Ok(t) => {
+                tracing::info!(target: "permagentd::voice", "TTS loaded: Kokoro via ort+misaki-rs (GPL-clean)");
+                Some(Arc::new(t))
+            }
+            Err(e) => {
+                tracing::error!(target: "permagentd::voice", "TTS load failed: {}", e);
+                None
+            }
+        }
+    } else {
+        tracing::info!(target: "permagentd::voice", "TTS models not found — voice TTS disabled");
+        None
+    };
+
+    (stt, tts)
 }
 
 /// Sanitize hostname for use as device_id: lowercase, replace dots/whitespace

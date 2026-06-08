@@ -14,7 +14,11 @@ export function MarkdownContent({ content }: { content: string }) {
           const inline = !match;
           if (inline) {
             return (
-              <code className="rounded bg-black/30 px-1 py-0.5 text-accent text-[12px]" {...props}>
+              <code
+                className="rounded px-1 py-0.5 text-[12px]"
+                style={{ backgroundColor: colors.codeBg, color: colors.codeText, wordBreak: 'break-all' }}
+                {...props}
+              >
                 {children}
               </code>
             );

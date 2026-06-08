@@ -160,6 +160,73 @@ pub fn spawn_persist_chat_turn(
     });
 }
 
+// ── Ambient context injection ────────────────────────────────────────────
+
+/// Inject ambient context (project focus, probed/recalled memories) into the
+/// agent's system prompt via the ContextBuilder.
+///
+/// Returns the digest on success (callers may use it for ContextAttached events).
+/// Returns None if the ContextBuilder is not available or the digest is empty.
+/// Errors are logged and swallowed — never blocks the reply path.
+pub async fn inject_ambient_context(
+    state: &crate::state::AppState,
+    agent: &Arc<permagent::agents::Agent>,
+    user_text: &str,
+) -> Option<permagent::activity::context_builder::Digest> {
+    let context_builder = state.context_builder.as_ref()?;
+
+    let focus_wing = state
+        .activity_ingester
+        .as_ref()
+        .and_then(|ing| ing.active_project())
+        .map(|ap| ap.wing.clone());
+
+    let recall_query = if user_text.len() > 20 {
+        Some(user_text.to_string())
+    } else {
+        None
+    };
+
+    let digest_opts = permagent::activity::context_builder::DigestOpts {
+        include_probe: true,
+        focus_wing,
+        include_recall_query: recall_query,
+        ..Default::default()
+    };
+
+    let cb = context_builder.clone();
+    let digest_result = tokio::task::spawn_blocking(move || cb.current_digest(digest_opts))
+        .await
+        .unwrap_or_else(|e| Err(anyhow::anyhow!("spawn_blocking: {}", e)));
+
+    match digest_result {
+        Ok(digest) => {
+            let ambient_block =
+                permagent::activity::context_builder::render_ambient_context(&digest);
+            if !ambient_block.is_empty() {
+                tracing::debug!(
+                    target: "permagentd::activity",
+                    probed = digest.probed_memories.len(),
+                    recalled = digest.recalled_memories.len(),
+                    "Injecting ambient context into system prompt"
+                );
+                agent
+                    .extend_system_prompt("ambient_context".to_string(), ambient_block)
+                    .await;
+            }
+            Some(digest)
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "permagentd::activity",
+                "ContextBuilder digest failed, proceeding without ambient context: {}",
+                e
+            );
+            None
+        }
+    }
+}
+
 // ── Read-only Brain DB connection ────────────────────────────────────────
 
 /// Open a read-only SQLite connection to the Brain memory.db.

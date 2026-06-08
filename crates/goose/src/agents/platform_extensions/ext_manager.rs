@@ -68,6 +68,7 @@ pub const LIST_RESOURCES_TOOL_NAME: &str = "list_resources";
 pub const SEARCH_AVAILABLE_EXTENSIONS_TOOL_NAME: &str = "search_available_extensions";
 pub const MANAGE_EXTENSIONS_TOOL_NAME: &str = "manage_extensions";
 pub const MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE: &str = "extensionmanager__manage_extensions";
+pub const SEARCH_MEMORY_TOOL_NAME: &str = "search_memory";
 
 pub struct ExtensionManagerClient {
     info: InitializeResult,
@@ -369,6 +370,43 @@ impl ExtensionManagerClient {
             }
         }
 
+        // search_memory — active memory search via Brain recall (available when Brain is loaded)
+        if super::get_global_brain().is_some() {
+            tools.push(
+                Tool::new(
+                    SEARCH_MEMORY_TOOL_NAME.to_string(),
+                    "Search your long-term memory (Brain) for information about a topic. \
+                     Returns the most relevant memories matching the query. Use this when you \
+                     need to recall facts, events, preferences, or context that you've learned \
+                     from past conversations and observations. The query should be a natural \
+                     language phrase describing what you're looking for."
+                        .to_string(),
+                    Arc::new(
+                        serde_json::json!({
+                            "type": "object",
+                            "required": ["query"],
+                            "properties": {
+                                "query": {
+                                    "type": "string",
+                                    "description": "Natural language search query for memories"
+                                }
+                            }
+                        })
+                        .as_object()
+                        .expect("Schema must be an object")
+                        .clone(),
+                    ),
+                )
+                .annotate(ToolAnnotations::from_raw(
+                    Some("Search memories".to_string()),
+                    Some(true),
+                    Some(false),
+                    Some(false),
+                    Some(false),
+                )),
+            );
+        }
+
         tools
     }
 }
@@ -422,6 +460,7 @@ impl McpClientTrait for ExtensionManagerClient {
             MANAGE_EXTENSIONS_TOOL_NAME => self.handle_manage_extensions(arguments).await,
             LIST_RESOURCES_TOOL_NAME => self.handle_list_resources(session_id, arguments).await,
             READ_RESOURCE_TOOL_NAME => self.handle_read_resource(session_id, arguments).await,
+            SEARCH_MEMORY_TOOL_NAME => handle_search_memory(arguments).await,
             _ => Err(ExtensionManagerToolError::UnknownTool {
                 tool_name: name.to_string(),
             }),
@@ -460,5 +499,71 @@ impl McpClientTrait for ExtensionManagerClient {
 
     fn get_info(&self) -> Option<&InitializeResult> {
         Some(&self.info)
+    }
+}
+
+/// Handle the search_memory tool — active Brain recall via spawn_blocking.
+/// Brain methods use block_on() internally and MUST run off the async executor.
+async fn handle_search_memory(
+    arguments: Option<JsonObject>,
+) -> Result<Vec<Content>, ExtensionManagerToolError> {
+    let query = arguments
+        .as_ref()
+        .and_then(|a| a.get("query"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    if query.is_empty() {
+        return Ok(vec![Content::text(
+            "Please provide a search query.".to_string(),
+        )]);
+    }
+
+    let brain = match super::get_global_brain() {
+        Some(b) => b,
+        None => {
+            return Ok(vec![Content::text(
+                "Memory search unavailable — Brain not loaded.".to_string(),
+            )]);
+        }
+    };
+
+    // CRITICAL: Brain::recall_cascade uses block_on internally.
+    // Must use spawn_blocking to avoid panicking the async runtime.
+    let query_for_task = query.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let ctx = spectral::graph::RecognitionContext::empty().with_persona("henry");
+        brain.recall_cascade(&query_for_task, &ctx, &Default::default())
+    })
+    .await;
+
+    match result {
+        Ok(Ok(recall_result)) => {
+            let hits = &recall_result.merged_hits;
+            if hits.is_empty() {
+                return Ok(vec![Content::text(format!(
+                    "No memories found matching \"{}\".",
+                    query
+                ))]);
+            }
+
+            let mut output = format!("Found {} memories matching \"{}\":\n\n", hits.len(), query);
+            for (i, hit) in hits.iter().take(5).enumerate() {
+                output.push_str(&format!(
+                    "{}. [score: {:.2}] {}\n",
+                    i + 1,
+                    hit.signal_score,
+                    &hit.content
+                ));
+            }
+
+            Ok(vec![Content::text(output)])
+        }
+        Ok(Err(e)) => Ok(vec![Content::text(format!("Memory search failed: {}", e))]),
+        Err(e) => Ok(vec![Content::text(format!(
+            "Memory search task panicked: {}",
+            e
+        ))]),
     }
 }
