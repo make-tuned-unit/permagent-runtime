@@ -227,6 +227,10 @@ function _syncCssVars() {
   root.setProperty('--tw-danger', c.danger);
   root.setProperty('--tw-success', c.success);
   root.setProperty('--tw-warning', c.warning);
+  // Sync color-scheme + body background so macOS native title bar matches theme
+  const scheme = _activeTheme === 'silver' ? 'light' : 'dark';
+  root.setProperty('color-scheme', scheme);
+  document.body.style.background = THEME_GRADIENTS[_activeTheme].shell;
 }
 _syncCssVars(); // initial sync
 _listeners.add(_syncCssVars); // re-sync on theme change

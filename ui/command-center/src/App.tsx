@@ -73,7 +73,10 @@ function App() {
     (async () => {
       try {
         const { getCurrentWindow } = await import('@tauri-apps/api/window');
-        await getCurrentWindow().setTheme(theme === 'silver' ? 'light' : 'dark');
+        const win = getCurrentWindow();
+        await win.setTheme(theme === 'silver' ? 'light' : 'dark');
+        await win.setTitleBarStyle('overlay');
+        await win.setBackgroundColor(gradient.shell);
       } catch { /* older Tauri or permission not available */ }
       // Enable media capture (getUserMedia) on this window's WKWebView.
       try {
@@ -192,14 +195,19 @@ function App() {
   }
 
   return (
-    <div className={`flex h-screen density-${density}`} style={{ background: gradient.shell }}>
-      <Sidebar />
-      <main className="flex-1 min-w-0 overflow-hidden relative">
-        <DropZone onDrop={handleDrop} disabled={!!(activeWorkspace && (hasToolType(activeWorkspace.layoutJson, 'world') || hasToolType(activeWorkspace.layoutJson, 'memory')))}>
-          <MainContent />
-        </DropZone>
-      </main>
-      <ChatLauncher />
+    <div className={`flex flex-col h-screen density-${density}`} style={{ background: gradient.shell }}>
+      {/* Title-bar strip — overlay mode makes native bar transparent; this fills
+          the area behind the traffic lights with the sidebar color across full width */}
+      <div data-tauri-drag-region style={{ height: 28, flexShrink: 0, background: gradient.sidebar }} />
+      <div className="flex flex-1 min-h-0">
+        <Sidebar />
+        <main className="flex-1 min-w-0 overflow-hidden relative">
+          <DropZone onDrop={handleDrop} disabled={!!(activeWorkspace && (hasToolType(activeWorkspace.layoutJson, 'world') || hasToolType(activeWorkspace.layoutJson, 'memory')))}>
+            <MainContent />
+          </DropZone>
+        </main>
+        <ChatLauncher />
+      </div>
     </div>
   );
 }
