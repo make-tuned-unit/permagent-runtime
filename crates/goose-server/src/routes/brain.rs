@@ -307,7 +307,7 @@ async fn brain_graph(
                     id: id_hex,
                     entity_type: ent.entity_type.clone(),
                     name: ent.canonical.clone(),
-                    note: String::new(),
+                    note: ent.description.clone().unwrap_or_default(),
                 });
             }
         }
