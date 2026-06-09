@@ -12,13 +12,13 @@ const RUNS: usize = 5;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let bg_mode = args.iter().any(|a| a == "--bg");
+    let _bg_mode = args.iter().any(|a| a == "--bg");
 
     // If --bg, set background QoS BEFORE any ort initialization
     // This simulates launchd ProcessType=Background where ALL threads
     // (including ort's global thread pool) start at background QoS
     #[cfg(target_os = "macos")]
-    if bg_mode {
+    if _bg_mode {
         println!("*** --bg: Setting QOS_CLASS_BACKGROUND before ort init ***");
         set_qos(0x09);
     }

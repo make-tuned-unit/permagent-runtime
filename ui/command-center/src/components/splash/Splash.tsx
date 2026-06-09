@@ -31,7 +31,7 @@ export function Splash({ onDone }: Props) {
     <div
       onClick={() => setPhase('out')}
       style={{
-        position: 'fixed', inset: 0,
+        position: 'fixed', inset: 0, paddingTop: 28,
         background: `radial-gradient(ellipse 70% 50% at 50% 45%, rgba(0,213,255,0.05) 0%, ${colors.bg} 70%)`,
         display: 'flex', flexDirection: 'column',
         alignItems: 'center', justifyContent: 'center',
