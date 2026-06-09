@@ -3,6 +3,17 @@
 //! After STT produces a transcript, fuzzy-match tokens against a dictionary of
 //! known proper nouns (people, projects, products) sourced from the Brain.
 //! Replace close matches above a conservative threshold.
+//!
+//! ## Root-cause: polluted entity dictionary (tracked follow-up)
+//!
+//! The Brain entity dictionary contains common words and sentence fragments stored
+//! as entities — a Brain entity-quality bug. This module hardens the CORRECTOR
+//! against a polluted dictionary via threshold (0.95) and common-word target
+//! filtering, but does NOT clean the dictionary itself. The entity-quality bug is
+//! recurring (also surfaced in Brain View people-quality and gates CRM entity-ID
+//! stability work). It affects more than STT: entity-based retrieval, CRM, and
+//! entity-keyed features. These corrector workarounds should be revisited if/when
+//! the dictionary is cleaned.
 
 use std::collections::HashSet;
 use std::sync::LazyLock;
@@ -133,7 +144,7 @@ struct Correction {
 /// Try to correct a single token against single-word entity names.
 /// Returns None if no confident correction is found.
 fn try_correct_token(token: &str, dict: &EntityDictionary) -> Option<Correction> {
-    // Strip trailing punctuation for matching (e.g. "Kinrose." → "Kinrose")
+    // Strip trailing punctuation for matching (e.g. "Kinrows." → "Kinrows")
     let stripped = token.trim_end_matches(|c: char| c.is_ascii_punctuation());
     if stripped.chars().count() < MIN_TOKEN_LENGTH {
         return None;
@@ -1849,7 +1860,7 @@ mod tests {
     /// and common-word-adjacent entities that caused false positives in testing.
     fn real_dict() -> EntityDictionary {
         let names: HashSet<String> = [
-            "Kinrose",
+            "Kinrows",
             "Sharratt",
             "GetLadle",
             "LAUFT",
@@ -1880,15 +1891,15 @@ mod tests {
     #[test]
     fn corrects_close_misspelling() {
         let dict = real_dict();
-        // "Kinros" → "Kinrose" at J-W ~0.97 (above 0.95 threshold)
+        // "Kinros" → "Kinrows" at J-W ~0.97 (above 0.95 threshold)
         let result = correct_proper_nouns("I was talking about Kinros yesterday", &dict);
-        assert!(result.contains("Kinrose"), "got: {}", result);
+        assert!(result.contains("Kinrows"), "got: {}", result);
     }
 
     #[test]
     fn kinras_below_threshold() {
         let dict = real_dict();
-        // "Kinras" vs "Kinrose": J-W ~0.91 — below 0.95 threshold, NOT corrected
+        // "Kinras" vs "Kinrows": J-W ~0.91 — below 0.95 threshold, NOT corrected
         let result = correct_proper_nouns("I mentioned Kinras earlier", &dict);
         assert!(result.contains("Kinras"), "got: {}", result);
     }
@@ -1909,8 +1920,8 @@ mod tests {
     fn exact_match_untouched() {
         let dict = real_dict();
         assert_eq!(
-            correct_proper_nouns("Open Kinrose project", &dict),
-            "Open Kinrose project"
+            correct_proper_nouns("Open Kinrows project", &dict),
+            "Open Kinrows project"
         );
     }
 
@@ -1918,8 +1929,8 @@ mod tests {
     fn case_insensitive_exact_match() {
         let dict = real_dict();
         assert_eq!(
-            correct_proper_nouns("open kinrose now", &dict),
-            "open kinrose now"
+            correct_proper_nouns("open kinrows now", &dict),
+            "open kinrows now"
         );
     }
 
@@ -2034,6 +2045,13 @@ mod tests {
         let dict = real_dict();
         let result = correct_proper_nouns("we drilled into the data", &dict);
         assert!(result.contains("drilled"), "got: {}", result);
+    }
+
+    #[test]
+    fn call_off_not_corrected_to_calls() {
+        let dict = real_dict();
+        let result = correct_proper_nouns("we need to call-off the meeting", &dict);
+        assert!(result.contains("call-off"), "got: {}", result);
     }
 
     // ── Edge cases ──
