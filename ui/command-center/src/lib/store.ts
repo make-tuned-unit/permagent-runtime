@@ -252,6 +252,10 @@ interface CommandCenterStore {
   handleSessionEvent: (data: SSEEvent) => void;
   clearEvents: () => void;
 
+  // --- Project navigation (from agent/voice) ---
+  pendingProjectNavigation: string | null;
+  setPendingProjectNavigation: (id: string | null) => void;
+
   // --- Browser overlay z-order ---
   overlayBlockingBrowser: number;
   pushBrowserOverlay: () => void;
@@ -844,6 +848,10 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       }
     }
   },
+
+  // Project navigation (from agent/voice)
+  pendingProjectNavigation: null,
+  setPendingProjectNavigation: (id) => set({ pendingProjectNavigation: id }),
 
   // Browser overlay z-order
   overlayBlockingBrowser: 0,

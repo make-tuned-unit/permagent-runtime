@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { apiFetch } from '../../lib/api';
+import { useCommandCenter } from '../../lib/store';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -48,11 +49,27 @@ const LS_KEY = 'permagent-projects-last-opened';
 
 // ── Main component ─────────────────────────────────────────────────────────
 
+/** Emit a ProjectSelected activity event via Tauri IPC (fire-and-forget). */
+function emitProjectSelected(project: Project) {
+  import('@tauri-apps/api/core')
+    .then(({ invoke }) => {
+      invoke('emit_activity', {
+        event_type: 'project_selected',
+        source_surface: 'project_picker',
+        payload: { project_id: project.id, project_name: project.name },
+        project_id: `project:${project.slug}`,
+      });
+    })
+    .catch(() => { /* not in Tauri context */ });
+}
+
 export function ProjectsView() {
   const { gradient, colors } = useTheme();
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const pendingProjectNavigation = useCommandCenter(s => s.pendingProjectNavigation);
+  const setPendingProjectNavigation = useCommandCenter(s => s.setPendingProjectNavigation);
 
   const loadProjects = useCallback(async () => {
     try {
@@ -83,10 +100,25 @@ export function ProjectsView() {
     }
   }, [loading, projects]);
 
+  // Agent/voice navigation: open a specific project when pendingProjectNavigation is set
+  useEffect(() => {
+    if (!pendingProjectNavigation || loading || projects.length === 0) return;
+    const target = projects.find(p => p.id === pendingProjectNavigation);
+    if (target) {
+      setActiveProjectId(target.id);
+      localStorage.setItem(LS_KEY, target.id);
+      emitProjectSelected(target);
+    }
+    setPendingProjectNavigation(null);
+  }, [pendingProjectNavigation, loading, projects, setPendingProjectNavigation]);
+
   const openProject = useCallback((id: string) => {
     setActiveProjectId(id);
     localStorage.setItem(LS_KEY, id);
-  }, []);
+    // Emit activity so agent knows which project is now active
+    const project = projects.find(p => p.id === id);
+    if (project) emitProjectSelected(project);
+  }, [projects]);
 
   const backToAll = useCallback(() => {
     setActiveProjectId(null);
