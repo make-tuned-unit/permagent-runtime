@@ -43,7 +43,10 @@ export default function ChatApp() {
     (async () => {
       try {
         const { getCurrentWindow } = await import('@tauri-apps/api/window');
-        await getCurrentWindow().setTheme(theme === 'silver' ? 'light' : 'dark');
+        const win = getCurrentWindow();
+        await win.setTheme(theme === 'silver' ? 'light' : 'dark');
+        await win.setTitleBarStyle('overlay');
+        await win.setBackgroundColor(gradient.shell);
       } catch { /* ignore */ }
     })();
   }, [theme]);
@@ -138,6 +141,8 @@ export default function ChatApp() {
       display: 'flex', flexDirection: 'column',
       fontFamily: font.body,
     }}>
+      {/* Title-bar strip — overlay mode makes native bar transparent */}
+      <div data-tauri-drag-region style={{ height: 28, flexShrink: 0, background: gradient.sidebar }} />
       {/* Toolbar */}
       <div style={{
         height: 36, flexShrink: 0,

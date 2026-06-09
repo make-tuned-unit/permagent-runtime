@@ -87,7 +87,7 @@ export function WizardShell({ onComplete }: Props) {
 
   return (
     <div style={{
-      position: 'fixed', inset: 0,
+      position: 'fixed', inset: 0, paddingTop: 28,
       background: `radial-gradient(ellipse 80% 60% at 50% 40%, rgba(0,213,255,0.06) 0%, ${colors.bg} 70%)`,
       display: 'flex', flexDirection: 'column',
       overflow: 'hidden',

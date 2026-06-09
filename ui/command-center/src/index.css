@@ -8,10 +8,6 @@
   color-scheme: dark;
 }
 
-html {
-  color-scheme: dark;
-}
-
 html,
 body,
 #root {
@@ -21,17 +17,10 @@ body,
 body {
   margin: 0;
   font-family: "JetBrains Mono", "SF Mono", "Fira Code", monospace;
-  background: #0a0e17;
+  background: var(--tw-dark-bg, #0a0e17);
 }
 
-.command-center-bg {
-  background:
-    radial-gradient(ellipse 800px 400px at 10% 0%, rgba(0, 255, 180, 0.06), transparent 60%),
-    radial-gradient(ellipse 600px 300px at 90% 5%, rgba(59, 130, 246, 0.05), transparent 50%),
-    #0a0e17;
-}
-
-/* Scrollbar styling */
+/* Scrollbar styling — colors synced by _syncCssVars per theme */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -42,12 +31,12 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #1e293b;
+  background: var(--scrollbar-thumb, #1e293b);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #334155;
+  background: var(--scrollbar-thumb-hover, #334155);
 }
 
 /* Status dot pulse */

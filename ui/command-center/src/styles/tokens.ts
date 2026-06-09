@@ -227,6 +227,14 @@ function _syncCssVars() {
   root.setProperty('--tw-danger', c.danger);
   root.setProperty('--tw-success', c.success);
   root.setProperty('--tw-warning', c.warning);
+  // Scrollbar colors per theme
+  const scrollThumb = _activeTheme === 'silver' ? '#C8CDD5' : '#1e293b';
+  const scrollThumbHover = _activeTheme === 'silver' ? '#A0A8B4' : '#334155';
+  root.setProperty('--scrollbar-thumb', scrollThumb);
+  root.setProperty('--scrollbar-thumb-hover', scrollThumbHover);
+  // Sync color-scheme + body background so macOS native title bar matches theme
+  const scheme = _activeTheme === 'silver' ? 'light' : 'dark';
+  root.setProperty('color-scheme', scheme);
 }
 _syncCssVars(); // initial sync
 _listeners.add(_syncCssVars); // re-sync on theme change
