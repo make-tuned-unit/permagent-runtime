@@ -118,10 +118,13 @@ impl McpClientTrait for AppConductorClient {
     ) -> std::result::Result<ListToolsResult, Error> {
         let tools = vec![Tool::new(
             "navigate_app".to_string(),
-            "Navigate the user to a specific tab. Call this whenever the user \
-             expresses intent to view, open, visit, or be taken to a tab. This is \
-             the ONLY way to actually change what the user sees — describing \
-             navigation in text does nothing."
+            "Navigate the user to a specific tab, optionally drilling into a \
+             sub-view. Call this whenever the user expresses intent to view, open, \
+             visit, or be taken to a tab. This is the ONLY way to actually change \
+             what the user sees — describing navigation in text does nothing.\n\n\
+             To open a specific project's detail/kanban view, navigate to the \
+             \"Projects\" tab with state: { \"project_id\": \"<uuid>\" }. Resolve \
+             the project name first with project_resolve to get the ID."
                 .to_string(),
             schema::<NavigateAppParams>(),
         )];

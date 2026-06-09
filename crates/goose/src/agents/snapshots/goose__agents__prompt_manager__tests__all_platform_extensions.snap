@@ -141,7 +141,17 @@ Template:
 
 # Projects
 
-Permagent users organize work into projects. When a user mentions a project by name, resolve it via project_list and use that context for subsequent actions (file paths, URLs, related memories, etc).
+Permagent users organize work into projects. When a user mentions a project by name, resolve it via project_resolve (fuzzy name matching) and use that context for subsequent actions (file paths, URLs, related memories, etc).
+
+## Navigating to a project
+
+When the user asks to "open project X", "show me the Kinros project", "drill into Personal", or similar:
+1. Call project_resolve with the spoken name to get the project ID. If multiple matches, confirm with the user.
+2. Call navigate_app with tab "Projects" and state: { "project_id": "<resolved_id>" } to open that project's detail/kanban view.
+
+This two-step flow (resolve then navigate) handles voice transcription errors — the user may say "Kinros" when the project is actually "Kinross".
+
+## Creating a project
 
 When the user asks to "set up a project," "create a project," or similar:
 1. Ask for the project name if not provided.

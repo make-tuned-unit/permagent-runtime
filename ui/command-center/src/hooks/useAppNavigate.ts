@@ -15,6 +15,7 @@ export function useAppNavigate() {
   const switchWorkspace = useCommandCenter(s => s.switchWorkspace);
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
   const workspaces = useCommandCenter(s => s.workspaces);
+  const setPendingProjectNavigation = useCommandCenter(s => s.setPendingProjectNavigation);
 
   // Keep refs so the WebSocket callback always sees latest state
   const workspacesRef = useRef(workspaces);
@@ -23,6 +24,8 @@ export function useAppNavigate() {
   switchWorkspaceRef.current = switchWorkspace;
   const setActivePanelRef = useRef(setActivePanel);
   setActivePanelRef.current = setActivePanel;
+  const setPendingProjectNavigationRef = useRef(setPendingProjectNavigation);
+  setPendingProjectNavigationRef.current = setPendingProjectNavigation;
 
   useEffect(() => {
     let ws: WebSocket | null = null;
@@ -40,7 +43,7 @@ export function useAppNavigate() {
           const eventType: string = event.event_type ?? event.type ?? '';
           if (eventType !== 'app_navigate') return;
 
-          const { tool_type, panel_type, reason } = event.payload ?? {};
+          const { tool_type, panel_type, state, reason } = event.payload ?? {};
           if (!tool_type) return;
 
           if (panel_type === 'overlay') {
@@ -54,6 +57,11 @@ export function useAppNavigate() {
               // Close any overlay first
               setActivePanelRef.current('chat');
               switchWorkspaceRef.current(ws.id);
+
+              // If navigating to projects with a specific project_id, queue drill-in
+              if (tool_type === 'projects' && state?.project_id) {
+                setPendingProjectNavigationRef.current(state.project_id);
+              }
             }
           }
 

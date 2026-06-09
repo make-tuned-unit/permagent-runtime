@@ -120,6 +120,13 @@ struct BoardSummaryParams {
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct ProjectResolveParams {
+    /// The spoken or approximate project name to resolve (e.g. "Kinros", "personal").
+    /// Performs fuzzy matching against all project names and slugs.
+    query: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ColumnCreateParams {
     /// Project ID (UUID) or slug
     project_id_or_slug: String,
@@ -359,6 +366,113 @@ impl ProjectManagerClient {
         cards::get_column_by_name(pool, project_id, col_ref)
             .await?
             .ok_or_else(|| format!("Column '{}' not found in project", col_ref))
+    }
+
+    async fn handle_resolve(&self, arguments: Option<JsonObject>) -> Result<Vec<Content>, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let query = args
+            .get("query")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing required parameter: query")?
+            .to_string();
+        let pool = self
+            .context
+            .session_manager
+            .pool_clone()
+            .await
+            .map_err(|e| e.to_string())?;
+        let items = projects::list_projects(&pool, None).await?;
+
+        let query_lower = query.to_lowercase();
+
+        // Score each project: lower is better
+        let mut scored: Vec<(usize, &projects::Project)> = items
+            .iter()
+            .filter_map(|p| {
+                let name_lower = p.name.to_lowercase();
+                let slug_lower = p.slug.to_lowercase();
+
+                // Exact match on slug or name
+                if slug_lower == query_lower || name_lower == query_lower {
+                    return Some((0, p));
+                }
+                // Substring match
+                if name_lower.contains(&query_lower) || slug_lower.contains(&query_lower) {
+                    return Some((1, p));
+                }
+                if query_lower.contains(&name_lower) || query_lower.contains(&slug_lower) {
+                    return Some((2, p));
+                }
+                // Edit distance (simple Levenshtein)
+                let dist_name = levenshtein(&query_lower, &name_lower);
+                let dist_slug = levenshtein(&query_lower, &slug_lower);
+                let best = dist_name.min(dist_slug);
+                let threshold = (query_lower.len().max(name_lower.len()) / 3).max(2);
+                if best <= threshold {
+                    Some((3 + best, p))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        scored.sort_by_key(|(score, _)| *score);
+
+        if scored.is_empty() {
+            return Ok(vec![Content::text(format!(
+                "No project matches \"{}\". Available projects:\n{}",
+                query,
+                items
+                    .iter()
+                    .map(|p| format!("  - {} (slug: {}, id: {})", p.name, p.slug, p.id))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ))]);
+        }
+
+        let best_score = scored[0].0;
+        // If best match is exact or substring, return just that one
+        let matches: Vec<_> = if best_score <= 2 {
+            vec![scored[0].1]
+        } else {
+            // Return all within same score tier for disambiguation
+            scored
+                .iter()
+                .filter(|(s, _)| *s == best_score)
+                .map(|(_, p)| *p)
+                .collect()
+        };
+
+        let json: Vec<serde_json::Value> = matches
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "id": p.id, "slug": p.slug, "name": p.name,
+                    "status": p.status, "root_path": p.root_path,
+                })
+            })
+            .collect();
+
+        let confidence = if best_score == 0 {
+            "exact"
+        } else if best_score <= 2 {
+            "high"
+        } else {
+            "fuzzy"
+        };
+
+        Ok(vec![Content::text(format!(
+            "{} match(es) for \"{}\" (confidence: {})\n\n{}{}",
+            matches.len(),
+            query,
+            confidence,
+            serde_json::to_string_pretty(&json).unwrap_or_default(),
+            if matches.len() > 1 {
+                "\n\nMultiple matches found — confirm with the user which project they mean."
+            } else {
+                ""
+            }
+        ))])
     }
 
     async fn handle_card_create(
@@ -752,6 +866,7 @@ impl ProjectManagerClient {
         let update_schema = serde_json::to_value(schema_for!(ProjectUpdateParams)).unwrap();
         let delete_schema = serde_json::to_value(schema_for!(ProjectDeleteParams)).unwrap();
         let list_schema = serde_json::to_value(schema_for!(ProjectListParams)).unwrap();
+        let resolve_schema = serde_json::to_value(schema_for!(ProjectResolveParams)).unwrap();
         let card_create_schema = serde_json::to_value(schema_for!(CardCreateParams)).unwrap();
         let card_move_schema = serde_json::to_value(schema_for!(CardMoveParams)).unwrap();
         let card_delete_schema = serde_json::to_value(schema_for!(CardDeleteParams)).unwrap();
@@ -823,6 +938,27 @@ impl ProjectManagerClient {
             )
             .annotate(ToolAnnotations::from_raw(
                 Some("List Projects".to_string()),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+            )),
+            Tool::new(
+                "project_resolve".to_string(),
+                indoc! {r#"
+                Resolve a spoken or approximate project name to an exact project.
+                Use when the user mentions a project by name (especially via voice)
+                and you need to find the matching project ID. Performs fuzzy matching
+                against project names and slugs to handle transcription errors
+                (e.g. "Kinros" matching "Kinross"). If multiple matches are found,
+                confirm with the user before proceeding. Then use navigate_app with
+                state: { project_id: "<id>" } to open the project's detail view.
+            "#}
+                .to_string(),
+                resolve_schema.as_object().unwrap().clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Resolve Project".to_string()),
                 Some(false),
                 Some(false),
                 Some(false),
@@ -980,6 +1116,7 @@ impl McpClientTrait for ProjectManagerClient {
             "project_update" => self.handle_update(arguments).await,
             "project_delete" => self.handle_delete(arguments).await,
             "project_list" => self.handle_list(arguments).await,
+            "project_resolve" => self.handle_resolve(arguments).await,
             "card_create" => self.handle_card_create(arguments).await,
             "card_move" => self.handle_card_move(arguments).await,
             "card_delete" => self.handle_card_delete(arguments).await,
@@ -1001,4 +1138,22 @@ impl McpClientTrait for ProjectManagerClient {
     fn get_info(&self) -> Option<&InitializeResult> {
         Some(&self.info)
     }
+}
+
+/// Simple Levenshtein distance for fuzzy name matching.
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let (m, n) = (a.len(), b.len());
+    let mut prev = (0..=n).collect::<Vec<_>>();
+    let mut curr = vec![0; n + 1];
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[n]
 }
