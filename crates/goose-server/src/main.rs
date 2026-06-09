@@ -1,6 +1,7 @@
 mod app_catalog;
 mod automation;
 mod brain_ops;
+mod brain_sync;
 mod commands;
 mod configuration;
 mod error;

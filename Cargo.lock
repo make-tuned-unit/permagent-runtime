@@ -7467,6 +7467,7 @@ dependencies = [
  "hex",
  "hound",
  "http 1.4.1",
+ "kuzu",
  "libc",
  "misaki-rs",
  "objc2",

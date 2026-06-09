@@ -86,6 +86,10 @@ impl AppState {
                 return None;
             }
 
+            // Reconcile Kuzu graph with ontology before Brain opens.
+            // This removes entities that were pruned from ontology.toml.
+            crate::brain_sync::sync_graph_with_ontology(&brain_dir, &ontology_path);
+
             let device_id_str =
                 std::env::var("HOSTNAME").unwrap_or_else(|_| "permagent-host".into());
 
