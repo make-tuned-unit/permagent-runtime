@@ -119,6 +119,29 @@ async fn handle_voice_socket(
         return;
     }
 
+    // Load proper-noun dictionary from Brain for post-STT correction.
+    let entity_dict = if let Some(ref brain) = state.brain {
+        let brain = brain.clone();
+        let dict = tokio::task::spawn_blocking(move || {
+            let names = crate::voice::proper_noun_corrector::load_entity_names(&brain);
+            crate::voice::proper_noun_corrector::EntityDictionary::new(names)
+        })
+        .await
+        .unwrap_or_else(|_| {
+            crate::voice::proper_noun_corrector::EntityDictionary::new(
+                std::collections::HashSet::new(),
+            )
+        });
+        tracing::info!(
+            target: "permagentd::voice",
+            "Loaded {} entity names for STT proper-noun correction",
+            dict.len()
+        );
+        dict
+    } else {
+        crate::voice::proper_noun_corrector::EntityDictionary::new(std::collections::HashSet::new())
+    };
+
     let mut audio_buffer: Vec<f32> = Vec::new();
     let mut recording = false;
     let mut client_sample_rate: u32 = 16000;
@@ -225,6 +248,12 @@ async fn handle_voice_socket(
                                 .await;
                             continue;
                         }
+
+                        // Post-STT proper-noun correction against Brain entities
+                        let transcript = crate::voice::proper_noun_corrector::correct_proper_nouns(
+                            &transcript,
+                            &entity_dict,
+                        );
 
                         if socket
                             .send(send_json(&ServerMessage::Transcript {

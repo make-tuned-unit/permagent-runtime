@@ -6,6 +6,7 @@
 //! the shipping TTS backend will differ from the development backend.
 
 pub mod ort_kokoro_backend;
+pub mod proper_noun_corrector;
 pub mod provider;
 pub mod sherpa_backend;
 
