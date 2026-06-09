@@ -235,9 +235,31 @@ impl AppState {
             });
         }
 
-        // Brain cleanup: prune noise memories, then consolidate redundant clusters.
-        // Runs after annotation backfill at daemon startup.
+        // Brain cleanup: first clean orphaned FK children (one-shot migration),
+        // then prune noise memories, then consolidate redundant clusters.
         tokio::task::spawn(async {
+            // Phase 0: one-shot cleanup of orphaned constellation_fingerprints /
+            // memory_spectrogram rows left by Spectral deletions before FK enforcement.
+            let fk_result = tokio::task::spawn_blocking(|| {
+                permagent::activity::cleanup::cleanup_orphaned_fk_children()
+            })
+            .await;
+            match fk_result {
+                Ok(Ok(stats))
+                    if stats.fingerprints_deleted > 0 || stats.spectrograms_deleted > 0 =>
+                {
+                    tracing::info!(
+                        fingerprints_deleted = stats.fingerprints_deleted,
+                        spectrograms_deleted = stats.spectrograms_deleted,
+                        backup = %stats.backup_path,
+                        "FK orphan cleanup completed"
+                    );
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => tracing::warn!(error = %e, "FK orphan cleanup failed"),
+                Err(e) => tracing::warn!(error = %e, "FK orphan cleanup task panicked"),
+            }
+
             // Phase 1: prune pure noise
             let prune_result = tokio::task::spawn_blocking(|| {
                 permagent::activity::cleanup::prune_noise_memories()

@@ -7,6 +7,18 @@
 use anyhow::Result;
 use tracing::{debug, info, warn};
 
+// SQL WHERE clause matching noise memories (used by prune + FK child cleanup).
+const NOISE_FILTER: &str = "\
+    content LIKE '%about:blank%' \
+    OR content LIKE '%doubleclick%' \
+    OR content LIKE '%crwdcntrl%' \
+    OR content LIKE '%recaptcha%' \
+    OR content LIKE '%adtrafficquality%' \
+    OR content LIKE '%ogs.google.com%' \
+    OR content LIKE '%googleads%' \
+    OR content LIKE 'Chat turn completed%' \
+    OR (key LIKE 'activity:%' AND content LIKE 'Navigated to%' AND LENGTH(content) < 100)";
+
 /// Delete pure-noise memories from the Brain corpus.
 ///
 /// Targets:
@@ -23,16 +35,7 @@ pub fn prune_noise_memories() -> Result<usize> {
 
     // First, count how many will be pruned (for logging)
     let noise_count: usize = conn.query_row(
-        "SELECT COUNT(*) FROM memories WHERE \
-         content LIKE '%about:blank%' \
-         OR content LIKE '%doubleclick%' \
-         OR content LIKE '%crwdcntrl%' \
-         OR content LIKE '%recaptcha%' \
-         OR content LIKE '%adtrafficquality%' \
-         OR content LIKE '%ogs.google.com%' \
-         OR content LIKE '%googleads%' \
-         OR content LIKE 'Chat turn completed%' \
-         OR (key LIKE 'activity:%' AND content LIKE 'Navigated to%' AND LENGTH(content) < 100)",
+        &format!("SELECT COUNT(*) FROM memories WHERE {f}", f = NOISE_FILTER),
         [],
         |r| r.get(0),
     )?;
@@ -48,42 +51,49 @@ pub fn prune_noise_memories() -> Result<usize> {
         "Pruning noise memories"
     );
 
-    // Delete annotations for noise memories first (belt-and-suspenders with CASCADE)
-    let annotations_deleted: usize = conn.execute(
-        "DELETE FROM memory_annotations WHERE memory_id IN ( \
-         SELECT id FROM memories WHERE \
-         content LIKE '%about:blank%' \
-         OR content LIKE '%doubleclick%' \
-         OR content LIKE '%crwdcntrl%' \
-         OR content LIKE '%recaptcha%' \
-         OR content LIKE '%adtrafficquality%' \
-         OR content LIKE '%ogs.google.com%' \
-         OR content LIKE '%googleads%' \
-         OR content LIKE 'Chat turn completed%' \
-         OR (key LIKE 'activity:%' AND content LIKE 'Navigated to%' AND LENGTH(content) < 100) \
-         )",
+    // Delete FK children for noise memories before deleting the parents.
+    // constellation_fingerprints has NO ACTION FKs — must clean explicitly.
+    let fingerprints_deleted: usize = conn.execute(
+        &format!(
+            "DELETE FROM constellation_fingerprints \
+             WHERE anchor_memory_id IN (SELECT id FROM memories WHERE {f}) \
+                OR target_memory_id IN (SELECT id FROM memories WHERE {f})",
+            f = NOISE_FILTER
+        ),
         [],
     )?;
 
-    // Delete the noise memories
+    let spectrograms_deleted: usize = conn.execute(
+        &format!(
+            "DELETE FROM memory_spectrogram \
+             WHERE memory_id IN (SELECT id FROM memories WHERE {f})",
+            f = NOISE_FILTER
+        ),
+        [],
+    )?;
+
+    // Delete annotations (belt-and-suspenders with CASCADE)
+    let annotations_deleted: usize = conn.execute(
+        &format!(
+            "DELETE FROM memory_annotations WHERE memory_id IN ( \
+             SELECT id FROM memories WHERE {f})",
+            f = NOISE_FILTER
+        ),
+        [],
+    )?;
+
+    // Delete the noise memories (now safe under FK enforcement)
     let deleted: usize = conn.execute(
-        "DELETE FROM memories WHERE \
-         content LIKE '%about:blank%' \
-         OR content LIKE '%doubleclick%' \
-         OR content LIKE '%crwdcntrl%' \
-         OR content LIKE '%recaptcha%' \
-         OR content LIKE '%adtrafficquality%' \
-         OR content LIKE '%ogs.google.com%' \
-         OR content LIKE '%googleads%' \
-         OR content LIKE 'Chat turn completed%' \
-         OR (key LIKE 'activity:%' AND content LIKE 'Navigated to%' AND LENGTH(content) < 100)",
+        &format!("DELETE FROM memories WHERE {f}", f = NOISE_FILTER),
         [],
     )?;
 
     info!(
         target: "permagent::cleanup",
-        deleted = deleted,
-        annotations_deleted = annotations_deleted,
+        deleted,
+        fingerprints_deleted,
+        spectrograms_deleted,
+        annotations_deleted,
         "Noise prune complete"
     );
 
@@ -191,7 +201,34 @@ pub fn consolidate_clusters() -> Result<usize> {
 
         match result {
             Ok(_) => {
-                // Delete annotations for the originals
+                // Delete FK children for cluster members before deleting parents.
+                // constellation_fingerprints has NO ACTION FKs — must clean explicitly.
+                let _ = conn.execute(
+                    "DELETE FROM constellation_fingerprints \
+                     WHERE anchor_memory_id IN ( \
+                       SELECT id FROM memories \
+                       WHERE key LIKE 'activity:%browser_navigated%' \
+                         AND content LIKE '%' || ?1 || '%' \
+                         AND key != ?2) \
+                        OR target_memory_id IN ( \
+                       SELECT id FROM memories \
+                       WHERE key LIKE 'activity:%browser_navigated%' \
+                         AND content LIKE '%' || ?1 || '%' \
+                         AND key != ?2)",
+                    rusqlite::params![cluster.domain, summary_key],
+                );
+
+                let _ = conn.execute(
+                    "DELETE FROM memory_spectrogram \
+                     WHERE memory_id IN ( \
+                       SELECT id FROM memories \
+                       WHERE key LIKE 'activity:%browser_navigated%' \
+                         AND content LIKE '%' || ?1 || '%' \
+                         AND key != ?2)",
+                    rusqlite::params![cluster.domain, summary_key],
+                );
+
+                // Delete annotations for the originals (belt-and-suspenders with CASCADE)
                 let _ = conn.execute(
                     "DELETE FROM memory_annotations WHERE memory_id IN ( \
                      SELECT id FROM memories \
@@ -202,7 +239,7 @@ pub fn consolidate_clusters() -> Result<usize> {
                     rusqlite::params![cluster.domain, summary_key],
                 );
 
-                // Delete the original cluster members (but not the new summary)
+                // Delete the original cluster members (now safe under FK enforcement)
                 let originals_deleted: usize = conn.execute(
                     "DELETE FROM memories \
                      WHERE key LIKE 'activity:%browser_navigated%' \
@@ -237,6 +274,133 @@ pub fn consolidate_clusters() -> Result<usize> {
     );
 
     Ok(consolidated)
+}
+
+// ── Part A: one-shot FK orphan cleanup ───────────────────────────
+
+const MIGRATION_FK_ORPHAN_CLEANUP: &str = "fk_orphan_cleanup_v1";
+
+/// One-shot cleanup of orphaned FK children in the Brain DB.
+///
+/// Deletes `constellation_fingerprints` and `memory_spectrogram` rows whose
+/// parent memory no longer exists. These orphans accumulated while Spectral's
+/// FK constraints were defined but never enforced (`PRAGMA foreign_keys` was
+/// off). Now that cleanup.rs enforces FKs, these stale rows block legitimate
+/// `DELETE FROM memories` operations.
+///
+/// Backs up memory.db before any data change. Gated by `_pm_migrations_applied`.
+pub fn cleanup_orphaned_fk_children() -> Result<FkOrphanCleanupStats> {
+    let db_path = crate::config::paths::Paths::brain_dir().join("memory.db");
+    if !db_path.exists() {
+        debug!(target: "permagent::cleanup", "FK orphan cleanup: no memory.db, skipping");
+        return Ok(FkOrphanCleanupStats::default());
+    }
+
+    let conn = rusqlite::Connection::open(&db_path)?;
+    ensure_migrations_table(&conn)?;
+
+    if is_migration_applied(&conn, MIGRATION_FK_ORPHAN_CLEANUP)? {
+        debug!(target: "permagent::cleanup", "FK orphan cleanup: already applied, skipping");
+        return Ok(FkOrphanCleanupStats::default());
+    }
+
+    // Back up memory.db before any destructive operation.
+    let backup_name = format!(
+        "memory.db.pre-fk-cleanup-{}",
+        chrono::Utc::now().format("%Y%m%dT%H%M%SZ")
+    );
+    let backup_path = db_path.with_file_name(&backup_name);
+    std::fs::copy(&db_path, &backup_path)?;
+
+    // Verify the backup exists and is non-zero.
+    let backup_meta = std::fs::metadata(&backup_path)?;
+    anyhow::ensure!(
+        backup_meta.len() > 0,
+        "FK orphan cleanup: backup file is empty — aborting"
+    );
+    info!(
+        target: "permagent::cleanup",
+        backup = %backup_path.display(),
+        size_bytes = backup_meta.len(),
+        "Brain DB backed up before FK orphan cleanup"
+    );
+
+    // Count orphans before cleanup (for logging).
+    let fp_anchor_orphans: usize = conn.query_row(
+        "SELECT COUNT(*) FROM constellation_fingerprints \
+         WHERE anchor_memory_id NOT IN (SELECT id FROM memories)",
+        [],
+        |r| r.get(0),
+    )?;
+    let fp_target_orphans: usize = conn.query_row(
+        "SELECT COUNT(*) FROM constellation_fingerprints \
+         WHERE target_memory_id NOT IN (SELECT id FROM memories)",
+        [],
+        |r| r.get(0),
+    )?;
+    let spec_orphans: usize = conn.query_row(
+        "SELECT COUNT(*) FROM memory_spectrogram \
+         WHERE memory_id NOT IN (SELECT id FROM memories)",
+        [],
+        |r| r.get(0),
+    )?;
+
+    if fp_anchor_orphans == 0 && fp_target_orphans == 0 && spec_orphans == 0 {
+        info!(target: "permagent::cleanup", "FK orphan cleanup: no orphans found");
+        mark_migration_applied(&conn, MIGRATION_FK_ORPHAN_CLEANUP)?;
+        return Ok(FkOrphanCleanupStats::default());
+    }
+
+    info!(
+        target: "permagent::cleanup",
+        fp_anchor_orphans,
+        fp_target_orphans,
+        spec_orphans,
+        "Cleaning up orphaned FK children"
+    );
+
+    // Delete orphaned constellation_fingerprints (anchor or target missing).
+    let fp_deleted_anchor: usize = conn.execute(
+        "DELETE FROM constellation_fingerprints \
+         WHERE anchor_memory_id NOT IN (SELECT id FROM memories)",
+        [],
+    )?;
+    let fp_deleted_target: usize = conn.execute(
+        "DELETE FROM constellation_fingerprints \
+         WHERE target_memory_id NOT IN (SELECT id FROM memories)",
+        [],
+    )?;
+
+    // Delete orphaned memory_spectrogram rows.
+    let spec_deleted: usize = conn.execute(
+        "DELETE FROM memory_spectrogram \
+         WHERE memory_id NOT IN (SELECT id FROM memories)",
+        [],
+    )?;
+
+    mark_migration_applied(&conn, MIGRATION_FK_ORPHAN_CLEANUP)?;
+
+    let stats = FkOrphanCleanupStats {
+        fingerprints_deleted: fp_deleted_anchor + fp_deleted_target,
+        spectrograms_deleted: spec_deleted,
+        backup_path: backup_path.to_string_lossy().into_owned(),
+    };
+
+    info!(
+        target: "permagent::cleanup",
+        fingerprints_deleted = stats.fingerprints_deleted,
+        spectrograms_deleted = stats.spectrograms_deleted,
+        "FK orphan cleanup complete"
+    );
+
+    Ok(stats)
+}
+
+#[derive(Debug, Default)]
+pub struct FkOrphanCleanupStats {
+    pub fingerprints_deleted: usize,
+    pub spectrograms_deleted: usize,
+    pub backup_path: String,
 }
 
 const MIGRATION_DOMAIN_CLUSTER_CLEANUP: &str = "domain_cluster_cleanup_v1";
