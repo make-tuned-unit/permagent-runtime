@@ -187,7 +187,7 @@ function App() {
   }
 
   if (phase === 'loading') {
-    return <div style={{ background: gradient.shell, width: '100vw', height: '100vh' }} />;
+    return <div style={{ background: gradient.shell, width: '100vw', height: '100vh', paddingTop: 28 }} />;
   }
 
   if (phase === 'wizard') {
