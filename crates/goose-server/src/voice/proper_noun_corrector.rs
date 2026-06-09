@@ -8,7 +8,8 @@ use std::collections::HashSet;
 use std::sync::LazyLock;
 
 /// Minimum Jaro-Winkler similarity to consider a correction.
-const SIMILARITY_THRESHOLD: f64 = 0.85;
+/// Real proper-noun hits sit at 0.97+; false positives cluster 0.85–0.94.
+const SIMILARITY_THRESHOLD: f64 = 0.95;
 
 /// Minimum token length (chars) to consider for correction.
 /// Short words are too risky (many common words are 3-4 chars).
@@ -25,6 +26,9 @@ impl EntityDictionary {
         let entries: Vec<(String, String)> = names
             .into_iter()
             .filter(|n| !n.is_empty())
+            // Exclude common English words from the dictionary — they should
+            // never be correction targets (e.g. "click", "drive", "graph").
+            .filter(|n| !is_common_word(n))
             .map(|n| {
                 let lower = n.to_lowercase();
                 (n, lower)
@@ -587,6 +591,7 @@ static COMMON_WORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
         "brush",
         "build",
         "burns",
+        "calls",
         "candy",
         "carol",
         "carry",
@@ -597,7 +602,9 @@ static COMMON_WORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
         "class",
         "clean",
         "clear",
+        "click",
         "cliff",
+        "climb",
         "close",
         "cloud",
         "coach",
@@ -660,6 +667,7 @@ static COMMON_WORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
         "grain",
         "grand",
         "grant",
+        "graph",
         "grass",
         "great",
         "green",
@@ -1852,6 +1860,14 @@ mod tests {
             "Finder",
             "open source",
             "design work",
+            // Polluted entries — common words that exist in real Brain dicts.
+            // EntityDictionary::new must filter these out.
+            "click",
+            "Drive",
+            "graph",
+            "calls",
+            "nothing",
+            "design",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -1864,15 +1880,29 @@ mod tests {
     #[test]
     fn corrects_close_misspelling() {
         let dict = real_dict();
-        let result = correct_proper_nouns("I was talking about Kinrows yesterday", &dict);
+        // "Kinros" → "Kinrose" at J-W ~0.97 (above 0.95 threshold)
+        let result = correct_proper_nouns("I was talking about Kinros yesterday", &dict);
         assert!(result.contains("Kinrose"), "got: {}", result);
     }
 
     #[test]
-    fn corrects_kinras_to_kinrose() {
+    fn kinras_below_threshold() {
         let dict = real_dict();
+        // "Kinras" vs "Kinrose": J-W ~0.91 — below 0.95 threshold, NOT corrected
         let result = correct_proper_nouns("I mentioned Kinras earlier", &dict);
-        assert!(result.contains("Kinrose"), "got: {}", result);
+        assert!(result.contains("Kinras"), "got: {}", result);
+    }
+
+    #[test]
+    fn common_words_filtered_from_dict() {
+        let dict = real_dict();
+        assert!(
+            !dict.entries.iter().any(|(_, lower)| [
+                "click", "drive", "graph", "calls", "nothing", "design"
+            ]
+            .contains(&lower.as_str())),
+            "Common words should be filtered from entity dictionary"
+        );
     }
 
     #[test]
@@ -1980,6 +2010,30 @@ mod tests {
         let dict = real_dict();
         let input = "what is the weather like today in the city";
         assert_eq!(correct_proper_nouns(input, &dict), input);
+    }
+
+    // ── Real voice false-positive regression tests (round 2) ──
+
+    #[test]
+    fn graham_not_corrected_to_graph() {
+        let dict = real_dict();
+        // "Graham" is a real name; must NOT become "graph" (which is filtered from dict anyway)
+        let result = correct_proper_nouns("ask Graham about it", &dict);
+        assert!(result.contains("Graham"), "got: {}", result);
+    }
+
+    #[test]
+    fn clicked_not_corrected_to_click() {
+        let dict = real_dict();
+        let result = correct_proper_nouns("I clicked the button", &dict);
+        assert!(result.contains("clicked"), "got: {}", result);
+    }
+
+    #[test]
+    fn drilled_not_corrected_to_drive() {
+        let dict = real_dict();
+        let result = correct_proper_nouns("we drilled into the data", &dict);
+        assert!(result.contains("drilled"), "got: {}", result);
     }
 
     // ── Edge cases ──
