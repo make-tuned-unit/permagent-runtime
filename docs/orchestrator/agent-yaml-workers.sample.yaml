@@ -1,0 +1,53 @@
+# Sample workers section for ~/.permagent/agent.yaml
+#
+# Verified against: crates/goose/src/config/agent_identity.rs :: WorkerPersona
+#
+# Struct fields (all serde-deserialized from YAML):
+#   first_name: String          — REQUIRED, the worker's display name
+#   last_name: Option<String>   — optional surname
+#   nickname: Option<String>    — if set, used as display_name instead of first+last
+#   role: String                — one-line description of what this worker does
+#   traits: Vec<String>         — personality traits injected into system prompt
+#   tone: String                — tone guidance for system prompt
+#   tool_kinds: Vec<String>     — capabilities for worker selection matching
+#                                  (empty = matches any requirement)
+#   availability_check: String  — how to detect if installed on this machine
+#                                  Parsed by: crates/goose/src/config/worker_probe.rs :: probe_worker()
+#                                  Valid formats:
+#                                    "always"                — always available (default)
+#                                    "bin_exists:<name>"     — checks `which <name>` on PATH
+#                                    "api_credential:<var>"  — checks env var is set
+#                                    "model_loaded:<model>"  — checks Ollama localhost:11434/api/tags
+#   cost_tier: String           — used for selection ranking
+#                                  Ranked by: crates/goose/src/goal_state.rs :: cost_tier_rank()
+#                                  Valid values (in preference order):
+#                                    "local_free"   — rank 0, preferred
+#                                    "subscription" — rank 1
+#                                    "paid_api"     — rank 2
+#                                    anything else  — rank 3, least preferred
+#
+# Binary verification (this machine, 2026-06-09):
+#   claude → /Users/jessesharratt/.nvm/versions/node/v22.22.1/bin/claude (node script)
+#   codex  → /opt/homebrew/bin/codex (Mach-O arm64 binary)
+
+workers:
+  claude-code:
+    first_name: Claude
+    role: "General-purpose coding agent with full tool access"
+    tool_kinds:
+      - code_edit
+      - shell
+      - web_search
+      - git
+    availability_check: "bin_exists:claude"
+    cost_tier: subscription
+
+  codex:
+    first_name: Codex
+    role: "Fast parallel coding agent"
+    tool_kinds:
+      - code_edit
+      - shell
+      - git
+    availability_check: "bin_exists:codex"
+    cost_tier: subscription
