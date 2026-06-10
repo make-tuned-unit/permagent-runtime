@@ -63,8 +63,9 @@ impl EntityDictionary {
 /// 1. Graph neighborhood entities from `brain.recall()` — canonical names
 /// 2. Direct SQL on `memory_annotations.who` — display_name values
 ///
-/// Must be called from `spawn_blocking` (Brain uses block_on internally).
-pub fn load_entity_names(brain: &spectral::Brain) -> HashSet<String> {
+/// Must be called from `spawn_blocking` — uses raw_blocking_handle() internally.
+pub fn load_entity_names(brain: &permagent::brain_handle::SafeBrain) -> HashSet<String> {
+    let brain = brain.raw_blocking_handle();
     let mut names = HashSet::new();
 
     // Source 1: graph neighborhood entities via recall

@@ -23,11 +23,12 @@
 //! writes Always-tier and Aggregated-tier activity events to Brain.
 //! Ephemeral events are bus-only and never persisted.
 
+use crate::brain_handle::SafeBrain;
 use crate::events::activity::{ActivityEvent, ActivityEventType, EventTier};
 use spectral::ingest::CompactionTier;
-use spectral::{Brain, DeviceId, RememberOpts, Visibility};
+use spectral::{DeviceId, RememberOpts, Visibility};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Mutex, RwLock};
 use tracing::{debug, error, warn};
 
 /// Tracks the user's currently-active project for wing classification.
@@ -157,7 +158,7 @@ fn domain_seen_recently(domain: &str) -> bool {
 }
 
 pub struct ActivityIngester {
-    brain: Arc<Brain>,
+    brain: SafeBrain,
     device_id: DeviceId,
     failure_count: AtomicU64,
     always_count: AtomicU64,
@@ -179,7 +180,7 @@ pub struct ActivityIngester {
 }
 
 impl ActivityIngester {
-    pub fn new(brain: Arc<Brain>, device_id: String) -> Self {
+    pub fn new(brain: SafeBrain, device_id: String) -> Self {
         Self {
             brain,
             device_id: DeviceId::from_descriptor(&device_id),
@@ -301,7 +302,8 @@ impl ActivityIngester {
             .ok()
             .and_then(|ap| ap.as_ref().map(|p| p.wing.clone()));
 
-        let result = self.brain.remember_with(
+        // Called from spawn_blocking context (state.rs activity event loop).
+        let result = self.brain.raw_blocking_handle().remember_with(
             &key,
             &content,
             RememberOpts {

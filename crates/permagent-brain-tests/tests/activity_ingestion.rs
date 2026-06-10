@@ -4,7 +4,9 @@
 
 mod common;
 
+// Sanctioned raw spectral::Brain usage — test crate owns its runtime.
 use permagent::activity::ingestion::ActivityIngester;
+use permagent::brain_handle::SafeBrain;
 use permagent::events::activity::{ActivityEvent, ActivityEventType, EventTier, SourceSurface};
 use spectral::Brain;
 use std::sync::Arc;
@@ -68,7 +70,7 @@ const ONTOLOGY_TOML: &str = include_str!("../../goose/assets/ontology.toml");
 #[test]
 fn active_project_set_on_project_selected() {
     let brain = common::shared_ingestion_brain();
-    let ingester = ActivityIngester::new(brain, "test-device".into());
+    let ingester = ActivityIngester::new(SafeBrain::from_arc(brain), "test-device".into());
 
     assert!(ingester.active_project().is_none());
 
@@ -84,7 +86,7 @@ fn active_project_set_on_project_selected() {
 #[test]
 fn active_project_replaced_on_subsequent_project_selected() {
     let brain = common::shared_ingestion_brain();
-    let ingester = ActivityIngester::new(brain, "test-device".into());
+    let ingester = ActivityIngester::new(SafeBrain::from_arc(brain), "test-device".into());
 
     ingester.handle_event(&make_project_selected("project:permagent", "Permagent"));
     assert_eq!(ingester.active_project().unwrap().wing, "permagent");
@@ -98,7 +100,7 @@ fn active_project_replaced_on_subsequent_project_selected() {
 #[test]
 fn active_project_unchanged_when_project_id_malformed() {
     let brain = common::shared_ingestion_brain();
-    let ingester = ActivityIngester::new(brain, "test-device".into());
+    let ingester = ActivityIngester::new(SafeBrain::from_arc(brain), "test-device".into());
 
     ingester.handle_event(&make_project_selected("project:permagent", "Permagent"));
     assert_eq!(ingester.active_project().unwrap().wing, "permagent");
@@ -121,7 +123,7 @@ fn active_project_unchanged_when_project_id_malformed() {
 #[test]
 fn wing_override_computed_during_ingestion() {
     let brain = common::shared_ingestion_brain();
-    let ingester = ActivityIngester::new(brain, "test-device".into());
+    let ingester = ActivityIngester::new(SafeBrain::from_arc(brain), "test-device".into());
 
     ingester.handle_event(&make_project_selected("project:permagent", "Permagent"));
     ingester.handle_event(&make_terminal_event());
@@ -136,7 +138,7 @@ fn wing_override_computed_during_ingestion() {
 #[test]
 fn always_event_ingested_to_brain() {
     let brain = common::shared_ingestion_brain();
-    let ingester = ActivityIngester::new(brain, "test-device".into());
+    let ingester = ActivityIngester::new(SafeBrain::from_arc(brain), "test-device".into());
     ingester.handle_event(&make_terminal_event());
     assert_eq!(ingester.always_count(), 1);
     assert_eq!(ingester.failure_count(), 0);
@@ -146,7 +148,7 @@ fn always_event_ingested_to_brain() {
 #[test]
 fn aggregated_event_ingested_and_queued() {
     let brain = common::shared_ingestion_brain();
-    let ingester = ActivityIngester::new(brain, "test-device".into());
+    let ingester = ActivityIngester::new(SafeBrain::from_arc(brain), "test-device".into());
     let event = ActivityEvent {
         event_id: uuid::Uuid::new_v4().to_string(),
         event_type: ActivityEventType::BrowserNavigated,
@@ -166,7 +168,7 @@ fn aggregated_event_ingested_and_queued() {
 #[test]
 fn ephemeral_event_counted_not_ingested() {
     let brain = common::shared_ingestion_brain();
-    let ingester = ActivityIngester::new(brain, "test-device".into());
+    let ingester = ActivityIngester::new(SafeBrain::from_arc(brain), "test-device".into());
     let event = ActivityEvent {
         event_id: "eph-1".into(),
         event_type: ActivityEventType::ChatTurnStarted,
@@ -198,7 +200,7 @@ fn brain_failure_increments_counter_without_panic() {
             .build()
             .expect("test brain"),
     );
-    let ingester = ActivityIngester::new(brain, "test-device".into());
+    let ingester = ActivityIngester::new(SafeBrain::from_arc(brain), "test-device".into());
     ingester.handle_event(&make_terminal_event());
     assert_eq!(ingester.always_count(), 1);
     assert_eq!(ingester.failure_count(), 0);
@@ -210,7 +212,7 @@ fn brain_failure_increments_counter_without_panic() {
 #[test]
 fn chat_turn_completed_filtered_by_ingester() {
     let brain = common::shared_ingestion_brain();
-    let ingester = ActivityIngester::new(brain, "test-device".into());
+    let ingester = ActivityIngester::new(SafeBrain::from_arc(brain), "test-device".into());
     ingester.handle_event(&make_always_event());
     assert_eq!(ingester.always_count(), 1);
     assert_eq!(ingester.filtered_count(), 1);

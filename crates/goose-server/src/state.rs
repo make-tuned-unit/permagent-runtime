@@ -30,8 +30,9 @@ pub struct AppState {
     #[cfg(feature = "local-inference")]
     pub inference_runtime: Arc<InferenceRuntime>,
     session_buses: Arc<Mutex<HashMap<String, Arc<SessionEventBus>>>>,
-    /// Spectral Brain handle for long-term memory (recall + remember).
-    pub brain: Option<Arc<spectral::Brain>>,
+    /// SafeBrain handle for long-term memory (recall + remember).
+    /// All Brain operations go through SafeBrain's async methods (spawn_blocking inside).
+    pub brain: Option<permagent::brain_handle::SafeBrain>,
     /// Shared agent persona (hot-reloaded via RwLock).
     pub persona: permagent::config::agent_identity::SharedPersona,
     /// Shared full agent config (primary + workers) for worker resolution.
@@ -91,7 +92,11 @@ impl AppState {
         // Mount Spectral Brain for long-term memory.
         // Brain::builder().build() creates its own tokio runtime internally,
         // so we must run it off the async executor via spawn_blocking.
-        let brain: Option<Arc<spectral::Brain>> = tokio::task::spawn_blocking(|| {
+        // Sanctioned raw spectral::Brain construction site.
+        // Brain::builder().build() creates its own tokio runtime internally,
+        // so we must run it off the async executor via spawn_blocking.
+        // What leaves this block is a SafeBrain.
+        let brain: Option<permagent::brain_handle::SafeBrain> = tokio::task::spawn_blocking(|| {
             let brain_dir = permagent::config::paths::Paths::brain_dir();
             let ontology_path = permagent::config::paths::Paths::brain_ontology();
 
@@ -131,7 +136,7 @@ impl AppState {
             let device_id_str =
                 std::env::var("HOSTNAME").unwrap_or_else(|_| "permagent-host".into());
 
-            let brain = match spectral::Brain::builder()
+            let raw_brain = match spectral::Brain::builder()
                 .data_dir(&brain_dir)
                 .ontology_path(&ontology_path)
                 .device_id(spectral::DeviceId::from_descriptor(&device_id_str))
@@ -143,7 +148,7 @@ impl AppState {
                         "Brain mounted at {}",
                         brain_dir.display()
                     );
-                    Arc::new(b)
+                    b
                 }
                 Err(e) => {
                     tracing::error!(
@@ -156,8 +161,8 @@ impl AppState {
                 }
             };
 
-            // Startup health check: verify brain is queryable
-            match brain.recall("permagent", spectral::Visibility::Private) {
+            // Startup health check: verify brain is queryable (still raw, pre-wrap)
+            match raw_brain.recall("permagent", spectral::Visibility::Private) {
                 Ok(result) => {
                     tracing::info!(
                         target: "permagentd::brain",
@@ -174,7 +179,7 @@ impl AppState {
                 }
             }
 
-            Some(brain)
+            Some(permagent::brain_handle::SafeBrain::new(raw_brain))
         })
         .await
         .unwrap_or_else(|e| {

@@ -30,7 +30,7 @@ pub fn filter_recall_hits(
 /// Filters by `RECALL_SCORE_FLOOR` (0.7), takes `RECALL_TOP_K` (3).
 /// Returns count of memories injected. Errors are logged, never propagated.
 pub async fn inject_recall(
-    brain: &Arc<spectral::Brain>,
+    brain: &permagent::brain_handle::SafeBrain,
     agent: &Arc<permagent::agents::Agent>,
     user_query: &str,
     recognition_ctx: spectral::graph::RecognitionContext,
@@ -39,16 +39,9 @@ pub async fn inject_recall(
         return 0;
     }
 
-    let brain = brain.clone();
-    let query = user_query.to_string();
     let query_for_log = user_query.chars().take(80).collect::<String>();
-    let recall_result = tokio::task::spawn_blocking(move || {
-        brain.recall_cascade(&query, &recognition_ctx, &Default::default())
-    })
-    .await;
-
-    match recall_result {
-        Ok(Ok(result)) => {
+    match brain.recall_cascade(user_query, &recognition_ctx).await {
+        Ok(result) => {
             let top_hits = filter_recall_hits(&result.merged_hits);
 
             if top_hits.is_empty() {
@@ -79,18 +72,10 @@ pub async fn inject_recall(
                 .await;
             count
         }
-        Ok(Err(e)) => {
-            tracing::warn!(
-                target: "permagentd::brain",
-                "Brain recall failed: {}",
-                e
-            );
-            0
-        }
         Err(e) => {
             tracing::warn!(
                 target: "permagentd::brain",
-                "Brain recall spawn_blocking panicked: {}",
+                "Brain recall failed: {}",
                 e
             );
             0
@@ -100,11 +85,10 @@ pub async fn inject_recall(
 
 // ── Chat turn persistence ────────────────────────────────────────────────
 
-/// Persist a chat turn's memories via Brain::remember_with.
+/// Persist a chat turn's memories via SafeBrain::remember_with.
 /// Spawns a detached background task — fire-and-forget.
-/// Wraps spawn_blocking and error handling with tracing.
 pub fn spawn_persist_chat_turn(
-    brain: Arc<spectral::Brain>,
+    brain: permagent::brain_handle::SafeBrain,
     session_id: String,
     turn_idx: usize,
     user_text: String,
@@ -116,8 +100,8 @@ pub fn spawn_persist_chat_turn(
         let device_id = *brain.device_id();
         let key_for_log = key.clone();
 
-        let result = tokio::task::spawn_blocking(move || {
-            brain.remember_with(
+        match brain
+            .remember_with(
                 &key,
                 &content,
                 spectral::RememberOpts {
@@ -129,29 +113,19 @@ pub fn spawn_persist_chat_turn(
                     ..Default::default()
                 },
             )
-        })
-        .await;
-
-        match result {
-            Ok(Ok(_)) => {
+            .await
+        {
+            Ok(_) => {
                 tracing::info!(
                     target: "permagentd::brain",
                     "Remembered chat turn: {}",
                     key_for_log
                 );
             }
-            Ok(Err(e)) => {
-                tracing::warn!(
-                    target: "permagentd::brain",
-                    "Failed to remember chat turn {}: {}",
-                    key_for_log,
-                    e
-                );
-            }
             Err(e) => {
                 tracing::warn!(
                     target: "permagentd::brain",
-                    "spawn_blocking panicked for remember {}: {}",
+                    "Failed to remember chat turn {}: {}",
                     key_for_log,
                     e
                 );

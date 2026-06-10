@@ -1,16 +1,15 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use crate::scheduler::{ScheduledJob, SchedulerError};
 use crate::session::Session;
 
 #[async_trait]
 pub trait SchedulerTrait: Send + Sync {
-    /// Set the Spectral Brain handle for recall/remember in scheduled jobs.
+    /// Set the SafeBrain handle for recall/remember in scheduled jobs.
     /// Default no-op; overridden by Scheduler.
-    async fn set_brain(&self, _brain: Option<Arc<spectral::Brain>>) {}
+    async fn set_brain(&self, _brain: Option<crate::brain_handle::SafeBrain>) {}
     /// Set the shared persona for scheduled job system prompts.
     async fn set_persona(&self, _persona: crate::config::agent_identity::SharedPersona) {}
     /// Set the shared agent config (primary + workers) for worker persona resolution.

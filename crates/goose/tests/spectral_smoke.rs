@@ -3,6 +3,7 @@
 //! Proves Spectral's Brain API compiles cleanly inside Permagent's Cargo
 //! workspace and round-trips memories with full provenance fields.
 //!
+//! Sanctioned raw `spectral::Brain` usage — test owns its runtime.
 //! Phase 1 exercises the API surface that works against a schema-only
 //! ontology: remember_with, recall, brain reopen. Graph layer assertions
 //! (brain.assert) require runtime entity creation and are gated on

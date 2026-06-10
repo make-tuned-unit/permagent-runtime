@@ -16,7 +16,6 @@ use rmcp::model::{
 };
 use schemars::{schema_for, JsonSchema};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 pub static EXTENSION_NAME: &str = "librarian";
@@ -171,7 +170,7 @@ impl LibrarianClient {
         Ok(Self { info, context })
     }
 
-    fn get_brain(&self) -> Result<Arc<spectral::Brain>, String> {
+    fn get_brain(&self) -> Result<crate::brain_handle::SafeBrain, String> {
         get_global_brain()
             .ok_or_else(|| "Brain not available — Spectral may not be initialized".to_string())
     }
@@ -212,9 +211,9 @@ impl LibrarianClient {
         let limit = params.limit.min(100);
 
         let brain = self.get_brain()?;
-        let memories = tokio::task::spawn_blocking(move || brain.list_undescribed(limit))
+        let memories = brain
+            .list_undescribed(limit)
             .await
-            .map_err(|e| format!("spawn_blocking failed: {}", e))?
             .map_err(|e| format!("Brain error: {}", e))?;
 
         let total = memories.len();
@@ -342,7 +341,7 @@ pub enum DescriptionQuality {
 /// When `emit_events` is true, emits librarian events on the global event bus
 /// for live HUD streaming (Started, Token, Retry, Completed).
 pub async fn describe_one(
-    brain: &Arc<spectral::Brain>,
+    brain: &crate::brain_handle::SafeBrain,
     memory_id: &str,
     force: bool,
     model: &str,
@@ -353,11 +352,9 @@ pub async fn describe_one(
     let start = std::time::Instant::now();
 
     // 1. Fetch memory
-    let mid = memory_id.to_string();
-    let brain_ref = brain.clone();
-    let memory = tokio::task::spawn_blocking(move || brain_ref.get_memory(&mid))
+    let memory = brain
+        .get_memory(memory_id)
         .await
-        .map_err(|e| format!("spawn_blocking failed: {}", e))?
         .map_err(|e| format!("Brain error: {}", e))?
         .ok_or_else(|| format!("Memory '{}' not found", memory_id))?;
 
@@ -440,12 +437,9 @@ pub async fn describe_one(
     }
 
     // 4. Write to Spectral first — if this fails, state hasn't been updated
-    let desc_clone = description.clone();
-    let mid = memory_id.to_string();
-    let brain_ref = brain.clone();
-    tokio::task::spawn_blocking(move || brain_ref.set_description(&mid, &desc_clone))
+    brain
+        .set_description(memory_id, &description)
         .await
-        .map_err(|e| format!("spawn_blocking failed: {}", e))?
         .map_err(|e| format!("Failed to write description: {}", e))?;
 
     // 4a. Stale fact heuristic — flag descriptions whose content contains
@@ -553,7 +547,7 @@ pub async fn describe_one(
 /// may differ slightly but is functionally equivalent. Not worth guarding against
 /// since set_description failures indicate a deeper Spectral issue.
 pub async fn run_batch(
-    brain: &Arc<spectral::Brain>,
+    brain: &crate::brain_handle::SafeBrain,
     batch_size: usize,
     model: &str,
 ) -> Result<usize, String> {
@@ -561,10 +555,9 @@ pub async fn run_batch(
 
     let mut described = 0;
     loop {
-        let brain_ref = brain.clone();
-        let memories = tokio::task::spawn_blocking(move || brain_ref.list_undescribed(batch_size))
+        let memories = brain
+            .list_undescribed(batch_size)
             .await
-            .map_err(|e| format!("spawn_blocking failed: {}", e))?
             .map_err(|e| format!("Brain error: {}", e))?;
 
         if memories.is_empty() {
@@ -1011,6 +1004,7 @@ fn schema<T: JsonSchema>() -> JsonObject {
 mod tests {
     use super::*;
     use crate::session::SessionManager;
+    use std::sync::Arc;
 
     fn test_context() -> PlatformExtensionContext {
         PlatformExtensionContext {
@@ -1100,13 +1094,7 @@ mod tests {
     async fn test_describe_one_force_false_returns_cached() {
         let brain = get_global_brain().expect("Brain required for this test");
         // Find a memory that already has a description
-        let described = tokio::task::spawn_blocking({
-            let brain = brain.clone();
-            move || brain.list_undescribed(1)
-        })
-        .await
-        .unwrap()
-        .unwrap();
+        let described = brain.list_undescribed(1).await.unwrap();
 
         // If no undescribed memories, this test can't run meaningfully
         if described.is_empty() {
@@ -1136,13 +1124,7 @@ mod tests {
     #[ignore = "requires Brain + Ollama: cargo test -p permagent -- librarian --ignored"]
     async fn test_describe_one_force_true_regenerates() {
         let brain = get_global_brain().expect("Brain required for this test");
-        let described = tokio::task::spawn_blocking({
-            let brain = brain.clone();
-            move || brain.list_undescribed(1)
-        })
-        .await
-        .unwrap()
-        .unwrap();
+        let described = brain.list_undescribed(1).await.unwrap();
 
         if described.is_empty() {
             eprintln!("No undescribed memories — skipping");

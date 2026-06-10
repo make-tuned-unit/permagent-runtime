@@ -209,19 +209,9 @@ async fn get_recent_memories(
         )
     })?;
 
-    let brain = brain.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        brain.recall("activity recent events", spectral::Visibility::Private)
-    })
-    .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorBody {
-                error: format!("spawn_blocking failed: {}", e),
-            }),
-        )
-    })?;
+    let result = brain
+        .recall("activity recent events", spectral::Visibility::Private)
+        .await;
 
     match result {
         Ok(result) => {

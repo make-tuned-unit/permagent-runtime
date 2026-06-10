@@ -379,9 +379,8 @@ pub async fn librarian_scheduler_loop() {
         // Full recompute, atomic replace, idempotent. No Ollama needed.
         if co_retrieval_rebuild_due() {
             if let Some(brain) = permagent::agents::platform_extensions::get_global_brain() {
-                match tokio::task::spawn_blocking(move || brain.rebuild_co_retrieval_index()).await
-                {
-                    Ok(Ok(n)) => {
+                match brain.rebuild_co_retrieval_index().await {
+                    Ok(n) => {
                         mark_co_retrieval_rebuilt();
                         tracing::info!(
                             target: "permagentd::librarian",
@@ -389,18 +388,11 @@ pub async fn librarian_scheduler_loop() {
                             "Co-retrieval index rebuilt"
                         );
                     }
-                    Ok(Err(e)) => {
-                        tracing::warn!(
-                            target: "permagentd::librarian",
-                            error = %e,
-                            "Co-retrieval index rebuild failed"
-                        );
-                    }
                     Err(e) => {
                         tracing::warn!(
                             target: "permagentd::librarian",
                             error = %e,
-                            "Co-retrieval rebuild panicked"
+                            "Co-retrieval index rebuild failed"
                         );
                     }
                 }
@@ -410,9 +402,9 @@ pub async fn librarian_scheduler_loop() {
         // ── Consolidation scan + optional pruning (daily) ────────────────
         if consolidation_due() {
             let pruning_enabled = schedule.pruning_enabled;
-            if let Some(brain) = permagent::agents::platform_extensions::get_global_brain() {
+            if let Some(safe_brain) = permagent::agents::platform_extensions::get_global_brain() {
                 match tokio::task::spawn_blocking(move || {
-                    let consolidation = run_consolidation_scan(&brain);
+                    let consolidation = run_consolidation_scan(&safe_brain);
                     let pruned = if pruning_enabled {
                         run_pruning_pass().unwrap_or(0)
                     } else {

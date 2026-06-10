@@ -1,6 +1,8 @@
 //! Shared test helpers for Brain-dependent integration tests.
 //! This crate runs WITHOUT V8 (no code-mode feature) to avoid
 //! the libc++abi symbol collision on Linux. See issue #190.
+//!
+//! Sanctioned raw `spectral::Brain` usage — test crate owns its runtime.
 #![allow(dead_code)]
 
 use spectral::Brain;

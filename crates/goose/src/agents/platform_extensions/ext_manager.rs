@@ -529,17 +529,9 @@ async fn handle_search_memory(
         }
     };
 
-    // CRITICAL: Brain::recall_cascade uses block_on internally.
-    // Must use spawn_blocking to avoid panicking the async runtime.
-    let query_for_task = query.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let ctx = spectral::graph::RecognitionContext::empty().with_persona("henry");
-        brain.recall_cascade(&query_for_task, &ctx, &Default::default())
-    })
-    .await;
-
-    match result {
-        Ok(Ok(recall_result)) => {
+    let ctx = spectral::graph::RecognitionContext::empty().with_persona("henry");
+    match brain.recall_cascade(&query, &ctx).await {
+        Ok(recall_result) => {
             let hits = &recall_result.merged_hits;
             if hits.is_empty() {
                 return Ok(vec![Content::text(format!(
@@ -560,10 +552,6 @@ async fn handle_search_memory(
 
             Ok(vec![Content::text(output)])
         }
-        Ok(Err(e)) => Ok(vec![Content::text(format!("Memory search failed: {}", e))]),
-        Err(e) => Ok(vec![Content::text(format!(
-            "Memory search task panicked: {}",
-            e
-        ))]),
+        Err(e) => Ok(vec![Content::text(format!("Memory search failed: {}", e))]),
     }
 }

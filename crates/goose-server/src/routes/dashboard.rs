@@ -88,22 +88,13 @@ async fn get_dashboard(State(state): State<Arc<AppState>>) -> Json<DashboardResp
 
     // Memory stats from brain
     let (memory_count, memory_delta_today) = if let Some(brain) = state.brain.as_ref() {
-        let brain = brain.clone();
-        let query = name.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            brain.recall(&query, spectral::Visibility::Private)
-        })
-        .await
-        .ok()
-        .and_then(|r| r.ok());
-
-        match result {
-            Some(r) => {
+        match brain.recall(&name, spectral::Visibility::Private).await {
+            Ok(r) => {
                 let ent_count = r.graph.neighborhood.entities.len();
                 let mem_count = r.memory_hits.len();
                 (ent_count + mem_count, 0) // delta requires timestamp tracking we don't have
             }
-            None => (0, 0),
+            Err(_) => (0, 0),
         }
     } else {
         (0, 0)
