@@ -608,7 +608,7 @@ export function Browser() {
             onKeyDown={handleUrlKeyDown}
             onFocus={(e) => e.target.select()}
             placeholder="Search or enter URL..."
-            className="flex-1 bg-transparent text-xs text-dark-text placeholder:text-dark-muted/50 py-1.5 pr-3 outline-none font-mono"
+            className="flex-1 bg-transparent text-xs text-dark-text placeholder:text-dark-muted/60 py-1.5 pr-3 outline-none font-mono"
           />
         </div>
       </div>

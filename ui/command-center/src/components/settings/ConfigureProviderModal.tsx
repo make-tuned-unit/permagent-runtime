@@ -111,7 +111,7 @@ export function ConfigureProviderModal({ provider, onClose }: Props) {
                   value={apiKey}
                   onChange={e => setApiKey(e.target.value)}
                   placeholder={provider.isConfigured ? '(key stored, enter new to replace)' : 'Enter API key'}
-                  className="w-full px-3 py-2 pr-10 rounded border border-dark-border text-sm text-dark-text placeholder:text-dark-muted/40 focus:outline-none focus:border-accent/50"
+                  className="w-full px-3 py-2 pr-10 rounded border border-dark-border text-sm text-dark-text placeholder:text-dark-muted/60 focus:outline-none focus:border-accent/50"
                   style={{ backgroundColor: colors.inputBg }}
                 />
                 <button

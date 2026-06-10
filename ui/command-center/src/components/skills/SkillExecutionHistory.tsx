@@ -30,7 +30,7 @@ export function SkillExecutionHistory({ skillId }: SkillExecutionHistoryProps) {
     return (
       <div>
         <label className="block text-[10px] font-mono uppercase text-dark-muted mb-2">Execution History</label>
-        <div className="text-[10px] font-mono text-dark-muted/60">Loading...</div>
+        <div className="text-[10px] font-mono text-dark-muted/80">Loading...</div>
       </div>
     );
   }
@@ -41,7 +41,7 @@ export function SkillExecutionHistory({ skillId }: SkillExecutionHistoryProps) {
         Execution History {executions.length > 0 && `(${executions.length})`}
       </label>
       {executions.length === 0 ? (
-        <div className="text-[10px] font-mono text-dark-muted/60">No executions yet.</div>
+        <div className="text-[10px] font-mono text-dark-muted/80">No executions yet.</div>
       ) : (
         <div className="space-y-1.5">
           {executions.map(exec => {

@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { FiChevronRight, FiChevronDown, FiCheck, FiX, FiCopy } from 'react-icons/fi';
 import type { ToolCall } from '../../lib/store';
+import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { GmailSearchResult } from './GmailSearchResult';
 import { GmailReadResult } from './GmailReadResult';
@@ -18,74 +19,44 @@ function parseResult(result: string | undefined): unknown {
 }
 
 function TypedResultBody({ name, data }: { name: string; data: unknown }) {
+  const { colors } = useTheme();
   if (data === undefined || data === null) return null;
 
-  // Gmail search
   if (name === 'gmail__search' || name === 'gmail_search') {
     const emails = Array.isArray(data) ? data : (data as Record<string, unknown>)?.emails;
-    if (Array.isArray(emails)) {
-      return <GmailSearchResult emails={emails} />;
-    }
+    if (Array.isArray(emails)) return <GmailSearchResult emails={emails} />;
   }
 
-  // Gmail read
   if (name === 'gmail__read' || name === 'gmail_read') {
     const obj = data as Record<string, unknown>;
     if (obj && (obj.subject || obj.body || obj.from)) {
-      return (
-        <GmailReadResult
-          subject={obj.subject as string}
-          from={obj.from as string}
-          to={obj.to as string}
-          date={obj.date as string}
-          body={obj.body as string}
-        />
-      );
+      return <GmailReadResult subject={obj.subject as string} from={obj.from as string} to={obj.to as string} date={obj.date as string} body={obj.body as string} />;
     }
   }
 
-  // Bash / shell output
   if (name === 'bash' || name === 'shell' || name === 'developer__shell' || name === 'run_command') {
     const obj = data as Record<string, unknown>;
-    if (typeof data === 'string') {
-      return <BashOutputResult stdout={data} />;
-    }
+    if (typeof data === 'string') return <BashOutputResult stdout={data} />;
     if (obj && (obj.stdout !== undefined || obj.stderr !== undefined || obj.output !== undefined)) {
-      return (
-        <BashOutputResult
-          stdout={(obj.stdout || obj.output) as string}
-          stderr={obj.stderr as string}
-          exitCode={obj.exit_code as number ?? obj.exitCode as number}
-        />
-      );
+      return <BashOutputResult stdout={(obj.stdout || obj.output) as string} stderr={obj.stderr as string} exitCode={obj.exit_code as number ?? obj.exitCode as number} />;
     }
   }
 
-  // File read
   if (name === 'file_read' || name === 'read_file' || name === 'read_attachment' || name === 'attachment_read') {
     const obj = data as Record<string, unknown>;
-    if (typeof data === 'string') {
-      return <FileReadResult content={data} />;
-    }
+    if (typeof data === 'string') return <FileReadResult content={data} />;
     if (obj && (obj.content !== undefined || obj.filename !== undefined)) {
-      return (
-        <FileReadResult
-          filename={obj.filename as string}
-          content={obj.content as string}
-          truncated={obj.truncated as boolean}
-        />
-      );
+      return <FileReadResult filename={obj.filename as string} content={obj.content as string} truncated={obj.truncated as boolean} />;
     }
   }
 
-  // Fallback: JSON viewer
-  if (typeof data === 'object') {
-    return <JsonResult data={data} />;
-  }
+  if (typeof data === 'object') return <JsonResult data={data} />;
 
-  // Plain string fallback
   return (
-    <pre className="rounded bg-black/30 p-2 font-mono text-[10px] text-slate-300 overflow-x-auto max-h-[150px] overflow-y-auto whitespace-pre-wrap">
+    <pre
+      className="rounded p-2 text-[10px] overflow-x-auto max-h-[150px] overflow-y-auto whitespace-pre-wrap"
+      style={{ fontFamily: font.mono, backgroundColor: colors.codeBg, color: colors.text }}
+    >
       {String(data)}
     </pre>
   );
@@ -108,41 +79,49 @@ export function ToolResult({ call }: { call: ToolCall }) {
   }, [call]);
 
   return (
-    <div className="mt-1.5 rounded-lg border border-dark-border" style={{ backgroundColor: colors.surface }}>
+    <div
+      className="mt-1.5 rounded-lg"
+      style={{ backgroundColor: colors.surface, border: `1px solid ${colors.border}` }}
+    >
       <button
         onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] font-mono hover:bg-white/[0.03] transition"
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] transition"
+        style={{ fontFamily: font.mono }}
       >
         {expanded
-          ? <FiChevronDown size={12} className="text-dark-muted shrink-0" />
-          : <FiChevronRight size={12} className="text-dark-muted shrink-0" />}
-        <span className="rounded bg-accent/10 text-accent px-1.5 py-0.5 text-[10px] shrink-0">
+          ? <FiChevronDown size={12} style={{ color: colors.textMuted, flexShrink: 0 }} />
+          : <FiChevronRight size={12} style={{ color: colors.textMuted, flexShrink: 0 }} />}
+        <span
+          className="rounded px-1.5 py-0.5 text-[10px] shrink-0"
+          style={{ backgroundColor: `${colors.cyan}1A`, color: colors.cyan }}
+        >
           {call.name}
         </span>
         <span className="flex-1" />
         {hasResult && (
           success
-            ? <FiCheck size={11} className="text-emerald-400 shrink-0" />
-            : <FiX size={11} className="text-red-400 shrink-0" />
+            ? <FiCheck size={11} className="shrink-0" style={{ color: colors.success }} />
+            : <FiX size={11} className="shrink-0" style={{ color: colors.danger }} />
         )}
       </button>
 
       {expanded && (
-        <div className="border-t border-dark-border/50 px-3 py-2 space-y-2">
+        <div className="px-3 py-2 space-y-2" style={{ borderTop: `1px solid ${colors.border}` }}>
           <div className="flex items-center justify-between">
-            <div className="text-[9px] font-mono uppercase text-dark-muted">Result</div>
+            <div className="text-[9px] uppercase" style={{ fontFamily: font.mono, color: colors.textMuted }}>Result</div>
             <button
               onClick={handleCopyRaw}
-              className="text-[9px] font-mono text-dark-muted hover:text-dark-text transition flex items-center gap-1"
+              className="text-[9px] transition flex items-center gap-1"
+              style={{ fontFamily: font.mono, color: colors.textMuted }}
             >
-              {copied ? <><FiCheck size={9} className="text-emerald-400" /> Copied</> : <><FiCopy size={9} /> Raw JSON</>}
+              {copied ? <><FiCheck size={9} style={{ color: colors.success }} /> Copied</> : <><FiCopy size={9} /> Raw JSON</>}
             </button>
           </div>
 
           {hasResult ? (
             <TypedResultBody name={call.name} data={parsedResult} />
           ) : (
-            <div className="text-[10px] font-mono text-dark-muted italic">Pending...</div>
+            <div className="text-[10px] italic" style={{ fontFamily: font.mono, color: colors.textMuted }}>Pending...</div>
           )}
         </div>
       )}

@@ -3,6 +3,7 @@ import { MarkdownContent } from './MarkdownContent';
 import { ImageMessage } from './ImageMessage';
 import { AudioMessage } from './AudioMessage';
 import { ToolResult } from '../tool-results/ToolResult';
+import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 interface Attachment {
@@ -22,13 +23,11 @@ export function MessageRenderer({ message, attachments, allImages }: MessageRend
   const { colors } = useTheme();
   const isUser = message.role === 'user';
 
-  // Separate attachments by type
   const imageAttachments = attachments?.filter(a => a.mime_type.startsWith('image/')) || [];
   const audioAttachments = attachments?.filter(a => a.mime_type.startsWith('audio/')) || [];
 
   return (
     <>
-      {/* Inline images (base64 from user's attached files) */}
       {message.images && message.images.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-2">
           {message.images.map((img, i) => (
@@ -36,37 +35,39 @@ export function MessageRenderer({ message, attachments, allImages }: MessageRend
               key={`${message.id}-img-${i}`}
               src={`data:${img.mimeType};base64,${img.data}`}
               alt="Attached image"
-              className="rounded-lg shadow-sm border border-slate-700/40 object-contain"
-              style={{ maxWidth: 300, maxHeight: 300 }}
+              className="rounded-lg shadow-sm object-contain"
+              style={{ maxWidth: 300, maxHeight: 300, border: `1px solid ${colors.border}` }}
             />
           ))}
         </div>
       )}
 
-      {/* Text content */}
       {message.content && (
         isUser ? (
-          <div className="font-mono text-[13px] leading-relaxed whitespace-pre-wrap" style={{ color: colors.userBubbleText }}>
+          <div
+            className="text-[14px] leading-relaxed whitespace-pre-wrap"
+            style={{ fontFamily: font.body, color: colors.userBubbleText }}
+          >
             {message.content}
           </div>
         ) : (
-          <div className="font-mono text-[13px] leading-relaxed text-dark-text" style={{ overflowWrap: 'break-word', wordBreak: 'break-word' }}>
+          <div
+            className="text-[14px] leading-relaxed"
+            style={{ fontFamily: font.body, color: colors.text, overflowWrap: 'break-word', wordBreak: 'break-word' }}
+          >
             <MarkdownContent content={message.content} />
           </div>
         )
       )}
 
-      {/* Image attachments */}
       {imageAttachments.map(a => (
         <ImageMessage key={a.id} src={a.url} alt={a.filename} allImages={allImages} />
       ))}
 
-      {/* Audio attachments */}
       {audioAttachments.map(a => (
         <AudioMessage key={a.id} src={a.url} filename={a.filename} />
       ))}
 
-      {/* Tool calls */}
       {message.tool_calls && message.tool_calls.length > 0 && (
         <div className="mt-2 space-y-1">
           {message.tool_calls.map((tc, i) => (

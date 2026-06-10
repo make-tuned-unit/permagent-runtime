@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { FiUpload } from 'react-icons/fi';
+import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { setDropHandlers } from '../../lib/native-drag-drop';
 
@@ -9,17 +10,6 @@ interface DropZoneProps {
   disabled?: boolean;
 }
 
-/**
- * File drop zone that wraps workspace content.
- *
- * In Tauri v2, native drag-drop intercepts Finder file drops before HTML5 events
- * fire, so we register a Tauri onDragDropEvent handler (via native-drag-drop.ts)
- * that reads file paths through a Tauri command and converts them to File objects.
- * HTML5 drag handlers remain as a fallback for browser environments.
- *
- * Internal drags (e.g. Kanban card DnD) are ignored — their events pass through
- * to inner handlers without interference.
- */
 export function DropZone({ onDrop, children, disabled = false }: DropZoneProps) {
   const { colors } = useTheme();
   const [dragging, setDragging] = useState(false);
@@ -27,8 +17,6 @@ export function DropZone({ onDrop, children, disabled = false }: DropZoneProps) 
   const onDropRef = useRef(onDrop);
   onDropRef.current = onDrop;
 
-  // Register Tauri native drag-drop handler (for Finder file drops).
-  // In non-Tauri environments this is a no-op.
   useEffect(() => {
     if (disabled) return;
     setDropHandlers({
@@ -44,14 +32,11 @@ export function DropZone({ onDrop, children, disabled = false }: DropZoneProps) 
 
   const isFileDrag = (e: React.DragEvent) => e.dataTransfer.types.includes('Files');
 
-  // HTML5 handlers: fallback for browser environments (Tauri intercepts these)
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     if (disabled) return;
     e.preventDefault();
     counter.current++;
-    if (isFileDrag(e)) {
-      setDragging(true);
-    }
+    if (isFileDrag(e)) setDragging(true);
   }, [disabled]);
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
@@ -61,9 +46,7 @@ export function DropZone({ onDrop, children, disabled = false }: DropZoneProps) 
   }, []);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
-    if (isFileDrag(e)) {
-      e.preventDefault();
-    }
+    if (isFileDrag(e)) e.preventDefault();
   }, []);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
@@ -89,9 +72,16 @@ export function DropZone({ onDrop, children, disabled = false }: DropZoneProps) 
     >
       {children}
       {dragging && (
-        <div className="absolute inset-0 z-40 flex flex-col items-center justify-center border-2 border-dashed border-accent/50 rounded-xl m-2 pointer-events-none" style={{ backgroundColor: colors.bg, opacity: 0.93 }}>
-          <FiUpload size={32} className="text-accent/60 mb-2" />
-          <span className="text-accent/80 font-mono text-sm">Drop files to send to chat</span>
+        <div
+          className="absolute inset-0 z-40 flex flex-col items-center justify-center rounded-xl m-2 pointer-events-none"
+          style={{
+            backgroundColor: colors.bg,
+            opacity: 0.93,
+            border: `2px dashed ${colors.cyan}80`,
+          }}
+        >
+          <FiUpload size={32} className="mb-2" style={{ color: `${colors.cyan}99` }} />
+          <span className="text-sm" style={{ fontFamily: font.mono, color: `${colors.cyan}CC` }}>Drop files to send to chat</span>
         </div>
       )}
     </div>

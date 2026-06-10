@@ -1,6 +1,7 @@
 import { useRef, useEffect, useMemo, useState, useCallback } from 'react';
 import { FiChevronDown, FiMessageSquare } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
+import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { MessageBubble } from './MessageBubble';
 import { StreamingIndicator } from './StreamingIndicator';
@@ -42,7 +43,6 @@ export function MessageList() {
     setShowJump(false);
   };
 
-  // Show streaming indicator only when streaming has started but no content yet
   const showStreamingIndicator = isStreaming && !streamingMessageId;
 
   return (
@@ -53,8 +53,8 @@ export function MessageList() {
         className="h-full overflow-y-auto p-4 space-y-3"
       >
         {timeline.length === 0 && !isStreaming && (
-          <div className="flex flex-col items-center justify-center h-full text-dark-muted text-xs text-center gap-2 font-mono">
-            <FiMessageSquare size={24} className="opacity-30 text-accent/40" />
+          <div className="flex flex-col items-center justify-center h-full text-xs text-center gap-2" style={{ color: colors.textMuted, fontFamily: font.body }}>
+            <FiMessageSquare size={24} style={{ opacity: 0.3, color: colors.cyan }} />
             <div>Send a message to start a conversation with your agent.</div>
           </div>
         )}
@@ -72,8 +72,14 @@ export function MessageList() {
         <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10">
           <button
             onClick={jumpToBottom}
-            className="flex items-center gap-1 rounded-full shadow-lg shadow-accent/5 border border-accent/20 px-3 py-1 text-[11px] text-accent font-mono transition"
-            style={{ backgroundColor: colors.surface }}
+            className="flex items-center gap-1 rounded-full shadow-lg px-3 py-1 text-[11px] transition"
+            style={{
+              backgroundColor: colors.surface,
+              color: colors.cyan,
+              fontFamily: font.mono,
+              border: `1px solid ${colors.cyan}33`,
+              boxShadow: colors.cardShadow,
+            }}
           >
             <FiChevronDown size={12} /> Jump to latest
           </button>

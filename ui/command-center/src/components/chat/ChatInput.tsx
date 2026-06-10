@@ -1,16 +1,19 @@
 import { useState, useRef, useEffect, useCallback, useImperativeHandle, forwardRef } from 'react';
 import { FiSend, FiLoader, FiPaperclip } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
+import { font, ease } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
 import { AttachmentChip } from './AttachmentChip';
 import { VoiceButton } from '../voice/VoiceButton';
 
-const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
+const MAX_FILE_SIZE = 50 * 1024 * 1024;
 
 export interface ChatInputHandle {
   addFiles: (files: File[]) => void;
 }
 
 export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, ref) {
+  const { colors } = useTheme();
   const isStreaming = useCommandCenter(s => s.isStreaming);
   const sendMessage = useCommandCenter(s => s.sendMessage);
 
@@ -28,19 +31,8 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
   }, [input]);
 
   const addFiles = useCallback((files: File[]) => {
-    console.log('[addfiles] called with', files.length, 'files:', files.map(f => `${f.name}(type=${f.type},size=${f.size})`));
-    const valid = files.filter(f => {
-      if (f.size > MAX_FILE_SIZE) {
-        console.warn(`[addfiles] File too large: ${f.name} (${f.size} bytes)`);
-        return false;
-      }
-      return true;
-    });
-    setPendingFiles(prev => {
-      const next = [...prev, ...valid];
-      console.log('[addfiles] pendingFiles count:', next.length);
-      return next;
-    });
+    const valid = files.filter(f => f.size <= MAX_FILE_SIZE);
+    setPendingFiles(prev => [...prev, ...valid]);
   }, []);
 
   useImperativeHandle(ref, () => ({ addFiles }), [addFiles]);
@@ -82,7 +74,7 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
   }, [addFiles]);
 
   return (
-    <div className="border-t border-dark-border bg-dark-surface p-3">
+    <div className="p-3" style={{ borderTop: `1px solid ${colors.border}`, backgroundColor: colors.surface }}>
       {pendingFiles.length > 0 && (
         <div className="flex flex-wrap gap-1.5 mb-2">
           {pendingFiles.map((f, i) => (
@@ -94,9 +86,15 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
         <button
           onClick={() => fileInputRef.current?.click()}
           disabled={disabled}
-          className="border border-dark-border bg-dark-surface-2 text-dark-muted hover:text-dark-text transition disabled:opacity-30"
           title="Attach files"
-          style={{ width: 28, height: 28, borderRadius: 6, flexShrink: 0, display: 'grid', placeItems: 'center' }}
+          className="transition disabled:opacity-30"
+          style={{
+            width: 28, height: 28, borderRadius: 6, flexShrink: 0,
+            display: 'grid', placeItems: 'center',
+            border: `1px solid ${colors.border}`,
+            backgroundColor: colors.inputBg,
+            color: colors.textMuted,
+          }}
         >
           <FiPaperclip size={12} style={{ display: 'block' }} />
         </button>
@@ -122,14 +120,37 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
           placeholder={disabled ? 'Agent is responding...' : 'Message your agent...'}
           disabled={disabled}
           rows={1}
-          className="flex-1 resize-none rounded-lg border border-dark-border bg-dark-surface-2 px-4 py-2 font-mono text-[13px] text-dark-text caret-accent outline-none focus:border-accent/50 focus:shadow-[0_0_8px_rgba(0,213,255,0.1)] placeholder:text-dark-muted transition disabled:opacity-40"
-          style={{ minHeight: '36px', maxHeight: '120px' }}
+          className="flex-1 resize-none rounded-lg px-4 py-2 text-[14px] outline-none transition disabled:opacity-40"
+          style={{
+            fontFamily: font.body,
+            color: colors.text,
+            backgroundColor: colors.inputBg,
+            border: `1px solid ${colors.border}`,
+            caretColor: colors.cyan,
+            minHeight: '36px',
+            maxHeight: '120px',
+            transition: `border-color 150ms ${ease.out}, box-shadow 150ms ${ease.out}`,
+          }}
+          onFocus={e => {
+            e.currentTarget.style.borderColor = colors.borderHi;
+            e.currentTarget.style.boxShadow = `0 0 8px ${colors.cyanGlow}`;
+          }}
+          onBlur={e => {
+            e.currentTarget.style.borderColor = colors.border;
+            e.currentTarget.style.boxShadow = 'none';
+          }}
         />
         <button
           onClick={handleSend}
           disabled={(!input.trim() && pendingFiles.length === 0) || disabled}
-          className="bg-accent text-dark-bg font-semibold transition hover:bg-accent hover:shadow-[0_0_12px_rgba(0,213,255,0.2)] disabled:opacity-30 disabled:hover:shadow-none"
-          style={{ width: 28, height: 28, borderRadius: 6, flexShrink: 0, display: 'grid', placeItems: 'center' }}
+          className="transition disabled:opacity-30"
+          style={{
+            width: 28, height: 28, borderRadius: 6, flexShrink: 0,
+            display: 'grid', placeItems: 'center',
+            background: colors.ribbonGradient,
+            color: colors.textOnAccent,
+            fontWeight: 600,
+          }}
         >
           {isStreaming ? <FiLoader size={12} className="animate-spin" /> : <FiSend size={12} />}
         </button>
