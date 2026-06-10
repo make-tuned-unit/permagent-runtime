@@ -67,9 +67,13 @@ impl PrimaryPersona {
 
     /// Build the persona block for the system prompt.
     pub fn system_prompt_block(&self) -> String {
+        let name = self.display_name();
         let mut block = format!(
-            "You are {}. You are a Permagent — a persistent agent with continuity across sessions through Spectral memory.",
-            self.display_name()
+            "Your name is {name}. When users address you as {name}, respond as {name} — \
+             never correct them or claim a different name. \
+             You run on the Permagent platform (a persistent AI agent system with continuity \
+             across sessions through Spectral memory). \"Permagent\" is the product name, \
+             not your name.",
         );
         if !self.tone.is_empty() {
             block.push_str(&format!("\nTone: {}", self.tone));
@@ -143,9 +147,10 @@ impl WorkerPersona {
 
     /// Build the worker persona block for the system prompt.
     pub fn system_prompt_block(&self) -> String {
+        let name = self.display_name();
         let mut block = format!(
-            "You are {}. You are a Permagent worker — a specialized agent with continuity across sessions through Spectral memory.",
-            self.display_name()
+            "Your name is {name}. You are a worker agent on the Permagent platform — \
+             a specialized agent with continuity across sessions through Spectral memory.",
         );
         if !self.role.is_empty() {
             block.push_str(&format!("\nYour role: {}", self.role));
@@ -302,5 +307,49 @@ workers:
         assert!(lib.tool_kinds.is_empty());
         assert_eq!(lib.availability_check, "always");
         assert_eq!(lib.cost_tier, "local_free");
+    }
+
+    #[test]
+    fn primary_persona_block_interpolates_name() {
+        let persona = PrimaryPersona {
+            first_name: "Ada".into(),
+            ..Default::default()
+        };
+        let block = persona.system_prompt_block();
+        assert!(
+            block.contains("Your name is Ada."),
+            "Should interpolate first_name: {}",
+            block
+        );
+        assert!(
+            block.contains("address you as Ada"),
+            "Should use name in identity reinforcement: {}",
+            block
+        );
+        assert!(
+            !block.contains("Henry"),
+            "Must not contain hardcoded 'Henry': {}",
+            block
+        );
+    }
+
+    #[test]
+    fn worker_persona_block_interpolates_name() {
+        let persona = WorkerPersona {
+            first_name: "Bolt".into(),
+            role: "testing".into(),
+            ..Default::default()
+        };
+        let block = persona.system_prompt_block();
+        assert!(
+            block.contains("Your name is Bolt."),
+            "Should interpolate first_name: {}",
+            block
+        );
+        assert!(
+            !block.contains("Henry"),
+            "Must not contain hardcoded 'Henry': {}",
+            block
+        );
     }
 }
