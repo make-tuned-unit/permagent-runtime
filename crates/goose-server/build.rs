@@ -21,6 +21,10 @@ fn main() {
     let rustc = rustc_version();
     println!("cargo:rustc-env=PERMAGENT_RUST_VERSION={}", rustc);
 
+    // Git dirty flag
+    let dirty = git_dirty();
+    println!("cargo:rustc-env=PERMAGENT_GIT_DIRTY={}", dirty);
+
     // Spectral pin — extract rev from Cargo.lock
     let spectral_pin = spectral_rev();
     println!("cargo:rustc-env=PERMAGENT_SPECTRAL_PIN={}", spectral_pin);
@@ -82,6 +86,27 @@ fn rustc_version() -> String {
                 .to_string()
         })
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn git_dirty() -> String {
+    Command::new("git")
+        .args(["status", "--porcelain"])
+        .output()
+        .ok()
+        .map(|o| {
+            if o.status.success() {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                if stdout.trim().is_empty() {
+                    "false"
+                } else {
+                    "true"
+                }
+            } else {
+                "unknown"
+            }
+        })
+        .unwrap_or("unknown")
+        .to_string()
 }
 
 fn spectral_rev() -> String {

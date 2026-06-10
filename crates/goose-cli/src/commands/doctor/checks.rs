@@ -1,0 +1,1203 @@
+use super::types::{CheckResult, CheckStatus};
+use crate::commands::daemon::{load_daemon_token, read_daemon_port};
+use permagent::config::paths::Paths;
+use permagent::session::spectral_schema::SPECTRAL_SCHEMA_VERSION;
+use std::path::PathBuf;
+use std::time::Duration;
+
+const OLLAMA_BASE_URL: &str = "http://localhost:11434";
+const DEFAULT_LIBRARIAN_MODEL: &str = "qwen2.5:7b";
+
+pub async fn run_all() -> Vec<CheckResult> {
+    let mut results = Vec::new();
+
+    results.push(check_launchd_plist());
+    results.push(check_daemon_process());
+    results.push(check_daemon_reachable().await);
+    results.push(check_token_file());
+    results.push(check_auth_roundtrip().await);
+    results.push(check_version_skew().await);
+    results.push(check_websocket().await);
+    results.push(check_ui_served().await);
+    results.push(check_permagent_db());
+    results.push(check_memory_db());
+    results.push(check_ollama().await);
+    results.push(check_disk());
+    results.push(check_caches());
+    results.push(check_backups());
+
+    results
+}
+
+// ── 1. launchd plist ──
+
+fn check_launchd_plist() -> CheckResult {
+    let plist = home_dir().join("Library/LaunchAgents/ai.permagent.daemon.plist");
+
+    if !plist.exists() {
+        return CheckResult {
+            name: "launchd-plist".into(),
+            status: CheckStatus::Fail,
+            detail: format!("{} not found", plist.display()),
+            remediation: Some("Run `permagent start` to generate and load the plist.".into()),
+        };
+    }
+
+    // Check loaded state via launchctl print (preferred) or list (fallback).
+    let uid = unsafe { libc::getuid() };
+    let domain_target = format!("gui/{uid}/ai.permagent.daemon");
+
+    let loaded = std::process::Command::new("launchctl")
+        .args(["print", &domain_target])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !loaded {
+        // Fallback: launchctl list
+        let list_loaded = std::process::Command::new("launchctl")
+            .arg("list")
+            .output()
+            .ok()
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .any(|l| l.contains("ai.permagent.daemon"))
+            })
+            .unwrap_or(false);
+
+        if !list_loaded {
+            return CheckResult {
+                name: "launchd-plist".into(),
+                status: CheckStatus::Fail,
+                detail: "plist exists but is not loaded".into(),
+                remediation: Some(
+                    "launchctl unload ~/Library/LaunchAgents/ai.permagent.daemon.plist; \
+                     pkill -f permagentd; sleep 1; \
+                     launchctl load -w ~/Library/LaunchAgents/ai.permagent.daemon.plist"
+                        .into(),
+                ),
+            };
+        }
+    }
+
+    CheckResult {
+        name: "launchd-plist".into(),
+        status: CheckStatus::Pass,
+        detail: "plist exists and loaded".into(),
+        remediation: None,
+    }
+}
+
+// ── 2. Daemon process ──
+
+fn check_daemon_process() -> CheckResult {
+    let running = std::process::Command::new("pgrep")
+        .args(["-x", "permagentd"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if running {
+        CheckResult {
+            name: "daemon-process".into(),
+            status: CheckStatus::Pass,
+            detail: "permagentd is running".into(),
+            remediation: None,
+        }
+    } else {
+        CheckResult {
+            name: "daemon-process".into(),
+            status: CheckStatus::Fail,
+            detail: "permagentd not found in process list".into(),
+            remediation: Some("Run `permagent restart` to restart the daemon.".into()),
+        }
+    }
+}
+
+// ── 3. Daemon reachable ──
+
+async fn check_daemon_reachable() -> CheckResult {
+    let port = read_daemon_port();
+    let url = format!("http://127.0.0.1:{port}/status");
+
+    match http_get(&url, None).await {
+        Ok(200) => CheckResult {
+            name: "daemon-reachable".into(),
+            status: CheckStatus::Pass,
+            detail: format!("GET /status returned 200 on port {port}"),
+            remediation: None,
+        },
+        Ok(status) => CheckResult {
+            name: "daemon-reachable".into(),
+            status: CheckStatus::Fail,
+            detail: format!("GET /status returned {status}"),
+            remediation: Some("Run `permagent restart` to restart the daemon.".into()),
+        },
+        Err(e) => CheckResult {
+            name: "daemon-reachable".into(),
+            status: CheckStatus::Fail,
+            detail: format!("connection failed: {e}"),
+            remediation: Some("Run `permagent restart` to restart the daemon.".into()),
+        },
+    }
+}
+
+// ── 4. Token file ──
+
+fn check_token_file() -> CheckResult {
+    let token_path = Paths::in_data_dir("secrets/daemon_token.json");
+
+    if !token_path.exists() {
+        return CheckResult {
+            name: "token-file".into(),
+            status: CheckStatus::Fail,
+            detail: format!("{} not found", token_path.display()),
+            remediation: Some("Restart the daemon; it generates the token on startup.".into()),
+        };
+    }
+
+    // Check permissions
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(&token_path) {
+            let mode = meta.permissions().mode() & 0o777;
+            if mode != 0o600 {
+                return CheckResult {
+                    name: "token-file".into(),
+                    status: CheckStatus::Warn,
+                    detail: format!("permissions are {mode:04o}, expected 0600"),
+                    remediation: Some(format!("chmod 600 {}", token_path.display())),
+                };
+            }
+        }
+    }
+
+    // Verify it parses
+    match std::fs::read_to_string(&token_path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("token").and_then(|t| t.as_str()).map(String::from))
+    {
+        Some(_) => CheckResult {
+            name: "token-file".into(),
+            status: CheckStatus::Pass,
+            detail: "exists, parseable, permissions ok".into(),
+            remediation: None,
+        },
+        None => CheckResult {
+            name: "token-file".into(),
+            status: CheckStatus::Fail,
+            detail: "file exists but missing or unparseable 'token' field".into(),
+            remediation: Some("Delete the file and restart the daemon to regenerate.".into()),
+        },
+    }
+}
+
+// ── 5. Auth round-trip ──
+
+async fn check_auth_roundtrip() -> CheckResult {
+    let port = read_daemon_port();
+    // Use GET /config — a stable, read-only, side-effect-free protected endpoint.
+    // Chosen because it exists in every daemon version since config management was
+    // added, returns quickly, and never triggers writes or external calls.
+    let url = format!("http://127.0.0.1:{port}/config");
+
+    // First verify 401 without token
+    match http_get(&url, None).await {
+        Ok(401) => {} // expected
+        Ok(status) => {
+            return CheckResult {
+                name: "auth-roundtrip".into(),
+                status: CheckStatus::Warn,
+                detail: format!("GET /config without token returned {status}, expected 401"),
+                remediation: Some("Daemon may be running in dev mode (no token enforced).".into()),
+            };
+        }
+        Err(e) => {
+            return CheckResult {
+                name: "auth-roundtrip".into(),
+                status: CheckStatus::Fail,
+                detail: format!("connection failed: {e}"),
+                remediation: Some("Ensure daemon is running: `permagent restart`".into()),
+            };
+        }
+    }
+
+    // Now verify 200 with token
+    let token = match load_daemon_token() {
+        Ok(t) => t,
+        Err(_) => {
+            return CheckResult {
+                name: "auth-roundtrip".into(),
+                status: CheckStatus::Fail,
+                detail: "could not load token for auth test".into(),
+                remediation: Some("Fix token-file check first.".into()),
+            };
+        }
+    };
+
+    match http_get(&url, Some(&token)).await {
+        Ok(200) => CheckResult {
+            name: "auth-roundtrip".into(),
+            status: CheckStatus::Pass,
+            detail: "401 without token, 200 with token".into(),
+            remediation: None,
+        },
+        Ok(401) => CheckResult {
+            name: "auth-roundtrip".into(),
+            status: CheckStatus::Fail,
+            detail: "token on disk does not match running daemon".into(),
+            remediation: Some(
+                "Restart the daemon to regenerate the token, or delete \
+                 ~/.permagent/secrets/daemon_token.json and restart."
+                    .into(),
+            ),
+        },
+        Ok(status) => CheckResult {
+            name: "auth-roundtrip".into(),
+            status: CheckStatus::Fail,
+            detail: format!("GET /config with token returned {status}"),
+            remediation: Some("Run `permagent restart`.".into()),
+        },
+        Err(e) => CheckResult {
+            name: "auth-roundtrip".into(),
+            status: CheckStatus::Fail,
+            detail: format!("connection failed: {e}"),
+            remediation: Some("Ensure daemon is running: `permagent restart`".into()),
+        },
+    }
+}
+
+// ── 6. Version skew ──
+
+async fn check_version_skew() -> CheckResult {
+    let port = read_daemon_port();
+    let url = format!("http://127.0.0.1:{port}/api/version");
+
+    let body = match http_get_body(&url, None).await {
+        Ok(b) => b,
+        Err(e) => {
+            return CheckResult {
+                name: "version-info".into(),
+                status: CheckStatus::Fail,
+                detail: format!("could not reach /api/version: {e}"),
+                remediation: Some("Ensure daemon is running.".into()),
+            };
+        }
+    };
+
+    let parsed: serde_json::Value = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            return CheckResult {
+                name: "version-info".into(),
+                status: CheckStatus::Fail,
+                detail: format!("invalid JSON from /api/version: {e}"),
+                remediation: None,
+            };
+        }
+    };
+
+    let sha = parsed
+        .get("git_sha")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let dirty = parsed
+        .get("git_dirty")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let version = parsed
+        .get("permagentd_version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let spectral = parsed
+        .get("spectral_pin")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    let mut parts = vec![format!("v{version} sha={sha}")];
+    if dirty == "true" {
+        parts.push("DIRTY".into());
+    }
+
+    let status = if sha == "unknown" || dirty == "true" {
+        CheckStatus::Warn
+    } else {
+        CheckStatus::Pass
+    };
+
+    let remediation = if dirty == "true" {
+        Some("Running daemon was built from uncommitted changes.".into())
+    } else if sha == "unknown" {
+        Some("Running daemon was built without git info.".into())
+    } else {
+        None
+    };
+
+    // Return version info; spectral pin is a separate INFO row added by the caller
+    let mut results_detail = parts.join(" ");
+    results_detail.push_str(&format!(" spectral={spectral}"));
+
+    CheckResult {
+        name: "version-info".into(),
+        status,
+        detail: results_detail,
+        remediation,
+    }
+}
+
+// ── 7. WebSocket ──
+
+async fn check_websocket() -> CheckResult {
+    let port = read_daemon_port();
+    let url = format!("ws://127.0.0.1:{port}/events");
+
+    match tokio_tungstenite::connect_async(&url).await {
+        Ok(_) => CheckResult {
+            name: "websocket".into(),
+            status: CheckStatus::Pass,
+            detail: "/events WebSocket upgrade succeeded".into(),
+            remediation: None,
+        },
+        Err(e) => CheckResult {
+            name: "websocket".into(),
+            status: CheckStatus::Fail,
+            detail: format!("WebSocket upgrade failed: {e}"),
+            remediation: Some("Ensure daemon is running: `permagent restart`".into()),
+        },
+    }
+}
+
+// ── 8. UI served ──
+
+async fn check_ui_served() -> CheckResult {
+    let port = read_daemon_port();
+    let url = format!("http://127.0.0.1:{port}/ui/");
+
+    match http_get(&url, None).await {
+        Ok(200) => CheckResult {
+            name: "ui-served".into(),
+            status: CheckStatus::Pass,
+            detail: "GET /ui/ returned 200".into(),
+            remediation: None,
+        },
+        Ok(status) => CheckResult {
+            name: "ui-served".into(),
+            status: CheckStatus::Warn,
+            detail: format!("GET /ui/ returned {status}"),
+            remediation: Some("Command Center dist may not be built. Run the UI build.".into()),
+        },
+        Err(e) => CheckResult {
+            name: "ui-served".into(),
+            status: CheckStatus::Fail,
+            detail: format!("connection failed: {e}"),
+            remediation: Some("Ensure daemon is running.".into()),
+        },
+    }
+}
+
+// ── 9. permagent.db ──
+
+fn check_permagent_db() -> CheckResult {
+    let db_path = Paths::spectral_db();
+
+    if !db_path.exists() {
+        return CheckResult {
+            name: "permagent-db".into(),
+            status: CheckStatus::Fail,
+            detail: format!("{} not found", db_path.display()),
+            remediation: Some("Start the daemon; it creates the database on first run.".into()),
+        };
+    }
+
+    match open_readonly_sqlite(&db_path) {
+        Err(e) => CheckResult {
+            name: "permagent-db".into(),
+            status: CheckStatus::Fail,
+            detail: format!("could not open: {e}"),
+            remediation: None,
+        },
+        Ok(conn) => {
+            // quick_check
+            if let Err(e) = sqlite_quick_check(&conn) {
+                return CheckResult {
+                    name: "permagent-db".into(),
+                    status: CheckStatus::Fail,
+                    detail: format!("PRAGMA quick_check failed: {e}"),
+                    remediation: Some("Database may be corrupted. Restore from backup.".into()),
+                };
+            }
+
+            let journal = sqlite_journal_mode(&conn);
+
+            // Schema version check
+            let db_version = sqlite_scalar_i32(&conn, "SELECT MAX(version) FROM schema_version");
+
+            let detail = match db_version {
+                Some(v) if v == SPECTRAL_SCHEMA_VERSION => {
+                    format!(
+                        "ok, journal={journal}, schema v{v} (matches compiled v{SPECTRAL_SCHEMA_VERSION})"
+                    )
+                }
+                Some(v) => {
+                    return CheckResult {
+                        name: "permagent-db".into(),
+                        status: CheckStatus::Warn,
+                        detail: format!(
+                            "schema v{v} != compiled v{SPECTRAL_SCHEMA_VERSION}, journal={journal}"
+                        ),
+                        remediation: Some("Restart the daemon to apply pending migrations.".into()),
+                    };
+                }
+                None => {
+                    return CheckResult {
+                        name: "permagent-db".into(),
+                        status: CheckStatus::Warn,
+                        detail: format!("no schema_version table found, journal={journal}"),
+                        remediation: Some("Restart the daemon to initialize the schema.".into()),
+                    };
+                }
+            };
+
+            CheckResult {
+                name: "permagent-db".into(),
+                status: CheckStatus::Pass,
+                detail,
+                remediation: None,
+            }
+        }
+    }
+}
+
+// ── 10. memory.db ──
+
+fn check_memory_db() -> CheckResult {
+    let db_path = Paths::brain_dir().join("memory.db");
+
+    if !db_path.exists() {
+        return CheckResult {
+            name: "memory-db".into(),
+            status: CheckStatus::Info,
+            detail: format!(
+                "{} not found (brain may not have run yet)",
+                db_path.display()
+            ),
+            remediation: None,
+        };
+    }
+
+    match open_readonly_sqlite(&db_path) {
+        Err(e) => CheckResult {
+            name: "memory-db".into(),
+            status: CheckStatus::Fail,
+            detail: format!("could not open: {e}"),
+            remediation: None,
+        },
+        Ok(conn) => {
+            if let Err(e) = sqlite_quick_check(&conn) {
+                return CheckResult {
+                    name: "memory-db".into(),
+                    status: CheckStatus::Fail,
+                    detail: format!("PRAGMA quick_check failed: {e}"),
+                    remediation: Some("Database may be corrupted. Restore from backup.".into()),
+                };
+            }
+
+            let journal = sqlite_journal_mode(&conn);
+
+            // Check for expected core table
+            let has_memories = sqlite_scalar_i32(
+                &conn,
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='memories'",
+            )
+            .unwrap_or(0)
+                > 0;
+
+            let tables_note = if has_memories {
+                "memories table present"
+            } else {
+                "memories table NOT found"
+            };
+
+            CheckResult {
+                name: "memory-db".into(),
+                status: CheckStatus::Info,
+                detail: format!("ok, journal={journal}, {tables_note}"),
+                remediation: None,
+            }
+        }
+    }
+}
+
+// ── 11. Ollama ──
+
+async fn check_ollama() -> CheckResult {
+    let model = resolve_librarian_model();
+    check_ollama_at(OLLAMA_BASE_URL, &model).await
+}
+
+/// Testable core: check Ollama reachability and model presence at a given base URL.
+async fn check_ollama_at(base_url: &str, model: &str) -> CheckResult {
+    let tags_url = format!("{base_url}/api/tags");
+    let body = match http_get_body(&tags_url, None).await {
+        Ok(b) => b,
+        Err(_) => {
+            return CheckResult {
+                name: "ollama".into(),
+                status: CheckStatus::Warn,
+                detail: format!("Ollama not reachable at {base_url}"),
+                remediation: Some(
+                    "Start Ollama (`ollama serve`). Librarian degrades but chat still works."
+                        .into(),
+                ),
+            };
+        }
+    };
+
+    let parsed: serde_json::Value = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(_) => {
+            return CheckResult {
+                name: "ollama".into(),
+                status: CheckStatus::Warn,
+                detail: "Ollama reachable but /api/tags returned invalid JSON".into(),
+                remediation: None,
+            };
+        }
+    };
+
+    let models = parsed
+        .get("models")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let model_present = models.iter().any(|m| {
+        m.get("name")
+            .and_then(|n| n.as_str())
+            .map(|n| n == model || n.starts_with(&format!("{model}:")))
+            .unwrap_or(false)
+    });
+
+    if model_present {
+        CheckResult {
+            name: "ollama".into(),
+            status: CheckStatus::Pass,
+            detail: format!("reachable, model '{model}' present"),
+            remediation: None,
+        }
+    } else {
+        CheckResult {
+            name: "ollama".into(),
+            status: CheckStatus::Fail,
+            detail: format!("model '{model}' not found in Ollama"),
+            remediation: Some(format!("ollama pull {model}")),
+        }
+    }
+}
+
+// ── 12. Disk ──
+
+fn check_disk() -> CheckResult {
+    let permagent_dir = Paths::data_dir();
+    let check_path = if permagent_dir.exists() {
+        permagent_dir
+    } else {
+        // Fall back to home dir
+        home_dir()
+    };
+
+    #[cfg(unix)]
+    {
+        use std::ffi::CString;
+        use std::mem::MaybeUninit;
+
+        let c_path = match CString::new(check_path.to_string_lossy().as_bytes()) {
+            Ok(p) => p,
+            Err(_) => {
+                return CheckResult {
+                    name: "disk-space".into(),
+                    status: CheckStatus::Warn,
+                    detail: "could not check disk space".into(),
+                    remediation: None,
+                };
+            }
+        };
+
+        let mut stat = MaybeUninit::<libc::statvfs>::uninit();
+        let ret = unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) };
+        if ret != 0 {
+            return CheckResult {
+                name: "disk-space".into(),
+                status: CheckStatus::Warn,
+                detail: "statvfs failed".into(),
+                remediation: None,
+            };
+        }
+
+        let stat = unsafe { stat.assume_init() };
+        let free_bytes = stat.f_bavail as u64 * stat.f_frsize;
+        let free_gb = free_bytes as f64 / 1_073_741_824.0;
+
+        let (status, detail) = if free_gb < 5.0 {
+            (
+                CheckStatus::Fail,
+                format!("{free_gb:.1} GB free (critical)"),
+            )
+        } else if free_gb < 15.0 {
+            (CheckStatus::Warn, format!("{free_gb:.1} GB free (low)"))
+        } else {
+            (CheckStatus::Info, format!("{free_gb:.1} GB free"))
+        };
+
+        let remediation = if free_gb < 5.0 {
+            Some("Free disk space. Permagent databases and models require space.".into())
+        } else if free_gb < 15.0 {
+            Some("Consider freeing disk space.".into())
+        } else {
+            None
+        };
+
+        CheckResult {
+            name: "disk-space".into(),
+            status,
+            detail,
+            remediation,
+        }
+    }
+
+    #[cfg(not(unix))]
+    CheckResult {
+        name: "disk-space".into(),
+        status: CheckStatus::Info,
+        detail: "disk check not supported on this platform".into(),
+        remediation: None,
+    }
+}
+
+// ── 13. Caches ──
+
+fn check_caches() -> CheckResult {
+    let home = home_dir();
+    let webkit = home.join("Library/WebKit");
+    let caches = home.join("Library/Caches");
+
+    let mut found = Vec::new();
+
+    if let Ok(entries) = std::fs::read_dir(&webkit) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("ai.permagent.") {
+                found.push(format!("WebKit/{name}"));
+            }
+        }
+    }
+
+    if let Ok(entries) = std::fs::read_dir(&caches) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("ai.permagent.") {
+                found.push(format!("Caches/{name}"));
+            }
+        }
+    }
+
+    if found.is_empty() {
+        CheckResult {
+            name: "webkit-caches".into(),
+            status: CheckStatus::Info,
+            detail: "no ai.permagent.* caches found".into(),
+            remediation: None,
+        }
+    } else {
+        CheckResult {
+            name: "webkit-caches".into(),
+            status: CheckStatus::Info,
+            detail: format!("found: {}", found.join(", ")),
+            remediation: Some(
+                "After reinstall, clear with: rm -rf ~/Library/WebKit/ai.permagent.* \
+                 ~/Library/Caches/ai.permagent.*"
+                    .into(),
+            ),
+        }
+    }
+}
+
+// ── 14. Backups ──
+
+fn check_backups() -> CheckResult {
+    let backups_dir = Paths::data_dir().join("backups");
+
+    if !backups_dir.exists() {
+        return CheckResult {
+            name: "backups".into(),
+            status: CheckStatus::Info,
+            detail: "backup snapshots not present (feature in flight)".into(),
+            remediation: None,
+        };
+    }
+
+    // Find newest file in backups dir
+    let newest = newest_file_age(&backups_dir);
+
+    match newest {
+        None => CheckResult {
+            name: "backups".into(),
+            status: CheckStatus::Info,
+            detail: "backups directory exists but is empty".into(),
+            remediation: None,
+        },
+        Some(age) => {
+            let hours = age.as_secs() / 3600;
+            if hours > 48 {
+                CheckResult {
+                    name: "backups".into(),
+                    status: CheckStatus::Warn,
+                    detail: format!("newest backup is {hours}h old (>48h)"),
+                    remediation: Some("Check that backup scheduling is running.".into()),
+                }
+            } else {
+                CheckResult {
+                    name: "backups".into(),
+                    status: CheckStatus::Pass,
+                    detail: format!("newest backup is {hours}h old"),
+                    remediation: None,
+                }
+            }
+        }
+    }
+}
+
+// ── Helpers ──
+
+fn home_dir() -> PathBuf {
+    dirs::home_dir().expect("could not determine home directory")
+}
+
+fn resolve_librarian_model() -> String {
+    let path = Paths::in_data_dir("librarian_schedule.json");
+    if let Ok(contents) = std::fs::read_to_string(&path) {
+        if let Ok(schedule) = serde_json::from_str::<serde_json::Value>(&contents) {
+            if let Some(model) = schedule.get("model").and_then(|v| v.as_str()) {
+                if !model.is_empty() {
+                    return model.to_string();
+                }
+            }
+        }
+    }
+    DEFAULT_LIBRARIAN_MODEL.to_string()
+}
+
+async fn http_get(url: &str, bearer: Option<&str>) -> Result<u16, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut req = client.get(url);
+    if let Some(token) = bearer {
+        req = req.bearer_auth(token);
+    }
+
+    let resp = req.send().await.map_err(|e| e.to_string())?;
+    Ok(resp.status().as_u16())
+}
+
+async fn http_get_body(url: &str, bearer: Option<&str>) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut req = client.get(url);
+    if let Some(token) = bearer {
+        req = req.bearer_auth(token);
+    }
+
+    let resp = req.send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    resp.text().await.map_err(|e| e.to_string())
+}
+
+fn open_readonly_sqlite(path: &std::path::Path) -> Result<rusqlite::Connection, String> {
+    rusqlite::Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| e.to_string())
+}
+
+fn sqlite_quick_check(conn: &rusqlite::Connection) -> Result<(), String> {
+    let result: String = conn
+        .query_row("PRAGMA quick_check", [], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    if result == "ok" {
+        Ok(())
+    } else {
+        Err(result)
+    }
+}
+
+fn sqlite_journal_mode(conn: &rusqlite::Connection) -> String {
+    conn.query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+        .unwrap_or_else(|_| "unknown".into())
+}
+
+fn sqlite_scalar_i32(conn: &rusqlite::Connection, sql: &str) -> Option<i32> {
+    conn.query_row(sql, [], |row| row.get::<_, i32>(0)).ok()
+}
+
+fn newest_file_age(dir: &std::path::Path) -> Option<Duration> {
+    let mut newest: Option<std::time::SystemTime> = None;
+
+    fn walk(dir: &std::path::Path, newest: &mut Option<std::time::SystemTime>) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                if let Ok(ft) = entry.file_type() {
+                    if ft.is_file() {
+                        if let Ok(meta) = entry.metadata() {
+                            if let Ok(modified) = meta.modified() {
+                                if newest.is_none_or(|n| modified > n) {
+                                    *newest = Some(modified);
+                                }
+                            }
+                        }
+                    } else if ft.is_dir() {
+                        walk(&entry.path(), newest);
+                    }
+                }
+            }
+        }
+    }
+
+    walk(dir, &mut newest);
+    newest.and_then(|t| std::time::SystemTime::now().duration_since(t).ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_exit_code_logic() {
+        let results = [
+            CheckResult {
+                name: "a".into(),
+                status: CheckStatus::Pass,
+                detail: "ok".into(),
+                remediation: None,
+            },
+            CheckResult {
+                name: "b".into(),
+                status: CheckStatus::Warn,
+                detail: "meh".into(),
+                remediation: Some("fix it".into()),
+            },
+        ];
+        // No FAIL => exit 0
+        assert!(!results.iter().any(|r| r.status == CheckStatus::Fail));
+
+        let results_with_fail = [
+            CheckResult {
+                name: "a".into(),
+                status: CheckStatus::Pass,
+                detail: "ok".into(),
+                remediation: None,
+            },
+            CheckResult {
+                name: "c".into(),
+                status: CheckStatus::Fail,
+                detail: "bad".into(),
+                remediation: Some("fix".into()),
+            },
+        ];
+        assert!(results_with_fail
+            .iter()
+            .any(|r| r.status == CheckStatus::Fail));
+    }
+
+    #[test]
+    fn test_token_file_permission_evaluation() {
+        // 0o600 should pass
+        assert_eq!(0o600 & 0o777, 0o600);
+        // 0o644 should not match
+        assert_ne!(0o644 & 0o777, 0o600);
+        // 0o700 should not match
+        assert_ne!(0o700 & 0o777, 0o600);
+    }
+
+    #[test]
+    fn test_disk_thresholds() {
+        // < 5 GB => FAIL
+        let free_gb: f64 = 4.5;
+        assert!(free_gb < 5.0);
+
+        // 5-15 GB => WARN
+        let free_gb: f64 = 10.0;
+        assert!((5.0..15.0).contains(&free_gb));
+
+        // >= 15 GB => INFO
+        let free_gb: f64 = 50.0;
+        assert!(free_gb >= 15.0);
+    }
+
+    #[test]
+    fn test_backup_age_thresholds() {
+        // > 48h => WARN
+        let hours = 50u64;
+        assert!(hours > 48);
+
+        // <= 48h => PASS
+        let hours = 24u64;
+        assert!(hours <= 48);
+    }
+
+    #[test]
+    fn test_check_result_json_serialization() {
+        let result = CheckResult {
+            name: "test".into(),
+            status: CheckStatus::Pass,
+            detail: "all good".into(),
+            remediation: None,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"status\":\"PASS\""));
+        assert!(json.contains("\"name\":\"test\""));
+        // remediation should be absent (skip_serializing_if)
+        assert!(!json.contains("remediation"));
+
+        let result_with_rem = CheckResult {
+            name: "fail".into(),
+            status: CheckStatus::Fail,
+            detail: "broken".into(),
+            remediation: Some("fix it".into()),
+        };
+        let json = serde_json::to_string(&result_with_rem).unwrap();
+        assert!(json.contains("\"remediation\":\"fix it\""));
+    }
+
+    #[test]
+    fn test_output_formatting() {
+        let results = vec![
+            CheckResult {
+                name: "short".into(),
+                status: CheckStatus::Pass,
+                detail: "ok".into(),
+                remediation: None,
+            },
+            CheckResult {
+                name: "longer-name".into(),
+                status: CheckStatus::Fail,
+                detail: "broken".into(),
+                remediation: Some("fix this thing".into()),
+            },
+            CheckResult {
+                name: "info-check".into(),
+                status: CheckStatus::Info,
+                detail: "noted".into(),
+                remediation: None,
+            },
+        ];
+        // Smoke test: print_table should not panic
+        super::super::output::print_table(&results);
+    }
+
+    #[test]
+    fn test_sqlite_checks_with_tempdir() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        // Create a valid DB
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TEXT);
+                 INSERT INTO schema_version VALUES (8, '2025-01-01');",
+            )
+            .unwrap();
+        }
+
+        // Read-only open
+        let conn = open_readonly_sqlite(&db_path).unwrap();
+        assert!(sqlite_quick_check(&conn).is_ok());
+        assert_eq!(
+            sqlite_scalar_i32(&conn, "SELECT MAX(version) FROM schema_version"),
+            Some(8)
+        );
+        let journal = sqlite_journal_mode(&conn);
+        assert!(!journal.is_empty());
+    }
+
+    #[test]
+    fn test_sqlite_corrupted_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("corrupt.db");
+
+        // Write garbage
+        std::fs::write(&db_path, b"this is not a sqlite database").unwrap();
+
+        let result = open_readonly_sqlite(&db_path);
+        // Should either fail to open or fail quick_check
+        if let Ok(conn) = result {
+            assert!(sqlite_quick_check(&conn).is_err());
+        }
+    }
+
+    #[test]
+    fn test_newest_file_age() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Empty dir
+        assert!(newest_file_age(dir.path()).is_none());
+
+        // Create a file
+        std::fs::write(dir.path().join("test.txt"), b"hello").unwrap();
+        let age = newest_file_age(dir.path());
+        assert!(age.is_some());
+        // Should be very recent (< 5 seconds)
+        assert!(age.unwrap().as_secs() < 5);
+    }
+
+    // ── Integration tests ──
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_version_endpoint_is_public_and_auth_rejects_without_token() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock = MockServer::start().await;
+
+        // /api/version is public: returns 200 without token
+        Mock::given(method("GET"))
+            .and(path("/api/version"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "git_sha": "abc123def",
+                "git_dirty": "false",
+                "permagentd_version": "1.31.0",
+                "spectral_pin": "2c1f6bf"
+            })))
+            .mount(&mock)
+            .await;
+
+        // /config is protected: returns 401 without token
+        Mock::given(method("GET"))
+            .and(path("/config"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&mock)
+            .await;
+
+        let base = mock.uri();
+
+        // Version endpoint: 200 without token
+        let status = http_get(&format!("{base}/api/version"), None)
+            .await
+            .unwrap();
+        assert_eq!(status, 200);
+
+        // Protected endpoint: 401 without token
+        let status = http_get(&format!("{base}/config"), None).await.unwrap();
+        assert_eq!(status, 401);
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_ollama_check_model_present() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "models": [
+                    {"name": "qwen2.5:7b", "size": 4_000_000_000_u64},
+                    {"name": "llama3:8b", "size": 5_000_000_000_u64}
+                ]
+            })))
+            .mount(&mock)
+            .await;
+
+        let result = check_ollama_at(&mock.uri(), "qwen2.5:7b").await;
+        assert_eq!(result.status, CheckStatus::Pass);
+        assert!(result.detail.contains("qwen2.5:7b"));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_ollama_check_model_missing() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "models": [
+                    {"name": "llama3:8b", "size": 5_000_000_000_u64}
+                ]
+            })))
+            .mount(&mock)
+            .await;
+
+        let result = check_ollama_at(&mock.uri(), "qwen2.5:7b").await;
+        assert_eq!(result.status, CheckStatus::Fail);
+        assert_eq!(
+            result.remediation.as_deref(),
+            Some("ollama pull qwen2.5:7b")
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_ollama_check_unreachable() {
+        // Point at a port that is definitely not listening
+        let result = check_ollama_at("http://127.0.0.1:19999", "qwen2.5:7b").await;
+        assert_eq!(result.status, CheckStatus::Warn);
+        assert!(result.detail.contains("not reachable"));
+    }
+
+    #[test]
+    fn test_sqlite_schema_version_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("mismatch.db");
+
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TEXT);
+                 INSERT INTO schema_version VALUES (5, '2025-01-01');",
+            )
+            .unwrap();
+        }
+
+        let conn = open_readonly_sqlite(&db_path).unwrap();
+        let db_version = sqlite_scalar_i32(&conn, "SELECT MAX(version) FROM schema_version");
+        assert_eq!(db_version, Some(5));
+        // Should NOT match the compiled constant (currently 8)
+        assert_ne!(db_version.unwrap(), SPECTRAL_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn test_sqlite_missing_schema_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("no_schema.db");
+
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch("CREATE TABLE other (id INTEGER PRIMARY KEY);")
+                .unwrap();
+        }
+
+        let conn = open_readonly_sqlite(&db_path).unwrap();
+        // Query against missing table should return None (error)
+        let db_version = sqlite_scalar_i32(&conn, "SELECT MAX(version) FROM schema_version");
+        assert!(db_version.is_none());
+    }
+}

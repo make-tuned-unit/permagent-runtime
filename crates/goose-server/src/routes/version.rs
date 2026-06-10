@@ -11,6 +11,7 @@ static BOOT_TIME: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instan
 pub struct VersionInfo {
     git_sha: &'static str,
     git_branch: &'static str,
+    git_dirty: &'static str,
     build_timestamp: &'static str,
     rust_version: &'static str,
     spectral_pin: &'static str,
@@ -27,6 +28,7 @@ async fn version() -> Json<VersionInfo> {
     Json(VersionInfo {
         git_sha: env!("PERMAGENT_GIT_SHA"),
         git_branch: env!("PERMAGENT_GIT_BRANCH"),
+        git_dirty: env!("PERMAGENT_GIT_DIRTY"),
         build_timestamp: env!("PERMAGENT_BUILD_TIMESTAMP"),
         rust_version: env!("PERMAGENT_RUST_VERSION"),
         spectral_pin: env!("PERMAGENT_SPECTRAL_PIN"),

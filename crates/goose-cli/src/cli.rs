@@ -869,8 +869,15 @@ enum Command {
         verbose: bool,
     },
 
-    #[command(about = "Check that your Goose setup is working")]
-    Doctor {},
+    #[command(about = "Run diagnostic checks on daemon, databases, and services")]
+    Doctor {
+        /// Output results as JSON array
+        #[arg(long)]
+        json: bool,
+        /// Use interactive LLM-assisted diagnosis instead of deterministic checks
+        #[arg(long)]
+        interactive: bool,
+    },
 
     /// Manage system prompts and behaviors
     #[command(about = "Run one of the mcp servers bundled with goose")]
@@ -1208,7 +1215,7 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::Worker { .. }) => "worker",
         Some(Command::Configure {}) => "configure",
         Some(Command::Setup { .. }) => "setup",
-        Some(Command::Doctor {}) => "doctor",
+        Some(Command::Doctor { .. }) => "doctor",
         Some(Command::Info { .. }) => "info",
         Some(Command::Mcp { .. }) => "mcp",
         Some(Command::Session { .. }) => "session",
@@ -2012,7 +2019,9 @@ pub async fn cli() -> anyhow::Result<()> {
                 handle_setup_interactive().await
             }
         }
-        Some(Command::Doctor {}) => crate::commands::doctor::handle_doctor().await,
+        Some(Command::Doctor { json, interactive }) => {
+            crate::commands::doctor::handle_doctor(json, interactive).await
+        }
         Some(Command::Info { verbose }) => handle_info(verbose),
         Some(Command::Mcp { server }) => handle_mcp_command(server).await,
         Some(Command::Session {
