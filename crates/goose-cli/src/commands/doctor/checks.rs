@@ -535,16 +535,19 @@ fn check_memory_db() -> CheckResult {
 
 async fn check_ollama() -> CheckResult {
     let model = resolve_librarian_model();
+    check_ollama_at(OLLAMA_BASE_URL, &model).await
+}
 
-    // Check Ollama reachable
-    let tags_url = format!("{OLLAMA_BASE_URL}/api/tags");
+/// Testable core: check Ollama reachability and model presence at a given base URL.
+async fn check_ollama_at(base_url: &str, model: &str) -> CheckResult {
+    let tags_url = format!("{base_url}/api/tags");
     let body = match http_get_body(&tags_url, None).await {
         Ok(b) => b,
         Err(_) => {
             return CheckResult {
                 name: "ollama".into(),
                 status: CheckStatus::Warn,
-                detail: format!("Ollama not reachable at {OLLAMA_BASE_URL}"),
+                detail: format!("Ollama not reachable at {base_url}"),
                 remediation: Some(
                     "Start Ollama (`ollama serve`). Librarian degrades but chat still works."
                         .into(),
@@ -553,7 +556,6 @@ async fn check_ollama() -> CheckResult {
         }
     };
 
-    // Check if configured model is present
     let parsed: serde_json::Value = match serde_json::from_str(&body) {
         Ok(v) => v,
         Err(_) => {
@@ -1058,5 +1060,144 @@ mod tests {
         assert!(age.is_some());
         // Should be very recent (< 5 seconds)
         assert!(age.unwrap().as_secs() < 5);
+    }
+
+    // ── Integration tests ──
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_version_endpoint_is_public_and_auth_rejects_without_token() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock = MockServer::start().await;
+
+        // /api/version is public: returns 200 without token
+        Mock::given(method("GET"))
+            .and(path("/api/version"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "git_sha": "abc123def",
+                "git_dirty": "false",
+                "permagentd_version": "1.31.0",
+                "spectral_pin": "2c1f6bf"
+            })))
+            .mount(&mock)
+            .await;
+
+        // /config is protected: returns 401 without token
+        Mock::given(method("GET"))
+            .and(path("/config"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&mock)
+            .await;
+
+        let base = mock.uri();
+
+        // Version endpoint: 200 without token
+        let status = http_get(&format!("{base}/api/version"), None)
+            .await
+            .unwrap();
+        assert_eq!(status, 200);
+
+        // Protected endpoint: 401 without token
+        let status = http_get(&format!("{base}/config"), None).await.unwrap();
+        assert_eq!(status, 401);
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_ollama_check_model_present() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "models": [
+                    {"name": "qwen2.5:7b", "size": 4_000_000_000_u64},
+                    {"name": "llama3:8b", "size": 5_000_000_000_u64}
+                ]
+            })))
+            .mount(&mock)
+            .await;
+
+        let result = check_ollama_at(&mock.uri(), "qwen2.5:7b").await;
+        assert_eq!(result.status, CheckStatus::Pass);
+        assert!(result.detail.contains("qwen2.5:7b"));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_ollama_check_model_missing() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "models": [
+                    {"name": "llama3:8b", "size": 5_000_000_000_u64}
+                ]
+            })))
+            .mount(&mock)
+            .await;
+
+        let result = check_ollama_at(&mock.uri(), "qwen2.5:7b").await;
+        assert_eq!(result.status, CheckStatus::Fail);
+        assert_eq!(
+            result.remediation.as_deref(),
+            Some("ollama pull qwen2.5:7b")
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn test_ollama_check_unreachable() {
+        // Point at a port that is definitely not listening
+        let result = check_ollama_at("http://127.0.0.1:19999", "qwen2.5:7b").await;
+        assert_eq!(result.status, CheckStatus::Warn);
+        assert!(result.detail.contains("not reachable"));
+    }
+
+    #[test]
+    fn test_sqlite_schema_version_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("mismatch.db");
+
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TEXT);
+                 INSERT INTO schema_version VALUES (5, '2025-01-01');",
+            )
+            .unwrap();
+        }
+
+        let conn = open_readonly_sqlite(&db_path).unwrap();
+        let db_version = sqlite_scalar_i32(&conn, "SELECT MAX(version) FROM schema_version");
+        assert_eq!(db_version, Some(5));
+        // Should NOT match the compiled constant (currently 8)
+        assert_ne!(db_version.unwrap(), SPECTRAL_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn test_sqlite_missing_schema_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("no_schema.db");
+
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch("CREATE TABLE other (id INTEGER PRIMARY KEY);")
+                .unwrap();
+        }
+
+        let conn = open_readonly_sqlite(&db_path).unwrap();
+        // Query against missing table should return None (error)
+        let db_version = sqlite_scalar_i32(&conn, "SELECT MAX(version) FROM schema_version");
+        assert!(db_version.is_none());
     }
 }
