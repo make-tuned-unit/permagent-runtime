@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { font, ease } from '../../styles/tokens';
 import { api } from '../../lib/api';
-import type { GraphMemory } from './useBrainData';
+import type { GraphMemory, GraphEntity } from './useBrainData';
+import type { TypeFilters } from './BrainScene';
 import { useTheme } from '../../styles/useTheme';
 
 // ── Title derivation ─────────────────────────────────────────────────
@@ -60,10 +61,12 @@ function formatDate(ts: string): string {
 // ── Component ────────────────────────────────────────────────────────
 
 interface BrainListProps {
-  onSelect: (info: { id: string; kind: string; label: string; note: string; data: GraphMemory }) => void;
+  onSelect: (info: { id: string; kind: string; label: string; note: string; data: GraphMemory | GraphEntity }) => void;
   selectedId: string | null;
   timeValue: number;
   searchQuery?: string;
+  entities?: GraphEntity[];
+  filters?: TypeFilters;
 }
 
 interface PageState {
@@ -78,8 +81,17 @@ interface PageState {
   searchOffset: number;
 }
 
-export function BrainList({ onSelect, selectedId, timeValue, searchQuery }: BrainListProps) {
+export function BrainList({ onSelect, selectedId, timeValue, searchQuery, entities = [], filters }: BrainListProps) {
   const { colors } = useTheme();
+
+  // Filter entities by type
+  const filteredEntities = entities.filter(ent => {
+    if (!filters) return true;
+    const key = ent.type as keyof TypeFilters;
+    return key in filters ? filters[key] : true;
+  });
+  const showEntities = !filters || filteredEntities.length > 0;
+  const showMemories = !filters || filters.memory;
   const [state, setState] = useState<PageState>({
     memories: [], total: 0, hasMore: false, loading: true,
     lastTimestamp: null, lastId: null, searchOffset: 0,
@@ -168,8 +180,13 @@ export function BrainList({ onSelect, selectedId, timeValue, searchQuery }: Brai
         padding: '8px 16px', display: 'flex', justifyContent: 'space-between',
         fontFamily: font.mono, fontSize: 10, color: colors.textDim,
       }}>
-        <span>{state.total.toLocaleString()} memories{isSearch ? ` matching "${searchQuery}"` : ''}</span>
-        <span>{filtered.length} shown</span>
+        <span>
+          {filteredEntities.length > 0 && `${filteredEntities.length} entities`}
+          {filteredEntities.length > 0 && showMemories && ' · '}
+          {showMemories && `${state.total.toLocaleString()} memories`}
+          {isSearch ? ` matching "${searchQuery}"` : ''}
+        </span>
+        <span>{filteredEntities.length + filtered.length} shown</span>
       </div>
 
       {/* Scrollable list */}
@@ -180,7 +197,41 @@ export function BrainList({ onSelect, selectedId, timeValue, searchQuery }: Brai
           flex: 1, overflowY: 'auto', padding: '0 12px 12px',
         }}
       >
-        {filtered.map(mem => (
+        {/* Entity rows */}
+        {showEntities && filteredEntities.length > 0 && (
+          <>
+            <div style={{
+              padding: '6px 14px 4px', fontFamily: font.mono, fontSize: 9,
+              color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em',
+            }}>
+              Entities ({filteredEntities.length})
+            </div>
+            {filteredEntities.map(ent => (
+              <EntityRow
+                key={ent.id}
+                entity={ent}
+                selected={ent.id === selectedId}
+                onClick={() => onSelect({
+                  id: ent.id,
+                  kind: ent.type,
+                  label: ent.name,
+                  note: ent.note,
+                  data: ent,
+                })}
+              />
+            ))}
+            {showMemories && (
+              <div style={{
+                padding: '10px 14px 4px', fontFamily: font.mono, fontSize: 9,
+                color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em',
+              }}>
+                Memories
+              </div>
+            )}
+          </>
+        )}
+
+        {showMemories && filtered.map(mem => (
           <MemoryRow
             key={mem.id}
             memory={mem}
@@ -196,19 +247,19 @@ export function BrainList({ onSelect, selectedId, timeValue, searchQuery }: Brai
           />
         ))}
 
-        {state.loading && (
+        {showMemories && state.loading && (
           <div style={{ padding: 20, textAlign: 'center', fontFamily: font.mono, fontSize: 11, color: colors.textDim }}>
             Loading...
           </div>
         )}
 
-        {!state.loading && filtered.length === 0 && (
+        {showMemories && !state.loading && filtered.length === 0 && (
           <div style={{ padding: 40, textAlign: 'center', fontFamily: font.body, fontSize: 13, color: colors.textMuted }}>
             {isSearch ? 'No memories match your search.' : 'No memories yet.'}
           </div>
         )}
 
-        {state.hasMore && !state.loading && (
+        {showMemories && state.hasMore && !state.loading && (
           <div style={{ padding: 12, textAlign: 'center', fontFamily: font.mono, fontSize: 10, color: colors.textDim }}>
             Scroll for more...
           </div>
@@ -305,6 +356,64 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
         <span>signal {Math.round(memory.weight * 100)}%</span>
         <span>{memory.age < 0.02 ? 'today' : memory.age < 0.11 ? 'this week' : memory.age < 0.33 ? 'this month' : memory.age < 0.67 ? '~3 months' : 'older'}</span>
       </div>
+    </div>
+  );
+}
+
+// ── Entity row component ────────────────────────────────────────────
+
+const TYPE_COLORS: Record<string, string> = {
+  person: '#c8e0ff', project: '#a855f7', tool: '#22d3ee',
+  location: '#4ade80', organization: '#fb923c', concept: '#7bb7ff',
+};
+
+function EntityRow({ entity, selected, onClick }: {
+  entity: GraphEntity;
+  selected: boolean;
+  onClick: () => void;
+}) {
+  const { colors, theme } = useTheme();
+  const rowBg = selected
+    ? colors.cyanSoft
+    : theme === 'silver' ? 'rgba(255,255,255,0.7)' : 'rgba(20,28,48,0.4)';
+  const rowHoverBg = theme === 'silver' ? 'rgba(255,255,255,0.9)' : 'rgba(20,28,48,0.65)';
+  const typeColor = TYPE_COLORS[entity.type] || colors.textDim;
+
+  return (
+    <div
+      onClick={onClick}
+      style={{
+        padding: '8px 14px', marginBottom: 2, cursor: 'pointer',
+        borderRadius: 8, background: rowBg,
+        border: selected ? `1px solid ${colors.cyan}40` : '1px solid transparent',
+        transition: `all 160ms ${ease.out}`,
+        display: 'flex', alignItems: 'center', gap: 10,
+      }}
+      onMouseEnter={e => { if (!selected) (e.currentTarget as HTMLDivElement).style.background = rowHoverBg; }}
+      onMouseLeave={e => { if (!selected) (e.currentTarget as HTMLDivElement).style.background = rowBg; }}
+    >
+      <span style={{
+        fontFamily: font.mono, fontSize: 9, fontWeight: 600,
+        color: typeColor, textTransform: 'uppercase', letterSpacing: '0.06em',
+        flexShrink: 0, width: 52, textAlign: 'right',
+      }}>
+        {entity.type}
+      </span>
+      <span style={{
+        fontFamily: font.body, fontSize: 13, fontWeight: 600, color: colors.text,
+        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1,
+      }}>
+        {entity.name}
+      </span>
+      {entity.note && (
+        <span style={{
+          fontFamily: font.body, fontSize: 11, color: colors.textMuted,
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          maxWidth: 200, flexShrink: 1,
+        }}>
+          {entity.note}
+        </span>
+      )}
     </div>
   );
 }

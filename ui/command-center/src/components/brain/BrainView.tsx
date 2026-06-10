@@ -128,6 +128,8 @@ export function BrainView() {
             selectedId={selected?.id ?? null}
             timeValue={timeValue}
             searchQuery={debouncedSearch}
+            entities={data?.entities ?? []}
+            filters={filters}
           />
         </div>
       )}
