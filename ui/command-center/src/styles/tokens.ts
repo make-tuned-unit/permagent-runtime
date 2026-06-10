@@ -209,27 +209,44 @@ export function getTheme(): ThemeId { return _activeTheme; }
 export function getThemeGradient() { return THEME_GRADIENTS[_activeTheme]; }
 export function setTheme(id: ThemeId) { _activeTheme = id; _set('permagent-theme', id); }
 
-// Sync CSS custom properties for Tailwind theme-aware colors
+// Extract RGB channel triplet from a hex color string for Tailwind alpha-modifier support.
+// e.g. '#0B1220' → '11 18 32'. Only call on solid hex values, not rgba().
+function _hex(h: string): string {
+  const s = h.replace('#', '');
+  return `${parseInt(s.substring(0, 2), 16)} ${parseInt(s.substring(2, 4), 16)} ${parseInt(s.substring(4, 6), 16)}`;
+}
+
+// Sync CSS custom properties for Tailwind theme-aware colors.
+// Solid colors are stored as RGB channel triplets so Tailwind /NN alpha modifiers
+// compose correctly: rgb(var(--tw-dark-muted) / 0.5). Colors with intrinsic alpha
+// (border, glow) are stored as full rgba values and don't support further alpha.
 function _syncCssVars() {
   if (typeof document === 'undefined') return;
   const c = THEME_COLORS[_activeTheme];
   const root = document.documentElement.style;
-  root.setProperty('--tw-dark-bg', c.bg);
-  root.setProperty('--tw-dark-surface', c.surface);
-  root.setProperty('--tw-dark-surface-2', c.surfaceHi);
+  // Channel triplets (support Tailwind /NN alpha modifiers)
+  root.setProperty('--tw-dark-bg', _hex(c.bg));
+  root.setProperty('--tw-dark-surface', _hex(c.surface));
+  root.setProperty('--tw-dark-surface-2', _hex(c.surfaceHi));
+  root.setProperty('--tw-dark-text', _hex(c.text));
+  root.setProperty('--tw-dark-muted', _hex(c.textMuted));
+  root.setProperty('--tw-accent', _hex(c.cyan));
+  root.setProperty('--tw-accent-dim', _hex(c.cyan));
+  root.setProperty('--tw-input-bg', _hex(c.inputBg));
+  root.setProperty('--tw-danger', _hex(c.danger));
+  root.setProperty('--tw-success', _hex(c.success));
+  root.setProperty('--tw-warning', _hex(c.warning));
+  // Status palette → bridged to theme tokens (ok→success, warn→warning, error→danger, info→cyan)
+  root.setProperty('--tw-status-ok', _hex(c.success));
+  root.setProperty('--tw-status-warn', _hex(c.warning));
+  root.setProperty('--tw-status-error', _hex(c.danger));
+  root.setProperty('--tw-status-info', _hex(c.cyan));
+  // Full rgba values (intrinsic alpha, no Tailwind alpha modifier support)
   root.setProperty('--tw-dark-border', c.border);
-  root.setProperty('--tw-dark-text', c.text);
-  root.setProperty('--tw-dark-muted', c.textMuted);
-  root.setProperty('--tw-accent', c.cyan);
-  root.setProperty('--tw-accent-dim', c.cyan);
   root.setProperty('--tw-accent-glow', c.cyanSoft);
-  root.setProperty('--tw-input-bg', c.inputBg);
-  root.setProperty('--tw-danger', c.danger);
-  root.setProperty('--tw-success', c.success);
-  root.setProperty('--tw-warning', c.warning);
-  // Scrollbar colors per theme
-  const scrollThumb = _activeTheme === 'silver' ? '#C8CDD5' : '#1e293b';
-  const scrollThumbHover = _activeTheme === 'silver' ? '#A0A8B4' : '#334155';
+  // Scrollbar colors per theme (aligned with tokens.ts dark bg/surface)
+  const scrollThumb = _activeTheme === 'silver' ? '#C8CDD5' : '#1E2433';
+  const scrollThumbHover = _activeTheme === 'silver' ? '#A0A8B4' : '#262D3F';
   root.setProperty('--scrollbar-thumb', scrollThumb);
   root.setProperty('--scrollbar-thumb-hover', scrollThumbHover);
   // Sync color-scheme + body background so macOS native title bar matches theme

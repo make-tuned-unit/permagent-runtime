@@ -65,7 +65,7 @@ export function SkillsPanel() {
               value={search}
               onChange={e => setSearch(e.target.value)}
               placeholder="Search skills..."
-              className="w-full rounded-md border border-dark-border bg-dark-surface/50 pl-7 pr-3 py-1.5 text-[11px] font-mono text-dark-text placeholder-dark-muted/50 focus:border-accent/50 focus:outline-none transition"
+              className="w-full rounded-md border border-dark-border bg-dark-surface/50 pl-7 pr-3 py-1.5 text-[11px] font-mono text-dark-text placeholder-dark-muted/60 focus:border-accent/50 focus:outline-none transition"
             />
           </div>
         </div>

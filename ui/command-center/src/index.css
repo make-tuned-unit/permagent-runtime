@@ -1,5 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap');
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -16,8 +14,8 @@ body,
 
 body {
   margin: 0;
-  font-family: "JetBrains Mono", "SF Mono", "Fira Code", monospace;
-  background: var(--tw-dark-bg, #0a0e17);
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+  background: rgb(var(--tw-dark-bg, 11 18 32));
 }
 
 /* Scrollbar styling — colors synced by _syncCssVars per theme */
@@ -31,12 +29,12 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--scrollbar-thumb, #1e293b);
+  background: var(--scrollbar-thumb, #1E2433);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--scrollbar-thumb-hover, #334155);
+  background: var(--scrollbar-thumb-hover, #262D3F);
 }
 
 /* Status dot pulse */
@@ -49,40 +47,10 @@ body {
   animation: statusPulse 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 
-/* Accent glow for active elements */
-.accent-glow {
-  box-shadow: 0 0 12px rgba(0, 255, 180, 0.25), inset 0 0 12px rgba(0, 255, 180, 0.05);
-}
-
-/* Card hover effect */
-.card-hover {
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.card-hover:hover {
-  border-color: rgba(0, 255, 180, 0.3);
-  box-shadow: 0 0 20px rgba(0, 255, 180, 0.08);
-}
-
 /* Data grid lines */
 .grid-line {
   background-image: linear-gradient(rgba(30, 41, 59, 0.5) 1px, transparent 1px);
   background-size: 100% 2rem;
-}
-
-@keyframes ticketStatusFlash {
-  0% {
-    box-shadow: 0 0 0 0 rgba(0, 255, 180, 0.45);
-    border-color: rgba(0, 255, 180, 0.8);
-  }
-  100% {
-    box-shadow: 0 0 0 10px rgba(0, 255, 180, 0);
-    border-color: inherit;
-  }
-}
-
-.ticket-status-changed {
-  animation: ticketStatusFlash 1.8s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* Mobile touch targets */

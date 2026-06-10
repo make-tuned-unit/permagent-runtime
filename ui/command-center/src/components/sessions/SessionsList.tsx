@@ -136,7 +136,7 @@ export function SessionsList() {
                     />
                   </span>
                   {s.updated_at && (
-                    <span className="text-[9px] font-mono text-dark-muted/50 shrink-0">
+                    <span className="text-[9px] font-mono text-dark-muted/70 shrink-0">
                       {timeAgo(s.updated_at)}
                     </span>
                   )}

@@ -11,7 +11,7 @@ export function BrainPanel() {
         <p className="text-sm text-dark-muted mt-2">
           Memory inspector and knowledge graph live here.
         </p>
-        <p className="text-xs text-dark-muted/60 mt-4">
+        <p className="text-xs text-dark-muted/80 mt-4">
           Coming in Phase 2 Track 7
         </p>
       </div>

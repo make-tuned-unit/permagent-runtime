@@ -31,7 +31,7 @@ export function SkillEditor({ skill, onClose }: SkillEditorProps) {
           type="text"
           value={name}
           onChange={e => setName(e.target.value)}
-          className="w-full rounded-md border border-dark-border bg-dark-surface/50 px-3 py-1.5 text-xs text-dark-text placeholder-dark-muted/50 focus:border-accent/50 focus:outline-none transition"
+          className="w-full rounded-md border border-dark-border bg-dark-surface/50 px-3 py-1.5 text-xs text-dark-text placeholder-dark-muted/60 focus:border-accent/50 focus:outline-none transition"
           placeholder="Skill name"
         />
       </div>
@@ -41,7 +41,7 @@ export function SkillEditor({ skill, onClose }: SkillEditorProps) {
           value={description}
           onChange={e => setDescription(e.target.value)}
           rows={3}
-          className="w-full rounded-md border border-dark-border bg-dark-surface/50 px-3 py-1.5 text-xs text-dark-text placeholder-dark-muted/50 focus:border-accent/50 focus:outline-none transition resize-none"
+          className="w-full rounded-md border border-dark-border bg-dark-surface/50 px-3 py-1.5 text-xs text-dark-text placeholder-dark-muted/60 focus:border-accent/50 focus:outline-none transition resize-none"
           placeholder="What does this skill do?"
         />
       </div>
