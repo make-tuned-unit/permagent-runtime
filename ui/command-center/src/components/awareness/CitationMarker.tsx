@@ -21,10 +21,10 @@ export function CitationMarker({ probed, recalled }: Props) {
         style={{
           display: 'inline-flex', alignItems: 'center', gap: 4,
           padding: '2px 8px', borderRadius: 10,
-          background: expanded ? colors.cyanSoft : colors.border,
-          border: `1px solid ${expanded ? colors.cyanGlow : colors.border}`,
-          color: expanded ? colors.cyan : colors.textDim,
-          fontSize: 10, fontFamily: font.body, cursor: 'pointer',
+          background: expanded ? colors.purpleSoft : `${colors.purple}18`,
+          border: `1px solid ${expanded ? colors.purpleGlow : `${colors.purple}30`}`,
+          color: expanded ? colors.purple : colors.textDim,
+          fontSize: 10, fontFamily: font.body, fontWeight: 500, cursor: 'pointer',
           transition: `all 150ms ${ease.out}`,
         }}
       >
@@ -42,12 +42,13 @@ export function CitationMarker({ probed, recalled }: Props) {
           background: colors.surface, backdropFilter: 'blur(16px)',
           border: `1px solid ${colors.borderHi}`,
           borderRadius: 8, padding: '8px 0',
-          boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+          boxShadow: colors.cardShadow,
+          ...(colors.cardHighlight ? { boxShadow: `${colors.cardShadow}, ${colors.cardHighlight}` } : {}),
           zIndex: 100,
           maxHeight: 280, overflow: 'auto',
         }}>
           {probed.length > 0 && (
-            <div style={{ padding: '4px 12px 2px', fontSize: 9, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+            <div style={{ padding: '4px 12px 2px', fontSize: 9, fontWeight: 600, fontFamily: font.display, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
               Probed memories
             </div>
           )}
@@ -63,13 +64,13 @@ export function CitationMarker({ probed, recalled }: Props) {
                   </span>
                 )}
               </div>
-              <div style={{ fontSize: 11, color: colors.textMuted, lineHeight: 1.3 }}>
+              <div style={{ fontSize: 11, fontFamily: font.body, color: colors.textMuted, lineHeight: 1.3 }}>
                 {m.content_summary}
               </div>
             </div>
           ))}
           {recalled.length > 0 && (
-            <div style={{ padding: '4px 12px 2px', fontSize: 9, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+            <div style={{ padding: '4px 12px 2px', fontSize: 9, fontWeight: 600, fontFamily: font.display, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
               Recalled memories
             </div>
           )}
@@ -78,7 +79,7 @@ export function CitationMarker({ probed, recalled }: Props) {
               <div style={{ fontSize: 10, fontFamily: font.mono, color: colors.purple, marginBottom: 2 }}>
                 score: {m.signal_score.toFixed(2)}
               </div>
-              <div style={{ fontSize: 11, color: colors.textMuted, lineHeight: 1.3 }}>
+              <div style={{ fontSize: 11, fontFamily: font.body, color: colors.textMuted, lineHeight: 1.3 }}>
                 {m.content_summary}
               </div>
             </div>
