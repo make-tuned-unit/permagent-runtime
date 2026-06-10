@@ -8,12 +8,19 @@ import { BrainList } from './BrainList';
 
 type ViewMode = 'graph' | 'list';
 
-const FILTERS: { key: keyof TypeFilters; label: string; shape: string }[] = [
+const TOP_FILTERS: { key: keyof TypeFilters; label: string; shape: string }[] = [
   { key: 'person', label: 'people', shape: '●' },
   { key: 'project', label: 'projects', shape: '■' },
-  { key: 'topic', label: 'topics', shape: '◆' },
-  { key: 'memory', label: 'memories', shape: '·' },
 ];
+
+const TOPIC_SUB_FILTERS: { key: keyof TypeFilters; label: string; shape: string }[] = [
+  { key: 'tool', label: 'tools', shape: '■' },
+  { key: 'location', label: 'locations', shape: '◇' },
+  { key: 'organization', label: 'orgs', shape: '■' },
+  { key: 'concept', label: 'concepts', shape: '◆' },
+];
+
+const TOPIC_KEYS: (keyof TypeFilters)[] = ['tool', 'location', 'organization', 'concept'];
 
 interface HoverInfo { id: string; kind: string; label: string; note: string; x: number; y: number }
 interface SelectedInfo { id: string; kind: string; label: string; note: string; data: any }
@@ -34,7 +41,8 @@ export function BrainView() {
   const [modeBeforeSearch, setModeBeforeSearch] = useState<ViewMode>('graph');
 
   const { data, loading } = useBrainData(debouncedSearch);
-  const [filters, setFilters] = useState<TypeFilters>({ person: true, project: true, topic: true, memory: true });
+  const [filters, setFilters] = useState<TypeFilters>({ person: true, project: true, tool: true, location: true, organization: true, concept: true, memory: true });
+  const [topicsExpanded, setTopicsExpanded] = useState(false);
   const [timeValue, setTimeValue] = useState(1);
   const [hover, setHover] = useState<HoverInfo | null>(null);
   const [selected, setSelected] = useState<SelectedInfo | null>(null);
@@ -120,6 +128,8 @@ export function BrainView() {
             selectedId={selected?.id ?? null}
             timeValue={timeValue}
             searchQuery={debouncedSearch}
+            entities={data?.entities ?? []}
+            filters={filters}
           />
         </div>
       )}
@@ -179,7 +189,7 @@ export function BrainView() {
           border: `1px solid ${glass.border}`, borderRadius: 10,
         }}>
           <span style={{ fontFamily: font.body, fontSize: 10, color: colors.textDim, marginRight: 4 }}>show</span>
-          {FILTERS.map(f => (
+          {TOP_FILTERS.map(f => (
             <button key={f.key} onClick={() => toggleFilter(f.key)} style={{
               fontFamily: font.body, fontSize: 11, fontWeight: 500,
               color: filters[f.key] ? colors.text : colors.textDim,
@@ -190,6 +200,58 @@ export function BrainView() {
               <span style={{ marginRight: 4 }}>{f.shape}</span>{f.label}
             </button>
           ))}
+
+          {/* Topics group with drilldown */}
+          <span style={{
+            display: 'inline-flex', alignItems: 'center', gap: 2,
+            borderLeft: `1px solid ${glass.border}`, paddingLeft: 6,
+          }}>
+            <button onClick={() => {
+              const allOn = TOPIC_KEYS.every(k => filters[k]);
+              setFilters(f => {
+                const next = { ...f };
+                for (const k of TOPIC_KEYS) next[k] = !allOn;
+                return next;
+              });
+            }} style={{
+              fontFamily: font.body, fontSize: 11, fontWeight: 500,
+              color: TOPIC_KEYS.some(k => filters[k]) ? colors.text : colors.textDim,
+              background: TOPIC_KEYS.every(k => filters[k]) ? colors.cyanSoft : TOPIC_KEYS.some(k => filters[k]) ? `${colors.cyanSoft}88` : 'transparent',
+              border: 'none', borderRadius: 6, padding: '4px 8px', cursor: 'pointer',
+              transition: `all 160ms ${ease.out}`,
+            }}>
+              <span style={{ marginRight: 4 }}>◆</span>topics
+            </button>
+            <button onClick={() => setTopicsExpanded(e => !e)} style={{
+              fontFamily: font.mono, fontSize: 9, color: colors.textDim,
+              background: 'transparent', border: 'none', cursor: 'pointer', padding: '2px 4px',
+              transition: `transform 160ms ${ease.out}`,
+              transform: topicsExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+            }}>▸</button>
+            {topicsExpanded && TOPIC_SUB_FILTERS.map(f => (
+              <button key={f.key} onClick={() => toggleFilter(f.key)} style={{
+                fontFamily: font.body, fontSize: 10, fontWeight: 500,
+                color: filters[f.key] ? colors.text : colors.textDim,
+                background: filters[f.key] ? colors.cyanSoft : 'transparent',
+                border: 'none', borderRadius: 5, padding: '3px 6px', cursor: 'pointer',
+                transition: `all 160ms ${ease.out}`,
+              }}>
+                <span style={{ marginRight: 3 }}>{f.shape}</span>{f.label}
+              </button>
+            ))}
+          </span>
+
+          <span style={{ borderLeft: `1px solid ${glass.border}`, paddingLeft: 6 }}>
+            <button onClick={() => toggleFilter('memory')} style={{
+              fontFamily: font.body, fontSize: 11, fontWeight: 500,
+              color: filters.memory ? colors.text : colors.textDim,
+              background: filters.memory ? colors.cyanSoft : 'transparent',
+              border: 'none', borderRadius: 6, padding: '4px 8px', cursor: 'pointer',
+              transition: `all 160ms ${ease.out}`,
+            }}>
+              <span style={{ marginRight: 4 }}>·</span>memories
+            </button>
+          </span>
         </div>
 
         {/* Graph / List toggle */}

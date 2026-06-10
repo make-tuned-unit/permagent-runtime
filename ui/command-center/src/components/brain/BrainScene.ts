@@ -37,7 +37,10 @@ interface Pulse {
 export interface TypeFilters {
   person: boolean;
   project: boolean;
-  topic: boolean;
+  tool: boolean;
+  location: boolean;
+  organization: boolean;
+  concept: boolean;
   memory: boolean;
 }
 
@@ -55,8 +58,8 @@ const COOLING = 0.997;
 const MIN_ALPHA = 0.05;
 
 const NODE_COLORS: Record<string, number> = {
-  person: 0xc8e0ff, project: 0xa855f7, topic: 0x7bb7ff,
-  tool: 0xa855f7, concept: 0x7bb7ff, location: 0x7bb7ff,
+  person: 0xc8e0ff, project: 0xa855f7, tool: 0x22d3ee,
+  location: 0x4ade80, organization: 0xfb923c, concept: 0x7bb7ff,
 };
 const MEM_FRESH = new THREE.Color(0x00d5ff);
 const MEM_STALE = new THREE.Color(0x4a5468);
@@ -124,7 +127,7 @@ export class BrainScene {
   private hoveredNode: SimNode | null = null;
 
   private search = '';
-  private typeFilter: TypeFilters = { person: true, project: true, topic: true, memory: true };
+  private typeFilter: TypeFilters = { person: true, project: true, tool: true, location: true, organization: true, concept: true, memory: true };
   private timeRange: [number, number] = [0, 1];
 
   private raf = 0;
@@ -238,8 +241,8 @@ export class BrainScene {
       const kind = ent.type as string;
       const nodeColor = NODE_COLORS[kind] || 0x7bb7ff;
       let geo: THREE.BufferGeometry;
-      if (kind === 'project' || kind === 'tool') geo = new THREE.BoxGeometry(0.85, 0.85, 0.85);
-      else if (kind === 'topic' || kind === 'concept' || kind === 'location') geo = new THREE.OctahedronGeometry(0.7, 0);
+      if (kind === 'project' || kind === 'tool' || kind === 'organization') geo = new THREE.BoxGeometry(0.85, 0.85, 0.85);
+      else if (kind === 'concept' || kind === 'location') geo = new THREE.OctahedronGeometry(0.7, 0);
       else geo = new THREE.SphereGeometry(0.55, 24, 18);
       const color = nodeColor;
 
@@ -330,9 +333,8 @@ export class BrainScene {
       if (n.kind === 'self') { n.mesh.visible = true; continue; }
       let visible = true;
       if (n.kind !== 'memory') {
-        // Map extended types to filter groups
-        const filterKey = (n.kind === 'tool' ? 'project' : n.kind === 'concept' || n.kind === 'location' ? 'topic' : n.kind) as keyof TypeFilters;
-        if (!this.typeFilter[filterKey]) visible = false;
+        const filterKey = n.kind as keyof TypeFilters;
+        if (filterKey in this.typeFilter && !this.typeFilter[filterKey]) visible = false;
       }
       if (n.kind === 'memory' && !this.typeFilter.memory) visible = false;
       if (n.kind === 'memory' && n.data) {
