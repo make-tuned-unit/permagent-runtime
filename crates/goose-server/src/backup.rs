@@ -212,6 +212,8 @@ fn take_snapshot(
     let final_path = dest_dir.join(&filename);
 
     // VACUUM INTO via a read-only connection. Safe under WAL.
+    let t0 = std::time::Instant::now();
+
     let conn = rusqlite::Connection::open_with_flags(
         source_db,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -225,6 +227,8 @@ fn take_snapshot(
     .map_err(|e| BackupError::VacuumFailed(format!("{e}")))?;
 
     drop(conn);
+
+    let vacuum_ms = t0.elapsed().as_millis();
 
     // Integrity check on the snapshot.
     if !check_integrity(&tmp_path) {
@@ -242,12 +246,16 @@ fn take_snapshot(
     std::fs::rename(&tmp_path, &final_path)?;
 
     let size_bytes = std::fs::metadata(&final_path).map(|m| m.len()).unwrap_or(0);
+    let total_ms = t0.elapsed().as_millis();
 
     tracing::info!(
         target: "permagentd::backup",
         db = target.label(),
         path = %final_path.display(),
+        source_bytes = source_size,
         size_bytes,
+        vacuum_ms,
+        total_ms,
         "Backup snapshot created"
     );
 
