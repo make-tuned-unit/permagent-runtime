@@ -62,6 +62,24 @@ impl AppState {
         let tunnel_manager = Arc::new(TunnelManager::new(tls));
         let gateway_manager = Arc::new(GatewayManager::new(agent_manager.clone())?);
 
+        // ── Pre-migration backup: spectral/permagent.db ──
+        // pool_clone() triggers lazy schema migration, so snapshot BEFORE it.
+        {
+            let source = permagent::config::paths::Paths::spectral_db();
+            let backup_root = permagent::config::paths::Paths::data_dir().join("backups");
+            if let Err(e) = crate::backup::snapshot_if_stale(
+                &source,
+                &backup_root,
+                crate::backup::DbTarget::Spectral,
+            ) {
+                tracing::error!(
+                    target: "permagentd::backup",
+                    error = %e,
+                    "Startup backup of spectral/permagent.db failed (non-fatal)"
+                );
+            }
+        }
+
         // Initialize TaskLogger with the same Spectral DB pool
         if let Ok(pool) = agent_manager.session_manager().pool_clone().await {
             permagent::tasks::init_global(pool);
@@ -84,6 +102,26 @@ impl AppState {
                     brain_dir.display()
                 );
                 return None;
+            }
+
+            // ── Pre-migration backup: brain/memory.db ──
+            // Must run before Brain::builder().build() which triggers Spectral
+            // auto-migration. Also before sync_graph_with_ontology which mutates
+            // graph.kz (separate store, but keeps backup timing unambiguous).
+            {
+                let source = brain_dir.join("memory.db");
+                let backup_root = permagent::config::paths::Paths::data_dir().join("backups");
+                if let Err(e) = crate::backup::snapshot_if_stale(
+                    &source,
+                    &backup_root,
+                    crate::backup::DbTarget::Brain,
+                ) {
+                    tracing::error!(
+                        target: "permagentd::backup",
+                        error = %e,
+                        "Startup backup of brain/memory.db failed (non-fatal)"
+                    );
+                }
             }
 
             // Reconcile Kuzu graph with ontology before Brain opens.
@@ -396,6 +434,11 @@ impl AppState {
         // to warm the Librarian's Ollama model for the configured window.
         tokio::spawn(async move {
             crate::routes::librarian::librarian_scheduler_loop().await;
+        });
+
+        // Backup scheduler: checks once per hour, snapshots if stale (>20h).
+        tokio::spawn(async move {
+            crate::backup::backup_scheduler_loop().await;
         });
 
         // Load app catalog (static tab/view descriptions for agent navigation).

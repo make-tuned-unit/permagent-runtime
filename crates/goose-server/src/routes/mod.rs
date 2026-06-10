@@ -3,6 +3,7 @@ pub mod activity;
 pub mod agent;
 pub mod agents;
 pub mod attachments;
+pub mod backup;
 pub mod brain;
 pub mod browser_content;
 pub mod cards;
@@ -72,6 +73,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
 
     // ── Protected routes (bearer token required) ──
     let mut protected = Router::new()
+        .merge(backup::routes(state.clone()))
         .merge(reply::routes(state.clone()))
         .merge(activity::routes(state.clone()))
         .merge(action_required::routes(state.clone()))
