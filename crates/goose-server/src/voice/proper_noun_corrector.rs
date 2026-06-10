@@ -64,7 +64,7 @@ impl EntityDictionary {
 /// 2. Direct SQL on `memory_annotations.who` — display_name values
 ///
 /// Must be called from `spawn_blocking` — uses raw_blocking_handle() internally.
-pub fn load_entity_names(brain: &permagent::brain_handle::SafeBrain) -> HashSet<String> {
+pub fn load_entity_names_blocking(brain: &permagent::brain_handle::SafeBrain) -> HashSet<String> {
     let brain = brain.raw_blocking_handle();
     let mut names = HashSet::new();
 

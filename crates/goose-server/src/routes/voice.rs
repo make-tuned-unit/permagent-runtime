@@ -123,7 +123,7 @@ async fn handle_voice_socket(
     let entity_dict = if let Some(ref brain) = state.brain {
         let brain = brain.clone();
         let dict = tokio::task::spawn_blocking(move || {
-            let names = crate::voice::proper_noun_corrector::load_entity_names(&brain);
+            let names = crate::voice::proper_noun_corrector::load_entity_names_blocking(&brain);
             crate::voice::proper_noun_corrector::EntityDictionary::new(names)
         })
         .await

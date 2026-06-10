@@ -6,7 +6,7 @@ use crate::routes::ollama::OLLAMA_BASE;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use super::consolidation::run_consolidation_scan;
+use super::consolidation::run_consolidation_scan_blocking;
 use super::pruning::run_pruning_pass;
 
 // ── Librarian schedule config ───────────────────────────────────────
@@ -404,7 +404,7 @@ pub async fn librarian_scheduler_loop() {
             let pruning_enabled = schedule.pruning_enabled;
             if let Some(safe_brain) = permagent::agents::platform_extensions::get_global_brain() {
                 match tokio::task::spawn_blocking(move || {
-                    let consolidation = run_consolidation_scan(&safe_brain);
+                    let consolidation = run_consolidation_scan_blocking(&safe_brain);
                     let pruned = if pruning_enabled {
                         run_pruning_pass().unwrap_or(0)
                     } else {

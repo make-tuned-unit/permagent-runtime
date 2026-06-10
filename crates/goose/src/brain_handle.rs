@@ -59,8 +59,9 @@ impl SafeBrain {
     /// `tokio::task::spawn_blocking`). Calling Brain methods on the async
     /// executor will stall it. This method exists only for functions that
     /// are themselves called from spawn_blocking and need the raw Brain
-    /// reference (e.g. `run_consolidation_scan`, `load_entity_names`,
-    /// `migrate_consolidated_into_to_spectral`).
+    /// reference. Callers of this method must carry a `_blocking` suffix
+    /// (e.g. `run_consolidation_scan_blocking`, `load_entity_names_blocking`,
+    /// `current_digest_blocking`).
     pub fn raw_blocking_handle(&self) -> &spectral::Brain {
         &self.inner
     }

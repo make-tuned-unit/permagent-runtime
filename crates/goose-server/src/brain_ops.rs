@@ -169,9 +169,10 @@ pub async fn inject_ambient_context(
     };
 
     let cb = context_builder.clone();
-    let digest_result = tokio::task::spawn_blocking(move || cb.current_digest(digest_opts))
-        .await
-        .unwrap_or_else(|e| Err(anyhow::anyhow!("spawn_blocking: {}", e)));
+    let digest_result =
+        tokio::task::spawn_blocking(move || cb.current_digest_blocking(digest_opts))
+            .await
+            .unwrap_or_else(|e| Err(anyhow::anyhow!("spawn_blocking: {}", e)));
 
     match digest_result {
         Ok(digest) => {

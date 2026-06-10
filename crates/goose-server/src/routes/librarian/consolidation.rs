@@ -73,7 +73,7 @@ pub fn find_domain_clusters(
 }
 
 /// Caller MUST be inside spawn_blocking — uses raw_blocking_handle() internally.
-pub(super) fn run_consolidation_scan(
+pub(super) fn run_consolidation_scan_blocking(
     brain: &permagent::brain_handle::SafeBrain,
 ) -> Result<(usize, usize), String> {
     let brain = brain.raw_blocking_handle();

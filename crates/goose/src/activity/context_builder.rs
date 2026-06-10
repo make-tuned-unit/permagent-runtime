@@ -1,7 +1,7 @@
 //! ContextBuilder — maintains live activity state and produces per-turn digests.
 //!
 //! Subscribes to the activity event bus alongside the [`ActivityIngester`].
-//! As events flow in, updates a live state snapshot. When `current_digest()`
+//! As events flow in, updates a live state snapshot. When `current_digest_blocking()`
 //! is called, assembles a [`Digest`] containing recent events, live state,
 //! probed memories from Brain recognition, and optionally recalled memories.
 
@@ -79,7 +79,7 @@ impl ContextBuilder {
     }
 
     /// Produce a digest of current activity context.
-    pub fn current_digest(&self, opts: DigestOpts) -> anyhow::Result<Digest> {
+    pub fn current_digest_blocking(&self, opts: DigestOpts) -> anyhow::Result<Digest> {
         let cutoff = chrono::Utc::now() - chrono::Duration::from_std(opts.event_window)?;
 
         let recent_events: Vec<ActivityEvent> = self

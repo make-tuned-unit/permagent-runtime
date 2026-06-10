@@ -257,7 +257,7 @@ impl AppState {
                 if let Some(ref brain) = brain_for_migration {
                     let brain = brain.clone();
                     let result = tokio::task::spawn_blocking(move || {
-                        permagent::activity::cleanup::migrate_consolidated_into_to_spectral(&brain)
+                        permagent::activity::cleanup::migrate_consolidated_into_to_spectral_blocking(&brain)
                     })
                     .await;
                     match result {
@@ -321,7 +321,7 @@ impl AppState {
 
             // Phase 2: consolidate browser navigation clusters
             let consolidate_result = tokio::task::spawn_blocking(|| {
-                permagent::activity::cleanup::consolidate_clusters()
+                permagent::activity::cleanup::consolidate_clusters_blocking()
             })
             .await;
             match consolidate_result {
@@ -408,7 +408,7 @@ impl AppState {
                                         let ingester = ingester_ref.clone();
                                         let event = activity_event;
                                         tokio::task::spawn_blocking(move || {
-                                            ingester.handle_event(&event);
+                                            ingester.handle_event_blocking(&event);
                                         });
                                     }
                                 }

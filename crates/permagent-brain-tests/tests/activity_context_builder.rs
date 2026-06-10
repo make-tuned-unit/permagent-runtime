@@ -106,7 +106,7 @@ fn ring_buffer_bounded() {
 }
 
 #[test]
-fn current_digest_returns_recent_events() {
+fn current_digest_blocking_returns_recent_events() {
     let brain = common::shared_context_builder_brain();
     let cb = ContextBuilder::new(SafeBrain::from_arc(brain));
 
@@ -121,7 +121,7 @@ fn current_digest_returns_recent_events() {
         cb.handle_event(&event);
     }
 
-    let digest = cb.current_digest(DigestOpts::default()).unwrap();
+    let digest = cb.current_digest_blocking(DigestOpts::default()).unwrap();
     assert_eq!(digest.recent_events.len(), 5);
     assert!(digest.probed_memories.is_empty());
     assert!(digest.recalled_memories.is_empty());
@@ -169,7 +169,7 @@ fn probe_results_sorted_by_relevance_descending() {
     }
 
     let digest = cb
-        .current_digest(DigestOpts {
+        .current_digest_blocking(DigestOpts {
             include_probe: true,
             min_probe_relevance: Some(0.0),
             ..Default::default()
@@ -230,7 +230,7 @@ fn probe_wing_filter_passes_through() {
     }
 
     let digest = cb
-        .current_digest(DigestOpts {
+        .current_digest_blocking(DigestOpts {
             include_probe: true,
             focus_wing: Some("permagent".into()),
             min_probe_relevance: Some(0.0),

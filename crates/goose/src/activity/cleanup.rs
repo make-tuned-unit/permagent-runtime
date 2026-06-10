@@ -107,7 +107,7 @@ pub fn prune_noise_memories() -> Result<usize> {
 /// originals are deleted.
 ///
 /// Returns the number of clusters consolidated.
-pub fn consolidate_clusters() -> Result<usize> {
+pub fn consolidate_clusters_blocking() -> Result<usize> {
     let db_path = crate::config::paths::Paths::brain_dir().join("memory.db");
     let conn = rusqlite::Connection::open(&db_path)?;
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
@@ -511,7 +511,7 @@ pub fn mark_migration(conn: &rusqlite::Connection, name: &str) -> Result<()> {
     mark_migration_applied(conn, name)
 }
 
-// Note: prune_noise_memories and consolidate_clusters use Paths::brain_dir()
+// Note: prune_noise_memories and consolidate_clusters_blocking use Paths::brain_dir()
 // which can't be overridden in unit tests. The SQL correctness is validated
 // by the daemon at startup. The ingest filter tests in ingestion.rs cover
 // the filtering logic independently.
@@ -540,9 +540,10 @@ pub struct ConsolidateMigrationStats {
 /// 3. Cross-check: row count + API verification via list_consolidated()
 /// 4. DROP COLUMN _pm_consolidated_into (gated on cross-check)
 /// 5. Mark migration applied
+///
 /// Migrate _pm_consolidated_into column to Spectral's consolidation_edges.
 /// Caller MUST be inside spawn_blocking — uses raw_blocking_handle() internally.
-pub fn migrate_consolidated_into_to_spectral(
+pub fn migrate_consolidated_into_to_spectral_blocking(
     brain: &crate::brain_handle::SafeBrain,
 ) -> Result<ConsolidateMigrationStats> {
     let brain = brain.raw_blocking_handle();

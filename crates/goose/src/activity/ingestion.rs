@@ -197,7 +197,7 @@ impl ActivityIngester {
         }
     }
 
-    pub fn handle_event(&self, event: &ActivityEvent) {
+    pub fn handle_event_blocking(&self, event: &ActivityEvent) {
         // Update active project tracking on ProjectSelected
         if event.event_type == ActivityEventType::ProjectSelected {
             self.update_active_project(event);
