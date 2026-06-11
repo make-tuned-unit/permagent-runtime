@@ -1021,13 +1021,19 @@ mod tests {
 
     /// REAL RUN against local Ollama (qwen2.5:7b). Ignored by default.
     /// Run with:
-    ///   PERMAGENT_PATH_ROOT=$(mktemp -d) cargo test -p permagent-daemon \
-    ///     --lib verification::tests::real_run -- --ignored --nocapture
-    /// Uses a throwaway git repo + in-memory DB; only network call is
-    /// http://localhost:11434 (zero cloud tokens).
+    ///   cargo test -p permagent-daemon --lib verification::tests::real_run \
+    ///     -- --ignored --nocapture
+    /// Self-isolating: sets PERMAGENT_PATH_ROOT to a throwaway tempdir so the
+    /// live data root is never read or written. Uses a throwaway git repo +
+    /// in-memory DB; only network call is http://localhost:11434 (zero cloud
+    /// tokens).
     #[tokio::test]
     #[ignore = "requires local Ollama with qwen2.5:7b pulled"]
     async fn real_run_local_ollama_toy_goal() {
+        // Isolate config/data reads from the live data root.
+        let throwaway_root = tempfile::tempdir().unwrap();
+        std::env::set_var("PERMAGENT_PATH_ROOT", throwaway_root.path());
+
         let repo = tempfile::tempdir().unwrap();
         let baseline = init_repo(repo.path());
         // Do the "work": add function b, in-path.
