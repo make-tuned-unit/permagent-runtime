@@ -1,0 +1,113 @@
+{
+  "renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)",
+  "views": {
+    "01-catalog-overview": {
+      "fps": 60,
+      "calls": 50,
+      "triangles": 9786,
+      "geometries": 6,
+      "textures": 3,
+      "programs": 10,
+      "dpr": 1
+    },
+    "02-workstation-cluster": {
+      "fps": 60,
+      "calls": 31,
+      "triangles": 4590,
+      "geometries": 5,
+      "textures": 3,
+      "programs": 10,
+      "dpr": 1
+    },
+    "03-brain-shelves": {
+      "fps": 60,
+      "calls": 36,
+      "triangles": 5506,
+      "geometries": 6,
+      "textures": 3,
+      "programs": 10,
+      "dpr": 1
+    },
+    "04-lab-props": {
+      "fps": 60,
+      "calls": 22,
+      "triangles": 3310,
+      "geometries": 5,
+      "textures": 3,
+      "programs": 10,
+      "dpr": 1
+    },
+    "05-automate-steles": {
+      "fps": 60,
+      "calls": 47,
+      "triangles": 8154,
+      "geometries": 6,
+      "textures": 3,
+      "programs": 10,
+      "dpr": 1
+    },
+    "06-bookwall-walkway": {
+      "fps": 60,
+      "calls": 28,
+      "triangles": 13926,
+      "geometries": 4,
+      "textures": 3,
+      "programs": 6,
+      "dpr": 1
+    },
+    "07-bookwall-ambient-wide": {
+      "fps": 60,
+      "calls": 28,
+      "triangles": 13926,
+      "geometries": 4,
+      "textures": 3,
+      "programs": 6,
+      "dpr": 1
+    }
+  },
+  "ledger": "WorkstationCluster — 8 DC · 6 seat anchorsBrainShelves — 9 DC · 2 seat + 4 stand anchorsLabProps — 8 DC · 4 stand anchorsAutomateSteles — 7 DC · 4 lean + 2 stand anchorsAmbientProps — 4 DC · 6 seat anchorsMezzanineBookWall — 12 DC (replaces ~443 meshes)W2 PROP CATALOG (dev)60 fps · 28 calls · 13,926 tris · 4 geom · dpr 1instance ledger — 1431 instances in 44 draw callsautomate: 107 instances / 6 instanced DCbrain: 172 instances / 8 instanced DCbuild: 58 instances / 8 instanced DChall: 30 instances / 4 instanced DClab: 80 instances / 6 instanced DCmezz: 984 instances / 12 instanced DC",
+  "flatness": [
+    {
+      "t": 0,
+      "geometries": 6,
+      "calls": 50,
+      "fps": 60
+    },
+    {
+      "t": 5,
+      "geometries": 6,
+      "calls": 50,
+      "fps": 60
+    },
+    {
+      "t": 10,
+      "geometries": 6,
+      "calls": 50,
+      "fps": 60
+    },
+    {
+      "t": 15,
+      "geometries": 6,
+      "calls": 50,
+      "fps": 60
+    },
+    {
+      "t": 20,
+      "geometries": 6,
+      "calls": 50,
+      "fps": 60
+    },
+    {
+      "t": 25,
+      "geometries": 6,
+      "calls": 50,
+      "fps": 60
+    },
+    {
+      "t": 30,
+      "geometries": 6,
+      "calls": 50,
+      "fps": 60
+    }
+  ]
+}
