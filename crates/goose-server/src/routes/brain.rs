@@ -99,15 +99,11 @@ async fn query_spectral(
     until: Option<DateTime<Utc>>,
 ) -> anyhow::Result<Vec<BrainSearchResult>> {
     let brain = match state.brain.as_ref() {
-        Some(b) => b.clone(),
+        Some(b) => b,
         None => return Ok(Vec::new()),
     };
 
-    let query_owned = query.to_string();
-    let recall_result = tokio::task::spawn_blocking(move || {
-        brain.recall(&query_owned, spectral::Visibility::Private)
-    })
-    .await??;
+    let recall_result = brain.recall(query, spectral::Visibility::Private).await?;
 
     let mut results = Vec::new();
     for (i, hit) in recall_result.memory_hits.into_iter().enumerate() {
@@ -276,7 +272,7 @@ async fn brain_graph(
     };
 
     let brain = match state.brain.as_ref() {
-        Some(b) => b.clone(),
+        Some(b) => b,
         None => {
             return Ok(Json(GraphResponse {
                 self_node,
@@ -291,31 +287,29 @@ async fn brain_graph(
     const MAX_MEMORIES: usize = 100;
 
     // --- Entities: use recall's graph neighborhood (only source) ---
-    let entity_brain = brain.clone();
-    let entity_query = self_node.name.clone();
-    let entities = tokio::task::spawn_blocking(move || -> Vec<GraphEntity> {
-        let result = match entity_brain.recall(&entity_query, spectral::Visibility::Private) {
-            Ok(r) => r,
-            Err(_) => return Vec::new(),
-        };
-        let mut ents: Vec<GraphEntity> = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        for ent in &result.graph.neighborhood.entities {
-            let id_hex = format!("e:{}", hex::encode(ent.id.as_bytes()));
-            if seen.insert(id_hex.clone()) {
-                ents.push(GraphEntity {
-                    id: id_hex,
-                    entity_type: ent.entity_type.clone(),
-                    name: ent.canonical.clone(),
-                    note: String::new(),
-                });
+    let entities = match brain
+        .recall(&self_node.name, spectral::Visibility::Private)
+        .await
+    {
+        Ok(result) => {
+            let mut ents: Vec<GraphEntity> = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for ent in &result.graph.neighborhood.entities {
+                let id_hex = format!("e:{}", hex::encode(ent.id.as_bytes()));
+                if seen.insert(id_hex.clone()) {
+                    ents.push(GraphEntity {
+                        id: id_hex,
+                        entity_type: ent.entity_type.clone(),
+                        name: ent.canonical.clone(),
+                        note: String::new(),
+                    });
+                }
             }
+            ents.truncate(80);
+            ents
         }
-        ents.truncate(80);
-        ents
-    })
-    .await
-    .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?;
+        Err(_) => Vec::new(),
+    };
 
     // --- Memories ---
     let search_q = params.q.as_deref().unwrap_or("").trim().to_string();
@@ -389,43 +383,40 @@ async fn brain_graph(
         .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?
     } else {
         // SEARCH VIEW: semantic recall for the query neighborhood
-        tokio::task::spawn_blocking(move || -> Vec<GraphMemory> {
-            let result = match brain.recall(&search_q, spectral::Visibility::Private) {
-                Ok(r) => r,
-                Err(_) => return Vec::new(),
-            };
-            let mut memories = Vec::new();
-            for hit in result.memory_hits.into_iter().take(MAX_MEMORIES) {
-                let age = hit
-                    .created_at
-                    .as_deref()
-                    .and_then(|s| {
-                        s.parse::<DateTime<Utc>>().ok().or_else(|| {
-                            chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
-                                .ok()
-                                .map(|dt| dt.and_utc())
+        match brain.recall(&search_q, spectral::Visibility::Private).await {
+            Ok(result) => {
+                let mut memories = Vec::new();
+                for hit in result.memory_hits.into_iter().take(MAX_MEMORIES) {
+                    let age = hit
+                        .created_at
+                        .as_deref()
+                        .and_then(|s| {
+                            s.parse::<DateTime<Utc>>().ok().or_else(|| {
+                                chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                                    .ok()
+                                    .map(|dt| dt.and_utc())
+                            })
                         })
-                    })
-                    .map(|ts| {
-                        ((now - ts).num_seconds().max(0) as f64 / max_age_secs).clamp(0.0, 1.0)
-                    })
-                    .unwrap_or(0.5);
-                let timestamp = hit.created_at.clone().unwrap_or_else(|| now.to_rfc3339());
-                memories.push(GraphMemory {
-                    id: hit.id,
-                    key: Some(hit.key),
-                    text: hit.content,
-                    description: hit.description,
-                    ent: Vec::new(),
-                    age,
-                    weight: hit.signal_score.clamp(0.0, 1.0),
-                    timestamp,
-                });
+                        .map(|ts| {
+                            ((now - ts).num_seconds().max(0) as f64 / max_age_secs).clamp(0.0, 1.0)
+                        })
+                        .unwrap_or(0.5);
+                    let timestamp = hit.created_at.clone().unwrap_or_else(|| now.to_rfc3339());
+                    memories.push(GraphMemory {
+                        id: hit.id,
+                        key: Some(hit.key),
+                        text: hit.content,
+                        description: hit.description,
+                        ent: Vec::new(),
+                        age,
+                        weight: hit.signal_score.clamp(0.0, 1.0),
+                        timestamp,
+                    });
+                }
+                memories
             }
-            memories
-        })
-        .await
-        .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?
+            Err(_) => Vec::new(),
+        }
     };
 
     // Populate entity links from memory_annotations table

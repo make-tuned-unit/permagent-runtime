@@ -155,7 +155,7 @@ pub struct Scheduler {
     storage_path: PathBuf,
     running_tasks: Arc<Mutex<RunningTasksMap>>,
     session_manager: Arc<SessionManager>,
-    brain: Arc<tokio::sync::RwLock<Option<Arc<spectral::Brain>>>>,
+    brain: Arc<tokio::sync::RwLock<Option<crate::brain_handle::SafeBrain>>>,
     persona: Arc<tokio::sync::RwLock<Option<crate::config::agent_identity::SharedPersona>>>,
     agent_config:
         Arc<tokio::sync::RwLock<Option<crate::config::agent_identity::SharedAgentConfig>>>,
@@ -886,7 +886,7 @@ async fn execute_job(
     jobs: Arc<Mutex<JobsMap>>,
     job_id: String,
     cancel_token: CancellationToken,
-    brain: Option<Arc<spectral::Brain>>,
+    brain: Option<crate::brain_handle::SafeBrain>,
     persona: Option<crate::config::agent_identity::SharedPersona>,
     agent_config: Option<crate::config::agent_identity::SharedAgentConfig>,
 ) -> Result<String> {
@@ -1035,18 +1035,14 @@ async fn execute_job(
     const RECALL_TOP_K: usize = 3;
 
     if let Some(ref brain_handle) = brain {
-        let brain_clone = brain_handle.clone();
-        let query = prompt_text.to_string();
         let recognition_ctx = spectral::graph::RecognitionContext::empty()
             .with_persona("henry")
             .with_session(session.id.clone());
-        let recall_result = tokio::task::spawn_blocking(move || {
-            brain_clone.recall_cascade(&query, &recognition_ctx, &Default::default())
-        })
-        .await;
-
-        match recall_result {
-            Ok(Ok(result)) => {
+        match brain_handle
+            .recall_cascade(prompt_text, &recognition_ctx)
+            .await
+        {
+            Ok(result) => {
                 let top_hits: Vec<_> = result
                     .merged_hits
                     .iter()
@@ -1079,18 +1075,10 @@ async fn execute_job(
                     );
                 }
             }
-            Ok(Err(e)) => {
-                tracing::warn!(
-                    target: "permagentd::brain",
-                    "Brain recall failed for scheduled job {}: {}",
-                    job_id,
-                    e
-                );
-            }
             Err(e) => {
                 tracing::warn!(
                     target: "permagentd::brain",
-                    "Brain recall spawn_blocking panicked for scheduled job {}: {}",
+                    "Brain recall failed for scheduled job {}: {}",
                     job_id,
                     e
                 );
@@ -1154,8 +1142,8 @@ async fn execute_job(
                 let device_id = *brain_clone.device_id();
                 let key_for_log = key.clone();
 
-                let result = tokio::task::spawn_blocking(move || {
-                    brain_clone.remember_with(
+                match brain_clone
+                    .remember_with(
                         &key,
                         &content,
                         spectral::RememberOpts {
@@ -1167,29 +1155,19 @@ async fn execute_job(
                             ..Default::default()
                         },
                     )
-                })
-                .await;
-
-                match result {
-                    Ok(Ok(_)) => {
+                    .await
+                {
+                    Ok(_) => {
                         tracing::info!(
                             target: "permagentd::brain",
                             "Remembered scheduled turn: {}",
                             key_for_log
                         );
                     }
-                    Ok(Err(e)) => {
-                        tracing::warn!(
-                            target: "permagentd::brain",
-                            "Failed to remember scheduled turn {}: {}",
-                            key_for_log,
-                            e
-                        );
-                    }
                     Err(e) => {
                         tracing::warn!(
                             target: "permagentd::brain",
-                            "spawn_blocking panicked for scheduled turn {}: {}",
+                            "Failed to remember scheduled turn {}: {}",
                             key_for_log,
                             e
                         );
@@ -1327,7 +1305,7 @@ async fn execute_job(
 
 #[async_trait]
 impl SchedulerTrait for Scheduler {
-    async fn set_brain(&self, brain: Option<Arc<spectral::Brain>>) {
+    async fn set_brain(&self, brain: Option<crate::brain_handle::SafeBrain>) {
         let mut guard = self.brain.write().await;
         *guard = brain;
     }

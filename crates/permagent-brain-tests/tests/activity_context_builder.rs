@@ -4,7 +4,9 @@
 
 mod common;
 
+// Sanctioned raw spectral::Brain usage — test crate owns its runtime.
 use permagent::activity::context_builder::{ContextBuilder, DigestOpts};
+use permagent::brain_handle::SafeBrain;
 use permagent::events::activity::{ActivityEvent, ActivityEventType, EventTier, SourceSurface};
 
 fn make_event(
@@ -28,7 +30,7 @@ fn make_event(
 #[test]
 fn live_state_tracks_browser_url() {
     let brain = common::shared_context_builder_brain();
-    let cb = ContextBuilder::new(brain);
+    let cb = ContextBuilder::new(SafeBrain::from_arc(brain));
 
     let event = make_event(
         ActivityEventType::BrowserNavigated,
@@ -48,7 +50,7 @@ fn live_state_tracks_browser_url() {
 #[test]
 fn live_state_tracks_terminal_command() {
     let brain = common::shared_context_builder_brain();
-    let cb = ContextBuilder::new(brain);
+    let cb = ContextBuilder::new(SafeBrain::from_arc(brain));
 
     let event = make_event(
         ActivityEventType::TerminalCommandStarted,
@@ -66,7 +68,7 @@ fn live_state_tracks_terminal_command() {
 #[test]
 fn live_state_tracks_project_selection() {
     let brain = common::shared_context_builder_brain();
-    let cb = ContextBuilder::new(brain);
+    let cb = ContextBuilder::new(SafeBrain::from_arc(brain));
 
     let mut event = make_event(
         ActivityEventType::ProjectSelected,
@@ -87,7 +89,7 @@ fn live_state_tracks_project_selection() {
 #[test]
 fn ring_buffer_bounded() {
     let brain = common::shared_context_builder_brain();
-    let cb = ContextBuilder::new(brain);
+    let cb = ContextBuilder::new(SafeBrain::from_arc(brain));
 
     for _ in 0..1100 {
         let event = make_event(
@@ -104,9 +106,9 @@ fn ring_buffer_bounded() {
 }
 
 #[test]
-fn current_digest_returns_recent_events() {
+fn current_digest_blocking_returns_recent_events() {
     let brain = common::shared_context_builder_brain();
-    let cb = ContextBuilder::new(brain);
+    let cb = ContextBuilder::new(SafeBrain::from_arc(brain));
 
     for i in 0..5 {
         let mut event = make_event(
@@ -119,7 +121,7 @@ fn current_digest_returns_recent_events() {
         cb.handle_event(&event);
     }
 
-    let digest = cb.current_digest(DigestOpts::default()).unwrap();
+    let digest = cb.current_digest_blocking(DigestOpts::default()).unwrap();
     assert_eq!(digest.recent_events.len(), 5);
     assert!(digest.probed_memories.is_empty());
     assert!(digest.recalled_memories.is_empty());
@@ -154,7 +156,7 @@ fn probe_results_sorted_by_relevance_descending() {
         )
         .unwrap();
 
-    let cb = ContextBuilder::new(brain);
+    let cb = ContextBuilder::new(SafeBrain::from_arc(brain));
 
     for _ in 0..3 {
         let event = make_event(
@@ -167,7 +169,7 @@ fn probe_results_sorted_by_relevance_descending() {
     }
 
     let digest = cb
-        .current_digest(DigestOpts {
+        .current_digest_blocking(DigestOpts {
             include_probe: true,
             min_probe_relevance: Some(0.0),
             ..Default::default()
@@ -215,7 +217,7 @@ fn probe_wing_filter_passes_through() {
         )
         .unwrap();
 
-    let cb = ContextBuilder::new(brain);
+    let cb = ContextBuilder::new(SafeBrain::from_arc(brain));
 
     for _ in 0..3 {
         let event = make_event(
@@ -228,7 +230,7 @@ fn probe_wing_filter_passes_through() {
     }
 
     let digest = cb
-        .current_digest(DigestOpts {
+        .current_digest_blocking(DigestOpts {
             include_probe: true,
             focus_wing: Some("permagent".into()),
             min_probe_relevance: Some(0.0),

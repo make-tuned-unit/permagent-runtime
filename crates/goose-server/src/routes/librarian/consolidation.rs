@@ -72,7 +72,11 @@ pub fn find_domain_clusters(
     Ok(clusters)
 }
 
-pub(super) fn run_consolidation_scan(brain: &spectral::Brain) -> Result<(usize, usize), String> {
+/// Caller MUST be inside spawn_blocking — uses raw_blocking_handle() internally.
+pub(super) fn run_consolidation_scan_blocking(
+    brain: &permagent::brain_handle::SafeBrain,
+) -> Result<(usize, usize), String> {
+    let brain = brain.raw_blocking_handle();
     let conn = read_only_brain_conn().map_err(|e| format!("Failed to open brain DB: {e}"))?;
 
     let mut total_clusters = 0usize;

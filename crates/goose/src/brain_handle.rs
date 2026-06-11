@@ -1,0 +1,232 @@
+//! `SafeBrain` — a newtype around `Arc<spectral::Brain>` that enforces
+//! `spawn_blocking` at compile time.
+//!
+//! Every public method is `async` and internally moves the blocking Brain
+//! call into `tokio::task::spawn_blocking`. This makes it impossible to
+//! accidentally call a Brain method on the async executor — the compiler
+//! is the reviewer.
+//!
+//! ## Sanctioned raw-Brain locations
+//!
+//! The only code permitted to touch `spectral::Brain` directly:
+//! - This module (wraps the raw handle)
+//! - `state.rs` construction block (builds Brain, wraps into SafeBrain)
+//! - Functions using `raw_blocking_handle()` (must already be inside spawn_blocking)
+//! - Test crates (`permagent-brain-tests`, `spectral_smoke`)
+
+use std::sync::Arc;
+
+/// Simplified cascade result carrying only the merged hits.
+///
+/// Wraps the fields callers actually use from the full CascadeResult
+/// (which lives in the `spectral_cascade` crate and is not directly
+/// nameable from this crate without adding a transitive dependency).
+pub struct CascadeHits {
+    pub merged_hits: Vec<spectral::ingest::MemoryHit>,
+}
+
+/// A thread-safe handle to `spectral::Brain` that enforces all operations
+/// run off the async executor via `spawn_blocking`.
+///
+/// `Clone` is cheap (Arc clone). The inner `Brain` is never publicly accessible
+/// except through the deterrent-named [`raw_blocking_handle()`](SafeBrain::raw_blocking_handle).
+#[derive(Clone)]
+pub struct SafeBrain {
+    inner: Arc<spectral::Brain>,
+}
+
+impl SafeBrain {
+    /// Wrap a freshly-built Brain. Call this inside the `spawn_blocking`
+    /// construction block in `state.rs` — what leaves that block is a SafeBrain.
+    pub fn new(brain: spectral::Brain) -> Self {
+        Self {
+            inner: Arc::new(brain),
+        }
+    }
+
+    /// Wrap an already-Arc'd Brain. Used by test crates that construct
+    /// `Arc<Brain>` directly (sanctioned raw-Brain users).
+    pub fn from_arc(brain: Arc<spectral::Brain>) -> Self {
+        Self { inner: brain }
+    }
+
+    /// Escape hatch: borrow the raw `spectral::Brain` for use inside an
+    /// **already-entered** `spawn_blocking` context.
+    ///
+    /// # Contract
+    ///
+    /// The caller MUST already be on a blocking thread (inside
+    /// `tokio::task::spawn_blocking`). Calling Brain methods on the async
+    /// executor will stall it. This method exists only for functions that
+    /// are themselves called from spawn_blocking and need the raw Brain
+    /// reference. Callers of this method must carry a `_blocking` suffix
+    /// (e.g. `run_consolidation_scan_blocking`, `load_entity_names_blocking`,
+    /// `current_digest_blocking`).
+    pub fn raw_blocking_handle(&self) -> &spectral::Brain {
+        &self.inner
+    }
+
+    /// The device ID of the underlying Brain (non-blocking read).
+    pub fn device_id(&self) -> &spectral::DeviceId {
+        self.inner.device_id()
+    }
+
+    /// Check whether this SafeBrain wraps the same underlying Brain as another.
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    // ── Async methods (each moves work into spawn_blocking) ──────────
+
+    pub async fn recall(
+        &self,
+        query: &str,
+        visibility: spectral::Visibility,
+    ) -> anyhow::Result<spectral::HybridRecallResult> {
+        let brain = self.inner.clone();
+        let query = query.to_string();
+        tokio::task::spawn_blocking(move || brain.recall(&query, visibility))
+            .await
+            .map_err(|e| anyhow::anyhow!("brain task panicked: recall: {e}"))?
+            .map_err(Into::into)
+    }
+
+    /// Recall via the integrated cascade pipeline with default config.
+    ///
+    /// All existing callers pass `Default::default()` for the cascade config,
+    /// so this wrapper hardcodes it. Returns merged hits with signal scores.
+    pub async fn recall_cascade(
+        &self,
+        query: &str,
+        context: &spectral::graph::RecognitionContext,
+    ) -> anyhow::Result<CascadeHits> {
+        let brain = self.inner.clone();
+        let query = query.to_string();
+        let context = context.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            brain.recall_cascade(&query, &context, &Default::default())
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: recall_cascade: {e}"))?
+        .map_err(anyhow::Error::from)?;
+        Ok(CascadeHits {
+            merged_hits: result.merged_hits,
+        })
+    }
+
+    pub async fn remember_with(
+        &self,
+        key: &str,
+        content: &str,
+        opts: spectral::RememberOpts,
+    ) -> anyhow::Result<spectral::RememberResult> {
+        let brain = self.inner.clone();
+        let key = key.to_string();
+        let content = content.to_string();
+        tokio::task::spawn_blocking(move || brain.remember_with(&key, &content, opts))
+            .await
+            .map_err(|e| anyhow::anyhow!("brain task panicked: remember_with: {e}"))?
+            .map_err(Into::into)
+    }
+
+    pub async fn probe_recent(
+        &self,
+        window: spectral::ProbeWindow,
+        opts: spectral::ProbeOpts,
+    ) -> anyhow::Result<Vec<spectral::RecognizedMemory>> {
+        let brain = self.inner.clone();
+        tokio::task::spawn_blocking(move || brain.probe_recent(window, opts))
+            .await
+            .map_err(|e| anyhow::anyhow!("brain task panicked: probe_recent: {e}"))?
+            .map_err(Into::into)
+    }
+
+    pub async fn list_undescribed(
+        &self,
+        limit: usize,
+    ) -> anyhow::Result<Vec<spectral::ingest::Memory>> {
+        let brain = self.inner.clone();
+        tokio::task::spawn_blocking(move || brain.list_undescribed(limit))
+            .await
+            .map_err(|e| anyhow::anyhow!("brain task panicked: list_undescribed: {e}"))?
+            .map_err(Into::into)
+    }
+
+    pub async fn get_memory(&self, id: &str) -> anyhow::Result<Option<spectral::ingest::Memory>> {
+        let brain = self.inner.clone();
+        let id = id.to_string();
+        tokio::task::spawn_blocking(move || brain.get_memory(&id))
+            .await
+            .map_err(|e| anyhow::anyhow!("brain task panicked: get_memory: {e}"))?
+            .map_err(Into::into)
+    }
+
+    pub async fn set_description(&self, id: &str, description: &str) -> anyhow::Result<()> {
+        let brain = self.inner.clone();
+        let id = id.to_string();
+        let description = description.to_string();
+        tokio::task::spawn_blocking(move || brain.set_description(&id, &description))
+            .await
+            .map_err(|e| anyhow::anyhow!("brain task panicked: set_description: {e}"))?
+            .map_err(Into::into)
+    }
+
+    pub async fn consolidate_into(
+        &self,
+        source_keys: &[String],
+        target_key: &str,
+        opts: &spectral::ingest::ConsolidateOpts,
+    ) -> anyhow::Result<spectral::ingest::ConsolidationResult> {
+        let brain = self.inner.clone();
+        let source_keys = source_keys.to_vec();
+        let target_key = target_key.to_string();
+        let opts = opts.clone();
+        tokio::task::spawn_blocking(move || {
+            brain.consolidate_into(&source_keys, &target_key, &opts)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: consolidate_into: {e}"))?
+        .map_err(Into::into)
+    }
+
+    pub async fn rebuild_co_retrieval_index(&self) -> anyhow::Result<usize> {
+        let brain = self.inner.clone();
+        tokio::task::spawn_blocking(move || brain.rebuild_co_retrieval_index())
+            .await
+            .map_err(|e| anyhow::anyhow!("brain task panicked: rebuild_co_retrieval_index: {e}"))?
+            .map_err(Into::into)
+    }
+
+    pub async fn list_consolidated(
+        &self,
+        target_key: Option<&str>,
+    ) -> anyhow::Result<Vec<spectral::ingest::ConsolidationEdge>> {
+        let brain = self.inner.clone();
+        let target_key = target_key.map(|s| s.to_string());
+        tokio::task::spawn_blocking(move || brain.list_consolidated(target_key.as_deref()))
+            .await
+            .map_err(|e| anyhow::anyhow!("brain task panicked: list_consolidated: {e}"))?
+            .map_err(Into::into)
+    }
+}
+
+impl std::fmt::Debug for SafeBrain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SafeBrain").finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify that Clone shares the same underlying Arc (cheap clone).
+    #[test]
+    fn clone_shares_arc() {
+        // We can't easily construct a real Brain in unit tests without a data dir,
+        // but we can verify the Clone impl at the type level by confirming SafeBrain
+        // is Clone. The actual sharing is guaranteed by Arc semantics.
+        fn assert_clone<T: Clone>() {}
+        assert_clone::<SafeBrain>();
+    }
+}

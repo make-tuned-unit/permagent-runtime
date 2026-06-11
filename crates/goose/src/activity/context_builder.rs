@@ -1,26 +1,27 @@
 //! ContextBuilder — maintains live activity state and produces per-turn digests.
 //!
 //! Subscribes to the activity event bus alongside the [`ActivityIngester`].
-//! As events flow in, updates a live state snapshot. When `current_digest()`
+//! As events flow in, updates a live state snapshot. When `current_digest_blocking()`
 //! is called, assembles a [`Digest`] containing recent events, live state,
 //! probed memories from Brain recognition, and optionally recalled memories.
 
+use crate::brain_handle::SafeBrain;
 use crate::events::activity::{ActivityEvent, ActivityEventType};
-use spectral::{Brain, ProbeOpts, ProbeWindow, RecognizedMemory};
+use spectral::{ProbeOpts, ProbeWindow, RecognizedMemory};
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Mutex, RwLock};
 use std::time::Duration;
 
 const MAX_RING_BUFFER_SIZE: usize = 1000;
 
 pub struct ContextBuilder {
-    brain: Arc<Brain>,
+    brain: SafeBrain,
     recent_events: Mutex<VecDeque<ActivityEvent>>,
     live_state: RwLock<LiveState>,
 }
 
 impl ContextBuilder {
-    pub fn new(brain: Arc<Brain>) -> Self {
+    pub fn new(brain: SafeBrain) -> Self {
         Self {
             brain,
             recent_events: Mutex::new(VecDeque::with_capacity(MAX_RING_BUFFER_SIZE)),
@@ -78,7 +79,7 @@ impl ContextBuilder {
     }
 
     /// Produce a digest of current activity context.
-    pub fn current_digest(&self, opts: DigestOpts) -> anyhow::Result<Digest> {
+    pub fn current_digest_blocking(&self, opts: DigestOpts) -> anyhow::Result<Digest> {
         let cutoff = chrono::Utc::now() - chrono::Duration::from_std(opts.event_window)?;
 
         let recent_events: Vec<ActivityEvent> = self
@@ -125,7 +126,12 @@ impl ContextBuilder {
                 wing_filter: opts.focus_wing.clone(),
             };
 
-            match self.brain.probe_recent(window, probe_opts) {
+            // Called from spawn_blocking context — use raw handle.
+            match self
+                .brain
+                .raw_blocking_handle()
+                .probe_recent(window, probe_opts)
+            {
                 Ok(mut memories) => {
                     // Sort by relevance descending — highest scores first
                     memories.sort_by(|a, b| {
@@ -150,10 +156,11 @@ impl ContextBuilder {
 
         // Recall if query provided
         let recalled_memories = if let Some(ref query) = opts.include_recall_query {
-            let brain = self.brain.clone();
+            let brain = self.brain.raw_blocking_handle();
             let q = query.clone();
             let recognition_ctx =
                 spectral::graph::RecognitionContext::empty().with_persona("henry");
+            // Called from spawn_blocking context — use raw handle.
             match brain.recall_cascade(&q, &recognition_ctx, &Default::default()) {
                 Ok(result) => result
                     .merged_hits

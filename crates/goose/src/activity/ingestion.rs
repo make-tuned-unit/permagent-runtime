@@ -23,11 +23,12 @@
 //! writes Always-tier and Aggregated-tier activity events to Brain.
 //! Ephemeral events are bus-only and never persisted.
 
+use crate::brain_handle::SafeBrain;
 use crate::events::activity::{ActivityEvent, ActivityEventType, EventTier};
 use spectral::ingest::CompactionTier;
-use spectral::{Brain, DeviceId, RememberOpts, Visibility};
+use spectral::{DeviceId, RememberOpts, Visibility};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Mutex, RwLock};
 use tracing::{debug, error, warn};
 
 /// Tracks the user's currently-active project for wing classification.
@@ -157,7 +158,7 @@ fn domain_seen_recently(domain: &str) -> bool {
 }
 
 pub struct ActivityIngester {
-    brain: Arc<Brain>,
+    brain: SafeBrain,
     device_id: DeviceId,
     failure_count: AtomicU64,
     always_count: AtomicU64,
@@ -179,7 +180,7 @@ pub struct ActivityIngester {
 }
 
 impl ActivityIngester {
-    pub fn new(brain: Arc<Brain>, device_id: String) -> Self {
+    pub fn new(brain: SafeBrain, device_id: String) -> Self {
         Self {
             brain,
             device_id: DeviceId::from_descriptor(&device_id),
@@ -196,7 +197,7 @@ impl ActivityIngester {
         }
     }
 
-    pub fn handle_event(&self, event: &ActivityEvent) {
+    pub fn handle_event_blocking(&self, event: &ActivityEvent) {
         // Update active project tracking on ProjectSelected
         if event.event_type == ActivityEventType::ProjectSelected {
             self.update_active_project(event);
@@ -205,13 +206,13 @@ impl ActivityIngester {
         match event.tier {
             EventTier::Always => {
                 if !self.paused.load(Ordering::Relaxed) {
-                    self.ingest_to_brain(event);
+                    self.ingest_to_brain_blocking(event);
                 }
                 self.always_count.fetch_add(1, Ordering::Relaxed);
             }
             EventTier::Aggregated => {
                 if !self.paused.load(Ordering::Relaxed) {
-                    self.ingest_to_brain(event);
+                    self.ingest_to_brain_blocking(event);
                 }
                 self.aggregated_count.fetch_add(1, Ordering::Relaxed);
             }
@@ -260,7 +261,7 @@ impl ActivityIngester {
         }
     }
 
-    fn ingest_to_brain(&self, event: &ActivityEvent) {
+    fn ingest_to_brain_blocking(&self, event: &ActivityEvent) {
         let key = format!(
             "activity:{}:{}:{}",
             event.timestamp.timestamp(),
@@ -301,7 +302,8 @@ impl ActivityIngester {
             .ok()
             .and_then(|ap| ap.as_ref().map(|p| p.wing.clone()));
 
-        let result = self.brain.remember_with(
+        // Called from spawn_blocking context (state.rs activity event loop).
+        let result = self.brain.raw_blocking_handle().remember_with(
             &key,
             &content,
             RememberOpts {
