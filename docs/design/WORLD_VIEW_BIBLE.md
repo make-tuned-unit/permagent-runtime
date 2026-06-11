@@ -1,6 +1,6 @@
 # World View Bible — v2
 
-Status: **DRAFT — awaiting creative-director approval (Jesse)**
+Status: **APPROVED 2026-06-10 (Jesse, creative director) with amendments — see §9**
 Branch: `feature/world-v2` · Swarm: World View v2 (lanes W1–W4)
 Source audit: full read of `ui/command-center/src/components/world/**` at `cb28713e7`.
 
@@ -156,6 +156,12 @@ lazy-loaded (`React.lazy` + suspense inside the scene graph), reached through a 
 readable from the hall center, themed to a product tab. The existing station pedestals
 become threshold markers. The mezzanine library remains part of the main hall.
 
+**Naming law (creative director):** the area map doubles as the marketing
+feature-showcase structure. Zone display labels (plaques, HUD tooltips, docs) use the
+product tab name **exactly** where one exists: **Build** (A1), **Brain** (A2),
+**Automate** (A4), **Mesh** (A5, future). The Lab (A3) covers Skills + Trace until those
+have a single tab name.
+
 Layout (plan view, rotunda r=15, thresholds punched through the colonnade line):
 
 ```
@@ -232,6 +238,16 @@ Body language per HUD state, on top of existing identity (trim color, crown for 
 - Henry: white-gold trim `#F0E6D0` + crown. Crown gems pick up the *state* color — the
   one sanctioned identity/state crossover, so Henry's state reads from across the room.
 - Scale: 2.4u tall, unchanged. Seated height ≈ 1.7u — W2 seat anchors assume this.
+
+### Sim-state rule (creative director amendment, LAW)
+Agents whose state `source === 'sim'` may only display **idle (gray)** and
+**available (cyan)** — never amber working or red error. Amber and red are claims that
+real work is happening or really failing; a simulation making that claim is a lie the
+user can see. Today: Henry and the Librarian (real daemon sources) show all four states;
+Aria/Felix/Nova wander as gray/cyan ambient life. The clamp is **enforced in
+`shared/agentStatus.ts`** so it reaches the pixels, not just the types. When the daemon
+`AgentStateChanged` follow-up ships, sim agents graduate to the full state range
+automatically through the same boundary — no W3 code change.
 
 ---
 
@@ -343,8 +359,10 @@ must come down first. Mandatory remediations, owned as noted:
    post-processing is on** (the post chain already controls AA) — W4.
 2. **Pause rendering when the World tab is hidden** (`frameloop` gating in WorldView /
    visibility from the workspace store) — W4, wiring in WorldView with coordinator review.
-3. **Fix the geometry leak** (suspect: Stargate arc respawner) — W1 (owns Stargate move),
-   verified by a flat `geometries` count over 60s in evidence.
+3. **Geometry leak — CARVED OUT of v2** (creative director): it is a live bug on main.
+   The coordinator fixes it as a standalone hotfix PR to main (minimal diff; evidence:
+   geometry count flat over 5 minutes, before/after counters). `feature/world-v2`
+   rebases over it after merge.
 4. **Instancing/batching** to take 1,340 DC under 300 — all lanes per ownership.
 5. Re-measure after 1–3 land; if 60fps is still out of reach with post on, Bloom is cut
    per the standing rule.
@@ -368,7 +386,12 @@ propose cuts (Bloom first, then shadow map 2048→1024, then starfield density).
 
 ---
 
-## 9. Decisions & stop items for Jesse
+## 9. Decisions & stop items — RESOLVED 2026-06-10
+
+All items below approved by Jesse. Amendments incorporated: sim-state rule (§4),
+zone naming law (§3), leak carve-out (§8), **W1 blockout checkpoint** — W1's blockout
+milestone is a Jesse review gate: all five zones in gray geometry + fly-through recording
+BEFORE any detail pass begins. The checkpoint applies to W1 only.
 
 - **D1 — Area themes & layout (§3).** Observatory is absorbed into the Lab; Antechamber
   is the fifth area (per amendment) rather than an addition.
