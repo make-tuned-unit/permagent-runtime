@@ -282,6 +282,66 @@ function OrbitalArcs({ reduceMotion }: { reduceMotion: boolean }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Antechamber fog bias (bible §3: A5 has the densest fog, +0.004).
+//
+// FogExp2 is scene-global, so a literal per-zone density is impossible; W1
+// shipped a haze-shell mesh as the *exterior* read (the chamber looks denser
+// from the hall). This component is the *interior* read: when the camera
+// crosses the Antechamber approach (NW diagonal, §3 coordinates — fixed even
+// though W1's zone geometry is still on PR #294), the scene fog density ramps
+// smoothly from 0.012 toward 0.016 and back out again. The two mechanisms are
+// complementary, not redundant — the haze shell stays.
+//
+// LAW: zero per-frame allocations — the existing scene fog object is mutated
+// in place. The ramp is positional (it follows camera movement, no autonomous
+// animation), so it needs no reduceMotion fallback; damping only smooths the
+// step when the camera teleports (tour start, mode switches).
+
+const FOG_BASE_DENSITY = 0.012;
+const FOG_ANTE_BIAS = 0.004;
+const ANTE_X = -19;
+const ANTE_Z = -19;
+const ANTE_RADIUS_FULL = 5; // fully biased inside this ground radius
+const ANTE_RADIUS_EDGE = 11; // bias begins here (just outside the gate)
+
+// DEV-ONLY A/B toggle for evidence capture (mirrors __worldPost's pattern).
+let fogBiasEnabled = true;
+declare global {
+  interface Window {
+    __worldFog?: { setAntechamberBias: (on: boolean) => void };
+  }
+}
+if (import.meta.env.DEV && typeof window !== 'undefined') {
+  window.__worldFog = {
+    setAntechamberBias: (on: boolean) => {
+      fogBiasEnabled = on;
+    },
+  };
+}
+
+function AntechamberFogBias() {
+  useFrame(({ camera, scene }, delta) => {
+    const fog = scene.fog;
+    if (!(fog instanceof THREE.FogExp2)) return;
+    let target = FOG_BASE_DENSITY;
+    if (fogBiasEnabled) {
+      const dx = camera.position.x - ANTE_X;
+      const dz = camera.position.z - ANTE_Z;
+      const d = Math.sqrt(dx * dx + dz * dz);
+      const t = THREE.MathUtils.clamp(
+        (ANTE_RADIUS_EDGE - d) / (ANTE_RADIUS_EDGE - ANTE_RADIUS_FULL),
+        0,
+        1
+      );
+      target = FOG_BASE_DENSITY + FOG_ANTE_BIAS * t;
+    }
+    fog.density = THREE.MathUtils.damp(fog.density, target, 4, delta);
+  });
+
+  return null;
+}
+
 /**
  * Full atmosphere stack for the hall: lighting, fog, starfield, dust, light
  * shaft, orbital arcs, and the reactive-ambience ticker.
@@ -299,8 +359,10 @@ export function Atmosphere() {
       <LightShaft reduceMotion={reduceMotion} />
       <DustMotes reduceMotion={reduceMotion} />
       {/* Depth atmosphere — exponential fog for natural falloff (bible §1:
-          density 0.012 everywhere; zones may bias ±0.004 after W1 lands). */}
+          density 0.012 base; the Antechamber biases it +0.004 on approach,
+          see AntechamberFogBias above). */}
       <fogExp2 attach="fog" args={[ENV.deepVoid, 0.012]} />
+      <AntechamberFogBias />
     </>
   );
 }
