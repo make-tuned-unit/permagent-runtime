@@ -111,7 +111,13 @@ pub async fn run_for_goal_with(
                     None => parsed
                         .iter()
                         .enumerate()
-                        .map(|(i, c)| error_result(i, c.type_name(), "working_dir unavailable — project has no resolvable root_path"))
+                        .map(|(i, c)| {
+                            error_result(
+                                i,
+                                c.type_name(),
+                                "working_dir unavailable — project has no resolvable root_path",
+                            )
+                        })
                         .collect(),
                 };
                 (parsed, results)
@@ -240,9 +246,7 @@ fn aggregate_record(
     tokens: Option<i64>,
     started_at: &str,
 ) -> VerificationRecord {
-    let any_check_not_pass = check_results
-        .iter()
-        .any(|r| r.status != CheckStatus::Pass);
+    let any_check_not_pass = check_results.iter().any(|r| r.status != CheckStatus::Pass);
 
     // Model grades; a degraded run grades everything uncertain.
     let (q1, q2, q3, q4, rationale) = match &vr.grades {
@@ -298,7 +302,9 @@ fn aggregate_record(
         meta.get("worker_session_id")
             .and_then(|v| v.as_str())
             .map(String::from),
-        meta.get("attempt_count").and_then(|v| v.as_u64()).unwrap_or(0),
+        meta.get("attempt_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
     );
 
     let evidence_digest = digest::assemble_digest(
@@ -472,7 +478,9 @@ pub async fn analyze_diff(
             diff_stat,
             out_of_path_files: Vec::new(),
             path_discipline: Grade::Uncertain,
-            degraded_note: Some("no declared_paths on goal — path discipline unverifiable".to_string()),
+            degraded_note: Some(
+                "no declared_paths on goal — path discipline unverifiable".to_string(),
+            ),
         };
     }
 
@@ -482,7 +490,9 @@ pub async fn analyze_diff(
             Ok(glob) => {
                 builder.add(glob);
             }
-            Err(e) => return uncertain_analysis(&format!("invalid declared_paths glob '{}': {}", g, e)),
+            Err(e) => {
+                return uncertain_analysis(&format!("invalid declared_paths glob '{}': {}", g, e))
+            }
         }
     }
     let set = match builder.build() {
@@ -765,7 +775,11 @@ mod tests {
         let repo = tempfile::tempdir().unwrap();
         let baseline = init_repo(repo.path());
         // In-path change.
-        std::fs::write(repo.path().join("src/lib.rs"), "pub fn a() {}\npub fn b() {}\n").unwrap();
+        std::fs::write(
+            repo.path().join("src/lib.rs"),
+            "pub fn a() {}\npub fn b() {}\n",
+        )
+        .unwrap();
 
         let pool = test_pool().await;
         let card = make_goal(
@@ -816,7 +830,10 @@ mod tests {
             .checks_summary
             .one_line
             .contains("All 3 automated checks passed"));
-        assert!(parsed.evidence_digest.verifier_summary.contains("confirmed"));
+        assert!(parsed
+            .evidence_digest
+            .verifier_summary
+            .contains("confirmed"));
         // No rate configured → cost_usd null + note.
         assert_eq!(parsed.evidence_digest.costs.cost_usd, None);
     }
@@ -941,13 +958,12 @@ mod tests {
         let baseline = init_repo(repo.path());
         std::fs::write(repo.path().join("brand_new.txt"), "new\n").unwrap();
 
-        let analysis = analyze_diff(
-            Some(repo.path()),
-            Some(&baseline),
-            &["src/**".to_string()],
-        )
-        .await;
-        assert_eq!(analysis.out_of_path_files, vec!["brand_new.txt".to_string()]);
+        let analysis =
+            analyze_diff(Some(repo.path()), Some(&baseline), &["src/**".to_string()]).await;
+        assert_eq!(
+            analysis.out_of_path_files,
+            vec!["brand_new.txt".to_string()]
+        );
         assert_eq!(analysis.path_discipline, Grade::Fail);
     }
 
@@ -1073,7 +1089,11 @@ mod tests {
             .check_results
             .iter()
             .all(|r| r.status == CheckStatus::Pass));
-        assert!(record.degraded_reason.is_none(), "verifier degraded: {:?}", record.degraded_reason);
+        assert!(
+            record.degraded_reason.is_none(),
+            "verifier degraded: {:?}",
+            record.degraded_reason
+        );
         assert!(record.grades_present(), "model grades should be present");
     }
 }

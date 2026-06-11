@@ -161,7 +161,10 @@ pub fn resolve_under(working_dir: &Path, rel: &str) -> Result<PathBuf, String> {
                 }
             }
             other => {
-                return Err(format!("unsupported path component {:?} in '{}'", other, rel));
+                return Err(format!(
+                    "unsupported path component {:?} in '{}'",
+                    other, rel
+                ));
             }
         }
     }
@@ -192,7 +195,8 @@ pub fn resolve_under(working_dir: &Path, rel: &str) -> Result<PathBuf, String> {
 
 /// Loopback-only SSRF guard for http_assert base URLs.
 pub fn assert_loopback_url(base: &str) -> Result<url::Url, String> {
-    let parsed = url::Url::parse(base).map_err(|e| format!("invalid base_url '{}': {}", base, e))?;
+    let parsed =
+        url::Url::parse(base).map_err(|e| format!("invalid base_url '{}': {}", base, e))?;
     match parsed.scheme() {
         "http" | "https" => {}
         s => return Err(format!("scheme '{}' not allowed (http/https only)", s)),
@@ -385,11 +389,7 @@ async fn run_http_check(
         m => return Err(format!("HTTP method '{}' not allowed (GET/HEAD/POST)", m)),
     };
 
-    let url = format!(
-        "{}{}",
-        parsed.as_str().trim_end_matches('/'),
-        path
-    );
+    let url = format!("{}{}", parsed.as_str().trim_end_matches('/'), path);
     // Re-verify the final URL is still loopback after joining.
     assert_loopback_url(&url)?;
 
@@ -740,7 +740,11 @@ mod tests {
     async fn grep_absent_pass_fail_and_missing_file_error() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("clean.rs"), "fn main() {}\n").unwrap();
-        std::fs::write(dir.path().join("dirty.rs"), "// TODO: fix this\nfn x() {}\n").unwrap();
+        std::fs::write(
+            dir.path().join("dirty.rs"),
+            "// TODO: fix this\nfn x() {}\n",
+        )
+        .unwrap();
         let checks = vec![
             CompletionCheck::GrepAbsent {
                 pattern: "TODO".to_string(),

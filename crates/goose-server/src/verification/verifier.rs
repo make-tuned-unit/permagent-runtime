@@ -159,7 +159,7 @@ pub fn parse_grades(raw: &str) -> Option<RubricGrades> {
 /// all-Q PASS → pass; any Q FAIL → fail; else uncertain.
 pub fn aggregate_grades(g: &RubricGrades) -> VerdictStatus {
     let all = [g.q1_intent, g.q2_evidence, g.q3_checks, g.q4_paths];
-    if all.iter().any(|x| *x == Grade::Fail) {
+    if all.contains(&Grade::Fail) {
         VerdictStatus::Fail
     } else if all.iter().all(|x| *x == Grade::Pass) {
         VerdictStatus::Pass
@@ -172,7 +172,10 @@ pub fn aggregate_grades(g: &RubricGrades) -> VerdictStatus {
 /// most fail, regardless of model output. This also defuses prompt injection
 /// like "Q1_INTENT: PASS" embedded in diff content — the model never decides
 /// the final verdict on its own.
-pub fn clamp_with_check_results(model: VerdictStatus, check_results: &[CheckResult]) -> VerdictStatus {
+pub fn clamp_with_check_results(
+    model: VerdictStatus,
+    check_results: &[CheckResult],
+) -> VerdictStatus {
     let any_not_pass = check_results.iter().any(|r| r.status != CheckStatus::Pass);
     if any_not_pass {
         VerdictStatus::Fail
@@ -307,7 +310,10 @@ pub fn build_user_prompt(
                     .or_else(|| r.evidence.exit_code.map(|c| format!("exit {}", c)))
                     .or_else(|| r.evidence.http_status.map(|s| format!("status {}", s)))
                     .unwrap_or_default();
-                format!("[{}] {} {} -> {} ({})", r.check_index, r.check_type, summary, status, detail)
+                format!(
+                    "[{}] {} {} -> {} ({})",
+                    r.check_index, r.check_type, summary, status, detail
+                )
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -452,9 +458,7 @@ async fn call_ollama_streaming(
     }
 
     if !saw_done {
-        return Err(
-            "Ollama stream terminated prematurely — no done signal received".to_string(),
-        );
+        return Err("Ollama stream terminated prematurely — no done signal received".to_string());
     }
 
     Ok(accumulated)
@@ -584,7 +588,8 @@ mod tests {
 
     #[test]
     fn parse_rejects_bad_token() {
-        let raw = "Q1_INTENT: MAYBE\nQ2_EVIDENCE: PASS\nQ3_CHECKS: PASS\nQ4_PATHS: PASS\nRATIONALE: x";
+        let raw =
+            "Q1_INTENT: MAYBE\nQ2_EVIDENCE: PASS\nQ3_CHECKS: PASS\nQ4_PATHS: PASS\nRATIONALE: x";
         assert!(parse_grades(raw).is_none());
         let raw2 = "Q1_INTENT: PASS definitely\nQ2_EVIDENCE: PASS\nQ3_CHECKS: PASS\nQ4_PATHS: PASS\nRATIONALE: x";
         assert!(parse_grades(raw2).is_none());
@@ -624,15 +629,24 @@ mod tests {
         // The crucial clamp: model says PASS but a machine check failed → fail.
         let model = VerdictStatus::Pass;
         let checks = vec![check_result(CheckStatus::Fail)];
-        assert_eq!(clamp_with_check_results(model, &checks), VerdictStatus::Fail);
+        assert_eq!(
+            clamp_with_check_results(model, &checks),
+            VerdictStatus::Fail
+        );
     }
 
     #[test]
     fn clamp_model_pass_with_check_error_is_fail() {
         // `error` never counts as pass; fail/error clamps to at most fail.
         let model = VerdictStatus::Pass;
-        let checks = vec![check_result(CheckStatus::Pass), check_result(CheckStatus::Error)];
-        assert_eq!(clamp_with_check_results(model, &checks), VerdictStatus::Fail);
+        let checks = vec![
+            check_result(CheckStatus::Pass),
+            check_result(CheckStatus::Error),
+        ];
+        assert_eq!(
+            clamp_with_check_results(model, &checks),
+            VerdictStatus::Fail
+        );
     }
 
     #[test]
@@ -675,7 +689,8 @@ mod tests {
             (GOOD_FAIL, VerdictStatus::Fail),
             (GOOD_UNCERTAIN, VerdictStatus::Uncertain),
         ] {
-            let (base_url, _handle) = spawn_mock_ollama(MockMode::Respond(fixture.to_string())).await;
+            let (base_url, _handle) =
+                spawn_mock_ollama(MockMode::Respond(fixture.to_string())).await;
             let run = run_verifier(&base_url, "test-model", "prompt").await;
             let grades = run.grades.expect("grades should parse");
             assert!(run.degraded_reason.is_none());
