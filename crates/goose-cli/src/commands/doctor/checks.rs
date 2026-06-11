@@ -25,6 +25,8 @@ pub async fn run_all() -> Vec<CheckResult> {
     results.push(check_disk());
     results.push(check_caches());
     results.push(check_backups());
+    results.push(check_secret_env_shadowing());
+    results.push(check_secret_split_brain());
 
     results
 }
@@ -772,6 +774,260 @@ fn check_backups() -> CheckResult {
     }
 }
 
+// ── 15. Secret env shadowing ──
+
+// Mirror of the (private) constants in permagent::config::base. The doctor
+// only performs a read-only metadata lookup against this item — it never
+// reads or writes the secret payload.
+const SECRETS_KEYRING_SERVICE: &str = "permagent";
+const SECRETS_KEYRING_ACCOUNT: &str = "secrets";
+
+/// WARN when a `*_API_KEY` is injected via the launchd plist or is present in
+/// the running daemon's environment while secret storage also holds secrets.
+///
+/// On current builds the keychain wins (keychain-first since 0055ee042), so
+/// the env value is silently ignored — stale bootstrap hygiene. On pre-fix
+/// builds the env value *shadows* the keychain and UI-saved keys appear to
+/// "not stick" (#157/#176).
+fn check_secret_env_shadowing() -> CheckResult {
+    let plist = home_dir().join("Library/LaunchAgents/ai.permagent.daemon.plist");
+    let plist_keys = std::fs::read_to_string(&plist)
+        .map(|c| extract_api_key_names_from_plist(&c))
+        .unwrap_or_default();
+
+    let daemon_env_keys = daemon_process_api_key_names();
+
+    let mut env_keys: Vec<String> = Vec::new();
+    for k in plist_keys.iter().chain(daemon_env_keys.iter()) {
+        if !env_keys.contains(k) {
+            env_keys.push(k.clone());
+        }
+    }
+
+    let keychain_exists = keychain_blob_exists();
+    let yaml_keys = secrets_yaml_keys();
+
+    let (status, detail, remediation) =
+        classify_shadowing(&env_keys, keychain_exists, &yaml_keys);
+
+    CheckResult {
+        name: "secret-env-shadowing".into(),
+        status,
+        detail,
+        remediation,
+    }
+}
+
+/// Pure decision logic, separated for testability.
+fn classify_shadowing(
+    env_keys: &[String],
+    keychain_exists: bool,
+    yaml_keys: &[String],
+) -> (CheckStatus, String, Option<String>) {
+    if env_keys.is_empty() {
+        return (
+            CheckStatus::Pass,
+            "no *_API_KEY in launchd plist or daemon environment".into(),
+            None,
+        );
+    }
+
+    let yaml_overlap: Vec<&String> = env_keys.iter().filter(|k| yaml_keys.contains(k)).collect();
+
+    if keychain_exists || !yaml_overlap.is_empty() {
+        let store = if keychain_exists {
+            "keychain blob"
+        } else {
+            "secrets.yaml"
+        };
+        (
+            CheckStatus::Warn,
+            format!(
+                "{} set via env while {store} exists — ignored on current builds \
+                 (keychain-first), but SHADOWS stored secrets on builds older than \
+                 2026-06-01 (#176)",
+                env_keys.join(", ")
+            ),
+            Some(
+                "Remove the key(s) from the plist EnvironmentVariables / shell env; \
+                 secret storage is authoritative. Then `permagent restart`."
+                    .into(),
+            ),
+        )
+    } else {
+        (
+            CheckStatus::Info,
+            format!(
+                "{} set via env with no stored secret — env bootstrap fallback in use",
+                env_keys.join(", ")
+            ),
+            None,
+        )
+    }
+}
+
+/// Extract `*_API_KEY` key names from the EnvironmentVariables dict of a
+/// launchd plist (values are never read).
+fn extract_api_key_names_from_plist(content: &str) -> Vec<String> {
+    let Some(env_pos) = content.find("<key>EnvironmentVariables</key>") else {
+        return Vec::new();
+    };
+    let rest = &content[env_pos..];
+    let Some(dict_start) = rest.find("<dict>") else {
+        return Vec::new();
+    };
+    let rest = &rest[dict_start..];
+    let section = &rest[..rest.find("</dict>").unwrap_or(rest.len())];
+
+    let mut keys = Vec::new();
+    let mut search = section;
+    while let Some(start) = search.find("<key>") {
+        let after = &search[start + "<key>".len()..];
+        let Some(close) = after.find("</key>") else {
+            break;
+        };
+        let name = after[..close].trim();
+        if name.ends_with("_API_KEY") && !keys.contains(&name.to_string()) {
+            keys.push(name.to_string());
+        }
+        search = &after[close..];
+    }
+    keys
+}
+
+/// Extract `*_API_KEY` variable names from a `ps eww` style listing
+/// (`command VAR=val VAR=val ...`). Only names are kept, never values.
+fn extract_api_key_names_from_env_listing(listing: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    for token in listing.split_whitespace() {
+        if let Some((name, _)) = token.split_once('=') {
+            if name.ends_with("_API_KEY")
+                && !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                && !keys.contains(&name.to_string())
+            {
+                keys.push(name.to_string());
+            }
+        }
+    }
+    keys
+}
+
+/// Names of `*_API_KEY` vars in the running daemon's environment (macOS:
+/// `ps eww` appends the environment to the command for same-user processes).
+fn daemon_process_api_key_names() -> Vec<String> {
+    let Ok(pgrep) = std::process::Command::new("pgrep")
+        .args(["-x", "permagentd"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !pgrep.status.success() {
+        return Vec::new();
+    }
+
+    let pids = String::from_utf8_lossy(&pgrep.stdout).to_string();
+    let mut keys = Vec::new();
+    for pid in pids.split_whitespace() {
+        if let Ok(ps) = std::process::Command::new("ps")
+            .args(["eww", "-o", "command=", "-p", pid])
+            .output()
+        {
+            if ps.status.success() {
+                for k in
+                    extract_api_key_names_from_env_listing(&String::from_utf8_lossy(&ps.stdout))
+                {
+                    if !keys.contains(&k) {
+                        keys.push(k);
+                    }
+                }
+            }
+        }
+    }
+    keys
+}
+
+/// Read-only existence check for the keychain secrets blob. Deliberately
+/// avoids `-w` (no secret data is read), so macOS does not prompt.
+fn keychain_blob_exists() -> bool {
+    std::process::Command::new("security")
+        .args([
+            "find-generic-password",
+            "-s",
+            SECRETS_KEYRING_SERVICE,
+            "-a",
+            SECRETS_KEYRING_ACCOUNT,
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Top-level key names in ~/.permagent/secrets.yaml (empty if absent/unreadable).
+fn secrets_yaml_keys() -> Vec<String> {
+    let path = Paths::in_config_dir("secrets.yaml");
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_yaml::from_str::<serde_yaml::Mapping>(&s).ok())
+        .map(|m| {
+            m.keys()
+                .filter_map(|k| k.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+// ── 16. Secret storage split-brain ──
+
+/// WARN when both the keychain blob and secrets.yaml exist. The file backend
+/// is only read when the keyring is disabled or unavailable, so a stale copy
+/// silently diverges from the keychain and confuses recovery/debugging.
+fn check_secret_split_brain() -> CheckResult {
+    let keychain = keychain_blob_exists();
+    let yaml_path = Paths::in_config_dir("secrets.yaml");
+    let yaml = yaml_path.exists();
+
+    match (keychain, yaml) {
+        (true, true) => CheckResult {
+            name: "secret-split-brain".into(),
+            status: CheckStatus::Warn,
+            detail: format!(
+                "both the keychain blob (service '{SECRETS_KEYRING_SERVICE}') and {} exist",
+                yaml_path.display()
+            ),
+            remediation: Some(
+                "Keychain is authoritative when available; the yaml copy is only read \
+                 when the keyring is disabled/unavailable and may be stale. Verify and \
+                 remove the yaml file (back it up first)."
+                    .into(),
+            ),
+        },
+        (true, false) => CheckResult {
+            name: "secret-split-brain".into(),
+            status: CheckStatus::Pass,
+            detail: "keychain blob present, no secrets.yaml".into(),
+            remediation: None,
+        },
+        (false, true) => CheckResult {
+            name: "secret-split-brain".into(),
+            status: CheckStatus::Info,
+            detail: "file backend in use (no keychain blob; keyring disabled or unavailable)"
+                .into(),
+            remediation: None,
+        },
+        (false, false) => CheckResult {
+            name: "secret-split-brain".into(),
+            status: CheckStatus::Info,
+            detail: "no stored secrets found (no keychain blob, no secrets.yaml)".into(),
+            remediation: None,
+        },
+    }
+}
+
 // ── Helpers ──
 
 fn home_dir() -> PathBuf {
@@ -1184,6 +1440,99 @@ mod tests {
         assert_eq!(db_version, Some(5));
         // Should NOT match the compiled constant (currently 8)
         assert_ne!(db_version.unwrap(), SPECTRAL_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn test_extract_api_key_names_from_plist() {
+        let plist = r#"
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.permagent.daemon</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/test</string>
+        <key>ANTHROPIC_API_KEY</key>
+        <string>sk-ant-something</string>
+        <key>OPENAI_API_KEY</key>
+        <string>sk-something</string>
+        <key>PERMAGENT_CONFIG</key>
+        <string>/Users/test/.permagent/config.yaml</string>
+    </dict>
+    <key>ProcessType</key>
+    <string>Standard</string>
+</dict>
+</plist>"#;
+        let keys = extract_api_key_names_from_plist(plist);
+        assert_eq!(keys, vec!["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]);
+    }
+
+    #[test]
+    fn test_extract_api_key_names_from_plist_no_env_section() {
+        let plist = "<plist><dict><key>Label</key><string>x</string></dict></plist>";
+        assert!(extract_api_key_names_from_plist(plist).is_empty());
+    }
+
+    #[test]
+    fn test_extract_api_key_names_from_plist_ignores_keys_outside_env_dict() {
+        // *_API_KEY after the EnvironmentVariables dict closes must not match
+        let plist = r#"
+<dict>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/bin</string>
+    </dict>
+    <key>FAKE_API_KEY</key>
+    <string>nope</string>
+</dict>"#;
+        assert!(extract_api_key_names_from_plist(plist).is_empty());
+    }
+
+    #[test]
+    fn test_extract_api_key_names_from_env_listing() {
+        let listing = "permagentd agent HOME=/Users/test ANTHROPIC_API_KEY=sk-ant-x \
+                       PATH=/usr/bin lowercase_api_key=x OPENROUTER_API_KEY=y";
+        let keys = extract_api_key_names_from_env_listing(listing);
+        // lowercase names are not env-var shaped and must be ignored
+        assert_eq!(keys, vec!["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"]);
+    }
+
+    #[test]
+    fn test_classify_shadowing_clean() {
+        let (status, detail, rem) = classify_shadowing(&[], true, &[]);
+        assert_eq!(status, CheckStatus::Pass);
+        assert!(detail.contains("no *_API_KEY"));
+        assert!(rem.is_none());
+    }
+
+    #[test]
+    fn test_classify_shadowing_env_plus_keychain_warns() {
+        let env = vec!["ANTHROPIC_API_KEY".to_string()];
+        let (status, detail, rem) = classify_shadowing(&env, true, &[]);
+        assert_eq!(status, CheckStatus::Warn);
+        assert!(detail.contains("ANTHROPIC_API_KEY"));
+        assert!(detail.contains("keychain blob"));
+        assert!(rem.is_some());
+    }
+
+    #[test]
+    fn test_classify_shadowing_env_plus_yaml_overlap_warns() {
+        let env = vec!["OPENAI_API_KEY".to_string()];
+        let yaml = vec!["OPENAI_API_KEY".to_string()];
+        let (status, detail, _) = classify_shadowing(&env, false, &yaml);
+        assert_eq!(status, CheckStatus::Warn);
+        assert!(detail.contains("secrets.yaml"));
+    }
+
+    #[test]
+    fn test_classify_shadowing_env_only_is_bootstrap_info() {
+        let env = vec!["ANTHROPIC_API_KEY".to_string()];
+        let (status, detail, rem) = classify_shadowing(&env, false, &[]);
+        assert_eq!(status, CheckStatus::Info);
+        assert!(detail.contains("bootstrap"));
+        assert!(rem.is_none());
     }
 
     #[test]
