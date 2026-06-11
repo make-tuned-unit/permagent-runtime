@@ -867,6 +867,7 @@ fn classify_shadowing(
 
 /// Extract `*_API_KEY` key names from the EnvironmentVariables dict of a
 /// launchd plist (values are never read).
+#[allow(clippy::string_slice)] // All indices come from str::find() with &str patterns, so they are always char-boundary safe
 fn extract_api_key_names_from_plist(content: &str) -> Vec<String> {
     let Some(env_pos) = content.find("<key>EnvironmentVariables</key>") else {
         return Vec::new();
