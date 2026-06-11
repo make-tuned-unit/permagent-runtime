@@ -8,8 +8,10 @@ use crate::config::worker_probe::{self, ProbeCache};
 use crate::config::{Config, ExtensionConfig, GooseMode};
 use crate::context_mgmt::format_message_for_compacting;
 use crate::conversation::message::Message;
+use crate::decisions;
 use crate::execution::manager::AgentManager;
 use crate::goal_state::{self, GoalAction, GoalState};
+use crate::goal_transition::{self, TransitionEffects};
 use crate::providers;
 use crate::providers::base::Provider;
 use crate::session::extension_data::EnabledExtensionsState;
@@ -27,7 +29,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-const MAX_GOAL_ATTEMPTS: u64 = 3;
+// Attempt caps are now per-goal budgets (S4): see
+// `goal_transition::goal_budget` / `DEFAULT_ATTEMPT_CAP` (default 3). The old
+// hardcoded MAX_GOAL_ATTEMPTS comparisons are gone; budget exhaustion emits a
+// kind='unblock' decision and parks the goal — never a silent retry.
 
 pub static EXTENSION_NAME: &str = "orchestrator";
 
@@ -458,6 +463,33 @@ impl OrchestratorClient {
             ));
         }
 
+        // Budget precondition (S4): exhausted goals are parked with an
+        // unblock decision — never silently retried or re-dispatched.
+        if let Some(exhaustion) = goal_transition::check_budget(&pool, &card.metadata_json).await? {
+            let last_error = card
+                .metadata_json
+                .get("last_error")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let decision_id = goal_transition::exhaust_and_park(
+                &pool,
+                card_id,
+                &card.title,
+                &card.project_id,
+                exhaustion,
+                last_error.as_deref(),
+            )
+            .await?;
+            self.invalidate_kanban_cache().await;
+            return Err(format!(
+                "Goal '{}' not dispatched: {}. Parked with unblock decision {} — answer it in \
+                 the decision inbox to continue.",
+                card.title,
+                exhaustion.describe(),
+                decision_id
+            ));
+        }
+
         // Select worker — on failure, leave card in Ready, no metadata changes
         let worker_key = self.select_worker(&card).await?;
 
@@ -500,6 +532,21 @@ impl OrchestratorClient {
             .as_ref()
             .map(PathBuf::from)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+        // Baseline commit of the working dir at dispatch time (Lane L2
+        // contract): recorded beside dispatched_at so verification can diff
+        // the worker's changes against a known-good ref. Best-effort — absent
+        // when the working dir is not a git repo.
+        let baseline_commit = tokio::process::Command::new("git")
+            .arg("-C")
+            .arg(&working_dir)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .await
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty());
 
         // Create subagent session
         let subagent_session = self
@@ -584,51 +631,68 @@ impl OrchestratorClient {
             }
         });
 
-        // Update card metadata BEFORE column move (design doc: metadata first)
-        let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
-        let attempt_count = meta
+        // Ready → InProgress through the goal-transition guard (tier-0
+        // 'dispatch'): worker metadata, dispatch timestamps, attempt count,
+        // baseline_commit, and the column move land in one audited transaction.
+        let attempt_count = card
+            .metadata_json
             .get("attempt_count")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
+        let dispatched_at = chrono::Utc::now().to_rfc3339();
 
-        meta.insert(
-            "worker_key".to_string(),
-            serde_json::Value::String(worker_key.clone()),
-        );
-        meta.insert(
+        // Per-attempt worker session history for token accounting (S4).
+        let mut worker_session_ids: Vec<String> = card
+            .metadata_json
+            .get("worker_session_ids")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        worker_session_ids.push(session_id.clone());
+
+        let mut patch = serde_json::Map::new();
+        patch.insert("worker_key".to_string(), serde_json::json!(worker_key));
+        patch.insert(
             "worker_session_id".to_string(),
-            serde_json::Value::String(session_id.clone()),
+            serde_json::json!(session_id),
         );
-        meta.insert(
-            "dispatched_at".to_string(),
-            serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
+        patch.insert(
+            "worker_session_ids".to_string(),
+            serde_json::json!(worker_session_ids),
         );
-        meta.insert(
+        patch.insert("dispatched_at".to_string(), serde_json::json!(dispatched_at));
+        if card.metadata_json.get("first_dispatched_at").is_none() {
+            patch.insert(
+                "first_dispatched_at".to_string(),
+                serde_json::json!(dispatched_at),
+            );
+        }
+        patch.insert(
             "attempt_count".to_string(),
             serde_json::json!(attempt_count + 1),
         );
-        meta.insert(
-            "goal_state".to_string(),
-            serde_json::Value::String("in_progress".to_string()),
-        );
+        if let Some(ref baseline) = baseline_commit {
+            patch.insert("baseline_commit".to_string(), serde_json::json!(baseline));
+        }
 
-        cards::update_card(
+        goal_transition::advance_goal_checked(
             &pool,
             card_id,
-            cards::UpdateCard {
-                assigned_to: Some(Some(worker_key.clone())),
-                metadata_json: Some(serde_json::Value::Object(meta)),
+            GoalAction::Dispatch,
+            decisions::ACTOR_SYSTEM,
+            None,
+            TransitionEffects {
+                metadata_patch: patch,
+                assigned_to: Some(worker_key.clone()),
                 ..Default::default()
             },
         )
-        .await?;
-
-        // Move card to InProgress
-        let in_progress_col = cards::get_goal_column(&pool, &card.project_id, "in_progress")
-            .await?
-            .ok_or("InProgress column not found")?;
-
-        cards::move_card(&pool, card_id, &in_progress_col.id, None).await?;
+        .await
+        .map_err(String::from)?;
 
         tracing::info!(
             target: "permagentd::brain",
@@ -1196,127 +1260,88 @@ impl OrchestratorClient {
                 )
             })?;
 
-        // Validate the transition
+        // Validate the transition shape early for an actionable error.
         let new_state =
             goal_state::validate_transition(current_state, action).map_err(|e| e.to_string())?;
 
-        // Parse existing metadata
-        let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
-
-        // Handle reject: check attempt_count for 3-attempt cap
-        if action == GoalAction::Reject {
-            let attempt_count = meta
-                .get("attempt_count")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-
-            if notes.is_some() {
-                meta.insert(
-                    "review_notes".to_string(),
-                    serde_json::Value::String(notes.clone().unwrap()),
-                );
-            }
-
-            if attempt_count + 1 >= MAX_GOAL_ATTEMPTS {
-                // 3-attempt cap: move to Triage with needs_human_attention
-                meta.insert(
-                    "attempt_count".to_string(),
-                    serde_json::json!(attempt_count + 1),
-                );
-                meta.insert(
-                    "needs_human_attention".to_string(),
-                    serde_json::Value::Bool(true),
-                );
-                meta.insert(
-                    "last_error".to_string(),
-                    serde_json::Value::String(
-                        notes.unwrap_or_else(|| "Rejected after maximum attempts".to_string()),
-                    ),
-                );
-                meta.insert(
-                    "goal_state".to_string(),
-                    serde_json::Value::String("triage".to_string()),
-                );
-
-                // Move to Triage instead of InProgress
-                let triage_col = cards::get_goal_column(&pool, &card.project_id, "triage")
-                    .await?
-                    .ok_or("Triage column not found")?;
-
-                cards::update_card(
+        match action {
+            // Tier-0 lifecycle steps route through the goal-transition guard.
+            GoalAction::Ready | GoalAction::Dispatch | GoalAction::Review => {
+                goal_transition::advance_goal_checked(
                     &pool,
                     &card_id,
-                    cards::UpdateCard {
-                        metadata_json: Some(serde_json::Value::Object(meta)),
-                        ..Default::default()
-                    },
+                    action,
+                    decisions::ACTOR_SYSTEM,
+                    None,
+                    TransitionEffects::default(),
                 )
-                .await?;
-                cards::move_card(&pool, &card_id, &triage_col.id, None).await?;
+                .await
+                .map_err(String::from)?;
 
                 self.invalidate_kanban_cache().await;
-                return Ok(CallToolResult::success(vec![Content::text(format!(
-                    "Goal '{}' has reached {} failed attempts. Moved back to Triage with needs_human_attention=true.",
-                    card.title, MAX_GOAL_ATTEMPTS
-                ))]));
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Goal '{}' advanced: {} → {} (action: {})",
+                    card.title, current_state, new_state, action
+                ))]))
             }
-
-            // Normal reject: increment attempt_count, bounce back to InProgress
-            meta.insert(
-                "attempt_count".to_string(),
-                serde_json::json!(attempt_count + 1),
-            );
-        }
-
-        // Handle approve: store notes
-        if action == GoalAction::Approve {
-            if let Some(ref n) = notes {
-                meta.insert(
-                    "review_notes".to_string(),
-                    serde_json::Value::String(n.clone()),
-                );
-            }
-        }
-
-        // Update goal_state in metadata
-        meta.insert(
-            "goal_state".to_string(),
-            serde_json::Value::String(new_state.binding().to_string()),
-        );
-
-        // Find target column and move
-        let target_col = cards::get_goal_column(&pool, &card.project_id, new_state.binding())
-            .await?
-            .ok_or_else(|| {
-                format!(
-                    "Target column for state '{}' not found in project",
-                    new_state
+            // Approve/reject are decision-gated (Tier 1+). The orchestrator
+            // cannot self-approve (S5): surface (or create) the corresponding
+            // approve_review decision and direct the answer to the inbox.
+            GoalAction::Approve | GoalAction::Reject => {
+                let decision = match decisions::find_open_decision_for_goal(
+                    &pool,
+                    &card_id,
+                    "approve_review",
                 )
-            })?;
+                .await?
+                {
+                    Some(d) => d,
+                    None => {
+                        let headline = {
+                            let h = format!("Approve the finished work on \"{}\"", card.title);
+                            if h.chars().count() > decisions::MAX_HEADLINE_CHARS {
+                                let cut: String = h
+                                    .chars()
+                                    .take(decisions::MAX_HEADLINE_CHARS - 1)
+                                    .collect();
+                                format!("{}…", cut)
+                            } else {
+                                h
+                            }
+                        };
+                        let detail = format!(
+                            "goal_advance '{}' was requested on goal {} (project {}). Notes: {}. \
+                             Review the worker output and answer approve or reject.",
+                            action,
+                            card_id,
+                            card.project_id,
+                            notes.as_deref().unwrap_or("(none)")
+                        );
+                        decisions::create_decision(
+                            &pool,
+                            decisions::NewDecision {
+                                kind: "approve_review".to_string(),
+                                goal_id: Some(card_id.clone()),
+                                project_id: Some(card.project_id.clone()),
+                                headline: Some(headline),
+                                detail: Some(detail),
+                                payload: serde_json::json!({}),
+                                ..Default::default()
+                            },
+                        )
+                        .await?
+                    }
+                };
 
-        cards::update_card(
-            &pool,
-            &card_id,
-            cards::UpdateCard {
-                metadata_json: Some(serde_json::Value::Object(meta)),
-                ..Default::default()
-            },
-        )
-        .await?;
-
-        cards::move_card(&pool, &card_id, &target_col.id, None).await?;
-
-        self.invalidate_kanban_cache().await;
-
-        // After approve (→ Complete), dispatch next eligible goals in the roadmap
-        if action == GoalAction::Approve {
-            let _ = dispatch_eligible_goals(&pool, &card.project_id, self).await;
+                Err(format!(
+                    "'{}' on goal '{}' requires an answered decision — the orchestrator cannot \
+                     approve or reject its own work. Decision {} is open in the inbox; Jesse \
+                     (or Henry policy, for Tier 1) must answer it via \
+                     POST /api/decisions/{}/answer.",
+                    action, card.title, decision.id, decision.id
+                ))
+            }
         }
-
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Goal '{}' advanced: {} → {} (action: {})",
-            card.title, current_state, new_state, action
-        ))]))
     }
 
     async fn handle_goal_status(
@@ -1617,15 +1642,20 @@ impl OrchestratorClient {
         }
 
         // Dispatch root goals (no dependencies) — move to Ready then dispatch
-        let ready_col = cards::get_goal_column(&pool, &project.id, "ready")
-            .await?
-            .ok_or("Ready column not found")?;
-
         let mut dispatched = 0;
         for &idx in &order {
             if goals[idx].depends_on.is_empty() {
                 let card_id = &index_to_card_id[idx];
-                cards::move_card(&pool, card_id, &ready_col.id, None).await?;
+                goal_transition::advance_goal_checked(
+                    &pool,
+                    card_id,
+                    GoalAction::Ready,
+                    decisions::ACTOR_SYSTEM,
+                    None,
+                    TransitionEffects::default(),
+                )
+                .await
+                .map_err(String::from)?;
                 match self.dispatch_goal(card_id).await {
                     Ok(_) => dispatched += 1,
                     Err(e) => {
@@ -1988,65 +2018,9 @@ pub async fn dispatch_eligible_goals(
         None => return Ok(0),
     };
 
-    let ready_goals =
-        cards::list_cards(pool, project_id, Some("goal"), Some(&ready_col.id)).await?;
-
-    if ready_goals.is_empty() {
-        return Ok(0);
-    }
-
-    // Find goals in Triage that have depends_on and might need to move to Ready
-    let triage_col = match cards::get_goal_column(pool, project_id, "triage").await? {
-        Some(c) => c,
-        None => return Ok(0),
-    };
-    let triage_goals =
-        cards::list_cards(pool, project_id, Some("goal"), Some(&triage_col.id)).await?;
-
-    // Check which triage goals have all deps complete → move to Ready
-    let complete_col = cards::get_goal_column(pool, project_id, "complete").await?;
-    let complete_col_id = complete_col.map(|c| c.id).unwrap_or_default();
-
-    for goal in &triage_goals {
-        let deps = goal
-            .metadata_json
-            .get("depends_on")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-
-        if deps.is_empty() {
-            continue; // Root goals should already be dispatched
-        }
-
-        // Check if all deps are complete
-        let all_complete = if complete_col_id.is_empty() {
-            false
-        } else {
-            let mut all = true;
-            for dep_id in &deps {
-                if let Ok(Some(dep_card)) = cards::get_card(pool, dep_id).await {
-                    if dep_card.column_id != complete_col_id {
-                        all = false;
-                        break;
-                    }
-                } else {
-                    all = false;
-                    break;
-                }
-            }
-            all
-        };
-
-        if all_complete {
-            // Move to Ready
-            cards::move_card(pool, &goal.id, &ready_col.id, None).await?;
-        }
-    }
+    // Promote Triage goals whose dependencies are all Complete to Ready
+    // (guarded tier-0 transitions; parked goals are skipped).
+    goal_transition::promote_eligible_dependents(pool, project_id).await?;
 
     // Now dispatch all goals in Ready
     let ready_goals =
@@ -2243,34 +2217,63 @@ pub async fn handle_goal_completion(
         }
     }
 
-    let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
-
     match result {
         Ok(()) => {
-            // Success: move to Review
-            meta.insert(
-                "goal_state".to_string(),
-                serde_json::Value::String("review".to_string()),
-            );
-            meta.insert(
+            // Success: InProgress → Review through the guard (tier 0), with
+            // completed_at recorded atomically.
+            let mut patch = serde_json::Map::new();
+            patch.insert(
                 "completed_at".to_string(),
-                serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
+                serde_json::json!(chrono::Utc::now().to_rfc3339()),
             );
-
-            cards::update_card(
+            goal_transition::advance_goal_checked(
                 pool,
                 card_id,
-                cards::UpdateCard {
-                    metadata_json: Some(serde_json::Value::Object(meta)),
+                GoalAction::Review,
+                decisions::ACTOR_SYSTEM,
+                None,
+                TransitionEffects {
+                    metadata_patch: patch,
                     ..Default::default()
                 },
             )
-            .await?;
+            .await
+            .map_err(String::from)?;
 
-            let review_col = cards::get_goal_column(pool, project_id, "review")
+            // Surface the review as a decision so it lands in the inbox.
+            if decisions::find_open_decision_for_goal(pool, card_id, "approve_review")
                 .await?
-                .ok_or("Review column not found")?;
-            cards::move_card(pool, card_id, &review_col.id, None).await?;
+                .is_none()
+            {
+                let headline = format!("Review the finished work on \"{}\"", card.title);
+                let headline = if headline.chars().count() > decisions::MAX_HEADLINE_CHARS {
+                    let cut: String = headline
+                        .chars()
+                        .take(decisions::MAX_HEADLINE_CHARS - 1)
+                        .collect();
+                    format!("{}…", cut)
+                } else {
+                    headline
+                };
+                let _ = decisions::create_decision(
+                    pool,
+                    decisions::NewDecision {
+                        kind: "approve_review".to_string(),
+                        goal_id: Some(card_id.to_string()),
+                        project_id: Some(project_id.to_string()),
+                        headline: Some(headline),
+                        detail: Some(format!(
+                            "Worker for goal {} reported success; the goal moved to Review. \
+                             Inspect the work and answer approve (Review → Complete) or \
+                             reject (Review → InProgress for rework).",
+                            card_id
+                        )),
+                        payload: serde_json::json!({}),
+                        ..Default::default()
+                    },
+                )
+                .await;
+            }
 
             tracing::info!(
                 target: "permagentd::brain",
@@ -2279,70 +2282,39 @@ pub async fn handle_goal_completion(
             );
         }
         Err(error) => {
-            let attempt_count = meta
-                .get("attempt_count")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-
-            meta.insert(
-                "last_error".to_string(),
-                serde_json::Value::String(error.clone()),
-            );
-
-            if attempt_count >= MAX_GOAL_ATTEMPTS {
-                // Terminal failure: move to Triage with needs_human_attention
-                meta.insert(
-                    "goal_state".to_string(),
-                    serde_json::Value::String("triage".to_string()),
-                );
-                meta.insert(
-                    "needs_human_attention".to_string(),
-                    serde_json::Value::Bool(true),
-                );
-
-                cards::update_card(
+            // Budget check (S4): exhaustion emits an unblock decision and
+            // parks the goal — never a silent retry.
+            if let Some(exhaustion) =
+                goal_transition::check_budget(pool, &card.metadata_json).await?
+            {
+                let decision_id = goal_transition::exhaust_and_park(
                     pool,
                     card_id,
-                    cards::UpdateCard {
-                        metadata_json: Some(serde_json::Value::Object(meta)),
-                        ..Default::default()
-                    },
+                    &card.title,
+                    project_id,
+                    exhaustion,
+                    Some(&error),
                 )
                 .await?;
 
-                let triage_col = cards::get_goal_column(pool, project_id, "triage")
-                    .await?
-                    .ok_or("Triage column not found")?;
-                cards::move_card(pool, card_id, &triage_col.id, None).await?;
-
                 tracing::warn!(
                     target: "permagentd::brain",
-                    "Goal '{}' failed {} times — moved to Triage with needs_human_attention",
+                    "Goal '{}' failed with budget exhausted ({}) — parked with unblock decision {}",
                     card.title,
-                    attempt_count
+                    exhaustion.describe(),
+                    decision_id
                 );
             } else {
-                // Retriable failure: leave in InProgress, metadata already updated
-                meta.insert(
-                    "goal_state".to_string(),
-                    serde_json::Value::String("in_progress".to_string()),
-                );
-
-                cards::update_card(
-                    pool,
-                    card_id,
-                    cards::UpdateCard {
-                        metadata_json: Some(serde_json::Value::Object(meta)),
-                        ..Default::default()
-                    },
-                )
-                .await?;
+                // Retriable failure within budget: record the error, stay in
+                // InProgress (guarded write — last_error is protected).
+                goal_transition::record_goal_failure(pool, card_id, &error)
+                    .await
+                    .map_err(String::from)?;
 
                 tracing::warn!(
                     target: "permagentd::brain",
-                    "Goal '{}' worker failed (attempt {}): {} — leaving in InProgress for retry",
+                    "Goal '{}' worker failed within budget: {} — leaving in InProgress for retry",
                     card.title,
-                    attempt_count,
                     error
                 );
             }
@@ -2470,76 +2442,56 @@ async fn resume_single_goal(
             session_id.unwrap_or("?")
         );
     } else {
-        // Case 1: session is dead — move to Ready or Triage
+        // Case 1: session is dead — requeue, or park on budget exhaustion.
         let new_attempt = attempt_count + 1;
-        let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
+        let budget = goal_transition::goal_budget(&card.metadata_json);
+        let abandon_reason = "Abandoned during daemon restart";
 
-        meta.insert("attempt_count".to_string(), serde_json::json!(new_attempt));
-        meta.insert(
-            "last_error".to_string(),
-            serde_json::Value::String("Abandoned during daemon restart".to_string()),
-        );
+        // Also honor token/wallclock budgets on the resume path (S4).
+        let other_exhaustion = goal_transition::check_budget(pool, &card.metadata_json).await?;
 
-        if new_attempt >= MAX_GOAL_ATTEMPTS {
-            // Terminal: move to Triage with needs_human_attention
-            meta.insert(
-                "goal_state".to_string(),
-                serde_json::Value::String("triage".to_string()),
+        if new_attempt >= budget.attempt_cap || other_exhaustion.is_some() {
+            let exhaustion = other_exhaustion.unwrap_or(
+                crate::goal_transition::BudgetExhaustion::AttemptCap {
+                    spent: new_attempt,
+                    cap: budget.attempt_cap,
+                },
             );
-            meta.insert(
-                "needs_human_attention".to_string(),
-                serde_json::Value::Bool(true),
-            );
-
-            cards::update_card(
+            let decision_id = goal_transition::exhaust_and_park(
                 pool,
                 card_id,
-                cards::UpdateCard {
-                    metadata_json: Some(serde_json::Value::Object(meta)),
-                    ..Default::default()
-                },
+                &card.title,
+                project_id,
+                exhaustion,
+                Some(abandon_reason),
             )
             .await?;
-
-            let triage_col = cards::get_goal_column(pool, project_id, "triage")
-                .await?
-                .ok_or("Triage column not found")?;
-            cards::move_card(pool, card_id, &triage_col.id, None).await?;
 
             tracing::warn!(
                 target: "permagentd::brain",
-                "Goal '{}' reached {} attempts after restart — moved to Triage with needs_human_attention",
+                "Goal '{}' budget exhausted after restart ({}) — parked with unblock decision {}",
                 card.title,
-                new_attempt
+                exhaustion.describe(),
+                decision_id
             );
         } else {
-            // Retriable: move to Ready for re-dispatch
-            meta.insert(
-                "goal_state".to_string(),
-                serde_json::Value::String("ready".to_string()),
-            );
-
-            cards::update_card(
+            // Retriable: requeue to Ready through the guard.
+            goal_transition::requeue_goal(
                 pool,
                 card_id,
-                cards::UpdateCard {
-                    metadata_json: Some(serde_json::Value::Object(meta)),
-                    ..Default::default()
-                },
+                decisions::ACTOR_SYSTEM,
+                new_attempt,
+                abandon_reason,
             )
-            .await?;
-
-            let ready_col = cards::get_goal_column(pool, project_id, "ready")
-                .await?
-                .ok_or("Ready column not found")?;
-            cards::move_card(pool, card_id, &ready_col.id, None).await?;
+            .await
+            .map_err(String::from)?;
 
             tracing::info!(
                 target: "permagentd::brain",
                 "Goal '{}' moved to Ready after restart (attempt {}/{})",
                 card.title,
                 new_attempt,
-                MAX_GOAL_ATTEMPTS
+                budget.attempt_cap
             );
         }
     }
@@ -2658,7 +2610,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn completion_failure_moves_to_triage_on_third_attempt() {
+    async fn completion_failure_at_attempt_cap_parks_with_unblock_decision() {
         let pool = test_pool().await;
         let card = setup_goal_in_state(&pool, "in_progress", 3).await;
 
@@ -2679,7 +2631,7 @@ mod tests {
         assert_eq!(
             col.state_binding.as_deref(),
             Some("triage"),
-            "Should move to Triage after 3 attempts"
+            "Budget exhaustion parks the goal in Triage"
         );
         assert_eq!(
             updated
@@ -2690,6 +2642,134 @@ mod tests {
             Some(true)
         );
         assert!(updated.metadata_json.get("last_error").is_some());
+
+        // S4: exhaustion emits a kind='unblock' decision — never a silent retry.
+        let unblock = decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+            .await
+            .unwrap()
+            .expect("an open unblock decision must exist for the parked goal");
+        assert_eq!(unblock.status, "open");
+        assert_eq!(
+            unblock.payload.get("reason").and_then(|v| v.as_str()),
+            Some("attempt_cap")
+        );
+    }
+
+    #[tokio::test]
+    async fn completion_failure_respects_custom_attempt_cap() {
+        let pool = test_pool().await;
+        // attempt_count=3 but budget allows 5 attempts → still retriable.
+        let card = setup_goal_in_state(&pool, "in_progress", 3).await;
+        sqlx::query("UPDATE cards SET metadata_json = json_set(metadata_json, '$.budget', json('{\"attempt_cap\": 5}')) WHERE id = ?")
+            .bind(&card.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        handle_goal_completion(
+            &pool,
+            &card.id,
+            &card.project_id,
+            Err("Worker crashed".to_string()),
+        )
+        .await
+        .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("in_progress"),
+            "within a raised attempt_cap the goal stays retriable"
+        );
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+                .await
+                .unwrap()
+                .is_none(),
+            "no unblock decision while within budget"
+        );
+    }
+
+    #[tokio::test]
+    async fn completion_success_creates_approve_review_decision() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
+            .await
+            .unwrap();
+
+        let d = decisions::find_open_decision_for_goal(&pool, &card.id, "approve_review")
+            .await
+            .unwrap()
+            .expect("review completion must surface an approve_review decision");
+        assert_eq!(d.tier, 1, "goal_approve_standard seeds at tier 1");
+        assert!(!d.headline.is_empty());
+        assert!(!d.detail.is_empty());
+    }
+
+    /// (a) Tier-gated advance WITHOUT a decision is rejected at the daemon
+    /// layer even via the orchestrator's own tool path.
+    #[tokio::test]
+    async fn tool_path_approve_without_decision_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(tmp.path().to_path_buf()));
+        let pool = sm.pool_clone().await.unwrap();
+
+        let card = setup_goal_in_state(&pool, "review", 1).await;
+
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        };
+        let client = OrchestratorClient::new(context).unwrap();
+
+        let mut args = JsonObject::new();
+        args.insert("card_id".to_string(), serde_json::json!(card.id));
+        args.insert("action".to_string(), serde_json::json!("approve"));
+
+        let err = client
+            .handle_goal_advance(Some(args))
+            .await
+            .expect_err("tool-path approve without an answered decision must fail");
+        assert!(
+            err.contains("requires an answered decision"),
+            "error must direct to the decision inbox: {}",
+            err
+        );
+
+        // Card did not move.
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(col.state_binding.as_deref(), Some("review"));
+
+        // The tool surfaced an approve_review decision for the inbox.
+        let d = decisions::find_open_decision_for_goal(&pool, &card.id, "approve_review")
+            .await
+            .unwrap();
+        assert!(d.is_some());
+
+        // Same protection when the trust dial raises approve to Tier 2.
+        sqlx::query("UPDATE risk_policy SET tier = 2 WHERE action_class = 'goal_approve_standard'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut args = JsonObject::new();
+        args.insert("card_id".to_string(), serde_json::json!(card.id));
+        args.insert("action".to_string(), serde_json::json!("approve"));
+        let err = client
+            .handle_goal_advance(Some(args))
+            .await
+            .expect_err("tier-2 approve without a jesse decision must fail via tool path");
+        assert!(err.contains("requires an answered decision"), "{}", err);
     }
 
     #[tokio::test]

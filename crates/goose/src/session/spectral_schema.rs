@@ -790,6 +790,8 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
                           CHECK (status IN ('open','answered','expired','superseded')),
             answer        TEXT CHECK (answer IN ('approve','reject','choice','input')),
             answer_note   TEXT,
+            answer_choice_id TEXT,
+            answer_input  TEXT,
             acted_by      TEXT CHECK (acted_by IN ('jesse','henry-policy','system')),
             created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
             resolved_at   TEXT,

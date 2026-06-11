@@ -525,11 +525,20 @@ impl ProjectManagerClient {
 
         // Auto-dispatch: for goal cards, move Triage → Ready → InProgress via Orchestrator
         if card_type_str == "goal" && auto_dispatch {
-            // Move to Ready
+            // Move to Ready through the goal-transition guard (tier-0 'ready')
             let ready_col = cards::get_goal_column(&pool, &project.id, "ready")
                 .await?
                 .ok_or("Ready column not found for auto-dispatch")?;
-            cards::move_card(&pool, &card.id, &ready_col.id, None).await?;
+            crate::goal_transition::advance_goal_checked(
+                &pool,
+                &card.id,
+                crate::goal_state::GoalAction::Ready,
+                crate::decisions::ACTOR_SYSTEM,
+                None,
+                crate::goal_transition::TransitionEffects::default(),
+            )
+            .await
+            .map_err(String::from)?;
 
             // Dispatch via a temporary OrchestratorClient
             match super::orchestrator::OrchestratorClient::new(self.context.clone()) {

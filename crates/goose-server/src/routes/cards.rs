@@ -146,8 +146,13 @@ pub struct ReorderEntry {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeleteResponse {
     deleted: bool,
+    /// Set when the card is a goal: deletion is Tier 2 (user_data_deletion)
+    /// and requires this risk_gate decision to be approved by Jesse first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending_decision_id: Option<String>,
 }
 
 // ── Column handlers ────────────────────────────────────────────────────────
@@ -327,19 +332,90 @@ async fn update_card_handler(
 async fn delete_card_handler(
     State(state): State<Arc<AppState>>,
     Path((_project_id, card_id)): Path<(String, String)>,
-) -> Result<Json<DeleteResponse>, StatusCode> {
+) -> Result<(StatusCode, Json<DeleteResponse>), (StatusCode, String)> {
     let pool = state
         .session_manager()
         .pool_clone()
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let card = cards::get_card(&pool, &card_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Card not found".to_string()))?;
+
+    // Goal deletion is Tier 2 (user_data_deletion): file (or surface) a
+    // risk_gate decision and return 202 — the deletion executes when Jesse
+    // approves the decision in the inbox.
+    if card.card_type == "goal" {
+        let decision = match permagent::decisions::find_open_decision_for_goal(
+            &pool, &card_id, "risk_gate",
+        )
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        {
+            Some(d) => d,
+            None => {
+                let headline = {
+                    let h = format!("Permission to delete the goal \"{}\"", card.title);
+                    if h.chars().count() > permagent::decisions::MAX_HEADLINE_CHARS {
+                        let cut: String = h
+                            .chars()
+                            .take(permagent::decisions::MAX_HEADLINE_CHARS - 1)
+                            .collect();
+                        format!("{}…", cut)
+                    } else {
+                        h
+                    }
+                };
+                permagent::decisions::create_decision(
+                    &pool,
+                    permagent::decisions::NewDecision {
+                        kind: "risk_gate".to_string(),
+                        goal_id: Some(card_id.clone()),
+                        project_id: Some(card.project_id.clone()),
+                        headline: Some(headline),
+                        detail: Some(format!(
+                            "DELETE was requested for goal card {} (project {}). Goal deletion \
+                             is Tier 2 (user_data_deletion); approving this decision deletes \
+                             the card permanently.",
+                            card_id, card.project_id
+                        )),
+                        payload: serde_json::json!({
+                            "action_class": "user_data_deletion",
+                            "description": format!("Delete goal card '{}'", card.title),
+                            "requested_by": "http",
+                        }),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+            }
+        };
+
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(DeleteResponse {
+                deleted: false,
+                pending_decision_id: Some(decision.id),
+            }),
+        ));
+    }
+
     let deleted = cards::delete_card(&pool, &card_id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     if deleted {
-        Ok(Json(DeleteResponse { deleted }))
+        Ok((
+            StatusCode::OK,
+            Json(DeleteResponse {
+                deleted,
+                pending_decision_id: None,
+            }),
+        ))
     } else {
-        Err(StatusCode::NOT_FOUND)
+        Err((StatusCode::NOT_FOUND, "Card not found".to_string()))
     }
 }
 
