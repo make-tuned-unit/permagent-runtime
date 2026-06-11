@@ -638,6 +638,8 @@ fn check_disk() -> CheckResult {
         }
 
         let stat = unsafe { stat.assume_init() };
+        // f_bavail is u64 on Linux, u32 on macOS — cast required cross-platform
+        #[allow(clippy::unnecessary_cast)]
         let free_bytes = stat.f_bavail as u64 * stat.f_frsize;
         let free_gb = free_bytes as f64 / 1_073_741_824.0;
 

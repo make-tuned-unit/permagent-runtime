@@ -299,7 +299,10 @@ fn free_space_bytes(path: &Path) -> Result<u64, std::io::Error> {
         if libc::statvfs(c_path.as_ptr(), &mut stat) != 0 {
             return Err(std::io::Error::last_os_error());
         }
-        Ok(stat.f_bavail as u64 * stat.f_frsize)
+        // f_bavail is u64 on Linux, u32 on macOS — cast required cross-platform
+        #[allow(clippy::unnecessary_cast)]
+        let free_bytes = stat.f_bavail as u64 * stat.f_frsize;
+        Ok(free_bytes)
     }
 }
 
