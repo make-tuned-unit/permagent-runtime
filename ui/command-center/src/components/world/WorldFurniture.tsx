@@ -84,6 +84,13 @@ function WorkTable({ position }: { position: [number, number, number] }) {
 function HoloScreen({ position, width = 1.2, height = 0.8 }: { position: [number, number, number]; width?: number; height?: number }) {
   const ref = useRef<THREE.Mesh>(null);
 
+  // Random line widths must be stable across re-renders — Math.random() in
+  // geometry args makes R3F rebuild the BufferGeometry on every render (leak).
+  const lineWidths = useMemo(
+    () => Array.from({ length: 5 }, () => width * 0.5 + Math.random() * width * 0.2),
+    [width]
+  );
+
   useFrame(() => {
     if (ref.current) {
       const mat = ref.current.material as THREE.MeshBasicMaterial;
@@ -104,9 +111,9 @@ function HoloScreen({ position, width = 1.2, height = 0.8 }: { position: [number
         <meshBasicMaterial color={COLORS.neonCyan} transparent opacity={0.3} depthWrite={false} />
       </mesh>
       {/* "Content" lines */}
-      {Array.from({ length: 5 }, (_, i) => (
+      {lineWidths.map((w, i) => (
         <mesh key={i} position={[-width * 0.3, height * 0.3 - i * height * 0.15, 0.01]}>
-          <boxGeometry args={[width * 0.5 + Math.random() * width * 0.2, 0.02, 0.001]} />
+          <boxGeometry args={[w, 0.02, 0.001]} />
           <meshBasicMaterial color={COLORS.neonCyan} transparent opacity={0.25} depthWrite={false} />
         </mesh>
       ))}
