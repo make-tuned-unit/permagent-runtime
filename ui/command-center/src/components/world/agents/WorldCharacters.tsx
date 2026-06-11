@@ -2,8 +2,8 @@ import { useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Html } from '@react-three/drei';
 import * as THREE from 'three';
-import type { AgentState } from './types';
-import { COLORS } from './constants';
+import type { AgentState } from '../types';
+import { COLORS } from '../constants';
 import { CyborgCharacterModel } from './CyborgCharacter';
 
 interface CharacterProps {

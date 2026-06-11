@@ -2,7 +2,7 @@ import { Suspense, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
-import { CyborgCharacterModel } from './components/world/CyborgCharacter';
+import { CyborgCharacterModel } from './components/world/agents/CyborgCharacter';
 
 const PRESETS = [
   { label: 'Librarian', trimColor: '#8B7E6F', weathering: 0.4, crown: false },

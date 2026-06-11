@@ -2,7 +2,7 @@ import { useRef, useEffect, useCallback } from 'react';
 import { useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
-import type { CameraMode, AgentState } from './types';
+import type { CameraMode, AgentState } from '../types';
 
 interface WorldCameraProps {
   mode: CameraMode;
