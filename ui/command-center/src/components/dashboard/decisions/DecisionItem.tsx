@@ -71,7 +71,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled }: Props
   const recommended = d.recommendation?.label;
 
   return (
-    <div style={{
+    <div data-testid={`decision-${d.id}`} style={{
       padding: '14px 18px',
       borderBottom: `1px solid ${colors.border}`,
       fontFamily: font.body,

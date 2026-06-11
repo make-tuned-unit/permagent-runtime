@@ -113,7 +113,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
         </div>
 
         {/* Body */}
-        <div style={{ overflow: 'auto', padding: '6px 0', flex: 1 }}>
+        <div data-testid="inbox-body" style={{ overflow: 'auto', padding: '6px 0', flex: 1 }}>
           {view === 'history' ? (
             <HistoryList items={history} />
           ) : loading && !data ? (

@@ -29,6 +29,7 @@ export function DecisionsCard() {
   return (
     <>
       <div
+        data-testid="decisions-card"
         role="button"
         tabIndex={0}
         aria-label="Open the decision inbox"
