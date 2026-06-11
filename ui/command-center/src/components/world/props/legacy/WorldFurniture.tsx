@@ -6,7 +6,6 @@ import { useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { COLORS } from '../../constants';
-import { StargatePortal } from '../../areas/antechamber/Stargate';
 
 // Shared materials
 export function useMarbleMat() {
@@ -294,7 +293,9 @@ function StarChartTable({ position }: { position: [number, number, number] }) {
   );
 }
 
-function ObservatoryArea() {
+// Unrendered since the zone blockouts: the Lab (areas/lab) absorbed the
+// observatory corner (bible §3 A3). Kept exported for W2 to mine for parts.
+export function ObservatoryArea() {
   return (
     <group position={[0, 0, 10]} rotation-y={Math.PI}>
       {/* Armillary sphere centerpiece */}
@@ -369,8 +370,7 @@ export function PortalGateway({ position }: { position: [number, number, number]
 function ForumArea() {
   return (
     <group position={[-10, 0, 0]} rotation-y={Math.PI / 2}>
-      {/* Stargate portal */}
-      <StargatePortal position={[0, 0, -3]} />
+      {/* The Stargate relocated to the NW Antechamber threshold (areas/Thresholds) */}
       {/* Semicircle of couches facing portal */}
       <Couch position={[-3, 0, 3]} rotation={-0.4} />
       <Couch position={[0, 0, 4]} rotation={0} />
@@ -515,7 +515,6 @@ export function LegacyFurniture() {
   return (
     <group>
       <WorkbenchArea />
-      <ObservatoryArea />
       <ForumArea />
     </group>
   );

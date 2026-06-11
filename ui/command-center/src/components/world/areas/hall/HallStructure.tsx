@@ -7,6 +7,7 @@ import { useFrame } from '@react-three/fiber';
 import { Float } from '@react-three/drei';
 import * as THREE from 'three';
 import { COLORS, STATIONS, COLUMN_COUNT, ROTUNDA_RADIUS, DOME_HEIGHT, PLATFORM_RADIUS } from '../../constants';
+import { isPunchedAngle } from '../zones';
 
 // Floor with glowing circuit mandala pattern
 function RotundaFloor() {
@@ -110,13 +111,15 @@ function Columns() {
     }
   });
 
+  // Threshold columns are punched out of the colonnade (bible §3); the portal
+  // frames in areas/Thresholds.tsx provide flanking columns in their place.
   const columns = useMemo(() => {
     return Array.from({ length: COLUMN_COUNT }, (_, i) => {
       const angle = (i / COLUMN_COUNT) * Math.PI * 2;
       const x = Math.cos(angle) * (ROTUNDA_RADIUS - 1);
       const z = Math.sin(angle) * (ROTUNDA_RADIUS - 1);
       return { x, z, angle };
-    });
+    }).filter(({ angle }) => !isPunchedAngle(angle));
   }, []);
 
   return (
