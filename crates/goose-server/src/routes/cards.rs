@@ -231,7 +231,10 @@ async fn delete_column_handler(
     let deleted = cards::delete_column(&pool, &col_id)
         .await
         .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
-    Ok(Json(DeleteResponse { deleted }))
+    Ok(Json(DeleteResponse {
+        deleted,
+        pending_decision_id: None,
+    }))
 }
 
 // ── Card handlers ──────────────────────────────────────────────────────────

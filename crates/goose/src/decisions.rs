@@ -720,6 +720,10 @@ pub async fn answer_decision(
 /// Compute the hash of one audit row. Pure; shared with `permagent doctor`'s
 /// chain-integrity check. NULLs hash as empty strings; the genesis row's
 /// prev_hash is the empty string.
+///
+/// One positional argument per hashed audit column, in chain order — a struct
+/// would obscure the field order the hash depends on.
+#[allow(clippy::too_many_arguments)]
 pub fn compute_audit_row_hash(
     prev_hash: &str,
     decision_id: &str,

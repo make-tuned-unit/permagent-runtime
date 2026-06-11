@@ -21,7 +21,7 @@ use axum::{
 use permagent::decisions::{self, AnswerError, DecisionAnswer};
 use permagent::goal_state::GoalAction;
 use permagent::goal_transition::{self, GuardError, TransitionEffects};
-use permagent::sqlx::{self, Pool, Sqlite};
+use permagent::sqlx::{Pool, Sqlite};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -93,15 +93,6 @@ fn status_for_answer_error(err: &AnswerError) -> StatusCode {
         AnswerError::Forbidden(_) => StatusCode::FORBIDDEN,
         AnswerError::Invalid(_) => StatusCode::BAD_REQUEST,
         AnswerError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
-    }
-}
-
-fn status_for_guard_error(err: &GuardError) -> StatusCode {
-    match err {
-        GuardError::NotFound(_) => StatusCode::NOT_FOUND,
-        GuardError::Invalid(_) => StatusCode::BAD_REQUEST,
-        GuardError::Denied(_) => StatusCode::FORBIDDEN,
-        GuardError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
@@ -181,6 +172,7 @@ async fn execute_effect(
     decision: &decisions::Decision,
     proof: decisions::DecisionProof,
 ) -> Result<Option<String>, GuardError> {
+    let acted_by = proof.acted_by().to_string();
     match (decision.kind.as_str(), decision.answer.as_deref()) {
         // Review approved → goal completes; dependents become eligible.
         ("approve_review", Some("approve")) => {
@@ -192,7 +184,7 @@ async fn execute_effect(
                 pool,
                 goal_id,
                 GoalAction::Approve,
-                proof.acted_by(),
+                &acted_by,
                 Some(proof),
                 TransitionEffects {
                     review_notes: decision.answer_note.clone(),
@@ -254,7 +246,7 @@ async fn execute_effect(
                     pool,
                     goal_id,
                     GoalAction::Reject,
-                    proof.acted_by(),
+                    &acted_by,
                     Some(proof),
                     TransitionEffects {
                         review_notes: decision.answer_note.clone(),
@@ -307,7 +299,7 @@ async fn execute_effect(
                 pool,
                 goal_id,
                 GoalAction::Ready,
-                proof.acted_by(),
+                &acted_by,
                 Some(proof),
                 TransitionEffects {
                     metadata_patch: patch,
@@ -380,11 +372,22 @@ pub fn routes(state: Arc<AppState>) -> Router {
 mod tests {
     use super::*;
 
+    /// GuardError → HTTP status mapping (documented contract; effect errors
+    /// surface in `effect_error` with the answer already 200-committed).
+    fn status_for_guard_error(err: &GuardError) -> StatusCode {
+        match err {
+            GuardError::NotFound(_) => StatusCode::NOT_FOUND,
+            GuardError::Invalid(_) => StatusCode::BAD_REQUEST,
+            GuardError::Denied(_) => StatusCode::FORBIDDEN,
+            GuardError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+
     /// (b) Required unit test: Tier-2 answered by anyone but 'jesse' → 403.
     #[tokio::test]
     async fn tier2_answer_by_non_jesse_maps_to_403() {
         use permagent::session::spectral_schema::init_spectral_db;
-        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        let pool = permagent::sqlx::sqlite::SqlitePoolOptions::new()
             .connect("sqlite::memory:")
             .await
             .unwrap();
