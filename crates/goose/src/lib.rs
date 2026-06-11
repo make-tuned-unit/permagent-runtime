@@ -16,6 +16,7 @@ pub mod cards;
 pub mod config;
 pub mod context_mgmt;
 pub mod conversation;
+pub mod decision_inbox;
 pub mod dictation;
 pub mod doctor;
 pub mod download_manager;
