@@ -7,6 +7,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Single source of truth for the sherpa-onnx prebuilt lib version.
+  # Must match the sherpa-onnx crate version in crates/goose-server/Cargo.toml.
+  SHERPA_ONNX_VERSION: 1.13.2
 
 jobs:
   test:
@@ -26,6 +29,38 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # Stage sherpa-onnx prebuilt libs OUTSIDE the cargo target dir.
+      # sherpa-onnx-sys's build.rs normally downloads them into
+      # <target-dir>/sherpa-onnx-prebuilt and records an absolute -L path,
+      # but rust-cache prunes that directory while restoring build
+      # fingerprints as fresh -> stale -L -> "unable to find library
+      # -lsherpa-onnx-c-api" at link time. Pointing SHERPA_ONNX_LIB_DIR at a
+      # directory staged on every run makes the recorded -L always valid.
+      - name: Resolve sherpa-onnx prebuilt lib paths
+        shell: bash
+        run: |
+          case "${{ runner.os }}-${{ runner.arch }}" in
+            Linux-X64)    stem="sherpa-onnx-v${SHERPA_ONNX_VERSION}-linux-x64-shared-lib" ;;
+            macOS-ARM64)  stem="sherpa-onnx-v${SHERPA_ONNX_VERSION}-osx-arm64-shared-lib" ;;
+            *) echo "Unsupported runner for sherpa-onnx prebuilt libs: ${{ runner.os }}-${{ runner.arch }}" >&2; exit 1 ;;
+          esac
+          echo "SHERPA_ONNX_STEM=${stem}" >> "$GITHUB_ENV"
+          echo "SHERPA_ONNX_LIB_DIR=${HOME}/sherpa-onnx-prebuilt/${stem}/lib" >> "$GITHUB_ENV"
+      - name: Cache sherpa-onnx prebuilt libs
+        id: sherpa-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/sherpa-onnx-prebuilt
+          key: sherpa-onnx-v${{ env.SHERPA_ONNX_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+      - name: Download sherpa-onnx prebuilt libs
+        if: steps.sherpa-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          mkdir -p "${HOME}/sherpa-onnx-prebuilt"
+          curl -fsSL --retry 3 \
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/v${SHERPA_ONNX_VERSION}/${SHERPA_ONNX_STEM}.tar.bz2" \
+            | tar xj -C "${HOME}/sherpa-onnx-prebuilt"
+          ls "${SHERPA_ONNX_LIB_DIR}"
       - name: Unit and integration tests
         run: cargo test --workspace --exclude permagent-brain-tests --lib --tests
         env:
