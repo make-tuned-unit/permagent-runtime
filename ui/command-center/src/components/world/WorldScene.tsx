@@ -23,27 +23,17 @@ declare global {
 }
 
 // Dev-only evidence hook: lets the CDP harness park the camera at exact poses
-// for fly-throughs and budget screenshots. Also fixes gl.info under the post
-// chain: the EffectComposer's internal passes reset gl.info between passes
-// (autoReset), so PerfSampler would only ever see the final quad. Matching the
-// bible §10 method, we disable autoReset and reset once per frame BEFORE the
-// composer renders so PerfSampler (priority 1000) reads true full-frame
-// totals. No effect in production builds.
+// for fly-throughs and budget screenshots. gl.info management (autoReset +
+// per-frame reset) is owned by the FROZEN-amended shared/perf.ts PerfSampler —
+// this hook must NOT touch gl.info or it would zero counters before the
+// sampler reads them. No effect in production builds.
 function WorldDevHooks() {
   const camera = useThree((s) => s.camera);
-  const gl = useThree((s) => s.gl);
   const override = useRef<{ active: boolean; pos: THREE.Vector3; look: THREE.Vector3 }>({
     active: false,
     pos: new THREE.Vector3(),
     look: new THREE.Vector3(),
   });
-
-  useEffect(() => {
-    gl.info.autoReset = false;
-    return () => {
-      gl.info.autoReset = true;
-    };
-  }, [gl]);
 
   useEffect(() => {
     const o = override.current;
@@ -62,11 +52,9 @@ function WorldDevHooks() {
     };
   }, []);
 
-  // Runs after OrbitControls (priority -1) and before the EffectComposer's
-  // render (priority 1) so the override wins and counters cover the whole
-  // frame. No per-frame allocations.
+  // Runs after OrbitControls (priority -1) so the override wins.
+  // No per-frame allocations.
   useFrame(() => {
-    gl.info.reset();
     const o = override.current;
     if (!o.active) return;
     camera.position.copy(o.pos);
