@@ -9,7 +9,7 @@ import * as THREE from 'three';
 import { HallStructure } from './areas/hall/HallStructure';
 import { MezzanineLibrary } from './areas/hall/MezzanineLibrary';
 import { Zones } from './areas/WorldZones';
-import { HallLighting, Starfield, DistantGrid, DustMotes, WorldFog } from './atmosphere/Atmosphere';
+import { Atmosphere, DistantGrid } from './atmosphere/Atmosphere';
 import { LegacyFurniture } from './props/legacy/WorldFurniture';
 import { PerfSampler } from './shared/perf';
 
@@ -75,10 +75,11 @@ export function WorldSceneContent({
   return (
     <>
       {/* Lighting */}
-      <HallLighting />
+      {/* Atmosphere (W4): lighting, fog, starfield, dust, light shaft,
+          orbital arcs, reactive ambience — see atmosphere/Atmosphere.tsx */}
+      <Atmosphere />
 
       {/* Environment */}
-      <Starfield />
       <DistantGrid />
 
       {/* Main hall — rotunda + mezzanine library */}
@@ -92,8 +93,6 @@ export function WorldSceneContent({
       <LegacyFurniture />
 
       {/* Atmosphere */}
-      <DustMotes />
-      <WorldFog />
 
       {/* Shared perf probe (bible §6) + dev-only camera hook for evidence */}
       <PerfSampler />

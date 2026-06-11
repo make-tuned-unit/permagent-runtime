@@ -294,108 +294,10 @@ function StationIcon({ type }: { type: string }) {
 }
 
 // Large sweeping orbital arcs — the signature dynamic element
-function OrbitalArcs() {
-  const groupRef = useRef<THREE.Group>(null);
-  const particlesRef = useRef<THREE.Group>(null);
-
-  // Slow global drift
-  useFrame((_, delta) => {
-    if (groupRef.current) {
-      groupRef.current.rotation.y += delta * 0.015;
-    }
-    // Animate particles along arcs
-    if (particlesRef.current) {
-      particlesRef.current.children.forEach((p, i) => {
-        if (p instanceof THREE.Mesh) {
-          const speed = 0.3 + i * 0.1;
-          const t = ((performance.now() * 0.001 * speed + i * 2.1) % (Math.PI * 2));
-          const arc = arcs[i % arcs.length];
-          const r = arc.radius;
-          p.position.set(
-            Math.cos(t) * r,
-            Math.sin(t) * r * Math.sin(arc.tiltX),
-            Math.sin(t) * r * Math.cos(arc.tiltX)
-          );
-        }
-      });
-    }
-  });
-
-  const arcs = useMemo(() => [
-    { radius: 11, tiltX: 0.4, tiltZ: 0.2, arcLength: Math.PI * 1.3 },
-    { radius: 13, tiltX: -0.3, tiltZ: 0.5, arcLength: Math.PI * 1.5 },
-    { radius: 9, tiltX: 0.6, tiltZ: -0.3, arcLength: Math.PI * 1.1 },
-  ], []);
-
-  // Build gradient opacity via vertex colors on each arc
-  const arcMeshes = useMemo(() => {
-    return arcs.map((arc) => {
-      const segments = 128;
-      const geo = new THREE.TorusGeometry(arc.radius, 0.04, 6, segments, arc.arcLength);
-      // Apply gradient alpha via vertex colors
-      const colors = new Float32Array(geo.attributes.position.count * 3);
-      for (let i = 0; i < geo.attributes.position.count; i++) {
-        const t = i / geo.attributes.position.count;
-        // Fade from bright center to dim edges
-        const brightness = 0.3 + 0.7 * Math.sin(t * Math.PI);
-        colors[i * 3] = brightness;
-        colors[i * 3 + 1] = brightness;
-        colors[i * 3 + 2] = brightness;
-      }
-      geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-      return { geo, ...arc };
-    });
-  }, [arcs]);
-
-  return (
-    <group ref={groupRef} position-y={DOME_HEIGHT * 0.5}>
-      {arcMeshes.map((arc, i) => (
-        <mesh
-          key={`arc-${i}`}
-          geometry={arc.geo}
-          rotation-x={arc.tiltX}
-          rotation-z={arc.tiltZ}
-        >
-          <meshBasicMaterial
-            color={COLORS.neonCyan}
-            transparent
-            opacity={0.5}
-            depthWrite={false}
-            vertexColors
-          />
-        </mesh>
-      ))}
-      {/* Traveling particles along arcs */}
-      <group ref={particlesRef}>
-        {arcs.map((_, i) => (
-          <mesh key={`particle-${i}`}>
-            <sphereGeometry args={[0.1, 8, 8]} />
-            <meshBasicMaterial color={COLORS.neonCyan} transparent opacity={0.9} />
-          </mesh>
-        ))}
-      </group>
-    </group>
-  );
-}
+// OrbitalArcs moved to atmosphere/Atmosphere.tsx (W4 reactive version)
 
 // Light shaft from oculus (fake volumetric)
-function LightShaft() {
-  const ref = useRef<THREE.Mesh>(null);
-
-  useFrame(() => {
-    if (ref.current) {
-      const mat = ref.current.material as THREE.MeshBasicMaterial;
-      mat.opacity = 0.09 + 0.03 * Math.sin(performance.now() * 0.0005);
-    }
-  });
-
-  return (
-    <mesh ref={ref} position-y={DOME_HEIGHT / 2}>
-      <cylinderGeometry args={[2.5, 4, DOME_HEIGHT, 32, 1, true]} />
-      <meshBasicMaterial color="#FFFAE5" transparent opacity={0.1} side={THREE.DoubleSide} depthWrite={false} />
-    </mesh>
-  );
-}
+// LightShaft moved to atmosphere/Atmosphere.tsx (W4 reactive version)
 
 // Hall structure composition — geometry only; lighting/fog live in atmosphere/.
 export function HallStructure({
@@ -414,10 +316,8 @@ export function HallStructure({
       <StationPedestals onHoverStation={onHoverStation} onClickStation={onClickStation} />
 
       {/* Orbital arcs — signature dynamic visual */}
-      <OrbitalArcs />
 
       {/* Light shaft from oculus */}
-      <LightShaft />
     </>
   );
 }
