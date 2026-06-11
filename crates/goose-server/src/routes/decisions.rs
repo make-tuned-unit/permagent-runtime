@@ -1,7 +1,9 @@
 //! Decision Inbox routes.
 //!
 //! Endpoints (registration in routes/mod.rs is the coordinator's commit):
-//!   GET  /api/decisions               — open items ranked + summary envelope
+//!   GET  /api/decisions               — top 10 open items ranked + summary envelope;
+//!                                       `?all=1` returns ALL open items (Lane L4
+//!                                       "+M more" overflow contract)
 //!   POST /api/decisions/{id}/answer   — answer a decision and execute the gated effect
 //!   GET  /api/decisions/history       — resolved decisions + audit join, cursor pagination
 //!
@@ -19,11 +21,27 @@ use axum::{
 use permagent::decisions::{self, AnswerError, DecisionAnswer};
 use permagent::goal_state::GoalAction;
 use permagent::goal_transition::{self, GuardError, TransitionEffects};
+use permagent::sqlx::{self, Pool, Sqlite};
 use serde::{Deserialize, Serialize};
-use sqlx::{Pool, Sqlite};
 use std::sync::Arc;
 
 // ── Request / response types ────────────────────────────────────────────────
+
+/// Default number of open items returned without `?all=1` (Lane L4 shows the
+/// top 10 and a "+M more" overflow computed from `summary.total_pending`).
+const DEFAULT_INBOX_LIMIT: usize = 10;
+
+#[derive(Deserialize)]
+pub struct InboxQuery {
+    /// `?all=1` (or `true`) returns every open decision instead of the top 10.
+    all: Option<String>,
+}
+
+impl InboxQuery {
+    fn wants_all(&self) -> bool {
+        matches!(self.all.as_deref(), Some("1") | Some("true"))
+    }
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -91,11 +109,15 @@ fn status_for_guard_error(err: &GuardError) -> StatusCode {
 
 async fn list_decisions_handler(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<InboxQuery>,
 ) -> Result<Json<InboxResponse>, (StatusCode, String)> {
     let pool = pool_of(&state).await?;
-    let items = decisions::list_open_decisions(&pool)
+    let mut items = decisions::list_open_decisions(&pool)
         .await
         .map_err(internal)?;
+    if !query.wants_all() {
+        items.truncate(DEFAULT_INBOX_LIMIT);
+    }
     let summary = decisions::inbox_summary(&pool).await.map_err(internal)?;
     Ok(Json(InboxResponse { items, summary }))
 }

@@ -802,6 +802,20 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(&mut *tx)
     .await?;
 
+    // Defensive backfill: CREATE TABLE IF NOT EXISTS won't add columns to a
+    // table created by an earlier iteration of this (unreleased) schema.
+    let decision_cols: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info('decisions')")
+        .fetch_all(&mut *tx)
+        .await?;
+    for (col, ddl) in [
+        ("answer_choice_id", "ALTER TABLE decisions ADD COLUMN answer_choice_id TEXT"),
+        ("answer_input", "ALTER TABLE decisions ADD COLUMN answer_input TEXT"),
+    ] {
+        if !decision_cols.iter().any(|c| c == col) {
+            sqlx::query(ddl).execute(&mut *tx).await?;
+        }
+    }
+
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_decisions_open
          ON decisions(status, rank DESC, created_at) WHERE status = 'open'",

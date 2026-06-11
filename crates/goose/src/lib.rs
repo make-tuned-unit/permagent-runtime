@@ -61,5 +61,9 @@ pub mod tracing;
 pub mod utils;
 pub mod workspaces;
 
+/// Re-exported so dependents (goose-server) can name pool types from the
+/// exact sqlx version this crate links (e.g. decisions/goal_transition APIs).
+pub use sqlx;
+
 #[cfg(test)]
 pub mod test_sigabrt_handler;
