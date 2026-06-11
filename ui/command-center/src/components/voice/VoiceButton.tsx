@@ -8,6 +8,8 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useVoice, VoiceState } from '../../hooks/useVoice';
 import { useCommandCenter } from '../../lib/store';
+import { useTheme } from '../../styles/useTheme';
+import type { ThemeColors } from '../../styles/useTheme';
 
 const STATE_LABELS: Record<VoiceState, string> = {
   idle: '',
@@ -19,15 +21,17 @@ const STATE_LABELS: Record<VoiceState, string> = {
   error: 'Error',
 };
 
-const STATE_COLORS: Record<VoiceState, string> = {
-  idle: '#666',
-  connecting: '#F5A623',
-  ready: '#00BFEF',
-  recording: '#FF4444',
-  processing: '#F5A623',
-  playing: '#00FF88',
-  error: '#FF4444',
-};
+function stateColorMap(colors: ThemeColors): Record<VoiceState, string> {
+  return {
+    idle: colors.textDim,
+    connecting: colors.warning,
+    ready: colors.cyan,
+    recording: colors.danger,
+    processing: colors.warning,
+    playing: colors.success,
+    error: colors.danger,
+  };
+}
 
 /** Returns true if the currently focused element is a text input (textarea, input, contenteditable). */
 function isTextInputFocused(): boolean {
@@ -41,6 +45,7 @@ function isTextInputFocused(): boolean {
 }
 
 export function VoiceButton() {
+  const { colors } = useTheme();
   const chatSessionId = useCommandCenter(s => s.chatSessionId);
   const {
     state,
@@ -116,8 +121,18 @@ export function VoiceButton() {
   }, [stopRecording]);
 
   const isActive = state !== 'idle';
-  const stateColor = STATE_COLORS[state];
+  const stateColor = stateColorMap(colors)[state];
   const showLabel = error || state === 'recording' || state === 'processing' || state === 'playing' || state === 'connecting';
+
+  const isBusy = state === 'processing' || state === 'playing';
+  const btnColors: React.CSSProperties =
+    state === 'recording'
+      ? { border: `1px solid ${colors.danger}`, backgroundColor: `${colors.danger}33`, color: colors.danger }
+      : isBusy
+        ? { border: `1px solid ${colors.border}`, backgroundColor: colors.surfaceHi, color: colors.textMuted }
+        : isActive
+          ? { border: `1px solid ${colors.cyan}80`, backgroundColor: colors.cyanSoft, color: colors.cyan }
+          : { border: `1px solid ${colors.border}`, backgroundColor: colors.surfaceHi, color: colors.textMuted };
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -132,16 +147,10 @@ export function VoiceButton() {
           : state === 'processing' || state === 'playing' ? 'Busy — wait for reply'
           : STATE_LABELS[state]
         }
-        className={`border transition ${
-          state === 'recording'
-            ? 'border-red-500 bg-red-500/20 text-red-400'
-            : state === 'processing' || state === 'playing'
-              ? 'border-dark-border bg-dark-surface-2 text-dark-muted opacity-50 cursor-wait'
-            : isActive
-              ? 'border-accent/50 bg-accent/10 text-accent'
-              : 'border-dark-border bg-dark-surface-2 text-dark-muted hover:text-dark-text'
-        }`}
-        style={{ width: 28, height: 28, borderRadius: 6, flexShrink: 0, display: 'grid', placeItems: 'center' }}
+        className={`transition ${isBusy ? 'opacity-50 cursor-wait' : ''}`}
+        style={{ width: 28, height: 28, borderRadius: 6, flexShrink: 0, display: 'grid', placeItems: 'center', ...btnColors }}
+        onMouseEnter={e => { if (!isActive) e.currentTarget.style.color = colors.text; }}
+        onMouseLeave={e => { if (!isActive) e.currentTarget.style.color = colors.textMuted; }}
       >
         <svg
           width="12"
@@ -164,7 +173,7 @@ export function VoiceButton() {
       {showLabel && (
         <span style={{
           fontSize: 10,
-          color: error ? '#FF4444' : stateColor,
+          color: error ? colors.danger : stateColor,
           whiteSpace: 'nowrap',
           maxWidth: 80,
           overflow: 'hidden',
