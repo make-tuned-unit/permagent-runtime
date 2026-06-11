@@ -206,13 +206,13 @@ impl ActivityIngester {
         match event.tier {
             EventTier::Always => {
                 if !self.paused.load(Ordering::Relaxed) {
-                    self.ingest_to_brain(event);
+                    self.ingest_to_brain_blocking(event);
                 }
                 self.always_count.fetch_add(1, Ordering::Relaxed);
             }
             EventTier::Aggregated => {
                 if !self.paused.load(Ordering::Relaxed) {
-                    self.ingest_to_brain(event);
+                    self.ingest_to_brain_blocking(event);
                 }
                 self.aggregated_count.fetch_add(1, Ordering::Relaxed);
             }
@@ -261,7 +261,7 @@ impl ActivityIngester {
         }
     }
 
-    fn ingest_to_brain(&self, event: &ActivityEvent) {
+    fn ingest_to_brain_blocking(&self, event: &ActivityEvent) {
         let key = format!(
             "activity:{}:{}:{}",
             event.timestamp.timestamp(),
