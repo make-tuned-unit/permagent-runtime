@@ -268,6 +268,19 @@ export function CyborgCharacterModel({ trimColor = VISOR_GLOW_FALLBACK, weatheri
     });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Cape side edge trims
+  const capeEdgeGeos = useMemo(() => {
+    return [0.0, 1.0].map((uVal) => {
+      const pts: THREE.Vector3[] = [];
+      for (let i = 0; i <= 16; i++) {
+        const v = i / 16;
+        const [x, y, z] = capePos(uVal, v);
+        pts.push(new THREE.Vector3(x, y, z));
+      }
+      return new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 12, 0.008, 4, false);
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Low-intensity trim for interior cape circuits
   const capeCircuitMat = useMemo(
     () => new THREE.MeshStandardMaterial({ color: trimColor, emissive: trimColor, emissiveIntensity: 0.4, roughness: 0.3, metalness: 0.1, transparent: true, opacity: 0.6 }),
@@ -539,18 +552,9 @@ export function CyborgCharacterModel({ trimColor = VISOR_GLOW_FALLBACK, weatheri
         <mesh key={`cp-${i}`} geometry={geo} material={capePanelMat} />
       ))}
       {/* Cape side edge trims */}
-      {[0, 1].map((sideIdx) => {
-        const uVal = sideIdx === 0 ? 0.0 : 1.0; // left edge, right edge
-        const edgePoints: THREE.Vector3[] = [];
-        for (let i = 0; i <= 16; i++) {
-          const v = i / 16;
-          const [x, y, z] = capePos(uVal, v);
-          edgePoints.push(new THREE.Vector3(x, y, z));
-        }
-        const curve = new THREE.CatmullRomCurve3(edgePoints);
-        const tubeGeo = new THREE.TubeGeometry(curve, 12, 0.008, 4, false);
-        return <mesh key={`ce-${sideIdx}`} geometry={tubeGeo} material={capeEdgeMat} />;
-      })}
+      {capeEdgeGeos.map((geo, i) => (
+        <mesh key={`ce-${i}`} geometry={geo} material={capeEdgeMat} />
+      ))}
 
       {/* === CROWN (optional) === */}
       {showCrown && <CyborgCrown trimColor={trimColor} />}
