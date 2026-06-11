@@ -285,6 +285,16 @@ client. HUD color semantics and the frozen `HenryIdentityTab.tsx` stand.
 
 ## 6. Shared contracts (`world/shared/`) — written in Phase 0, frozen after
 
+**Frozen-amendment policy (creative director, 2026-06-11):** frozen modules may receive
+**bug fixes only** — coordinator-authored, commit message prefixed `FROZEN AMENDMENT:`,
+all consuming lanes notified before they next capture evidence. Interface changes remain
+forbidden. (Precedent: the PerfSampler render-loop-takeover fix, found by Lane W2.)
+
+**Lane setup verification (standing rule, both swarms):** every lane's first action is to
+paste `pwd` and `git worktree list` output as evidence of correct setup, and the
+coordinator verifies it BEFORE the lane's first commit. The main checkout at
+`~/dev/permagent-runtime` is the operator's live working tree — lanes never work there.
+
 **`palette.ts`** — §2 as typed constants.
 
 **`anchors.ts`** — the W2→W3 interface. W2 publishes early, then freezes:
