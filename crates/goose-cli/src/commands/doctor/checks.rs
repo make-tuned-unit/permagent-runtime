@@ -807,8 +807,7 @@ fn check_secret_env_shadowing() -> CheckResult {
     let keychain_exists = keychain_blob_exists();
     let yaml_keys = secrets_yaml_keys();
 
-    let (status, detail, remediation) =
-        classify_shadowing(&env_keys, keychain_exists, &yaml_keys);
+    let (status, detail, remediation) = classify_shadowing(&env_keys, keychain_exists, &yaml_keys);
 
     CheckResult {
         name: "secret-env-shadowing".into(),
