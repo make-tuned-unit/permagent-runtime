@@ -12,6 +12,13 @@ import { WorldHUD } from './WorldHUD';
 import { LibrarianHUD } from './LibrarianHUD';
 import { HenryHUD } from './HenryHUD';
 import { AgentPicker } from './AgentPicker';
+import { PerfSampler } from './shared/perf';
+import { useWorldVisibility } from './atmosphere/useWorldVisibility';
+import { installDevHarness } from './atmosphere/devHarness';
+import { TourMode } from './camera/TourMode';
+
+// DEV-ONLY: window.__worldDev harness for ambience evidence (no-op in prod).
+installDevHarness();
 
 function LoadingShimmer() {
   return (
@@ -90,6 +97,7 @@ function SceneContent({
         onModeChange={onModeChange}
         onMoveAgent={handleMoveAgent}
       />
+      <TourMode cameraMode={cameraMode} />
       <WorldPostProcessing />
     </>
   );
@@ -103,6 +111,11 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
   const [showFps, setShowFps] = useState(false);
   const [activeHud, setActiveHud] = useState<'henry' | 'librarian' | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  // Perf (bible §8 item 2): pause the render loop whenever this view has no
+  // layout box — i.e. its workspace tab is hidden (display:none) or the canvas
+  // has not been sized yet. Prevents GPU burn behind other tabs and the
+  // zero-size GL_INVALID_FRAMEBUFFER_OPERATION spam at startup.
+  const canvasActive = useWorldVisibility(containerRef);
 
   const handleSelectAgent = useCallback((id: string) => {
     if (id === 'henry') {
@@ -171,7 +184,14 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
     <div ref={containerRef} style={{ width: '100%', height: '100%', position: 'relative', background: COLORS.deepVoid }}>
       <Suspense fallback={<LoadingShimmer />}>
         <Canvas
-          shadows="soft"
+          // Bible §8 item 3: explicit PCF — `shadows="soft"` is deprecated in
+          // three 0.184 and silently fell back to PCF anyway. Map size stays
+          // 2048 (set on the key light in atmosphere/Lighting).
+          shadows={{ type: THREE.PCFShadowMap }}
+          // Bible §8 item 1: the scene is fill-rate bound (~4fps at dpr 2).
+          dpr={[1, 1.5]}
+          // Bible §8 item 2: stop rendering when the World tab is hidden.
+          frameloop={canvasActive ? 'always' : 'never'}
           camera={{
             position: [20, 15, 20],
             fov: 50,
@@ -179,7 +199,9 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
             far: 500,
           }}
           gl={{
-            antialias: true,
+            // Bible §8 item 1: MSAA off — the post chain owns AA duties and
+            // antialias:true multiplies the fill-rate cost at full dpr.
+            antialias: false,
             toneMapping: THREE.ACESFilmicToneMapping,
             toneMappingExposure: 1.3,
             outputColorSpace: THREE.SRGBColorSpace,
@@ -201,6 +223,8 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
             onHoverStation={setHoveredStation}
             onClickStation={handleClickStation}
           />
+          {/* Shared perf probe (bible §6): publishes window.__worldPerf 1/s. */}
+          <PerfSampler />
         </Canvas>
       </Suspense>
       <WorldHUD
