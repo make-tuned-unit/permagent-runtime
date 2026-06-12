@@ -103,6 +103,12 @@ async fn list_decisions_handler(
     Query(query): Query<InboxQuery>,
 ) -> Result<Json<InboxResponse>, (StatusCode, String)> {
     let pool = pool_of(&state).await?;
+    // Curation (L3): refresh `rank` for open rows before listing — the query
+    // below orders by `rank DESC NULLS LAST`. Failure-tolerant: a rerank
+    // error never blocks the inbox.
+    if let Err(e) = permagent::decision_inbox::curation::rerank_open_decisions(&pool).await {
+        tracing::warn!("Decision rerank failed (non-fatal): {}", e);
+    }
     let mut items = decisions::list_open_decisions(&pool)
         .await
         .map_err(internal)?;
@@ -143,6 +149,23 @@ async fn answer_decision_handler(
             (None, Some(msg))
         }
     };
+
+    // Learn (L3): jesse-answered decisions become Brain memories. This
+    // handler attributes all HTTP answers to 'jesse' (S5), and
+    // `ingest_answered_decision` re-checks status/acted_by itself.
+    // Failure-tolerant — never breaks the answer path.
+    if let Some(brain) = permagent::agents::platform_extensions::get_global_brain() {
+        if let Err(e) =
+            permagent::decision_inbox::learn::ingest_answered_decision(&pool, &brain, &decision)
+                .await
+        {
+            tracing::warn!(
+                "Decision {} learn ingestion failed (non-fatal): {}",
+                decision.id,
+                e
+            );
+        }
+    }
 
     Ok(Json(AnswerResponse {
         decision,
@@ -328,9 +351,14 @@ async fn execute_effect(
                 format!("goal {} was already gone", goal_id)
             }))
         }
-        // Rejections of unblock/risk_gate, choices, inputs, malformed acks:
-        // recorded; no state change to execute.
-        _ => Ok(None),
+        // Remaining shapes route through L3's resume:auto — `choice` answers
+        // and `unblock` answered with input on a PARKED goal make it
+        // re-dispatch eligible (Triage → Ready through the guard). Everything
+        // else (rejections of unblock/risk_gate, malformed acks, unparked
+        // goals) returns Ok(None): recorded; no state change to execute.
+        _ => {
+            permagent::decision_inbox::policy::resume_answered_decision(pool, decision, proof).await
+        }
     }
 }
 

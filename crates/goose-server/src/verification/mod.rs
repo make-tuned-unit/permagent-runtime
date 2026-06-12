@@ -236,7 +236,82 @@ pub async fn run_for_goal_with(
         "Goal verification complete"
     );
 
+    // ── 6. Tier-1 auto-approval (L3 policy × this verdict) ──
+    // On a PASS verdict, Henry answers the goal's open approve_review
+    // decision as 'henry-policy' through L1's tier-gated answer path
+    // (Tier-2 is Forbidden there and nothing moves). Failure-tolerant:
+    // the verification record stands regardless.
+    if record.status == VerdictStatus::Pass {
+        henry_approve_after_pass(pool, goal_id, &record).await;
+    }
+
     Ok(record)
+}
+
+/// Wire 4 (integration): verifier pass → henry-policy Tier-1 auto-approve.
+/// Looks up the open approve_review decision `handle_goal_completion`
+/// created when the goal moved to Review, then routes through L3's
+/// [`permagent::decision_inbox::policy::henry_approve_on_verifier_pass`].
+/// Every failure path is logged and swallowed — this never breaks the
+/// verification flow, and the daemon still tier-validates inside
+/// `decisions::answer_decision`.
+async fn henry_approve_after_pass(pool: &Pool<Sqlite>, goal_id: &str, record: &VerificationRecord) {
+    let decision =
+        match permagent::decisions::find_open_decision_for_goal(pool, goal_id, "approve_review")
+            .await
+        {
+            Ok(Some(d)) => d,
+            Ok(None) => {
+                tracing::info!(
+                    target: "permagentd::verification",
+                    goal_id = %goal_id,
+                    "Verifier pass, but no open approve_review decision — nothing to auto-approve"
+                );
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "permagentd::verification",
+                    goal_id = %goal_id,
+                    "Verifier pass, but approve_review lookup failed (non-fatal): {}",
+                    e
+                );
+                return;
+            }
+        };
+
+    let rationale = format!("verifier pass: {}", record.rationale);
+    match permagent::decision_inbox::policy::henry_approve_on_verifier_pass(
+        pool,
+        &decision.id,
+        &rationale,
+    )
+    .await
+    {
+        Ok(approval) => match approval.effect_error {
+            None => tracing::info!(
+                target: "permagentd::verification",
+                goal_id = %goal_id,
+                decision_id = %decision.id,
+                effect = ?approval.effect,
+                "Verifier pass — approve_review auto-approved by henry-policy"
+            ),
+            Some(e) => tracing::warn!(
+                target: "permagentd::verification",
+                goal_id = %goal_id,
+                decision_id = %decision.id,
+                "henry-policy approval recorded but effect failed (non-fatal): {}",
+                e
+            ),
+        },
+        Err(e) => tracing::warn!(
+            target: "permagentd::verification",
+            goal_id = %goal_id,
+            decision_id = %decision.id,
+            "henry-policy auto-approval refused (non-fatal): {}",
+            e
+        ),
+    }
 }
 
 fn error_result(index: usize, check_type: &str, message: &str) -> CheckResult {
@@ -956,6 +1031,240 @@ mod tests {
         let pool = test_pool().await;
         hook(pool, "no-such-goal".to_string()); // must not panic or block
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    /// Build a goal that sits in its project's REAL Review column (so the
+    /// henry-policy approve effect can move it through the guard), backed by
+    /// a git repo at `root_path` and carrying `extra_meta`.
+    async fn make_review_goal_in_columns(
+        pool: &Pool<Sqlite>,
+        root_path: &str,
+        extra_meta: serde_json::Value,
+    ) -> permagent::cards::Card {
+        let project = permagent::projects::create_project(
+            pool,
+            permagent::projects::CreateProject {
+                name: "Wire4 Test".to_string(),
+                root_path: Some(root_path.to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        permagent::cards::seed_goal_columns(pool, &project.id)
+            .await
+            .unwrap();
+        let review_col = permagent::cards::get_goal_column(pool, &project.id, "review")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let mut meta = serde_json::Map::new();
+        meta.insert("goal_state".to_string(), serde_json::json!("review"));
+        meta.insert("attempt_count".to_string(), serde_json::json!(1));
+        if let Some(obj) = extra_meta.as_object() {
+            for (k, v) in obj {
+                meta.insert(k.clone(), v.clone());
+            }
+        }
+        permagent::cards::create_card(
+            pool,
+            permagent::cards::CreateCard {
+                project_id: project.id.clone(),
+                title: "Wire4 goal".to_string(),
+                description: Some("Make src/lib.rs have function b".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(review_col.id.clone()),
+                created_by: Some("user".to_string()),
+                metadata_json: Some(serde_json::Value::Object(meta)),
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn state_of(pool: &Pool<Sqlite>, card_id: &str) -> String {
+        let card = permagent::cards::get_card(pool, card_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let col = permagent::cards::get_column(pool, &card.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        col.state_binding.unwrap_or_default()
+    }
+
+    /// Wire 4: verifier PASS → the goal's open Tier-1 approve_review decision
+    /// is answered by henry-policy with the verifier rationale and the goal
+    /// completes; a Tier-2 decision is untouched AND not auto-approvable by
+    /// henry-policy (tier gate in L1's answer path).
+    #[tokio::test]
+    async fn verifier_pass_auto_approves_tier1_review_via_henry_policy() {
+        use permagent::decisions::{self, NewDecision};
+
+        let repo = tempfile::tempdir().unwrap();
+        let baseline = init_repo(repo.path());
+        std::fs::write(
+            repo.path().join("src/lib.rs"),
+            "pub fn a() {}\npub fn b() {}\n",
+        )
+        .unwrap();
+
+        let pool = test_pool().await;
+        let goal = make_review_goal_in_columns(
+            &pool,
+            repo.path().to_str().unwrap(),
+            serde_json::json!({
+                "baseline_commit": baseline,
+                "declared_paths": ["src/**"],
+                "completion_checks": [
+                    {"type": "command_exit_zero", "cmd": "true", "timeout_secs": 30}
+                ],
+            }),
+        )
+        .await;
+
+        // The approval need handle_goal_completion creates at Review time.
+        let d_review = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(goal.project_id.clone()),
+                headline: Some("Review the finished work on the wire4 goal".to_string()),
+                detail: Some("worker reported success".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(d_review.tier, 1);
+
+        // A Tier-2 decision on the same goal: must never be auto-approved.
+        let d_risk = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "risk_gate".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(goal.project_id.clone()),
+                headline: Some("Permission to push the release".to_string()),
+                detail: Some("merge_to_main risk gate".to_string()),
+                payload: serde_json::json!({
+                    "action_class": "merge_to_main",
+                    "description": "publish",
+                    "requested_by": "test"
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(d_risk.tier, 2);
+
+        let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
+        let record = run_for_goal_with(&pool, &goal.id, &base_url).await.unwrap();
+        assert_eq!(record.status, VerdictStatus::Pass);
+
+        // Tier-1 approve_review answered by henry-policy, rationale recorded,
+        // goal completed through the guard.
+        let d_review = decisions::get_decision(&pool, &d_review.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(d_review.status, "answered");
+        assert_eq!(d_review.acted_by.as_deref(), Some(decisions::ACTOR_HENRY));
+        assert_eq!(d_review.answer.as_deref(), Some("approve"));
+        let note = d_review.answer_note.as_deref().unwrap();
+        assert!(
+            note.contains("verifier pass"),
+            "rationale missing: {}",
+            note
+        );
+        assert!(
+            note.contains("Everything checks out."),
+            "verifier rationale must be carried into the answer note: {}",
+            note
+        );
+        assert_eq!(state_of(&pool, &goal.id).await, "complete");
+
+        // Tier-2 untouched by the pass…
+        let d_risk_after = decisions::get_decision(&pool, &d_risk.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(d_risk_after.status, "open");
+        assert!(d_risk_after.acted_by.is_none());
+
+        // …and NOT auto-approvable by henry-policy: the daemon tier-validates.
+        let err = permagent::decision_inbox::policy::henry_approve_on_verifier_pass(
+            &pool,
+            &d_risk.id,
+            "verifier pass: should be refused",
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, decisions::AnswerError::Forbidden(_)),
+            "Tier-2 via henry-policy must be Forbidden: {:?}",
+            err
+        );
+        let d_risk_final = decisions::get_decision(&pool, &d_risk.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(d_risk_final.status, "open");
+    }
+
+    /// Wire 4 negative: a FAIL verdict leaves the approve_review decision
+    /// open and the goal in Review — auto-approval only fires on pass.
+    #[tokio::test]
+    async fn verifier_fail_leaves_review_decision_open() {
+        use permagent::decisions::{self, NewDecision};
+
+        let repo = tempfile::tempdir().unwrap();
+        let baseline = init_repo(repo.path());
+
+        let pool = test_pool().await;
+        let goal = make_review_goal_in_columns(
+            &pool,
+            repo.path().to_str().unwrap(),
+            serde_json::json!({
+                "baseline_commit": baseline,
+                "declared_paths": ["src/**"],
+                "completion_checks": [
+                    {"type": "command_exit_zero", "cmd": "exit 1", "timeout_secs": 30}
+                ],
+            }),
+        )
+        .await;
+        let d = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(goal.project_id.clone()),
+                headline: Some("Review the finished work on the failing goal".to_string()),
+                detail: Some("worker reported success".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
+        let record = run_for_goal_with(&pool, &goal.id, &base_url).await.unwrap();
+        assert_eq!(record.status, VerdictStatus::Fail);
+
+        let d = decisions::get_decision(&pool, &d.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(d.status, "open");
+        assert!(d.acted_by.is_none());
+        assert_eq!(state_of(&pool, &goal.id).await, "review");
     }
 
     #[tokio::test]
