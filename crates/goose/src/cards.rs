@@ -1,9 +1,45 @@
 //! Cards module — CRUD operations for the cards and board_columns tables.
+//!
+//! Goal-card hardening (Decision Inbox, S1): goal lifecycle state lives in
+//! `column_id` + protected metadata keys, and every daemon path (HTTP, MCP
+//! tools, background tasks) converges on the functions in this module. They
+//! therefore REFUSE goal column changes and protected-metadata writes; the
+//! sole legal mutator is [`crate::goal_transition::advance_goal_checked`]
+//! (and its audited sibling paths), which performs its own guarded writes.
 
 use sqlx::{Pool, Row, Sqlite};
 use uuid::Uuid;
 
+use crate::goal_transition::PROTECTED_GOAL_METADATA_KEYS;
 use crate::projects::PERSONAL_PROJECT_ID;
+
+/// Check a metadata replacement against the protected-key set for goal cards.
+/// Any change (add / remove / modify) to a protected key is refused. The
+/// `verification` key is deliberately NOT protected (Lane L2 allowlist).
+fn check_protected_metadata(
+    existing: &serde_json::Value,
+    proposed: &serde_json::Value,
+) -> Result<(), String> {
+    let null = serde_json::Value::Null;
+    for key in PROTECTED_GOAL_METADATA_KEYS {
+        let before = existing.get(*key).unwrap_or(&null);
+        let after = proposed.get(*key).unwrap_or(&null);
+        if before != after {
+            return Err(format!(
+                "Refusing to write protected goal metadata key '{}'. Goal state, attempts, \
+                 budgets, and attention flags are managed by the goal-transition guard \
+                 (decision inbox); they cannot be edited directly.",
+                key
+            ));
+        }
+    }
+    Ok(())
+}
+
+const GOAL_MOVE_REFUSAL: &str =
+    "Goal cards cannot be moved between columns directly. Goal lifecycle transitions go \
+     through the decision inbox (goal_transition guard): use goal_advance for tier-0 steps \
+     and answer the corresponding decision for approve/reject.";
 
 // ── Data types ─────────────────────────────────────────────────────────────
 
@@ -524,6 +560,9 @@ pub async fn update_card(
     if let Some(ref col) = input.column_id {
         // Verify target column exists and is in the same project
         let card = existing.as_ref().unwrap();
+        if card.card_type == "goal" && col != &card.column_id {
+            return Err(GOAL_MOVE_REFUSAL.to_string());
+        }
         let target_col = get_column(pool, col).await?;
         match target_col {
             Some(c) if c.project_id == card.project_id => {}
@@ -554,6 +593,10 @@ pub async fn update_card(
             .map_err(|e| e.to_string())?;
     }
     if let Some(ref meta) = input.metadata_json {
+        let card = existing.as_ref().unwrap();
+        if card.card_type == "goal" {
+            check_protected_metadata(&card.metadata_json, meta)?;
+        }
         let meta_str = serde_json::to_string(meta).map_err(|e| e.to_string())?;
         sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
             .bind(&meta_str)
@@ -575,6 +618,19 @@ pub async fn update_card(
 }
 
 pub async fn delete_card(pool: &Pool<Sqlite>, card_id: &str) -> Result<bool, String> {
+    // Goal deletion is a Tier-2 action (user_data_deletion): it requires a
+    // risk_gate decision approved by Jesse, executed via
+    // goal_transition::delete_goal_checked.
+    if let Some(card) = get_card(pool, card_id).await? {
+        if card.card_type == "goal" {
+            return Err(
+                "Goal cards cannot be deleted directly. Goal deletion is Tier 2 \
+                 (user_data_deletion): file a risk_gate decision and have Jesse approve it."
+                    .to_string(),
+            );
+        }
+    }
+
     let result = sqlx::query("DELETE FROM cards WHERE id = ?")
         .bind(card_id)
         .execute(pool)
@@ -596,6 +652,12 @@ pub async fn move_card(
         Some(c) => c,
         None => return Ok(None),
     };
+
+    // Goal lifecycle state is positional: refuse goal column changes here;
+    // they must go through the goal-transition guard.
+    if card.card_type == "goal" && column_id != card.column_id {
+        return Err(GOAL_MOVE_REFUSAL.to_string());
+    }
 
     // Verify target column is in the same project
     let target_col = get_column(pool, column_id)
@@ -631,10 +693,25 @@ pub async fn move_card(
 }
 
 /// Batch reorder: accepts a list of (card_id, column_id, position) tuples.
+///
+/// Refuses the entire batch if any entry would change a goal card's column —
+/// goal lifecycle moves must go through the goal-transition guard.
 pub async fn reorder_cards(
     pool: &Pool<Sqlite>,
     moves: &[(String, String, i32)],
 ) -> Result<(), String> {
+    // Validate before applying anything.
+    for (card_id, column_id, _position) in moves {
+        if let Some(card) = get_card(pool, card_id).await? {
+            if card.card_type == "goal" && column_id != &card.column_id {
+                return Err(format!(
+                    "Reorder batch refused: entry for card '{}' would change a goal's column. {}",
+                    card_id, GOAL_MOVE_REFUSAL
+                ));
+            }
+        }
+    }
+
     for (card_id, column_id, position) in moves {
         sqlx::query("UPDATE cards SET column_id = ?, position = ? WHERE id = ?")
             .bind(column_id)
@@ -644,6 +721,33 @@ pub async fn reorder_cards(
             .await
             .map_err(|e| e.to_string())?;
     }
+    Ok(())
+}
+
+/// Narrow API for Lane L2's verification module (allowlist): writes ONLY the
+/// `verification` metadata key on a goal card. Never moves cards, never
+/// touches protected keys.
+pub async fn set_goal_verification(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    verification: serde_json::Value,
+) -> Result<(), String> {
+    let card = get_card(pool, card_id)
+        .await?
+        .ok_or_else(|| format!("Card '{}' not found", card_id))?;
+    if card.card_type != "goal" {
+        return Err(format!("Card '{}' is not a goal", card_id));
+    }
+    let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
+    meta.insert("verification".to_string(), verification);
+    let meta_str =
+        serde_json::to_string(&serde_json::Value::Object(meta)).map_err(|e| e.to_string())?;
+    sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+        .bind(&meta_str)
+        .bind(card_id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1108,6 +1212,198 @@ mod tests {
             .find(|c| c.state_binding.as_deref() == Some("triage"))
             .expect("Triage column should exist");
         assert_eq!(card.column_id, triage.id);
+    }
+
+    // ── Goal hardening (Decision Inbox S1) ──
+
+    async fn make_goal(pool: &Pool<Sqlite>) -> Card {
+        create_card(
+            pool,
+            CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: "Hardened goal".to_string(),
+                description: None,
+                card_type: Some("goal".to_string()),
+                column_id: None,
+                created_by: None,
+                metadata_json: Some(serde_json::json!({"attempt_count": 1})),
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn move_card_refuses_goal_column_change() {
+        let pool = test_pool().await;
+        let goal = make_goal(&pool).await;
+        let ready = get_goal_column(&pool, PERSONAL_PROJECT_ID, "ready")
+            .await
+            .unwrap()
+            .unwrap();
+        let err = move_card(&pool, &goal.id, &ready.id, None).await;
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("decision inbox"));
+
+        // Repositioning within the same column is still allowed.
+        let ok = move_card(&pool, &goal.id, &goal.column_id, Some(5)).await;
+        assert!(ok.is_ok());
+    }
+
+    #[tokio::test]
+    async fn update_card_refuses_goal_column_change() {
+        let pool = test_pool().await;
+        let goal = make_goal(&pool).await;
+        let complete = get_goal_column(&pool, PERSONAL_PROJECT_ID, "complete")
+            .await
+            .unwrap()
+            .unwrap();
+        let err = update_card(
+            &pool,
+            &goal.id,
+            UpdateCard {
+                column_id: Some(complete.id),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn update_card_refuses_protected_metadata_writes() {
+        let pool = test_pool().await;
+        let goal = make_goal(&pool).await;
+
+        for (key, value) in [
+            ("goal_state", serde_json::json!("complete")),
+            ("needs_human_attention", serde_json::json!(false)),
+            ("attempt_count", serde_json::json!(0)),
+            ("last_error", serde_json::json!("forged")),
+            ("budget", serde_json::json!({"attempt_cap": 999})),
+            ("completed_at", serde_json::json!("2026-01-01T00:00:00Z")),
+        ] {
+            let mut meta = goal.metadata_json.as_object().cloned().unwrap();
+            meta.insert(key.to_string(), value);
+            let err = update_card(
+                &pool,
+                &goal.id,
+                UpdateCard {
+                    metadata_json: Some(serde_json::Value::Object(meta)),
+                    ..Default::default()
+                },
+            )
+            .await;
+            assert!(err.is_err(), "protected key '{}' must be refused", key);
+            assert!(err.unwrap_err().contains(key));
+        }
+    }
+
+    #[tokio::test]
+    async fn update_card_allows_unprotected_and_verification_metadata() {
+        let pool = test_pool().await;
+        let goal = make_goal(&pool).await;
+
+        let mut meta = goal.metadata_json.as_object().cloned().unwrap();
+        meta.insert("tags".to_string(), serde_json::json!(["rust"]));
+        meta.insert(
+            "verification".to_string(),
+            serde_json::json!({"status": "passed"}),
+        );
+        let updated = update_card(
+            &pool,
+            &goal.id,
+            UpdateCard {
+                metadata_json: Some(serde_json::Value::Object(meta)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            updated
+                .metadata_json
+                .get("verification")
+                .and_then(|v| v.get("status"))
+                .and_then(|v| v.as_str()),
+            Some("passed")
+        );
+
+        // The narrow L2 API also works and touches only `verification`.
+        set_goal_verification(&pool, &goal.id, serde_json::json!({"status": "failed"}))
+            .await
+            .unwrap();
+        let after = get_card(&pool, &goal.id).await.unwrap().unwrap();
+        assert_eq!(
+            after
+                .metadata_json
+                .get("verification")
+                .and_then(|v| v.get("status"))
+                .and_then(|v| v.as_str()),
+            Some("failed")
+        );
+        assert_eq!(
+            after
+                .metadata_json
+                .get("attempt_count")
+                .and_then(|v| v.as_u64()),
+            Some(1),
+            "protected keys untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn reorder_refuses_goal_column_change_whole_batch() {
+        let pool = test_pool().await;
+        let goal = make_goal(&pool).await;
+        let standard = create_card(
+            &pool,
+            CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: "Standard".to_string(),
+                description: None,
+                card_type: None,
+                column_id: None,
+                created_by: None,
+                metadata_json: None,
+            },
+        )
+        .await
+        .unwrap();
+        let ready = get_goal_column(&pool, PERSONAL_PROJECT_ID, "ready")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let err = reorder_cards(
+            &pool,
+            &[
+                (standard.id.clone(), "col-personal-doing".to_string(), 0),
+                (goal.id.clone(), ready.id.clone(), 1),
+            ],
+        )
+        .await;
+        assert!(err.is_err());
+
+        // Nothing in the batch was applied.
+        let std_after = get_card(&pool, &standard.id).await.unwrap().unwrap();
+        assert_eq!(std_after.column_id, "col-personal-backlog");
+
+        // Goal repositioning within its own column is fine.
+        reorder_cards(&pool, &[(goal.id.clone(), goal.column_id.clone(), 7)])
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_card_refuses_goals() {
+        let pool = test_pool().await;
+        let goal = make_goal(&pool).await;
+        let err = delete_card(&pool, &goal.id).await;
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("Tier 2"));
+        assert!(get_card(&pool, &goal.id).await.unwrap().is_some());
     }
 
     #[tokio::test]

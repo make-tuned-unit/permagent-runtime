@@ -80,7 +80,7 @@ export function BuildView() {
             return (
               <div key={n} style={{
                 width: 26, height: 4, borderRadius: 2,
-                background: n < step ? '#5BD17F' : n === step ? colors.cyan : colors.border,
+                background: n < step ? colors.success : n === step ? colors.cyan : colors.border,
                 boxShadow: n === step ? `0 0 6px ${colors.cyanGlow}` : 'none',
               }} />
             );
@@ -107,8 +107,14 @@ export function BuildView() {
               <TerminalManager ref={terminalRef} />
             </div>
           </Panel>
-          <Separator className="group relative flex items-center justify-center w-1">
-            <div className="bg-dark-border group-hover:bg-accent/50 group-active:bg-accent transition-colors w-px h-full" />
+          <Separator
+            className="relative flex items-center justify-center w-1"
+            onMouseEnter={e => { const d = e.currentTarget.firstElementChild as HTMLElement | null; if (d) d.style.backgroundColor = `${colors.cyan}80`; }}
+            onMouseLeave={e => { const d = e.currentTarget.firstElementChild as HTMLElement | null; if (d) d.style.backgroundColor = colors.border; }}
+            onMouseDown={e => { const d = e.currentTarget.firstElementChild as HTMLElement | null; if (d) d.style.backgroundColor = colors.cyan; }}
+            onMouseUp={e => { const d = e.currentTarget.firstElementChild as HTMLElement | null; if (d) d.style.backgroundColor = `${colors.cyan}80`; }}
+          >
+            <div className="transition-colors w-px h-full" style={{ backgroundColor: colors.border }} />
           </Separator>
           <Panel id="build-browser" defaultSize={50} minSize={20}>
             <div style={{ height: '100%', borderRadius: radius.md, overflow: 'hidden', border: `1px solid ${colors.border}` }}>

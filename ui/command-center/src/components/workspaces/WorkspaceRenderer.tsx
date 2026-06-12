@@ -1,6 +1,8 @@
 import { useCallback, lazy, Suspense } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import { useCommandCenter } from '../../lib/store';
+import { font } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
 import type { LayoutNode, LayoutSplit, LayoutPanel, ToolType } from '../../lib/store';
 import { ChatView } from '../chat/ChatView';
 import { SkillsPanel } from '../skills/SkillsPanel';
@@ -37,18 +39,19 @@ function LayoutNodeRenderer({
   path: string;
   onResize: (path: string, sizes: number[]) => void;
 }) {
+  const { colors } = useTheme();
   if (node.type === 'panel') {
     const panel = node as LayoutPanel;
     const Component = TOOL_COMPONENTS[panel.tool];
     if (!Component) {
       return (
-        <div className="flex h-full items-center justify-center text-dark-muted text-xs">
+        <div className="flex h-full items-center justify-center text-xs" style={{ fontFamily: font.body, color: colors.textMuted }}>
           Unknown tool: {panel.tool}
         </div>
       );
     }
     return (
-      <Suspense fallback={<div className="flex h-full items-center justify-center text-dark-muted text-xs">Loading...</div>}>
+      <Suspense fallback={<div className="flex h-full items-center justify-center text-xs" style={{ fontFamily: font.body, color: colors.textMuted }}>Loading...</div>}>
         <Component />
       </Suspense>
     );
@@ -105,15 +108,25 @@ function LayoutChildPanel({
   defaultSize: number;
   onResize: (path: string, sizes: number[]) => void;
 }) {
+  const { colors } = useTheme();
   return (
     <>
       {index > 0 && (
-        <Separator className={`group relative flex items-center justify-center ${
-          orientation === 'horizontal' ? 'w-1' : 'h-1'
-        }`}>
-          <div className={`bg-dark-border group-hover:bg-accent/50 group-active:bg-accent transition-colors ${
-            orientation === 'horizontal' ? 'w-px h-full' : 'h-px w-full'
-          }`} />
+        <Separator
+          className={`relative flex items-center justify-center ${
+            orientation === 'horizontal' ? 'w-1' : 'h-1'
+          }`}
+          onMouseEnter={e => { const d = e.currentTarget.firstElementChild as HTMLElement | null; if (d) d.style.backgroundColor = `${colors.cyan}80`; }}
+          onMouseLeave={e => { const d = e.currentTarget.firstElementChild as HTMLElement | null; if (d) d.style.backgroundColor = colors.border; }}
+          onMouseDown={e => { const d = e.currentTarget.firstElementChild as HTMLElement | null; if (d) d.style.backgroundColor = colors.cyan; }}
+          onMouseUp={e => { const d = e.currentTarget.firstElementChild as HTMLElement | null; if (d) d.style.backgroundColor = `${colors.cyan}80`; }}
+        >
+          <div
+            className={`transition-colors ${
+              orientation === 'horizontal' ? 'w-px h-full' : 'h-px w-full'
+            }`}
+            style={{ backgroundColor: colors.border }}
+          />
         </Separator>
       )}
       <Panel id={panelId} defaultSize={defaultSize} minSize={10}>
@@ -130,6 +143,7 @@ function LayoutChildPanel({
 }
 
 export function WorkspaceRenderer({ workspaceId }: { workspaceId: string }) {
+  const { colors } = useTheme();
   const workspace = useCommandCenter(s =>
     s.workspaces.find(w => w.id === workspaceId)
   );
@@ -148,7 +162,7 @@ export function WorkspaceRenderer({ workspaceId }: { workspaceId: string }) {
 
   if (!workspace) {
     return (
-      <div className="flex h-full items-center justify-center text-dark-muted">
+      <div className="flex h-full items-center justify-center" style={{ fontFamily: font.body, color: colors.textMuted }}>
         Workspace not found
       </div>
     );

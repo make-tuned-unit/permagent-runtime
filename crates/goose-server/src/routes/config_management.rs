@@ -69,6 +69,13 @@ pub struct ProviderDetails {
     pub is_configured: bool,
     pub is_default: bool,
     pub provider_type: ProviderType,
+    /// True when a secret config key for this provider is set as an environment
+    /// variable while the same key also exists in secret storage. On current
+    /// builds storage wins (keychain-first), so the env value is inert — but on
+    /// pre-2026-06-01 builds it shadows UI-saved keys (#157/#176). Surfaced so
+    /// clients can warn about the stale env value.
+    #[serde(default)]
+    pub env_override_active: bool,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -337,6 +344,7 @@ pub async fn read_all_config() -> Result<Json<ConfigResponse>, ErrorResponse> {
 pub async fn providers() -> Result<Json<Vec<ProviderDetails>>, ErrorResponse> {
     let config = Config::global();
     let default_provider_name = config.get_goose_provider().ok();
+    let stored_secrets = config.all_secrets().unwrap_or_default();
 
     let providers = get_providers().await;
     let providers_response: Vec<ProviderDetails> = providers
@@ -344,6 +352,7 @@ pub async fn providers() -> Result<Json<Vec<ProviderDetails>>, ErrorResponse> {
         .map(|(metadata, provider_type)| {
             let is_configured = check_provider_configured(&metadata, provider_type);
             let is_default = default_provider_name.as_deref() == Some(metadata.name.as_str());
+            let env_override_active = env_override_active(&metadata, &stored_secrets);
 
             ProviderDetails {
                 name: metadata.name.clone(),
@@ -351,11 +360,28 @@ pub async fn providers() -> Result<Json<Vec<ProviderDetails>>, ErrorResponse> {
                 is_configured,
                 is_default,
                 provider_type,
+                env_override_active,
             }
         })
         .collect();
 
     Ok(Json(providers_response))
+}
+
+/// A secret config key is both set in the process environment and present
+/// (non-empty) in secret storage. Storage is authoritative on current builds,
+/// so the env copy is stale at best and shadowing at worst (pre-fix builds).
+fn env_override_active(
+    metadata: &ProviderMetadata,
+    stored_secrets: &HashMap<String, Value>,
+) -> bool {
+    metadata.config_keys.iter().any(|key| {
+        key.secret
+            && std::env::var(&key.name).is_ok_and(|v| !v.is_empty())
+            && stored_secrets
+                .get(&key.name)
+                .is_some_and(|v| !v.as_str().is_some_and(|s| s.is_empty()))
+    })
 }
 
 #[utoipa::path(

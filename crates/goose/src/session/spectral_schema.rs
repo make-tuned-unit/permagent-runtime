@@ -12,6 +12,19 @@ use tracing::{info, warn};
 /// Current Spectral schema version. Bump when adding migrations.
 pub const SPECTRAL_SCHEMA_VERSION: i32 = 8;
 
+/// Sentinel meaning "decision-inbox schema version not yet assigned".
+pub const DECISION_INBOX_VERSION_SENTINEL: i32 = -1;
+
+/// Schema version for the decision-inbox migration (decisions, decision_audit, risk_policy).
+///
+/// // TBD: Jesse assigns before integration PR — parked swarm holds WIP v8->v9, do NOT assume 9.
+///
+/// While this equals `DECISION_INBOX_VERSION_SENTINEL` the migration runs idempotently on
+/// every boot and records nothing in `schema_version`. Reassigning this constant to the real
+/// version number is the ONLY change needed to turn it into a standard one-shot migration
+/// (the `version < DECISION_INBOX_SCHEMA_VERSION` gate in session_manager.rs then applies).
+pub const DECISION_INBOX_SCHEMA_VERSION: i32 = DECISION_INBOX_VERSION_SENTINEL;
+
 /// Initialize the Spectral database schema from scratch.
 /// Creates all tables, indexes, FTS virtual tables, triggers, and views.
 /// Inserts the default user row for Phase 1 single-user operation.
@@ -740,10 +753,202 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
 
     tx.commit().await?;
 
+    // Decision-inbox tables (decisions, decision_audit, risk_policy) + guard triggers.
+    // Idempotent; shared with migrate_to_decision_inbox for existing installs.
+    apply_decision_inbox_schema(pool).await?;
+
     info!(
         "Spectral schema v{} initialized successfully",
         SPECTRAL_SCHEMA_VERSION
     );
+    Ok(())
+}
+
+/// Apply the decision-inbox schema: decisions, decision_audit (append-only,
+/// hash-chained), risk_policy (trust dial), and defense-in-depth triggers.
+///
+/// Fully idempotent — every statement uses IF NOT EXISTS / INSERT OR IGNORE so
+/// it is safe to run on every boot (sentinel mode) and on fresh installs.
+pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool.begin().await?;
+
+    // ── DECISIONS ──
+    // headline/detail are Jesse amendment A1: two separate REQUIRED text fields.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS decisions (
+            id            TEXT PRIMARY KEY,
+            kind          TEXT NOT NULL CHECK (kind IN
+                            ('approve_review','unblock','choice','risk_gate','malformed')),
+            goal_id       TEXT REFERENCES cards(id) ON DELETE SET NULL,
+            project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
+            tier          INTEGER NOT NULL CHECK (tier IN (0,1,2)),
+            headline      TEXT NOT NULL CHECK (length(headline) > 0 AND length(headline) <= 80),
+            detail        TEXT NOT NULL CHECK (length(detail) > 0),
+            payload_json  TEXT NOT NULL DEFAULT '{}',
+            rank          REAL,
+            status        TEXT NOT NULL DEFAULT 'open'
+                          CHECK (status IN ('open','answered','expired','superseded')),
+            answer        TEXT CHECK (answer IN ('approve','reject','choice','input')),
+            answer_note   TEXT,
+            answer_choice_id TEXT,
+            answer_input  TEXT,
+            acted_by      TEXT CHECK (acted_by IN ('jesse','henry-policy','system')),
+            created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            resolved_at   TEXT,
+            CHECK (status != 'answered'
+                   OR (answer IS NOT NULL AND acted_by IS NOT NULL AND resolved_at IS NOT NULL))
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    // Defensive backfill: CREATE TABLE IF NOT EXISTS won't add columns to a
+    // table created by an earlier iteration of this (unreleased) schema.
+    let decision_cols: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('decisions')")
+            .fetch_all(&mut *tx)
+            .await?;
+    for (col, ddl) in [
+        (
+            "answer_choice_id",
+            "ALTER TABLE decisions ADD COLUMN answer_choice_id TEXT",
+        ),
+        (
+            "answer_input",
+            "ALTER TABLE decisions ADD COLUMN answer_input TEXT",
+        ),
+    ] {
+        if !decision_cols.iter().any(|c| c == col) {
+            sqlx::query(ddl).execute(&mut *tx).await?;
+        }
+    }
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_decisions_open
+         ON decisions(status, rank DESC, created_at) WHERE status = 'open'",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_decisions_goal ON decisions(goal_id)")
+        .execute(&mut *tx)
+        .await?;
+
+    // ── DECISION AUDIT (append-only, hash chain) ──
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS decision_audit (
+            seq             INTEGER PRIMARY KEY AUTOINCREMENT,
+            decision_id     TEXT NOT NULL,
+            goal_id         TEXT,
+            acted_by        TEXT NOT NULL,
+            tier            INTEGER NOT NULL,
+            outcome         TEXT NOT NULL,
+            evidence_digest TEXT,
+            prev_hash       TEXT,
+            row_hash        TEXT NOT NULL,
+            created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS trg_decision_audit_no_update BEFORE UPDATE ON decision_audit
+         BEGIN SELECT RAISE(ABORT, 'decision_audit is append-only'); END",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS trg_decision_audit_no_delete BEFORE DELETE ON decision_audit
+         BEGIN SELECT RAISE(ABORT, 'decision_audit is append-only'); END",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    // ── RISK POLICY (trust dial) ──
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS risk_policy (
+            action_class TEXT PRIMARY KEY,
+            tier         INTEGER NOT NULL CHECK (tier IN (0,1,2)),
+            rationale    TEXT,
+            updated_by   TEXT NOT NULL DEFAULT 'system',
+            updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    // Seeds. Unknown action_class resolves to Tier 2 (fail-closed) in code.
+    sqlx::query(
+        "INSERT OR IGNORE INTO risk_policy (action_class, tier, rationale) VALUES
+            ('goal_ready', 0, 'Triage->Ready promotion is reversible'),
+            ('goal_dispatch', 0, 'Dispatching a ready goal to a worker is reversible'),
+            ('goal_review', 0, 'Worker reporting completion is informational'),
+            ('goal_complete_confined', 0, 'Completion check passed, diff confined to declared paths, reversible class'),
+            ('goal_approve_standard', 1, 'Review->Complete requires a recorded decision (Henry or Jesse)'),
+            ('goal_retry_within_budget', 1, 'Reject/retry requires a recorded decision with rationale'),
+            ('merge_to_main', 2, 'Irreversible publication'),
+            ('push_main', 2, 'Irreversible publication'),
+            ('schema_migration', 2, 'Data-shape change'),
+            ('user_data_deletion', 2, 'Destructive, includes goal-card deletion'),
+            ('network_external', 2, 'Side effects outside the machine'),
+            ('spend', 2, 'Costs money'),
+            ('secrets_access', 2, 'Credential exposure'),
+            ('permission_change', 2, 'Expands capability surface'),
+            ('orchestrator_edit', 2, 'Self-modification of the control loop'),
+            ('policy_edit', 2, 'Changes to this table are themselves Tier 2')",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    // ── Defense-in-depth: block raw goal moves into complete-bound columns ──
+    // Fires for ANY connection (including raw sqlite3) absent a matching
+    // answered approve decision for the goal.
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS trg_goal_complete_guard
+         BEFORE UPDATE OF column_id ON cards
+         FOR EACH ROW
+         WHEN OLD.card_type = 'goal'
+           AND NEW.column_id != OLD.column_id
+           AND (SELECT state_binding FROM board_columns WHERE id = NEW.column_id) = 'complete'
+           AND NOT EXISTS (
+               SELECT 1 FROM decisions d
+               WHERE d.goal_id = OLD.id
+                 AND d.status = 'answered'
+                 AND d.answer = 'approve'
+           )
+         BEGIN
+             SELECT RAISE(ABORT, 'goal cannot enter complete without an answered approve decision');
+         END",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Migrate an existing database to the decision-inbox schema.
+///
+/// Follows the idempotent migrate_v7_to_v8 template. Records
+/// DECISION_INBOX_SCHEMA_VERSION in schema_version only once Jesse assigns a
+/// real version number (sentinel mode records nothing and simply re-ensures
+/// the schema, which is a no-op when present).
+pub async fn migrate_to_decision_inbox(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Ensuring decision-inbox schema (decisions, decision_audit, risk_policy)");
+
+    apply_decision_inbox_schema(pool).await?;
+
+    if DECISION_INBOX_SCHEMA_VERSION != DECISION_INBOX_VERSION_SENTINEL {
+        sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (?)")
+            .bind(DECISION_INBOX_SCHEMA_VERSION)
+            .execute(pool)
+            .await?;
+        info!(
+            "Spectral schema migrated to v{} (decision inbox)",
+            DECISION_INBOX_SCHEMA_VERSION
+        );
+    }
+
     Ok(())
 }
 
