@@ -1,0 +1,43 @@
+9:39:13 p.m. [vite] ws proxy error:
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+9:39:13 p.m. [vite] ws proxy error:
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+9:39:13 p.m. [vite] http proxy error: /api/projects
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+9:39:14 p.m. [vite] http proxy error: /api/henry/status
+Error: socket hang up
+    at Socket.socketOnEnd (node:_http_client:599:25)
+    at Socket.emit (node:events:531:35)
+    at endReadableNT (node:internal/streams/readable:1698:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:89:21)
+9:39:21 p.m. [vite] http proxy error: /api/henry/status
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+9:39:21 p.m. [vite] http proxy error: /api/dashboard
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+9:39:21 p.m. [vite] http proxy error: /api/henry/status
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+9:39:21 p.m. [vite] http proxy error: /api/projects
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+9:39:21 p.m. [vite] ws proxy error:
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+9:39:21 p.m. [vite] http proxy error: /api/dashboard
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+9:39:21 p.m. [vite] http proxy error: /api/henry/status
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+9:39:21 p.m. [vite] ws proxy error:
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+9:39:21 p.m. [vite] ws proxy error:
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+9:57:01 p.m. [vite] hmr update /src/components/world/WorldView.tsx, /src/index.css

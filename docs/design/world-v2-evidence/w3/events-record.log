@@ -1,0 +1,150 @@
+2026-06-12T00:19:49.316Z [harness] world tab click: null
+2026-06-12T00:20:02.189Z [henry-poll] current_state=idle tool=none
+2026-06-12T00:20:02.332Z [librarian-poll] state=error task="Error: Ollama unreachable: error sending request for url (http://localhost:11434/api/generate)"
+2026-06-12T00:20:02.572Z [events-ws] librarian_describe_started ts=2026-06-11T17:33:15.053320Z {"memory_key":"chat-20260611_4-2","started_at":"2026-06-11T17:33:15.052422+00:00"}
+2026-06-12T00:20:02.577Z [events-ws] librarian_describe_completed ts=2026-06-11T17:34:53.532562Z {"memory_key":"chat-20260611_4-2","description":"Described the nature of the AI assistant and its memory system. Related
+2026-06-12T00:20:02.578Z [events-ws] librarian_describe_started ts=2026-06-11T17:34:53.549211Z {"memory_key":"chat-20260611_3-2","started_at":"2026-06-11T17:34:53.549177+00:00"}
+2026-06-12T00:20:02.581Z [events-ws] librarian_describe_completed ts=2026-06-11T17:36:10.051154Z {"memory_key":"chat-20260611_3-2","description":"Described the nature of the AI system and its memory functionality. Rel
+2026-06-12T00:20:02.582Z [events-ws] librarian_describe_started ts=2026-06-11T17:36:10.058170Z {"memory_key":"chat-20260611_2-3","started_at":"2026-06-11T17:36:10.058155+00:00"}
+2026-06-12T00:20:02.584Z [events-ws] librarian_describe_completed ts=2026-06-11T17:37:18.895027Z {"memory_key":"chat-20260611_2-3","description":"The memory describes an AI assistant identifying itself as Henry. Relat
+2026-06-12T00:20:02.739Z [meshcount] {"mesh":856,"skinned":26}
+2026-06-12T00:20:02.829Z [perf] after-initial {"fps":3.2,"calls":920,"triangles":79773,"geometries":841,"textures":25,"programs":22,"dpr":2}
+2026-06-12T00:20:23.736Z [frame] 0000-1781223623717-wide-initial.png
+2026-06-12T00:20:23.739Z [action] phase H: framing Henry (hall)
+2026-06-12T00:20:32.619Z [frame] 0001-1781223632612-H-available.jpg
+2026-06-12T00:20:36.476Z [frame] 0002-1781223636467-H-available.jpg
+2026-06-12T00:20:40.224Z [frame] 0003-1781223640203-H-available.jpg
+2026-06-12T00:20:43.815Z [frame] 0004-1781223643813-H-available.jpg
+2026-06-12T00:20:45.019Z [action] creating session + sending real chat message to Henry
+2026-06-12T00:20:45.212Z [action] session created: 20260612_2
+2026-06-12T00:20:45.336Z [henry-poll] current_state=in_conversation tool=none
+2026-06-12T00:20:45.567Z [action] update_provider -> HTTP 200
+2026-06-12T00:20:45.599Z [action] reply stream opened: HTTP 200
+2026-06-12T00:20:47.929Z [frame] 0005-1781223647915-H-chat.jpg
+2026-06-12T00:20:48.220Z [action] reply stream closed (Finish=true, 4354 bytes)
+2026-06-12T00:20:53.567Z [frame] 0006-1781223653566-H-chat.jpg
+2026-06-12T00:20:57.263Z [frame] 0007-1781223657262-H-chat.jpg
+2026-06-12T00:21:01.477Z [frame] 0008-1781223661475-H-chat.jpg
+2026-06-12T00:21:05.581Z [frame] 0009-1781223665564-H-chat.jpg
+2026-06-12T00:21:10.088Z [frame] 0010-1781223670078-H-chat.jpg
+2026-06-12T00:21:12.787Z [frame] 0011-1781223672784-H-chat.jpg
+2026-06-12T00:21:15.868Z [frame] 0012-1781223675864-H-chat.jpg
+2026-06-12T00:21:18.834Z [frame] 0013-1781223678830-H-chat.jpg
+2026-06-12T00:21:22.344Z [frame] 0014-1781223682327-H-chat.jpg
+2026-06-12T00:21:25.077Z [frame] 0015-1781223685075-H-chat.jpg
+2026-06-12T00:21:28.204Z [frame] 0016-1781223688201-H-chat.jpg
+2026-06-12T00:21:31.193Z [frame] 0017-1781223691189-H-chat.jpg
+2026-06-12T00:21:34.040Z [frame] 0018-1781223694029-H-chat.jpg
+2026-06-12T00:21:36.873Z [frame] 0019-1781223696863-H-chat.jpg
+2026-06-12T00:21:39.993Z [frame] 0020-1781223699983-H-chat.jpg
+2026-06-12T00:21:42.892Z [frame] 0021-1781223702888-H-chat.jpg
+2026-06-12T00:21:45.699Z [frame] 0022-1781223705685-H-chat.jpg
+2026-06-12T00:21:48.238Z [frame] 0023-1781223708236-H-chat.jpg
+2026-06-12T00:21:51.092Z [frame] 0024-1781223711089-H-chat.jpg
+2026-06-12T00:21:54.335Z [frame] 0025-1781223714334-H-chat.jpg
+2026-06-12T00:21:57.014Z [frame] 0026-1781223717011-H-chat.jpg
+2026-06-12T00:21:59.960Z [frame] 0027-1781223719958-H-chat.jpg
+2026-06-12T00:22:02.574Z [frame] 0028-1781223722571-H-chat.jpg
+2026-06-12T00:22:05.055Z [frame] 0029-1781223725052-H-chat.jpg
+2026-06-12T00:22:07.342Z [frame] 0030-1781223727341-H-chat.jpg
+2026-06-12T00:22:09.688Z [frame] 0031-1781223729687-H-chat.jpg
+2026-06-12T00:22:12.064Z [frame] 0032-1781223732062-H-chat.jpg
+2026-06-12T00:22:14.397Z [frame] 0033-1781223734396-H-chat.jpg
+2026-06-12T00:22:16.817Z [frame] 0034-1781223736817-H-after.jpg
+2026-06-12T00:22:19.208Z [frame] 0035-1781223739207-H-after.jpg
+2026-06-12T00:22:21.572Z [frame] 0036-1781223741571-H-after.jpg
+2026-06-12T00:22:23.885Z [frame] 0037-1781223743884-H-after.jpg
+2026-06-12T00:22:30.881Z [frame] 0038-1781223750875-H-final.png
+2026-06-12T00:22:30.884Z [action] phase L: framing the Librarian (mezzanine)
+2026-06-12T00:22:33.244Z [frame] 0039-1781223753244-L-idle.jpg
+2026-06-12T00:22:35.411Z [frame] 0040-1781223755410-L-idle.jpg
+2026-06-12T00:22:37.473Z [frame] 0041-1781223757473-L-idle.jpg
+2026-06-12T00:22:39.579Z [frame] 0042-1781223759578-L-idle.jpg
+2026-06-12T00:22:41.663Z [frame] 0043-1781223761663-L-idle.jpg
+2026-06-12T00:22:42.863Z [action] POST /api/librarian/run-now (real describe run)
+2026-06-12T00:22:43.142Z [librarian-poll] state=warming task="Warming model — loading qwen2.5:3b into memory"
+2026-06-12T00:22:43.746Z [frame] 0044-1781223763746-L-run.jpg
+2026-06-12T00:22:45.852Z [frame] 0045-1781223765851-L-run.jpg
+2026-06-12T00:22:47.963Z [frame] 0046-1781223767962-L-run.jpg
+2026-06-12T00:22:48.145Z [henry-poll] current_state=idle tool=none
+2026-06-12T00:22:50.101Z [frame] 0047-1781223770101-L-run.jpg
+2026-06-12T00:22:52.545Z [frame] 0048-1781223772540-L-run.jpg
+2026-06-12T00:22:55.015Z [frame] 0049-1781223775009-L-run.jpg
+2026-06-12T00:22:57.780Z [frame] 0050-1781223777760-L-run.jpg
+2026-06-12T00:23:00.452Z [frame] 0051-1781223780441-L-run.jpg
+2026-06-12T00:23:00.461Z [events-ws] librarian_describe_started ts=2026-06-12T00:23:00.405487Z {"memory_key":"chat-20260612_2-2","started_at":"2026-06-12T00:23:00.402819+00:00"}
+2026-06-12T00:23:01.281Z [librarian-poll] state=describing task="Describing memory 1 of ~2"
+2026-06-12T00:23:03.026Z [frame] 0052-1781223783015-L-run.jpg
+2026-06-12T00:23:05.446Z [frame] 0053-1781223785433-L-run.jpg
+2026-06-12T00:23:07.962Z [frame] 0054-1781223787960-L-run.jpg
+2026-06-12T00:23:10.330Z [frame] 0055-1781223790323-L-run.jpg
+2026-06-12T00:23:13.530Z [frame] 0056-1781223793493-L-run.jpg
+2026-06-12T00:23:16.429Z [frame] 0057-1781223796416-L-run.jpg
+2026-06-12T00:23:19.143Z [frame] 0058-1781223799141-L-run.jpg
+2026-06-12T00:23:22.396Z [frame] 0059-1781223802394-L-run.jpg
+2026-06-12T00:23:25.384Z [frame] 0060-1781223805382-L-run.jpg
+2026-06-12T00:23:28.779Z [frame] 0061-1781223808777-L-run.jpg
+2026-06-12T00:23:31.905Z [frame] 0062-1781223811904-L-run.jpg
+2026-06-12T00:23:35.103Z [frame] 0063-1781223815033-L-run.jpg
+2026-06-12T00:23:40.398Z [frame] 0064-1781223820390-L-run.jpg
+2026-06-12T00:23:43.760Z [frame] 0065-1781223823758-L-run.jpg
+2026-06-12T00:23:47.370Z [frame] 0066-1781223827362-L-run.jpg
+2026-06-12T00:23:50.888Z [frame] 0067-1781223830856-L-run.jpg
+2026-06-12T00:23:55.641Z [frame] 0068-1781223835639-L-run.jpg
+2026-06-12T00:23:58.698Z [frame] 0069-1781223838686-L-run.jpg
+2026-06-12T00:24:01.453Z [frame] 0070-1781223841447-L-run.jpg
+2026-06-12T00:24:04.823Z [frame] 0071-1781223844802-L-run.jpg
+2026-06-12T00:24:08.874Z [frame] 0072-1781223848830-L-run.jpg
+2026-06-12T00:24:11.922Z [frame] 0073-1781223851915-L-run.jpg
+2026-06-12T00:24:15.705Z [frame] 0074-1781223855697-L-run.jpg
+2026-06-12T00:24:20.294Z [frame] 0075-1781223860283-L-run.jpg
+2026-06-12T00:24:21.463Z [events-ws] librarian_describe_completed ts=2026-06-12T00:24:21.454518Z {"memory_key":"chat-20260612_2-2","description":"Described the nature of the memory system and how it functions. Related
+2026-06-12T00:24:21.473Z [events-ws] librarian_describe_started ts=2026-06-12T00:24:21.467021Z {"memory_key":"chat-20260612_1-2","started_at":"2026-06-12T00:24:21.466951+00:00"}
+2026-06-12T00:24:24.005Z [frame] 0076-1781223863996-L-run.jpg
+2026-06-12T00:24:28.045Z [frame] 0077-1781223868043-L-run.jpg
+2026-06-12T00:24:32.080Z [frame] 0078-1781223872075-L-run.jpg
+2026-06-12T00:24:36.075Z [frame] 0079-1781223876066-L-run.jpg
+2026-06-12T00:24:40.698Z [frame] 0080-1781223880678-L-run.jpg
+2026-06-12T00:24:45.951Z [frame] 0081-1781223885942-L-run.jpg
+2026-06-12T00:24:51.080Z [frame] 0082-1781223891079-L-run.jpg
+2026-06-12T00:24:55.730Z [frame] 0083-1781223895724-L-run.jpg
+2026-06-12T00:25:00.986Z [frame] 0084-1781223900984-L-run.jpg
+2026-06-12T00:25:06.085Z [frame] 0085-1781223906083-L-run.jpg
+2026-06-12T00:25:08.923Z [frame] 0086-1781223908905-L-run.jpg
+2026-06-12T00:25:11.607Z [frame] 0087-1781223911606-L-run.jpg
+2026-06-12T00:25:14.613Z [frame] 0088-1781223914612-L-run.jpg
+2026-06-12T00:25:17.330Z [frame] 0089-1781223917328-L-run.jpg
+2026-06-12T00:25:22.058Z [frame] 0090-1781223922057-L-run.jpg
+2026-06-12T00:25:25.098Z [frame] 0091-1781223925069-L-run.jpg
+2026-06-12T00:25:29.350Z [frame] 0092-1781223929329-L-run.jpg
+2026-06-12T00:25:36.665Z [frame] 0093-1781223936638-L-run.jpg
+2026-06-12T00:25:40.601Z [frame] 0094-1781223940599-L-run.jpg
+2026-06-12T00:25:44.465Z [frame] 0095-1781223944460-L-run.jpg
+2026-06-12T00:25:45.712Z [events-ws] librarian_describe_completed ts=2026-06-12T00:25:45.639604Z {"memory_key":"chat-20260612_1-2","description":"Described the nature of the AI system and its memory functionality. Rel
+2026-06-12T00:25:45.721Z [action] run-now -> {"success":true,"model":"qwen2.5:7b","keep_alive_secs":1800}
+2026-06-12T00:25:46.356Z [librarian-poll] state=batch_complete task="Batch complete — described 2 memories"
+2026-06-12T00:25:48.733Z [frame] 0096-1781223948731-L-run.jpg
+2026-06-12T00:25:50.599Z [frame] 0097-1781223950584-L-after.jpg
+2026-06-12T00:25:53.379Z [frame] 0098-1781223953379-L-after.jpg
+2026-06-12T00:25:55.656Z [frame] 0099-1781223955655-L-after.jpg
+2026-06-12T00:25:58.098Z [frame] 0100-1781223958096-L-after.jpg
+2026-06-12T00:26:08.365Z [frame] 0101-1781223968337-L-final.png
+2026-06-12T00:26:08.369Z [action] phase E: touching proxy-off — page loses ALL daemon connectivity (daemon itself untouched)
+2026-06-12T00:26:11.418Z [frame] 0102-1781223971417-E-error.jpg
+2026-06-12T00:26:13.420Z [frame] 0103-1781223973415-E-error.jpg
+2026-06-12T00:26:15.620Z [frame] 0104-1781223975612-E-error.jpg
+2026-06-12T00:26:17.621Z [frame] 0105-1781223977614-E-error.jpg
+2026-06-12T00:26:19.832Z [frame] 0106-1781223979829-E-error.jpg
+2026-06-12T00:26:21.801Z [frame] 0107-1781223981798-E-error.jpg
+2026-06-12T00:26:23.610Z [frame] 0108-1781223983609-E-error.jpg
+2026-06-12T00:26:25.692Z [frame] 0109-1781223985691-E-error.jpg
+2026-06-12T00:26:48.058Z [frame] 0110-1781224008043-E-error-steady.png
+2026-06-12T00:26:48.060Z [action] phase E: removing proxy-off — connectivity restored
+2026-06-12T00:26:51.961Z [frame] 0111-1781224011946-E-recovery.jpg
+2026-06-12T00:26:54.756Z [frame] 0112-1781224014755-E-recovery.jpg
+2026-06-12T00:26:57.119Z [frame] 0113-1781224017116-E-recovery.jpg
+2026-06-12T00:26:59.745Z [frame] 0114-1781224019744-E-recovery.jpg
+2026-06-12T00:27:02.368Z [frame] 0115-1781224022367-E-recovery.jpg
+2026-06-12T00:27:19.039Z [frame] 0116-1781224038980-E-recovered.png
+2026-06-12T00:27:19.505Z [perf] after-final {"fps":11.9,"calls":124,"triangles":55197,"geometries":843,"textures":25,"programs":22,"dpr":2}
+2026-06-12T00:27:19.511Z [harness] done

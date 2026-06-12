@@ -1,0 +1,37 @@
+2026-06-12T00:38:34.946Z [harness] world tab click: World
+2026-06-12T00:38:46.960Z [henry-poll] current_state=idle tool=none
+2026-06-12T00:38:46.965Z [librarian-poll] state=batch_complete task="Batch complete — described 2 memories"
+2026-06-12T00:38:46.967Z [meshcount] {"mesh":856,"skinned":26}
+2026-06-12T00:38:47.460Z [events-ws] librarian_describe_started ts=2026-06-11T17:33:15.053320Z {"memory_key":"chat-20260611_4-2","started_at":"2026-06-11T17:33:15.052422+00:00"}
+2026-06-12T00:38:47.460Z [events-ws] librarian_describe_completed ts=2026-06-11T17:34:53.532562Z {"memory_key":"chat-20260611_4-2","description":"Described the nature of the AI assistant and its memory system. Related
+2026-06-12T00:38:47.460Z [events-ws] librarian_describe_started ts=2026-06-11T17:34:53.549211Z {"memory_key":"chat-20260611_3-2","started_at":"2026-06-11T17:34:53.549177+00:00"}
+2026-06-12T00:38:47.461Z [events-ws] librarian_describe_completed ts=2026-06-11T17:36:10.051154Z {"memory_key":"chat-20260611_3-2","description":"Described the nature of the AI system and its memory functionality. Rel
+2026-06-12T00:38:47.461Z [events-ws] librarian_describe_started ts=2026-06-11T17:36:10.058170Z {"memory_key":"chat-20260611_2-3","started_at":"2026-06-11T17:36:10.058155+00:00"}
+2026-06-12T00:38:47.461Z [events-ws] librarian_describe_completed ts=2026-06-11T17:37:18.895027Z {"memory_key":"chat-20260611_2-3","description":"The memory describes an AI assistant identifying itself as Henry. Relat
+2026-06-12T00:38:47.462Z [events-ws] librarian_describe_started ts=2026-06-12T00:23:00.405487Z {"memory_key":"chat-20260612_2-2","started_at":"2026-06-12T00:23:00.402819+00:00"}
+2026-06-12T00:38:47.462Z [events-ws] librarian_describe_completed ts=2026-06-12T00:24:21.454518Z {"memory_key":"chat-20260612_2-2","description":"Described the nature of the memory system and how it functions. Related
+2026-06-12T00:38:47.462Z [events-ws] librarian_describe_started ts=2026-06-12T00:24:21.467021Z {"memory_key":"chat-20260612_1-2","started_at":"2026-06-12T00:24:21.466951+00:00"}
+2026-06-12T00:38:47.463Z [events-ws] librarian_describe_completed ts=2026-06-12T00:25:45.639604Z {"memory_key":"chat-20260612_1-2","description":"Described the nature of the AI system and its memory functionality. Rel
+2026-06-12T00:38:55.078Z [frame] 0000-1781224735071-E0-available-before.png
+2026-06-12T00:38:55.079Z [action] phaseE: touching proxy-off — page loses ALL daemon connectivity (daemon itself untouched)
+2026-06-12T00:38:56.325Z [frame] 0001-1781224736324-E-error.jpg
+2026-06-12T00:38:58.148Z [frame] 0002-1781224738147-E-error.jpg
+2026-06-12T00:39:00.156Z [frame] 0003-1781224740155-E-error.jpg
+2026-06-12T00:39:02.172Z [frame] 0004-1781224742171-E-error.jpg
+2026-06-12T00:39:04.004Z [frame] 0005-1781224744004-E-error.jpg
+2026-06-12T00:39:06.001Z [frame] 0006-1781224746001-E-error.jpg
+2026-06-12T00:39:07.868Z [frame] 0007-1781224747867-E-error.jpg
+2026-06-12T00:39:09.909Z [frame] 0008-1781224749909-E-error.jpg
+2026-06-12T00:39:12.012Z [frame] 0009-1781224752009-E-error.jpg
+2026-06-12T00:39:14.065Z [frame] 0010-1781224754064-E-error.jpg
+2026-06-12T00:39:21.866Z [frame] 0011-1781224761858-E-error-steady.png
+2026-06-12T00:39:21.866Z [action] phaseE: removing proxy-off — connectivity restored
+2026-06-12T00:39:23.045Z [frame] 0012-1781224763044-E-recovery.jpg
+2026-06-12T00:39:25.626Z [frame] 0013-1781224765625-E-recovery.jpg
+2026-06-12T00:39:28.090Z [frame] 0014-1781224768089-E-recovery.jpg
+2026-06-12T00:39:30.097Z [frame] 0015-1781224770094-E-recovery.jpg
+2026-06-12T00:39:32.197Z [frame] 0016-1781224772196-E-recovery.jpg
+2026-06-12T00:39:34.078Z [frame] 0017-1781224774078-E-recovery.jpg
+2026-06-12T00:39:43.265Z [frame] 0018-1781224783258-E-recovered.png
+2026-06-12T00:39:43.273Z [perf] phaseE-final {"fps":1,"calls":100,"triangles":49081,"geometries":841,"textures":25,"programs":22,"dpr":2}
+2026-06-12T00:39:43.274Z [harness] done
