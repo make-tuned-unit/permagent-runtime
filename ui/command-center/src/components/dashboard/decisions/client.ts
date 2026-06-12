@@ -69,7 +69,7 @@ async function decisionsFetch<T>(endpoint: string, options?: RequestInit): Promi
   return response.json() as Promise<T>;
 }
 
-const realDecisionsClient: DecisionsClient = {
+export const realDecisionsClient: DecisionsClient = {
   async list(opts?: { all?: boolean }): Promise<DecisionsResponse> {
     const { items, summary } = await decisionsFetch<WireInboxResponse>(
       `/api/decisions${opts?.all ? '?all=1' : ''}`,
