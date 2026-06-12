@@ -118,6 +118,78 @@ pub async fn ingest_decision(
         .await
 }
 
+/// Human-readable answer text for an answered decision row: choice answers
+/// resolve to the chosen option's label, input answers to the input text,
+/// approve/reject pass through.
+pub fn answered_decision_answer_text(decision: &crate::decisions::Decision) -> String {
+    match decision.answer.as_deref() {
+        Some("choice") => {
+            let choice_id = decision.answer_choice_id.as_deref().unwrap_or("(unknown)");
+            decision
+                .payload
+                .get("options")
+                .and_then(|v| v.as_array())
+                .and_then(|opts| {
+                    opts.iter()
+                        .find(|o| o.get("id").and_then(|v| v.as_str()) == Some(choice_id))
+                })
+                .and_then(|o| o.get("label").and_then(|v| v.as_str()))
+                .unwrap_or(choice_id)
+                .to_string()
+        }
+        Some("input") => decision
+            .answer_input
+            .clone()
+            .unwrap_or_else(|| "(no input recorded)".to_string()),
+        Some(other) => other.to_string(),
+        None => "(unanswered)".to_string(),
+    }
+}
+
+/// Part B wiring: ingest a jesse-answered decision row straight from L1's
+/// decisions table. Resolves the project slug (used as both key part and
+/// wing) from `decision.project_id`, composes the question from the
+/// plain-language headline and the answer from the recorded
+/// answer/choice/input, then performs the keyed [`ingest_decision`] upsert.
+///
+/// Returns `Ok(None)` (no-op) for decisions that are not answered or not
+/// acted by jesse — only Jesse's explicit calls become memories.
+///
+/// Call site (outside this module; coordinator inserts the one-liner): L1's
+/// answer handler in crates/goose-server/src/routes/decisions.rs, after the
+/// answer commits.
+pub async fn ingest_answered_decision(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    brain: &SafeBrain,
+    decision: &crate::decisions::Decision,
+) -> anyhow::Result<Option<spectral::RememberResult>> {
+    if decision.status != "answered"
+        || decision.acted_by.as_deref() != Some(crate::decisions::ACTOR_JESSE)
+    {
+        return Ok(None);
+    }
+
+    let slug = match decision.project_id.as_deref() {
+        Some(pid) => crate::projects::get_project_by_id_or_slug(pool, pid)
+            .await
+            .map_err(anyhow::Error::msg)?
+            .map(|p| p.slug),
+        None => None,
+    }
+    .unwrap_or_else(|| "personal".to_string());
+
+    let answer_text = answered_decision_answer_text(decision);
+    let answered = AnsweredDecision {
+        project_slug: &slug,
+        wing: &slug,
+        decision_id: &decision.id,
+        question: &decision.headline,
+        answer: &answer_text,
+        note: decision.answer_note.as_deref(),
+    };
+    ingest_decision(brain, &answered).await.map(Some)
+}
+
 /// A recalled past decision.
 #[derive(Debug, Clone)]
 pub struct RecalledDecision {
@@ -283,5 +355,62 @@ mod tests {
     #[test]
     fn context_block_empty_input_returns_none() {
         assert!(format_decision_context_block(&[]).is_none());
+    }
+
+    // ── answer text composition (Part B) ──
+
+    fn answered_row(
+        answer: &str,
+        choice_id: Option<&str>,
+        input: Option<&str>,
+        payload: serde_json::Value,
+    ) -> crate::decisions::Decision {
+        crate::decisions::Decision {
+            id: "d-1".to_string(),
+            kind: "choice".to_string(),
+            goal_id: None,
+            project_id: None,
+            tier: 1,
+            headline: "Q".to_string(),
+            detail: "detail".to_string(),
+            payload,
+            rank: None,
+            status: "answered".to_string(),
+            answer: Some(answer.to_string()),
+            answer_note: None,
+            answer_choice_id: choice_id.map(String::from),
+            answer_input: input.map(String::from),
+            acted_by: Some("jesse".to_string()),
+            created_at: "2026-06-11T00:00:00.000Z".to_string(),
+            resolved_at: Some("2026-06-11T00:00:01.000Z".to_string()),
+        }
+    }
+
+    #[test]
+    fn answer_text_resolves_choice_label_input_and_passthrough() {
+        let payload = serde_json::json!({
+            "question": "Which?",
+            "options": [
+                {"id": "pg", "label": "Hosted Postgres"},
+                {"id": "lite", "label": "Local SQLite"}
+            ]
+        });
+        let d = answered_row("choice", Some("pg"), None, payload.clone());
+        assert_eq!(answered_decision_answer_text(&d), "Hosted Postgres");
+
+        // Unknown choice id falls back to the id itself.
+        let d = answered_row("choice", Some("gone"), None, payload);
+        assert_eq!(answered_decision_answer_text(&d), "gone");
+
+        let d = answered_row(
+            "input",
+            None,
+            Some("use the staging key"),
+            serde_json::json!({}),
+        );
+        assert_eq!(answered_decision_answer_text(&d), "use the staging key");
+
+        let d = answered_row("approve", None, None, serde_json::json!({}));
+        assert_eq!(answered_decision_answer_text(&d), "approve");
     }
 }

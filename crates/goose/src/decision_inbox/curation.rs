@@ -146,6 +146,88 @@ pub fn transitive_dependents(goal_id: &str, edges: &[(String, String)]) -> usize
     visited.len() - 1 // exclude the goal itself
 }
 
+/// Map a goal card's metadata `priority` string to a [`Priority`]
+/// (unknown/absent → Normal).
+pub fn priority_from_metadata(metadata: &serde_json::Value) -> Priority {
+    match metadata.get("priority").and_then(|v| v.as_str()) {
+        Some("low") => Priority::Low,
+        Some("high") => Priority::High,
+        Some("critical") => Priority::Critical,
+        _ => Priority::Normal,
+    }
+}
+
+/// Part B: deterministic re-rank pass over OPEN decisions — scores each one
+/// and persists the score into L1's `decisions.rank` column (GET
+/// /api/decisions orders by `rank DESC NULLS LAST`). Returns the number of
+/// rows updated.
+///
+/// Call sites (outside this module; coordinator inserts): L1's list handler
+/// before listing, or the orchestrator heartbeat. Pure SQL + arithmetic —
+/// zero cloud tokens, no local model.
+pub async fn rerank_open_decisions(pool: &sqlx::Pool<sqlx::Sqlite>) -> Result<usize, String> {
+    let now = Utc::now();
+    let open = crate::decisions::list_open_decisions(pool).await?;
+    if open.is_empty() {
+        return Ok(0);
+    }
+
+    // Dependency edges, loaded once per project referenced.
+    let mut edges_by_project: HashMap<String, Vec<(String, String)>> = HashMap::new();
+
+    let mut updated = 0usize;
+    for item in &open {
+        let d = &item.decision;
+
+        let (priority, blocked_goals) = match d.goal_id.as_deref() {
+            Some(goal_id) => match crate::cards::get_card(pool, goal_id).await? {
+                Some(card) => {
+                    let edges = match edges_by_project.get(&card.project_id) {
+                        Some(e) => e,
+                        None => {
+                            let loaded = load_goal_dependency_edges(pool, &card.project_id).await?;
+                            edges_by_project
+                                .entry(card.project_id.clone())
+                                .or_insert(loaded)
+                        }
+                    };
+                    (
+                        priority_from_metadata(&card.metadata_json),
+                        transitive_dependents(goal_id, edges),
+                    )
+                }
+                None => (Priority::Normal, 0),
+            },
+            None => (Priority::Normal, 0),
+        };
+
+        let created_at = DateTime::parse_from_rfc3339(&d.created_at)
+            .map(|t| t.with_timezone(&Utc))
+            .unwrap_or(now);
+
+        let scored = score_decision(
+            &OpenDecision {
+                id: d.id.clone(),
+                created_at,
+                priority,
+                blocked_goals,
+                malformed: d.kind == "malformed",
+            },
+            now,
+        );
+
+        let result = sqlx::query("UPDATE decisions SET rank = ? WHERE id = ? AND status = 'open'")
+            .bind(scored.score)
+            .bind(&d.id)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        updated += result.rows_affected() as usize;
+    }
+
+    Ok(updated)
+}
+
 /// Load `(goal, depends_on_goal)` edges for a project from existing card
 /// metadata — the SQL-over-existing-tables half of curation. Part B joins
 /// these against decision rows.
@@ -382,5 +464,101 @@ mod tests {
             .unwrap();
         assert_eq!(edges, vec![(child.id.clone(), root.id.clone())]);
         assert_eq!(transitive_dependents(&root.id, &edges), 1);
+    }
+
+    #[test]
+    fn priority_from_metadata_table() {
+        let cases = [
+            (serde_json::json!({"priority": "low"}), Priority::Low),
+            (serde_json::json!({"priority": "high"}), Priority::High),
+            (
+                serde_json::json!({"priority": "critical"}),
+                Priority::Critical,
+            ),
+            (serde_json::json!({"priority": "weird"}), Priority::Normal),
+            (serde_json::json!({}), Priority::Normal),
+        ];
+        for (meta, expected) in cases {
+            assert_eq!(priority_from_metadata(&meta), expected, "meta {}", meta);
+        }
+    }
+
+    #[tokio::test]
+    async fn rerank_persists_scores_that_order_the_inbox() {
+        use crate::projects::PERSONAL_PROJECT_ID;
+        use crate::session::spectral_schema::init_spectral_db;
+
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        init_spectral_db(&pool).await.unwrap();
+        crate::cards::seed_goal_columns(&pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        let col = crate::cards::get_goal_column(&pool, PERSONAL_PROJECT_ID, "triage")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let mk_goal = |priority: &str, deps: serde_json::Value| crate::cards::CreateCard {
+            project_id: PERSONAL_PROJECT_ID.to_string(),
+            title: "g".to_string(),
+            description: None,
+            card_type: Some("goal".to_string()),
+            column_id: Some(col.id.clone()),
+            created_by: None,
+            metadata_json: Some(serde_json::json!({
+                "priority": priority,
+                "depends_on": deps
+            })),
+        };
+
+        // critical goal with a dependent vs low-priority leaf goal.
+        let hot = crate::cards::create_card(&pool, mk_goal("critical", serde_json::json!([])))
+            .await
+            .unwrap();
+        let _dependent =
+            crate::cards::create_card(&pool, mk_goal("normal", serde_json::json!([hot.id])))
+                .await
+                .unwrap();
+        let cold = crate::cards::create_card(&pool, mk_goal("low", serde_json::json!([])))
+            .await
+            .unwrap();
+
+        let mk_decision = |goal_id: &str| crate::decisions::NewDecision {
+            kind: "unblock".to_string(),
+            goal_id: Some(goal_id.to_string()),
+            project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+            headline: Some("A goal is stuck and needs your direction".to_string()),
+            detail: Some("stuck".to_string()),
+            payload: serde_json::json!({"reason": "stuck"}),
+            ..Default::default()
+        };
+        // Create the LOW-priority decision first so creation order cannot
+        // accidentally produce the expected ranking.
+        let d_cold = crate::decisions::create_decision(&pool, mk_decision(&cold.id))
+            .await
+            .unwrap();
+        let d_hot = crate::decisions::create_decision(&pool, mk_decision(&hot.id))
+            .await
+            .unwrap();
+        assert!(d_cold.rank.is_none() && d_hot.rank.is_none());
+
+        let updated = rerank_open_decisions(&pool).await.unwrap();
+        assert_eq!(updated, 2);
+
+        let open = crate::decisions::list_open_decisions(&pool).await.unwrap();
+        assert_eq!(open.len(), 2);
+        assert_eq!(
+            open[0].decision.id, d_hot.id,
+            "critical + blocking decision must rank first"
+        );
+        assert!(open[0].decision.rank.unwrap() > open[1].decision.rank.unwrap());
+
+        // Deterministic: a second pass yields identical ordering.
+        rerank_open_decisions(&pool).await.unwrap();
+        let again = crate::decisions::list_open_decisions(&pool).await.unwrap();
+        assert_eq!(again[0].decision.id, open[0].decision.id);
     }
 }
