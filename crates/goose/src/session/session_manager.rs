@@ -616,6 +616,15 @@ impl SessionStorage {
                     if version < 8 {
                         spectral_schema::migrate_v7_to_v8(&self.pool).await?;
                     }
+                    // Decision inbox: while the version constant is the sentinel
+                    // this runs idempotently every boot (records nothing); once
+                    // Jesse assigns the real number it becomes a one-shot gate.
+                    if spectral_schema::DECISION_INBOX_SCHEMA_VERSION
+                        == spectral_schema::DECISION_INBOX_VERSION_SENTINEL
+                        || version < spectral_schema::DECISION_INBOX_SCHEMA_VERSION
+                    {
+                        spectral_schema::migrate_to_decision_inbox(&self.pool).await?;
+                    }
                 } else {
                     info!("Initializing Spectral schema at {:?}", self.db_path);
                     spectral_schema::init_spectral_db(&self.pool).await?;

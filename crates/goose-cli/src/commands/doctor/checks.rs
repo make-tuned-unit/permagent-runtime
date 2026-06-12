@@ -21,6 +21,7 @@ pub async fn run_all() -> Vec<CheckResult> {
     results.push(check_ui_served().await);
     results.push(check_permagent_db());
     results.push(check_memory_db());
+    results.push(check_decision_audit_chain());
     results.push(check_ollama().await);
     results.push(check_disk());
     results.push(check_caches());
@@ -825,6 +826,153 @@ async fn http_get_body(url: &str, bearer: Option<&str>) -> Result<String, String
     resp.text().await.map_err(|e| e.to_string())
 }
 
+// ── decision audit hash chain (Decision Inbox S3) ──
+
+/// Walk decision_audit verifying prev_hash linkage and recomputing each
+/// row_hash with the shared hash function. Reports the first break point.
+fn check_decision_audit_chain() -> CheckResult {
+    let name = "decision-audit-chain";
+    let db_path = Paths::spectral_db();
+
+    if !db_path.exists() {
+        return CheckResult {
+            name: name.into(),
+            status: CheckStatus::Info,
+            detail: "permagent.db not found — nothing to verify".into(),
+            remediation: None,
+        };
+    }
+
+    let conn = match open_readonly_sqlite(&db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            return CheckResult {
+                name: name.into(),
+                status: CheckStatus::Fail,
+                detail: format!("could not open permagent.db: {e}"),
+                remediation: None,
+            };
+        }
+    };
+
+    let table_exists = sqlite_scalar_i32(
+        &conn,
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='decision_audit'",
+    )
+    .unwrap_or(0)
+        > 0;
+    if !table_exists {
+        return CheckResult {
+            name: name.into(),
+            status: CheckStatus::Info,
+            detail: "decision_audit table not present (decision inbox schema not applied)".into(),
+            remediation: Some("Restart the daemon to apply pending migrations.".into()),
+        };
+    }
+
+    match walk_audit_chain(&conn) {
+        Err(e) => CheckResult {
+            name: name.into(),
+            status: CheckStatus::Fail,
+            detail: format!("could not read decision_audit: {e}"),
+            remediation: None,
+        },
+        Ok((total, None)) => CheckResult {
+            name: name.into(),
+            status: CheckStatus::Pass,
+            detail: format!("{total} audit row(s), hash chain intact"),
+            remediation: None,
+        },
+        Ok((total, Some((seq, why)))) => CheckResult {
+            name: name.into(),
+            status: CheckStatus::Fail,
+            detail: format!("chain BROKEN at seq {seq} of {total}: {why}"),
+            remediation: Some(
+                "The append-only decision audit log has been tampered with or corrupted. \
+                 Inspect decision_audit around the break point and restore from backup."
+                    .into(),
+            ),
+        },
+    }
+}
+
+/// Returns (total_rows, Some((break_seq, reason))) on a broken chain.
+#[allow(clippy::type_complexity)]
+fn walk_audit_chain(conn: &rusqlite::Connection) -> Result<(u64, Option<(i64, String)>), String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT seq, decision_id, goal_id, acted_by, tier, outcome, evidence_digest, \
+             prev_hash, row_hash, created_at FROM decision_audit ORDER BY seq ASC",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,            // seq
+                r.get::<_, String>(1)?,         // decision_id
+                r.get::<_, Option<String>>(2)?, // goal_id
+                r.get::<_, String>(3)?,         // acted_by
+                r.get::<_, i64>(4)?,            // tier
+                r.get::<_, String>(5)?,         // outcome
+                r.get::<_, Option<String>>(6)?, // evidence_digest
+                r.get::<_, Option<String>>(7)?, // prev_hash
+                r.get::<_, String>(8)?,         // row_hash
+                r.get::<_, String>(9)?,         // created_at
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut total = 0u64;
+    let mut expected_prev = String::new();
+    for row in rows {
+        let (
+            seq,
+            decision_id,
+            goal_id,
+            acted_by,
+            tier,
+            outcome,
+            evidence,
+            prev_hash,
+            row_hash,
+            created_at,
+        ) = row.map_err(|e| e.to_string())?;
+        total += 1;
+
+        let stored_prev = prev_hash.unwrap_or_default();
+        if stored_prev != expected_prev {
+            return Ok((
+                total,
+                Some((
+                    seq,
+                    "prev_hash does not match the previous row's row_hash".into(),
+                )),
+            ));
+        }
+
+        let recomputed = permagent::decisions::compute_audit_row_hash(
+            &stored_prev,
+            &decision_id,
+            goal_id.as_deref().unwrap_or(""),
+            &acted_by,
+            tier,
+            &outcome,
+            evidence.as_deref().unwrap_or(""),
+            &created_at,
+        );
+        if recomputed != row_hash {
+            return Ok((
+                total,
+                Some((seq, "row contents do not match the stored row_hash".into())),
+            ));
+        }
+        expected_prev = row_hash;
+    }
+
+    Ok((total, None))
+}
+
 fn open_readonly_sqlite(path: &std::path::Path) -> Result<rusqlite::Connection, String> {
     rusqlite::Connection::open_with_flags(
         path,
@@ -1047,6 +1195,63 @@ mod tests {
         if let Ok(conn) = result {
             assert!(sqlite_quick_check(&conn).is_err());
         }
+    }
+
+    #[test]
+    fn test_walk_audit_chain_detects_break() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("audit.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE decision_audit (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                decision_id TEXT NOT NULL, goal_id TEXT, acted_by TEXT NOT NULL,
+                tier INTEGER NOT NULL, outcome TEXT NOT NULL, evidence_digest TEXT,
+                prev_hash TEXT, row_hash TEXT NOT NULL, created_at TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+
+        // Empty chain verifies.
+        assert_eq!(walk_audit_chain(&conn).unwrap(), (0, None));
+
+        // Build two correctly chained rows with the shared hash function.
+        let h1 = permagent::decisions::compute_audit_row_hash(
+            "", "d1", "", "system", 1, "created", "", "t1",
+        );
+        conn.execute(
+            "INSERT INTO decision_audit (decision_id, goal_id, acted_by, tier, outcome, \
+             evidence_digest, prev_hash, row_hash, created_at) \
+             VALUES ('d1', NULL, 'system', 1, 'created', NULL, NULL, ?1, 't1')",
+            [&h1],
+        )
+        .unwrap();
+        let h2 = permagent::decisions::compute_audit_row_hash(
+            &h1, "d1", "", "jesse", 1, "approve", "", "t2",
+        );
+        conn.execute(
+            "INSERT INTO decision_audit (decision_id, goal_id, acted_by, tier, outcome, \
+             evidence_digest, prev_hash, row_hash, created_at) \
+             VALUES ('d1', NULL, 'jesse', 1, 'approve', NULL, ?1, ?2, 't2')",
+            rusqlite::params![&h1, &h2],
+        )
+        .unwrap();
+
+        let (total, broken) = walk_audit_chain(&conn).unwrap();
+        assert_eq!(total, 2);
+        assert!(broken.is_none(), "valid chain must verify: {:?}", broken);
+
+        // Forge a third row with a bogus hash → break detected at seq 3.
+        conn.execute(
+            "INSERT INTO decision_audit (decision_id, goal_id, acted_by, tier, outcome, \
+             evidence_digest, prev_hash, row_hash, created_at) \
+             VALUES ('d1', NULL, 'jesse', 2, 'approve', NULL, ?1, 'forged', 't3')",
+            [&h2],
+        )
+        .unwrap();
+        let (total, broken) = walk_audit_chain(&conn).unwrap();
+        assert_eq!(total, 3);
+        assert_eq!(broken.unwrap().0, 3);
     }
 
     #[test]
