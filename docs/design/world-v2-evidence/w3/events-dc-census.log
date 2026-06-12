@@ -1,0 +1,3 @@
+2026-06-12T00:39:54.271Z [harness] world tab click: World
+2026-06-12T00:40:37.609Z [census] {"names":[],"baselineCalls":921,"agents":{"henry":{"mesh":0,"skinned":6,"callsHidden":913,"callsRestored":921,"dcDelta":8},"librarian":{"mesh":0,"skinned":5,"callsHidden":914,"callsRestored":921,"dcDelta":7},"aria":{"mesh":0,"skinned":5,"callsHidden":914,"callsRestored":921,"dcDelta":7},"felix":{"mesh":0,"skinned":5,"callsHidden":914,"callsRestored":921,"dcDelta":7},"nova":{"mesh":0,"skinned":5,"callsHidden":914,"callsRestored":921,"dcDelta":7}}}
+2026-06-12T00:40:37.613Z [harness] done
