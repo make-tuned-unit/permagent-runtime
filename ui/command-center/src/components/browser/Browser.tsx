@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useCommandCenter } from '../../lib/store';
+import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useBrowserContentBridge } from '../../hooks/useBrowserContentBridge';
 import {
@@ -562,18 +563,24 @@ export function Browser() {
       />
 
       {/* URL bar */}
-      <div className="flex items-center gap-2 border-b border-dark-border px-3 py-2" style={{ backgroundColor: colors.surface }}>
+      <div className="flex items-center gap-2 px-3 py-2" style={{ backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}` }}>
         {/* Nav buttons */}
         <div className="flex items-center gap-1">
           <button
-            className="p-1.5 rounded text-dark-muted hover:text-dark-text hover:bg-white/5 transition-colors"
+            className="p-1.5 rounded hover:bg-white/5 transition-colors"
+            style={{ color: colors.textMuted }}
+            onMouseEnter={e => { e.currentTarget.style.color = colors.text; }}
+            onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
             title="Back (Cmd+[)"
             disabled
           >
             <FiArrowLeft size={14} />
           </button>
           <button
-            className="p-1.5 rounded text-dark-muted hover:text-dark-text hover:bg-white/5 transition-colors"
+            className="p-1.5 rounded hover:bg-white/5 transition-colors"
+            style={{ color: colors.textMuted }}
+            onMouseEnter={e => { e.currentTarget.style.color = colors.text; }}
+            onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
             title="Forward (Cmd+])"
             disabled
           >
@@ -581,7 +588,10 @@ export function Browser() {
           </button>
           <button
             onClick={handleReload}
-            className="p-1.5 rounded text-dark-muted hover:text-dark-text hover:bg-white/5 transition-colors"
+            className="p-1.5 rounded hover:bg-white/5 transition-colors"
+            style={{ color: colors.textMuted }}
+            onMouseEnter={e => { e.currentTarget.style.color = colors.text; }}
+            onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
             title="Reload (Cmd+R)"
             disabled={!activeTab?.webviewId}
           >
@@ -590,14 +600,19 @@ export function Browser() {
         </div>
 
         {/* Address bar */}
-        <div className="flex-1 flex items-center rounded-md border border-dark-border focus-within:border-accent transition-colors" style={{ backgroundColor: colors.bgDeeper }}>
+        <div
+          className="flex-1 flex items-center rounded-md transition-colors"
+          style={{ backgroundColor: colors.bgDeeper, border: `1px solid ${colors.border}` }}
+          onFocus={e => { e.currentTarget.style.borderColor = colors.cyan; }}
+          onBlur={e => { e.currentTarget.style.borderColor = colors.border; }}
+        >
           <span className="pl-2.5 pr-1">
             {protocol === 'https' ? (
-              <FiLock size={12} className="text-accent" />
+              <FiLock size={12} style={{ color: colors.cyan }} />
             ) : protocol === 'http' ? (
               <FiAlertTriangle size={12} className="text-amber-400" />
             ) : (
-              <FiShield size={12} className="text-dark-muted" />
+              <FiShield size={12} style={{ color: colors.textMuted }} />
             )}
           </span>
           <input
@@ -608,8 +623,10 @@ export function Browser() {
             onKeyDown={handleUrlKeyDown}
             onFocus={(e) => e.target.select()}
             placeholder="Search or enter URL..."
-            className="flex-1 bg-transparent text-xs text-dark-text placeholder:text-dark-muted/60 py-1.5 pr-3 outline-none font-mono"
+            className="browser-url-input flex-1 bg-transparent text-xs py-1.5 pr-3 outline-none"
+            style={{ fontFamily: font.mono, color: colors.text }}
           />
+          <style>{`.browser-url-input::placeholder { color: ${colors.textMuted}; opacity: 0.6; }`}</style>
         </div>
       </div>
 
@@ -618,11 +635,11 @@ export function Browser() {
         {!api ? (
           <div className="flex items-center justify-center h-full">
             <div className="text-center p-8">
-              <FiShield size={48} className="mx-auto mb-4 text-dark-muted" />
-              <h3 className="text-lg font-semibold text-dark-text mb-2">Desktop App Required</h3>
-              <p className="text-xs text-dark-muted max-w-md">
+              <FiShield size={48} className="mx-auto mb-4" style={{ color: colors.textMuted }} />
+              <h3 className="text-lg mb-2" style={{ fontFamily: font.display, fontWeight: 600, color: colors.text }}>Desktop App Required</h3>
+              <p className="text-xs max-w-md" style={{ fontFamily: font.body, color: colors.textMuted }}>
                 The embedded browser requires the Permagent desktop app. Run{' '}
-                <code className="bg-black/30 px-1.5 py-0.5 rounded text-accent">
+                <code className="px-1.5 py-0.5 rounded" style={{ fontFamily: font.mono, backgroundColor: colors.codeBg, color: colors.codeText }}>
                   npm run tauri:dev
                 </code>{' '}
                 to use this feature.
@@ -632,11 +649,11 @@ export function Browser() {
         ) : !activeTab?.webviewId ? (
           <div className="flex items-center justify-center h-full">
             <div className="text-center p-8">
-              <FiGlobe size={48} className="mx-auto mb-4 text-accent/30" />
-              <h3 className="text-sm font-medium text-dark-text mb-2">Ready to Browse</h3>
-              <p className="text-xs text-dark-muted">
+              <FiGlobe size={48} className="mx-auto mb-4" style={{ color: colors.cyan, opacity: 0.3 }} />
+              <h3 className="text-sm mb-2" style={{ fontFamily: font.display, fontWeight: 600, color: colors.text }}>Ready to Browse</h3>
+              <p className="text-xs" style={{ fontFamily: font.body, color: colors.textMuted }}>
                 Enter a URL above or press{' '}
-                <kbd className="bg-dark-border px-1.5 py-0.5 rounded text-[10px]">Cmd+L</kbd> to
+                <kbd className="px-1.5 py-0.5 rounded text-[10px]" style={{ fontFamily: font.mono, backgroundColor: colors.border }}>Cmd+L</kbd> to
                 focus the address bar
               </p>
               <div className="mt-6 flex flex-wrap gap-2 justify-center">
@@ -644,7 +661,10 @@ export function Browser() {
                   <button
                     key={site}
                     onClick={() => handleNavigate(`https://${site}`)}
-                    className="px-3 py-1.5 rounded-md bg-white/5 text-xs text-dark-muted hover:text-accent hover:bg-accent/10 transition-colors"
+                    className="px-3 py-1.5 rounded-md bg-white/5 text-xs transition-colors"
+                    style={{ fontFamily: font.body, color: colors.textMuted }}
+                    onMouseEnter={e => { e.currentTarget.style.color = colors.cyan; e.currentTarget.style.backgroundColor = colors.cyanSoft; }}
+                    onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; e.currentTarget.style.backgroundColor = ''; }}
                   >
                     {site}
                   </button>
@@ -656,8 +676,8 @@ export function Browser() {
       </div>
 
       {/* Status bar */}
-      <div className="flex items-center gap-3 border-t border-dark-border px-3 py-1" style={{ backgroundColor: colors.surface }}>
-        <span className="text-[10px] font-mono text-dark-muted flex-1 truncate">
+      <div className="flex items-center gap-3 px-3 py-1" style={{ backgroundColor: colors.surface, borderTop: `1px solid ${colors.border}` }}>
+        <span className="text-[10px] flex-1 truncate" style={{ fontFamily: font.mono, color: colors.textMuted }}>
           {activeTab?.loading
             ? 'Loading...'
             : activeTab?.webviewId
@@ -665,13 +685,23 @@ export function Browser() {
               : 'Ready'}
         </span>
         {activeTab?.webviewId && (
-          <span className="flex items-center gap-1 text-[10px] font-mono text-dark-muted">
-            <button onClick={() => handleZoom(-0.1)} className="hover:text-accent transition-colors px-0.5">−</button>
+          <span className="flex items-center gap-1 text-[10px]" style={{ fontFamily: font.mono, color: colors.textMuted }}>
+            <button
+              onClick={() => handleZoom(-0.1)}
+              className="transition-colors px-0.5"
+              onMouseEnter={e => { e.currentTarget.style.color = colors.cyan; }}
+              onMouseLeave={e => { e.currentTarget.style.color = ''; }}
+            >−</button>
             <span className="w-8 text-center">{Math.round(zoomLevel * 100)}%</span>
-            <button onClick={() => handleZoom(0.1)} className="hover:text-accent transition-colors px-0.5">+</button>
+            <button
+              onClick={() => handleZoom(0.1)}
+              className="transition-colors px-0.5"
+              onMouseEnter={e => { e.currentTarget.style.color = colors.cyan; }}
+              onMouseLeave={e => { e.currentTarget.style.color = ''; }}
+            >+</button>
           </span>
         )}
-        <span className="text-[10px] font-mono text-dark-muted">
+        <span className="text-[10px]" style={{ fontFamily: font.mono, color: colors.textMuted }}>
           {tabs.length} tab{tabs.length !== 1 ? 's' : ''}
         </span>
       </div>

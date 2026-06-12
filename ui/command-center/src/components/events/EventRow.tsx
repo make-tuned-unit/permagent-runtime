@@ -1,5 +1,7 @@
 import { useMemo } from 'react';
 import type { EventRecord } from '../../lib/store';
+import { font } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
 
 // Color-coded type badges per spec:
 // green = success/completed, blue = info/started, red = errors/failed, yellow = warnings
@@ -76,6 +78,7 @@ interface EventRowProps {
 }
 
 export function EventRow({ event, isSelected, onClick }: EventRowProps) {
+  const { colors } = useTheme();
   const color = TYPE_COLORS[event.event_type] || DEFAULT_COLOR;
   const relative = useMemo(() => relativeTime(event.timestamp), [event.timestamp]);
   const summary = useMemo(() => summarizePayload(event), [event]);
@@ -83,13 +86,15 @@ export function EventRow({ event, isSelected, onClick }: EventRowProps) {
   return (
     <button
       onClick={onClick}
-      className={`flex w-full items-center gap-2 border-b border-dark-border/20 px-3 py-1.5 text-left transition hover:bg-white/[0.03] ${
+      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left transition hover:bg-white/[0.03] ${
         isSelected ? 'bg-white/[0.05]' : ''
       }`}
+      style={{ borderBottom: `1px solid ${colors.border}` }}
     >
       {/* Relative timestamp with full ISO on hover */}
       <span
-        className="shrink-0 text-[10px] font-mono text-[#00ffb4]/70 w-[52px] text-right"
+        className="shrink-0 text-[10px] w-[52px] text-right"
+        style={{ fontFamily: font.mono, color: colors.success, opacity: 0.7 }}
         title={event.timestamp}
       >
         {relative}
@@ -97,13 +102,14 @@ export function EventRow({ event, isSelected, onClick }: EventRowProps) {
 
       {/* Color-coded type badge */}
       <span
-        className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wide ${color.bg} ${color.text} min-w-[80px] text-center truncate`}
+        className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] uppercase tracking-wide ${color.bg} ${color.text} min-w-[80px] text-center truncate`}
+        style={{ fontFamily: font.mono }}
       >
         {event.event_type.replace(/_/g, ' ')}
       </span>
 
       {/* Payload summary */}
-      <span className="flex-1 truncate text-[11px] font-mono text-dark-text">
+      <span className="flex-1 truncate text-[11px]" style={{ fontFamily: font.mono, color: colors.text }}>
         {summary}
       </span>
     </button>
