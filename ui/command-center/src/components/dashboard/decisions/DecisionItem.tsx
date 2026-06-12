@@ -6,6 +6,16 @@
  * Tier-2 answers are confirmed individually, inline — there is deliberately
  * no checkbox, no select-all, no batch affordance.
  *
+ * Kinds and effects mirror L1's handler (routes/decisions.rs:170-335):
+ *  - approve_review: approve → Review→Complete; reject → rework (or park at
+ *    attempt cap). Evidence digest available via the goal card (L2).
+ *  - unblock: approve → unpark with a raised attempt cap; reject/input →
+ *    recorded, goal stays parked. Freeform replies travel as answer='input'.
+ *  - choice: answer='choice' + choiceId from payload.options
+ *    (decisions.rs:625-643); payload.default marks Henry's recommendation.
+ *  - risk_gate: approve authorizes the gated action class; reject records.
+ *  - malformed: acknowledgement only — recorded, no state change.
+ *
  * S2: every string from the daemon renders as a React text node. No markdown,
  * no auto-links, no dangerouslySetInnerHTML.
  */
@@ -15,6 +25,7 @@ import type { ReactNode } from 'react';
 import { font, radius, ease } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import type { AnswerBody, Decision } from './types';
+import { choiceOptions, recommendedChoiceId } from './types';
 import type { AnswerResult } from './useDecisions';
 import { EvidenceDigest } from './EvidenceDigest';
 import { formatAge } from './format';
@@ -31,6 +42,33 @@ interface PendingAnswer {
   confirmLabel: string;
   /** Plain-language restatement shown in the confirm row. */
   effectText: string;
+}
+
+/**
+ * Confirm-step copy per kind+answer. UI copy describing the server's
+ * documented gated effect (routes/decisions.rs:176-334) — never derived from
+ * decision content (A1).
+ */
+function effectTextFor(kind: string, answer: 'approve' | 'reject'): string {
+  if (kind === 'approve_review') {
+    return answer === 'approve'
+      ? 'Confirm approve — Henry will mark this goal complete and start anything waiting on it.'
+      : 'Confirm reject — Henry will send the work back for another attempt.';
+  }
+  if (kind === 'unblock') {
+    return answer === 'approve'
+      ? 'Confirm approve — Henry will wake this goal up and let it try again.'
+      : 'Confirm reject — the goal stays parked.';
+  }
+  if (kind === 'risk_gate') {
+    return answer === 'approve'
+      ? 'Confirm approve — Henry may go ahead with this action.'
+      : 'Confirm reject — Henry will not go ahead with this.';
+  }
+  // malformed and anything unknown: recorded only, no state change.
+  return answer === 'approve'
+    ? 'Confirm — this is recorded for the audit trail; nothing else changes.'
+    : 'Confirm reject — this is recorded for the audit trail; nothing else changes.';
 }
 
 export function DecisionItem({ decision: d, onAnswer, onConflictSettled }: Props) {
@@ -68,7 +106,13 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled }: Props
   const badge = badgeFor(d, colors);
   const isUnblock = d.kind === 'unblock';
   const isChoice = d.kind === 'choice';
-  const recommended = d.recommendation?.label;
+  const isApprovalLike =
+    d.kind === 'approve_review' || d.kind === 'risk_gate' || d.kind === 'malformed';
+  const options = choiceOptions(d);
+  const recommendedId = recommendedChoiceId(d);
+  const recommended = options.find(o => o.id === recommendedId) ?? null;
+  // L2 digest lives on the goal card; only goal-bound reviews can have one.
+  const hasEvidence = d.kind === 'approve_review' && !!d.goal_id && !!d.project_id;
 
   return (
     <div data-testid={`decision-${d.id}`} style={{
@@ -96,50 +140,33 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled }: Props
         </span>
       </div>
 
-      {/* Detail line */}
+      {/* Goal binding, where known (joined title — plain data) */}
+      {d.goal_title && (
+        <div style={{ fontSize: 11, color: colors.textDim, marginTop: 4 }}>
+          Goal: {d.goal_title}
+        </div>
+      )}
+
+      {/* Detail: technical why/attribution, verbatim (S2) */}
       {d.detail && (
         <div style={{
           fontSize: 12, color: colors.textMuted, marginTop: 4,
-          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+          whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
+          maxHeight: 96, overflow: 'auto',
         }}>
           {d.detail}
         </div>
       )}
 
-      {/* Unblock: the worker's question, verbatim and quoted */}
-      {isUnblock && d.specific_ask && (
-        <div style={{
-          marginTop: 8, padding: '8px 12px',
-          borderLeft: `2px solid ${colors.warning}`,
-          background: colors.warning + '14',
-          borderRadius: radius.sm,
-          fontSize: 12, color: colors.text, fontStyle: 'italic',
-          whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
-        }}>
-          “{d.specific_ask}”
-        </div>
-      )}
-
-      {/* Effect line, verbatim from the daemon */}
-      {d.effect_summary && (
-        <div style={{
-          fontSize: 12, color: colors.textMuted, marginTop: 6,
-          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-        }}>
-          {d.effect_summary}
-        </div>
-      )}
-
-      {/* Recommendation chip — informational, not a button */}
-      {d.recommendation && (
+      {/* Recommendation chip — only when the daemon marked a default option */}
+      {recommended && (
         <div style={{ marginTop: 8 }}>
           <span style={{
             display: 'inline-flex', alignItems: 'center', gap: 6,
             borderRadius: radius.pill, background: colors.cyanSoft,
             color: colors.cyan, fontSize: 11, fontWeight: 500, padding: '3px 10px',
           }}>
-            Henry recommends · {d.recommendation.label}
-            {d.recommendation.confidence ? ` (${d.recommendation.confidence} confidence)` : ''}
+            Henry recommends · {recommended.label}
           </span>
         </div>
       )}
@@ -170,7 +197,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled }: Props
           <Btn disabled={submitting} onClick={() => setPending(null)}>Cancel</Btn>
         </div>
       ) : inputOpen ? (
-        /* Freeform answer (unblock "Other…") */
+        /* Freeform answer (unblock) — travels as answer='input' */
         <div style={{ marginTop: 10 }}>
           <textarea
             value={inputText}
@@ -204,16 +231,16 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled }: Props
         </div>
       ) : (
         /* Action row per kind (A4): binary approvals get Approve/Reject/Add note
-           only; option chips appear only on choice-kind (and option unblocks). */
+           only; option chips appear only on choice-kind decisions. */
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-          {d.kind === 'approval' && (
+          {(isApprovalLike || isUnblock) && (
             <>
               <Btn
                 variant="primary"
                 onClick={() => setPending({
                   body: { answer: 'approve' },
                   confirmLabel: 'Confirm approve',
-                  effectText: `Confirm approve — ${d.effect_summary}`,
+                  effectText: effectTextFor(d.kind, 'approve'),
                 })}
               >
                 Approve
@@ -223,7 +250,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled }: Props
                 onClick={() => setPending({
                   body: { answer: 'reject' },
                   confirmLabel: 'Confirm reject',
-                  effectText: 'Confirm reject — Henry will not go ahead with this.',
+                  effectText: effectTextFor(d.kind, 'reject'),
                 })}
               >
                 Reject
@@ -231,14 +258,14 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled }: Props
             </>
           )}
 
-          {(isChoice || isUnblock) && d.options?.map(opt => (
+          {isChoice && options.map(opt => (
             <Btn
               key={opt.id}
-              variant={opt.label === recommended ? 'primary' : 'ghost'}
+              variant={opt.id === recommendedId ? 'primary' : 'ghost'}
               onClick={() => setPending({
                 body: { answer: 'choice', choice_id: opt.id },
                 confirmLabel: 'Confirm choice',
-                effectText: `Confirm “${opt.label}” — ${opt.effect_summary}`,
+                effectText: `Confirm “${opt.label}” — Henry will go with this option.`,
               })}
             >
               {opt.label}
@@ -246,14 +273,12 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled }: Props
           ))}
 
           {isUnblock && (
-            <Btn onClick={() => setInputOpen(true)}>
-              {d.options?.length ? 'Other…' : 'Send answer'}
-            </Btn>
+            <Btn onClick={() => setInputOpen(true)}>Send answer</Btn>
           )}
 
           <Btn onClick={() => setNoteOpen(o => !o)}>Add note</Btn>
 
-          {d.evidence && (
+          {hasEvidence && (
             <button
               onClick={() => setEvidenceOpen(o => !o)}
               style={{
@@ -285,16 +310,22 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled }: Props
         />
       )}
 
-      {/* Layered evidence (A3) */}
-      {evidenceOpen && d.evidence && <EvidenceDigest evidence={d.evidence} />}
+      {/* Layered evidence (A3) — lazy-fetched L2 digest from the goal card */}
+      {evidenceOpen && hasEvidence && (
+        <EvidenceDigest projectId={d.project_id!} goalId={d.goal_id!} />
+      )}
     </div>
   );
 }
 
 function badgeFor(d: Decision, colors: ReturnType<typeof useTheme>['colors']) {
-  if (d.kind === 'unblock') return { label: 'unblock', color: colors.warning, bg: colors.warning + '24' };
-  if (d.kind === 'choice') return { label: 'choice', color: colors.purpleBright, bg: colors.purpleSoft };
-  return { label: 'approval', color: colors.cyan, bg: colors.cyanSoft };
+  switch (d.kind) {
+    case 'unblock': return { label: 'unblock', color: colors.warning, bg: colors.warning + '24' };
+    case 'choice': return { label: 'choice', color: colors.purpleBright, bg: colors.purpleSoft };
+    case 'risk_gate': return { label: 'permission', color: colors.danger, bg: colors.danger + '24' };
+    case 'malformed': return { label: 'review', color: colors.warning, bg: colors.warning + '24' };
+    default: return { label: 'approval', color: colors.cyan, bg: colors.cyanSoft };
+  }
 }
 
 /** Inline-styled button per the post-#273 convention (no shared atom yet). */

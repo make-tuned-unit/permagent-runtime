@@ -1,20 +1,56 @@
 /**
- * Decision Inbox — client selection (Lane L4).
+ * Decision Inbox — real daemon client (Lane L4, default since the real-API
+ * swap). The mock stays behind VITE_DECISIONS_MOCK=1 for development.
  *
- * Real client implements Lane L1's contract; the mock server is selected by
- * VITE_DECISIONS_MOCK=1. Both sit behind the DecisionsClient seam so the swap
- * is a one-line change at integration time.
+ * Auth: Bearer token via loadDaemonToken() from lib/api.ts — the proven,
+ * cached path every other surface uses (never a separate IPC invoke).
+ *
+ * Wire mapping (cited to the Rust handlers):
+ *  - GET  /api/decisions[?all=1] → { items, summary }
+ *    (routes/decisions.rs:46-51, 101-114) — flattened here into
+ *    DecisionsResponse for the UI.
+ *  - POST /api/decisions/{id}/answer with camelCase body
+ *    { answer, note?, choiceId?, inputText? } (routes/decisions.rs:53-60);
+ *    response { decision, effect, effectError } (routes/decisions.rs:62-71).
+ *    409 = already resolved (routes/decisions.rs:89-97).
+ *  - GET  /api/decisions/history → { items, nextBefore }
+ *    (routes/decisions.rs:79-85, 154-164).
+ *  - Evidence digest: GET /api/projects/{pid}/cards/{gid} →
+ *    metadataJson.verification.evidence_digest (CardResponse camelCase,
+ *    routes/cards.rs:57-73; digest schema verification/digest.rs:89-107).
  */
 
 import { getApiBaseUrl, loadDaemonToken } from '../../../lib/api';
 import type {
   AnswerBody,
+  AnswerOutcome,
   Decision,
   DecisionHistoryResponse,
   DecisionsClient,
   DecisionsResponse,
+  EvidenceDigestData,
+  HistoryItem,
+  InboxSummary,
 } from './types';
 import { DecisionConflictError } from './types';
+
+// ── Wire envelopes (daemon-side shapes before UI flattening) ────────────────
+
+interface WireInboxResponse {
+  items: Decision[];
+  summary: InboxSummary;
+}
+
+interface WireAnswerResponse {
+  decision: Decision;
+  effect: string | null;
+  effectError: string | null;
+}
+
+interface WireHistoryResponse {
+  items: HistoryItem[];
+  nextBefore: number | null;
+}
 
 /** apiFetch-alike that surfaces HTTP 409 as DecisionConflictError. */
 async function decisionsFetch<T>(endpoint: string, options?: RequestInit): Promise<T> {
@@ -34,14 +70,55 @@ async function decisionsFetch<T>(endpoint: string, options?: RequestInit): Promi
 }
 
 const realDecisionsClient: DecisionsClient = {
-  list: (opts?: { all?: boolean }) =>
-    decisionsFetch<DecisionsResponse>(`/api/decisions${opts?.all ? '?all=1' : ''}`),
-  answer: (id: string, body: AnswerBody) =>
-    decisionsFetch<Decision>(`/api/decisions/${encodeURIComponent(id)}/answer`, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
-  history: () => decisionsFetch<DecisionHistoryResponse>('/api/decisions/history'),
+  async list(opts?: { all?: boolean }): Promise<DecisionsResponse> {
+    const { items, summary } = await decisionsFetch<WireInboxResponse>(
+      `/api/decisions${opts?.all ? '?all=1' : ''}`,
+    );
+    return {
+      decisions: items,
+      total_pending: summary.total_pending,
+      handled_count: summary.handled_count,
+      goals_in_flight: summary.goals_in_flight,
+      oldest_pending_at: summary.oldest_pending_at,
+    };
+  },
+
+  async answer(id: string, body: AnswerBody): Promise<AnswerOutcome> {
+    // Wire body is camelCase (AnswerRequest rename_all, routes/decisions.rs:53-60).
+    const wireBody: Record<string, unknown> = { answer: body.answer };
+    if (body.note !== undefined) wireBody.note = body.note;
+    if (body.choice_id !== undefined) wireBody.choiceId = body.choice_id;
+    if (body.input_text !== undefined) wireBody.inputText = body.input_text;
+    const res = await decisionsFetch<WireAnswerResponse>(
+      `/api/decisions/${encodeURIComponent(id)}/answer`,
+      { method: 'POST', body: JSON.stringify(wireBody) },
+    );
+    return { decision: res.decision, effect: res.effect, effect_error: res.effectError };
+  },
+
+  async history(): Promise<DecisionHistoryResponse> {
+    const res = await decisionsFetch<WireHistoryResponse>('/api/decisions/history');
+    return { items: res.items, next_before: res.nextBefore };
+  },
+
+  async evidence(projectId: string, goalId: string): Promise<EvidenceDigestData | null> {
+    try {
+      const card = await decisionsFetch<{ metadataJson?: Record<string, unknown> | null }>(
+        `/api/projects/${encodeURIComponent(projectId)}/cards/${encodeURIComponent(goalId)}`,
+      );
+      const verification = card.metadataJson?.verification as
+        | { evidence_digest?: EvidenceDigestData }
+        | undefined;
+      const digest = verification?.evidence_digest;
+      // Minimal shape check before handing to the renderer.
+      if (digest && digest.checks_summary && typeof digest.verifier_summary === 'string') {
+        return digest;
+      }
+      return null;
+    } catch {
+      return null; // missing card / no verification yet — evidence simply absent
+    }
+  },
 };
 
 import { mockDecisionsClient } from './mockDecisions';

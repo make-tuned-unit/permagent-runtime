@@ -7,11 +7,11 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { decisionsClient } from './client';
-import type { AnswerBody, Decision, DecisionsResponse } from './types';
+import type { AnswerBody, Decision, DecisionsResponse, HistoryItem } from './types';
 import { DecisionConflictError } from './types';
 
 export type AnswerResult =
-  | { ok: true; decision: Decision }
+  | { ok: true; decision: Decision; effect: string | null }
   | { ok: false; conflict: true };
 
 export function useDecisions() {
@@ -50,9 +50,9 @@ export function useDecisions() {
   const answer = useCallback(
     async (id: string, body: AnswerBody): Promise<AnswerResult> => {
       try {
-        const decision = await decisionsClient.answer(id, body);
+        const outcome = await decisionsClient.answer(id, body);
         await fetchDecisions();
-        return { ok: true, decision };
+        return { ok: true, decision: outcome.decision, effect: outcome.effect };
       } catch (e) {
         if (e instanceof DecisionConflictError) {
           return { ok: false, conflict: true };
@@ -63,8 +63,8 @@ export function useDecisions() {
     [fetchDecisions],
   );
 
-  /** Resolved decisions (incl. Tier-1 auto-handled) for audit/history views. */
-  const loadHistory = useCallback(async (): Promise<Decision[]> => {
+  /** Resolved decisions + audit join for audit/history views. */
+  const loadHistory = useCallback(async (): Promise<HistoryItem[]> => {
     const { items } = await decisionsClient.history();
     return items;
   }, []);

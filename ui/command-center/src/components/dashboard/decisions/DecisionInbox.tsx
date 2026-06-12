@@ -12,7 +12,8 @@ import { FiX } from 'react-icons/fi';
 import { font, radius, ease } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import type { useDecisions } from './useDecisions';
-import type { Decision } from './types';
+import type { HistoryItem } from './types';
+import { resolutionText } from './types';
 import { DecisionItem } from './DecisionItem';
 import { formatAge } from './format';
 
@@ -25,7 +26,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
   const { colors, reduceMotion } = useTheme();
   const { data, loading } = inbox;
   const [view, setView] = useState<'list' | 'history'>('list');
-  const [history, setHistory] = useState<Decision[] | null>(null);
+  const [history, setHistory] = useState<HistoryItem[] | null>(null);
   const [tier1Open, setTier1Open] = useState(false);
 
   const openHistory = useCallback(async () => {
@@ -203,7 +204,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                             <span style={{
                               flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                             }}>
-                              {row.resolution || row.headline}
+                              {row.headline}
                             </span>
                             <span style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, flexShrink: 0 }}>
                               {formatAge(row.created_at)}
@@ -252,7 +253,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
 }
 
 /** Read-only audit list: every resolved decision, incl. Tier-1 auto-handled. */
-function HistoryList({ items }: { items: Decision[] | null }) {
+function HistoryList({ items }: { items: HistoryItem[] | null }) {
   const { colors } = useTheme();
   if (items === null) {
     return (
@@ -299,11 +300,9 @@ function HistoryList({ items }: { items: Decision[] | null }) {
               {formatAge(item.created_at)}
             </span>
           </div>
-          {item.resolution && (
-            <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4 }}>
-              {item.resolution}
-            </div>
-          )}
+          <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4 }}>
+            {resolutionText(item)}
+          </div>
         </div>
       ))}
     </div>
