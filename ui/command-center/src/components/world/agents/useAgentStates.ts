@@ -4,8 +4,8 @@
 // Until then, this hook simulates agent states locally.
 
 import { useState, useCallback, useEffect, useRef } from 'react';
-import type { AgentState } from './types';
-import { STATIONS } from './constants';
+import type { AgentState } from '../types';
+import { STATIONS } from '../constants';
 
 const WANDER_INTERVAL_MIN = 15000;
 const WANDER_INTERVAL_MAX = 30000;

@@ -1,0 +1,93 @@
+{
+  "method": "WORLD_VIEW_BIBLE.md \u00a710: vite dev build, Google Chrome 149 headless=new --use-angle=metal over raw CDP, daemon Bearer token injected, viewport 1600x1000 @ dsf 2 (dpr 2). Probe: FROZEN shared/perf.ts PerfSampler via window.__worldPerf. 'before' = origin/feature/world-v2 @ 1964d7bc3 with an uncommitted evidence-only patch mounting PerfSampler (port 5292); 'after' = world/areas-w1 (port 5291).",
+  "primary_delta": {
+    "note": "Default orbit pose, ALL FIVE zone interiors lazy-loaded vs before. Draw-call/triangle delta is the primary number; absolute fps is known-broken until W4's fill-rate remediation lands (bible \u00a78).",
+    "draw_calls": {
+      "before": 1340,
+      "after_all_zones_loaded": 1323,
+      "delta": -17
+    },
+    "triangles": {
+      "before": 71297,
+      "after_all_zones_loaded": 76537,
+      "delta": 5240
+    }
+  },
+  "zone_budget": {
+    "note": "Bible \u00a78: all zones <= 100 DC total. Zone-interior cost at default pose = after(all loaded) - after(none loaded).",
+    "after_no_zones_loaded": {
+      "calls": 1258,
+      "triangles": 70449
+    },
+    "after_all_zones_loaded": {
+      "calls": 1323,
+      "triangles": 76537
+    },
+    "all_five_interiors_delta_calls": 65,
+    "thresholds_and_imposters_included_in_unloaded_number": true,
+    "unloaded_vs_before_calls_delta": -82
+  },
+  "samples": {
+    "before_default": {
+      "fps": 1.9,
+      "calls": 1340,
+      "triangles": 71297,
+      "geometries": 1238,
+      "dpr": 2
+    },
+    "before_hall_top": {
+      "fps": 7.6,
+      "calls": 1380,
+      "triangles": 72245,
+      "dpr": 2
+    },
+    "after_default_zones_unloaded": {
+      "fps": 4.1,
+      "calls": 1258,
+      "triangles": 70449,
+      "dpr": 2
+    },
+    "after_default_all_zones_loaded": {
+      "fps": 5.6,
+      "calls": 1323,
+      "triangles": 76537,
+      "dpr": 2
+    },
+    "after_hall_top_zones_unloaded": {
+      "fps": 11.5,
+      "calls": 1299,
+      "triangles": 71453,
+      "dpr": 2
+    },
+    "after_inside_build": {
+      "fps": 5.5,
+      "calls": 110,
+      "triangles": 9057,
+      "dpr": 2
+    },
+    "after_inside_brain": {
+      "fps": 5.7,
+      "calls": 112,
+      "triangles": 10237,
+      "dpr": 2
+    },
+    "after_inside_lab": {
+      "fps": 6.1,
+      "calls": 111,
+      "triangles": 10505,
+      "dpr": 2
+    },
+    "after_inside_automate": {
+      "fps": 5.5,
+      "calls": 115,
+      "triangles": 10077,
+      "dpr": 2
+    },
+    "after_inside_antechamber": {
+      "fps": 4.5,
+      "calls": 115,
+      "triangles": 9145,
+      "dpr": 2
+    }
+  }
+}

@@ -1,6 +1,7 @@
 import { useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
+import { InstancedProp, type InstanceTransform } from '../../shared/instancing';
 // Stargate — large ring structure with segmented chevrons and animated event horizon
 
 const RING_RADIUS = 3.2;
@@ -80,32 +81,54 @@ function EventHorizon() {
   );
 }
 
-function Chevron({ angle }: { angle: number }) {
-  const x = Math.cos(angle) * RING_RADIUS;
-  const y = Math.sin(angle) * RING_RADIUS;
+// Chevrons + ring panel segments are instanced (budget law, bible §8:
+// InstancedMesh for anything placed >2x). 32 segments + 9x2 chevron parts
+// collapse from 50 draw calls to 3.
+const chevronBodyGeo = new THREE.BoxGeometry(0.35, 0.5, 0.35);
+const chevronGlowGeo = new THREE.BoxGeometry(0.2, 0.12, 0.36);
+const segmentGeo = new THREE.BoxGeometry(0.02, RING_TUBE * 2.2, RING_TUBE * 2.2);
+
+const chevronBodyMat = new THREE.MeshStandardMaterial({
+  color: CHEVRON_COLOR,
+  roughness: 0.3,
+  metalness: 0.7,
+});
+const chevronGlowMat = new THREE.MeshStandardMaterial({
+  color: HORIZON_COLOR,
+  emissive: HORIZON_COLOR,
+  emissiveIntensity: 1.5,
+  roughness: 0.1,
+  metalness: 0.3,
+});
+const segmentMat = new THREE.MeshStandardMaterial({
+  color: GATE_COLOR,
+  roughness: 0.3,
+  metalness: 0.8,
+});
+
+function Chevrons() {
+  const { bodies, glows } = useMemo(() => {
+    const bodies: InstanceTransform[] = [];
+    const glows: InstanceTransform[] = [];
+    for (let i = 0; i < CHEVRON_COUNT; i++) {
+      const angle = (i / CHEVRON_COUNT) * Math.PI * 2 + Math.PI / 2; // top-center start
+      const x = Math.cos(angle) * RING_RADIUS;
+      const y = Math.sin(angle) * RING_RADIUS;
+      const rz = angle - Math.PI / 2;
+      bodies.push({ position: [x, y, 0], rotation: [0, 0, rz] });
+      // Glow offset: local (0, 0.05, 0) rotated by rz
+      glows.push({
+        position: [x - 0.05 * Math.sin(rz), y + 0.05 * Math.cos(rz), 0],
+        rotation: [0, 0, rz],
+      });
+    }
+    return { bodies, glows };
+  }, []);
 
   return (
-    <group position={[x, y, 0]} rotation-z={angle - Math.PI / 2}>
-      {/* Chevron body — wedge shape */}
-      <mesh>
-        <boxGeometry args={[0.35, 0.5, 0.35]} />
-        <meshStandardMaterial
-          color={CHEVRON_COLOR}
-          roughness={0.3}
-          metalness={0.7}
-        />
-      </mesh>
-      {/* Chevron emissive indicator — lights up */}
-      <mesh position-y={0.05}>
-        <boxGeometry args={[0.2, 0.12, 0.36]} />
-        <meshStandardMaterial
-          color={HORIZON_COLOR}
-          emissive={HORIZON_COLOR}
-          emissiveIntensity={1.5}
-          roughness={0.1}
-          metalness={0.3}
-        />
-      </mesh>
+    <group>
+      <InstancedProp name="stargate.chevronBody" geometry={chevronBodyGeo} material={chevronBodyMat} transforms={bodies} />
+      <InstancedProp name="stargate.chevronGlow" geometry={chevronGlowGeo} material={chevronGlowMat} transforms={glows} />
     </group>
   );
 }
@@ -129,6 +152,18 @@ function GateRing() {
     opacity: 0.8,
   }), []);
 
+  const segments = useMemo<InstanceTransform[]>(
+    () =>
+      Array.from({ length: 32 }, (_, i) => {
+        const a = (i / 32) * Math.PI * 2;
+        return {
+          position: [Math.cos(a) * RING_RADIUS, Math.sin(a) * RING_RADIUS, 0] as [number, number, number],
+          rotation: [0, 0, a] as [number, number, number],
+        };
+      }),
+    []
+  );
+
   return (
     <group>
       {/* Main ring body */}
@@ -146,28 +181,16 @@ function GateRing() {
         <torusGeometry args={[RING_RADIUS + RING_TUBE * 0.5, 0.04, 8, 64]} />
       </mesh>
 
-      {/* Segmented panel lines on the ring — 32 segments */}
-      {Array.from({ length: 32 }, (_, i) => {
-        const a = (i / 32) * Math.PI * 2;
-        const x = Math.cos(a) * RING_RADIUS;
-        const y = Math.sin(a) * RING_RADIUS;
-        return (
-          <mesh key={`seg-${i}`} position={[x, y, 0]} rotation-z={a}>
-            <boxGeometry args={[0.02, RING_TUBE * 2.2, RING_TUBE * 2.2]} />
-            <meshStandardMaterial
-              color={GATE_COLOR}
-              roughness={0.3}
-              metalness={0.8}
-            />
-          </mesh>
-        );
-      })}
+      {/* Segmented panel lines on the ring — 32 segments, one draw call */}
+      <InstancedProp
+        name="stargate.ringSegments"
+        geometry={segmentGeo}
+        material={segmentMat}
+        transforms={segments}
+      />
 
-      {/* Chevrons */}
-      {Array.from({ length: CHEVRON_COUNT }, (_, i) => {
-        const angle = (i / CHEVRON_COUNT) * Math.PI * 2 + Math.PI / 2; // top-center start
-        return <Chevron key={`chev-${i}`} angle={angle} />;
-      })}
+      {/* Chevrons — instanced */}
+      <Chevrons />
     </group>
   );
 }
