@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { FiTrash2, FiEdit2, FiX, FiChevronDown, FiChevronRight } from 'react-icons/fi';
 import { useCommandCenter, type SkillState } from '../../lib/store';
+import { font } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
 import { SkillEditor } from './SkillEditor';
 import { SkillExecutionHistory } from './SkillExecutionHistory';
 
@@ -9,6 +11,7 @@ interface SkillDetailPanelProps {
 }
 
 export function SkillDetailPanel({ skill }: SkillDetailPanelProps) {
+  const { colors } = useTheme();
   const deleteSkill = useCommandCenter(s => s.deleteSkill);
   const setSelectedSkillId = useCommandCenter(s => s.setSelectedSkillId);
   const [editing, setEditing] = useState(false);
@@ -23,31 +26,48 @@ export function SkillDetailPanel({ skill }: SkillDetailPanelProps) {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-dark-border px-4 py-2.5">
+      <div
+        className="flex items-center justify-between px-4 py-2.5"
+        style={{ borderBottom: `1px solid ${colors.border}` }}
+      >
         <div className="flex items-center gap-2 min-w-0">
           <span className={`w-2 h-2 rounded-full shrink-0 ${
             skill.status === 'active' ? 'bg-emerald-400' : 'bg-slate-500'
           }`} />
-          <span className="text-sm font-medium text-dark-text truncate">{skill.name}</span>
+          <span
+            className="text-sm truncate"
+            style={{ fontFamily: font.display, fontWeight: 600, color: colors.text }}
+          >
+            {skill.name}
+          </span>
         </div>
         <div className="flex items-center gap-1 shrink-0">
           <button
             onClick={() => setEditing(!editing)}
-            className="rounded p-1.5 text-dark-muted hover:text-accent hover:bg-accent/10 transition"
+            className="rounded p-1.5 transition"
+            style={{ color: colors.textMuted }}
+            onMouseEnter={e => { e.currentTarget.style.color = colors.cyan; e.currentTarget.style.backgroundColor = colors.cyanSoft; }}
+            onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; e.currentTarget.style.backgroundColor = ''; }}
             title="Edit skill"
           >
             <FiEdit2 size={13} />
           </button>
           <button
             onClick={() => setConfirmDelete(true)}
-            className="rounded p-1.5 text-dark-muted hover:text-red-400 hover:bg-red-400/10 transition"
+            className="rounded p-1.5 transition"
+            style={{ color: colors.textMuted }}
+            onMouseEnter={e => { e.currentTarget.style.color = colors.danger; e.currentTarget.style.backgroundColor = `${colors.danger}1A`; }}
+            onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; e.currentTarget.style.backgroundColor = ''; }}
             title="Delete skill"
           >
             <FiTrash2 size={13} />
           </button>
           <button
             onClick={() => setSelectedSkillId(null)}
-            className="rounded p-1.5 text-dark-muted hover:text-dark-text hover:bg-white/5 transition"
+            className="rounded p-1.5 hover:bg-white/5 transition"
+            style={{ color: colors.textMuted }}
+            onMouseEnter={e => { e.currentTarget.style.color = colors.text; }}
+            onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
             title="Close"
           >
             <FiX size={14} />
@@ -58,17 +78,21 @@ export function SkillDetailPanel({ skill }: SkillDetailPanelProps) {
       {/* Delete confirmation */}
       {confirmDelete && (
         <div className="mx-4 mt-3 rounded-lg border border-red-400/30 bg-red-400/5 p-3">
-          <p className="text-xs text-red-300 mb-2 font-mono">Delete this skill permanently?</p>
+          <p className="text-xs text-red-300 mb-2" style={{ fontFamily: font.mono }}>Delete this skill permanently?</p>
           <div className="flex gap-2">
             <button
               onClick={handleDelete}
-              className="rounded-md bg-red-500/20 px-3 py-1 text-[11px] font-mono text-red-400 hover:bg-red-500/30 transition"
+              className="rounded-md bg-red-500/20 px-3 py-1 text-[11px] text-red-400 hover:bg-red-500/30 transition"
+              style={{ fontFamily: font.mono }}
             >
               Delete
             </button>
             <button
               onClick={() => setConfirmDelete(false)}
-              className="rounded-md px-3 py-1 text-[11px] font-mono text-dark-muted hover:text-dark-text hover:bg-white/5 transition"
+              className="rounded-md px-3 py-1 text-[11px] hover:bg-white/5 transition"
+              style={{ fontFamily: font.mono, color: colors.textMuted }}
+              onMouseEnter={e => { e.currentTarget.style.color = colors.text; }}
+              onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
             >
               Cancel
             </button>
@@ -85,8 +109,13 @@ export function SkillDetailPanel({ skill }: SkillDetailPanelProps) {
             {/* Description */}
             {skill.description && (
               <div>
-                <label className="block text-[10px] font-mono uppercase text-dark-muted mb-1">Description</label>
-                <p className="text-xs text-dark-text/80">{skill.description}</p>
+                <label
+                  className="block text-[10px] uppercase mb-1"
+                  style={{ fontFamily: font.display, fontWeight: 600, color: colors.textMuted }}
+                >
+                  Description
+                </label>
+                <p className="text-xs" style={{ fontFamily: font.body, color: colors.text, opacity: 0.8 }}>{skill.description}</p>
               </div>
             )}
 
@@ -103,18 +132,23 @@ export function SkillDetailPanel({ skill }: SkillDetailPanelProps) {
             {/* Steps */}
             {skill.steps && skill.steps.length > 0 && (
               <div>
-                <label className="block text-[10px] font-mono uppercase text-dark-muted mb-2">Steps</label>
+                <label
+                  className="block text-[10px] uppercase mb-2"
+                  style={{ fontFamily: font.display, fontWeight: 600, color: colors.textMuted }}
+                >
+                  Steps
+                </label>
                 <div className="space-y-1.5">
                   {skill.steps.map((step, i) => (
-                    <div key={i} className="flex items-start gap-2 rounded bg-dark-surface/50 p-2">
-                      <span className="text-[10px] font-mono text-dark-muted shrink-0 mt-0.5">{i + 1}.</span>
+                    <div key={i} className="flex items-start gap-2 rounded p-2" style={{ backgroundColor: `${colors.surface}80` }}>
+                      <span className="text-[10px] shrink-0 mt-0.5" style={{ fontFamily: font.mono, color: colors.textMuted }}>{i + 1}.</span>
                       <div className="min-w-0">
-                        <span className="text-xs text-dark-text">{step.action}</span>
+                        <span className="text-xs" style={{ fontFamily: font.body, color: colors.text }}>{step.action}</span>
                         {step.tool && (
-                          <span className="ml-2 text-[10px] font-mono text-accent/70">{step.tool}</span>
+                          <span className="ml-2 text-[10px]" style={{ fontFamily: font.mono, color: colors.cyan, opacity: 0.7 }}>{step.tool}</span>
                         )}
                         {step.description && (
-                          <p className="text-[10px] text-dark-muted mt-0.5">{step.description}</p>
+                          <p className="text-[10px] mt-0.5" style={{ fontFamily: font.body, color: colors.textMuted }}>{step.description}</p>
                         )}
                       </div>
                     </div>
@@ -127,13 +161,19 @@ export function SkillDetailPanel({ skill }: SkillDetailPanelProps) {
             <div>
               <button
                 onClick={() => setShowDefinition(!showDefinition)}
-                className="flex items-center gap-1 text-[10px] font-mono uppercase text-dark-muted hover:text-dark-text transition"
+                className="flex items-center gap-1 text-[10px] uppercase transition"
+                style={{ fontFamily: font.display, fontWeight: 600, color: colors.textMuted }}
+                onMouseEnter={e => { e.currentTarget.style.color = colors.text; }}
+                onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
               >
                 {showDefinition ? <FiChevronDown size={11} /> : <FiChevronRight size={11} />}
                 Definition JSON
               </button>
               {showDefinition && (
-                <pre className="mt-2 rounded bg-dark-surface/50 p-3 text-[10px] font-mono text-dark-muted overflow-x-auto max-h-64 overflow-y-auto">
+                <pre
+                  className="mt-2 rounded p-3 text-[10px] overflow-x-auto max-h-64 overflow-y-auto"
+                  style={{ fontFamily: font.mono, backgroundColor: `${colors.surface}80`, color: colors.textMuted }}
+                >
                   {JSON.stringify(skill, null, 2)}
                 </pre>
               )}
@@ -149,10 +189,16 @@ export function SkillDetailPanel({ skill }: SkillDetailPanelProps) {
 }
 
 function MetaField({ label, value }: { label: string; value: string }) {
+  const { colors } = useTheme();
   return (
     <div>
-      <label className="block text-[10px] font-mono uppercase text-dark-muted mb-0.5">{label}</label>
-      <span className="text-xs text-dark-text/80 font-mono">{value}</span>
+      <label
+        className="block text-[10px] uppercase mb-0.5"
+        style={{ fontFamily: font.display, fontWeight: 600, color: colors.textMuted }}
+      >
+        {label}
+      </label>
+      <span className="text-xs" style={{ fontFamily: font.mono, color: colors.text, opacity: 0.8 }}>{value}</span>
     </div>
   );
 }

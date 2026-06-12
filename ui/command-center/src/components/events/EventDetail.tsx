@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import { FiX, FiCopy, FiCheck } from 'react-icons/fi';
 import type { EventRecord } from '../../lib/store';
+import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { TYPE_COLORS, DEFAULT_COLOR } from './EventRow';
 
@@ -53,48 +54,68 @@ export function EventDetail({ event, onClose }: EventDetailProps) {
   };
 
   return (
-    <div className="border-t border-dark-border max-h-[40%] overflow-y-auto" style={{ backgroundColor: colors.surface }}>
+    <div
+      className="max-h-[40%] overflow-y-auto"
+      style={{ backgroundColor: colors.surface, borderTop: `1px solid ${colors.border}` }}
+    >
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-dark-border/50">
+      <div
+        className="flex items-center justify-between px-3 py-2"
+        style={{ borderBottom: `1px solid ${colors.border}` }}
+      >
         <div className="flex items-center gap-2">
-          <span className="text-[10px] font-mono uppercase text-dark-muted">Event Detail</span>
-          <span className={`rounded px-1.5 py-0.5 text-[9px] font-mono uppercase ${color.bg} ${color.text}`}>
+          <span
+            className="text-[10px] uppercase"
+            style={{ fontFamily: font.display, fontWeight: 600, color: colors.textMuted }}
+          >
+            Event Detail
+          </span>
+          <span
+            className={`rounded px-1.5 py-0.5 text-[9px] uppercase ${color.bg} ${color.text}`}
+            style={{ fontFamily: font.mono }}
+          >
             {event.event_type.replace(/_/g, ' ')}
           </span>
         </div>
-        <button onClick={onClose} className="text-dark-muted hover:text-dark-text transition">
+        <button
+          onClick={onClose}
+          className="transition"
+          style={{ color: colors.textMuted }}
+          onMouseEnter={e => { e.currentTarget.style.color = colors.text; }}
+          onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
+        >
           <FiX size={12} />
         </button>
       </div>
 
       {/* Metadata fields */}
-      <div className="px-3 py-2 space-y-1.5 font-mono text-[10px]">
+      <div className="px-3 py-2 space-y-1.5 text-[10px]" style={{ fontFamily: font.mono }}>
         <div className="flex gap-3">
-          <span className="w-[70px] text-dark-muted">ID</span>
-          <span className="text-dark-text break-all">{event.id}</span>
+          <span className="w-[70px]" style={{ color: colors.textMuted }}>ID</span>
+          <span className="break-all" style={{ color: colors.text }}>{event.id}</span>
         </div>
         <div className="flex gap-3">
-          <span className="w-[70px] text-dark-muted">Type</span>
+          <span className="w-[70px]" style={{ color: colors.textMuted }}>Type</span>
           <span className={color.text}>{event.event_type}</span>
         </div>
         <div className="flex gap-3">
-          <span className="w-[70px] text-dark-muted">Time</span>
-          <span className="text-dark-text">{event.timestamp}</span>
+          <span className="w-[70px]" style={{ color: colors.textMuted }}>Time</span>
+          <span style={{ color: colors.text }}>{event.timestamp}</span>
         </div>
         <div className="flex gap-3">
-          <span className="w-[70px] text-dark-muted">Source</span>
-          <span className="text-dark-text">{event.source}</span>
+          <span className="w-[70px]" style={{ color: colors.textMuted }}>Source</span>
+          <span style={{ color: colors.text }}>{event.source}</span>
         </div>
         {event.task_id && (
           <div className="flex gap-3">
-            <span className="w-[70px] text-dark-muted">Task</span>
-            <span className="text-dark-text">{event.task_id}</span>
+            <span className="w-[70px]" style={{ color: colors.textMuted }}>Task</span>
+            <span style={{ color: colors.text }}>{event.task_id}</span>
           </div>
         )}
         {event.run_id && (
           <div className="flex gap-3">
-            <span className="w-[70px] text-dark-muted">Run</span>
-            <span className="text-dark-text">{event.run_id}</span>
+            <span className="w-[70px]" style={{ color: colors.textMuted }}>Run</span>
+            <span style={{ color: colors.text }}>{event.run_id}</span>
           </div>
         )}
       </div>
@@ -102,16 +123,27 @@ export function EventDetail({ event, onClose }: EventDetailProps) {
       {/* JSON payload with syntax highlighting and copy button */}
       <div className="px-3 py-2">
         <div className="flex items-center justify-between mb-1">
-          <span className="text-[9px] font-mono uppercase text-dark-muted">Payload</span>
+          <span
+            className="text-[9px] uppercase"
+            style={{ fontFamily: font.display, fontWeight: 600, color: colors.textMuted }}
+          >
+            Payload
+          </span>
           <button
             onClick={handleCopy}
-            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-mono text-dark-muted hover:text-dark-text hover:bg-white/5 transition"
+            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[9px] hover:bg-white/5 transition"
+            style={{ fontFamily: font.mono, color: colors.textMuted }}
+            onMouseEnter={e => { e.currentTarget.style.color = colors.text; }}
+            onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
           >
             {copied ? <FiCheck size={10} className="text-emerald-400" /> : <FiCopy size={10} />}
             {copied ? 'Copied' : 'Copy'}
           </button>
         </div>
-        <pre className="rounded bg-black/30 p-2 font-mono text-[9px] text-dark-text overflow-x-auto max-h-[150px] overflow-y-auto">
+        <pre
+          className="rounded p-2 text-[9px] overflow-x-auto max-h-[150px] overflow-y-auto"
+          style={{ fontFamily: font.mono, backgroundColor: colors.codeBg, color: colors.text }}
+        >
           {highlightJson(jsonString)}
         </pre>
       </div>

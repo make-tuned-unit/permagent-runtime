@@ -14,6 +14,9 @@ env:
 jobs:
   test:
     strategy:
+      # Let each OS report its own result — a canceled macOS leg loses
+      # exactly the cross-platform signal the matrix exists for.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
@@ -46,6 +49,17 @@ jobs:
           esac
           echo "SHERPA_ONNX_STEM=${stem}" >> "$GITHUB_ENV"
           echo "SHERPA_ONNX_LIB_DIR=${HOME}/sherpa-onnx-prebuilt/${stem}/lib" >> "$GITHUB_ENV"
+          # SHERPA_ONNX_LIB_DIR makes LINKING cache-independent, but test
+          # binaries also load the shared libs at RUNTIME. Cargo's replay of
+          # build-script -L paths into the loader path breaks on reruns with
+          # warm pre-staged-cache fingerprints (stale path into the pruned
+          # target dir), so stage the loader path explicitly too.
+          libdir="${HOME}/sherpa-onnx-prebuilt/${stem}/lib"
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            echo "LD_LIBRARY_PATH=${libdir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" >> "$GITHUB_ENV"
+          else
+            echo "DYLD_FALLBACK_LIBRARY_PATH=${libdir}${DYLD_FALLBACK_LIBRARY_PATH:+:${DYLD_FALLBACK_LIBRARY_PATH}}" >> "$GITHUB_ENV"
+          fi
       - name: Cache sherpa-onnx prebuilt libs
         id: sherpa-cache
         uses: actions/cache@v4

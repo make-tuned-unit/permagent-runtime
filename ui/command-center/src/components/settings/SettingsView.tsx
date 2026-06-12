@@ -9,12 +9,13 @@ import { usePersona } from './useSettings';
 import { H1, Section, Row, TextInput, Chip, Toggle, Slider, Kbd, SaveButton } from './atoms';
 
 function PreviewBadge() {
+  const { colors } = useThemeHook();
   return (
     <span style={{
       fontSize: 10, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase',
       padding: '3px 8px', borderRadius: 999, marginLeft: 10,
-      background: 'rgba(141,68,174,0.12)', color: '#C893E0',
-      border: '1px solid rgba(141,68,174,0.25)',
+      background: colors.purpleSoft, color: colors.purpleBright,
+      border: `1px solid ${colors.purple}40`,
     }}>preview</span>
   );
 }
@@ -116,6 +117,7 @@ function PersonaPanel() {
 }
 
 function ProfilePanel() {
+  const { colors } = useThemeHook();
   return (
     <div>
       <H1 sub="Your account — visible to your agent and to anyone you share a workspace with."><>Profile<PreviewBadge /></></H1>
@@ -124,7 +126,7 @@ function ProfilePanel() {
         <Row label="Email" hint="Used for sign-in and notifications."><TextInput value="" placeholder="email@example.com" /></Row>
         <Row label="Workspace">
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div style={{ width: 28, height: 28, borderRadius: 6, background: 'linear-gradient(135deg, #8D44AE, #00D5FF)' }} />
+            <div style={{ width: 28, height: 28, borderRadius: 6, background: `linear-gradient(135deg, ${colors.purple}, ${colors.cyan})` }} />
             <TextInput value="Personal" />
           </div>
         </Row>
@@ -274,7 +276,7 @@ function ToolsPanel() {
                 <div style={{ fontSize: 13, fontWeight: 600 }}>{ext.display_name}</div>
                 <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ext.type}{ext.bundled ? ' · bundled' : ''} · {ext.available_tools.length} tools</div>
               </div>
-              <div style={{ width: 8, height: 8, borderRadius: '50%', background: ext.enabled ? '#5BD17F' : colors.textDim, flexShrink: 0 }} />
+              <div style={{ width: 8, height: 8, borderRadius: '50%', background: ext.enabled ? colors.success : colors.textDim, flexShrink: 0 }} />
             </div>
           ))}
         </div>
@@ -531,7 +533,7 @@ function KeysPanel() {
               <TextInput mono value={maskedKeys[`${p.name.toUpperCase()}_API_KEY`] || (p.isConfigured ? '••••••••' : '')} placeholder={p.isConfigured ? '' : 'paste key…'} />
               <span style={{
                 fontSize: 10, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase',
-                color: p.isConfigured ? '#5BD17F' : colors.textDim,
+                color: p.isConfigured ? colors.success : colors.textDim,
               }}>{p.isConfigured ? 'set' : 'missing'}</span>
             </div>
           </Row>
@@ -544,6 +546,7 @@ function KeysPanel() {
 function AppearancePanel() {
   const { colors } = useThemeHook();
   const prefs = useThemeHook();
+  // Literal hex by design: these swatch gradients intentionally depict each theme's own palette, regardless of the active theme.
   const themes: Array<{ id: ThemeId; l: string; g: string }> = [
     { id: 'dark', l: 'Permagent dark', g: 'linear-gradient(135deg, #0B1220, #1E2433)' },
     { id: 'aurora', l: 'Aurora', g: 'linear-gradient(135deg, #0B1220 30%, #8D44AE)' },

@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { FiCheckCircle, FiXCircle, FiClock } from 'react-icons/fi';
 import { api } from '../../lib/api';
+import { font } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
 
 interface Execution {
   id: string;
@@ -15,6 +17,7 @@ interface SkillExecutionHistoryProps {
 }
 
 export function SkillExecutionHistory({ skillId }: SkillExecutionHistoryProps) {
+  const { colors } = useTheme();
   const [executions, setExecutions] = useState<Execution[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -29,19 +32,27 @@ export function SkillExecutionHistory({ skillId }: SkillExecutionHistoryProps) {
   if (loading) {
     return (
       <div>
-        <label className="block text-[10px] font-mono uppercase text-dark-muted mb-2">Execution History</label>
-        <div className="text-[10px] font-mono text-dark-muted/80">Loading...</div>
+        <label
+          className="block text-[10px] uppercase mb-2"
+          style={{ fontFamily: font.display, fontWeight: 600, color: colors.textMuted }}
+        >
+          Execution History
+        </label>
+        <div className="text-[10px]" style={{ fontFamily: font.mono, color: colors.textMuted, opacity: 0.8 }}>Loading...</div>
       </div>
     );
   }
 
   return (
     <div>
-      <label className="block text-[10px] font-mono uppercase text-dark-muted mb-2">
+      <label
+        className="block text-[10px] uppercase mb-2"
+        style={{ fontFamily: font.display, fontWeight: 600, color: colors.textMuted }}
+      >
         Execution History {executions.length > 0 && `(${executions.length})`}
       </label>
       {executions.length === 0 ? (
-        <div className="text-[10px] font-mono text-dark-muted/80">No executions yet.</div>
+        <div className="text-[10px]" style={{ fontFamily: font.mono, color: colors.textMuted, opacity: 0.8 }}>No executions yet.</div>
       ) : (
         <div className="space-y-1.5">
           {executions.map(exec => {
@@ -50,7 +61,7 @@ export function SkillExecutionHistory({ skillId }: SkillExecutionHistoryProps) {
               : null;
 
             return (
-              <div key={exec.id} className="flex items-start gap-2 rounded bg-dark-surface/50 p-2">
+              <div key={exec.id} className="flex items-start gap-2 rounded p-2" style={{ backgroundColor: `${colors.surface}80` }}>
                 {exec.status === 'completed' ? (
                   <FiCheckCircle size={12} className="text-emerald-400 shrink-0 mt-0.5" />
                 ) : exec.status === 'failed' ? (
@@ -59,12 +70,12 @@ export function SkillExecutionHistory({ skillId }: SkillExecutionHistoryProps) {
                   <FiClock size={12} className="text-amber-400 shrink-0 mt-0.5" />
                 )}
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 text-[10px] font-mono">
-                    <span className="text-dark-text/80">
+                  <div className="flex items-center gap-2 text-[10px]" style={{ fontFamily: font.mono }}>
+                    <span style={{ color: colors.text, opacity: 0.8 }}>
                       {new Date(exec.started_at).toLocaleString()}
                     </span>
                     {duration !== null && (
-                      <span className="text-dark-muted">{duration}s</span>
+                      <span style={{ color: colors.textMuted }}>{duration}s</span>
                     )}
                     <span className={`uppercase ${
                       exec.status === 'completed' ? 'text-emerald-400' :

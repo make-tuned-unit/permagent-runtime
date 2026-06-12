@@ -4,6 +4,7 @@ import { useCommandCenter, type EventRecord, type PermagentEventType } from '../
 import { EventRow } from './EventRow';
 import { EventFilter, getDateCutoff, type DatePreset } from './EventFilter';
 import { EventDetail } from './EventDetail';
+import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 export function EventLogView() {
@@ -72,22 +73,33 @@ export function EventLogView() {
   return (
     <div className="flex h-full flex-col" style={{ backgroundColor: colors.bg, color: colors.text }}>
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-dark-border px-4 py-2.5">
+      <div
+        className="flex items-center justify-between px-4 py-2.5"
+        style={{ borderBottom: `1px solid ${colors.border}` }}
+      >
         <div className="flex items-center gap-2">
-          <span className="text-[11px] font-mono uppercase tracking-wider text-dark-muted">
+          <span
+            className="text-[11px] uppercase tracking-wider"
+            style={{ fontFamily: font.display, fontWeight: 600, color: colors.textMuted }}
+          >
             Event Log
           </span>
-          <span className="rounded bg-dark-surface px-1.5 py-0.5 text-[10px] font-mono text-dark-muted">
+          <span
+            className="rounded px-1.5 py-0.5 text-[10px]"
+            style={{ fontFamily: font.mono, backgroundColor: colors.surface, color: colors.textMuted }}
+          >
             {displayed.length}
           </span>
         </div>
         <button
           onClick={() => setShowFilters(f => !f)}
-          className={`rounded p-1 transition ${
-            showFilters || hasActiveFilters
-              ? 'bg-accent/10 text-accent'
-              : 'text-dark-muted hover:text-dark-text'
-          }`}
+          className="rounded p-1 transition"
+          style={{
+            backgroundColor: showFilters || hasActiveFilters ? colors.cyanSoft : undefined,
+            color: showFilters || hasActiveFilters ? colors.cyan : colors.textMuted,
+          }}
+          onMouseEnter={e => { if (!(showFilters || hasActiveFilters)) e.currentTarget.style.color = colors.text; }}
+          onMouseLeave={e => { if (!(showFilters || hasActiveFilters)) e.currentTarget.style.color = colors.textMuted; }}
         >
           <FiFilter size={14} />
         </button>
@@ -108,7 +120,8 @@ export function EventLogView() {
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="relative flex-1 overflow-y-auto font-mono text-[11px] leading-relaxed"
+        className="relative flex-1 overflow-y-auto text-[11px] leading-relaxed"
+        style={{ fontFamily: font.mono }}
       >
         {displayed.map(event => (
           <EventRow
@@ -122,7 +135,10 @@ export function EventLogView() {
         ))}
 
         {displayed.length === 0 && (
-          <div className="flex items-center justify-center p-8 text-xs text-dark-muted font-mono">
+          <div
+            className="flex items-center justify-center p-8 text-xs"
+            style={{ fontFamily: font.mono, color: colors.textMuted }}
+          >
             {events.length === 0 ? 'Waiting for events...' : 'No events match filters'}
           </div>
         )}
@@ -130,7 +146,10 @@ export function EventLogView() {
         {showJumpBtn && displayed.length > 0 && (
           <button
             onClick={jumpToLatest}
-            className="sticky bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 rounded-full bg-accent/20 px-3 py-1.5 text-[10px] font-mono text-accent backdrop-blur transition hover:bg-accent/30"
+            className="sticky bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[10px] backdrop-blur transition"
+            style={{ fontFamily: font.mono, backgroundColor: colors.cyanSoft, color: colors.cyan }}
+            onMouseEnter={e => { e.currentTarget.style.backgroundColor = `${colors.cyan}4D`; }}
+            onMouseLeave={e => { e.currentTarget.style.backgroundColor = colors.cyanSoft; }}
           >
             <FiArrowDown size={12} />
             Jump to latest
