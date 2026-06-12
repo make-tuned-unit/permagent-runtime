@@ -2179,6 +2179,14 @@ pub async fn format_board_summary(pool: &sqlx::Pool<sqlx::Sqlite>) -> Result<Str
     Ok(lines.join("\n"))
 }
 
+/// Post-Review hook (Lane L2 verification). The daemon installs this once at
+/// startup; it is invoked after `handle_goal_completion` successfully moves a
+/// goal InProgress → Review. The installed closure MUST be non-blocking
+/// (spawn its own task) and failure-tolerant — a verification failure must
+/// never break the completion path (degraded result = uncertain).
+pub type GoalReviewHook = Box<dyn Fn(sqlx::Pool<sqlx::Sqlite>, String) + Send + Sync>;
+pub static GOAL_REVIEW_HOOK: std::sync::OnceLock<GoalReviewHook> = std::sync::OnceLock::new();
+
 /// Handle the completion of a dispatched goal worker.
 ///
 /// Called by the tracker task spawned in dispatch_goal when the JoinHandle resolves.
@@ -2271,6 +2279,12 @@ pub async fn handle_goal_completion(
                     },
                 )
                 .await;
+            }
+
+            // Lane L2: kick off post-Review verification (hook spawns its own
+            // task; absent hook or hook failure never affects this path).
+            if let Some(hook) = GOAL_REVIEW_HOOK.get() {
+                hook(pool.clone(), card_id.to_string());
             }
 
             tracing::info!(
@@ -2574,6 +2588,45 @@ mod tests {
             Some("review")
         );
         assert!(updated.metadata_json.get("completed_at").is_some());
+    }
+
+    /// Lane L2 hook contract: when installed, GOAL_REVIEW_HOOK fires exactly
+    /// on the success → Review transition with the goal's card id.
+    /// (OnceLock is process-global; the recording closure is inert for other
+    /// tests — it only appends card ids to a list.)
+    #[tokio::test]
+    async fn completion_success_fires_review_hook() {
+        static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        let _ = GOAL_REVIEW_HOOK.set(Box::new(|_pool, card_id| {
+            SEEN.lock().unwrap().push(card_id);
+        }));
+
+        let pool = test_pool().await;
+
+        // Failure path must NOT fire the hook.
+        let failed = setup_goal_in_state(&pool, "in_progress", 1).await;
+        handle_goal_completion(
+            &pool,
+            &failed.id,
+            &failed.project_id,
+            Err("boom".to_string()),
+        )
+        .await
+        .unwrap();
+        assert!(
+            !SEEN.lock().unwrap().contains(&failed.id),
+            "hook must not fire on worker failure"
+        );
+
+        // Success path fires it after the Review move.
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
+            .await
+            .unwrap();
+        assert!(
+            SEEN.lock().unwrap().contains(&card.id),
+            "hook must fire with the goal id on success → Review"
+        );
     }
 
     #[tokio::test]
