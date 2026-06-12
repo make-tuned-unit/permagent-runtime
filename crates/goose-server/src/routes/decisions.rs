@@ -255,7 +255,9 @@ async fn execute_effect(
                     },
                 )
                 .await?;
-                Ok(Some("goal rejected: Review → InProgress for rework".to_string()))
+                Ok(Some(
+                    "goal rejected: Review → InProgress for rework".to_string(),
+                ))
             }
         }
         // Unblock approved → unpark: clear attention flag, extend the attempt
@@ -290,10 +292,7 @@ async fn execute_effect(
                 "needs_human_attention".to_string(),
                 serde_json::json!(false),
             );
-            patch.insert(
-                "budget".to_string(),
-                serde_json::Value::Object(budget_obj),
-            );
+            patch.insert("budget".to_string(), serde_json::Value::Object(budget_obj));
 
             goal_transition::advance_goal_checked(
                 pool,
@@ -314,7 +313,10 @@ async fn execute_effect(
         }
         // Approved goal deletion (user_data_deletion risk gate).
         ("risk_gate", Some("approve"))
-            if decision.payload.get("action_class").and_then(|v| v.as_str())
+            if decision
+                .payload
+                .get("action_class")
+                .and_then(|v| v.as_str())
                 == Some("user_data_deletion")
                 && decision.goal_id.is_some() =>
         {
@@ -340,8 +342,8 @@ async fn record_effect_failure(pool: &Pool<Sqlite>, decision: &decisions::Decisi
         decision.id,
         error
     );
-    let _ = decisions::record_effect_outcome(pool, decision, &format!("effect_error: {}", error))
-        .await;
+    let _ =
+        decisions::record_effect_outcome(pool, decision, &format!("effect_error: {}", error)).await;
 }
 
 // ── Plumbing ────────────────────────────────────────────────────────────────

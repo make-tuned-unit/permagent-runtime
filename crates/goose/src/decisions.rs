@@ -433,12 +433,11 @@ pub async fn inbox_summary(pool: &Pool<Sqlite>) -> Result<InboxSummary, String> 
     .fetch_one(pool)
     .await
     .map_err(|e| e.to_string())?;
-    let oldest_pending_at: Option<String> = sqlx::query_scalar(
-        "SELECT MIN(created_at) FROM decisions WHERE status = 'open'",
-    )
-    .fetch_one(pool)
-    .await
-    .map_err(|e| e.to_string())?;
+    let oldest_pending_at: Option<String> =
+        sqlx::query_scalar("SELECT MIN(created_at) FROM decisions WHERE status = 'open'")
+            .fetch_one(pool)
+            .await
+            .map_err(|e| e.to_string())?;
 
     Ok(InboxSummary {
         total_pending,
@@ -658,7 +657,10 @@ pub async fn answer_decision(
     }
 
     let resolved_at = now_timestamp();
-    let mut tx = pool.begin().await.map_err(|e| AnswerError::Db(e.to_string()))?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| AnswerError::Db(e.to_string()))?;
 
     // Atomic open → answered: zero rows affected means we lost a race.
     let result = sqlx::query(
@@ -696,7 +698,9 @@ pub async fn answer_decision(
     .await
     .map_err(AnswerError::Db)?;
 
-    tx.commit().await.map_err(|e| AnswerError::Db(e.to_string()))?;
+    tx.commit()
+        .await
+        .map_err(|e| AnswerError::Db(e.to_string()))?;
 
     let updated = get_decision(pool, decision_id)
         .await
@@ -772,12 +776,11 @@ pub(crate) async fn append_audit_tx(
     outcome: &str,
     evidence_digest: Option<&str>,
 ) -> Result<(), String> {
-    let prev_hash: Option<String> = sqlx::query_scalar(
-        "SELECT row_hash FROM decision_audit ORDER BY seq DESC LIMIT 1",
-    )
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(|e| e.to_string())?;
+    let prev_hash: Option<String> =
+        sqlx::query_scalar("SELECT row_hash FROM decision_audit ORDER BY seq DESC LIMIT 1")
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|e| e.to_string())?;
 
     let created_at = now_timestamp();
     let row_hash = compute_audit_row_hash(

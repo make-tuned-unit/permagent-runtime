@@ -740,8 +740,8 @@ pub async fn set_goal_verification(
     }
     let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
     meta.insert("verification".to_string(), verification);
-    let meta_str = serde_json::to_string(&serde_json::Value::Object(meta))
-        .map_err(|e| e.to_string())?;
+    let meta_str =
+        serde_json::to_string(&serde_json::Value::Object(meta)).map_err(|e| e.to_string())?;
     sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
         .bind(&meta_str)
         .bind(card_id)
@@ -1344,7 +1344,10 @@ mod tests {
             Some("failed")
         );
         assert_eq!(
-            after.metadata_json.get("attempt_count").and_then(|v| v.as_u64()),
+            after
+                .metadata_json
+                .get("attempt_count")
+                .and_then(|v| v.as_u64()),
             Some(1),
             "protected keys untouched"
         );

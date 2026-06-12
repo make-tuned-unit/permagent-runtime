@@ -757,7 +757,10 @@ pub async fn exhaust_and_park(
         None => {
             let (spent, cap) = exhaustion.spent_and_cap();
             let headline = truncate_chars(
-                &format!("\"{}\" is out of budget and needs your direction", goal_title),
+                &format!(
+                    "\"{}\" is out of budget and needs your direction",
+                    goal_title
+                ),
                 decisions::MAX_HEADLINE_CHARS,
             );
             let detail = format!(
@@ -954,7 +957,10 @@ mod tests {
     }
 
     async fn state_of(pool: &Pool<Sqlite>, card_id: &str) -> String {
-        let card = crate::cards::get_card(pool, card_id).await.unwrap().unwrap();
+        let card = crate::cards::get_card(pool, card_id)
+            .await
+            .unwrap()
+            .unwrap();
         let col = crate::cards::get_column(pool, &card.column_id)
             .await
             .unwrap()
@@ -1128,7 +1134,8 @@ mod tests {
         let pool = test_pool().await;
         let goal_a = goal_in_state(&pool, "review", 1).await;
         let goal_b = goal_in_state(&pool, "review", 1).await;
-        let proof_b = approve_decision_proof(&pool, &goal_b.id, crate::decisions::ACTOR_JESSE).await;
+        let proof_b =
+            approve_decision_proof(&pool, &goal_b.id, crate::decisions::ACTOR_JESSE).await;
         let err = advance_goal_checked(
             &pool,
             &goal_a.id,
@@ -1304,7 +1311,10 @@ mod tests {
 
         // Goal is parked, not retried.
         assert_eq!(state_of(&pool, &goal.id).await, "triage");
-        let card = crate::cards::get_card(&pool, &goal.id).await.unwrap().unwrap();
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             card.metadata_json.get("needs_human_attention"),
             Some(&serde_json::Value::Bool(true))
@@ -1350,7 +1360,8 @@ mod tests {
         let goal = goal_in_state(&pool, "triage", 0).await;
 
         // A non-risk_gate proof is refused.
-        let wrong_kind = approve_decision_proof(&pool, &goal.id, crate::decisions::ACTOR_JESSE).await;
+        let wrong_kind =
+            approve_decision_proof(&pool, &goal.id, crate::decisions::ACTOR_JESSE).await;
         let err = delete_goal_checked(&pool, &goal.id, wrong_kind)
             .await
             .unwrap_err();
@@ -1399,13 +1410,24 @@ mod tests {
     async fn requeue_moves_in_progress_to_ready_with_attempts() {
         let pool = test_pool().await;
         let goal = goal_in_state(&pool, "in_progress", 1).await;
-        requeue_goal(&pool, &goal.id, "system", 2, "Abandoned during daemon restart")
-            .await
-            .unwrap();
+        requeue_goal(
+            &pool,
+            &goal.id,
+            "system",
+            2,
+            "Abandoned during daemon restart",
+        )
+        .await
+        .unwrap();
         assert_eq!(state_of(&pool, &goal.id).await, "ready");
-        let card = crate::cards::get_card(&pool, &goal.id).await.unwrap().unwrap();
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
-            card.metadata_json.get("attempt_count").and_then(|v| v.as_u64()),
+            card.metadata_json
+                .get("attempt_count")
+                .and_then(|v| v.as_u64()),
             Some(2)
         );
     }

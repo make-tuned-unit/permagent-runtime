@@ -169,7 +169,9 @@ async fn decision_lifecycle_through_router() {
     let v = body_json(resp).await;
     let items = v["items"].as_array().unwrap();
     assert!(
-        items.iter().any(|i| i["id"] == serde_json::json!(decision.id)),
+        items
+            .iter()
+            .any(|i| i["id"] == serde_json::json!(decision.id)),
         "resolved decision must appear in history: {}",
         v
     );
@@ -216,8 +218,15 @@ async fn decision_lifecycle_through_router() {
 
     let resp = app.clone().oneshot(get("/api/decisions")).await.unwrap();
     let v = body_json(resp).await;
-    assert_eq!(v["items"].as_array().unwrap().len(), 10, "default is top 10");
-    assert_eq!(v["summary"]["total_pending"], 12, "+M more computed from summary");
+    assert_eq!(
+        v["items"].as_array().unwrap().len(),
+        10,
+        "default is top 10"
+    );
+    assert_eq!(
+        v["summary"]["total_pending"], 12,
+        "+M more computed from summary"
+    );
 
     let resp = app
         .clone()

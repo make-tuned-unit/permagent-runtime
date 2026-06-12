@@ -664,7 +664,10 @@ impl OrchestratorClient {
             "worker_session_ids".to_string(),
             serde_json::json!(worker_session_ids),
         );
-        patch.insert("dispatched_at".to_string(), serde_json::json!(dispatched_at));
+        patch.insert(
+            "dispatched_at".to_string(),
+            serde_json::json!(dispatched_at),
+        );
         if card.metadata_json.get("first_dispatched_at").is_none() {
             patch.insert(
                 "first_dispatched_at".to_string(),
@@ -1288,28 +1291,23 @@ impl OrchestratorClient {
             // cannot self-approve (S5): surface (or create) the corresponding
             // approve_review decision and direct the answer to the inbox.
             GoalAction::Approve | GoalAction::Reject => {
-                let decision = match decisions::find_open_decision_for_goal(
-                    &pool,
-                    &card_id,
-                    "approve_review",
-                )
-                .await?
-                {
-                    Some(d) => d,
-                    None => {
-                        let headline = {
-                            let h = format!("Approve the finished work on \"{}\"", card.title);
-                            if h.chars().count() > decisions::MAX_HEADLINE_CHARS {
-                                let cut: String = h
-                                    .chars()
-                                    .take(decisions::MAX_HEADLINE_CHARS - 1)
-                                    .collect();
-                                format!("{}…", cut)
-                            } else {
-                                h
-                            }
-                        };
-                        let detail = format!(
+                let decision =
+                    match decisions::find_open_decision_for_goal(&pool, &card_id, "approve_review")
+                        .await?
+                    {
+                        Some(d) => d,
+                        None => {
+                            let headline = {
+                                let h = format!("Approve the finished work on \"{}\"", card.title);
+                                if h.chars().count() > decisions::MAX_HEADLINE_CHARS {
+                                    let cut: String =
+                                        h.chars().take(decisions::MAX_HEADLINE_CHARS - 1).collect();
+                                    format!("{}…", cut)
+                                } else {
+                                    h
+                                }
+                            };
+                            let detail = format!(
                             "goal_advance '{}' was requested on goal {} (project {}). Notes: {}. \
                              Review the worker output and answer approve or reject.",
                             action,
@@ -1317,21 +1315,21 @@ impl OrchestratorClient {
                             card.project_id,
                             notes.as_deref().unwrap_or("(none)")
                         );
-                        decisions::create_decision(
-                            &pool,
-                            decisions::NewDecision {
-                                kind: "approve_review".to_string(),
-                                goal_id: Some(card_id.clone()),
-                                project_id: Some(card.project_id.clone()),
-                                headline: Some(headline),
-                                detail: Some(detail),
-                                payload: serde_json::json!({}),
-                                ..Default::default()
-                            },
-                        )
-                        .await?
-                    }
-                };
+                            decisions::create_decision(
+                                &pool,
+                                decisions::NewDecision {
+                                    kind: "approve_review".to_string(),
+                                    goal_id: Some(card_id.clone()),
+                                    project_id: Some(card.project_id.clone()),
+                                    headline: Some(headline),
+                                    detail: Some(detail),
+                                    payload: serde_json::json!({}),
+                                    ..Default::default()
+                                },
+                            )
+                            .await?
+                        }
+                    };
 
                 Err(format!(
                     "'{}' on goal '{}' requires an answered decision — the orchestrator cannot \
@@ -2451,12 +2449,11 @@ async fn resume_single_goal(
         let other_exhaustion = goal_transition::check_budget(pool, &card.metadata_json).await?;
 
         if new_attempt >= budget.attempt_cap || other_exhaustion.is_some() {
-            let exhaustion = other_exhaustion.unwrap_or(
-                crate::goal_transition::BudgetExhaustion::AttemptCap {
+            let exhaustion =
+                other_exhaustion.unwrap_or(crate::goal_transition::BudgetExhaustion::AttemptCap {
                     spent: new_attempt,
                     cap: budget.attempt_cap,
-                },
-            );
+                });
             let decision_id = goal_transition::exhaust_and_park(
                 pool,
                 card_id,
@@ -2717,7 +2714,9 @@ mod tests {
     #[tokio::test]
     async fn tool_path_approve_without_decision_is_rejected() {
         let tmp = tempfile::tempdir().unwrap();
-        let sm = Arc::new(crate::session::SessionManager::new(tmp.path().to_path_buf()));
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
         let pool = sm.pool_clone().await.unwrap();
 
         let card = setup_goal_in_state(&pool, "review", 1).await;
@@ -2883,23 +2882,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resume_dead_session_at_max_attempts_moves_to_triage() {
+    async fn resume_dead_session_at_attempt_cap_parks_with_unblock_decision() {
         let pool = test_pool().await;
+        // attempt_count=2 with the default cap of 3: the resume attempt would
+        // be #3, which exhausts the budget (S4) — park + unblock decision,
+        // never a silent retry.
         let card = setup_goal_in_state(&pool, "in_progress", 2).await;
 
         resume_single_goal(&pool, &None, &card.id, &card.project_id)
             .await
             .unwrap();
 
+        // Goal is parked: Triage column, needs_human_attention, error recorded.
         let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
         let col = cards::get_column(&pool, &updated.column_id)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(col.state_binding.as_deref(), Some("triage"));
         assert_eq!(
-            updated.metadata_json.get("attempt_count").unwrap().as_u64(),
-            Some(3)
+            col.state_binding.as_deref(),
+            Some("triage"),
+            "Budget exhaustion on resume parks the goal in Triage"
+        );
+        assert_eq!(
+            updated.metadata_json.get("goal_state").unwrap().as_str(),
+            Some("triage")
         );
         assert_eq!(
             updated
@@ -2908,6 +2915,57 @@ mod tests {
                 .unwrap()
                 .as_bool(),
             Some(true)
+        );
+        assert!(
+            updated
+                .metadata_json
+                .get("last_error")
+                .and_then(|v| v.as_str())
+                .is_some_and(|e| e.contains("Abandoned during daemon restart")),
+            "abandonment reason must be recorded in last_error"
+        );
+        // Parking does not fabricate a consumed attempt: the exhausted resume
+        // attempt was never dispatched, so attempt_count stays at 2.
+        assert_eq!(
+            updated.metadata_json.get("attempt_count").unwrap().as_u64(),
+            Some(2)
+        );
+
+        // S4 contract: an open kind='unblock' decision exists for the goal.
+        let unblock = decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+            .await
+            .unwrap()
+            .expect("an open unblock decision must exist for the parked goal");
+        assert_eq!(unblock.kind, "unblock");
+        assert_eq!(unblock.status, "open");
+        assert_eq!(
+            unblock.acted_by, None,
+            "open decision has no actor until answered"
+        );
+        assert_eq!(unblock.goal_id.as_deref(), Some(card.id.as_str()));
+        assert_eq!(
+            unblock.payload.get("reason").and_then(|v| v.as_str()),
+            Some("attempt_cap")
+        );
+        assert_eq!(
+            unblock.payload.get("spent").and_then(|v| v.as_u64()),
+            Some(3)
+        );
+        assert_eq!(unblock.payload.get("cap").and_then(|v| v.as_u64()), Some(3));
+
+        // The park itself is audited with system attribution.
+        use sqlx::Row;
+        let audit =
+            sqlx::query("SELECT acted_by, outcome FROM decision_audit WHERE goal_id = ? ORDER BY seq DESC LIMIT 1")
+                .bind(&card.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(audit.get::<String, _>("outcome"), "park");
+        assert_eq!(
+            audit.get::<String, _>("acted_by"),
+            decisions::ACTOR_SYSTEM,
+            "park on the resume path is attributed to the system"
         );
     }
 

@@ -351,51 +351,50 @@ async fn delete_card_handler(
     // risk_gate decision and return 202 — the deletion executes when Jesse
     // approves the decision in the inbox.
     if card.card_type == "goal" {
-        let decision = match permagent::decisions::find_open_decision_for_goal(
-            &pool, &card_id, "risk_gate",
-        )
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
-        {
-            Some(d) => d,
-            None => {
-                let headline = {
-                    let h = format!("Permission to delete the goal \"{}\"", card.title);
-                    if h.chars().count() > permagent::decisions::MAX_HEADLINE_CHARS {
-                        let cut: String = h
-                            .chars()
-                            .take(permagent::decisions::MAX_HEADLINE_CHARS - 1)
-                            .collect();
-                        format!("{}…", cut)
-                    } else {
-                        h
-                    }
-                };
-                permagent::decisions::create_decision(
-                    &pool,
-                    permagent::decisions::NewDecision {
-                        kind: "risk_gate".to_string(),
-                        goal_id: Some(card_id.clone()),
-                        project_id: Some(card.project_id.clone()),
-                        headline: Some(headline),
-                        detail: Some(format!(
+        let decision =
+            match permagent::decisions::find_open_decision_for_goal(&pool, &card_id, "risk_gate")
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+            {
+                Some(d) => d,
+                None => {
+                    let headline = {
+                        let h = format!("Permission to delete the goal \"{}\"", card.title);
+                        if h.chars().count() > permagent::decisions::MAX_HEADLINE_CHARS {
+                            let cut: String = h
+                                .chars()
+                                .take(permagent::decisions::MAX_HEADLINE_CHARS - 1)
+                                .collect();
+                            format!("{}…", cut)
+                        } else {
+                            h
+                        }
+                    };
+                    permagent::decisions::create_decision(
+                        &pool,
+                        permagent::decisions::NewDecision {
+                            kind: "risk_gate".to_string(),
+                            goal_id: Some(card_id.clone()),
+                            project_id: Some(card.project_id.clone()),
+                            headline: Some(headline),
+                            detail: Some(format!(
                             "DELETE was requested for goal card {} (project {}). Goal deletion \
                              is Tier 2 (user_data_deletion); approving this decision deletes \
                              the card permanently.",
                             card_id, card.project_id
                         )),
-                        payload: serde_json::json!({
-                            "action_class": "user_data_deletion",
-                            "description": format!("Delete goal card '{}'", card.title),
-                            "requested_by": "http",
-                        }),
-                        ..Default::default()
-                    },
-                )
-                .await
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
-            }
-        };
+                            payload: serde_json::json!({
+                                "action_class": "user_data_deletion",
+                                "description": format!("Delete goal card '{}'", card.title),
+                                "requested_by": "http",
+                            }),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+                }
+            };
 
         return Ok((
             StatusCode::ACCEPTED,

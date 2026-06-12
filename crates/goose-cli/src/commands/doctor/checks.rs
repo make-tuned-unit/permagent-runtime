@@ -898,9 +898,7 @@ fn check_decision_audit_chain() -> CheckResult {
 
 /// Returns (total_rows, Some((break_seq, reason))) on a broken chain.
 #[allow(clippy::type_complexity)]
-fn walk_audit_chain(
-    conn: &rusqlite::Connection,
-) -> Result<(u64, Option<(i64, String)>), String> {
+fn walk_audit_chain(conn: &rusqlite::Connection) -> Result<(u64, Option<(i64, String)>), String> {
     let mut stmt = conn
         .prepare(
             "SELECT seq, decision_id, goal_id, acted_by, tier, outcome, evidence_digest, \
@@ -911,16 +909,16 @@ fn walk_audit_chain(
     let rows = stmt
         .query_map([], |r| {
             Ok((
-                r.get::<_, i64>(0)?,                    // seq
-                r.get::<_, String>(1)?,                 // decision_id
-                r.get::<_, Option<String>>(2)?,         // goal_id
-                r.get::<_, String>(3)?,                 // acted_by
-                r.get::<_, i64>(4)?,                    // tier
-                r.get::<_, String>(5)?,                 // outcome
-                r.get::<_, Option<String>>(6)?,         // evidence_digest
-                r.get::<_, Option<String>>(7)?,         // prev_hash
-                r.get::<_, String>(8)?,                 // row_hash
-                r.get::<_, String>(9)?,                 // created_at
+                r.get::<_, i64>(0)?,            // seq
+                r.get::<_, String>(1)?,         // decision_id
+                r.get::<_, Option<String>>(2)?, // goal_id
+                r.get::<_, String>(3)?,         // acted_by
+                r.get::<_, i64>(4)?,            // tier
+                r.get::<_, String>(5)?,         // outcome
+                r.get::<_, Option<String>>(6)?, // evidence_digest
+                r.get::<_, Option<String>>(7)?, // prev_hash
+                r.get::<_, String>(8)?,         // row_hash
+                r.get::<_, String>(9)?,         // created_at
             ))
         })
         .map_err(|e| e.to_string())?;
@@ -928,15 +926,28 @@ fn walk_audit_chain(
     let mut total = 0u64;
     let mut expected_prev = String::new();
     for row in rows {
-        let (seq, decision_id, goal_id, acted_by, tier, outcome, evidence, prev_hash, row_hash, created_at) =
-            row.map_err(|e| e.to_string())?;
+        let (
+            seq,
+            decision_id,
+            goal_id,
+            acted_by,
+            tier,
+            outcome,
+            evidence,
+            prev_hash,
+            row_hash,
+            created_at,
+        ) = row.map_err(|e| e.to_string())?;
         total += 1;
 
         let stored_prev = prev_hash.unwrap_or_default();
         if stored_prev != expected_prev {
             return Ok((
                 total,
-                Some((seq, "prev_hash does not match the previous row's row_hash".into())),
+                Some((
+                    seq,
+                    "prev_hash does not match the previous row's row_hash".into(),
+                )),
             ));
         }
 
