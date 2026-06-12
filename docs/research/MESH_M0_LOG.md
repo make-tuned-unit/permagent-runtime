@@ -253,3 +253,27 @@ IQ4_XS 30B-A3B 16.38 G · 32B Q3_K_M 15.97 G · 14B Q4_K_M 9.0 G (M4 control) ·
   - M1 (local): `sudo brew services start tailscale`
   - M4 (his SSH/Screen Sharing): `sudo /opt/homebrew/bin/brew services start tailscale`
 - CHECKPOINT 2 (auth) waits on checkpoint 1; key will be REDACTED in logs.
+
+### Phase 1 decisions (Jesse, 2026-06-11 late evening)
+
+1. **Checkpoint 1:** Jesse running `sudo brew services start tailscale` on M1
+   now; M4 command runs (his SSH) once agent confirms M4 brew install done.
+   Pre-auth key to be pasted at checkpoint 2.
+2. **exo-on-M4 exemption DECLINED — DNF stands for all pooled exo cells.**
+   Results doc records prominently: exo pooled mode requires full Xcode + rust
+   nightly + node + uv on EVERY node → disqualified as a consumer pod engine
+   at current state regardless of performance; M2 minimum-contributor-spec
+   cites this. Q5 collapses to llama.cpp-RPC-only for pooled cells.
+   **Consolation row:** exo single-node on M1 vs same model as M1 llama.cpp
+   control row (MLX-vs-ggml per-node efficiency); "revisit at exo 1.0 /
+   prebuilt binaries" note.
+3. **Evening window confirmed for tonight.** P2 pause staged: at window open
+   `ollama ps` → `ollama stop <name>` → verify + log RAM freed; re-warm at
+   close. M4 control row + heavy cells inside window; M1 control row as soon
+   as 8B lands.
+4. **QoS/SSH finding promoted** to its own results-doc subsection under M1
+   design inputs: "headless M4 requires launchd services; non-interactive SSH
+   spawns are QoS-frozen" — seed of the headless-server setup spec, together
+   with the Tailscale persistence note.
+5. Downloads: all 6 must be size-sanity-checked against HF content-length
+   before any transfer.
