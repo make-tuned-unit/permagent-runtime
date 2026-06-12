@@ -9,6 +9,7 @@ pub mod browser_content;
 pub mod cards;
 pub mod config_management;
 pub mod dashboard;
+pub mod decisions;
 pub mod errors;
 pub mod events;
 pub mod features;
@@ -104,6 +105,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(henry_status::routes(state.clone()))
         .merge(projects::routes(state.clone()))
         .merge(cards::routes(state.clone()))
+        .merge(decisions::routes(state.clone()))
         .merge(agents::routes(state.clone()))
         .merge(crate::app_catalog::routes(state.clone()));
 

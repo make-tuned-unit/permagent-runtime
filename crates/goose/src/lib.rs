@@ -16,6 +16,7 @@ pub mod cards;
 pub mod config;
 pub mod context_mgmt;
 pub mod conversation;
+pub mod decisions;
 pub mod dictation;
 pub mod doctor;
 pub mod download_manager;
@@ -23,6 +24,7 @@ pub mod events;
 pub mod execution;
 pub mod gateway;
 pub mod goal_state;
+pub mod goal_transition;
 pub mod goose_apps;
 pub mod hints;
 pub mod identity;
@@ -58,6 +60,10 @@ pub mod tool_monitor;
 pub mod tracing;
 pub mod utils;
 pub mod workspaces;
+
+/// Re-exported so dependents (goose-server) can name pool types from the
+/// exact sqlx version this crate links (e.g. decisions/goal_transition APIs).
+pub use sqlx;
 
 #[cfg(test)]
 pub mod test_sigabrt_handler;
