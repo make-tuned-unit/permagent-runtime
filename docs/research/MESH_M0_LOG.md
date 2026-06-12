@@ -277,3 +277,58 @@ IQ4_XS 30B-A3B 16.38 G · 32B Q3_K_M 15.97 G · 14B Q4_K_M 9.0 G (M4 control) ·
    with the Tailscale persistence note.
 5. Downloads: all 6 must be size-sanity-checked against HF content-length
    before any transfer.
+
+### Checkpoint 1/2 execution + wiring (2026-06-11 ~23:30–00:00)
+
+**M4 brew QoS freeze — second confirmed instance (Jesse's archaeology):** the
+original `brew install tailscale` over non-interactive SSH froze; recovery
+required killing the full process tree from the henry account (lock-holder was
+a ruby child invisible to 'brew' greps) and clearing
+`/opt/homebrew/var/homebrew/locks/` wholesale (lock files are UNSUFFIXED — a
+`*.lock` glob misses them). Reinstall running interactively by Jesse.
+→ Results-doc hard rule (M1 design inputs): **nothing long-running spawns
+non-interactively on the M4 without launchd**; recovery = kill full tree +
+clear locks directory. henry is NON-SUDO by design; all privileged
+provisioning routes through the admin account: provision once via admin +
+launchd, zero interactive babysitting thereafter.
+
+**ZeroClaw census (Jesse, tonight):** litellm, memory/knowledge/learning
+servers, spend proxy, task runner, ~20 duplicate chroma-mcp processes (likely
+leak). ~10 GB estimate stands; P2 pause frees the 9.3 GB Ollama model only.
+
+**Tailscale M1 joined:**
+```
+$ tailscale up --auth-key=[REDACTED] --hostname=m1-mini
+$ tailscale status → 100.77.38.66  m1-mini  jesse.sharratt@  macOS
+```
+M4 join HOLDS until Jesse posts "M4 ready" (install + admin sudo step).
+Agent's parallel background brew retry was stopped (TaskStop) the moment Jesse
+reported hands-on recovery — single writer on the M4.
+
+**Wired path live (link-local — en0 has no DHCP lease on either mini; both
+sit on the same isolated wired L2 segment, 169.254.233.101 ↔ .220; `route
+get` confirms en0 both directions):**
+
+| path | min/avg/max/stddev (ms) | loss |
+|---|---|---|
+| M1 → M4 WIRED en0 | 0.449 / **0.520** / 0.656 / 0.056 | 0% |
+| M4 → M1 WIRED en0 | 0.417 / **0.465** / 0.558 / 0.043 | 0% |
+| (before-row) M1 → M4 Wi-Fi | 0.406 / 0.553 / 0.667 / 0.054 | 0% |
+| (before-row) M4 → M1 Wi-Fi | 6.076 / **39.614** / 106.090 / 34.884 | 0% |
+
+Wi-Fi's 39.6 ms power-save asymmetry is gone on the wire. Throughput probe
+(ssh pipe, 300 MB /dev/zero): 2.68 s ≈ **112 MB/s ≈ saturated GbE**.
+Benchmarks will bind RPC to the 169.254 wired addresses.
+
+### Download integrity (size vs HF Content-Length, byte-exact)
+
+| file | bytes (HF) | downloaded | status |
+|---|---|---|---|
+| Qwen3-30B-A3B-IQ4_XS | 16378073664 | 16378073664 | ✓ |
+| Qwen3-30B-A3B-Q4_K_M | 18556686912 | 18556686912 | ✓ |
+| Qwen3-32B-Q3_K_M | 15971778208 | 15971778208 | ✓ |
+| Qwen3-32B-Q4_K_M | 19762150048 | in flight (91%) | … |
+| Qwen3-14B-Q4_K_M | 9001753984 | 9001753984 | ✓ |
+| Qwen3-8B-Q4_K_M | 5027784512 | 5027784512 | ✓ |
+
+8B control model transferring to M1 over the wire (~112 MB/s).
