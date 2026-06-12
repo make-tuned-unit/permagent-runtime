@@ -13,6 +13,10 @@ mod routes;
 mod session_event_bus;
 mod state;
 mod tunnel;
+// Some verification items (test-support consts/fields) are only consumed by
+// the lib target's tests; the bin needs the module for the startup hook wire.
+#[allow(dead_code)]
+mod verification;
 mod voice;
 
 use std::path::PathBuf;
