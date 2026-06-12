@@ -4,7 +4,8 @@
 //! card to Review, `run_for_goal` executes the goal's declared completion
 //! checks, analyzes the diff against the dispatch-time baseline commit, grades
 //! the work with a local Ollama model, and writes the result to
-//! `metadata_json.verification` via ONE atomic `cards::update_card`.
+//! `metadata_json.verification` via L1's narrow allowlist API
+//! `cards::set_goal_verification` (the sanctioned L2 write path).
 //!
 //! L1 contract (PHASE0-L2.md §4):
 //! - This module writes ONLY the `verification` key in metadata_json.
@@ -70,6 +71,29 @@ pub async fn run_for_goal(
     goal_id: &str,
 ) -> Result<VerificationRecord, String> {
     run_for_goal_with(pool, goal_id, verifier::OLLAMA_BASE_URL).await
+}
+
+/// Install the post-Review verification hook on L1's orchestrator extension
+/// point (`GOAL_REVIEW_HOOK`): after `handle_goal_completion` moves a goal to
+/// Review, `run_for_goal` runs as a spawned, failure-tolerant task — a
+/// verification failure never breaks the completion path. Idempotent; call
+/// once at daemon startup (the startup call belongs to the coordinator's
+/// state.rs wiring).
+pub fn install_review_hook() {
+    let _ = permagent::agents::platform_extensions::orchestrator::GOAL_REVIEW_HOOK.set(Box::new(
+        |pool, goal_id| {
+            tokio::spawn(async move {
+                if let Err(e) = run_for_goal(&pool, &goal_id).await {
+                    tracing::warn!(
+                        target: "permagentd::verification",
+                        goal_id = %goal_id,
+                        "Post-Review verification failed (non-fatal): {}",
+                        e
+                    );
+                }
+            });
+        },
+    ));
 }
 
 /// Same as `run_for_goal` but with an injectable Ollama base URL (tests).
@@ -547,27 +571,15 @@ async fn write_verification(
     goal_id: &str,
     record: &VerificationRecord,
 ) -> Result<(), String> {
-    // Re-read the card so concurrent metadata writes by L1 between our initial
-    // read and now are preserved; we only overwrite the `verification` key.
-    let card = permagent::cards::get_card(pool, goal_id)
-        .await?
-        .ok_or_else(|| format!("Card '{}' disappeared during verification", goal_id))?;
-    let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
-    meta.insert(
-        VERIFICATION_KEY.to_string(),
-        serde_json::to_value(record).map_err(|e| e.to_string())?,
-    );
-
-    permagent::cards::update_card(
+    // L1's sanctioned narrow API (allowlist): writes ONLY the `verification`
+    // key, re-reading the card internally so concurrent L1 metadata writes
+    // are preserved. Never moves cards, never touches protected keys.
+    permagent::cards::set_goal_verification(
         pool,
         goal_id,
-        permagent::cards::UpdateCard {
-            metadata_json: Some(serde_json::Value::Object(meta)),
-            ..Default::default()
-        },
+        serde_json::to_value(record).map_err(|e| e.to_string())?,
     )
-    .await?;
-    Ok(())
+    .await
 }
 
 // ── Test support: mock Ollama server ────────────────────────────────────────
@@ -836,6 +848,114 @@ mod tests {
             .contains("confirmed"));
         // No rate configured → cost_usd null + note.
         assert_eq!(parsed.evidence_digest.costs.cost_usd, None);
+    }
+
+    /// CONTRACT (L1 hardening × L2 allowlist, part 1): the module's REAL
+    /// `metadata_json.verification` write — run_for_goal persisting via L1's
+    /// narrow API `cards::set_goal_verification` — succeeds against a goal
+    /// card, never moves it, and never disturbs protected keys.
+    #[tokio::test]
+    async fn contract_l1_allowlist_permits_verification_write_on_goal_card() {
+        let repo = tempfile::tempdir().unwrap();
+        let baseline = init_repo(repo.path());
+
+        let pool = test_pool().await;
+        let card = make_goal(
+            &pool,
+            repo.path().to_str().unwrap(),
+            serde_json::json!({
+                "baseline_commit": baseline,
+                "declared_paths": ["src/**"],
+            }),
+        )
+        .await;
+
+        let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
+        run_for_goal_with(&pool, &card.id, &base_url)
+            .await
+            .expect("L1's hardened layer must permit the verification write on a goal card");
+
+        let after = permagent::cards::get_card(&pool, &card.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let meta = after.metadata_json.as_object().unwrap();
+        assert!(
+            meta.contains_key(VERIFICATION_KEY),
+            "verification key written through the allowlist"
+        );
+        assert_eq!(after.column_id, card.column_id, "card never moved");
+        assert_eq!(meta.get("goal_state").unwrap(), "review");
+        assert_eq!(meta.get("attempt_count").unwrap(), 1);
+    }
+
+    /// CONTRACT (part 2): from this module's exact call path (goose-server →
+    /// permagent::cards), a metadata write touching a PROTECTED key
+    /// (attempt_count) is refused by L1's guard, while the same write shape
+    /// carrying only a `verification` change passes — the allowlist is
+    /// exactly as narrow as designed.
+    #[tokio::test]
+    async fn contract_l1_guard_rejects_protected_key_write_from_module_path() {
+        let pool = test_pool().await;
+        let card = make_goal(&pool, "/nonexistent", serde_json::json!({})).await;
+
+        // Allowed: general update carrying only a `verification` change.
+        let mut meta = card.metadata_json.as_object().cloned().unwrap();
+        meta.insert(
+            VERIFICATION_KEY.to_string(),
+            serde_json::json!({"status": "uncertain"}),
+        );
+        permagent::cards::update_card(
+            &pool,
+            &card.id,
+            permagent::cards::UpdateCard {
+                metadata_json: Some(serde_json::Value::Object(meta.clone())),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("`verification` is deliberately NOT protected (L2 allowlist)");
+
+        // Refused: identical path, but mutating the protected attempt_count.
+        meta.insert("attempt_count".to_string(), serde_json::json!(99));
+        let err = permagent::cards::update_card(
+            &pool,
+            &card.id,
+            permagent::cards::UpdateCard {
+                metadata_json: Some(serde_json::Value::Object(meta)),
+                ..Default::default()
+            },
+        )
+        .await;
+        let msg = err.expect_err("protected key write must be refused");
+        assert!(
+            msg.contains("protected goal metadata key 'attempt_count'"),
+            "unexpected refusal message: {}",
+            msg
+        );
+
+        // Protected key unchanged on disk.
+        let after = permagent::cards::get_card(&pool, &card.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.metadata_json.get("attempt_count").unwrap(), 1);
+    }
+
+    /// The hook installer registers on L1's orchestrator extension point, is
+    /// idempotent, and the installed closure is failure-tolerant (unknown
+    /// goal id → logged, no panic, completion path unaffected).
+    #[tokio::test]
+    async fn install_review_hook_registers_and_tolerates_failure() {
+        install_review_hook();
+        install_review_hook(); // idempotent: second set is a no-op
+        let hook = permagent::agents::platform_extensions::orchestrator::GOAL_REVIEW_HOOK
+            .get()
+            .expect("hook installed");
+
+        let pool = test_pool().await;
+        hook(pool, "no-such-goal".to_string()); // must not panic or block
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 
     #[tokio::test]
