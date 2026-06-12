@@ -1,0 +1,22 @@
+renderer: "Chrome/149.0.7827.103"
+tab click [World]: null
+saved /tmp/world-baseline/w4/run/ambience-1-idle.jpg
+# idle (0 working)
+fps	calls	tris	geoms	tex	progs	dpr
+5.4	1340	71297	1258	20	16	1.5
+6.3	1340	71297	1368	20	16	1.5
+6.3	1339	71185	1368	20	16	1.5
+dev harness: harness ok
+saved /tmp/world-baseline/w4/run/ambience-2-ramp-1s.jpg
+saved /tmp/world-baseline/w4/run/ambience-3-ramp-3s.jpg
+saved /tmp/world-baseline/w4/run/ambience-4-busy-7s.jpg
+# busy (4 working)
+fps	calls	tris	geoms	tex	progs	dpr
+6.5	1340	71297	1948	20	16	1.5
+6.6	1340	71297	1948	20	16	1.5
+7	1340	71297	1948	20	16	1.5
+saved /tmp/world-baseline/w4/run/ambience-5-decay-8s.jpg
+# after removal
+fps	calls	tris	geoms	tex	progs	dpr
+6.4	1340	71297	2258	20	16	1.5
+6.9	1348	72385	2398	20	16	1.5

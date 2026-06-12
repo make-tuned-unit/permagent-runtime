@@ -1,0 +1,19 @@
+{
+ "drawables": 9,
+ "byType": {
+  "Points": 2,
+  "Mesh": 7
+ },
+ "visible": 9,
+ "items": [
+  "Points:BufferGeometry",
+  "Mesh:TorusGeometry",
+  "Mesh:TorusGeometry",
+  "Mesh:TorusGeometry",
+  "Mesh:SphereGeometry",
+  "Mesh:SphereGeometry",
+  "Mesh:SphereGeometry",
+  "Mesh:CylinderGeometry",
+  "Points:BufferGeometry"
+ ]
+}

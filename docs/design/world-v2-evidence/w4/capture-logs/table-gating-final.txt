@@ -1,0 +1,4 @@
+visible, settled 20s: {"fps":6.7,"calls":1339,"triangles":71185,"geometries":1428,"textures":20,"programs":16,"dpr":1.5}
+hidden: sampler frozen between +5s and +8s = true {"fps":0,"calls":1340,"triangles":71297,"geometries":1508,"textures":20,"programs":16,"dpr":1.5}
+re-shown: __worldPerf updated after 2s: {"fps":10.1,"calls":1340,"triangles":71297,"geometries":1528,"textures":20,"programs":16,"dpr":1.5}
+RESNAP VERDICT: sampler recovered in 2s (pre-fix: 15-20s stale)

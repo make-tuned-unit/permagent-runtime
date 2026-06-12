@@ -3,6 +3,7 @@ import { useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import type { CameraMode, AgentState } from '../types';
+import { useTourActive } from './tourState';
 
 interface WorldCameraProps {
   mode: CameraMode;
@@ -20,12 +21,24 @@ const TRANSITION_DURATION = 1.5;
 const TP_OFFSET = new THREE.Vector3(0, 3, 6);
 const TP_LOOK_OFFSET = new THREE.Vector3(0, 1.5, 0);
 
+// Scratch vectors — bible §8: zero per-frame allocations in useFrame.
+// Single camera instance, so module-level scratch is safe.
+const _transitionTarget = new THREE.Vector3();
+const _camDir = new THREE.Vector3();
+const _camRight = new THREE.Vector3();
+const _UP = new THREE.Vector3(0, 1, 0);
+const _desiredPos = new THREE.Vector3();
+const _desiredTarget = new THREE.Vector3();
+
 function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
 
 export function WorldCamera({ mode, selectedAgent, onModeChange, onMoveAgent }: WorldCameraProps) {
   const { camera, gl } = useThree();
+  // While the tour owns the camera, OrbitControls must unmount (its damped
+  // update loop would fight the spline every frame).
+  const tourActive = useTourActive();
   const controlsRef = useRef<React.ComponentRef<typeof OrbitControls>>(null);
   const lastInteraction = useRef(Date.now());
   const transitionRef = useRef<{
@@ -120,6 +133,9 @@ export function WorldCamera({ mode, selectedAgent, onModeChange, onMoveAgent }: 
   }, [mode, selectedAgent?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useFrame(({ scene }) => {
+    // Tour mode owns the camera entirely (see camera/TourMode.tsx).
+    if (tourActive) return;
+
     // Handle camera transition
     if (transitionRef.current?.active) {
       const t = transitionRef.current;
@@ -129,8 +145,8 @@ export function WorldCamera({ mode, selectedAgent, onModeChange, onMoveAgent }: 
 
       camera.position.lerpVectors(t.startPos, t.endPos, eased);
 
-      const currentTarget = new THREE.Vector3().lerpVectors(t.startTarget, t.endTarget, eased);
-      camera.lookAt(currentTarget);
+      _transitionTarget.lerpVectors(t.startTarget, t.endTarget, eased);
+      camera.lookAt(_transitionTarget);
 
       // "Diving in" fog pulse during transition
       if (scene.fog) {
@@ -162,35 +178,35 @@ export function WorldCamera({ mode, selectedAgent, onModeChange, onMoveAgent }: 
       const m = moveKeys.current;
       if (m.forward || m.backward || m.left || m.right) {
         // Move relative to camera facing direction (projected to XZ)
-        const camDir = new THREE.Vector3();
-        camera.getWorldDirection(camDir);
-        camDir.y = 0;
-        camDir.normalize();
-        const camRight = new THREE.Vector3().crossVectors(camDir, new THREE.Vector3(0, 1, 0)).normalize();
+        camera.getWorldDirection(_camDir);
+        _camDir.y = 0;
+        _camDir.normalize();
+        _camRight.crossVectors(_camDir, _UP).normalize();
 
         const speed = 0.15;
         let dx = 0, dz = 0;
-        if (m.forward) { dx += camDir.x * speed; dz += camDir.z * speed; }
-        if (m.backward) { dx -= camDir.x * speed; dz -= camDir.z * speed; }
-        if (m.left) { dx -= camRight.x * speed; dz -= camRight.z * speed; }
-        if (m.right) { dx += camRight.x * speed; dz += camRight.z * speed; }
+        if (m.forward) { dx += _camDir.x * speed; dz += _camDir.z * speed; }
+        if (m.backward) { dx -= _camDir.x * speed; dz -= _camDir.z * speed; }
+        if (m.left) { dx -= _camRight.x * speed; dz -= _camRight.z * speed; }
+        if (m.right) { dx += _camRight.x * speed; dz += _camRight.z * speed; }
         onMoveAgent(dx, dz);
       }
     }
 
     // Third-person follow: smoothly track the agent
     if (mode === 'third-person' && selectedAgent) {
-      const agentPos = new THREE.Vector3(selectedAgent.position.x, selectedAgent.position.y, selectedAgent.position.z);
-      const desiredPos = agentPos.clone().add(TP_OFFSET);
-      const desiredTarget = new THREE.Vector3(
+      _desiredPos
+        .set(selectedAgent.position.x, selectedAgent.position.y, selectedAgent.position.z)
+        .add(TP_OFFSET);
+      _desiredTarget.set(
         selectedAgent.position.x,
         selectedAgent.position.y + TP_LOOK_OFFSET.y,
         selectedAgent.position.z
       );
 
       // Smooth lerp toward desired position
-      smoothCamPos.current.lerp(desiredPos, 0.05);
-      smoothCamTarget.current.lerp(desiredTarget, 0.08);
+      smoothCamPos.current.lerp(_desiredPos, 0.05);
+      smoothCamTarget.current.lerp(_desiredTarget, 0.08);
 
       camera.position.copy(smoothCamPos.current);
       camera.lookAt(smoothCamTarget.current);
@@ -208,7 +224,7 @@ export function WorldCamera({ mode, selectedAgent, onModeChange, onMoveAgent }: 
     lastInteraction.current = Date.now();
   }, []);
 
-  if (mode === 'third-person') {
+  if (mode === 'third-person' || tourActive) {
     return null;
   }
 
