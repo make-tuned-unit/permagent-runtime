@@ -49,6 +49,10 @@ across the whole capture).
 
 - `events-record.log` — full four-phase capture (H: chat, L: describe run, E: sever/restore)
 - `events-phaseE.log` — re-aimed error close-up pass (frames 02,04–07)
+- `events-phaseE-page-fetch-failures.log` — vite dev-proxy excerpt for the severed window
+  (9:39:13–9:39:21 p.m. ADT = 00:39:13–21 UTC): the page's real `/api/henry/status` fetch
+  failures that drove the error state (the capture harness polls the daemon directly on 3011,
+  so the failures only appear page-side)
 - `events-sim.log` — wander + closeup pass for the sim trio
 - `events-dc-census.log` — per-agent draw-call census raw output
 - `perf-ledger.json` — before/after + per-agent numbers, measurement method
