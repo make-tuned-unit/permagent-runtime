@@ -3,10 +3,15 @@
 //   Henry      'daemon'  poll /api/henry/status:
 //                          idle → available, in_conversation|tool_call → working,
 //                          fetch/parse failure → error (daemon unreachable IS a real signal)
-//   Librarian  'daemon'  /events WebSocket (read-only):
-//                          LibrarianDescribeStarted|Retry|Token → working,
-//                          LibrarianDescribeCompleted → available,
-//                          Librarian*Error|Failed → error, idle until first event
+//   Librarian  'daemon'  /events WebSocket (read-only). Wire types are
+//                          snake_case (PermagentEventType has
+//                          #[serde(rename_all = "snake_case")] and the envelope
+//                          renames event_type to "type"):
+//                          librarian_describe_started|_retry|_token → working,
+//                          librarian_describe_completed → available,
+//                          librarian_*error|failed → error, idle until first event.
+//                          /events replays its buffer on connect — replayed
+//                          history (timestamp before page load) is ignored.
 //   Aria/Felix/Nova 'sim' roster from /api/agents; activity is the local wander sim.
 //                          The shared clamp holds them to idle/available — LAW (§4).
 //                          Daemon AgentStateChanged follow-up (issue #288) lifts this.
@@ -61,6 +66,7 @@ export function AgentStateSources() {
     let closed = false;
     let ws: WebSocket | null = null;
     let retry: ReturnType<typeof setTimeout> | undefined;
+    const mountedAt = Date.now();
 
     setAgentSource('librarian', 'The Librarian', 'idle', 'daemon');
 
@@ -71,17 +77,22 @@ export function AgentStateSources() {
       ws.onmessage = (ev) => {
         try {
           const event = JSON.parse(ev.data);
-          const type: string = event.event_type ?? event.type ?? '';
-          if (!type.startsWith('Librarian')) return;
+          // Wire shape: { id, type: "librarian_describe_started", timestamp, payload }
+          const type: string = event.type ?? event.event_type ?? '';
+          if (!type.startsWith('librarian_')) return;
+          // /events replays its buffer on connect — skip pre-mount history so
+          // the Librarian stays "idle until first event" (bible §6).
+          const ts = Date.parse(event.timestamp ?? '');
+          if (Number.isFinite(ts) && ts < mountedAt) return;
           let next: AgentHudState | null = null;
-          if (/Error|Failed/.test(type)) next = 'error';
+          if (/error|failed/.test(type)) next = 'error';
           else if (
-            type === 'LibrarianDescribeStarted' ||
-            type === 'LibrarianDescribeRetry' ||
-            type === 'LibrarianDescribeToken'
+            type === 'librarian_describe_started' ||
+            type === 'librarian_describe_retry' ||
+            type === 'librarian_describe_token'
           )
             next = 'working';
-          else if (type === 'LibrarianDescribeCompleted') next = 'available';
+          else if (type === 'librarian_describe_completed') next = 'available';
           if (next) setAgentSource('librarian', 'The Librarian', next, 'daemon');
         } catch {
           // ignore malformed events
