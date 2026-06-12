@@ -1,62 +1,11 @@
 import { Suspense, useState, useCallback, useEffect, useRef } from 'react';
-import { Canvas, useThree, useFrame } from '@react-three/fiber';
+import { Canvas } from '@react-three/fiber';
 import * as THREE from 'three';
-// EVIDENCE-ONLY (uncommitted): perf probe + camera pin hook for CDP capture.
-import { PerfSampler } from './shared/perf';
-// INTEGRATION PREVIEW (becomes permanent after W1's skeleton lands + rebase):
-import { WorldAgents, getAgentPosition } from './agents';
-
-function EvidenceCamHook() {
-  const camera = useThree((s) => s.camera);
-  const scene = useThree((s) => s.scene);
-  const pin = useRef<{ p: [number, number, number]; l: [number, number, number] } | null>(null);
-  useEffect(() => {
-    (window as unknown as Record<string, unknown>).__worldDebug = {
-      setCam: (p: [number, number, number], l: [number, number, number]) => {
-        pin.current = { p, l };
-      },
-      clearCam: () => {
-        pin.current = null;
-      },
-      countMeshes: () => {
-        let mesh = 0;
-        let skinned = 0;
-        scene.traverse((o) => {
-          const obj = o as THREE.Object3D & { isMesh?: boolean; isSkinnedMesh?: boolean };
-          if (obj.isSkinnedMesh) skinned++;
-          else if (obj.isMesh) mesh++;
-        });
-        return { mesh, skinned };
-      },
-    };
-    (window as unknown as Record<string, unknown>).__worldAgents = { getAgentPosition };
-  }, [scene]);
-  useFrame(() => {
-    if (!pin.current) return;
-    camera.position.set(...pin.current.p);
-    camera.lookAt(...pin.current.l);
-  }, 998);
-  return null;
-}
-
-// EVIDENCE-ONLY: with the post chain, gl.info resets per pass — accumulate the
-// whole frame instead and reset AFTER PerfSampler (priority 1000) has sampled.
-function EvidenceInfoReset() {
-  const gl = useThree((s) => s.gl);
-  useEffect(() => {
-    gl.info.autoReset = false;
-    return () => {
-      gl.info.autoReset = true;
-    };
-  }, [gl]);
-  useFrame(() => {
-    gl.info.reset();
-  }, 1001);
-  return null;
-}
 import type { CameraMode } from './types';
 import { COLORS, STATIONS } from './constants';
+import { useAgentStates } from './useAgentStates';
 import { WorldSceneContent } from './WorldScene';
+import { WorldCharacters } from './WorldCharacters';
 import { WorldCamera } from './WorldCamera';
 import { WorldPostProcessing } from './WorldPostProcessing';
 import { WorldHUD } from './WorldHUD';
@@ -117,17 +66,20 @@ function SceneContent({
   onHoverStation: (id: string | null) => void;
   onClickStation: (id: string) => void;
 }) {
-  // EVIDENCE PATCH: old useAgentStates sim removed; third-person camera follow is
-  // disabled until W4 reads getAgentPosition() (see PR notes). selectedAgentId is
-  // kept for the HUD flow.
-  void selectedAgentId;
-  const selectedAgent = null;
-  const handleMoveAgent = useCallback((_dx: number, _dz: number) => {}, []);
+  const { agents, moveAgent } = useAgentStates();
+  const selectedAgent = agents.find((a) => a.id === selectedAgentId) ?? null;
+
+  const handleMoveAgent = useCallback((dx: number, dz: number) => {
+    if (selectedAgentId) {
+      moveAgent(selectedAgentId, dx, dz);
+    }
+  }, [selectedAgentId, moveAgent]);
 
   return (
     <>
       <WorldSceneContent onHoverStation={onHoverStation} onClickStation={onClickStation} />
-      <WorldAgents
+      <WorldCharacters
+        agents={agents}
         hoveredAgent={hoveredAgent}
         onHoverAgent={onHoverAgent}
         onSelectAgent={onSelectAgent}
@@ -139,9 +91,6 @@ function SceneContent({
         onMoveAgent={handleMoveAgent}
       />
       <WorldPostProcessing />
-      <PerfSampler />
-      <EvidenceCamHook />
-      <EvidenceInfoReset />
     </>
   );
 }
