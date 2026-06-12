@@ -100,6 +100,13 @@ impl AppState {
             tracing::warn!("Failed to initialize TaskLogger — task logging disabled");
         }
 
+        // Decision Inbox (L2): post-Review verification hook on the
+        // orchestrator extension point. After handle_goal_completion moves a
+        // goal to Review, verification runs as a spawned, failure-tolerant
+        // task. Idempotent (OnceLock) — safe to call on every startup.
+        crate::verification::install_review_hook();
+        tracing::info!("Goal review hook installed (post-Review verification)");
+
         // Mount Spectral Brain for long-term memory.
         // Brain::builder().build() creates its own tokio runtime internally,
         // so we must run it off the async executor via spawn_blocking.
