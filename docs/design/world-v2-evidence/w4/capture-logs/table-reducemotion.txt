@@ -1,0 +1,8 @@
+renderer: "Chrome/149.0.7827.103"
+tab click [World]: null
+tab click [World]: null
+saved /tmp/world-baseline/w4/run/rm-1-static-t0.jpg
+saved /tmp/world-baseline/w4/run/rm-2-static-t6.jpg
+saved /tmp/world-baseline/w4/run/rm-3-tour-establishing.jpg
+saved /tmp/world-baseline/w4/run/rm-4-tour-still-static-t6.jpg
+reduceMotion captured: 1≡2 = particles/arcs static; 3≡4 = tour renders static establishing shot

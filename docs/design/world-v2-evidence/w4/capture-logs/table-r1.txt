@@ -1,0 +1,9 @@
+renderer: "Chrome/149.0.7827.103"
+tab click [World]: World
+# R1 step 1: dpr cap 1.5 + antialias ON
+fps	calls	tris	geoms	tex	progs	dpr
+2.8	1340	71297	1358	20	16	1.5
+7.1	1340	71297	1438	20	16	1.5
+4.5	1340	71297	1538	20	16	1.5
+4.6	1340	71297	1638	20	16	1.5
+4.5	1340	71297	1738	20	16	1.5

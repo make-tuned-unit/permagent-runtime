@@ -1,0 +1,58 @@
+{
+  "lane": "W4 — camera & atmosphere",
+  "captured": "2026-06-11",
+  "head": "6cee8285135e00c9fe8f3a43d689da245b916e37",
+  "method": {
+    "build": "vite dev server (same methodology as Phase 0 baseline, bible §10)",
+    "browser": "Chrome 149 headless=new over CDP, --use-angle=metal (real GPU, ANGLE Metal / Apple M1)",
+    "viewport": "1600x1000 @ deviceScaleFactor 2",
+    "probe": "shared/perf.ts PerfSampler at HEAD — priority-0 + clock-reset-resnap frozen amendments (adopted by coordinator)",
+    "samples": "5 reads, 2s apart, after 20s settle; medians reported",
+    "note": "run-to-run fps variance ~1fps: the geometry-leak bug (carved out of v2, coordinator hotfix per bible §8 item 3) grows 'geometries' throughout every session and degrades fps over time; visible in every sample column"
+  },
+  "remediation_table": {
+    "R0 pre-remediation (dpr 2 device, antialias ON)": {
+      "fps_median": 3.3, "fps_samples": [3.5, 3.0, 3.3, 3.3, 2.7],
+      "calls": 1340, "triangles": 71297, "dpr": 2
+    },
+    "R1 step 1 (dpr cap 1.5, antialias ON)": {
+      "fps_median": 4.5, "fps_samples": [2.8, 7.1, 4.5, 4.6, 4.5],
+      "calls": 1340, "triangles": 71297, "dpr": 1.5
+    },
+    "R2 HEAD as committed (dpr cap 1.5, antialias OFF)": {
+      "fps_median": 5.1, "fps_samples": [5.3, 5.1, 5.3, 5.1, 5.0],
+      "calls": 1340, "triangles": 71297, "dpr": 1.5
+    }
+  },
+  "post_matrix_at_head": {
+    "post ON, bloom ON": { "fps_median": 6.5, "fps_samples": [6.5, 6.3, 6.5, 6.5, 6.1], "calls": 1340 },
+    "post ON, bloom OFF (noise only)": { "fps_median": 6.5, "fps_samples": [6.5, 6.5, 6.5, 6.8, 6.9], "calls": 1324 },
+    "post OFF": { "fps_median": 6.4, "fps_samples": [8.3, 6.5, 6.4, 6.4, 6.4], "calls": 1323 },
+    "reading": "bloom costs ~16 draw calls and ~0 fps at the current bottleneck; the scene is bound by the legacy 1,340-DC submission (bible §8 item 4, all lanes) and the carved-out geometry leak, not by post"
+  },
+  "frameloop_gating": {
+    "hidden": "sampler frozen between +5s and +8s after display:none = true (0 world frames while hidden)",
+    "reshow_recovery_s": 2,
+    "pre_resnap_recovery_s": "15-20 (stale reads — the bug fixed by the adopted perf.ts clock-reset-resnap amendment)"
+  },
+  "budget_check": {
+    "atmosphere_draw_calls": { "measured": 9, "detail": "starfield Points + dust Points + 3 arc Torus + 3 arc-bead Sphere + 1 light-shaft Cylinder (runtime subtree census)" },
+    "post_draw_calls": { "measured": 17, "detail": "bloom 16 + noise 1 (gl.info diff: 1340 -> 1324 -> 1323)" },
+    "atmosphere_plus_post": { "measured": 26, "budget": 60, "verdict": "PASS" },
+    "point_lights_scene_wide": { "measured": 32, "budget": 12, "verdict": "FAIL scene-wide — atmosphere contributes 1 (oculus uplight); remaining 31 are legacy scene/furniture/characters (8 dome thresholds, 8 mezzanine ring, 6 furniture, ~9 characters+misc) owned by their lanes for the integration pass" },
+    "shadow_casting_lights": { "measured": 1, "detail": "DirectionalLight key, mapSize 2048", "budget": 1, "verdict": "PASS" },
+    "bloom_cut_rule": "60fps-with-post NOT met (~6.5 fps), but bloom measures ~0 fps cost at the current DC-bound bottleneck — cutting it today buys nothing. Per bible §8 item 5 the cut decision applies after items 1-3 land and instancing takes DC under 300; recommend re-measuring at the integration pass before cutting"
+  },
+  "fog_bias_numeric_ab": {
+    "base_density": 0.012,
+    "bias_on_tour": { "t48s": 0.012, "t52s": 0.01238, "t56s": 0.0127, "t60s": 0.01273 },
+    "bias_off_tour": { "t48s": 0.012, "t52s": 0.012, "t56s": 0.012, "t60s": 0.012 },
+    "note": "tour's final leg approaches the antechamber coordinates (-19,-19); density ramps only with bias enabled. Full bias (0.016) is reached inside r=5; the spline ends partway into the falloff. W1's blockout (PR #294) is not in this branch, so screenshots of the leg show no zone geometry — numeric A/B is the evidence"
+  },
+  "activity_reactive_ambience": {
+    "idle_fps_calls": [6.3, 1340],
+    "busy_4_working_fps_calls": [6.6, 1340],
+    "reading": "reactive ambience adds 0 draw calls and ~0 fps cost — it only scales emissive/rate/speed on existing objects (LAW <= 1.5x idle, bible §7); driven via getAgentRuntimeStates() from shared/agentStatus, demo'd through the DEV-only __worldDev harness feeding source='daemon'"
+  },
+  "reduce_motion": "permagent-reduce-motion=true: starfield/dust/arcs static (rm-1 vs rm-2 — W4-owned elements identical; only legacy floor-vein pulse and stargate shimmer animate, owned by their lanes), tour 't' renders a static establishing shot with no drift (rm-3 vs rm-4), reactive ambience frozen at idle via setAmbienceFrozen"
+}
