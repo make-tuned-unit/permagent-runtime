@@ -41,7 +41,13 @@ pub fn decision_memory_key(project_slug: &str, decision_id: &str) -> String {
 fn sanitize_key_part(part: &str) -> String {
     part.trim()
         .chars()
-        .map(|c| if c == ':' || c.is_whitespace() { '-' } else { c })
+        .map(|c| {
+            if c == ':' || c.is_whitespace() {
+                '-'
+            } else {
+                c
+            }
+        })
         .collect()
 }
 
@@ -96,8 +102,7 @@ pub async fn ingest_decision(
     decision: &AnsweredDecision<'_>,
 ) -> anyhow::Result<spectral::RememberResult> {
     let key = decision_memory_key(decision.project_slug, decision.decision_id);
-    let content =
-        decision_memory_content(decision.question, decision.answer, decision.note);
+    let content = decision_memory_content(decision.question, decision.answer, decision.note);
     brain
         .remember_with(
             &key,

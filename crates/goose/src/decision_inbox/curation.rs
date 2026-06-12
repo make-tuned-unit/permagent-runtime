@@ -122,7 +122,10 @@ pub fn transitive_dependents(goal_id: &str, edges: &[(String, String)]) -> usize
     // Reverse adjacency: dependency → goals that depend on it.
     let mut dependents: HashMap<&str, Vec<&str>> = HashMap::new();
     for (goal, dep) in edges {
-        dependents.entry(dep.as_str()).or_default().push(goal.as_str());
+        dependents
+            .entry(dep.as_str())
+            .or_default()
+            .push(goal.as_str());
     }
 
     let mut visited: HashSet<&str> = HashSet::new();
@@ -153,7 +156,11 @@ pub async fn load_goal_dependency_edges(
     let cards = crate::cards::list_cards(pool, project_id, Some("goal"), None).await?;
     let mut edges = Vec::new();
     for card in cards {
-        if let Some(deps) = card.metadata_json.get("depends_on").and_then(|v| v.as_array()) {
+        if let Some(deps) = card
+            .metadata_json
+            .get("depends_on")
+            .and_then(|v| v.as_array())
+        {
             for dep in deps {
                 if let Some(dep_id) = dep.as_str() {
                     if !dep_id.is_empty() {
@@ -275,10 +282,24 @@ mod tests {
     #[test]
     fn rank_is_deterministic_across_runs() {
         let ds: Vec<OpenDecision> = (0..12)
-            .map(|i| decision(&format!("d{}", i), i % 4, Priority::Normal, (i % 3) as usize, i % 5 == 0))
+            .map(|i| {
+                decision(
+                    &format!("d{}", i),
+                    i % 4,
+                    Priority::Normal,
+                    (i % 3) as usize,
+                    i % 5 == 0,
+                )
+            })
             .collect();
-        let a: Vec<String> = rank_decisions(&ds, now()).into_iter().map(|r| r.id).collect();
-        let b: Vec<String> = rank_decisions(&ds, now()).into_iter().map(|r| r.id).collect();
+        let a: Vec<String> = rank_decisions(&ds, now())
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        let b: Vec<String> = rank_decisions(&ds, now())
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
         assert_eq!(a, b);
     }
 

@@ -1472,12 +1472,8 @@ impl OrchestratorClient {
         // a quoted data-not-instructions block. Local-only (SQLite + local
         // embeddings) — zero cloud tokens; failures are non-fatal.
         if let Some(brain) = super::get_global_brain() {
-            match crate::decision_inbox::learn::recall_decisions(
-                &brain,
-                &objective,
-                &project.slug,
-            )
-            .await
+            match crate::decision_inbox::learn::recall_decisions(&brain, &objective, &project.slug)
+                .await
             {
                 Ok(hits) => {
                     if let Some(block) =

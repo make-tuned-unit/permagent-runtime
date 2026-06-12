@@ -236,9 +236,15 @@ pub fn headline_violations(text: &str) -> Vec<String> {
                 && !next.is_empty()
                 && next.chars().all(|c| c.is_ascii_digit())
             {
-                violations.push(format!("headline contains a PR number ('{} {}')", token, next));
+                violations.push(format!(
+                    "headline contains a PR number ('{} {}')",
+                    token, next
+                ));
             } else if token_is_number && next.to_ascii_lowercase().starts_with("file") {
-                violations.push(format!("headline contains a file count ('{} {}')", token, next));
+                violations.push(format!(
+                    "headline contains a file count ('{} {}')",
+                    token, next
+                ));
             }
         }
     }
@@ -370,9 +376,7 @@ pub fn validate_escalation(raw: &serde_json::Value) -> EscalationOutcome {
                 if !seen_ids.insert(o.id.clone()) {
                     errors.push(format!("options[{}].id '{}' is duplicated", i, o.id));
                 }
-                if o.label.trim().is_empty()
-                    || o.label.chars().count() > MAX_OPTION_LABEL_CHARS
-                {
+                if o.label.trim().is_empty() || o.label.chars().count() > MAX_OPTION_LABEL_CHARS {
                     errors.push(format!(
                         "options[{}].label must be 1-{} characters",
                         i, MAX_OPTION_LABEL_CHARS
