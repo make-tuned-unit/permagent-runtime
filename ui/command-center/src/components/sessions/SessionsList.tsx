@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from 'react';
 import { FiPlus, FiTrash2, FiMessageSquare } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
 import { api } from '../../lib/api';
+import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 function timeAgo(dateStr: string): string {
@@ -18,6 +19,7 @@ function timeAgo(dateStr: string): string {
 }
 
 function EditableName({ value, onSave }: { value: string; onSave: (name: string) => void }) {
+  const { colors } = useTheme();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -36,8 +38,10 @@ function EditableName({ value, onSave }: { value: string; onSave: (name: string)
   if (!editing) {
     return (
       <span
-        className="truncate cursor-pointer hover:text-accent transition"
+        className="truncate cursor-pointer transition"
         onClick={(e) => { e.stopPropagation(); setEditing(true); }}
+        onMouseEnter={e => { e.currentTarget.style.color = colors.cyan; }}
+        onMouseLeave={e => { e.currentTarget.style.color = ''; }}
         title="Click to rename"
       >
         {value}
@@ -53,7 +57,8 @@ function EditableName({ value, onSave }: { value: string; onSave: (name: string)
       onBlur={commit}
       onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') { setDraft(value); setEditing(false); } }}
       onClick={e => e.stopPropagation()}
-      className="bg-transparent border-b border-accent/50 outline-none text-dark-text w-full"
+      className="bg-transparent outline-none w-full"
+      style={{ borderBottom: `1px solid ${colors.cyan}80`, color: colors.text }}
     />
   );
 }
@@ -92,12 +97,23 @@ export function SessionsList() {
   };
 
   return (
-    <div className="flex flex-col h-full text-dark-text" style={{ backgroundColor: colors.bg }}>
-      <div className="flex items-center justify-between border-b border-dark-border px-4 py-2.5">
-        <span className="text-[11px] font-mono uppercase tracking-wider text-dark-muted">Sessions</span>
+    <div className="flex flex-col h-full" style={{ backgroundColor: colors.bg, color: colors.text }}>
+      <div
+        className="flex items-center justify-between px-4 py-2.5"
+        style={{ borderBottom: `1px solid ${colors.border}` }}
+      >
+        <span
+          className="text-[11px] uppercase tracking-wider"
+          style={{ fontFamily: font.display, fontWeight: 600, color: colors.textMuted }}
+        >
+          Sessions
+        </span>
         <button
           onClick={handleNewSession}
-          className="flex items-center gap-1 text-[10px] font-mono text-accent hover:text-accent/80 transition px-2 py-1 rounded hover:bg-accent/10"
+          className="flex items-center gap-1 text-[10px] transition px-2 py-1 rounded"
+          style={{ fontFamily: font.mono, color: colors.cyan }}
+          onMouseEnter={e => { e.currentTarget.style.opacity = '0.8'; e.currentTarget.style.backgroundColor = colors.cyanSoft; }}
+          onMouseLeave={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.backgroundColor = 'transparent'; }}
         >
           <FiPlus size={12} /> New
         </button>
@@ -105,12 +121,16 @@ export function SessionsList() {
 
       <div className="flex-1 overflow-y-auto">
         {sessions.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full text-dark-muted text-xs font-mono gap-2 p-4 text-center">
+          <div
+            className="flex flex-col items-center justify-center h-full text-xs gap-2 p-4 text-center"
+            style={{ fontFamily: font.mono, color: colors.textMuted }}
+          >
             <FiMessageSquare size={20} className="opacity-30" />
             <div>No sessions yet.</div>
             <button
               onClick={handleNewSession}
-              className="text-accent hover:underline"
+              className="hover:underline"
+              style={{ color: colors.cyan }}
             >
               Click + New to start a chat.
             </button>
@@ -123,32 +143,43 @@ export function SessionsList() {
             <div
               key={s.id}
               onClick={() => handleSelect(s.id)}
-              className={`group flex items-center gap-3 px-4 py-3 cursor-pointer border-b border-dark-border/50 transition ${
-                isActive ? 'bg-accent/5 border-l-2 border-l-accent' : 'hover:bg-white/[0.03]'
+              className={`group flex items-center gap-3 px-4 py-3 cursor-pointer transition ${
+                isActive ? '' : 'hover:bg-white/[0.03]'
               }`}
+              style={{
+                borderBottom: `1px solid ${colors.border}`,
+                backgroundColor: isActive ? `${colors.cyan}0D` : undefined,
+                borderLeft: isActive ? `2px solid ${colors.cyan}` : undefined,
+              }}
             >
               <div className="flex-1 min-w-0">
                 <div className="flex items-baseline gap-2">
-                  <span className="text-[12px] font-mono text-dark-text truncate flex-1">
+                  <span className="text-[12px] truncate flex-1" style={{ fontFamily: font.mono, color: colors.text }}>
                     <EditableName
                       value={s.name || s.id.slice(0, 12)}
                       onSave={(name) => renameSession(s.id, name)}
                     />
                   </span>
                   {s.updated_at && (
-                    <span className="text-[9px] font-mono text-dark-muted/70 shrink-0">
+                    <span
+                      className="text-[9px] shrink-0"
+                      style={{ fontFamily: font.mono, color: colors.textMuted, opacity: 0.7 }}
+                    >
                       {timeAgo(s.updated_at)}
                     </span>
                   )}
                 </div>
-                <div className="text-[10px] font-mono text-dark-muted mt-0.5">
+                <div className="text-[10px] mt-0.5" style={{ fontFamily: font.mono, color: colors.textMuted }}>
                   {s.message_count} message{s.message_count !== 1 ? 's' : ''}
                 </div>
               </div>
 
               <button
                 onClick={(e) => { e.stopPropagation(); setConfirmDelete(s.id); }}
-                className="opacity-0 group-hover:opacity-100 text-dark-muted hover:text-red-400 transition p-1 rounded"
+                className="opacity-0 group-hover:opacity-100 transition p-1 rounded"
+                style={{ color: colors.textMuted }}
+                onMouseEnter={e => { e.currentTarget.style.color = colors.danger; }}
+                onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
                 title="Delete session"
               >
                 <FiTrash2 size={12} />
@@ -161,11 +192,21 @@ export function SessionsList() {
       {/* Delete confirmation */}
       {confirmDelete && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setConfirmDelete(null)}>
-          <div className="rounded-xl border border-dark-border p-5 max-w-sm shadow-2xl" style={{ backgroundColor: colors.surface }} onClick={e => e.stopPropagation()}>
-            <h3 className="font-semibold mb-2">Delete session?</h3>
-            <p className="text-xs text-dark-muted mb-4">This will permanently delete this session and its messages.</p>
+          <div
+            className="rounded-xl p-5 max-w-sm"
+            style={{ backgroundColor: colors.surface, border: `1px solid ${colors.border}`, boxShadow: colors.cardShadow }}
+            onClick={e => e.stopPropagation()}
+          >
+            <h3 className="mb-2" style={{ fontFamily: font.display, fontWeight: 600, color: colors.text }}>Delete session?</h3>
+            <p className="text-xs mb-4" style={{ fontFamily: font.body, color: colors.textMuted }}>This will permanently delete this session and its messages.</p>
             <div className="flex justify-end gap-2">
-              <button onClick={() => setConfirmDelete(null)} className="px-3 py-1.5 text-sm rounded border border-dark-border text-dark-muted hover:bg-white/5 transition">Cancel</button>
+              <button
+                onClick={() => setConfirmDelete(null)}
+                className="px-3 py-1.5 text-sm rounded hover:bg-white/5 transition"
+                style={{ border: `1px solid ${colors.border}`, color: colors.textMuted }}
+              >
+                Cancel
+              </button>
               <button onClick={() => handleDelete(confirmDelete)} className="px-3 py-1.5 text-sm rounded bg-red-500/20 text-red-400 hover:bg-red-500/30 transition">Delete</button>
             </div>
           </div>

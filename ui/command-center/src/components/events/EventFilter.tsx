@@ -1,5 +1,6 @@
 import { FiX } from 'react-icons/fi';
 import type { PermagentEventType } from '../../lib/store';
+import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 // All known event types for the multi-select
@@ -57,39 +58,61 @@ export function EventFilter({
   const hasFilters = selectedTypes.length > 0 || datePreset !== 'all';
 
   return (
-    <div className="border-b border-dark-border px-3 py-2 space-y-2" style={{ backgroundColor: colors.bgDeeper }}>
+    <div
+      className="px-3 py-2 space-y-2"
+      style={{ backgroundColor: colors.bgDeeper, borderBottom: `1px solid ${colors.border}` }}
+    >
       {/* Date range presets */}
       <div className="flex items-center gap-1.5">
-        <span className="text-[9px] font-mono uppercase text-dark-muted mr-1">Range</span>
-        {DATE_PRESETS.map(p => (
-          <button
-            key={p.value}
-            onClick={() => onDatePresetChange(p.value)}
-            className={`rounded px-2 py-0.5 text-[10px] font-mono transition ${
-              datePreset === p.value
-                ? 'bg-accent/20 text-accent'
-                : 'text-dark-muted hover:text-dark-text hover:bg-white/5'
-            }`}
-          >
-            {p.label}
-          </button>
-        ))}
+        <span
+          className="text-[9px] uppercase mr-1"
+          style={{ fontFamily: font.display, fontWeight: 600, color: colors.textMuted }}
+        >
+          Range
+        </span>
+        {DATE_PRESETS.map(p => {
+          const active = datePreset === p.value;
+          return (
+            <button
+              key={p.value}
+              onClick={() => onDatePresetChange(p.value)}
+              className={`rounded px-2 py-0.5 text-[10px] transition ${active ? '' : 'hover:bg-white/5'}`}
+              style={{
+                fontFamily: font.mono,
+                backgroundColor: active ? colors.cyanSoft : undefined,
+                color: active ? colors.cyan : colors.textMuted,
+              }}
+              onMouseEnter={e => { if (!active) e.currentTarget.style.color = colors.text; }}
+              onMouseLeave={e => { if (!active) e.currentTarget.style.color = colors.textMuted; }}
+            >
+              {p.label}
+            </button>
+          );
+        })}
       </div>
 
       {/* Event type chips (multi-select) */}
       <div className="flex flex-wrap items-center gap-1">
-        <span className="text-[9px] font-mono uppercase text-dark-muted mr-1">Type</span>
+        <span
+          className="text-[9px] uppercase mr-1"
+          style={{ fontFamily: font.display, fontWeight: 600, color: colors.textMuted }}
+        >
+          Type
+        </span>
         {ALL_EVENT_TYPES.map(type => {
           const active = selectedTypes.includes(type);
           return (
             <button
               key={type}
               onClick={() => onToggleType(type)}
-              className={`rounded-full px-2 py-0.5 text-[9px] font-mono transition ${
-                active
-                  ? 'bg-accent/20 text-accent'
-                  : 'bg-white/5 text-dark-muted hover:text-dark-text hover:bg-white/10'
-              }`}
+              className={`rounded-full px-2 py-0.5 text-[9px] transition ${active ? '' : 'bg-white/5 hover:bg-white/10'}`}
+              style={{
+                fontFamily: font.mono,
+                backgroundColor: active ? colors.cyanSoft : undefined,
+                color: active ? colors.cyan : colors.textMuted,
+              }}
+              onMouseEnter={e => { if (!active) e.currentTarget.style.color = colors.text; }}
+              onMouseLeave={e => { if (!active) e.currentTarget.style.color = colors.textMuted; }}
             >
               {type.replace(/_/g, ' ')}
             </button>
@@ -102,7 +125,10 @@ export function EventFilter({
         <div className="flex justify-end">
           <button
             onClick={onClearAll}
-            className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-mono text-dark-muted hover:bg-white/5 hover:text-dark-text transition"
+            className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] hover:bg-white/5 transition"
+            style={{ fontFamily: font.mono, color: colors.textMuted }}
+            onMouseEnter={e => { e.currentTarget.style.color = colors.text; }}
+            onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
           >
             <FiX size={10} /> Clear filters
           </button>

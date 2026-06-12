@@ -5,6 +5,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 import { useEventBus } from '../../lib/eventBus';
 import { useTheme } from '../../styles/useTheme';
+import { getXtermTheme } from './xtermTheme';
 
 // ── Tauri API loader (cached, no module-level mutation) ──
 
@@ -33,60 +34,6 @@ function getTauriApi(): Promise<TauriApi | null> {
   return apiPromise;
 }
 
-const DARK_THEME = {
-  background: '#0A0E17',
-  foreground: '#e2e8f0',
-  cursor: '#00D5FF',
-  cursorAccent: '#0A0E17',
-  selectionBackground: 'rgba(0, 213, 255, 0.2)',
-  selectionForeground: '#e2e8f0',
-  black: '#1e293b',
-  red: '#ef4444',
-  green: '#5BD17F',
-  yellow: '#FF9500',
-  blue: '#3b82f6',
-  magenta: '#A855CC',
-  cyan: '#00D5FF',
-  white: '#e2e8f0',
-  brightBlack: '#64748b',
-  brightRed: '#f87171',
-  brightGreen: '#5BD17F',
-  brightYellow: '#FFB340',
-  brightBlue: '#60a5fa',
-  brightMagenta: '#C893E0',
-  brightCyan: '#00D5FF',
-  brightWhite: '#f8fafc',
-};
-
-const SILVER_THEME = {
-  background: '#FAFBFD',
-  foreground: '#1E2530',
-  cursor: '#1E2530',
-  cursorAccent: '#FAFBFD',
-  selectionBackground: 'rgba(0, 191, 239, 0.20)',
-  selectionForeground: '#1E2530',
-  black: '#5A6577',
-  red: '#D32F2F',
-  green: '#2E7D32',
-  yellow: '#F57C00',
-  blue: '#1565C0',
-  magenta: '#7B1FA2',
-  cyan: '#00838F',
-  white: '#1E2530',
-  brightBlack: '#8492A6',
-  brightRed: '#E53935',
-  brightGreen: '#43A047',
-  brightYellow: '#FB8C00',
-  brightBlue: '#1E88E5',
-  brightMagenta: '#8E24AA',
-  brightCyan: '#00ACC1',
-  brightWhite: '#0F1419',
-};
-
-function getXtermTheme(themeId: string) {
-  return themeId === 'silver' ? SILVER_THEME : DARK_THEME;
-}
-
 interface TerminalProps {
   sessionId: string | null;
   onSessionSpawned?: (sessionId: string) => void;
@@ -98,7 +45,7 @@ interface TerminalProps {
 }
 
 export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChange, cwd, initialCommand, isVisible }: TerminalProps) {
-  const { theme } = useTheme();
+  const { theme, colors } = useTheme();
   const containerRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -131,7 +78,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
       if (cancelled) return;
 
       const term = new XTerm({
-        theme: getXtermTheme(theme),
+        theme: getXtermTheme(theme, colors),
         fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, "DejaVu Sans Mono", monospace',
         fontSize: 13,
         lineHeight: 1.15,
@@ -387,11 +334,12 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
   }, []); // Mount once — props accessed through stable refs
 
   // Update xterm theme when app theme changes
+  // (colors has stable per-theme identity, so this fires exactly on theme change)
   useEffect(() => {
     if (xtermRef.current) {
-      xtermRef.current.options.theme = getXtermTheme(theme);
+      xtermRef.current.options.theme = getXtermTheme(theme, colors);
     }
-  }, [theme]);
+  }, [theme, colors]);
 
   // Re-fit when visibility changes
   useEffect(() => {
@@ -419,7 +367,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
     return () => window.removeEventListener('keydown', handler);
   }, [isVisible]);
 
-  const xtermBg = theme === 'silver' ? '#FAFBFD' : '#0A0E17';
+  const xtermBg = getXtermTheme(theme, colors).background;
 
   return (
     <div
