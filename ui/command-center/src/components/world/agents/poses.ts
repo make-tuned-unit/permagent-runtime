@@ -22,7 +22,22 @@ export const BONE_NAMES = [
 
 export type BoneName = (typeof BONE_NAMES)[number];
 
-export type PoseKey = 'idle' | 'available' | 'seatedWork' | 'standWork' | 'error';
+export type PoseKey =
+  | 'idle'
+  | 'available'
+  | 'seatedWork'
+  | 'standWork'
+  | 'error'
+  | 'tending';
+
+/**
+ * Tending color — THE_CAVE_vision_bible.md §4: "Gray-warm, unhurried, honest …
+ * never amber." A warm low-saturation stone-gray, deliberately distinct from idle's
+ * cool gray (#8A94A6) and NEVER the amber working color. This is the third agent
+ * register; it lives here, not in shared/palette STATE (which is the HUD-color LAW
+ * with exactly four semantic states). Tending is ambient, not a HUD claim.
+ */
+export const TENDING_COLOR = '#B8A488';
 
 export interface Pose {
   /** Root bone Y offset — seated postures drop the body (seated height ~1.7u). */
@@ -73,6 +88,20 @@ export const POSES: Record<PoseKey, Pose> = {
       foreR: [-0.3, 0, 0],
     },
   },
+  // Tending (bible §4): between tasks, workers tend the world — hauling, setting
+  // stones, raising scaffold. Unhurried; a slightly stooped working stance with the
+  // arms forward as if carrying/placing. The haul sway is layered additively per-frame.
+  tending: {
+    rootY: -0.04,
+    rot: {
+      spine: [0.18, 0, 0],
+      head: [0.1, 0, 0],
+      armL: [-0.6, 0, -0.12],
+      armR: [-0.6, 0, 0.12],
+      foreL: [-0.5, 0, 0],
+      foreR: [-0.5, 0, 0],
+    },
+  },
   // The slump: shoulders dropped, head bowed 20° (0.35 rad).
   error: {
     rootY: -0.06,
@@ -102,6 +131,16 @@ export const STATE_VISUALS: Record<AgentHudState, StateVisual> = {
   available: { color: STATE.available, visorIntensity: 2.0, stateIntensity: 1.0 },
   // Error visor flickers at 2Hz for 3s then holds steady dim (handled per-frame).
   error: { color: STATE.error, visorIntensity: 0.5, stateIntensity: 0.8 },
+};
+
+/**
+ * Tending visual — its own warm-gray register (bible §4/§8: "Tending is its own warm-gray
+ * register, never amber"). Low emissive: unhurried, ambient, never claims attention.
+ */
+export const TENDING_VISUAL: StateVisual = {
+  color: TENDING_COLOR,
+  visorIntensity: 0.45,
+  stateIntensity: 0.5,
 };
 
 /** Posture transition + color lerp duration (bible §4). */
