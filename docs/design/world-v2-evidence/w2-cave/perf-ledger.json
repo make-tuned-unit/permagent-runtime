@@ -1,0 +1,36 @@
+{
+  "lane": "W2 — Furniture & Props (THE CAVE detail pass)",
+  "capturedAt": "2026-06-15",
+  "method": "Chrome 149 headless + ANGLE/SwiftShader WebGL (headless Metal context unavailable in this run), dpr 1.5, 1600x1000 CSS viewport, /ui/propcatalog.html served by vite dev on dedicated port 5290; shared/perf.ts PerfSampler + shared/instancing.ts getInstanceLedger overlay. fps is SOFTWARE-rendered and NOT representative (SwiftShader); draw calls, triangles, geometry count and the instance ledger are renderer-independent (WORLD_VIEW_BIBLE.md §10 caveat).",
+  "geometrySingletonDiscipline": {
+    "geometries": "8-10 across all views (flat)",
+    "note": "Every cave family scales the shared unit-geometry singletons (unitBox/unitCylinder8/unitRock/unitTetra/unitCone6). Geometry count does not grow with prop count or instance count — no per-prop BufferGeometry allocation, no leak (bible §0.8)."
+  },
+  "instanceLedger": {
+    "totalInstances": 1671,
+    "totalInstancedDrawCalls": 87,
+    "byFamilyPrefix": {
+      "automate": { "instances": 107, "instancedDC": 6 },
+      "brain": { "instances": 172, "instancedDC": 8 },
+      "build": { "instances": 58, "instancedDC": 8 },
+      "cat": { "instances": 240, "instancedDC": 43, "note": "ALL cave §9 W2 families (construction kit + strata + gallery + tending), catalog idPrefix 'cat.*'" },
+      "hall": { "instances": 30, "instancedDC": 4 },
+      "lab": { "instances": 80, "instancedDC": 6 },
+      "mezz": { "instances": 984, "instancedDC": 12 }
+    }
+  },
+  "views": [
+    { "file": "01-catalog-overview.jpg", "desc": "Whole catalog stage: round-1 families + cave §9 families + assembled vignettes", "calls": 209, "triangles": 28910, "geometries": 10, "dpr": 1.5 },
+    { "file": "02-cave-primal-families.jpg", "desc": "Cave §3 primal stratum catalog sheet: CrudeToolRack, LibrariansLamp, MineralVein, RootMass", "calls": 82, "triangles": 6850, "geometries": 8, "dpr": 1.5 },
+    { "file": "03-construction-kit-scaffold-vignette.jpg", "desc": "Cave §4 construction kit in a scaffold-state vignette: idle crane, 2 scaffolds w/ amber work-lights, banked stone piles, survey line, tending props", "calls": 145, "triangles": 11538, "geometries": 8, "dpr": 1.5 },
+    { "file": "04-construction-kit-closeup.jpg", "desc": "Construction kit closer angle", "calls": 175, "triangles": 15762, "geometries": 10, "dpr": 1.5 },
+    { "file": "05-cornerstone-gallery-assembled.jpg", "desc": "Cave §6 Cornerstone Gallery template assembled: switchback ascent, landing terrace, relief wall, plinths, cracked stone, cornerstone inscription", "calls": 100, "triangles": 8750, "geometries": 9, "dpr": 1.5 },
+    { "file": "06-cornerstone-gallery-detail.jpg", "desc": "Gallery detail: cornerstone inscription + cracked stone bracing", "calls": 81, "triangles": 5190, "geometries": 8, "dpr": 1.5 },
+    { "file": "07-tending-work-props.jpg", "desc": "Cave §4 tending-work props catalog sheet: HaulingSledge, StoneSettingStation", "calls": 108, "triangles": 8238, "geometries": 9, "dpr": 1.5 }
+  ],
+  "budgetCompliance": {
+    "drawCalls": "Whole multi-family catalog stage at 209 calls — under the 300 scene budget, and the catalog packs EVERY family at once (the real scene loads zones lazily). All cave families instanced.",
+    "triangles": "Peak 28,910 across the full stage — far under the 500k budget.",
+    "instancingLaw": "Every cave prop placed >2x is an InstancedProp (ledger evidence: 240 cave instances in 43 instanced draw calls). Unique focal singletons (IdleCrane, LibrariansLamp, CrackedStone, CornerstoneInscription) are intentionally non-instanced per bible §8 (placed once)."
+  }
+}
