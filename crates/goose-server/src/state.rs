@@ -83,11 +83,29 @@ impl AppState {
 
         // Initialize TaskLogger with the same Spectral DB pool
         if let Ok(pool) = agent_manager.session_manager().pool_clone().await {
-            permagent::tasks::init_global(pool);
+            permagent::tasks::init_global(pool.clone());
             tracing::info!("TaskLogger initialized");
+
+            // Decision Inbox (L3 Part B): escalations persist as decision
+            // rows. Must install before the first escalate tool call, which
+            // otherwise falls back to the in-memory sink.
+            if permagent::decision_inbox::escalate::install_decision_sink(std::sync::Arc::new(
+                permagent::decision_inbox::sink::SqlDecisionSink::new(pool),
+            ))
+            .is_ok()
+            {
+                tracing::info!("Decision sink installed (escalations persist as decisions)");
+            }
         } else {
             tracing::warn!("Failed to initialize TaskLogger — task logging disabled");
         }
+
+        // Decision Inbox (L2): post-Review verification hook on the
+        // orchestrator extension point. After handle_goal_completion moves a
+        // goal to Review, verification runs as a spawned, failure-tolerant
+        // task. Idempotent (OnceLock) — safe to call on every startup.
+        crate::verification::install_review_hook();
+        tracing::info!("Goal review hook installed (post-Review verification)");
 
         // Mount Spectral Brain for long-term memory.
         // Brain::builder().build() creates its own tokio runtime internally,

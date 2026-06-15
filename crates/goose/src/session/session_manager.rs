@@ -616,6 +616,14 @@ impl SessionStorage {
                     if version < 8 {
                         spectral_schema::migrate_v7_to_v8(&self.pool).await?;
                     }
+                    // Decision inbox (schema v10). No v8->v9 step on this branch:
+                    // v9 is reserved by session-list-perf (committed, unmerged), so
+                    // the chain steps straight from v8 to v10 here. migrate_v9_to_v10
+                    // is base-independent (idempotent additive DDL), so it is correct
+                    // over a v8 or v9 base alike.
+                    if version < 10 {
+                        spectral_schema::migrate_v9_to_v10(&self.pool).await?;
+                    }
                 } else {
                     info!("Initializing Spectral schema at {:?}", self.db_path);
                     spectral_schema::init_spectral_db(&self.pool).await?;
