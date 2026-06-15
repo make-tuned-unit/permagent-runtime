@@ -9,6 +9,7 @@ import * as THREE from 'three';
 import { HallStructure } from './areas/hall/HallStructure';
 import { MezzanineLibrary } from './areas/hall/MezzanineLibrary';
 import { Zones } from './areas/WorldZones';
+import { CaveSystem } from './areas/strata/CaveSystem';
 import { Atmosphere, DistantGrid } from './atmosphere/Atmosphere';
 import { LegacyFurniture } from './props/legacy/WorldFurniture';
 import { PerfSampler } from './shared/perf';
@@ -88,6 +89,11 @@ export function WorldSceneContent({
 
       {/* Five zones off the rotunda — thresholds always on, interiors lazy (§3) */}
       <Zones />
+
+      {/* The vertical cave beneath the crown — strata, throat, Mouth sightline,
+          survey footprints, scaffold mounts. Lazy depth chunks; the Mouth aperture
+          is geometry only (W4 owns its light). THE_CAVE_vision_bible.md §9 W1. */}
+      <CaveSystem />
 
       {/* Legacy station-corner furniture (W2 takes over in props/) */}
       <LegacyFurniture />
