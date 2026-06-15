@@ -4,12 +4,16 @@
 // §8 reduceMotion static fallbacks. LAW: zero per-frame allocations.
 
 import { useMemo, useRef, useEffect } from 'react';
-import { useFrame } from '@react-three/fiber';
+import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { ENV } from '../shared/palette';
 import { DOME_HEIGHT } from '../constants';
 import { getReduceMotion } from '../../../styles/tokens';
 import { tickAmbience, getAmbienceLevel, setAmbienceFrozen } from './ambience';
+import { startWorldSignals } from './worldSignals';
+import { MouthShaft } from './MouthShaft';
+import { Water } from './Water';
+import { ShadowsOnTheWall } from './ShadowsOnTheWall';
 
 // Bible §1 light formula: one warm key (shadows), one cool fill (no shadows),
 // near-black ambient 0.08. These are the established §1 colors — they are
@@ -40,6 +44,34 @@ function AmbienceTicker({ reduceMotion }: { reduceMotion: boolean }) {
   return null;
 }
 
+/**
+ * Starts the READ-ONLY Brain/event signal store (atmosphere/worldSignals) on
+ * mount — the honesty source for water presence + the day-one shadows. No daemon
+ * code, no new endpoints: it polls /api/brain/graph and listens to /events,
+ * which the frontend already consumes. Disposes on unmount.
+ */
+function SignalBinder() {
+  useEffect(() => startWorldSignals(), []);
+  return null;
+}
+
+/**
+ * DEV-ONLY: stash the live three.js scene on window so the CDP evidence harness
+ * can run the light census (count PointLight/DirectionalLight, shadow casters) on
+ * the real scene graph. No-op in production builds.
+ */
+function SceneCensusHook() {
+  const scene = useThree((s) => s.scene);
+  useEffect(() => {
+    if (!import.meta.env.DEV || typeof window === 'undefined') return;
+    (window as unknown as { __worldScene?: THREE.Scene }).__worldScene = scene;
+    return () => {
+      delete (window as unknown as { __worldScene?: THREE.Scene }).__worldScene;
+    };
+  }, [scene]);
+  return null;
+}
+
 // Bible §1: one warm key + one cool fill + near-black ambient. Exactly one
 // shadow caster scene-wide; shadow map 2048 (drops to 1024 only if the budget
 // demands). Zone re-aims land as a follow-up once W1's blockouts merge.
@@ -65,14 +97,13 @@ function Lighting() {
       />
       {/* Cool fill light from opposite side — prevents pure black shadows */}
       <directionalLight position={[-10, DOME_HEIGHT, -6]} intensity={0.25} color={LIGHT.fill} />
-      {/* Uplight from oculus shaft — faint warm wash on dome interior */}
-      <pointLight
-        position={[0, 2, 0]}
-        color={LIGHT.oculus}
-        intensity={0.4}
-        distance={DOME_HEIGHT + 5}
-        decay={2}
-      />
+      {/* NOTE (THE CAVE re-mean, §2): the old oculus uplight pointLight was
+          removed here. The world's light now comes from the Mouth (the Mesh
+          portal far above) — MouthShaft's single cold key light replaces this
+          warm uplight, so the atmosphere lane's point-light census stays NET
+          NEUTRAL (was 1 oculus → now 1 Mouth key). The 32→12 scene-wide
+          reduction remains the cross-lane integration job; this lane does not
+          grow the count. */}
     </>
   );
 }
@@ -353,11 +384,26 @@ export function Atmosphere() {
   return (
     <>
       <AmbienceTicker reduceMotion={reduceMotion} />
+      <SignalBinder />
+      {import.meta.env.DEV && <SceneCensusHook />}
       <Lighting />
       <Starfield reduceMotion={reduceMotion} />
       <OrbitalArcs reduceMotion={reduceMotion} />
       <LightShaft reduceMotion={reduceMotion} />
       <DustMotes reduceMotion={reduceMotion} />
+
+      {/* THE CAVE detail pass (bible §9 W4) — staged against bible geography
+          until W1's vertical strata + Mouth aperture land (see each file's
+          header for the plug-in point). All bind to REAL signals or render
+          dormant; none add a shadow caster; the Mouth adds exactly one cold
+          point light (census delta in the PR). */}
+      {/* The Mouth's daylight shaft — THE light of the world (§2, §3). */}
+      <MouthShaft />
+      {/* Water + growth — the user; presence bound to real memory count (§3). */}
+      <Water />
+      {/* Shadows on the wall — real entities, the day-one state (§2). */}
+      <ShadowsOnTheWall />
+
       {/* Depth atmosphere — exponential fog for natural falloff (bible §1:
           density 0.012 base; the Antechamber biases it +0.004 on approach,
           see AntechamberFogBias above). */}

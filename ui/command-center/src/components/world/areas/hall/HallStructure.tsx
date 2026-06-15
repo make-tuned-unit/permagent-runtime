@@ -8,6 +8,10 @@ import { Float } from '@react-three/drei';
 import * as THREE from 'three';
 import { COLORS, STATIONS, COLUMN_COUNT, ROTUNDA_RADIUS, DOME_HEIGHT, PLATFORM_RADIUS } from '../../constants';
 import { isPunchedAngle } from '../zones';
+// W4 reactivity seam (bible §7): the colonnade veins brighten with the live
+// working-agent count. The driving signal stays in the atmosphere lane; this is
+// the one cross-lane read W4 flagged in its PR for W1 awareness.
+import { getVeinOpacity } from '../../atmosphere/ambience';
 
 // Floor with glowing circuit mandala pattern
 function RotundaFloor() {
@@ -101,11 +105,15 @@ function Columns() {
 
   useFrame(() => {
     if (groupRef.current) {
+      const now = performance.now();
       groupRef.current.children.forEach((col, i) => {
         const vein = col.children[1];
         if (vein instanceof THREE.Mesh) {
           const mat = vein.material as THREE.MeshBasicMaterial;
-          mat.opacity = 0.5 + 0.3 * Math.sin(performance.now() * 0.0008 + i * 0.8);
+          // W4 reactivity: amplitude scales with the live working count
+          // (getVeinOpacity, ≤ 1.5× idle per bible §7). reduceMotion pins the
+          // ambience level to idle, so this stays calm with no extra branch.
+          mat.opacity = getVeinOpacity(i, now);
         }
       });
     }
