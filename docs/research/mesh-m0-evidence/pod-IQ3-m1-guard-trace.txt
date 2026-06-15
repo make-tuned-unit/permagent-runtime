@@ -1,0 +1,11 @@
+14:13:00 M1 swap_used=4385M avail=4346M peak_swap=4385M
+14:13:02 M1 swap_used=4385M avail=4205M peak_swap=4385M
+14:13:04 M1 swap_used=4385M avail=4434M peak_swap=4385M
+14:13:06 M1 swap_used=4385M avail=4562M peak_swap=4385M
+14:13:08 M1 swap_used=4385M avail=4548M peak_swap=4385M
+14:13:10 M1 swap_used=4385M avail=4651M peak_swap=4385M
+14:13:12 M1 swap_used=4385M avail=4330M peak_swap=4385M
+14:13:14 M1 swap_used=4385M avail=4268M peak_swap=4385M
+14:13:17 M1 swap_used=4385M avail=4207M peak_swap=4385M
+14:13:19 M1 swap_used=5012M avail=676M peak_swap=5012M
+M1_GUARD_TRIP avail=676M — kill worker

@@ -726,6 +726,70 @@ The "physics, stop" call was premature on two counts (Jesse caught it):
   test. (3) HARD STOP. Worst acceptable outcome = graceful OOM; a panic means
   the watchdog was too slow and we stop for good.
 
+### WATCHED RUN RESULTS (2026-06-15, Jesse watching M4, Screen Sharing off)
+
+Pre-flight (after Jesse disconnected Screen Sharing): M4 readily-avail 7.8 GB
+(freed ~2 GB), M1 5.3 GB. Combined ~13.1 GB vs IQ3 12.89 GB — tight. M4
+wired_limit default (0). Worker `--device MTL0`. Both guards armed (M4
+watchdog 2500 MB avail; M1 guard 900 MB avail).
+
+**Two attempts, both GRACEFUL, ZERO PANIC — the safety redesign worked:**
+
+| split | M4 head shard | M4 result | M1 result | outcome |
+|---|---|---|---|---|
+| 70 / 30 | held 9.25 GB OK | healthy, no abort/panic | avail → 481 MB, **guard tripped**, killed worker | head SIGABRT on RPC-buffer alloc; M4 survived |
+| 76 / 24 | held 9.93 GB OK | healthy (avail 6.7 GB, swap flat) | avail → 676 MB, **guard tripped** | head SIGABRT; M4 survived |
+
+Both times the **M1 worker was the failure**, not the M4. The M4 head held
+9.25–9.93 GB shards gracefully at default wired-limit (free dipped to ~57 MB
+but swap stayed flat at 259 MB — clean compression, no panic). The M1, hosting
+this orchestrating agent, dropped below its 900 MB guard while loading even a
+24 % (~3.1 GB) shard → guard killed the worker → head aborted cleanly. **The M4
+never panicked, never needed recovery.** Traces:
+`pod-IQ3-m4-warmup-trace.txt`, `pod-IQ3-76-24-m4-trace.txt`,
+`pod-IQ3-m1-guard-trace.txt`.
+
+### CEILING — refined and decisive (the wall is the orchestrator, not physics)
+
+- **M4 head: handles ~10 GB shard gracefully** at default wired-limit — capped
+  near its ~10.6 GB Metal working-set. No panic at default cap (vs guaranteed
+  panic at 13000 — the wired-limit finding, re-confirmed).
+- **M1-as-orchestrator: contributes only ~2 GB reliably.** With this agent
+  session resident (~5–7 GB free), loading a 3 GB shard trips its guard. The
+  M1's useful pool contribution is near-zero while it's the household's
+  interactive/orchestrator node.
+- **Pool serving envelope while M1 orchestrates ≈ M4 ~10 GB + M1 ~2–3 GB ≈
+  12–13 GB** — right at the 12.89 GB IQ3, too tight to serve reliably (a load
+  might squeak through, but generation's KV growth pushes it over). That tier
+  (~12–13 GB ≈ 14B-class) is **what the M4 already serves SOLO** (control:
+  11.8 tg). **So pooling buys nothing while the M1 is occupied.**
+- **BUT the thesis is NOT physically dead — it's blocked by coexistence.** The
+  binding constraint is the M1's orchestrator footprint, not the hardware. A
+  **quiet M1** (~12 GB free) would lift the pool to ~22 GB and serve the
+  16.4 GB IQ4_XS (and the IQ3) comfortably. The pool *can* hold a tier neither
+  node serves solo — but only when **both nodes are dedicated**, which
+  conflicts with the M1 being the interactive/daemon host.
+
+### M1/M2 DESIGN CONCLUSION
+
+Pooling on this trio is worthwhile **only with a dedicated, larger anchor** —
+the headless M4 grown to 32–64 GB, contributing the bulk, with smaller nodes
+adding slices **only when not doing other work**. A 16 GB node that is also the
+household's interactive machine + daemon host contributes ~nothing to a pool
+and should default to **client**, not contributor (this is the
+minimum-contributor-spec answer, proven). The unified-memory "biggest model
+possible" thesis needs the anchor's RAM, not node count: 2×16 GB (one of them
+busy) tops out at the same ~14B tier a single quiet node serves.
+
+### STOP (graceful, per plan)
+
+Two graceful attempts + corrected split; the remaining needle (M4 ~80 %,
+M1 ~20 %) would load at the M1's guard edge and trip during generation —
+no value, and IQ4_XS (16.4 GB > IQ3 that already won't serve) is moot. Per
+Jesse's framework: graceful = recorded ceiling, hard stop. The
+engine/ceiling/coexistence questions are answered; no panic was ever
+provoked in the tuned configuration.
+
 ---
 
 ## Post-reboot M4 state (for Phase 2 setup)
