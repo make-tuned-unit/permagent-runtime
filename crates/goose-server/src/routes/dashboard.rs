@@ -206,43 +206,127 @@ pub struct DashboardLayout {
     pub cards: Vec<DashboardCard>,
 }
 
+/// Config key for the orchestrator platform extension. Mirrors
+/// `permagent::agents::platform_extensions::orchestrator::EXTENSION_NAME`;
+/// kept as a local literal to avoid a cross-crate visibility dependency.
+/// The Decision Inbox feature is dormant until this extension is enabled, so
+/// its Home card must appear iff `is_extension_enabled(ORCHESTRATOR_EXTENSION)`.
+const ORCHESTRATOR_EXTENSION: &str = "orchestrator";
+
 impl DashboardLayout {
     /// The default layout matching the current static Dashboard render.
     /// Grid uses 12 columns. Row height is abstract (1 unit ~ one card row).
-    pub fn default_layout() -> Self {
-        Self {
-            cards: vec![
-                DashboardCard {
-                    id: "hero".to_string(),
-                    card_type: "hero".to_string(),
-                    position: CardPosition { x: 0, y: 0 },
-                    size: CardSize { w: 7, h: 4 },
-                    visible: true,
-                },
-                DashboardCard {
-                    id: "stats".to_string(),
-                    card_type: "stats".to_string(),
-                    position: CardPosition { x: 7, y: 0 },
-                    size: CardSize { w: 5, h: 4 },
-                    visible: true,
-                },
-                DashboardCard {
-                    id: "in_flight".to_string(),
-                    card_type: "in_flight".to_string(),
-                    position: CardPosition { x: 0, y: 4 },
-                    size: CardSize { w: 12, h: 3 },
-                    visible: true,
-                },
-                DashboardCard {
-                    id: "recent".to_string(),
-                    card_type: "recent".to_string(),
-                    position: CardPosition { x: 0, y: 7 },
-                    size: CardSize { w: 12, h: 4 },
-                    visible: true,
-                },
-            ],
+    ///
+    /// When the orchestrator is enabled the Decision Inbox card takes the
+    /// top-right slot (matching the command-center frontend `DEFAULT_LAYOUT`)
+    /// and the remaining cards shift down a row. When dormant the card is
+    /// absent entirely — dormancy is uniform across daemon and surface.
+    pub fn default_layout(orchestrator_enabled: bool) -> Self {
+        let hero = DashboardCard {
+            id: "hero".to_string(),
+            card_type: "hero".to_string(),
+            position: CardPosition { x: 0, y: 0 },
+            size: CardSize { w: 7, h: 4 },
+            visible: true,
+        };
+
+        if orchestrator_enabled {
+            // 5-card layout: decisions top-right, everything else shifts down.
+            Self {
+                cards: vec![
+                    hero,
+                    Self::decisions_card(),
+                    DashboardCard {
+                        id: "stats".to_string(),
+                        card_type: "stats".to_string(),
+                        position: CardPosition { x: 0, y: 4 },
+                        size: CardSize { w: 5, h: 4 },
+                        visible: true,
+                    },
+                    DashboardCard {
+                        id: "in_flight".to_string(),
+                        card_type: "in_flight".to_string(),
+                        position: CardPosition { x: 0, y: 8 },
+                        size: CardSize { w: 12, h: 3 },
+                        visible: true,
+                    },
+                    DashboardCard {
+                        id: "recent".to_string(),
+                        card_type: "recent".to_string(),
+                        position: CardPosition { x: 0, y: 11 },
+                        size: CardSize { w: 12, h: 4 },
+                        visible: true,
+                    },
+                ],
+            }
+        } else {
+            // 4-card dormant layout (no Decision Inbox card).
+            Self {
+                cards: vec![
+                    hero,
+                    DashboardCard {
+                        id: "stats".to_string(),
+                        card_type: "stats".to_string(),
+                        position: CardPosition { x: 7, y: 0 },
+                        size: CardSize { w: 5, h: 4 },
+                        visible: true,
+                    },
+                    DashboardCard {
+                        id: "in_flight".to_string(),
+                        card_type: "in_flight".to_string(),
+                        position: CardPosition { x: 0, y: 4 },
+                        size: CardSize { w: 12, h: 3 },
+                        visible: true,
+                    },
+                    DashboardCard {
+                        id: "recent".to_string(),
+                        card_type: "recent".to_string(),
+                        position: CardPosition { x: 0, y: 7 },
+                        size: CardSize { w: 12, h: 4 },
+                        visible: true,
+                    },
+                ],
+            }
         }
     }
+
+    /// The Decision Inbox card descriptor (top-right slot, 5x4).
+    fn decisions_card() -> DashboardCard {
+        DashboardCard {
+            id: "decisions".to_string(),
+            card_type: "decisions".to_string(),
+            position: CardPosition { x: 7, y: 0 },
+            size: CardSize { w: 5, h: 4 },
+            visible: true,
+        }
+    }
+}
+
+/// Reconcile a (possibly persisted) layout's Decision Inbox card against the
+/// orchestrator's enabled state so dormancy is uniform regardless of any
+/// stale `dashboard.json`:
+///  - disabled  -> strip every decisions card (a dormant feature never surfaces)
+///  - enabled and missing -> append one below all existing cards (surfaces
+///    without overlapping a layout the user has already arranged; fresh
+///    installs get the proper top-right slot via `default_layout`)
+///  - enabled and present -> leave as-is
+fn enforce_decisions_visibility(cards: &mut Vec<DashboardCard>, orchestrator_enabled: bool) {
+    let is_decisions = |c: &DashboardCard| c.card_type == "decisions" || c.id == "decisions";
+    if !orchestrator_enabled {
+        cards.retain(|c| !is_decisions(c));
+        return;
+    }
+    if cards.iter().any(is_decisions) {
+        return;
+    }
+    let next_y = cards
+        .iter()
+        .map(|c| c.position.y + c.size.h)
+        .max()
+        .unwrap_or(0);
+    let mut card = DashboardLayout::decisions_card();
+    card.position = CardPosition { x: 0, y: next_y };
+    cards.push(card);
 }
 
 fn layout_path() -> std::path::PathBuf {
@@ -250,12 +334,18 @@ fn layout_path() -> std::path::PathBuf {
 }
 
 async fn get_layout() -> Json<DashboardLayout> {
+    // Decision Inbox dormancy: the Home card is present iff the orchestrator
+    // platform extension is enabled. Read once and apply to whatever layout we
+    // serve — default or persisted.
+    let orchestrator_enabled =
+        permagent::config::extensions::is_extension_enabled(ORCHESTRATOR_EXTENSION);
     let path = layout_path();
-    let layout = match tokio::fs::read_to_string(&path).await {
+    let mut layout = match tokio::fs::read_to_string(&path).await {
         Ok(contents) => serde_json::from_str::<DashboardLayout>(&contents)
-            .unwrap_or_else(|_| DashboardLayout::default_layout()),
-        Err(_) => DashboardLayout::default_layout(),
+            .unwrap_or_else(|_| DashboardLayout::default_layout(orchestrator_enabled)),
+        Err(_) => DashboardLayout::default_layout(orchestrator_enabled),
     };
+    enforce_decisions_visibility(&mut layout.cards, orchestrator_enabled);
     Json(layout)
 }
 
@@ -322,17 +412,72 @@ mod tests {
 
     #[test]
     fn default_layout_has_four_cards() {
-        let layout = DashboardLayout::default_layout();
+        // Dormant (orchestrator disabled): no Decision Inbox card.
+        let layout = DashboardLayout::default_layout(false);
         assert_eq!(layout.cards.len(), 4);
         assert_eq!(layout.cards[0].id, "hero");
         assert_eq!(layout.cards[1].id, "stats");
         assert_eq!(layout.cards[2].id, "in_flight");
         assert_eq!(layout.cards[3].id, "recent");
+        assert!(!layout.cards.iter().any(|c| c.card_type == "decisions"));
+    }
+
+    #[test]
+    fn default_layout_enabled_includes_decisions_top_right() {
+        let layout = DashboardLayout::default_layout(true);
+        assert_eq!(layout.cards.len(), 5);
+        let decisions = layout
+            .cards
+            .iter()
+            .find(|c| c.card_type == "decisions")
+            .expect("decisions card present when orchestrator enabled");
+        // Top-right slot, matching the command-center frontend DEFAULT_LAYOUT.
+        assert_eq!(decisions.position, CardPosition { x: 7, y: 0 });
+        assert_eq!(decisions.size, CardSize { w: 5, h: 4 });
+        // Hero still anchors top-left; remaining cards shifted down a row.
+        assert_eq!(layout.cards[0].id, "hero");
+        assert_eq!(layout.cards[0].position, CardPosition { x: 0, y: 0 });
+    }
+
+    #[test]
+    fn enforce_strips_decisions_when_disabled() {
+        let mut cards = DashboardLayout::default_layout(true).cards;
+        assert!(cards.iter().any(|c| c.card_type == "decisions"));
+        enforce_decisions_visibility(&mut cards, false);
+        assert!(!cards.iter().any(|c| c.card_type == "decisions"));
+        assert_eq!(cards.len(), 4);
+    }
+
+    #[test]
+    fn enforce_appends_decisions_when_enabled_and_missing() {
+        // A persisted dormant layout that predates the feature.
+        let mut cards = DashboardLayout::default_layout(false).cards;
+        let max_bottom = cards.iter().map(|c| c.position.y + c.size.h).max().unwrap();
+        enforce_decisions_visibility(&mut cards, true);
+        let decisions: Vec<_> = cards
+            .iter()
+            .filter(|c| c.card_type == "decisions")
+            .collect();
+        assert_eq!(decisions.len(), 1, "exactly one decisions card");
+        // Appended below existing cards — never overlaps the user's arrangement.
+        assert!(decisions[0].position.y >= max_bottom);
+    }
+
+    #[test]
+    fn enforce_is_noop_when_enabled_and_present() {
+        let mut cards = DashboardLayout::default_layout(true).cards;
+        let before = cards.len();
+        enforce_decisions_visibility(&mut cards, true);
+        assert_eq!(cards.len(), before);
+        assert_eq!(
+            cards.iter().filter(|c| c.card_type == "decisions").count(),
+            1
+        );
     }
 
     #[test]
     fn default_layout_uses_12_column_grid() {
-        let layout = DashboardLayout::default_layout();
+        let layout = DashboardLayout::default_layout(false);
         // Hero(7) + Stats(5) = 12 columns in first row
         assert_eq!(layout.cards[0].size.w + layout.cards[1].size.w, 12);
         // Top row cards have same height
@@ -346,7 +491,7 @@ mod tests {
 
     #[test]
     fn layout_serialization_roundtrip() {
-        let layout = DashboardLayout::default_layout();
+        let layout = DashboardLayout::default_layout(false);
         let json = serde_json::to_string_pretty(&layout).unwrap();
         let deserialized: DashboardLayout = serde_json::from_str(&json).unwrap();
         assert_eq!(layout, deserialized);
@@ -371,8 +516,8 @@ mod tests {
         // Simulates what get_layout does when file content is invalid
         let bad_json = "{ not valid json }";
         let result = serde_json::from_str::<DashboardLayout>(bad_json)
-            .unwrap_or_else(|_| DashboardLayout::default_layout());
-        assert_eq!(result, DashboardLayout::default_layout());
+            .unwrap_or_else(|_| DashboardLayout::default_layout(false));
+        assert_eq!(result, DashboardLayout::default_layout(false));
     }
 
     #[tokio::test]
@@ -412,10 +557,10 @@ mod tests {
         // File doesn't exist
         let result = match tokio::fs::read_to_string(&path).await {
             Ok(contents) => serde_json::from_str::<DashboardLayout>(&contents)
-                .unwrap_or_else(|_| DashboardLayout::default_layout()),
-            Err(_) => DashboardLayout::default_layout(),
+                .unwrap_or_else(|_| DashboardLayout::default_layout(false)),
+            Err(_) => DashboardLayout::default_layout(false),
         };
-        assert_eq!(result, DashboardLayout::default_layout());
+        assert_eq!(result, DashboardLayout::default_layout(false));
 
         std::env::remove_var("PERMAGENT_PATH_ROOT");
     }
