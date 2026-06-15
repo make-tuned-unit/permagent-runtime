@@ -1,0 +1,14 @@
+=== M1 dual-stack diagnosis (2026-06-15) ===
+M1 ComputerName: Jesse's Mac mini (2)
+M4 ComputerName: Jesse's Mac mini
+
+brew daemon authoritative peers (/var/run/tailscaled.socket):
+100.77.38.66   m1-mini            jesse.sharratt@  macOS  -  
+100.74.232.95  jesses-mac-mini-2  jesse.sharratt@  macOS  -  
+
+M1 processes:
+1672 /Applications/Tailscale.app/Contents/MacOS/Tailscale  
+3084 /Library/SystemExtensions/A70A1513-E05F-42CB-9F64-7369D311946A/io.tailscale.ipn.macsys.network-extension.systemextension/Contents/MacOS/io.tailscale.ipn.macsys.network-extension  
+47155 /opt/homebrew/opt/tailscale/bin/tailscaled  
+60567 ssh -o BatchMode=yes
+60204 /bin/bash -c source

@@ -332,3 +332,171 @@ Benchmarks will bind RPC to the 169.254 wired addresses.
 | Qwen3-8B-Q4_K_M | 5027784512 | 5027784512 | ✓ |
 
 8B control model transferring to M1 over the wire (~112 MB/s).
+
+---
+
+## Control rows + overnight events (2026-06-12 morning)
+
+### M1 control row — llama.cpp (COMPLETE)
+
+```
+$ /usr/bin/time -l llama-bench -m Qwen3-8B-Q4_K_M.gguf -p 512 -n 256 -r 3
+| qwen3 8B Q4_K - Medium | 4.68 GiB | 8.19 B | MTL,BLAS | pp512 | 119.32 ± 2.64 |
+| qwen3 8B Q4_K - Medium | 4.68 GiB | 8.19 B | MTL,BLAS | tg256 |  10.95 ± 0.31 |
+102.13 real · maximum RSS 4,720,377,856 (4.72 GB — inside P3 envelope)
+```
+Evidence: `mesh-m0-evidence/control-m1-llamacpp-qwen3-8b-q4km.txt`.
+M1 solo at 8B Q4 just clears the 10 t/s interactive bar.
+
+### M4 overnight reboot + state change
+
+M4 rebooted ~01:24 (uptime 6:37 at 08:01), **0 console users**. Consequences:
+- ZeroClaw only partially restarted: ollama server idle (~130 MB, **no model
+  loaded**), python (~240 MB); Chrome/litellm/chroma-mcp absent. ~8.6 GB free.
+- en0 link-local address CHANGED (169.254.233.220 → 169.254.65.157) — wired
+  path moved. **M1-spec input: static IPs on the wired segment** (link-local
+  is not stable across reboots).
+- Tailscale M4: still not installed (reboot interrupted Jesse's interactive
+  recovery install).
+
+### llama-cli "hang" root-caused — NOT a QoS jail, NOT Metal
+
+The 30-min 99.6%-CPU spinner (and its -ngl 0 repeat) was llama-cli dropping
+into **conversation mode and busy-looping on closed stdin** after the SSH
+channel died: log shows `> ` interactive prompts; 98.88 s sys vs 18.92 s user
+(syscall spin); 5 GB RSS = KV cache at default context. Killed by exact PIDs
+2587, 4178 (ps lines in transcript). Phase 2 rule: **benchmarks use
+llama-bench / llama-server only; never llama-cli over SSH**. (`llama-bench
+--help | head` also wedges on device enumeration + SIGPIPE — don't pipe its
+help.)
+
+### Metal-headless verification (KEY POSITIVE FINDING)
+
+```
+$ ssh henry llama-bench -m Qwen3-0.6B-Q4_K_M.gguf -p 128 -n 32 -r 1   # 0 console users
+| qwen3 0.6B Q4_K | MTL,BLAS | pp128 | 2803.92 | tg32 | 188.09 |
+```
+**Metal compute works over non-interactive SSH with zero console users** on
+macOS 26.2/M4. The headless daemon-only server role is GPU-viable. (The
+QoS-freeze finding still stands for nohup/screen/brew-style spawns; held-open
+SSH channels and llama-bench work.)
+
+### M4 control row — justification
+
+Jesse gated the M4 control row on the evening window, whose purpose was the
+P2 Ollama pause. Post-reboot, `ollama ps` is verified EMPTY (no model
+resident) — the pause is a no-op and ZeroClaw is idle. Control row (14B
+Q4_K_M, ~9 GB, fits free RAM) run now on that basis; logged here explicitly.
+
+### exo friction log (continued)
+
+- `uv sync` default does NOT install the `mlx` extra → runner fails with
+  ModuleNotFoundError. Correct: `uv sync --extra mlx`.
+- `--extra mlx` builds MLX from the pinned git fork → **fails unless the
+  Xcode "Metal Toolchain" component is separately downloaded**
+  (`xcodebuild -downloadComponent MetalToolchain`) — full Xcode alone is not
+  enough. More consumer-pod disqualification evidence.
+- Custom HF model works: POST /place_instance accepted
+  mlx-community/Qwen3-8B-4bit (4.61 GB, 36 layers) though absent from the
+  curated /v1/models registry.
+- Observed an UNREQUESTED `DownloadPending` for
+  mlx-community/gemma-4-26b-a4b-it-6bit (21.8 GB) in node state — pending
+  only (0 established connections, nothing on disk), but an alarming default
+  for a disk-budgeted machine. Logged as friction.
+- MLX runner needs the `mlx` extra (`uv sync --extra mlx`) AND the Metal
+  Toolchain Xcode component (`xcodebuild -downloadComponent MetalToolchain`,
+  687.9 MB) to build the pinned MLX fork. After both: `mlx OK Device(gpu,0)`,
+  runner can load. Full friction chain to a working exo node on macOS:
+  Xcode + Metal Toolchain component + rust nightly + node + uv + `--extra mlx`.
+
+### Jesse's exo-process question — ANSWERED
+
+The exo process/dashboard Jesse saw briefly on the M1's localhost (port 52415)
+was **mine and expected**: I started `uv run exo` for the single-node
+consolation row, discovered the runner failed with `ModuleNotFoundError: No
+module named 'mlx'`, killed it by exact PID to fix the MLX/Metal-toolchain
+dependency, then restarted it. The transient dashboard was that
+start→kill→restart cycle. Nothing unaccounted-for; no second actor.
+
+---
+
+## Tailnet reality — DIAGNOSED (2026-06-12/15)
+
+**The M4 is NOT on the tailnet, and the M1 is double-registered.** Jesse's
+admin-console read ("two nodes online: jesses-mac-mini-2 @ 100.74.232.95 and
+m1-mini @ 100.77.38.66") is **both the M1** — the M4 never connected.
+
+Ground truth:
+```
+M1 ComputerName = "Jesse's Mac mini (2)"   ← the "(2)" is the M1, not the M4
+M4 ComputerName = "Jesse's Mac mini"       (ssh henry: scutil --get ComputerName)
+```
+M1 runs a DUAL Tailscale stack:
+- brew `tailscaled` (PID 47155, /var/run/tailscaled.socket) = node **m1-mini @
+  100.77.38.66** — the one the agent `tailscale up`'d.
+- standalone **Tailscale.app + network-extension** (PIDs 1672/3084) = node
+  **jesses-mac-mini-2 @ 100.74.232.95** — pre-existing GUI install, surfaced
+  after Phase 0. The default `tailscale` CLI talks to THIS one (version suffix
+  `-g…` = GUI build), which is why early status reads were confusing.
+
+Authoritative brew-daemon peer list shows only those two nodes — **no M4**:
+```
+$ tailscale --socket /var/run/tailscaled.socket status
+100.77.38.66   m1-mini            jesse.sharratt@  macOS
+100.74.232.95  jesses-mac-mini-2  jesse.sharratt@  macOS
+```
+M4 side: `Tailscale.app/.../Tailscale ip` returns **blank**; the tailscaled
+system extension is **not installed** (`/Library/SystemExtensions/*/io.tailscale*`
+→ no matches). The GUI standalone app installed, but with **0 console users**
+the network extension can't be approved and login never completes.
+
+**This explains every ping result:** my "M1→M4 tailnet" pings to 100.74.232.95
+were the M1 hitting its OWN app-stack IP (loopback, 0.5 ms). The M4→M1 100%
+loss was the M4 genuinely unable to reach the tailnet (it isn't on it).
+
+→ **Headless-server finding (M1 design input):** neither brew nor the GUI
+standalone Tailscale app is a viable headless provisioning path on the M4.
+brew froze 4× (disqualified); the GUI app needs a console session to approve
+its sysext. The headless path is **`tailscaled install-system-daemon`** (the
+open-source CLI daemon as a launchd LaunchDaemon), provisioned once via the
+admin account — consistent with the "vendor binary + launchd, provisioned
+once" rule. M1 must also resolve its **own dual-stack** (pick one: keep the
+brew daemon OR the GUI app, tear down the other, to stop the double node).
+
+⚠️ **[JESSE] required** (GUI/sudo/admin-console — agent will not touch):
+1. M1: choose ONE Tailscale stack, remove the other (recommend keeping the
+   GUI app for an interactive box, or the CLI daemon for headless parity).
+2. M4: install the CLI daemon — `sudo tailscaled install-system-daemon` then
+   `sudo tailscale up --auth-key=… --hostname=m4-mini` — over SSH, no GUI
+   needed. (The brew/GUI attempts can be discarded.)
+3. Cells B (off-LAN client) and E (Tailnet daemon checks) stay BLOCKED until
+   a real M1↔M4 (and MacBook) tailnet exists.
+
+Wired LAN cells (A/C′/D) are unaffected — they run over the 169.254 wired
+link, no tailnet needed.
+
+---
+
+## Post-reboot M4 state (for Phase 2 setup)
+
+- ZeroClaw honest baseline after the clean reboot (chroma leak reset): only
+  idle ollama server (~130 MB, **no model loaded**) + python (~258 MB);
+  Chrome/litellm/chroma-mcp not yet relaunched. `ollama ps` EMPTY → P2 pause
+  is currently a no-op; ceiling math's ~12 GB M4 contribution holds with
+  margin while ZeroClaw is light.
+- **Wired link-local IP changed across reboot: M4 en0 = 169.254.65.157**
+  (was .220). Benchmarks bind the CURRENT address. (M1 design input already
+  logged: static IPs on the wired segment.)
+
+## Control rows (both COMPLETE)
+
+| machine | engine | model | pp t/s | tg t/s | peak RSS |
+|---|---|---|---|---|---|
+| M1 (M1, 16 GB) | llama.cpp Metal | Qwen3-8B Q4_K_M | 119.32 ± 2.64 | 10.95 ± 0.31 | 4.72 GB |
+| M4 (M4, 16 GB) | llama.cpp Metal | Qwen3-14B Q4_K_M | 121.66 ± 0.05 | 11.76 ± 0.04 | 9.07 GB |
+
+(Each is the biggest model that machine holds comfortably solo. M4's newer GPU
+edges the M1 on decode despite the larger model — the per-node baseline for
+judging whether pooling actually buys anything.)
+Evidence: `control-m1-llamacpp-qwen3-8b-q4km.txt`,
+`control-m4-llamacpp-qwen3-14b-q4km.txt`.
