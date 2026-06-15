@@ -616,6 +616,77 @@ M1 8B Q4 = 11 tg, M4 14B Q4 = 11.8 tg.
 
 ---
 
+## DEFINITIVE: tuned retry — 2×16 GB cannot SERVE a 30B (2nd M4 panic) (2026-06-15)
+
+Prerequisites all met this run: `iogpu.wired_limit_mb=13000` on BOTH minis
+(Jesse, confirmed), M1 browsers closed + Screen Sharing disconnected, M4 ollama
+idle (gemma4:e4b keepalive expired → P2 pause was a no-op), worker pinned
+`--device MTL0`, ctx 1024, even `-ts 50,50`, live M1 memory guard armed
+(trip < 900 MB free+inactive, logs every 3 s →
+`mesh-m0-evidence/pod-30B-m1-memory-trace.txt`).
+
+Sequence (30B-A3B-IQ4_XS, 16.4 GB):
+- Loaded across both nodes again. During the M1-half wiring, M1 free+inactive
+  fell to ~974 MB and swap spiked to a **7.92 GB peak** (agent pages evicted),
+  then recovered to ~2 GB once wired — worker survived loading.
+- During the **distributed warmup compute**, the **M4 head went unresponsive**
+  (SSH timeout wired+Wi-Fi), then **"This system is locked" → key-auth denied
+  = a SECOND panic-reboot into FileVault pre-boot.** I aborted the M1 worker
+  immediately (M1 recovered instantly, free→9.3 GB), but the M4 was already
+  gone. ⚠️ **[JESSE] M4 needs recovery again.**
+
+**Why raising the wired-limit did NOT help — it moved the failure, not removed
+it.** Default `iogpu.wired_limit_mb=0` (~10.6 GB cap) → the head OOMs its GPU
+(run 1). Raised to 13 GB → Metal wires up to 13 GB on a 16 GB box, leaving
+< 3 GB for the OS, so under the warmup's compute buffers the whole **machine**
+thrashes to a panic instead (run 2). There is no setting at 16 GB that both
+fits the model's compute and leaves the OS enough to stay alive. The 30B
+distributed warmup needs more resident headroom than a 16 GB node has, period.
+
+### CEILING FINDING (record, do not fight — per Jesse)
+
+**The CORE POD (2 × 16 GB M1+M4) pools memory but cannot SERVE a 30B-class
+model.** It LOADS one (layers transfer, weights map) but the first real compute
+panics a node. The largest model the pod can actually serve sits between the
+0.6 B that ran clean (76 t/s pooled) and the 30 B that panics — and a 14 B-class
+(9 GB, ~4.5 GB/node) is exactly the size each node **already runs solo**
+(M4 14B Q4 = 11.8 tg). So on this trio:
+
+- **Biggest model the pod can SERVE ≈ 14 B class — which needs no pooling at
+  all.** Pooling buys essentially nothing on 2×16 GB: the overhead/instability
+  of splitting a 30B outweighs any gain, and the models that fit comfortably
+  fit on one node anyway.
+- **The unified-memory "biggest model possible" thesis FAILS for this
+  hardware generation.** 30B-class needs a node with real headroom (a 32–64 GB
+  Mac), and 70B needs ≥48 GB — neither exists in this trio (the MacBook is
+  Intel/8 GB, client-only). The household ceiling is the ~8–14 B class that
+  any single Apple-silicon node here already serves at ~11 t/s.
+- **M1 design input:** the value of pooling on Apple Silicon appears only when
+  a SINGLE node is too small for the target model AND the nodes are large
+  enough that each one's OS headroom survives its shard's compute. 2×16 GB
+  satisfies neither for 30B. The M2 path is a bigger anchor node (the headless
+  M4 → 32–64 GB), not more 16 GB nodes.
+
+### Partial elasticity (cell D) observed for free
+
+Killing the M1 worker mid-load/compute makes the head emit
+`recv failed … Remote RPC server crashed` and exit — i.e. **worker departure
+takes the whole pooled instance down; the head does NOT gracefully fall back**
+to its own tier. That is the realistic node-drop behavior and a direct M1
+design input: graceful degradation on contributor departure must be built; the
+engine does not provide it. (Clean timed D trials need a pod that can actually
+serve — moot at 30B here.)
+
+### STOP decision
+
+Two M4 panics from the same root cause = I am **not retrying 30B pooling on
+this hardware**; the physics are settled and further attempts only risk the
+office machine. Cells C′ (Q4 18.6/19.8 GB — strictly bigger than the 30B that
+already panics) and timed-D are **declared infeasible on 2×16 GB**, which is
+itself the deliverable. The spike's engine/ceiling questions are answered.
+
+---
+
 ## Post-reboot M4 state (for Phase 2 setup)
 
 - ZeroClaw honest baseline after the clean reboot (chroma leak reset): only
