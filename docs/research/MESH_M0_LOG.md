@@ -677,13 +677,54 @@ design input: graceful degradation on contributor departure must be built; the
 engine does not provide it. (Clean timed D trials need a pod that can actually
 serve — moot at 30B here.)
 
-### STOP decision
+### Correction & reopened investigation (2026-06-15)
 
-Two M4 panics from the same root cause = I am **not retrying 30B pooling on
-this hardware**; the physics are settled and further attempts only risk the
-office machine. Cells C′ (Q4 18.6/19.8 GB — strictly bigger than the 30B that
-already panics) and timed-D are **declared infeasible on 2×16 GB**, which is
-itself the deliverable. The spike's engine/ceiling questions are answered.
+The "physics, stop" call was premature on two counts (Jesse caught it):
+1. **Both panics were the 30B MoE (`Qwen3-30B-A3B-IQ4_XS`), NOT dense.** The
+   dense 32B was never reached (it's cell 2 in `pod_bench`; the MoE in cell 1
+   panicked first every time). The premise "even-split dense-30B is dead" was
+   wrong — it's the even-split MoE that's proven to wedge; dense untested.
+2. **`iogpu.wired_limit_mb=13000` is itself a key finding — record prominently:**
+   - Default cap (0 ⇒ ~10.6 GB, 66% of 16 GB): the M4 head failed with a
+     **GRACEFUL** `kIOGPUCommandBufferCallbackErrorOutOfMemory` / "Compute
+     error" — process reports it, machine survives.
+   - Raised to 13 GB: Metal wires up to 13 GB on a 16 GB box, starving the OS
+     to < 3 GB, and the failure became a **HARD KERNEL PANIC → FileVault-locked
+     reboot.** Raising the wired-limit did not enable bigger models — it
+     converted a survivable OOM into an unrecoverable panic.
+   → **M1/headless-server design rule: do NOT raise `iogpu.wired_limit_mb` near
+   total RAM on a node that must stay alive. The default cap is a safety
+   feature; over-raising trades graceful degradation for kernel panic.**
+3. **The unattended wedges trace to guard placement:** the memory guard ran on
+   the M1 and the M4 was SSH-polled — and SSH latency to the M4 spikes exactly
+   when it thrashes, so the guard saw the panic too late. Fix: a LOCAL M4-side
+   watchdog (next section).
+4. **Crucially, the M4 panicked with ~14 GB FREE at run start** — so it is NOT
+   steady-state shard size (~8 GB) that kills it; it's a TRANSIENT during the
+   distributed warmup. That points at a warmup-time spike (Metal buffer alloc
+   burst / RPC weight transfer) — if we can see the spike shape, a
+   warmup-throttle or staged load might make 16 GB pooling viable. Worth
+   characterizing, not just surviving.
+
+### Reopened-test harness (staged 2026-06-15, awaiting Jesse's watched window)
+
+- `bench/m4_watchdog.sh` — runs ON the M4; logs free/inact/wired/compressed/
+  swap/llama-server-RSS every 1 s (captures the warmup spike shape), and
+  `kill -9`s llama-server LOCALLY if avail RAM < threshold (default 3500 MB) —
+  aborts before a panic, no SSH dependency.
+- `bench/pod_cell.sh <label> <model> <ts> <ctx> <ngen> [wd_thresh]` —
+  parameterized single cell: arms the watchdog, 90 s HARD warmup timeout
+  (catches the hung-warmup wedge), runs 3 trials, classifies failure
+  (graceful OOM vs watchdog-kill), prints the warmup memory trace.
+- Config: **M4 default wired-limit (do NOT re-raise)**; M1 left at 13000 (worker
+  needs headroom to load its shard; M1-side guard prevents M1 panic); worker
+  `rpc-server --device MTL0`.
+- Run order (watched): (1) MoE IQ4_XS 16.4 GB, **capped split M4 ~58 / M1 ~42**
+  (M4 ≤ ~9.5 GB, under its default cap; NOT 80/20 — never load the node that
+  collapses), ctx 1024. (2) if graceful OOM (not panic) → MoE
+  **UD-IQ3_XXS 12.89 GB** (downloaded to M4) at ~50/50, the "smaller tier"
+  test. (3) HARD STOP. Worst acceptable outcome = graceful OOM; a panic means
+  the watchdog was too slow and we stop for good.
 
 ---
 
