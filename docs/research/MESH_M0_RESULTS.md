@@ -109,6 +109,49 @@ an MLX-spec anchor bench on the M4 — expect ~2–3× the M0 solo numbers.
 
 ---
 
+## M0.5 — MLX speculative-decoding anchor bench (measured 2026-06-15)
+
+Ran the shipping near-term path on the M4 (16 GB) against the same tiers + prompt
+as the M0 controls. Engine: **`mlx-lm` (MLX, prebuilt wheels — NO Xcode needed;
+refines the exo-DNF: standard MLX ships headless fine, only exo's *git-fork*
+needed the toolchain).** Draft model: Qwen3-0.6B-4bit. ctx via chat template,
+350-tok prompt, 256-gen, temp 0. Evidence: `mesh-m0-evidence/m05-mlx-spec-bench.txt`.
+
+| config | decode tok/s | TTFT (350-tok) | peak mem | note |
+|---|---|---|---|---|
+| 14B-4bit, **no spec** | **12.1** | ~4.2 s | 8.76 GB | ≈ M0 llama.cpp (11.8) ✓ apples-to-apples |
+| 14B-4bit, **spec** (0.6B draft, k=4) | **16.9** | ~4.5 s | 9.22 GB | **1.39× speedup**, comfortably interactive decode |
+| 30B-A3B-3bit (13.37 GB), no spec | **OOM** | — | wired 13.4 GB | does NOT fit 16 GB (graceful, no panic) |
+| 30B-A3B-3bit, spec | **OOM / GPU timeout** | — | wired 12.4 GB | does NOT fit 16 GB |
+
+**Findings:**
+1. **The headline hypothesis is FALSE: a 30B does NOT run on the 16 GB M4.** Even
+   at 3-bit (13.37 GB weights), the model + compute buffers exceed the M4's Metal
+   budget → graceful `kIOGPUCommandBufferCallbackErrorOutOfMemory` (single-node,
+   no panic). A usable-quality 30B (≥3-bit) needs **≥24–32 GB**. The anchor does
+   NOT need less RAM than we thought — it needs the RAM M2 already planned.
+2. **Speculative decoding works on MLX and is a real multiplier:** 14B
+   **12.1 → 16.9 tok/s (1.39×)**, lifting the 14B tier comfortably interactive.
+   This is a conservative floor — the 0.6B draft is small (lower acceptance); a
+   1.7B draft + structured text (code) tracks toward the cited 2–3× (MTPLX). The
+   technique is validated on shipping MLX, no exotic engine needed.
+3. **MLX baseline ≈ llama.cpp baseline** (12.1 vs 11.8 on the 14B) — confirms the
+   M0 controls were not engine-handicapped on decode.
+4. **TTFT caveat:** MLX prefill (~83 tok/s) is *slower* than llama.cpp (~121) →
+   ~4.2 s TTFT for a 350-tok prompt, **above the 2 s interactive bar.** Decode is
+   interactive; prefill/TTFT is the weak axis on this hardware and grows with
+   prompt length (short prompts clear the bar; long-context does not).
+
+**Net — reinforces M2, doesn't shortcut it:** the 16 GB node's interactive
+ceiling is the **14B tier at ~17 tok/s with spec**, not a 30B. The 30B tier
+still requires the **bigger dedicated anchor (32–64 GB)** — and there, spec
+decoding stacks as a ≥1.4× multiplier (more with a tuned draft / structured
+workloads). Engine: **MLX-spec for the anchor** is confirmed shipping-ready and
+beats llama.cpp on decode at equal RAM; pair it with attention to TTFT on long
+contexts.
+
+---
+
 ## 2. Evidence
 
 ### Solo controls (clean, the per-node baseline)
