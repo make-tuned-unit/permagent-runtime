@@ -10,20 +10,16 @@ use sqlx::{Pool, Sqlite};
 use tracing::{info, warn};
 
 /// Current Spectral schema version. Bump when adding migrations.
-pub const SPECTRAL_SCHEMA_VERSION: i32 = 8;
-
-/// Sentinel meaning "decision-inbox schema version not yet assigned".
-pub const DECISION_INBOX_VERSION_SENTINEL: i32 = -1;
-
-/// Schema version for the decision-inbox migration (decisions, decision_audit, risk_policy).
 ///
-/// // TBD: Jesse assigns before integration PR — parked swarm holds WIP v8->v9, do NOT assume 9.
-///
-/// While this equals `DECISION_INBOX_VERSION_SENTINEL` the migration runs idempotently on
-/// every boot and records nothing in `schema_version`. Reassigning this constant to the real
-/// version number is the ONLY change needed to turn it into a standard one-shot migration
-/// (the `version < DECISION_INBOX_SCHEMA_VERSION` gate in session_manager.rs then applies).
-pub const DECISION_INBOX_SCHEMA_VERSION: i32 = DECISION_INBOX_VERSION_SENTINEL;
+/// v10 = decision inbox (decisions, decision_audit, risk_policy), assigned by
+/// Jesse 2026-06-15. v9 is reserved by the session-list-perf branch (committed
+/// but unmerged: migrate_v8_to_v9 + idx_sessions_type_updated), so on THIS
+/// branch the chain steps straight from v8 to v10 via `migrate_v9_to_v10` —
+/// the absent v9 is intentional. Whichever of the two branches merges second
+/// renumbers to sit directly above the first (see the integration-PR
+/// sequencing note); `migrate_v9_to_v10` is base-independent so it is correct
+/// over either a v8 or a v9 base.
+pub const SPECTRAL_SCHEMA_VERSION: i32 = 10;
 
 /// Initialize the Spectral database schema from scratch.
 /// Creates all tables, indexes, FTS virtual tables, triggers, and views.
@@ -754,7 +750,7 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     tx.commit().await?;
 
     // Decision-inbox tables (decisions, decision_audit, risk_policy) + guard triggers.
-    // Idempotent; shared with migrate_to_decision_inbox for existing installs.
+    // Idempotent; shared with migrate_v9_to_v10 for existing installs.
     apply_decision_inbox_schema(pool).await?;
 
     info!(
@@ -927,27 +923,26 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
-/// Migrate an existing database to the decision-inbox schema.
+/// Migrate an existing database to the decision-inbox schema (schema v10).
 ///
-/// Follows the idempotent migrate_v7_to_v8 template. Records
-/// DECISION_INBOX_SCHEMA_VERSION in schema_version only once Jesse assigns a
-/// real version number (sentinel mode records nothing and simply re-ensures
-/// the schema, which is a no-op when present).
-pub async fn migrate_to_decision_inbox(pool: &Pool<Sqlite>) -> Result<()> {
-    info!("Ensuring decision-inbox schema (decisions, decision_audit, risk_policy)");
+/// Follows the idempotent migrate_v7_to_v8 template. The body is base-version
+/// independent (purely additive CREATE TABLE IF NOT EXISTS / INSERT OR IGNORE),
+/// so it correctly covers the v8 -> v10 step on this branch while v9
+/// (session-list-perf, committed but unmerged) is absent, and would apply
+/// equally over a v9 base once that lands. Records v10 in `schema_version`.
+pub async fn migrate_v9_to_v10(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v9 -> v10 (decision inbox)");
 
     apply_decision_inbox_schema(pool).await?;
 
-    if DECISION_INBOX_SCHEMA_VERSION != DECISION_INBOX_VERSION_SENTINEL {
-        sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (?)")
-            .bind(DECISION_INBOX_SCHEMA_VERSION)
-            .execute(pool)
-            .await?;
-        info!(
-            "Spectral schema migrated to v{} (decision inbox)",
-            DECISION_INBOX_SCHEMA_VERSION
-        );
-    }
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (?)")
+        .bind(SPECTRAL_SCHEMA_VERSION)
+        .execute(pool)
+        .await?;
+    info!(
+        "Spectral schema migrated to v{} (decision inbox)",
+        SPECTRAL_SCHEMA_VERSION
+    );
 
     Ok(())
 }

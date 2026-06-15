@@ -1643,7 +1643,7 @@ mod tests {
         let conn = open_readonly_sqlite(&db_path).unwrap();
         let db_version = sqlite_scalar_i32(&conn, "SELECT MAX(version) FROM schema_version");
         assert_eq!(db_version, Some(5));
-        // Should NOT match the compiled constant (currently 8)
+        // Should NOT match the compiled constant (currently 10)
         assert_ne!(db_version.unwrap(), SPECTRAL_SCHEMA_VERSION);
     }
 
