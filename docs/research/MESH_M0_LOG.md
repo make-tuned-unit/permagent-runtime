@@ -475,6 +475,63 @@ brew daemon OR the GUI app, tear down the other, to stop the double node).
 Wired LAN cells (A/C′/D) are unaffected — they run over the 169.254 wired
 link, no tailnet needed.
 
+### Tailnet RESOLVED + characterized (2026-06-15)
+
+M4 brought onto the tailnet by Jesse via GUI sign-out/in + reconnect (the
+App Store build's CLI silently no-ops; required interactive Screen-Sharing
+setup — confirms the headless finding). **Three nodes, all under
+jesse.sharratt@gmail.com:**
+
+| node | tailnet IP | what it is |
+|---|---|---|
+| jesses-mac-mini (M4) | **100.80.110.80** | the M4 — use this |
+| jesses-mac-mini-2 | 100.74.232.95 | M1 **GUI-app** node — carries real traffic |
+| m1-mini | 100.77.38.66 | M1 **brew-daemon** node — control-plane ghost |
+
+**Tailnet ping matrix (post-resolution):**
+
+| path | result |
+|---|---|
+| M1 → M4 (100.80.110.80) | 0% loss, **16.6 ms avg** (8.9 min, 84 max — Wi-Fi jitter) |
+| M4 → M1 **.95** (GUI) ICMP | 0% loss, 18.4 ms avg |
+| M4 → M1 **.66** (brew) ICMP | **100% loss — even warmed** |
+| M4 → M1 .66 `tailscale ping` | pong via 159.2.20.27, 9 ms (control-plane only) |
+| M4 → M1 .95 `tailscale ping` | pong via 159.2.20.27, 12 ms |
+
+Two findings:
+1. **The M1 brew-daemon node (.66) is a ghost** — `tailscale ping` (disco/
+   control plane) succeeds, but plain ICMP/IP traffic gets 100% loss even
+   after warming. Only the GUI-app node (.95) passes real data. Cause: dual
+   tailscaled stacks; only the GUI app's utun is wired into OS routing.
+   → **For cells B/E the M1's usable tailnet address is 100.74.232.95 (.95),
+   NOT .66**, contra the "prefer m1-mini" guidance — unless Jesse logs the
+   brew node out (then the dual-stack collapses and .95 is the sole M1 node).
+   This promotes the dual-stack from "low priority" to "blocks tailnet-to-M1
+   until resolved or .95 is used."
+2. **Path is direct-via-public-endpoint with NAT hairpin, not LAN-direct.**
+   `via 159.2.20.27` is the M1's OWN public IP (netcheck: external
+   159.2.20.27:54527), so M4↔M1 hairpins through the router (~9–18 ms)
+   instead of taking the 0.5 ms LAN path. netcheck: UDP ok, easy NAT
+   (MappingVariesByDestIP false), UPnP port-mapping, nearest DERP NYC 62.7 ms
+   (so it's NOT full-relay — direct via public endpoint). For cell B
+   (genuinely-remote client) this is moot; pooling uses the wire regardless.
+
+M4 model integrity re-confirmed post-resolution — all six byte-exact, 126 GB
+free.
+
+### exo single-node consolation row — DEFERRED (memory, not engine fault)
+
+Restarted exo on M1 (MLX now works). `POST /place_instance` for
+Qwen3-8B-4bit (4.6 GB) failed: `ValueError: No cycles found with sufficient
+memory`. exo's `nodeMemory` reported **ramAvailable 4.36 GB** — genuinely
+less than the model, because this Claude Code agent session's own helper
+processes (several `claude` at 0.4–0.7 GB) + permagentd + the world-baseline
+test daemon were resident. **Not an exo defect** — the box wasn't quiet.
+exo can only ever run single-node here anyway (M4 exo = DNF), so this one
+row is **deferred to the evening window** when the M1 is quiet, run against
+the same 8B tier as the llama.cpp control for a clean MLX-vs-ggml point.
+exo stopped (PID 82552/83086) to reclaim memory.
+
 ---
 
 ## Post-reboot M4 state (for Phase 2 setup)

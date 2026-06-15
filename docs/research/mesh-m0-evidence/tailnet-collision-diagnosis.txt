@@ -12,3 +12,8 @@ M1 processes:
 47155 /opt/homebrew/opt/tailscale/bin/tailscaled  
 60567 ssh -o BatchMode=yes
 60204 /bin/bash -c source
+
+=== Tailnet ping matrix (2026-06-15, post-resolution) ===
+M4 = 100.80.110.80 | M1 GUI=.95 | M1 brew=.66
+M1->M4: 0% loss 16.6ms avg | M4->M1 .95: 0% loss 18.4ms | M4->M1 .66: 100% loss (ghost)
+netcheck: easy NAT, UPnP, nearest DERP NYC 62.7ms; M4<->M1 direct-via-public-endpoint hairpin ~9-18ms
