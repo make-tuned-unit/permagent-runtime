@@ -9,6 +9,7 @@
 
 import { useMemo } from 'react';
 import * as THREE from 'three';
+import { ENV } from '../../shared/palette';
 import { blockoutMat } from '../blockout';
 import { InstancedProp, type InstanceTransform } from '../../shared/instancing';
 import { STRATA, type StratumDef } from './strata';
@@ -17,6 +18,16 @@ import { STRATA, type StratumDef } from './strata';
 // chamfered mass per bible §1 silhouette law). Module singleton — one geometry.
 const rockChunk = new THREE.IcosahedronGeometry(1, 0);
 
+// Cavern-wall material: Stone tier (matte, bible §1) but DoubleSide so the open
+// cylinder shells read whether the camera is inside the cavern or outside it
+// (the descent fly-through crosses both). Module singleton — one program.
+const wallMat = new THREE.MeshStandardMaterial({
+  color: ENV.darkStone,
+  roughness: 0.95,
+  metalness: 0.03,
+  side: THREE.DoubleSide,
+});
+
 /** Open cylinder shell = the cavern rock wall of one stratum (1 draw call). */
 function StratumWall({ s }: { s: StratumDef }) {
   const height = s.top - s.floor;
@@ -24,7 +35,7 @@ function StratumWall({ s }: { s: StratumDef }) {
   // Throat centre is at z=9; the cavern is centred there too so the walls wrap
   // the descending abyss.
   return (
-    <mesh position={[0, midY, 9]} material={blockoutMat} receiveShadow>
+    <mesh position={[0, midY, 9]} material={wallMat} receiveShadow>
       <cylinderGeometry args={[s.radius, s.radius + 1, height, 24, 1, true]} />
     </mesh>
   );

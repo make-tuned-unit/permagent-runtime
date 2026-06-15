@@ -7,9 +7,19 @@
 
 import { useMemo } from 'react';
 import * as THREE from 'three';
+import { ENV } from '../../shared/palette';
 import { blockoutMat } from '../blockout';
 import { InstancedProp, type InstanceTransform } from '../../shared/instancing';
 import { THROAT, CAVE_FLOOR } from './strata';
+
+// DoubleSide shaft wall material so the bored throat reads from inside the abyss
+// and from the bridge looking down. Stone tier, matte. Module singleton.
+const shaftMat = new THREE.MeshStandardMaterial({
+  color: ENV.darkStone,
+  roughness: 0.95,
+  metalness: 0.03,
+  side: THREE.DoubleSide,
+});
 
 // Shared ledge geometry — shelf-rings descending the bored upper shaft (bible §5
 // "newest memories near the surface, oldest fading into raw rock below"). Placed
@@ -27,7 +37,7 @@ function ThroatShaft() {
   return (
     <group position={[cx, 0, cz]}>
       {/* Clean bored shaft (crown → rawRockY): open cylinder, smooth radius. */}
-      <mesh position={[0, (topY + THROAT.rawRockY) / 2, 0]} material={blockoutMat} receiveShadow>
+      <mesh position={[0, (topY + THROAT.rawRockY) / 2, 0]} material={shaftMat} receiveShadow>
         <cylinderGeometry
           args={[THROAT.radiusTop, THROAT.radiusTop + 0.5, boreHeight, 20, 1, true]}
         />
@@ -35,7 +45,7 @@ function ThroatShaft() {
       {/* Raw-rock funnel (rawRockY → floor): widens, jagged segment count. */}
       <mesh
         position={[0, (THROAT.rawRockY + CAVE_FLOOR) / 2, 0]}
-        material={blockoutMat}
+        material={shaftMat}
         receiveShadow
       >
         <cylinderGeometry

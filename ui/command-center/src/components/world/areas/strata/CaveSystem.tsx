@@ -15,7 +15,7 @@
 //
 // LAW: zero per-frame allocations — scalar distance math only.
 
-import { Suspense, lazy, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { blockoutMat } from '../blockout';
 import { THROAT } from './strata';
@@ -77,9 +77,38 @@ function useMouthTrigger(): boolean {
   return load;
 }
 
+// DEV-ONLY A/B toggle for evidence capture (mirrors atmosphere's __worldFog).
+// Lets the CDP harness measure the exact cave cost at an identical pose by
+// hiding the whole cave. No effect in production builds.
+let caveEnabled = true;
+declare global {
+  interface Window {
+    __worldCave?: { setEnabled: (on: boolean) => void; getEnabled: () => boolean };
+  }
+}
+if (import.meta.env.DEV && typeof window !== 'undefined') {
+  window.__worldCave = {
+    setEnabled: (on: boolean) => {
+      caveEnabled = on;
+      window.dispatchEvent(new Event('worldcave-toggle'));
+    },
+    getEnabled: () => caveEnabled,
+  };
+}
+
 export function CaveSystem() {
   const loadDescent = useDescentTrigger();
   const loadMouth = useMouthTrigger();
+  const [, force] = useState(0);
+  // Dev A/B toggle listener (no-op in prod — the event never fires there).
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const h = () => force((n) => n + 1);
+    window.addEventListener('worldcave-toggle', h);
+    return () => window.removeEventListener('worldcave-toggle', h);
+  }, []);
+
+  if (import.meta.env.DEV && !caveEnabled) return null;
 
   return (
     <group>
