@@ -16,11 +16,14 @@ import {
   BONE_NAMES,
   POSES,
   STATE_VISUALS,
+  TENDING_VISUAL,
   TRANSITION_S,
   ERROR_FLICKER_HZ,
   ERROR_FLICKER_S,
   type PoseKey,
 } from './poses';
+import { publishHenryPosition } from './henryPresence';
+import { advanceMining, resolveTablet } from './librarianMining';
 
 const LABEL_ON_DIST = 18;
 const LABEL_OFF_DIST = 20; // hysteresis so the label doesn't strobe at the boundary
@@ -49,7 +52,8 @@ interface TransitionState {
   poseT: number;
   fromRootY: number;
   toRootY: number;
-  hud: AgentHudState;
+  /** Color register key — a HUD state OR 'tending' (the third register, bible §4). */
+  colorKey: string;
   colorT: number;
   errorStart: number;
   initialized: boolean;
@@ -81,6 +85,7 @@ export function AgentCharacterV2({
         trimColor: identity.trimColor,
         weathering: identity.weathering,
         crown: identity.isHenry,
+        variant: identity.isHenry ? 'henry' : identity.id === 'librarian' ? 'librarian' : null,
       }),
     [identity],
   );
@@ -106,7 +111,7 @@ export function AgentCharacterV2({
     poseT: 1,
     fromRootY: 0,
     toRootY: 0,
-    hud: 'idle',
+    colorKey: 'idle',
     colorT: 1,
     errorStart: -1,
     initialized: false,
@@ -132,13 +137,24 @@ export function AgentCharacterV2({
     g.rotation.y = m.heading;
 
     // ── Resolve target pose ──
+    // Tending is a THIRD register (bible §4): driven by engagement, not HUD state. An
+    // idle agent that has walked to a construction tend anchor displays tending (gray-warm),
+    // never amber. HUD working/error still win — real work for the user takes the body.
+    const tending = m.engaged === 'tending' && hud !== 'working' && hud !== 'error';
     let pose: PoseKey;
-    if (hud === 'working') {
+    if (tending) pose = 'tending';
+    else if (hud === 'working') {
       pose =
         m.engaged === 'seated' ? 'seatedWork' : m.engaged === 'standing' ? 'standWork' : 'available';
     } else if (hud === 'error') pose = 'error';
     else if (hud === 'available') pose = 'available';
     else pose = 'idle';
+
+    // The visual register: tending overrides the HUD color channel with its warm-gray
+    // (its own ambient register — bible §4/§8). Otherwise the HUD state drives color.
+    const visual = tending ? TENDING_VISUAL : STATE_VISUALS[hud];
+    // A change in tending-ness must also retrigger the color tween below.
+    const colorKey = tending ? 'tending' : hud;
 
     // ── Start transitions on discrete change (0.8s tween — no snapping) ──
     if (pose !== tr.pose || !tr.initialized) {
@@ -154,14 +170,14 @@ export function AgentCharacterV2({
       tr.pose = pose;
       tr.poseT = tr.initialized ? 0 : 1;
     }
-    if (hud !== tr.hud || !tr.initialized) {
+    if (colorKey !== tr.colorKey || !tr.initialized) {
       // Capture the currently displayed values as the new "from".
       quats.colorFrom.copy(rig.stateMat.emissive);
       quats.visorFrom = rig.visorMat.emissiveIntensity;
       quats.stateFrom = rig.stateMat.emissiveIntensity;
-      quats.colorTo.set(STATE_VISUALS[hud].color);
-      if (hud === 'error') tr.errorStart = t;
-      tr.hud = hud;
+      quats.colorTo.set(visual.color);
+      if (colorKey === 'error') tr.errorStart = t;
+      tr.colorKey = colorKey;
       tr.colorT = tr.initialized ? 0 : 1;
     }
     tr.initialized = true;
@@ -178,7 +194,7 @@ export function AgentCharacterV2({
     // ── Color blend (state channels only — identity trim untouched) ──
     tr.colorT = Math.min(1, tr.colorT + dt / TRANSITION_S);
     const ce = easeInOut(tr.colorT);
-    const visTarget = STATE_VISUALS[hud];
+    const visTarget = visual;
     rig.stateMat.emissive.lerpColors(quats.colorFrom, quats.colorTo, ce);
     rig.stateMat.color.copy(rig.stateMat.emissive);
     rig.visorMat.emissive.copy(rig.stateMat.emissive);
@@ -189,7 +205,7 @@ export function AgentCharacterV2({
       quats.visorFrom + (visTarget.visorIntensity - quats.visorFrom) * ce;
 
     // Error visor: 2Hz flicker for 3s, then steady dim (bible §4).
-    if (hud === 'error' && tr.errorStart >= 0) {
+    if (colorKey === 'error' && tr.errorStart >= 0) {
       const since = t - tr.errorStart;
       if (since < ERROR_FLICKER_S) {
         rig.visorMat.emissiveIntensity =
@@ -207,12 +223,49 @@ export function AgentCharacterV2({
       bones.armL.rotateX(-swing * 0.55);
       bones.armR.rotateX(swing * 0.55);
       g.rotation.z = 0;
+    } else if (pose === 'tending') {
+      // Unhurried haul/set sway (bible §4): a slow stoop-and-place cadence on the arms,
+      // gentler and slower than the walk swing — never busy, never amber.
+      g.rotation.z = Math.sin(t * 1.2) * 0.02;
+      const haul = Math.sin(t * 1.1) * 0.18;
+      bones.armL.rotateX(haul);
+      bones.armR.rotateX(haul);
+      bones.spine.rotateX(Math.max(0, Math.sin(t * 1.1)) * 0.06);
     } else {
       // Slow ambient sway (idle weight shift).
       g.rotation.z = Math.sin(t * 2) * 0.015;
       if (pose === 'seatedWork' || pose === 'standWork') {
         // Small periodic head nods while engaged.
         bones.head.rotateX(0.05 * Math.sin(t * 2.6) * Math.max(0, Math.sin(t * 0.45)));
+      }
+    }
+
+    // ── Per-agent specials ──
+    if (identity.isHenry) {
+      // Henry presides — publish his live position so W4 can gather light where he
+      // stands (bible §4: "light gathers slightly where he stands"). He never lifts.
+      publishHenryPosition(m.x, m.y, m.z, hud);
+      // His own floor pool: gathers (brighter/larger) when he stops to inspect, fades
+      // while walking. Tints toward his state color (the crown-gem crossover, bible §4).
+      const pl = rig.presenceLight;
+      if (pl) {
+        const settle = m.walking ? 0.35 : 1;
+        const pulse = 1 + 0.08 * Math.sin(t * 1.4);
+        pl.scale.setScalar((0.7 + 0.3 * settle) * pulse);
+        (pl.material as THREE.MeshBasicMaterial).opacity = (m.walking ? 0.09 : 0.18) * pulse;
+      }
+    } else if (identity.id === 'librarian') {
+      // The Librarian's mining tablet — driven by REAL describe events (librarianMining).
+      advanceMining(performance.now());
+      const tab = resolveTablet(performance.now());
+      const tablet = rig.tablet;
+      if (tablet) {
+        tablet.visible = tab.visible;
+        if (tab.visible) {
+          // Tablet rides from the shelf (reach 0) into the hands (reach 1).
+          tablet.position.set(0, 1.05, 0.18 + tab.reach * 0.32);
+          tablet.material.emissiveIntensity = tab.glow * 2.0;
+        }
       }
     }
 

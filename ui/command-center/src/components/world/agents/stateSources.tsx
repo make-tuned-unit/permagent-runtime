@@ -19,6 +19,8 @@
 import { useEffect } from 'react';
 import { api, getApiBaseUrl } from '../../../lib/api';
 import { setAgentSource } from '../shared/agentStatus';
+import { bankEvent } from '../shared/tendingBank';
+import { noteDescribe } from './librarianMining';
 import type { AgentHudState } from '../shared/palette';
 import { ROSTER } from './roster';
 
@@ -79,11 +81,32 @@ export function AgentStateSources() {
           const event = JSON.parse(ev.data);
           // Wire shape: { id, type: "librarian_describe_started", timestamp, payload }
           const type: string = event.type ?? event.event_type ?? '';
-          if (!type.startsWith('librarian_')) return;
-          // /events replays its buffer on connect — skip pre-mount history so
-          // the Librarian stays "idle until first event" (bible §6).
+          // /events replays its buffer on connect — skip pre-mount history so the
+          // Librarian stays "idle until first event" AND the tending bank only ever
+          // counts work seen live (bible §6; tendingBank honesty note).
           const ts = Date.parse(event.timestamp ?? '');
-          if (Number.isFinite(ts) && ts < mountedAt) return;
+          const replayed = Number.isFinite(ts) && ts < mountedAt;
+          const payload = event.payload ?? {};
+          const ref: string =
+            payload.memory_key ?? payload.key ?? payload.id ?? event.id ?? '';
+
+          // ── Tending bank: real describe/ingest events deposit material ──
+          // (bible §4 — describe = quarried stone, ingest = ore). Live only.
+          if (!replayed) {
+            if (type === 'librarian_describe_completed') bankEvent('describe', ref, 'daemon');
+            else if (type === 'memory_added') bankEvent('ingest', ref, 'daemon');
+          }
+
+          if (!type.startsWith('librarian_')) return;
+          if (replayed) return;
+
+          // ── Librarian mining loop: tablet pull → brighten → reshelve ──
+          // (bible §5 Brain: pull a dim tablet, it brightens violet, reshelve glowing).
+          if (type === 'librarian_describe_started' || type === 'librarian_describe_retry')
+            noteDescribe('start', ref);
+          else if (type === 'librarian_describe_completed') noteDescribe('complete', ref);
+          else if (/error|failed/.test(type)) noteDescribe('error', ref);
+
           let next: AgentHudState | null = null;
           if (/error|failed/.test(type)) next = 'error';
           else if (
