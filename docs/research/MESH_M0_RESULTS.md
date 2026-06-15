@@ -67,9 +67,12 @@ maturity levels:
   a 30B interactively usable (~18 tok/s) with NO pool, NO split, NO WAN.** This
   *supersedes* "bigger anchor is slow": a bigger anchor + MLX-spec is bigger
   **and** fast.
-  → **Our M0 solo controls (11–12 tok/s) used non-speculative llama.cpp and
-  therefore UNDERSTATE achievable anchor speed by ~2–3×.** Re-bench with MLX-spec
-  is the M0.5 follow-up (below).
+  → **CORRECTED by M0.5 (below): the lever is SPECULATION, not the engine
+  swap.** MLX's non-speculative decode ≈ llama.cpp's (12.1 vs 11.8 tok/s on the
+  14B) — the M0 controls were accurate. Speculative decoding adds the speedup
+  (~1.4× measured, up to 2–3× with a tuned draft / structured text). And note the
+  ~18 tok/s "30B on an anchor" figure assumes a 32–48 GB box — M0.5 proved a 30B
+  does **not** fit 16 GB at all.
 - **Local multi-Mac split ships today** via MLX-distributed (LocalAI) / exo:
   pipeline-parallel Ring backend, or JACCL tensor-parallel over
   **Thunderbolt/RDMA**. Built for *co-located high-bandwidth* links, not WAN. A
@@ -102,14 +105,21 @@ maturity levels:
 3. **Interactive WAN Mesh = M3+,** gated on speculative-split landing in the
    engine layer. Tracked, not built.
 
-**Engine re-eval (supersedes §4's anchor choice):** for the **anchor**
-(single-node interactive), an **MLX speculative engine likely beats llama.cpp
-RPC**. Keep **llama.cpp RPC for the batch/pool path**. The **M0.5 follow-up** is
-an MLX-spec anchor bench on the M4 — expect ~2–3× the M0 solo numbers.
+**Engine re-eval (supersedes §4's anchor choice; confirmed by M0.5):** for the
+**anchor** (single-node interactive), **MLX-spec wins decode** (parity with
+llama.cpp + the speculation multiplier at equal RAM); **llama.cpp wins
+prefill/long-context** (faster TTFT). Keep **llama.cpp RPC for the batch/pool
+path**. Engine choice may be **workload-dependent** — see the M0.5 TTFT
+constraint below.
 
 ---
 
 ## M0.5 — MLX speculative-decoding anchor bench (measured 2026-06-15)
+
+> **VERDICT: the 16 GB M4 is NOT a 30B machine.** Even 3-bit (13.37 GB) OOMs on
+> the Metal budget. The local-30B path **requires the 32–64 GB M2 anchor — no
+> software trick shortcuts it.** Hypothesis falsified cheaply, *before any
+> hardware spend.* That is the value of M0.5.
 
 Ran the shipping near-term path on the M4 (16 GB) against the same tiers + prompt
 as the M0 controls. Engine: **`mlx-lm` (MLX, prebuilt wheels — NO Xcode needed;
@@ -134,13 +144,26 @@ needed the toolchain).** Draft model: Qwen3-0.6B-4bit. ctx via chat template,
    **12.1 → 16.9 tok/s (1.39×)**, lifting the 14B tier comfortably interactive.
    This is a conservative floor — the 0.6B draft is small (lower acceptance); a
    1.7B draft + structured text (code) tracks toward the cited 2–3× (MTPLX). The
-   technique is validated on shipping MLX, no exotic engine needed.
-3. **MLX baseline ≈ llama.cpp baseline** (12.1 vs 11.8 on the 14B) — confirms the
-   M0 controls were not engine-handicapped on decode.
-4. **TTFT caveat:** MLX prefill (~83 tok/s) is *slower* than llama.cpp (~121) →
-   ~4.2 s TTFT for a 350-tok prompt, **above the 2 s interactive bar.** Decode is
-   interactive; prefill/TTFT is the weak axis on this hardware and grows with
-   prompt length (short prompts clear the bar; long-context does not).
+   technique is validated on shipping MLX, no exotic engine needed. **The 16 GB
+   M4 IS a comfortably interactive 14B machine TODAY — the local heartbeat model,
+   no purchase needed.**
+3. **The lever is SPECULATION, not the engine.** MLX baseline ≈ llama.cpp on
+   decode (12.1 vs 11.8 on the 14B) → the M0 controls were *not*
+   engine-handicapped, and the earlier "M0 understated by 2–3×" note is
+   **corrected**: swapping engines buys decode parity; the speedup comes from
+   speculative decoding on top.
+4. **CONTRIBUTOR-SPEC UNLOCK: `mlx-lm` installs with ZERO Xcode** (prebuilt
+   wheels) — no per-node build burden. The exo DNF was its *git-fork* MLX
+   specifically. → the MLX-spec engine is **deployable to non-dev machines**,
+   unlike exo. Relevant to the eventual Mesh contributor story: a household
+   contributor can run it without a developer toolchain.
+5. **OPEN CONSTRAINT — prefill/TTFT is MLX's weak axis.** MLX prefill (~83 tok/s)
+   is *slower* than llama.cpp (~121) → ~4.2 s TTFT for a 350-tok prompt, **above
+   the 2 s bar.** Decode interactive, prefill not; the gap grows with prompt
+   length (short prompts clear the bar, long-context does not). **Engine choice
+   may be workload-dependent: MLX-spec wins decode, llama.cpp wins
+   prefill/long-context.** Tracked open item — chase MLX prefill optimization OR
+   route long-context workloads to llama.cpp. Not a blocker; a nuance.
 
 **Net — reinforces M2, doesn't shortcut it:** the 16 GB node's interactive
 ceiling is the **14B tier at ~17 tok/s with spec**, not a 30B. The 30B tier
