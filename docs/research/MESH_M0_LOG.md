@@ -534,6 +534,88 @@ exo stopped (PID 82552/83086) to reclaim memory.
 
 ---
 
+## Wired pod cells A/C′ — ATTEMPTED; engine bug fixed, then hit a hard memory wall (2026-06-15)
+
+Setup: M4 = head (models local, faster GPU, more free RAM), M1 = RPC worker.
+Wired IPs this session: M1 en0 169.254.233.101, M4 en0 169.254.65.157
+(both shift across reboots — static-IP design input stands). Wired link clean
+(0.56 ms, ~112 MB/s). Bench: `llama-server` + stdlib streaming client
+(`pod_bench.sh`, `ttft_client.py`), 3 trials, fixed ~500-tok prompt, 256-tok gen.
+
+### Finding 1 — llama.cpp RPC BLAS bug (FIXED, important)
+
+First pooled attempts crashed the M1 rpc-server with SIGABRT on the first real
+op. Root cause from the worker log:
+```
+ggml-blas.cpp:252: ggml_backend_blas_graph_compute: unsupported op RMS_NORM
+```
+By default `rpc-server` registers ALL local devices (MTL0 Metal, BLAS, CPU) and
+the graph compute landed on **BLAS (Accelerate)**, which lacks `RMS_NORM` →
+abort. This crashed even a 0.6 GB model, so it was NOT memory.
+**FIX: `rpc-server --device MTL0`** pins it to the Metal GPU. After the fix, a
+pooled 0.6 B model loaded and generated cleanly (76 t/s) — RPC pipeline proven.
+→ M1 design input: any pooled llama.cpp worker MUST be launched
+`--device MTL0` (or the node's Metal device id); the default BLAS fallback is a
+silent crash on transformer models. Device discovery: `rpc-server` prints the
+list on a bad `--device` arg (`MTL0`/`BLAS`/`CPU`).
+
+### Finding 2 — the core pod cannot SERVE a 30B at 2×16 GB without tuning
+
+With the RPC bug fixed, the 30B-A3B-IQ4_XS (16.4 GB) **loaded** across both
+nodes (38 s, 315 MB transferred to the worker — pooling physically works), but
+**compute failed**:
+```
+ggml_metal_synchronize: command buffer failed status 5
+Insufficient Memory (kIOGPUCommandBufferCallbackErrorOutOfMemory)  → "Compute error"  → 0 tokens
+```
+The M4 head's GPU **exceeded its Metal working-set cap**. On a 16 GB Mac the
+default `iogpu.wired_limit_mb=0` ⇒ ~66 % ≈ 10.6 GB usable for Metal. Head share
+(~8 GB weights) + full-context KV (ctx 4096) + compute buffers > 10.6 GB → OOM.
+Reducing to ctx 1024 + even `-ts 50,50` got further but the warmup compute
+**thrashed**: the M1 was swap-saturated (this agent session + browsers +
+daemon held ~9 GB; swap climbed 6→9 GB), so the M1's half had no real RAM and
+the distributed warmup hung.
+
+### Finding 3 — the run wedged the M4 (offline, needs Jesse)
+
+During the distributed warmup the M4 became unresponsive (SSH timeout on wired
+AND Wi-Fi), then began answering with **"This system is locked"** and finally
+**key-auth denied** — the signature of a **panic/watchdog reboot into the
+FileVault pre-boot login** (encrypted volume not unlocked ⇒ no user/SSH keys).
+The 30B distributed compute thrashed both 16 GB machines hard enough to take
+the M4 down. ⚠️ **[JESSE] the M4 needs manual recovery** (Screen Sharing /
+physical FileVault unlock, or `fdesetup authrestart` next boot). The benchmark
+`llama-server` was the cause; no permagent/ZeroClaw code involved.
+M1 side: cleaned up (no orphans), swap draining (9→6 GB), permagentd healthy
+throughout (P3 honored — daemon never touched).
+
+### Verdict on the wired pod cells
+
+- **Pooling WORKS** at the pipeline level (RPC + MTL0 fix; layers transfer;
+  small models generate across nodes).
+- **Clean 30B/32B ceiling numbers are blocked by two memory walls**, both
+  fixable, neither doable mid-session:
+  1. **M4 (and M1) GPU working-set cap** — needs `sudo sysctl
+     iogpu.wired_limit_mb=<~13000>` on each node so Metal can use more of the
+     16 GB. Jesse's sudo; it's also a legitimate headless-server config step.
+  2. **M1 must be QUIET** — the orchestrating agent + Jesse's browsers
+     swap-saturate the M1, leaving its pool half no real RAM. The M1 cannot be
+     both the spike's orchestrator/desktop AND a full pool member at once —
+     **this is the Q4 coexistence answer arriving early**: on a 16 GB node,
+     heavy pooled inference is NOT invisible to the contributor; it evicts
+     everything else.
+- **Prerequisites for the ceiling run (evening window):** M4 recovered;
+  `iogpu.wired_limit_mb` raised on both minis (sudo); M1 quiet (browsers
+  closed, agent footprint minimal); small context (`-c 1024`, the workload is
+  ~756 tok); worker `--device MTL0`. With those, the 30B-class cells should
+  serve. The C′ Q4 cells (18.6/19.8 GB) remain the tightest and may still not
+  fit 2×16 GB even tuned — that itself is the ceiling answer.
+
+Solo control rows (already banked) remain the only clean t/s numbers so far:
+M1 8B Q4 = 11 tg, M4 14B Q4 = 11.8 tg.
+
+---
+
 ## Post-reboot M4 state (for Phase 2 setup)
 
 - ZeroClaw honest baseline after the clean reboot (chroma leak reset): only
