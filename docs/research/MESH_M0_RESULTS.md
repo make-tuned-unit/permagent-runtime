@@ -40,6 +40,52 @@ anchor's RAM, not node count."
 
 ---
 
+## Latency: the beatable wall (M3+ roadmap — NOT measured here)
+
+> This section is **forward-looking**, added after deep research (June 2026). It
+> does **not** revise the M0 verdict above: M0 correctly measured *naive
+> sequential split* (what llama.cpp RPC does), where every decoded token costs a
+> network round-trip. That floor is real for that engine. But it is **not a
+> fundamental limit** — the frontier has beaten it, so the next person knows the
+> ceiling, not just the floor we hit.
+
+**Key technique — speculative / lookahead decoding for split inference.**
+Speculate *k* tokens locally, then **verify them across nodes in ONE round-trip**
+instead of *k* round-trips — amortizing network latency. The benefit is
+*amplified* for split inference precisely because round-trips are expensive: the
+exact thing that hurt naive RPC is what this exploits.
+
+**Evidence:**
+- **Cunningham 2026** (arXiv 2602.16760): split inference + lookahead decoding
+  over ~80 ms WAN → **8.7–9.3 tok/s (7B), 7.8–8.7 (12B)**; projects **15–19
+  tok/s at 20 ms RTT** — the same ballpark as our solo controls (~11–12 tok/s),
+  *over the internet*. Also keeps embed/unembed layers local (raw tokens never
+  leave the originating node); **split depth = a tunable privacy dial**, measured
+  against an inversion attack — a real validation of the vision doc's Approach A.
+- **DSD** (arXiv 2511.11733): Decentralized Speculative Decoding — plug-and-play,
+  no retraining, **best at 3–8 nodes** (= household / circle pod size). Converts
+  network stalls into throughput.
+- **Acceptance rates peak on STRUCTURED text** (code, templates) — up to **7
+  tokens/round-trip on code**. Permagent's Librarian / Reader / codegen
+  workloads are therefore the **best case** for split inference, not the worst.
+
+**Roadmap impact:**
+1. **Interactive distributed inference is viable in 2026 — REOPEN it as an M3+
+   goal**, gated on a speculative-split-capable engine. llama.cpp RPC lacks this;
+   track exo and research implementations.
+2. **Both/and, not either/or.** A bigger **anchor** remains the M1/M2 answer for
+   the everyday interactive model (concentration is still ~30 % faster). A
+   speculative-split **mesh** is the M3+ answer for the *giant* model no single
+   household box can hold — now at usable speed.
+3. **Asymmetric-split privacy (Approach A) is validated** — fold the
+   inversion-attack / split-depth finding into the privacy section of the vision
+   doc.
+4. **New dependency to track: speculative-decoding support in the pod engine is
+   the gating capability for interactive Mesh.** When it lands in exo or a
+   successor, the interactive Mesh unblocks.
+
+---
+
 ## 2. Evidence
 
 ### Solo controls (clean, the per-node baseline)
