@@ -17,9 +17,10 @@ export interface DashboardLayoutData {
 export const DEFAULT_LAYOUT: DashboardLayoutData = {
   cards: [
     { id: 'hero', type: 'hero', position: { x: 0, y: 0 }, size: { w: 7, h: 4 }, visible: true },
-    { id: 'stats', type: 'stats', position: { x: 7, y: 0 }, size: { w: 5, h: 4 }, visible: true },
-    { id: 'in_flight', type: 'in_flight', position: { x: 0, y: 4 }, size: { w: 12, h: 3 }, visible: true },
-    { id: 'recent', type: 'recent', position: { x: 0, y: 7 }, size: { w: 12, h: 4 }, visible: true },
+    { id: 'decisions', type: 'decisions', position: { x: 7, y: 0 }, size: { w: 5, h: 4 }, visible: true },
+    { id: 'stats', type: 'stats', position: { x: 0, y: 4 }, size: { w: 5, h: 4 }, visible: true },
+    { id: 'in_flight', type: 'in_flight', position: { x: 0, y: 8 }, size: { w: 12, h: 3 }, visible: true },
+    { id: 'recent', type: 'recent', position: { x: 0, y: 11 }, size: { w: 12, h: 4 }, visible: true },
   ],
 };
 

@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Decision Inbox — L4 Phase 0 mockup</title>
+<style>
+/* ── Token values hardcoded verbatim from ui/command-center/src/styles/tokens.ts ── */
+:root{
+  --font-display:"Manrope","Satoshi",-apple-system,BlinkMacSystemFont,sans-serif;
+  --font-body:"Inter",-apple-system,BlinkMacSystemFont,sans-serif;
+  --font-mono:"JetBrains Mono",ui-monospace,SFMono-Regular,monospace;
+  --r-sm:6px;--r-md:10px;--r-lg:14px;--r-pill:999px;
+  --ease-out:cubic-bezier(0.22,1,0.36,1);
+}
+html[data-theme="dark"]{
+  --workspace:radial-gradient(120% 80% at 50% 0%,#142035 0%,#0B1220 50%,#050810 100%);
+  --bg:#0B1220;--surface:#1E2433;--surface-hi:#262D3F;
+  --border:rgba(255,255,255,0.07);--border-hi:rgba(0,213,255,0.18);
+  --cyan:#00D5FF;--cyan-soft:rgba(0,213,255,0.14);--cyan-glow:rgba(0,213,255,0.45);
+  --text:#FFFFFF;--text-muted:#8A94A6;--text-dim:#5A6478;
+  --danger:#FFB4A2;--success:#34D399;--warning:#FBBF24;
+  --code-bg:rgba(0,0,0,0.30);--code-text:#00D5FF;--input-bg:#1E2433;
+  --card-elev:0 8px 32px rgba(0,0,0,0.5),0 0 0 1px rgba(255,255,255,0.04);
+  --ribbon:linear-gradient(135deg,#00D5FF 0%,#6366F1 50%,#8D44AE 100%);
+  --on-accent:#FFFFFF;--scrim:rgba(0,0,0,0.5);
+}
+html[data-theme="aurora"]{
+  --workspace:radial-gradient(120% 80% at 50% 0%,#1a1040 0%,#0B1220 40%,#2d1050 100%);
+  --bg:#0B1220;--surface:#1E2433;--surface-hi:#262D3F;
+  --border:rgba(255,255,255,0.07);--border-hi:rgba(0,213,255,0.18);
+  --cyan:#00D5FF;--cyan-soft:rgba(0,213,255,0.14);--cyan-glow:rgba(0,213,255,0.45);
+  --text:#FFFFFF;--text-muted:#8A94A6;--text-dim:#5A6478;
+  --danger:#FFB4A2;--success:#34D399;--warning:#FBBF24;
+  --code-bg:rgba(0,0,0,0.30);--code-text:#00D5FF;--input-bg:#1E2433;
+  --card-elev:0 8px 32px rgba(0,0,0,0.5),0 0 0 1px rgba(255,255,255,0.04);
+  --ribbon:linear-gradient(135deg,#00D5FF 0%,#6366F1 50%,#A855CC 100%);
+  --on-accent:#FFFFFF;--scrim:rgba(0,0,0,0.5);
+}
+html[data-theme="silver"]{
+  --workspace:linear-gradient(180deg,#F8FAFC 0%,#F2F5F9 100%);
+  --bg:#F8FAFC;--surface:#FFFFFF;--surface-hi:#F8FAFC;
+  --border:rgba(167,176,190,0.35);--border-hi:rgba(0,191,239,0.40);
+  --cyan:#00BFEF;--cyan-soft:rgba(0,191,239,0.10);--cyan-glow:rgba(0,191,239,0.25);
+  --text:#1E2530;--text-muted:#4B5563;--text-dim:#6B7585;
+  --danger:#DC2626;--success:#059669;--warning:#D97706;
+  --code-bg:#EEF2F7;--code-text:#0369A1;--input-bg:#EEF2F7;
+  --card-elev:0 2px 12px rgba(30,37,48,0.10),0 1px 4px rgba(30,37,48,0.06),inset 0 1px 0 rgba(255,255,255,0.9);
+  --ribbon:linear-gradient(135deg,#00BFEF 0%,#3A7BFF 30%,#8B5CFF 100%);
+  --on-accent:#FFFFFF;--scrim:rgba(30,37,48,0.35);
+}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:var(--workspace);background-attachment:fixed;
+  font-family:var(--font-body);color:var(--text);padding:28px 32px 80px}
+/* reduceMotion: app gates on useTheme().reduceMotion; the static mockup honors the OS pref */
+@media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
+.toolbar{display:flex;align-items:center;gap:10px;margin-bottom:24px}
+.toolbar h1{font-family:var(--font-display);font-size:18px;font-weight:600;margin:0;flex:1}
+.tbtn{padding:5px 14px;border-radius:var(--r-md);border:1px solid var(--border);
+  background:var(--surface);color:var(--text-muted);font-family:var(--font-body);
+  font-size:12px;font-weight:500;cursor:pointer;transition:all 150ms ease}
+.tbtn.active{border-color:var(--cyan);background:var(--cyan-soft);color:var(--cyan)}
+.state-label{font-family:var(--font-mono);font-size:11px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--text-dim);margin:36px 0 12px}
+/* ── Card shell (InFlightCard.tsx:24-33 pattern) ── */
+.card{border-radius:var(--r-lg);background:var(--surface);border:1px solid var(--border);
+  box-shadow:var(--card-elev);padding:18px 20px;display:flex;flex-direction:column}
+.home-row{display:flex;gap:16px;flex-wrap:wrap}
+.home-card{width:360px;height:288px;cursor:pointer;transition:border-color 150ms ease}
+.home-card:hover{border-color:var(--border-hi)}
+.kicker{font-size:11px;font-weight:600;letter-spacing:.10em;text-transform:uppercase;
+  color:var(--text-dim);margin-bottom:6px}
+.big{font-family:var(--font-display);font-size:32px;font-weight:600;letter-spacing:-0.02em;color:var(--cyan)}
+.home-card .ask-line{font-size:13px;font-weight:600;color:var(--text);margin-top:2px}
+.home-card .hint{font-family:var(--font-mono);font-size:11px;color:var(--text-dim);margin-top:6px}
+.home-card .handled{font-size:11px;color:var(--text-muted);margin-top:14px}
+.home-card .review{margin-top:auto;font-size:12px;font-weight:500;color:var(--cyan)}
+.center-empty{flex:1;display:flex;align-items:center;justify-content:center;text-align:center}
+.check{width:34px;height:34px;border-radius:50%;background:color-mix(in srgb,var(--success) 15%,transparent);
+  color:var(--success);display:flex;align-items:center;justify-content:center;font-size:16px;margin:0 auto 10px}
+.empty-1{font-size:13px;color:var(--text-muted);margin-bottom:4px}
+.empty-2{font-size:11px;color:var(--text-dim)}
+/* ── Inbox overlay (AddCardPicker.tsx:18-37 pattern, widened) ── */
+.scrim-demo{position:relative;border-radius:var(--r-lg);background:var(--scrim);
+  padding:32px;display:flex;justify-content:center}
+.inbox{width:min(720px,92vw);max-height:86vh;border-radius:var(--r-lg);background:var(--surface);
+  border:1px solid var(--border);box-shadow:var(--card-elev);overflow:hidden;display:flex;flex-direction:column}
+.inbox-head{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--border)}
+.inbox-head .t{font-family:var(--font-display);font-size:14px;font-weight:600;flex:1}
+.count-pill{font-family:var(--font-mono);font-size:11px;color:var(--cyan);background:var(--cyan-soft);
+  border-radius:var(--r-pill);padding:2px 8px}
+.x{background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:15px;padding:4px}
+.inbox-body{overflow:auto;padding:6px 0}
+.item{padding:14px 18px;border-bottom:1px solid var(--border)}
+.item .r1{display:flex;align-items:center;gap:8px}
+.badge{font-family:var(--font-mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;
+  border-radius:4px;padding:2px 6px;flex-shrink:0}
+.badge.approval{color:var(--cyan);background:var(--cyan-soft)}
+.badge.unblock{color:var(--warning);background:color-mix(in srgb,var(--warning) 14%,transparent)}
+.ask{font-size:13px;font-weight:600;color:var(--text);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.age{font-family:var(--font-mono);font-size:11px;color:var(--text-dim);flex-shrink:0}
+.effect{font-size:12px;color:var(--text-muted);margin:6px 0 0 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rec{display:inline-flex;align-items:center;gap:6px;margin-top:8px;border-radius:var(--r-pill);
+  background:var(--cyan-soft);color:var(--cyan);font-size:11px;font-weight:500;padding:3px 10px}
+.actions{display:flex;align-items:center;gap:8px;margin-top:10px}
+.btn{border-radius:var(--r-md);font-family:var(--font-body);font-size:12px;font-weight:500;
+  padding:5px 14px;cursor:pointer;transition:all 150ms var(--ease-out);border:1px solid var(--border);
+  background:var(--surface);color:var(--text-muted)}
+.btn:hover{border-color:var(--border-hi);color:var(--text)}
+.btn.primary{border:none;background:var(--ribbon);color:var(--on-accent);font-weight:600}
+.btn.reject{color:var(--danger)}
+.ev-toggle{margin-left:auto;background:none;border:none;color:var(--text-dim);font-size:11px;
+  font-family:var(--font-body);cursor:pointer;padding:4px}
+.ev-toggle:hover{color:var(--cyan)}
+/* Evidence digest — PLAIN TEXT ONLY (S2). <pre> + textContent; no markdown, no links. */
+.evidence{display:none;margin-top:12px;border-radius:var(--r-sm);background:var(--code-bg);
+  padding:12px 14px;font-family:var(--font-mono);font-size:11px;line-height:1.6;
+  color:var(--text-muted);white-space:pre-wrap;word-break:break-word;user-select:text}
+.evidence.open{display:block}
+.evidence .sec{color:var(--code-text);font-weight:600}
+.confirm-row{display:flex;align-items:center;gap:8px;margin-top:10px;border-radius:var(--r-md);
+  border:1px solid var(--border-hi);background:var(--cyan-soft);padding:8px 12px}
+.confirm-row .q{font-size:12px;color:var(--text);flex:1}
+.more{display:block;width:100%;text-align:center;padding:10px;background:none;border:none;
+  color:var(--cyan);font-size:12px;font-weight:500;cursor:pointer;font-family:var(--font-body)}
+.tier1-head{display:flex;align-items:center;gap:10px;width:100%;padding:12px 18px;background:none;
+  border:none;border-bottom:1px solid var(--border);cursor:pointer;font-family:var(--font-body);text-align:left}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--success);flex-shrink:0}
+.tier1-head .t{font-size:13px;font-weight:500;color:var(--text);flex:1}
+.chev{color:var(--text-dim);font-size:11px;transition:transform 150ms var(--ease-out)}
+.tier1-list{display:none}
+.tier1-list.open{display:block}
+.tier1-row{display:flex;align-items:center;gap:10px;padding:8px 18px 8px 36px;font-size:12px;
+  color:var(--text-muted);border-bottom:1px solid var(--border)}
+.tier1-row .s{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.audit{color:var(--cyan);font-size:11px;text-decoration:none;flex-shrink:0}
+.inbox-foot{padding:10px 18px;border-top:1px solid var(--border);display:flex;justify-content:flex-end}
+.inbox-foot a{color:var(--text-dim);font-size:12px;text-decoration:none}
+.inbox-foot a:hover{color:var(--cyan)}
+.note{font-size:11px;color:var(--text-dim);margin-top:10px;max-width:720px}
+</style>
+</head>
+<body>
+<div class="toolbar">
+  <h1>Decision Inbox — L4 mockup (Phase 0 approval gate)</h1>
+  <button class="tbtn active" data-t="dark">Dark</button>
+  <button class="tbtn" data-t="aurora">Aurora</button>
+  <button class="tbtn" data-t="silver">Silver</button>
+</div>
+
+<div class="state-label">State A — Home card ("decisions" registry entry, w:5 h:4 = 360×288)</div>
+<div class="home-row">
+  <div class="card home-card" title="Opens the decision inbox">
+    <div class="kicker">Needs you</div>
+    <div class="big">4</div>
+    <div class="ask-line">Henry needs 4 answers</div>
+    <div class="hint">oldest waiting 3h 12m</div>
+    <div class="handled">Henry handled 7 things overnight</div>
+    <div class="review">Review →</div>
+  </div>
+  <div class="card home-card">
+    <div class="kicker">Needs you</div>
+    <div class="center-empty"><div>
+      <div class="check">✓</div>
+      <div class="empty-1">No decisions needed.</div>
+      <div class="empty-2">6 goals in flight.</div>
+    </div></div>
+  </div>
+</div>
+<div class="note">Card is fully tappable → opens the inbox overlay. Hover = borderHi only; no scale/glow animation. Count refreshes on the dashboard 15s poll (Phase 1), event push later.</div>
+
+<div class="state-label">State B — Inbox list (Tier-2, Tier-2 confirm step, unblock, +M more, Tier-1 group)</div>
+<div class="scrim-demo">
+<div class="inbox">
+  <div class="inbox-head">
+    <span class="t">Decision inbox</span>
+    <span class="count-pill">4 pending</span>
+    <button class="x" title="Close">✕</button>
+  </div>
+  <div class="inbox-body">
+
+    <!-- Tier-2 approval, collapsed evidence -->
+    <div class="item">
+      <div class="r1">
+        <span class="badge approval">approval</span>
+        <span class="ask">Merge PR #312 — daemon: decision queue persistence</span>
+        <span class="age">3h 12m</span>
+      </div>
+      <div class="effect">Approving will: merge 14 files (+482/−97) to feature/decision-inbox and start L2 integration.</div>
+      <div><span class="rec">Henry recommends · Approve</span></div>
+      <div class="actions">
+        <button class="btn primary">Approve</button>
+        <button class="btn reject">Reject</button>
+        <button class="btn">Options</button>
+        <button class="btn">Add note</button>
+        <button class="ev-toggle" data-ev="ev1">Evidence ▸</button>
+      </div>
+      <pre class="evidence" id="ev1"><span class="sec">CHECKS</span>
+  cargo check --workspace ............ ok (2m 04s)
+  cargo clippy --all-targets ......... ok, 0 warnings
+  cargo test --workspace ............. 412 passed, 0 failed, 1 skipped (test_codex_provider)
+  cargo fmt --check .................. clean
+
+<span class="sec">DIFF</span>
+  14 files changed, +482 / −97
+  crates/goose/src/decisions/*.rs (new), crates/goose-server/src/routes/decisions.rs
+
+<span class="sec">VERIFIER</span>
+  Plan matches approved scope. No public API changes outside /api/decisions.
+  Worker note appears verbatim and inert: **do not render markdown** and
+  https://evil.example/phish?x=1 must NOT become a clickable link.
+
+<span class="sec">COST</span>
+  $4.82 to date (3 sessions, 1.9M tokens)</pre>
+    </div>
+
+    <!-- Tier-2 in CONFIRM state: individual confirmation, never batch -->
+    <div class="item">
+      <div class="r1">
+        <span class="badge approval">approval</span>
+        <span class="ask">Spend cap raise: goal "voice latency sweep" wants +$10</span>
+        <span class="age">1h 40m</span>
+      </div>
+      <div class="effect">Approving will: raise this goal's budget from $15 to $25; Henry resumes the paused sweep.</div>
+      <div><span class="rec">Henry recommends · Approve (medium confidence)</span></div>
+      <div class="confirm-row">
+        <span class="q">Confirm approve — raises budget to $25 and resumes the sweep.</span>
+        <button class="btn primary">Confirm approve</button>
+        <button class="btn">Cancel</button>
+      </div>
+    </div>
+
+    <!-- Unblock: worker's specific_ask VERBATIM as headline -->
+    <div class="item">
+      <div class="r1">
+        <span class="badge unblock">unblock</span>
+        <span class="ask">“Which Postgres version is the prod target — 15 or 16? Migration syntax differs.”</span>
+        <span class="age">48m</span>
+      </div>
+      <div class="effect">Answering will: unblock worker di-daemon/w3, currently idle on phase 2 migrations.</div>
+      <div><span class="rec">Henry recommends · Postgres 16</span></div>
+      <div class="actions">
+        <button class="btn primary">Postgres 16</button>
+        <button class="btn">Postgres 15</button>
+        <button class="btn">Other…</button>
+        <button class="btn">Add note</button>
+        <button class="ev-toggle" data-ev="ev2">Evidence ▸</button>
+      </div>
+      <pre class="evidence" id="ev2"><span class="sec">CONTEXT</span>
+  Worker has been blocked 48m. Repo pins no PG version; infra notes mention 16.3.
+<span class="sec">COST</span>
+  $1.10 to date (1 session, 240K tokens)</pre>
+    </div>
+
+    <!-- Overflow -->
+    <button class="more">+3 more decisions</button>
+
+    <!-- Tier-1 FYI group: collapsed, audit links only, read-only -->
+    <button class="tier1-head" id="t1h">
+      <span class="dot"></span>
+      <span class="t">Henry handled 7 things</span>
+      <span class="chev" id="t1c">▸</span>
+    </button>
+    <div class="tier1-list" id="t1l">
+      <div class="tier1-row"><span class="s">Retried flaky CI job on #309 — green on second run</span><span class="age">2h</span><a class="audit" href="#audit">audit →</a></div>
+      <div class="tier1-row"><span class="s">Rotated stale worktree lock for di-verify</span><span class="age">4h</span><a class="audit" href="#audit">audit →</a></div>
+      <div class="tier1-row"><span class="s">Answered worker question from cached decision (PG pool size)</span><span class="age">6h</span><a class="audit" href="#audit">audit →</a></div>
+      <div class="tier1-row"><span class="s">…4 more in history</span><span class="age"></span><a class="audit" href="#audit">history →</a></div>
+    </div>
+  </div>
+  <div class="inbox-foot"><a href="#history">History →</a></div>
+</div>
+</div>
+<div class="note">Tier-2 items are confirmed one at a time, inline (second item). There is deliberately no checkbox column, no select-all, no batch-approve anywhere. Tier-1 rows are read-only with audit links. Evidence (toggle on items 1 and 3) renders as plain text in a &lt;pre&gt; — literal **asterisks** and an unlinked URL prove S2 handling.</div>
+
+<div class="state-label">State C — Expanded evidence digest (click "Evidence ▸" on item 1 above; shown pre-expanded here)</div>
+<div class="scrim-demo"><div class="inbox" style="max-width:720px"><div class="inbox-body"><div class="item" style="border-bottom:none">
+  <div class="r1"><span class="badge approval">approval</span><span class="ask">Merge PR #312 — daemon: decision queue persistence</span><span class="age">3h 12m</span></div>
+  <pre class="evidence open"><span class="sec">CHECKS</span>
+  cargo check --workspace ............ ok (2m 04s)
+  cargo clippy --all-targets ......... ok, 0 warnings
+  cargo test --workspace ............. 412 passed, 0 failed, 1 skipped (test_codex_provider)
+  cargo fmt --check .................. clean
+
+<span class="sec">DIFF</span>
+  14 files changed, +482 / −97
+
+<span class="sec">VERIFIER</span>
+  Plan matches approved scope. Escalation text is untrusted: **bold** stays literal,
+  https://evil.example/phish?x=1 stays plain text (no auto-link, no markdown).
+
+<span class="sec">COST</span>
+  $4.82 to date (3 sessions, 1.9M tokens)</pre>
+</div></div></div></div>
+
+<div class="state-label">State D — Empty inbox</div>
+<div class="scrim-demo">
+<div class="inbox" style="min-height:220px">
+  <div class="inbox-head"><span class="t">Decision inbox</span><button class="x" title="Close">✕</button></div>
+  <div class="inbox-body center-empty" style="display:flex"><div style="margin:40px auto;text-align:center">
+    <div class="check">✓</div>
+    <div class="empty-1">No decisions needed.</div>
+    <div class="empty-2">6 goals in flight.</div>
+  </div></div>
+</div>
+</div>
+
+<div class="note">Motion: all transitions ≤200ms ease-out and removed entirely under prefers-reduced-motion (in-app: gated on useTheme().reduceMotion). Theme values are hardcoded verbatim from src/styles/tokens.ts (ThemeColors dark/aurora/silver + THEME_GRADIENTS).</div>
+
+<script>
+document.querySelectorAll('.tbtn').forEach(function(b){
+  b.addEventListener('click',function(){
+    document.documentElement.setAttribute('data-theme',b.dataset.t);
+    document.querySelectorAll('.tbtn').forEach(function(x){x.classList.toggle('active',x===b);});
+  });
+});
+document.querySelectorAll('.ev-toggle').forEach(function(b){
+  b.addEventListener('click',function(){
+    var ev=document.getElementById(b.dataset.ev);
+    var open=ev.classList.toggle('open');
+    b.textContent=open?'Evidence ▾':'Evidence ▸';
+  });
+});
+var t1h=document.getElementById('t1h');
+t1h.addEventListener('click',function(){
+  var open=document.getElementById('t1l').classList.toggle('open');
+  document.getElementById('t1c').textContent=open?'▾':'▸';
+});
+</script>
+</body>
+</html>
