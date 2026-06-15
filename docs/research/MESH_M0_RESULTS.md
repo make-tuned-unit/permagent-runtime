@@ -49,40 +49,63 @@ anchor's RAM, not node count."
 > fundamental limit** — the frontier has beaten it, so the next person knows the
 > ceiling, not just the floor we hit.
 
-**Key technique — speculative / lookahead decoding for split inference.**
-Speculate *k* tokens locally, then **verify them across nodes in ONE round-trip**
-instead of *k* round-trips — amortizing network latency. The benefit is
-*amplified* for split inference precisely because round-trips are expensive: the
-exact thing that hurt naive RPC is what this exploits.
+**Key technique — speculative / lookahead decoding.** Speculate *k* tokens with
+a small draft model (or local layers), then **verify them in one pass** instead
+of *k* sequential steps. On a single node this hides decode latency; across
+nodes it amortizes the per-token *network round-trip* — and the benefit is
+*amplified* for split inference precisely because round-trips are expensive (the
+exact thing that hurt naive RPC is what this exploits). Two clearly different
+maturity levels:
 
-**Evidence:**
-- **Cunningham 2026** (arXiv 2602.16760): split inference + lookahead decoding
-  over ~80 ms WAN → **8.7–9.3 tok/s (7B), 7.8–8.7 (12B)**; projects **15–19
-  tok/s at 20 ms RTT** — the same ballpark as our solo controls (~11–12 tok/s),
-  *over the internet*. Also keeps embed/unembed layers local (raw tokens never
-  leave the originating node); **split depth = a tunable privacy dial**, measured
-  against an inversion attack — a real validation of the vision doc's Approach A.
-- **DSD** (arXiv 2511.11733): Decentralized Speculative Decoding — plug-and-play,
-  no retraining, **best at 3–8 nodes** (= household / circle pod size). Converts
-  network stalls into throughput.
-- **Acceptance rates peak on STRUCTURED text** (code, templates) — up to **7
-  tokens/round-trip on code**. Permagent's Librarian / Reader / codegen
-  workloads are therefore the **best case** for split inference, not the worst.
+### Shipping TODAY (near-term build items — use now)
 
-**Roadmap impact:**
-1. **Interactive distributed inference is viable in 2026 — REOPEN it as an M3+
-   goal**, gated on a speculative-split-capable engine. llama.cpp RPC lacks this;
-   track exo and research implementations.
-2. **Both/and, not either/or.** A bigger **anchor** remains the M1/M2 answer for
-   the everyday interactive model (concentration is still ~30 % faster). A
-   speculative-split **mesh** is the M3+ answer for the *giant* model no single
-   household box can hold — now at usable speed.
-3. **Asymmetric-split privacy (Approach A) is validated** — fold the
-   inversion-attack / split-depth finding into the privacy section of the vision
-   doc.
-4. **New dependency to track: speculative-decoding support in the pod engine is
-   the gating capability for interactive Mesh.** When it lands in exo or a
-   successor, the interactive Mesh unblocks.
+- **MLX speculative decoding on a single anchor is the biggest near-term win —
+  bigger than pooling.** MTPLX took a 27B from **7 → 18.3 tok/s** on one M4 Pro
+  (48 GB), mathematically-correct sampling, OpenAI-compatible API, ~5-min agent
+  integration. Also `mlx-dflash` (3.34×, MIT) and `mlx-community/
+  speculative-decoding` (MLX-Swift, 2–3×, MIT). **On a 32–48 GB anchor this makes
+  a 30B interactively usable (~18 tok/s) with NO pool, NO split, NO WAN.** This
+  *supersedes* "bigger anchor is slow": a bigger anchor + MLX-spec is bigger
+  **and** fast.
+  → **Our M0 solo controls (11–12 tok/s) used non-speculative llama.cpp and
+  therefore UNDERSTATE achievable anchor speed by ~2–3×.** Re-bench with MLX-spec
+  is the M0.5 follow-up (below).
+- **Local multi-Mac split ships today** via MLX-distributed (LocalAI) / exo:
+  pipeline-parallel Ring backend, or JACCL tensor-parallel over
+  **Thunderbolt/RDMA**. Built for *co-located high-bandwidth* links, not WAN. A
+  same-room household pod (**M1+M4 Thunderbolt-bridged**) is a **today**
+  capability for >anchor capacity if we want it — distinct from the
+  ethernet/Wi-Fi pod M0 measured.
+
+### Research, NOT yet productized (track, don't build)
+
+- **WAN split + speculation** — the 10–20-person interactive Mesh case — is
+  proven in papers (**Cunningham 2026**, arXiv 2602.16760: 8–9 tok/s over 80 ms
+  WAN, projects 15–19 at 20 ms; **DSD**, arXiv 2511.11733, best at 3–8 nodes) but
+  is **not a shipping feature in any distributed engine.** MLX's own roadmap
+  lists "speculative decoding" and "distributed across network Mac clusters" as
+  *separate* future directions — combining them over WAN is the unshipped piece.
+  Cunningham's asymmetric split (embed/unembed kept local; split-depth = privacy
+  dial, measured vs an inversion attack) validates the vision doc's **Approach
+  A**. **Gating dependency for interactive WAN Mesh; track exo + mlx-lm
+  releases.**
+- Acceptance rates peak on **structured text** (code up to ~7 tokens/round-trip)
+  → Permagent's Librarian / Reader / codegen are the **best case**, not the worst.
+
+### Revised roadmap
+
+1. **M1/M2 anchor runs an MLX speculative engine** (MTPLX / mlx-dflash class),
+   **not** plain Ollama/llama.cpp — near-term build item, large interactive
+   speedup, shipping today.
+2. **Co-located Thunderbolt pod** is a today-option for >anchor capacity;
+   ethernet/WAN pod stays **batch-only** until #3 lands.
+3. **Interactive WAN Mesh = M3+,** gated on speculative-split landing in the
+   engine layer. Tracked, not built.
+
+**Engine re-eval (supersedes §4's anchor choice):** for the **anchor**
+(single-node interactive), an **MLX speculative engine likely beats llama.cpp
+RPC**. Keep **llama.cpp RPC for the batch/pool path**. The **M0.5 follow-up** is
+an MLX-spec anchor bench on the M4 — expect ~2–3× the M0 solo numbers.
 
 ---
 
