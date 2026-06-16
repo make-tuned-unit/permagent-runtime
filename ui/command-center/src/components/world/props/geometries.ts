@@ -27,6 +27,26 @@ export const unitPlane = new THREE.PlaneGeometry(1, 1);
 export const unitShard = new THREE.OctahedronGeometry(0.5, 0);
 
 /**
+ * r=0.5 dodecahedron. Rough rock: banked rubble, boulders, mineral masses,
+ * sledge loads (Cave stratum families). Scaled non-uniformly per instance for
+ * variety — one geometry, any number of rocks.
+ */
+export const unitRock = new THREE.DodecahedronGeometry(0.5, 0);
+
+/**
+ * r=0.5 tetrahedron. Mineral glitter in raw rock, survey-marker caps, sharp
+ * crystal accents. Sub-detail sized; one geometry, scattered per instance.
+ */
+export const unitTetra = new THREE.TetrahedronGeometry(0.5, 0);
+
+/**
+ * r=0.5 h=1 6-sided cone. The Librarian's lamp shade, crude tool wedges /
+ * pick heads, the hauling sledge's nose, survey-marker plumb tips. Low-poly,
+ * primal — fits the living-cave stratum silhouette grammar.
+ */
+export const unitCone6 = new THREE.ConeGeometry(0.5, 1, 6);
+
+/**
  * Deterministic hash → [0,1). Replaces Math.random() in legacy props so
  * instanced layouts are stable across mounts (and across evidence captures).
  */

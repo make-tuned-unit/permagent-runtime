@@ -8,7 +8,7 @@
 // All hex comes from shared/palette.ts — never inline (§2).
 
 import * as THREE from 'three';
-import { ENV } from '../shared/palette';
+import { ENV, STATE } from '../shared/palette';
 
 // ─── Tier 1: STONE (structure) — matte, never emissive ──────────────────────
 
@@ -22,6 +22,18 @@ export const stoneDark = new THREE.MeshStandardMaterial({
   color: ENV.darkStone,
   roughness: 0.3,
   metalness: 0.15,
+});
+
+/**
+ * Raw cave rock (Cave §3 living-cave stratum): rougher and flatter than the
+ * composed dark stone — banked rubble, boulders, crude scaffold footings, the
+ * primal stratum's unhewn mass. Same darkStone hex (no new palette entry);
+ * the roughness change carries the "lived-in, tool-marks-left-honest" read.
+ */
+export const stoneRough = new THREE.MeshStandardMaterial({
+  color: ENV.darkStone,
+  roughness: 0.95,
+  metalness: 0,
 });
 
 // ─── Tier 2: METAL (mechanism) — mid metalness, no emissive ─────────────────
@@ -62,6 +74,38 @@ export const lightViolet = new THREE.MeshStandardMaterial({
   emissive: ENV.violet,
   emissiveIntensity: 1.6,
   roughness: 0.4,
+  metalness: 0,
+});
+
+/**
+ * Slim amber WORK-light (Cave §4 construction kit). Warm but DIM — these are
+ * the scaffold's work-lamps and the Librarian's lamp aesthetic, deliberately
+ * below the §1 focal ceiling so a scaffold reads as one dark mass + one accent.
+ *
+ * SEMANTIC NOTE (bible §8 / Cave §4): this is a WORK-light, not HUD amber.
+ * HUD amber (STATE.working) is "working-for-the-user" and belongs to AGENTS only
+ * (visors, crown gems, station ambience). A lamp on a crane is just a lamp.
+ */
+export const lightAmberWork = new THREE.MeshStandardMaterial({
+  color: ENV.deepVoid,
+  emissive: ENV.neonAmber,
+  emissiveIntensity: 1.1,
+  roughness: 0.5,
+  metalness: 0,
+});
+
+/**
+ * Tending register (Cave §4 "the third agent state"): gray-warm, unhurried,
+ * NEVER amber. Survey lines, banked-material markers, the tending sledge's
+ * load-glow. A cool desaturated value lerped off idle gray so it reads as
+ * "ambient site activity", distinct from both HUD amber and intelligence cyan.
+ */
+const tendingColor = new THREE.Color(STATE.idle).lerp(new THREE.Color(ENV.bronze), 0.3);
+export const lightTending = new THREE.MeshStandardMaterial({
+  color: ENV.deepVoid,
+  emissive: tendingColor,
+  emissiveIntensity: 0.9,
+  roughness: 0.6,
   metalness: 0,
 });
 

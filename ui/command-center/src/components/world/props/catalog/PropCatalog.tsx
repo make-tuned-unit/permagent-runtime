@@ -20,6 +20,19 @@ import { BrainShelves } from '../BrainShelves';
 import { LabProps } from '../LabProps';
 import { AutomateSteles } from '../AutomateSteles';
 import { AmbientProps } from '../AmbientProps';
+import { Scaffold, IdleCrane, StonePile, SurveyLine } from '../ConstructionKit';
+import { CrudeToolRack, LibrariansLamp, MineralVein, RootMass } from '../StratumProps';
+import {
+  SwitchbackAscent,
+  ascentTop,
+  GoalReliefWall,
+  StatuaryPlinth,
+  CrackedStone,
+  CornerstoneInscription,
+  LandingTerrace,
+} from '../CornerstoneGallery';
+import { HaulingSledge, StoneSettingStation } from '../TendingProps';
+import { SCAFFOLD_VIGNETTE, GALLERY_ASSEMBLY } from '../devCatalog';
 
 type Vec3 = [number, number, number];
 
@@ -192,6 +205,80 @@ export function PropCatalog() {
         <group position={[0, -10.01, 44]}>
           <MezzanineBookWall />
           <Label position={[0, 15.5, 0]} text="MezzanineBookWall — 12 DC (replaces ~443 meshes)" />
+        </group>
+
+        {/* ── CAVE §9 W2 — per-stratum catalog sheet (primal families) ── */}
+        <group position={[-44, 0, -8]}>
+          <Label position={[0, 5.5, 4]} text="CAVE — primal stratum families" />
+          <CrudeToolRack position={[-4, 0, 0]} idPrefix="cat.toolrack" />
+          <Label position={[-4, 2.6, 0]} text="CrudeToolRack — 3 DC · 1 lean" />
+          <LibrariansLamp position={[0, 0, 0]} />
+          <Label position={[0, 1.8, 0]} text="LibrariansLamp (work-light, not HUD amber)" />
+          <MineralVein position={[4, 0, 0]} seed={2} idPrefix="cat.mineral" />
+          <Label position={[4, 2.6, 0]} text="MineralVein — 3 DC · carved cyan cut" />
+          <RootMass position={[8, 0, 0]} seed={4} idPrefix="cat.root" />
+          <Label position={[8, 2.0, 0]} text="RootMass — built AROUND, never cut" />
+        </group>
+
+        {/* ── CAVE §4 — the construction kit, scaffold-state vignette ── */}
+        <group position={[-44, 0, 24]}>
+          <Label position={[0, 9, 0]} text="CAVE §4 — CONSTRUCTION KIT (scaffold-state vignette)" />
+          <IdleCrane {...SCAFFOLD_VIGNETTE.crane} />
+          {SCAFFOLD_VIGNETTE.scaffolds.map((s, i) => (
+            <Scaffold key={i} {...s} idPrefix={`cat.scaffold${i}`} />
+          ))}
+          {SCAFFOLD_VIGNETTE.stonePiles.map((p, i) => (
+            <StonePile key={i} {...p} idPrefix={`cat.pile${i}`} />
+          ))}
+          {SCAFFOLD_VIGNETTE.surveyLines.map((l, i) => (
+            <SurveyLine key={i} {...l} idPrefix={`cat.survey${i}`} />
+          ))}
+          {SCAFFOLD_VIGNETTE.toolRacks.map((r, i) => (
+            <CrudeToolRack key={i} {...r} idPrefix={`cat.vrack${i}`} />
+          ))}
+          <LibrariansLamp {...SCAFFOLD_VIGNETTE.lamp} />
+          {SCAFFOLD_VIGNETTE.minerals.map((m, i) => (
+            <MineralVein key={i} {...m} idPrefix={`cat.vmineral${i}`} />
+          ))}
+          {SCAFFOLD_VIGNETTE.roots.map((r, i) => (
+            <RootMass key={i} {...r} idPrefix={`cat.vroot${i}`} />
+          ))}
+          <HaulingSledge {...SCAFFOLD_VIGNETTE.tending.sledge} idPrefix="cat.sledge" />
+          <StoneSettingStation {...SCAFFOLD_VIGNETTE.tending.setting} idPrefix="cat.setting" />
+        </group>
+
+        {/* ── CAVE §4 — tending-work props (W3 holds/uses these) ── */}
+        <group position={[44, 0, 24]}>
+          <Label position={[0, 4, 0]} text="CAVE §4 — TENDING-WORK PROPS" />
+          <HaulingSledge position={[-3, 0, 0]} idPrefix="cat.tsledge" />
+          <Label position={[-3, 1.8, 0]} text="HaulingSledge — 1 DC load · 1 lean" />
+          <StoneSettingStation position={[3, 0, 0]} idPrefix="cat.tsetting" />
+          <Label position={[3, 2.4, 0]} text="StoneSettingStation — 3 DC · 1 stand + 1 lean" />
+        </group>
+
+        {/* ── CAVE §6 — Cornerstone Gallery template, assembled ── */}
+        <group position={[44, 0, -12]}>
+          <Label position={[0, 9, 0]} text="CAVE §6 — CORNERSTONE GALLERY (template assembled)" />
+          <SwitchbackAscent {...GALLERY_ASSEMBLY.ascent} flights={GALLERY_ASSEMBLY.flights} idPrefix="cat.ascent" />
+          <CornerstoneInscription {...GALLERY_ASSEMBLY.inscription} />
+          <Label position={[-2.4, 1.2, -1.5]} text='"It starts in the dark."' />
+          <GoalReliefWall {...GALLERY_ASSEMBLY.reliefWall} idPrefix="cat.relief" />
+          <Label position={[-4.5, 4.2, 4]} text="GoalReliefWall (blank template slots)" />
+          {GALLERY_ASSEMBLY.plinths.map((p, i) => (
+            <StatuaryPlinth key={i} {...p} idPrefix={`cat.plinth${i}`} />
+          ))}
+          <Label position={[-3.5, 2.4, 4]} text="StatuaryPlinth ×2 (no fake figures)" />
+          <CrackedStone {...GALLERY_ASSEMBLY.crackedStone} idPrefix="cat.cracked" />
+          <Label position={[4.5, 2.6, 1]} text="CrackedStone — braced, not replaced" />
+          {/* Landing at the top of the ascent. */}
+          <LandingTerrace
+            position={[0, ascentTop(GALLERY_ASSEMBLY.flights).y, ascentTop(GALLERY_ASSEMBLY.flights).z + 2]}
+            idPrefix="cat.terrace"
+          />
+          <Label
+            position={[0, ascentTop(GALLERY_ASSEMBLY.flights).y + 1.5, ascentTop(GALLERY_ASSEMBLY.flights).z + 2]}
+            text="LandingTerrace — view back + 1 stand"
+          />
         </group>
 
         <OrbitControls target={target} enableDamping />
