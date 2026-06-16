@@ -7,16 +7,19 @@
 // tending bank is spent (consumeBanked) — i.e. only when real describe/ingest material
 // has accumulated. With an empty bank nothing rises (idle, not tending — bible §4).
 //
-// TENDING ANCHORS — W2 interface note (placeholder until W2 lands construction anchors):
-// these ids follow W2's convention `${areaId}.${prop}${n}.${slot}` (see
-// props/WorkstationCluster.tsx `${idPrefix}.bench${r}.seat${L}`). W2's construction kit
-// (scaffold lattice / banked-stone piles, bible §9 W2) will publish `kind: 'stand'`
-// anchors at these footprints; W3 consumes them by id. Until then we register our own so
-// builders have a real place to stand and tend. Convention to confirm with W2:
-//   build.scaffold1.tend  ·  brain.scaffold1.tend  (areaId-scoped, kind 'stand')
+// CONSTRUCTION ANCHORS — the W2 → W3 seam (now CLOSED). W1's SCAFFOLD_MOUNTS feed W2's
+// construction kit (CaveConstruction.tsx), which publishes one frozen 'stand'-kind
+// AgentAnchor per scaffold/banked mount under the stable id `${mount.id}.build`. W3
+// consumes those FIVE ids verbatim (no placeholders, no hardcoded positions):
+//   verge.westwing.scaffold.build · carved.gallery.scaffold.build ·
+//   carved.staging.banked.build · roughwork.spur.scaffold.build · roughwork.cairn.banked.build
+//
+// DEFENSIVE: these anchors register only when the relevant lazy area chunk is mounted.
+// Until then getAnchor(id) is undefined and that site is simply absent — workers fall
+// back to idle/wander (behavior.ts), and nothing is drawn for it (ConstructionSite.tsx).
+// We never invent a position; an unresolved site contributes nothing.
 
-import type { AgentAnchor } from '../shared/anchors';
-import { getAnchors, registerAnchors } from '../shared/anchors';
+import { getAnchor } from '../shared/anchors';
 import { consumeBanked, getBankLevel } from '../shared/tendingBank';
 
 /** One unit of banked material advances a stage by this much (0..1 within a stage). */
@@ -26,79 +29,76 @@ export const STAGES_PER_SITE = 4;
 /** Minimum ms between stage advances — keeps growth unhurried even if the bank is full. */
 const STAGE_COOLDOWN_MS = 2600;
 
+/** The five real construction 'stand' anchor ids W2 publishes (frozen seam). */
+export const BUILD_ANCHOR_IDS = [
+  'verge.westwing.scaffold.build',
+  'carved.gallery.scaffold.build',
+  'carved.staging.banked.build',
+  'roughwork.spur.scaffold.build',
+  'roughwork.cairn.banked.build',
+] as const;
+
 export interface ConstructionSite {
   id: string;
-  /** World-space footprint origin (the scaffold base). */
-  position: [number, number, number];
-  /** Where a builder stands to tend this site (the placeholder tending anchor). */
-  tendAnchorId: string;
+  /** Frozen W2 'stand' anchor id this site is built at (the worker's build position). */
+  anchorId: string;
   /** 0 … STAGES_PER_SITE — integer stones set; fractional = stone rising this frame. */
   progress: number;
   /** Epoch ms of the last stage advance (cooldown gate). */
   lastAdvance: number;
 }
 
-// Two starter sites on bare stone where future wings rise (bible §4 "survey lines glow on
-// bare stone where future wings will rise"). Positioned just outside the rotunda colonnade
-// toward the Build (+x) and Brain (+z) thresholds so they read as new wings breaking ground.
-export const SITES: ConstructionSite[] = [
-  {
-    id: 'build.scaffold1',
-    position: [16.5, 0, -2.4],
-    tendAnchorId: 'build.scaffold1.tend',
-    progress: 0,
-    lastAdvance: 0,
-  },
-  {
-    id: 'brain.scaffold1',
-    position: [2.4, 0, 16.5],
-    tendAnchorId: 'brain.scaffold1.tend',
-    progress: 0,
-    lastAdvance: 0,
-  },
-];
+// One site per published build anchor. Progress/cooldown state lives here; the world-space
+// footprint is resolved on demand from the frozen anchor (resolveSite) — never literal.
+export const SITES: ConstructionSite[] = BUILD_ANCHOR_IDS.map((anchorId) => ({
+  id: anchorId,
+  anchorId,
+  progress: 0,
+  lastAdvance: 0,
+}));
 
-let anchorsRegistered = false;
+/** A site whose anchor is currently registered (area chunk mounted), with its live pose. */
+export interface ResolvedSite {
+  site: ConstructionSite;
+  position: [number, number, number];
+  facing: number;
+}
 
 /**
- * Register the placeholder tending anchors (W2 convention) once. If W2 has already
- * published anchors at these ids, never overwrite them — consume theirs.
+ * Resolve a site against the frozen anchor registry. Returns null when the build area
+ * chunk isn't mounted yet (anchor absent) — callers skip such sites defensively rather
+ * than fabricate a position.
  */
-export function ensureConstructionAnchors(): void {
-  if (anchorsRegistered) return;
-  anchorsRegistered = true;
-  const existing = new Set(getAnchors().map((a) => a.id));
-  const toAdd: AgentAnchor[] = [];
-  for (const site of SITES) {
-    if (existing.has(site.tendAnchorId)) continue;
-    // Stand ~1.4u toward the rotunda centre from the footprint, facing the work.
-    const [x, , z] = site.position;
-    const len = Math.hypot(x, z) || 1;
-    const tx = x - (x / len) * 1.4;
-    const tz = z - (z / len) * 1.4;
-    toAdd.push({
-      id: site.tendAnchorId,
-      areaId: site.id.startsWith('brain') ? 'brain' : 'build',
-      kind: 'stand',
-      position: [tx, 0, tz],
-      facing: Math.atan2(x - tx, z - tz),
-    });
+export function resolveSite(site: ConstructionSite): ResolvedSite | null {
+  const anchor = getAnchor(site.anchorId);
+  if (!anchor) return null;
+  return { site, position: anchor.position, facing: anchor.facing };
+}
+
+/** All sites whose build anchor is currently registered, with resolved poses. */
+export function getResolvedSites(): ResolvedSite[] {
+  const out: ResolvedSite[] = [];
+  for (const s of SITES) {
+    const r = resolveSite(s);
+    if (r) out.push(r);
   }
-  if (toAdd.length) registerAnchors(toAdd);
+  return out;
 }
 
 /**
  * Spend banked material into construction. Called on a slow discrete tick (NOT per frame).
  * Advances at most one stage per cooldown so growth stays unhurried (bible §4). Returns
- * the site that advanced (for a one-shot stone-set flash), or null.
+ * the site that advanced (for a one-shot stone-set flash), or null. Only sites whose
+ * anchor is currently registered are eligible — an unmounted area can't rise.
  */
 export function tickConstruction(now: number): ConstructionSite | null {
   if (getBankLevel() <= 0) return null;
-  // Pick the least-built unfinished site so wings rise together, not one-at-a-time.
+  // Pick the least-built unfinished, currently-resolvable site so wings rise together.
   let target: ConstructionSite | null = null;
   for (const s of SITES) {
     if (s.progress >= STAGES_PER_SITE) continue;
     if (now - s.lastAdvance < STAGE_COOLDOWN_MS) continue;
+    if (!getAnchor(s.anchorId)) continue; // area not mounted — can't build here
     if (!target || s.progress < target.progress) target = s;
   }
   if (!target) return null;

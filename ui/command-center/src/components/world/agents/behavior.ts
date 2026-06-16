@@ -15,7 +15,7 @@ import { STATIONS } from '../constants';
 import { ROSTER, MEZZ_RADIUS, MEZZ_Y, getIdentity, type AgentIdentity } from './roster';
 import { ensureMotion, getMotion, setEngaged, setPath, stopAgent } from './motion';
 import { ensurePlaceholderAnchors } from './placeholderAnchors';
-import { ensureConstructionAnchors, SITES } from './construction';
+import { BUILD_ANCHOR_IDS } from './construction';
 import { hasBankedWork } from '../shared/tendingBank';
 
 const WANDER_MIN_MS = 15000;
@@ -102,13 +102,17 @@ function disengage(agent: AgentIdentity): void {
 // events (hasBankedWork). No bank ⇒ they stay idle, NOT tending. Henry never tends — he
 // presides (handled in the tick). The Librarian mines on the mezzanine, not here.
 //
-// Eligible agents claim a construction tend anchor (W2 convention; placeholder until W2
-// ships construction anchors) and walk to it; on arrival they enter the 'tending'
+// Eligible agents claim one of W2's frozen construction build anchors (the five
+// `${mount.id}.build` 'stand' ids) and walk to it; on arrival they enter the 'tending'
 // engagement. The AgentCharacterV2 reads engagement + bank to show the tending register.
+// DEFENSIVE: those anchors register only when the build area chunk is mounted — if none
+// are present yet, pickTendAnchor returns null and the worker stays idle/wanders.
+
+const BUILD_ANCHOR_SET = new Set<string>(BUILD_ANCHOR_IDS);
 
 function pickTendAnchor(agentId: string, from: { x: number; z: number }): AgentAnchor | null {
   const stands = getAnchors()
-    .filter((a) => a.kind === 'stand' && SITES.some((s) => s.tendAnchorId === a.id))
+    .filter((a) => a.kind === 'stand' && BUILD_ANCHOR_SET.has(a.id))
     .sort((a, b) => {
       const da = (a.position[0] - from.x) ** 2 + (a.position[2] - from.z) ** 2;
       const db = (b.position[0] - from.x) ** 2 + (b.position[2] - from.z) ** 2;
@@ -149,10 +153,10 @@ export function useAgentBehavior(states: AgentRuntimeState[]): void {
   const wanderAtRef = useRef(new Map<string, number>());
   const henryStrollAtRef = useRef(Date.now() + 30000);
 
-  // Spawn motion records + placeholder anchors once.
+  // Spawn motion records + placeholder seat anchors once. Construction build anchors are
+  // published by W2's props on area mount — W3 only consumes them (no registration here).
   useEffect(() => {
     ensurePlaceholderAnchors();
-    ensureConstructionAnchors();
     for (const a of ROSTER) {
       ensureMotion(a.id, a.home, a.mezzanineLocked ? MEZZ_RADIUS : null);
     }

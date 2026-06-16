@@ -13,9 +13,8 @@ import { useLayoutEffect, useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { ENV } from '../shared/palette';
-import { InstancedProp, type InstanceTransform } from '../shared/instancing';
 import { TENDING_COLOR } from './poses';
-import { SITES, STAGES_PER_SITE, tickConstruction } from './construction';
+import { SITES, STAGES_PER_SITE, resolveSite, tickConstruction } from './construction';
 import { getReduceMotion } from '../../../styles/tokens';
 
 const STAGE_H = 0.55; // height of one set-stone course
@@ -28,7 +27,7 @@ const FLASH_DECAY_PER_S = 0.7; // warm set-flash fade rate
 const tmp = new THREE.Object3D();
 
 interface RisingStone {
-  siteIndex: number;
+  siteId: string;
   course: number;
   startedAt: number;
 }
@@ -36,29 +35,9 @@ interface RisingStone {
 export function ConstructionSite() {
   const reduceMotion = getReduceMotion();
 
-  // Scaffold poles: 4 corner poles per site (static instanced).
-  const poleTransforms = useMemo<InstanceTransform[]>(() => {
-    const out: InstanceTransform[] = [];
-    for (const s of SITES) {
-      const [ox, , oz] = s.position;
-      for (const sx of [-1, 1])
-        for (const sz of [-1, 1])
-          out.push({ position: [ox + sx * (STONE_W / 2 + 0.1), POLE_H / 2, oz + sz * (STONE_D / 2 + 0.1)] });
-    }
-    return out;
-  }, []);
-
-  // Survey-line markers on the bare footprint (the promise of a wing, bible §4).
-  const surveyTransforms = useMemo<InstanceTransform[]>(
-    () =>
-      SITES.map((s) => ({
-        position: [s.position[0], 0.012, s.position[2]],
-        rotation: [-Math.PI / 2, 0, 0],
-        scale: [STONE_W + 0.5, STONE_D + 0.5, 1],
-      })),
-    [],
-  );
-
+  // Poles + survey markers are placed from the LIVE resolved anchor positions each frame
+  // (defensive: a site whose build anchor isn't registered yet contributes nothing). They
+  // are stable once the area chunk mounts, so we still draw them as instanced meshes.
   const poleGeo = useMemo(() => new THREE.CylinderGeometry(0.05, 0.05, POLE_H, 6), []);
   const poleMat = useMemo(
     () => new THREE.MeshStandardMaterial({ color: ENV.bronze, roughness: 0.5, metalness: 0.7 }),
@@ -84,15 +63,20 @@ export function ConstructionSite() {
   );
 
   const stonesRef = useRef<THREE.InstancedMesh>(null);
+  const polesRef = useRef<THREE.InstancedMesh>(null);
+  const surveyRef = useRef<THREE.InstancedMesh>(null);
   const rising = useRef<RisingStone | null>(null);
-  const flash = useRef<number[]>(SITES.map(() => 0));
-  const lastCourse = useRef<number[]>(SITES.map(() => 0));
+  // Flash + last-set course keyed by site id (index-free; tolerates absent sites).
+  const flash = useRef<Map<string, number>>(new Map());
+  const lastCourse = useRef<Map<string, number>>(new Map());
   const tickAt = useRef(0);
 
-  // Start with no stones drawn (progress 0) — avoids a 1-frame flash of all stones
-  // stacked at the origin before the first useFrame writes the real count.
+  // Start with nothing drawn — avoids a 1-frame flash before the first useFrame writes
+  // the real counts (and before any anchor has registered).
   useLayoutEffect(() => {
     if (stonesRef.current) stonesRef.current.count = 0;
+    if (polesRef.current) polesRef.current.count = 0;
+    if (surveyRef.current) surveyRef.current.count = 0;
   }, []);
 
   useFrame(({ clock }, dt) => {
@@ -106,22 +90,48 @@ export function ConstructionSite() {
     }
 
     const mesh = stonesRef.current;
-    if (!mesh) return;
+    const poles = polesRef.current;
+    const survey = surveyRef.current;
+    if (!mesh || !poles || !survey) return;
 
     let instance = 0;
+    let poleInstance = 0;
+    let surveyInstance = 0;
     let anyRising = false;
     let maxFlash = 0;
 
-    for (let si = 0; si < SITES.length; si++) {
-      const site = SITES[si];
-      const [ox, , oz] = site.position;
+    // Only sites whose build anchor is currently registered are resolvable; the rest are
+    // simply absent (no poles, no survey, no stones) — defensive against unmounted areas.
+    for (const site of SITES) {
+      const resolved = resolveSite(site);
+      if (!resolved) continue;
+      const [ox, , oz] = resolved.position;
+
+      // Survey-line marker on the bare footprint (the promise of a wing, bible §4).
+      tmp.position.set(ox, 0.012, oz);
+      tmp.rotation.set(-Math.PI / 2, 0, 0);
+      tmp.scale.set(STONE_W + 0.5, STONE_D + 0.5, 1);
+      tmp.updateMatrix();
+      survey.setMatrixAt(surveyInstance++, tmp.matrix);
+
+      // Four corner scaffold poles.
+      for (const sx of [-1, 1]) {
+        for (const sz of [-1, 1]) {
+          tmp.position.set(ox + sx * (STONE_W / 2 + 0.1), POLE_H / 2, oz + sz * (STONE_D / 2 + 0.1));
+          tmp.rotation.set(0, 0, 0);
+          tmp.scale.setScalar(1);
+          tmp.updateMatrix();
+          poles.setMatrixAt(poleInstance++, tmp.matrix);
+        }
+      }
+
       const full = Math.floor(site.progress);
 
       // Detect a newly set course → start its rise + warm flash.
-      if (full > lastCourse.current[si]) {
-        rising.current = { siteIndex: si, course: full - 1, startedAt: nowMs };
-        flash.current[si] = 1;
-        lastCourse.current[si] = full;
+      if (full > (lastCourse.current.get(site.id) ?? 0)) {
+        rising.current = { siteId: site.id, course: full - 1, startedAt: nowMs };
+        flash.current.set(site.id, 1);
+        lastCourse.current.set(site.id, full);
       }
 
       for (let c = 0; c < full && c < STAGES_PER_SITE; c++) {
@@ -129,7 +139,7 @@ export function ConstructionSite() {
         if (
           !reduceMotion &&
           rising.current &&
-          rising.current.siteIndex === si &&
+          rising.current.siteId === site.id &&
           rising.current.course === c
         ) {
           const k = Math.min(1, (nowMs - rising.current.startedAt) / STONE_RISE_MS);
@@ -144,25 +154,33 @@ export function ConstructionSite() {
       }
 
       // Decay the warm set-flash (frame-rate independent).
-      if (flash.current[si] > 0) {
-        flash.current[si] = Math.max(0, flash.current[si] - FLASH_DECAY_PER_S * dt);
+      const f = flash.current.get(site.id) ?? 0;
+      if (f > 0) {
+        const nf = Math.max(0, f - FLASH_DECAY_PER_S * dt);
+        flash.current.set(site.id, nf);
+        if (nf > maxFlash) maxFlash = nf;
       }
-      if (flash.current[si] > maxFlash) maxFlash = flash.current[si];
     }
 
     mesh.count = instance;
     mesh.instanceMatrix.needsUpdate = true;
+    poles.count = poleInstance;
+    poles.instanceMatrix.needsUpdate = true;
+    survey.count = surveyInstance;
+    survey.instanceMatrix.needsUpdate = true;
     stoneMat.emissiveIntensity = reduceMotion ? 0 : maxFlash * 0.9;
 
     if (rising.current && !anyRising) rising.current = null;
   });
 
   const maxStones = SITES.length * STAGES_PER_SITE;
+  const maxPoles = SITES.length * 4;
+  const maxSurvey = SITES.length;
 
   return (
     <group>
-      <InstancedProp name="construction.pole" geometry={poleGeo} material={poleMat} transforms={poleTransforms} castShadow />
-      <InstancedProp name="construction.survey" geometry={surveyGeo} material={surveyMat} transforms={surveyTransforms} />
+      <instancedMesh ref={polesRef} args={[poleGeo, poleMat, maxPoles]} castShadow />
+      <instancedMesh ref={surveyRef} args={[surveyGeo, surveyMat, maxSurvey]} />
       <instancedMesh ref={stonesRef} args={[stoneGeo, stoneMat, maxStones]} castShadow />
     </group>
   );
