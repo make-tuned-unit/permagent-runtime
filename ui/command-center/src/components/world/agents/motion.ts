@@ -17,7 +17,7 @@ export interface Waypoint {
   pauseMs?: number;
 }
 
-export type Engagement = 'none' | 'seated' | 'standing';
+export type Engagement = 'none' | 'seated' | 'standing' | 'tending';
 
 export interface MotionState {
   x: number;

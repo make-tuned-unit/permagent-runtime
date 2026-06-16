@@ -1,0 +1,40 @@
+2026-06-15T22:33:13.791Z [harness] world tab click: World
+2026-06-15T22:33:25.801Z [henry-poll] current_state=idle
+2026-06-15T22:33:25.805Z [librarian-poll] state=batch_complete task="Batch complete — described 5 memories"
+2026-06-15T22:33:25.807Z [meshcount] {"mesh":783,"skinned":26}
+2026-06-15T22:33:25.809Z [perf] initial {"fps":18.7,"calls":0,"triangles":0,"geometries":763,"textures":30,"programs":28,"dpr":1.5}
+2026-06-15T22:33:25.809Z [action] Henry site-walk — light pool at his feet, no lifting
+2026-06-15T22:33:26.302Z [events-ws] librarian_describe_started ts=2026-06-15T19:29:57.832229Z {"memory_key":"chat-20260615_2-2","started_at":"2026-06-15T19:29:57.831512+00:00"}
+2026-06-15T22:33:26.303Z [events-ws] librarian_describe_completed ts=2026-06-15T19:31:17.682602Z {"memory_key":"chat-20260615_2-2","description":"Described the nature of Henry as an AI agent and how his memo
+2026-06-15T22:33:26.304Z [events-ws] librarian_describe_started ts=2026-06-15T19:31:17.683511Z {"memory_key":"scheduled-storage-insights-5","started_at":"2026-06-15T19:31:17.683498+00:00"}
+2026-06-15T22:33:26.304Z [events-ws] librarian_describe_completed ts=2026-06-15T19:32:02.557284Z {"memory_key":"scheduled-storage-insights-5","description":"User requested a storage health scan on their Mac 
+2026-06-15T22:33:26.304Z [events-ws] librarian_describe_started ts=2026-06-15T19:32:02.557431Z {"memory_key":"activity:1781529446:automation_job_completed:019ecb6e","started_at":"2026-06-15T19:32:02.557425
+2026-06-15T22:33:26.305Z [events-ws] librarian_describe_completed ts=2026-06-15T19:32:29.074453Z {"memory_key":"activity:1781529446:automation_job_completed:019ecb6e","description":"Automation named 'storage
+2026-06-15T22:33:26.305Z [events-ws] librarian_describe_started ts=2026-06-15T19:32:29.074697Z {"memory_key":"scheduled-workspace-snapshot-11","started_at":"2026-06-15T19:32:29.074691+00:00"}
+2026-06-15T22:33:26.305Z [events-ws] librarian_describe_completed ts=2026-06-15T19:33:19.676372Z {"memory_key":"scheduled-workspace-snapshot-11","description":"Generated a morning workspace snapshot includin
+2026-06-15T22:33:26.305Z [events-ws] librarian_describe_started ts=2026-06-15T19:33:19.676461Z {"memory_key":"activity:1781529431:automation_job_completed:019ecb6d","started_at":"2026-06-15T19:33:19.676457
+2026-06-15T22:33:26.306Z [events-ws] librarian_describe_completed ts=2026-06-15T19:33:53.716411Z {"memory_key":"activity:1781529431:automation_job_completed:019ecb6d","description":"The automation job named 
+2026-06-15T22:33:27.715Z [frame] 000-1781562807714-20-henry-sitewalk.jpg
+2026-06-15T22:33:29.703Z [frame] 001-1781562809702-20-henry-sitewalk.jpg
+2026-06-15T22:33:31.722Z [frame] 002-1781562811722-20-henry-sitewalk.jpg
+2026-06-15T22:33:33.715Z [frame] 003-1781562813715-20-henry-sitewalk.jpg
+2026-06-15T22:33:35.721Z [frame] 004-1781562815721-20-henry-sitewalk.jpg
+2026-06-15T22:33:37.673Z [frame] 005-1781562817672-20-henry-sitewalk.jpg
+2026-06-15T22:33:39.643Z [frame] 006-1781562819643-20-henry-sitewalk.jpg
+2026-06-15T22:33:41.609Z [frame] 007-1781562821609-20-henry-sitewalk.jpg
+2026-06-15T22:33:43.576Z [frame] 008-1781562823576-20-henry-sitewalk.jpg
+2026-06-15T22:33:45.559Z [frame] 009-1781562825559-20-henry-sitewalk.jpg
+2026-06-15T22:33:47.539Z [frame] 010-1781562827539-20-henry-sitewalk.jpg
+2026-06-15T22:33:51.115Z [frame] 011-1781562831114-20-henry-sitewalk.jpg
+2026-06-15T22:33:53.139Z [frame] 012-1781562833138-20-henry-sitewalk.jpg
+2026-06-15T22:33:55.240Z [frame] 013-1781562835239-20-henry-sitewalk.jpg
+2026-06-15T22:33:57.291Z [frame] 014-1781562837291-20-henry-sitewalk.jpg
+2026-06-15T22:33:59.371Z [frame] 015-1781562839370-20-henry-sitewalk.jpg
+2026-06-15T22:34:01.483Z [frame] 016-1781562841482-20-henry-sitewalk.jpg
+2026-06-15T22:34:03.590Z [frame] 017-1781562843590-20-henry-sitewalk.jpg
+2026-06-15T22:34:05.673Z [frame] 018-1781562845672-20-henry-sitewalk.jpg
+2026-06-15T22:34:07.738Z [frame] 019-1781562847738-20-henry-sitewalk.jpg
+2026-06-15T22:34:12.053Z [frame] 020-1781562852050-21-henry-presence-light.png
+2026-06-15T22:34:12.056Z [henry-presence] {"x":0.6848197586593932,"y":0,"z":1.7473209003119994,"hudState":"available","live":true}
+2026-06-15T22:34:12.057Z [perf] after-sitewalk {"fps":5.9,"calls":0,"triangles":0,"geometries":783,"textures":31,"programs":57,"dpr":1.5}
+2026-06-15T22:34:12.057Z [harness] done

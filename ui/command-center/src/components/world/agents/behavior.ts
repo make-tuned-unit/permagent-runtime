@@ -15,6 +15,8 @@ import { STATIONS } from '../constants';
 import { ROSTER, MEZZ_RADIUS, MEZZ_Y, getIdentity, type AgentIdentity } from './roster';
 import { ensureMotion, getMotion, setEngaged, setPath, stopAgent } from './motion';
 import { ensurePlaceholderAnchors } from './placeholderAnchors';
+import { BUILD_ANCHOR_IDS } from './construction';
+import { hasBankedWork } from '../shared/tendingBank';
 
 const WANDER_MIN_MS = 15000;
 const WANDER_MAX_MS = 30000;
@@ -95,6 +97,51 @@ function disengage(agent: AgentIdentity): void {
   }
 }
 
+// ── Tending (bible §4): between tasks, idle workers tend the construction sites —
+// hauling, setting stones. Gray-warm, unhurried, driven ONLY by banked describe/ingest
+// events (hasBankedWork). No bank ⇒ they stay idle, NOT tending. Henry never tends — he
+// presides (handled in the tick). The Librarian mines on the mezzanine, not here.
+//
+// Eligible agents claim one of W2's frozen construction build anchors (the five
+// `${mount.id}.build` 'stand' ids) and walk to it; on arrival they enter the 'tending'
+// engagement. The AgentCharacterV2 reads engagement + bank to show the tending register.
+// DEFENSIVE: those anchors register only when the build area chunk is mounted — if none
+// are present yet, pickTendAnchor returns null and the worker stays idle/wanders.
+
+const BUILD_ANCHOR_SET = new Set<string>(BUILD_ANCHOR_IDS);
+
+function pickTendAnchor(agentId: string, from: { x: number; z: number }): AgentAnchor | null {
+  const stands = getAnchors()
+    .filter((a) => a.kind === 'stand' && BUILD_ANCHOR_SET.has(a.id))
+    .sort((a, b) => {
+      const da = (a.position[0] - from.x) ** 2 + (a.position[2] - from.z) ** 2;
+      const db = (b.position[0] - from.x) ** 2 + (b.position[2] - from.z) ** 2;
+      return da - db;
+    });
+  for (const s of stands) {
+    if (claimAnchor(s.id, agentId)) return s;
+  }
+  return null;
+}
+
+function startTending(agent: AgentIdentity): boolean {
+  const m = getMotion(agent.id);
+  if (!m) return false;
+  const anchor = pickTendAnchor(agent.id, m);
+  if (!anchor) return false;
+  setPath(
+    agent.id,
+    [{ x: anchor.position[0], y: anchor.position[1], z: anchor.position[2], facing: anchor.facing }],
+    () => setEngaged(agent.id, 'tending'),
+  );
+  return true;
+}
+
+function stopTending(agent: AgentIdentity): void {
+  releaseAgentAnchors(agent.id);
+  setEngaged(agent.id, 'none');
+}
+
 /**
  * Drives wander + work engagement from the runtime states. Continuous motion is
  * advanced separately (advanceMotion in WorldAgents' useFrame); this hook only
@@ -106,7 +153,8 @@ export function useAgentBehavior(states: AgentRuntimeState[]): void {
   const wanderAtRef = useRef(new Map<string, number>());
   const henryStrollAtRef = useRef(Date.now() + 30000);
 
-  // Spawn motion records + placeholder anchors once.
+  // Spawn motion records + placeholder seat anchors once. Construction build anchors are
+  // published by W2's props on area mount — W3 only consumes them (no registration here).
   useEffect(() => {
     ensurePlaceholderAnchors();
     for (const a of ROSTER) {
@@ -146,11 +194,26 @@ export function useAgentBehavior(states: AgentRuntimeState[]): void {
   useEffect(() => {
     const tick = setInterval(() => {
       const now = Date.now();
+      const banked = hasBankedWork();
       for (const agent of ROSTER) {
         const m = getMotion(agent.id);
-        if (!m || m.walking || m.engaged !== 'none' || m.queue.length > 0) continue;
+        if (!m) continue;
         const hud = hudRef.current.get(agent.id) ?? 'idle';
+
+        // ── Tending lifecycle (bible §4) — only while real material is banked ──
+        // Henry presides (never tends); the Librarian mines the mezzanine, not the
+        // construction sites. Everyone else tends when there's banked work and they're
+        // otherwise idle. When the bank empties, tenders stand down and resume wander.
+        const canTend = !agent.isHenry && !agent.mezzanineLocked;
+        if (m.engaged === 'tending') {
+          if (!banked || hud === 'working' || hud === 'error') stopTending(agent);
+          else continue; // keep tending while material remains
+        }
+        if (m.walking || m.engaged !== 'none' || m.queue.length > 0) continue;
         if (hud === 'working' || hud === 'error') continue;
+        if (canTend && banked) {
+          if (startTending(agent)) continue;
+        }
 
         // Henry's Antechamber stroll — through the threshold and back (§4).
         if (agent.isHenry && now >= henryStrollAtRef.current) {

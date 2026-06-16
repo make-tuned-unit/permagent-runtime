@@ -492,6 +492,11 @@ function getSharedMats() {
   };
 }
 
+/** A glowing tablet the Librarian pulls/reshelves during a real describe (bible §5). */
+export interface TabletMesh extends THREE.Mesh {
+  material: THREE.MeshStandardMaterial;
+}
+
 export interface AgentRig {
   root: THREE.Group;
   bones: Record<BoneName, THREE.Bone>;
@@ -499,6 +504,10 @@ export interface AgentRig {
   trimMat: THREE.MeshStandardMaterial;
   stateMat: THREE.MeshStandardMaterial;
   visorMat: THREE.MeshStandardMaterial;
+  /** Librarian-only: the violet describe tablet (null for everyone else). */
+  tablet: TabletMesh | null;
+  /** Henry-only: the soft pool of light that gathers at his feet (null otherwise). */
+  presenceLight: THREE.Mesh | null;
   /** Draw calls this rig contributes. */
   drawCalls: number;
   dispose(): void;
@@ -508,6 +517,8 @@ export function createAgentRig(opts: {
   trimColor: string;
   weathering: number;
   crown: boolean;
+  /** Librarian gets the describe tablet; Henry gets the presence light. */
+  variant?: 'librarian' | 'henry' | null;
 }): AgentRig {
   const geos = getRigGeometries({ weathering: opts.weathering, crown: opts.crown });
   const shared = getSharedMats();
@@ -561,19 +572,70 @@ export function createAgentRig(opts: {
     drawCalls += 1;
   }
 
+  // ── Librarian-only describe tablet (bible §5): a small violet plate that brightens
+  // in the hands during a real describe. Parented to the spine bone so it follows the
+  // body; AgentCharacterV2 moves it shelf→hands and ramps emissive from the mining loop.
+  let tablet: TabletMesh | null = null;
+  let tabletMat: THREE.MeshStandardMaterial | null = null;
+  if (opts.variant === 'librarian') {
+    const tabletGeo = new THREE.BoxGeometry(0.22, 0.3, 0.03);
+    tabletMat = new THREE.MeshStandardMaterial({
+      color: ENV.violet,
+      emissive: ENV.violet,
+      emissiveIntensity: 0,
+      roughness: 0.3,
+      metalness: 0.1,
+    });
+    const t = new THREE.Mesh(tabletGeo, tabletMat) as TabletMesh;
+    t.visible = false;
+    t.frustumCulled = false;
+    bones.byName.spine.add(t);
+    tablet = t;
+    drawCalls += 1;
+  }
+
+  // ── Henry-only presence light (bible §4): a soft warm pool that gathers at his feet.
+  // He never lifts; the light is the only thing his presiding adds to the floor.
+  let presenceLight: THREE.Mesh | null = null;
+  let presenceMat: THREE.MeshBasicMaterial | null = null;
+  let presenceGeo: THREE.RingGeometry | null = null;
+  if (opts.variant === 'henry') {
+    presenceGeo = new THREE.RingGeometry(0.2, 1.6, 24);
+    presenceMat = new THREE.MeshBasicMaterial({
+      color: '#FFF0D4',
+      transparent: true,
+      opacity: 0.16,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const pl = new THREE.Mesh(presenceGeo, presenceMat);
+    pl.rotation.x = -Math.PI / 2;
+    pl.position.y = 0.015;
+    pl.frustumCulled = false;
+    root.add(pl);
+    presenceLight = pl;
+    drawCalls += 1;
+  }
+
   return {
     root,
     bones: bones.byName,
     trimMat,
     stateMat,
     visorMat,
+    tablet,
+    presenceLight,
     drawCalls,
     dispose() {
       // Geometries + shared materials are cached app-lifetime; only per-agent
-      // materials are owned here.
+      // materials (and the per-variant tablet/light geo) are owned here.
       trimMat.dispose();
       stateMat.dispose();
       visorMat.dispose();
+      tabletMat?.dispose();
+      tablet?.geometry.dispose();
+      presenceMat?.dispose();
+      presenceGeo?.dispose();
     },
   };
 }

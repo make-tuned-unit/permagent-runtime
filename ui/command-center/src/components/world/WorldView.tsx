@@ -1,11 +1,13 @@
 import { Suspense, useState, useCallback, useEffect, useRef } from 'react';
-import { Canvas } from '@react-three/fiber';
+import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import type { CameraMode } from './types';
+import type { CameraMode, AgentState } from './types';
 import { COLORS, STATIONS } from './constants';
-import { useAgentStates } from './agents/useAgentStates';
 import { WorldSceneContent } from './WorldScene';
-import { WorldCharacters } from './agents/WorldCharacters';
+// W3 v2 agent stack (mount swap, bible §5 — replaces legacy WorldCharacters/useAgentStates).
+import { WorldAgents, ROSTER, getAgentPosition, getHenryPresence } from './agents';
+import { getBankSnapshot } from './shared/tendingBank';
+import { getConstructionProgress } from './agents/construction';
 import { WorldCamera } from './camera/WorldCamera';
 import { WorldPostProcessing } from './WorldPostProcessing';
 import { WorldHUD } from './WorldHUD';
@@ -54,6 +56,77 @@ function LoadingShimmer() {
   );
 }
 
+// EVIDENCE-ONLY hooks (no-op in production): expose the CDP harness surface the W3
+// rig drives — countMeshes + per-agent live position from the motion store. The camera
+// pin hook (window.__worldDebug.setCam) is owned by WorldScene's WorldDevHooks; this adds
+// the agents reads the harness's drive.mjs expects (window.__worldAgents.getAgentPosition).
+function AgentEvidenceHooks() {
+  const scene = useThree((s) => s.scene);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const w = window as unknown as Record<string, unknown>;
+    w.__worldAgents = { getAgentPosition };
+    // Evidence reads for the tending bank ledger + construction progress + Henry presence.
+    w.__worldBank = () => ({ ...getBankSnapshot(), construction: getConstructionProgress() });
+    w.__worldHenry = () => ({ ...getHenryPresence() });
+    const dbg = (w.__worldDebug ?? {}) as Record<string, unknown>;
+    dbg.countMeshes = () => {
+      let mesh = 0;
+      let skinned = 0;
+      scene.traverse((o) => {
+        const obj = o as THREE.Object3D & { isMesh?: boolean; isSkinnedMesh?: boolean };
+        if (obj.isSkinnedMesh) skinned++;
+        else if (obj.isMesh) mesh++;
+      });
+      return { mesh, skinned };
+    };
+    w.__worldDebug = dbg;
+    return () => {
+      delete w.__worldAgents;
+      delete w.__worldBank;
+      delete w.__worldHenry;
+    };
+  }, [scene]);
+  return null;
+}
+
+// Bridges the autonomous V2 motion store to the (W4-owned) camera's third-person follow.
+// The V2 agents move themselves; this proxies the selected agent's LIVE position into the
+// AgentState shape the camera reads, refreshed each frame. WASD nudging is gone — V2
+// agents are autonomous (no per-user puppeting), so onMoveAgent is a no-op.
+function useSelectedAgentProxy(selectedAgentId: string | null): AgentState | null {
+  const ref = useRef<AgentState | null>(null);
+  useFrame(() => {
+    if (!selectedAgentId) {
+      ref.current = null;
+      return;
+    }
+    const pos = getAgentPosition(selectedAgentId);
+    const id = ROSTER.find((r) => r.id === selectedAgentId);
+    if (!pos || !id) {
+      ref.current = null;
+      return;
+    }
+    if (!ref.current || ref.current.id !== selectedAgentId) {
+      ref.current = {
+        id: id.id,
+        name: id.name,
+        role: id.role,
+        position: { x: pos.x, y: pos.y, z: pos.z },
+        activity: 'idle',
+        currentStation: null,
+        togaTrimColor: id.trimColor,
+        isHenry: id.isHenry,
+      };
+    } else {
+      ref.current.position.x = pos.x;
+      ref.current.position.y = pos.y;
+      ref.current.position.z = pos.z;
+    }
+  });
+  return ref.current;
+}
+
 function SceneContent({
   cameraMode,
   selectedAgentId,
@@ -73,20 +146,13 @@ function SceneContent({
   onHoverStation: (id: string | null) => void;
   onClickStation: (id: string) => void;
 }) {
-  const { agents, moveAgent } = useAgentStates();
-  const selectedAgent = agents.find((a) => a.id === selectedAgentId) ?? null;
-
-  const handleMoveAgent = useCallback((dx: number, dz: number) => {
-    if (selectedAgentId) {
-      moveAgent(selectedAgentId, dx, dz);
-    }
-  }, [selectedAgentId, moveAgent]);
+  const selectedAgent = useSelectedAgentProxy(selectedAgentId);
+  const noopMove = useCallback(() => {}, []);
 
   return (
     <>
       <WorldSceneContent onHoverStation={onHoverStation} onClickStation={onClickStation} />
-      <WorldCharacters
-        agents={agents}
+      <WorldAgents
         hoveredAgent={hoveredAgent}
         onHoverAgent={onHoverAgent}
         onSelectAgent={onSelectAgent}
@@ -95,10 +161,11 @@ function SceneContent({
         mode={cameraMode}
         selectedAgent={selectedAgent}
         onModeChange={onModeChange}
-        onMoveAgent={handleMoveAgent}
+        onMoveAgent={noopMove}
       />
       <TourMode cameraMode={cameraMode} />
       <WorldPostProcessing />
+      {import.meta.env.DEV && <AgentEvidenceHooks />}
     </>
   );
 }
