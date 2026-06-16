@@ -171,6 +171,14 @@ pub async fn upsert_config(
 ) -> Result<Json<Value>, ErrorResponse> {
     let config = Config::global();
     config.set(&query.key, &query.value, query.is_secret)?;
+
+    // First-run Brain seeding (#298): the moment onboarding completes, seed
+    // welcome/orientation memories daemon-internally. Idempotent and fire-and-
+    // forget — no new public brain-write surface, no blocking of the config write.
+    if query.key == "wizard_complete" && query.value == Value::Bool(true) {
+        tokio::spawn(crate::automation::onboarding_seed::seed_onboarding_memories());
+    }
+
     Ok(Json(Value::String(format!("Upserted key {}", query.key))))
 }
 

@@ -376,6 +376,17 @@ impl AppState {
         // Seed starter recipes (Workspace Snapshot, Storage Insights) on first run.
         crate::automation::starters::seed_starter_recipes(agent_manager.scheduler().as_ref()).await;
 
+        // First-run welcome memories (#298): seed once onboarding is complete.
+        // Idempotent (config marker); also triggered immediately on completion via
+        // the /config upsert handler. This startup pass covers onboarding that
+        // finished before the Brain was ready or before this feature shipped.
+        if permagent::config::Config::global()
+            .get_param::<bool>("wizard_complete")
+            .unwrap_or(false)
+        {
+            crate::automation::onboarding_seed::seed_onboarding_memories().await;
+        }
+
         // Load or generate daemon token for /activity/emit auth.
         let daemon_token = load_or_create_daemon_token();
 
