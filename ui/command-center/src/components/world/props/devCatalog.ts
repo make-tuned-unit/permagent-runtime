@@ -1,15 +1,11 @@
 // W2 — dev catalog mount points (Cave §4 / §9 W2 handoff).
-// W1 will define per-chamber mount points in a typed module under their areas
-// code (likely areas/strata/anchors). Until that blockout lands, the cave kit
-// is exercised standalone from THIS dev catalog: a hand-placed set of mount
-// transforms that compose the construction kit into a "scaffold-state vignette"
-// (the construction-site-at-first-light read) and assemble the Cornerstone
-// Gallery template. NOT part of the product build — consumed only by the dev
-// PropCatalog stage.
-//
-// When W1 publishes its strata anchors, this file is the single place to swap:
-// the kit components already take (position, rotationY); replace these literals
-// with imported W1 mount points and nothing else changes.
+// LIVE placement now comes from W1's areas/strata/anchors (SCAFFOLD_MOUNTS):
+// see areas/strata/CaveConstruction.tsx, which dresses each real ScaffoldMount
+// with the matching kit piece. THIS file is the DEV CATALOG ONLY: a hand-placed
+// set of mount transforms that compose the construction kit into a self-contained
+// "scaffold-state vignette" (the construction-site-at-first-light read) and
+// assemble the Cornerstone Gallery template for visual review on the PropCatalog
+// stage. NOT part of the product build — consumed only by props/catalog.
 
 type Vec3 = [number, number, number];
 

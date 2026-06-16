@@ -104,7 +104,7 @@ function BankedStones() {
 }
 
 /** Finished/built wing masses (crown-adjacent) — solid gray blocks, instanced. */
-function BuiltWings() {
+export function BuiltWings() {
   const transforms = useMemo<InstanceTransform[]>(() => {
     const t: InstanceTransform[] = [];
     for (const m of SCAFFOLD_MOUNTS) {
