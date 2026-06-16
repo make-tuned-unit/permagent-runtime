@@ -288,7 +288,7 @@ client. HUD color semantics and the frozen `HenryIdentityTab.tsx` stand.
 **Frozen-amendment policy (creative director, 2026-06-11):** frozen modules may receive
 **bug fixes only** — coordinator-authored, commit message prefixed `FROZEN AMENDMENT:`,
 all consuming lanes notified before they next capture evidence. Interface changes remain
-forbidden. (Precedent: the PerfSampler render-loop-takeover fix, found by Lane W2.)
+forbidden. (Precedent: the PerfSampler render-loop-takeover fix, found by Lane W2.) This covers bug-fixes to EXISTING frozen modules only; a NEW shared module requires coordinator blessing before a lane adds it (e.g. shared/tendingBank.ts, blessed 2026-06-15).
 
 **Lane setup verification (standing rule, both swarms):** every lane's first action is to
 paste `pwd` and `git worktree list` output as evidence of correct setup, and the
