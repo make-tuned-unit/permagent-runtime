@@ -51,3 +51,20 @@ export function tickAmbience(delta: number): void {
 export function getAmbienceLevel(): number {
   return level;
 }
+
+/**
+ * Column-vein emissive accessor (bible §7: "column-vein emissive intensity …
+ * scale gently with the working count, ≤ 1.5× idle values"). HallStructure's
+ * colonnade reads this so the veins brighten when agents are really working —
+ * the W1↔W4 reactivity seam (the columns moved to W1's HallStructure during the
+ * integration rebase; this keeps the driving signal in the atmosphere lane).
+ *
+ * Returns the per-vein opacity for column index `i` at wall-clock time `now`,
+ * preserving the original per-column phase offset (0.5 + 0.3·sin) and scaling
+ * the amplitude by the live ambience level. Frozen (reduceMotion) ⇒ the level is
+ * pinned to idle, so this naturally yields the calm baseline with no extra
+ * branch. Zero allocations.
+ */
+export function getVeinOpacity(i: number, now: number): number {
+  return (0.5 + 0.3 * Math.sin(now * 0.0008 + i * 0.8)) * level;
+}

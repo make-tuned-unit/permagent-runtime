@@ -24,6 +24,13 @@ const ESTABLISHING_LOOK = new THREE.Vector3(0, 4, 0);
 // Automate x=-24 (W), Lab z=-24 (N), Antechamber (-19, -19) NW diagonal.
 // Camera path stays inside the colonnade (r ≈ 8.5, eye height 2.6); the look
 // path leads down each threshold sightline.
+//
+// FOLLOW-UP (THE CAVE §9 W4, blocked on W1): when W1's vertical strata + the
+// throat (the descending Brain abyss, §2) land, extend this spline DOWNWARD —
+// descend through the throat to the deepest chamber (the spring, the oldest
+// rough-hewn work) and rise back up toward the Mouth, so the tour reads the §2
+// "depth is time" climb. The current spline is the crown-level loop only; the
+// downward leg is intentionally deferred until there is strata geometry to frame.
 const POSITION_CURVE = new THREE.CatmullRomCurve3(
   [
     ESTABLISHING_POS.clone(),
