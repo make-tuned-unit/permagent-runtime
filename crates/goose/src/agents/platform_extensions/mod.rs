@@ -13,6 +13,7 @@ pub mod orchestrator;
 pub mod project_manager;
 pub mod recipe_author;
 pub mod skills;
+pub mod steward;
 pub mod storage_health;
 pub mod summarize;
 pub mod summon;
@@ -342,6 +343,20 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 client_factory: |ctx| {
                     Box::new(storage_health::StorageHealthClient::new(ctx).unwrap())
                 },
+            },
+        );
+
+        map.insert(
+            steward::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: steward::EXTENSION_NAME,
+                display_name: "Git Steward",
+                description:
+                    "Safety gate for autonomous repo hygiene — routes destructive git operations (branch delete, history rewrite, force-push) to human approval and hard-refuses protected branches",
+                default_enabled: false,
+                unprefixed_tools: true,
+                hidden: true,
+                client_factory: |ctx| Box::new(steward::StewardClient::new(ctx).unwrap()),
             },
         );
 
