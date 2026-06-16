@@ -8,9 +8,11 @@ import { WizardShell } from './components/wizard/WizardShell';
 import { Splash } from './components/splash/Splash';
 import { ChatLauncher } from './components/chat/ChatLauncher';
 import { DropZone } from './components/chat/DropZone';
+import { VersionSkewBanner } from './components/version/VersionSkewBanner';
 import { api, fileToBase64 } from './lib/api';
 import type { LayoutNode } from './lib/store';
 import { useAppNavigate } from './hooks/useAppNavigate';
+import { useVersionSkew } from './hooks/useVersionSkew';
 
 function MainContent() {
   const activePanel = useCommandCenter(s => s.activePanel);
@@ -90,6 +92,9 @@ function App() {
 
   // Subscribe to AppNavigate events from the agent
   useAppNavigate();
+
+  // App↔daemon version-skew detection — only once we're in the running app.
+  const versionSkew = useVersionSkew(phase === 'app');
 
   useEffect(() => {
     if (phase !== 'loading') return;
@@ -199,6 +204,7 @@ function App() {
       {/* Title-bar strip — overlay mode makes native bar transparent; this fills
           the area behind the traffic lights with the sidebar color across full width */}
       <div data-tauri-drag-region style={{ height: 28, flexShrink: 0, background: gradient.sidebar }} />
+      <VersionSkewBanner skew={versionSkew} />
       <div className="flex flex-1 min-h-0">
         <Sidebar />
         <main className="flex-1 min-w-0 overflow-hidden relative">
