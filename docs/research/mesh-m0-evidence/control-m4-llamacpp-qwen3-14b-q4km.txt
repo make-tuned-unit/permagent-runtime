@@ -1,0 +1,9 @@
+NAME    ID    SIZE    PROCESSOR    CONTEXT    UNTIL 
+---
+OLLAMA_EMPTY — control row proceeding
+| model                          |       size |     params | backend    | threads |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | --------------: | -------------------: |
+| qwen3 14B Q4_K - Medium        |   8.38 GiB |    14.77 B | MTL,BLAS   |       4 |           pp512 |        121.66 ± 0.05 |
+| qwen3 14B Q4_K - Medium        |   8.38 GiB |    14.77 B | MTL,BLAS   |       4 |           tg256 |         11.76 ± 0.04 |
+       86.51 real        10.37 user         0.72 sys
+          9066545152  maximum resident set size

@@ -1,0 +1,19 @@
+=== M1 dual-stack diagnosis (2026-06-15) ===
+M1 ComputerName: Jesse's Mac mini (2)
+M4 ComputerName: Jesse's Mac mini
+
+brew daemon authoritative peers (/var/run/tailscaled.socket):
+100.77.38.66   m1-mini            jesse.sharratt@  macOS  -  
+100.74.232.95  jesses-mac-mini-2  jesse.sharratt@  macOS  -  
+
+M1 processes:
+1672 /Applications/Tailscale.app/Contents/MacOS/Tailscale  
+3084 /Library/SystemExtensions/A70A1513-E05F-42CB-9F64-7369D311946A/io.tailscale.ipn.macsys.network-extension.systemextension/Contents/MacOS/io.tailscale.ipn.macsys.network-extension  
+47155 /opt/homebrew/opt/tailscale/bin/tailscaled  
+60567 ssh -o BatchMode=yes
+60204 /bin/bash -c source
+
+=== Tailnet ping matrix (2026-06-15, post-resolution) ===
+M4 = 100.80.110.80 | M1 GUI=.95 | M1 brew=.66
+M1->M4: 0% loss 16.6ms avg | M4->M1 .95: 0% loss 18.4ms | M4->M1 .66: 100% loss (ghost)
+netcheck: easy NAT, UPnP, nearest DERP NYC 62.7ms; M4<->M1 direct-via-public-endpoint hairpin ~9-18ms

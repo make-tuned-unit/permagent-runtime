@@ -1,0 +1,26 @@
+5027784512
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                               72524.
+| model                          |       size |     params | backend    | threads |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | --------------: | -------------------: |
+| qwen3 8B Q4_K - Medium         |   4.68 GiB |     8.19 B | MTL,BLAS   |       4 |           pp512 |        119.32 ± 2.64 |
+| qwen3 8B Q4_K - Medium         |   4.68 GiB |     8.19 B | MTL,BLAS   |       4 |           tg256 |         10.95 ± 0.31 |
+
+      102.13 real        23.71 user         1.51 sys
+          4720377856  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               22472  page reclaims
+              306380  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                  74  voluntary context switches
+              114158  involuntary context switches
+        272596379780  instructions retired
+         70911108791  cycles elapsed
+           186723392  peak memory footprint

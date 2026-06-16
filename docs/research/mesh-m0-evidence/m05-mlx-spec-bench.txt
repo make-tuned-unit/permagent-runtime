@@ -1,0 +1,22 @@
+=== M0.5 MLX-spec anchor bench on M4 (16GB) ===
+################## 14B-4bit BASELINE (no spec)  15:08:35 ##################
+Prompt: 350 tokens, 82.984 tokens-per-sec
+Generation: 256 tokens, 12.135 tokens-per-sec
+Peak memory: 8.756 GB
+------ peak wired during (MB): 10095  min free (MB): 51
+
+################## 14B-4bit SPEC (draft 0.6B, k=4)  15:09:04 ##################
+Prompt: 350 tokens, 78.095 tokens-per-sec
+Generation: 256 tokens, 16.860 tokens-per-sec
+Peak memory: 9.224 GB
+------ peak wired during (MB): 11269  min free (MB): 57
+
+################## 30B-A3B-3bit BASELINE (no spec)  15:09:29 ##################
+libc++abi: terminating due to uncaught exception of type std::runtime_error: [METAL] Command buffer execution failed: Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)
+------ peak wired during (MB): 13356  min free (MB): 52
+
+################## 30B-A3B-3bit SPEC (draft 0.6B, k=4)  15:09:48 ##################
+libc++abi: terminating due to uncaught exception of type std::runtime_error: [METAL] Command buffer execution failed: Caused GPU Timeout Error (00000002:kIOGPUCommandBufferCallbackErrorTimeout)
+------ peak wired during (MB): 12368  min free (MB): 40
+
+ALL_MLX_BENCH_DONE
