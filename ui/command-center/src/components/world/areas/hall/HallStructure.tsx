@@ -154,8 +154,22 @@ function Columns() {
             <cylinderGeometry args={[0.7, 0.9, 0.6, 16]} />
             <meshStandardMaterial color={COLORS.primaryMarble} roughness={0.3} />
           </mesh>
-          {/* Rim light (point light at column edge) — subtle cyan wash */}
-          <pointLight position={[0.7, DOME_HEIGHT * 0.7, 0]} color={COLORS.neonCyan} intensity={0.15} distance={4} decay={2} />
+          {/* Rim glow at the column edge — subtle cyan wash. Light-census reduction
+              (integration §1): this was a 0.15-intensity decorative pointLight, one
+              per surviving column (3 of the scene's 20 point lights). The column
+              already carries an emissive cyan circuit-vein mesh above; this faint
+              additive sprite reproduces the edge wash with zero light cost. */}
+          <mesh position={[0.7, DOME_HEIGHT * 0.7, 0]}>
+            <sphereGeometry args={[0.5, 10, 10]} />
+            <meshBasicMaterial
+              color={COLORS.neonCyan}
+              transparent
+              opacity={0.12}
+              depthWrite={false}
+              blending={THREE.AdditiveBlending}
+              toneMapped={false}
+            />
+          </mesh>
         </group>
       ))}
     </group>

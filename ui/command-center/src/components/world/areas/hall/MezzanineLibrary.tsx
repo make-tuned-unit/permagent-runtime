@@ -3,6 +3,7 @@
 // Raised ring walkway high on the columns with built-in bookshelf walls.
 
 import { useMemo } from 'react';
+import * as THREE from 'three';
 import { COLORS } from '../../constants';
 import {
   useMarbleMat,
@@ -227,11 +228,36 @@ function MezzanineLibraryContents() {
       {/* Armchairs */}
       <ArmChair position={[Math.cos(Math.PI) * MEZZ_MID_R, 0, Math.sin(Math.PI) * MEZZ_MID_R]} rotation={0} />
       <ArmChair position={[Math.cos(0) * MEZZ_MID_R, 0, Math.sin(0) * MEZZ_MID_R]} rotation={Math.PI} />
-      {/* Warm amber lighting */}
+      {/* Warm amber ring sconces. Light-census reduction (integration §1): these
+          were 8 decorative pointLights — a pure rim array contributing 8 of the
+          scene's 20 point lights for a barely-perceptible 0.2-intensity wash. They
+          are now emissive glow fixtures (additive core + faint halo): the same warm
+          dotted-ring read, at zero per-pixel light cost. The hall's real fill comes
+          from the §1 directional pair + the Mouth key. */}
       {Array.from({ length: 8 }, (_, i) => {
         const angle = (i / 8) * Math.PI * 2;
+        const x = Math.cos(angle) * MEZZ_MID_R;
+        const z = Math.sin(angle) * MEZZ_MID_R;
         return (
-          <pointLight key={i} position={[Math.cos(angle) * MEZZ_MID_R, 2.5, Math.sin(angle) * MEZZ_MID_R]} color={COLORS.neonAmber} intensity={0.2} distance={8} />
+          <group key={i} position={[x, 2.5, z]}>
+            {/* Bright emissive core — the sconce point itself */}
+            <mesh>
+              <sphereGeometry args={[0.06, 8, 8]} />
+              <meshBasicMaterial color={COLORS.neonAmber} toneMapped={false} />
+            </mesh>
+            {/* Faint additive halo — the soft warm bloom the pointLight used to cast */}
+            <mesh>
+              <sphereGeometry args={[0.18, 12, 12]} />
+              <meshBasicMaterial
+                color={COLORS.neonAmber}
+                transparent
+                opacity={0.22}
+                depthWrite={false}
+                blending={THREE.AdditiveBlending}
+                toneMapped={false}
+              />
+            </mesh>
+          </group>
         );
       })}
     </group>
