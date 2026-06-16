@@ -210,6 +210,17 @@ pub async fn generate_diagnostics(
             zip.write_all(content.as_bytes())?;
         }
 
+        // Crash reports — included ONLY with the user's consent (off by default,
+        // reusing the telemetry opt-in). Capture is always-on locally (#299);
+        // this gate controls sharing, and there is no upload path (→ #327).
+        if crate::session::crash_capture::crash_reports_consented() {
+            let crash_dir = crate::session::crash_capture::crash_dir();
+            for (name, bytes) in crate::session::crash_capture::collect_crash_logs(&crash_dir) {
+                zip.start_file(format!("crashes/{}", name), options)?;
+                zip.write_all(&bytes)?;
+            }
+        }
+
         zip.finish()?;
     }
 

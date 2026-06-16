@@ -62,6 +62,10 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Capture panics to local crash reports for diagnostics (#299). Installed
+    // first so a panic anywhere in startup is recorded. Bundling is consent-gated.
+    permagent::session::crash_capture::install_panic_hook();
+
     let cli = Cli::parse();
 
     match cli.command {

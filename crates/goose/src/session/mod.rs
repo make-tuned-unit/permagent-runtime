@@ -1,4 +1,5 @@
 mod chat_history_search;
+pub mod crash_capture;
 mod diagnostics;
 pub mod extension_data;
 pub mod session_manager;
