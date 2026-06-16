@@ -10,7 +10,7 @@
     "release": "changeset publish"
   },
   "devDependencies": {
-    "@changesets/cli": "^2.27.1"
+    "@changesets/cli": "^2.31.0"
   },
   "pnpm": {
     "overrides": {
