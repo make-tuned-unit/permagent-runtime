@@ -14,6 +14,7 @@ use std::path::PathBuf;
 
 const WORKSPACE_SNAPSHOT_YAML: &str = include_str!("workspace_snapshot.yaml");
 const STORAGE_INSIGHTS_YAML: &str = include_str!("storage_insights.yaml");
+const STEWARD_YAML: &str = include_str!("steward.yaml");
 
 struct StarterRecipe {
     id: &'static str,
@@ -31,6 +32,11 @@ const STARTERS: &[StarterRecipe] = &[
         id: "storage-insights",
         cron: "0 19 * * 0",
         yaml: STORAGE_INSIGHTS_YAML,
+    },
+    StarterRecipe {
+        id: "git-steward",
+        cron: "0 6 * * 1-5",
+        yaml: STEWARD_YAML,
     },
 ];
 
@@ -381,6 +387,43 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::TempDir;
     use tokio::sync::Mutex;
+
+    #[test]
+    fn all_starters_parse_as_recipes() {
+        for s in STARTERS {
+            let recipe: Recipe = serde_yaml::from_str(s.yaml)
+                .unwrap_or_else(|e| panic!("starter '{}' failed to parse: {e}", s.id));
+            assert!(!recipe.title.is_empty(), "{} has empty title", s.id);
+        }
+    }
+
+    #[test]
+    fn steward_recipe_wires_developer_and_steward_extensions() {
+        use permagent::agents::extension::ExtensionConfig;
+        let s = STARTERS
+            .iter()
+            .find(|s| s.id == "git-steward")
+            .expect("git-steward starter registered");
+        let recipe: Recipe = serde_yaml::from_str(s.yaml).unwrap();
+        let names: Vec<String> = recipe
+            .extensions
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|e| match e {
+                ExtensionConfig::Builtin { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "developer"),
+            "developer ext present: {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n == "steward"),
+            "steward (safety gate) ext present: {names:?}"
+        );
+    }
 
     /// Minimal valid Recipe YAML at v1.0.0 (different from embedded v2.0.0).
     const OLD_STORAGE_YAML: &str = concat!(
