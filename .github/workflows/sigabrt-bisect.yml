@@ -41,7 +41,7 @@ jobs:
           EXIT_CODE=${PIPESTATUS[0]}
           echo "=== Exit code: $EXIT_CODE ==="
           echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: test-log-${{ matrix.crate }}
@@ -89,7 +89,7 @@ jobs:
           fi
           EXIT_CODE=${PIPESTATUS[0]}
           echo "=== Exit code: $EXIT_CODE ==="
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: test-log-feat-${{ matrix.name }}
@@ -127,7 +127,7 @@ jobs:
           else
             echo "RESULT: No SIGABRT detected - fix confirmed!"
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: test-log-v8-no-libcxx
