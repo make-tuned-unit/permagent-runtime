@@ -1,0 +1,248 @@
+{
+ "census": {
+  "totalLights": 23,
+  "pointLights": 20,
+  "shadowCasters": 1,
+  "byType": {
+   "AmbientLight": 1,
+   "DirectionalLight": 2,
+   "PointLight": 20
+  },
+  "lights": [
+   {
+    "type": "AmbientLight",
+    "castShadow": false,
+    "intensity": 0.08,
+    "color": "#b8c4d8",
+    "distance": null,
+    "pos": null,
+    "name": null,
+    "parentName": null
+   },
+   {
+    "type": "DirectionalLight",
+    "castShadow": true,
+    "intensity": 1.6,
+    "color": "#fff0d4",
+    "distance": null,
+    "pos": null,
+    "name": null,
+    "parentName": null
+   },
+   {
+    "type": "DirectionalLight",
+    "castShadow": false,
+    "intensity": 0.25,
+    "color": "#8ec8e8",
+    "distance": null,
+    "pos": null,
+    "name": null,
+    "parentName": null
+   },
+   {
+    "type": "PointLight",
+    "castShadow": false,
+    "intensity": 1.1,
+    "color": "#d6e4f0",
+    "distance": 78,
+    "pos": null,
+    "name": null,
+    "parentName": null
+   },
+   {
+    "type": "PointLight",
+    "castShadow": false,
+    "intensity": 0.15,
+    "color": "#00d9ff",
+    "distance": 4,
+    "pos": null,
+    "name": null,
+    "parentName": null
+   },
+   {
+    "type": "PointLight",
+    "castShadow": false,
+    "intensity": 0.15,
+    "color": "#00d9ff",
+    "distance": 4,
+    "pos": null,
+    "name": null,
+    "parentName": null
+   },
+   {
+    "type": "PointLight",
+    "castShadow": false,
+    "intensity": 0.15,
+    "color": "#00d9ff",
+    "distance": 4,
+    "pos": null,
+    "name": null,
+    "parentName": null
+   },
+   {
+    "type": "PointLight",
+    "castShadow": false,
+    "intensity": 0.5,
+    "color": "#ffb347",
+    "distance": 3,
+    "pos": null,
+    "name": null,
+    "parentName": null
+   },
+   {
+    "type": "PointLight",
+    "castShadow": false,
+    "intensity": 0.5,
+    "color": "#ffb347",
+    "distance": 3,
+    "pos": null,
+    "name": null,
+    "parentName": null
+   },
+   {
+    "type": "PointLight",
+    "castShadow": false,
+    "intensity": 0.5,
+    "color": "#ffb347",
+    "distance": 3,
+    "pos": null,
+    "name": null,
+    "parentName": null
+   },
+   {
+    "type": "PointLight",
+    "castShadow": false,
+    "intensity": 0.5,
+    "color": "#ffb347",
+    "distance": 3,
+    "pos": null,
+    "name": null,
+    "parentName": null
+   },
+   {
+    "type": "PointLight",
+    "castShadow": false,
+    "intensity": 0.5,
+    "color": "#ffb347",
+    "distance": 3,
+    "pos": null,
+    "name": null,
+    "parentName": null
+   },
+   {
+    "type": "PointLight",
+    "castShadow": false,
+    "intensity": 0.5,
+    "color": "#ffb347",
+    "distance": 3,
+    "pos": null,
+    "name": null,
+    "parentName": null
+   },
+   {
+    "type": "PointLight",
+    "castShadow": false,
+    "intensity": 0.2,
+    "color": "#ffb347",
+    "distance": 8,
+    "pos": null,
+    "name": null,
+    "parentName": null
+   },
+   {
+    "type": "PointLight",
+    "castShadow": false,
+    "intensity": 0.2,
+    "color": "#ffb347",
+    "distance": 8,
+    "pos": null,
+    "name": null,
+    "parentName": null
+   },
+   {
+    "type": "PointLight",
+    "castShadow": false,
+    "intensity": 0.2,
+    "color": "#ffb347",
+    "distance": 8,
+    "pos": null,
+    "name": null,
+    "parentName": null
+   },
+   {
+    "type": "PointLight",
+    "castShadow": false,
+    "intensity": 0.2,
+    "color": "#ffb347",
+    "distance": 8,
+    "pos": null,
+    "name": null,
+    "parentName": null
+   },
+   {
+    "type": "PointLight",
+    "castShadow": false,
+    "intensity": 0.2,
+    "color": "#ffb347",
+    "distance": 8,
+    "pos": null,
+    "name": null,
+    "parentName": null
+   },
+   {
+    "type": "PointLight",
+    "castShadow": false,
+    "intensity": 0.2,
+    "color": "#ffb347",
+    "distance": 8,
+    "pos": null,
+    "name": null,
+    "parentName": null
+   },
+   {
+    "type": "PointLight",
+    "castShadow": false,
+    "intensity": 0.2,
+    "color": "#ffb347",
+    "distance": 8,
+    "pos": null,
+    "name": null,
+    "parentName": null
+   },
+   {
+    "type": "PointLight",
+    "castShadow": false,
+    "intensity": 0.2,
+    "color": "#ffb347",
+    "distance": 8,
+    "pos": null,
+    "name": null,
+    "parentName": null
+   },
+   {
+    "type": "PointLight",
+    "castShadow": false,
+    "intensity": 1.2,
+    "color": "#5599ff",
+    "distance": 8,
+    "pos": null,
+    "name": null,
+    "parentName": null
+   },
+   {
+    "type": "PointLight",
+    "castShadow": false,
+    "intensity": 0.4,
+    "color": "#5599ff",
+    "distance": 12,
+    "pos": null,
+    "name": null,
+    "parentName": null
+   }
+  ]
+ },
+ "meshes": {
+  "mesh": 796,
+  "skinned": 26
+ }
+}
