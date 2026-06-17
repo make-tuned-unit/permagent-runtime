@@ -24,6 +24,7 @@ pub mod local_inference;
 pub mod ollama;
 pub mod projects;
 pub mod prompts;
+pub mod reader;
 pub mod recipe;
 pub mod recipe_utils;
 pub mod reply;
@@ -94,6 +95,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(integrations::routes(state.clone()))
         .merge(workspaces::routes(state.clone()))
         .merge(attachments::routes(state.clone()))
+        .merge(reader::routes(state.clone()))
         .merge(brain::routes(state.clone()))
         .merge(dashboard::routes(state.clone()))
         .merge(identity::routes(state.clone()))

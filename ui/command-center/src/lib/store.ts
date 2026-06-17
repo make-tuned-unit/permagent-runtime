@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { api, apiFetch, extractText, fileToBase64 } from './api';
+import { api, apiFetch, extractText, fileToBase64, readerIngest } from './api';
 import type { Session, DaemonMessage, SSEEvent, AppContextPayload } from './api';
 import { startEventPruning } from './eventBus';
 
@@ -482,24 +482,43 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       return;
     }
 
-    // Read image files as base64 for vision (before adding user message so we can include thumbnails)
+    // Route dropped images through the local Reader (#296) BEFORE base64-ing
+    // them into the message. The Reader OCRs locally and ingests the text into
+    // the Brain; Henry receives a compact digest, NOT the raw bytes — that is
+    // the token-leak fix. Only "visual" images (little/no text, e.g. a photo)
+    // fall through to base64 so the agent can still SEE them.
     let images: Array<{ data: string; mime_type: string }> | undefined;
+    const digests: Array<{ name: string; summary: string; recall_query: string }> = [];
     if (files && files.length > 0) {
       const imageFiles = files.filter(f => f.type.startsWith('image/'));
       console.log('[send] total files:', files.length, 'image files after filter:', imageFiles.length,
         'all types:', files.map(f => `${f.name}(type="${f.type}")`));
-      if (imageFiles.length > 0) {
+      const visualImages: File[] = [];
+      for (const f of imageFiles) {
+        try {
+          const d = await readerIngest(f);
+          if (d.is_visual) {
+            // Sparse/low-confidence text → the agent needs to see it.
+            console.log('[reader] visual image, falling through to vision:', f.name);
+            visualImages.push(f);
+          } else {
+            // OCR'd + ingested into the Brain. Digest only — bytes never sent.
+            console.log('[reader] ingested', f.name, '→', d.token_count, 'tok kept out of context');
+            digests.push({ name: f.name, summary: d.summary, recall_query: d.recall_query });
+          }
+        } catch (err) {
+          // Fail-open: never lose the user's image if the Reader is unavailable.
+          console.error('[reader] ingest failed, falling back to image:', f.name, err);
+          visualImages.push(f);
+        }
+      }
+      if (visualImages.length > 0) {
         try {
           images = await Promise.all(
-            imageFiles.map(async f => {
-              console.log('[send] fileToBase64 start:', f.name, 'size:', f.size);
-              const data = await fileToBase64(f);
-              console.log('[send] fileToBase64 done:', f.name, 'base64 length:', data.length);
-              return {
-                data,
-                mime_type: f.type || 'image/png',
-              };
-            }),
+            visualImages.map(async f => ({
+              data: await fileToBase64(f),
+              mime_type: f.type || 'image/png',
+            })),
           );
         } catch (err) {
           console.error('[send] fileToBase64 FAILED:', err);
@@ -507,17 +526,29 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       }
     }
 
+    // Fold any Reader digests into the outgoing text so Henry sees the summary
+    // + recall handle (and can follow up via search_memory), never the bytes.
+    let outgoingText = text;
+    if (digests.length > 0) {
+      const block = digests
+        .map(d => `📎 ${d.name} — ${d.summary} (recall: "${d.recall_query}")`)
+        .join('\n');
+      // Replace the bare "(file upload)" placeholder ChatInput sends for
+      // file-only messages; otherwise append.
+      outgoingText = !text || text === '(file upload)' ? block : `${text}\n\n${block}`;
+    }
+
     // Add user message to chat — includes inline images for rendering in the bubble
     const userMsg: ChatMessage = {
       id: `msg-${Date.now()}`,
       role: 'user',
-      content: text,
+      content: outgoingText,
       timestamp: new Date().toISOString(),
       images: images?.map(img => ({ data: img.data, mimeType: img.mime_type })),
     };
     set(s => ({ chatMessages: [...s.chatMessages, userMsg] }));
 
-    console.log('[send] before api.sendReply — text length:', text.length, 'images count:', images?.length ?? 0);
+    console.log('[send] before api.sendReply — text length:', outgoingText.length, 'images count:', images?.length ?? 0, 'digests:', digests.length);
 
     // Create streaming placeholder
     const streamMsgId = `msg-${Date.now()}-stream`;
@@ -537,7 +568,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
     try {
       // Fire-and-forget: events arrive on SSE channel
-      await api.sendReply(sessionId, text, images, appContext);
+      await api.sendReply(sessionId, outgoingText, images, appContext);
     } catch (err) {
       console.error('[send] api.sendReply FAILED:', err);
       set(s => ({
