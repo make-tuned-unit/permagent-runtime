@@ -32,15 +32,18 @@ jobs:
         if: runner.os == 'Linux'
         uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
         with:
-          # Max reclaim (~30GB+): the workspace debug build (kuzu+candle+v8+
-          # llama+sherpa) sits at the runner's disk ceiling and ENOSPC'd at the
-          # link stage. The Rust toolchain is installed fresh below, so dropping
-          # the hosted tool-cache is safe; android/dotnet/haskell are unused.
+          # Reclaim ~30GB: the workspace debug build (kuzu+candle+v8+llama+
+          # sherpa) sits at the runner's disk ceiling and ENOSPC'd at the link
+          # stage. tool-cache/android/dotnet/haskell do the bulk of the freeing
+          # and are unused by this build (Rust toolchain installed fresh below).
+          # large-packages is intentionally OFF: it removes the llvm-* apt
+          # packages, which strips clang's builtin headers (stdbool.h) that
+          # llama-cpp-sys-2's bindgen needs — and it only saves a few GB anyway.
           tool-cache: true
           android: true
           dotnet: true
           haskell: true
-          large-packages: true
+          large-packages: false
           docker-images: true
           swap-storage: true
       - uses: actions/checkout@v6
