@@ -7309,6 +7309,7 @@ dependencies = [
  "lazy_static",
  "libc",
  "llama-cpp-2",
+ "lopdf",
  "lru 0.16.3",
  "minijinja",
  "mockall",
