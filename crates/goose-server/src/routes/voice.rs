@@ -368,6 +368,12 @@ async fn stream_reply_with_tts(
     let stt_ms = ctx.stt_ms;
     let cancelled = &ctx.cancelled;
 
+    // Resolve the configured voice once for this reply (persona.voice_id),
+    // reused for every synthesized sentence. `None` lets the backend fall back
+    // to its default voice. Read once here rather than per-sentence to avoid
+    // taking the persona lock inside the streaming loop.
+    let voice_id = state.persona.read().await.voice_id.clone();
+
     let t_setup = std::time::Instant::now();
 
     let sid = if let Some(id) = ctx.session_id {
@@ -484,13 +490,20 @@ async fn stream_reply_with_tts(
                         let tts_ref = tts.clone();
                         let sent = sentence.clone();
                         let cancel_flag = cancelled.clone();
+                        let voice_id = voice_id.clone();
                         let tts_start = std::time::Instant::now();
                         let audio = tokio::task::spawn_blocking(move || {
                             // Check cancellation before acquiring the mutex
                             if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
                                 return Err(anyhow::anyhow!("cancelled"));
                             }
-                            tts_ref.synthesize(&sent, &TtsConfig::default())
+                            tts_ref.synthesize(
+                                &sent,
+                                &TtsConfig {
+                                    voice_id,
+                                    ..TtsConfig::default()
+                                },
+                            )
                         })
                         .await;
                         let chunk_tts_ms = tts_start.elapsed().as_millis();
@@ -554,12 +567,19 @@ async fn stream_reply_with_tts(
         sentence_num += 1;
         let tts_ref = tts.clone();
         let cancel_flag = cancelled.clone();
+        let voice_id = voice_id.clone();
         let tts_start = std::time::Instant::now();
         let audio = tokio::task::spawn_blocking(move || {
             if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
                 return Err(anyhow::anyhow!("cancelled"));
             }
-            tts_ref.synthesize(&remainder, &TtsConfig::default())
+            tts_ref.synthesize(
+                &remainder,
+                &TtsConfig {
+                    voice_id,
+                    ..TtsConfig::default()
+                },
+            )
         })
         .await;
         let chunk_tts_ms = tts_start.elapsed().as_millis();

@@ -25,6 +25,12 @@ pub struct PromptManager {
     current_date_timestamp: String,
     subdirectory_hint_tracker: SubdirectoryHintTracker,
     persona: Option<crate::config::agent_identity::SharedPersona>,
+    /// Last-known-good persona value, refreshed on every successful read in
+    /// `build()`. Used as the fallback when `persona.try_read()` fails under
+    /// lock contention (e.g. a concurrent identity hot-reload) so a turn never
+    /// silently reverts to the default ("Aria") persona. std RwLock (not tokio)
+    /// because `build()` is synchronous and only ever clones a small value.
+    last_good_persona: std::sync::RwLock<Option<crate::config::agent_identity::PrimaryPersona>>,
     /// Override persona block and display name (used for worker personas).
     persona_block_override: Option<(String, String)>,
 }
@@ -152,13 +158,35 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
             if let Some((ref block, ref name)) = self.manager.persona_block_override {
                 (block.clone(), name.clone())
             } else {
-                let persona = self
+                let persona = match self
                     .manager
                     .persona
                     .as_ref()
                     .and_then(|p| p.try_read().ok())
-                    .map(|p| p.clone())
-                    .unwrap_or_default();
+                {
+                    // Live read succeeded: this is the source of truth. Refresh
+                    // the last-known-good cache so a later contended turn has a
+                    // current value to fall back to (renames included).
+                    Some(guard) => {
+                        let persona = guard.clone();
+                        if let Ok(mut cache) = self.manager.last_good_persona.write() {
+                            *cache = Some(persona.clone());
+                        }
+                        persona
+                    }
+                    // Live read failed (lock contention, e.g. a concurrent
+                    // identity hot-reload). Fall back to the last-known-good
+                    // value rather than silently reverting to the default
+                    // ("Aria") persona. Only truly defaults if no successful
+                    // read has happened yet (pre-startup-load).
+                    None => self
+                        .manager
+                        .last_good_persona
+                        .read()
+                        .ok()
+                        .and_then(|cache| cache.clone())
+                        .unwrap_or_default(),
+                };
                 (persona.system_prompt_block(), persona.display_name())
             };
 
@@ -224,6 +252,7 @@ impl PromptManager {
             current_date_timestamp: Utc::now().format("%Y-%m-%d %H:00").to_string(),
             subdirectory_hint_tracker: SubdirectoryHintTracker::new(),
             persona: None,
+            last_good_persona: std::sync::RwLock::new(None),
             persona_block_override: None,
         }
     }
@@ -236,6 +265,7 @@ impl PromptManager {
             current_date_timestamp: dt.format("%Y-%m-%d %H:%M:%S").to_string(),
             subdirectory_hint_tracker: SubdirectoryHintTracker::new(),
             persona: None,
+            last_good_persona: std::sync::RwLock::new(None),
             persona_block_override: None,
         }
     }
@@ -317,6 +347,48 @@ mod tests {
         assert!(!result.contains('\u{E0043}'));
         assert!(result.contains("System prompt"));
         assert!(result.contains("with hidden text"));
+    }
+
+    #[tokio::test]
+    async fn test_persona_fallback_uses_last_good_not_default_under_contention() {
+        use crate::config::agent_identity::{PrimaryPersona, SharedPersona};
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let custom = PrimaryPersona {
+            first_name: "Zephyr".into(),
+            ..PrimaryPersona::default()
+        };
+        let shared: SharedPersona = Arc::new(RwLock::new(custom));
+
+        let mut manager = PromptManager::new();
+        manager.set_persona(shared.clone());
+
+        // First build: live read succeeds and primes the last-known-good cache.
+        let primed = manager.builder().build();
+        assert!(
+            primed.contains("Zephyr"),
+            "primed build should reflect the live persona"
+        );
+        assert!(!primed.contains("Aria"));
+
+        // Simulate a concurrent identity hot-reload holding the write lock, so
+        // the next `try_read()` in build() fails.
+        let write_guard = shared.write().await;
+
+        // Contended build must fall back to the cached "Zephyr", NOT silently
+        // revert to the default "Aria" persona.
+        let contended = manager.builder().build();
+        assert!(
+            contended.contains("Zephyr"),
+            "contended build must use last-known-good persona, got: {contended}"
+        );
+        assert!(
+            !contended.contains("Aria"),
+            "contended build must NOT revert to default Aria"
+        );
+
+        drop(write_guard);
     }
 
     #[test]
