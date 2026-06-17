@@ -30,31 +30,33 @@ async fn ingest_handler(
     State(_state): State<Arc<AppState>>,
     mut multipart: Multipart,
 ) -> Result<Json<reader::Digest>, StatusCode> {
-    while let Ok(Some(field)) = multipart.next_field().await {
-        let filename = field
-            .file_name()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "dropped".to_string());
-        let mime = field
-            .content_type()
-            .map(|s| s.to_string())
-            .unwrap_or_default();
-        let data = field.bytes().await.map_err(|_| StatusCode::BAD_REQUEST)?;
-        if data.len() > MAX_FILE_SIZE {
-            return Err(StatusCode::PAYLOAD_TOO_LARGE);
-        }
+    // One file per request — take the first multipart field.
+    let Ok(Some(field)) = multipart.next_field().await else {
+        return Err(StatusCode::BAD_REQUEST);
+    };
 
-        // Phase 1: images only. Documents (PDF/DOCX) are Phase 2 — until then
-        // the caller falls back to its prior behavior for non-images.
-        if !mime.starts_with("image/") {
-            return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
-        }
-
-        let digest = reader::ingest_image(&data, &filename).await.map_err(|e| {
-            tracing::warn!("reader: ingest failed for {filename}: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-        return Ok(Json(digest));
+    let filename = field
+        .file_name()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "dropped".to_string());
+    let mime = field
+        .content_type()
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+    let data = field.bytes().await.map_err(|_| StatusCode::BAD_REQUEST)?;
+    if data.len() > MAX_FILE_SIZE {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
     }
-    Err(StatusCode::BAD_REQUEST)
+
+    // Phase 1: images only. Documents (PDF/DOCX) are Phase 2 — until then
+    // the caller falls back to its prior behavior for non-images.
+    if !mime.starts_with("image/") {
+        return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    let digest = reader::ingest_image(&data, &filename).await.map_err(|e| {
+        tracing::warn!("reader: ingest failed for {filename}: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    Ok(Json(digest))
 }
