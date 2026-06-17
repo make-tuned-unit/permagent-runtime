@@ -21,12 +21,22 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     env:
-      # Cut debuginfo on the heavy debug build (kuzu/candle/v8/llama rlibs) so
-      # the ubuntu runner clears its disk ceiling at link. line-tables-only keeps
-      # panic/backtrace file:line, so the ubuntu RUST_BACKTRACE=full diagnostics
-      # still work. This is the durable lever — the build graph only grows.
+      # The ubuntu runner is disk-bound at link: the ~50GB build sits at the
+      # runner's ceiling even after the aggressive free-disk step, and the bulk
+      # is DEBUGINFO. Strip it from every layer (ubuntu only — macOS isn't disk-
+      # constrained and stays at defaults so its green leg can't be perturbed):
+      #  - line-tables-only: Rust crates (keeps panic file:line for the ubuntu
+      #    RUST_BACKTRACE=full diagnostics).
+      #  - CFLAGS/CXXFLAGS=-g0: the C++ debuginfo in llama/kuzu (compiled from
+      #    source) that a Rust profile setting can't reach.
+      #  - RUSTFLAGS=-C strip=debuginfo: link-time strip, the only lever that
+      #    reaches v8's prebuilt-lib debuginfo contribution. (.cargo/config.toml
+      #    rustflags are Windows-msvc-target only, so this clobbers nothing here.)
       CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
       CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+      CFLAGS: ${{ matrix.os == 'ubuntu-latest' && '-g0' || '' }}
+      CXXFLAGS: ${{ matrix.os == 'ubuntu-latest' && '-g0' || '' }}
+      RUSTFLAGS: ${{ matrix.os == 'ubuntu-latest' && '-C strip=debuginfo' || '' }}
     steps:
       - name: Free disk space (aggressive, ubuntu only)
         if: runner.os == 'Linux'
