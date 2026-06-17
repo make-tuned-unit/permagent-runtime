@@ -199,6 +199,41 @@ export function fileToBase64(file: File): Promise<string> {
   });
 }
 
+/** Compact result of routing a dropped file to the local Reader (#296). */
+export interface ReaderDigest {
+  summary: string;
+  recall_query: string;
+  source: string;
+  token_count: number;
+  char_count: number;
+  is_visual: boolean;
+  memory_key: string;
+  already_ingested: boolean;
+}
+
+/**
+ * Route a dropped file to the local Reader for OCR/extraction + Brain ingest.
+ * Returns a compact digest instead of the raw bytes. When `is_visual` is true
+ * the Reader found too little text to ingest — the caller should fall back to
+ * sending the image to the agent so visual Q&A still works.
+ */
+export async function readerIngest(file: File): Promise<ReaderDigest> {
+  if (!_daemonToken && isTauri) await loadDaemonToken();
+  const form = new FormData();
+  form.append('file', file, file.name);
+  // Do NOT set Content-Type — the browser adds the multipart boundary.
+  const headers: Record<string, string> = {};
+  if (_daemonToken) headers['Authorization'] = `Bearer ${_daemonToken}`;
+  if (SECRET_KEY) headers['x-secret-key'] = SECRET_KEY;
+  const resp = await fetch(`${API_BASE_URL}/api/reader/ingest`, {
+    method: 'POST',
+    headers,
+    body: form,
+  });
+  if (!resp.ok) throw new Error(`reader ingest HTTP ${resp.status}`);
+  return resp.json() as Promise<ReaderDigest>;
+}
+
 /** Build a user Message in the format the daemon expects */
 export function buildUserMessage(
   text: string,

@@ -152,6 +152,28 @@ impl SafeBrain {
             .map_err(Into::into)
     }
 
+    /// Look up a memory by its logical **key** (not the derived id).
+    ///
+    /// Mirrors spectral's id derivation (`blake3(key)[..8]` as 16-hex, pinned
+    /// rev 2c1f6bf). Used by the Reader for idempotency pre-checks so a re-drop
+    /// of the same file skips OCR + summarization. Correctness does NOT depend
+    /// on this — `remember_with` is itself idempotent via `WriteOutcome::NoOp`
+    /// on a stable key — only the skip-redundant-work optimization does.
+    pub async fn get_memory_by_key(
+        &self,
+        key: &str,
+    ) -> anyhow::Result<Option<spectral::ingest::Memory>> {
+        let id = format!(
+            "{:016x}",
+            u64::from_be_bytes(
+                blake3::hash(key.as_bytes()).as_bytes()[..8]
+                    .try_into()
+                    .expect("blake3 digest is 32 bytes")
+            )
+        );
+        self.get_memory(&id).await
+    }
+
     pub async fn get_memory(&self, id: &str) -> anyhow::Result<Option<spectral::ingest::Memory>> {
         let brain = self.inner.clone();
         let id = id.to_string();
