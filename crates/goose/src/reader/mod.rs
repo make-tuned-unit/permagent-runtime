@@ -7,8 +7,9 @@
 //! `recall_query` — is returned to the caller. Henry communicates the digest
 //! and answers follow-ups via Brain recall, never holding the raw document.
 //!
-//! Phase 1 covers images (screenshots, photos) via Apple Vision OCR. Documents
-//! (PDF/DOCX) land in Phase 2.
+//! Phase 1 covers images (screenshots, photos) via Apple Vision OCR. Phase 2
+//! adds documents: PDF text-layer extraction (lopdf) and plain-text/code
+//! passthrough. Scanned (image-only) PDFs and docx are follow-ups.
 //!
 //! ## The `is_visual` decision (the make-or-break UX knob)
 //!
@@ -22,6 +23,7 @@
 //! hardcoded magic. When `is_visual` is true the Reader does NOT ingest; the
 //! caller passes the image to the agent as before.
 
+pub mod pdf;
 pub mod vision_ocr;
 
 use crate::agents::platform_extensions::get_global_brain;
@@ -122,28 +124,65 @@ fn joined_text(lines: &[vision_ocr::OcrLine]) -> String {
         .join("\n")
 }
 
+/// Idempotency / skip-work pre-check: if these exact bytes were already
+/// ingested, rebuild the digest from the stored memory (no OCR/extract, no
+/// re-summarize). Shared by the image and document paths.
+async fn already_ingested_digest(key: &str, filename: &str) -> Option<Digest> {
+    let brain = get_global_brain()?;
+    let mem = brain.get_memory_by_key(key).await.ok()??;
+    let char_count = mem.content.chars().filter(|c| !c.is_whitespace()).count();
+    let summary = truncate(&mem.content, 240);
+    Some(Digest {
+        recall_query: recall_query_for(filename, &summary),
+        summary,
+        source: READER_SOURCE.to_string(),
+        token_count: mem.content.len() / 4,
+        char_count,
+        is_visual: false,
+        memory_key: key.to_string(),
+        already_ingested: true,
+    })
+}
+
+/// Summarize extracted text, write the full text to the Brain under `key`, and
+/// build the compact digest. Shared tail of the image and document paths.
+async fn finalize_text_ingest(key: String, full_text: String, filename: &str) -> Digest {
+    let summary = summarize(&full_text).await;
+
+    if let Some(brain) = get_global_brain() {
+        let opts = RememberOpts {
+            source: Some(READER_SOURCE.to_string()),
+            visibility: Visibility::Private,
+            ..Default::default()
+        };
+        if let Err(e) = brain.remember_with(&key, &full_text, opts).await {
+            tracing::warn!("reader: brain write failed for {key}: {e}");
+        }
+    } else {
+        tracing::warn!("reader: Brain not ready; digest returned but full text not persisted");
+    }
+
+    let char_count = full_text.chars().filter(|c| !c.is_whitespace()).count();
+    Digest {
+        recall_query: recall_query_for(filename, &summary),
+        summary,
+        source: READER_SOURCE.to_string(),
+        token_count: full_text.len() / 4,
+        char_count,
+        is_visual: false,
+        memory_key: key,
+        already_ingested: false,
+    }
+}
+
 /// Ingest a dropped image: OCR locally, decide visual-vs-textual, and for
 /// textual images summarize + write the full text to the Brain. Returns the
 /// compact [`Digest`]. Idempotent on identical bytes.
 pub async fn ingest_image(image_bytes: &[u8], filename: &str) -> anyhow::Result<Digest> {
     let key = content_key(image_bytes);
 
-    // Idempotency / skip-work pre-check: identical bytes already ingested?
-    if let Some(brain) = get_global_brain() {
-        if let Ok(Some(mem)) = brain.get_memory_by_key(&key).await {
-            let char_count = mem.content.chars().filter(|c| !c.is_whitespace()).count();
-            let summary = truncate(&mem.content, 240);
-            return Ok(Digest {
-                recall_query: recall_query_for(filename, &summary),
-                summary,
-                source: READER_SOURCE.to_string(),
-                token_count: mem.content.len() / 4,
-                char_count,
-                is_visual: false,
-                memory_key: key,
-                already_ingested: true,
-            });
-        }
+    if let Some(d) = already_ingested_digest(&key, filename).await {
+        return Ok(d);
     }
 
     // OCR runs off the async executor (objc2/Vision is blocking native work).
@@ -177,32 +216,117 @@ pub async fn ingest_image(image_bytes: &[u8], filename: &str) -> anyhow::Result<
         });
     }
 
-    let full_text = joined_text(&lines);
-    let summary = summarize(&full_text).await;
+    Ok(finalize_text_ingest(key, joined_text(&lines), filename).await)
+}
 
-    if let Some(brain) = get_global_brain() {
-        let opts = RememberOpts {
-            source: Some(READER_SOURCE.to_string()),
-            visibility: Visibility::Private,
-            ..Default::default()
-        };
-        if let Err(e) = brain.remember_with(&key, &full_text, opts).await {
-            tracing::warn!("reader: brain write failed for {key}: {e}");
-        }
-    } else {
-        tracing::warn!("reader: Brain not ready; digest returned but full text not persisted");
+/// Ingest a dropped document (PDF / text / code / markdown / …): extract text
+/// locally, summarize, and write the full text to the Brain. Returns the
+/// compact [`Digest`] — never the raw bytes. Idempotent on identical bytes.
+///
+/// Documents are never "visual" — there is nothing for the agent to *see*, only
+/// text to read — so `is_visual` is always false. Phase 2 handles text-bearing
+/// PDFs and plain-text/code; scanned (image-only) PDFs and docx are follow-ups.
+pub async fn ingest_document(bytes: &[u8], filename: &str, mime: &str) -> anyhow::Result<Digest> {
+    let key = content_key(bytes);
+
+    if let Some(d) = already_ingested_digest(&key, filename).await {
+        return Ok(d);
     }
 
-    Ok(Digest {
-        recall_query: recall_query_for(filename, &summary),
-        summary,
-        source: READER_SOURCE.to_string(),
-        token_count: full_text.len() / 4,
-        char_count,
-        is_visual: false,
-        memory_key: key,
-        already_ingested: false,
-    })
+    let full_text = extract_document_text(bytes, filename, mime).await?;
+    if full_text.trim().is_empty() {
+        anyhow::bail!("no extractable text in {filename} (mime={mime})");
+    }
+
+    Ok(finalize_text_ingest(key, full_text, filename).await)
+}
+
+/// Extract plain text from a document's bytes by type.
+async fn extract_document_text(bytes: &[u8], filename: &str, mime: &str) -> anyhow::Result<String> {
+    let ext = std::path::Path::new(filename)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    if mime == "application/pdf" || ext == "pdf" {
+        let owned = bytes.to_vec();
+        let text = tokio::task::spawn_blocking(move || pdf::extract_pdf_text(&owned))
+            .await
+            .map_err(|e| anyhow::anyhow!("pdf task panicked: {e}"))?;
+        if text.chars().filter(|c| !c.is_whitespace()).count() < min_chars() {
+            // Image-only / scanned PDF: no text layer. Per-page Vision OCR is a
+            // Phase 2.1 follow-up; for now we surface what (little) we found.
+            tracing::warn!(
+                filename,
+                "reader: PDF has little/no text layer (likely scanned); per-page OCR is a follow-up"
+            );
+        }
+        Ok(text)
+    } else if is_texty(mime, &ext) {
+        Ok(String::from_utf8_lossy(bytes).to_string())
+    } else {
+        anyhow::bail!("unsupported document type: mime={mime} ext={ext}")
+    }
+}
+
+/// Whether a non-PDF document is plain-text-like (safe to read as UTF-8).
+fn is_texty(mime: &str, ext: &str) -> bool {
+    if mime.starts_with("text/") {
+        return true;
+    }
+    matches!(
+        mime,
+        "application/json"
+            | "application/xml"
+            | "application/x-yaml"
+            | "application/yaml"
+            | "application/toml"
+            | "application/javascript"
+            | "application/x-sh"
+    ) || matches!(
+        ext,
+        "txt"
+            | "md"
+            | "markdown"
+            | "rst"
+            | "csv"
+            | "tsv"
+            | "log"
+            | "json"
+            | "yaml"
+            | "yml"
+            | "toml"
+            | "xml"
+            | "html"
+            | "htm"
+            | "ini"
+            | "cfg"
+            | "conf"
+            | "rs"
+            | "ts"
+            | "tsx"
+            | "js"
+            | "jsx"
+            | "py"
+            | "go"
+            | "java"
+            | "c"
+            | "h"
+            | "cpp"
+            | "hpp"
+            | "cc"
+            | "rb"
+            | "php"
+            | "swift"
+            | "kt"
+            | "sh"
+            | "bash"
+            | "zsh"
+            | "sql"
+            | "css"
+            | "scss"
+    )
 }
 
 /// Local-model summary via Ollama; degrades to a truncation if Ollama is down
@@ -338,5 +462,45 @@ mod tests {
         );
         assert!(q.contains("Quarterly_Report"));
         assert!(q.contains("Q2"));
+    }
+
+    #[test]
+    fn is_texty_covers_text_code_and_data() {
+        assert!(is_texty("text/plain", "txt"));
+        assert!(is_texty("text/markdown", "md"));
+        assert!(is_texty("application/json", "json"));
+        // Recognized by extension even with a generic/empty mime.
+        assert!(is_texty("application/octet-stream", "rs"));
+        assert!(is_texty("", "py"));
+        // Not text.
+        assert!(!is_texty("application/pdf", "pdf"));
+        assert!(!is_texty("image/png", "png"));
+        assert!(!is_texty("application/octet-stream", "bin"));
+    }
+
+    #[tokio::test]
+    async fn document_text_passthrough_reads_utf8() {
+        let text = extract_document_text(b"hello reader\nsecond line", "notes.txt", "text/plain")
+            .await
+            .expect("text passthrough");
+        assert_eq!(text, "hello reader\nsecond line");
+    }
+
+    #[tokio::test]
+    async fn document_unsupported_type_errors() {
+        let err = extract_document_text(
+            &[0xFF, 0xD8, 0xFF],
+            "mystery.bin",
+            "application/octet-stream",
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("unsupported document type"));
+    }
+
+    #[test]
+    fn pdf_extract_on_garbage_is_empty_not_panic() {
+        assert_eq!(pdf::extract_pdf_text(b"not a pdf at all"), "");
+        assert_eq!(pdf::extract_pdf_text(&[]), "");
     }
 }

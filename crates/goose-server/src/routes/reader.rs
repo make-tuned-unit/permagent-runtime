@@ -5,7 +5,8 @@
 //! a compact digest (summary + recall handle). This is the interception point
 //! that keeps raw file bytes out of the agent's context: the command-center
 //! chat surface POSTs dropped files here *before* base64-ing them into a
-//! message. Phase 1 handles images; documents (PDF/DOCX) arrive in Phase 2.
+//! message. Images go through Vision OCR (Phase 1); documents (PDF text layer,
+//! plain-text/code) through extraction (Phase 2).
 
 use crate::state::AppState;
 use axum::extract::{DefaultBodyLimit, Multipart, State};
@@ -48,13 +49,15 @@ async fn ingest_handler(
         return Err(StatusCode::PAYLOAD_TOO_LARGE);
     }
 
-    // Phase 1: images only. Documents (PDF/DOCX) are Phase 2 — until then
-    // the caller falls back to its prior behavior for non-images.
-    if !mime.starts_with("image/") {
-        return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
-    }
-
-    let digest = reader::ingest_image(&data, &filename).await.map_err(|e| {
+    // Images → Vision OCR (Phase 1); everything else → document extraction
+    // (Phase 2: PDF text layer + plain-text/code). Both return the same compact
+    // digest and keep the raw bytes out of the agent's context.
+    let result = if mime.starts_with("image/") {
+        reader::ingest_image(&data, &filename).await
+    } else {
+        reader::ingest_document(&data, &filename, &mime).await
+    };
+    let digest = result.map_err(|e| {
         tracing::warn!("reader: ingest failed for {filename}: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;

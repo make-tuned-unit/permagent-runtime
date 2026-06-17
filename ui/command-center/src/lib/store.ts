@@ -482,34 +482,42 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       return;
     }
 
-    // Route dropped images through the local Reader (#296) BEFORE base64-ing
-    // them into the message. The Reader OCRs locally and ingests the text into
-    // the Brain; Henry receives a compact digest, NOT the raw bytes — that is
-    // the token-leak fix. Only "visual" images (little/no text, e.g. a photo)
-    // fall through to base64 so the agent can still SEE them.
+    // Route EVERY dropped file through the local Reader (#296) BEFORE it enters
+    // the message. The Reader extracts text locally (Vision OCR for images, PDF
+    // text layer / UTF-8 for documents) and ingests it into the Brain; Henry
+    // receives a compact digest, NOT the raw bytes — the token-leak fix. Only
+    // "visual" images (little/no text, e.g. a photo) fall through to base64 so
+    // the agent can still SEE them. Documents previously died silently on drop.
     let images: Array<{ data: string; mime_type: string }> | undefined;
     const digests: Array<{ name: string; summary: string; recall_query: string }> = [];
     if (files && files.length > 0) {
-      const imageFiles = files.filter(f => f.type.startsWith('image/'));
-      console.log('[send] total files:', files.length, 'image files after filter:', imageFiles.length,
-        'all types:', files.map(f => `${f.name}(type="${f.type}")`));
+      console.log('[send] total files:', files.length,
+        'types:', files.map(f => `${f.name}(type="${f.type}")`));
       const visualImages: File[] = [];
-      for (const f of imageFiles) {
+      for (const f of files) {
+        const isImage = f.type.startsWith('image/');
         try {
           const d = await readerIngest(f);
-          if (d.is_visual) {
-            // Sparse/low-confidence text → the agent needs to see it.
+          if (isImage && d.is_visual) {
+            // Sparse/low-confidence text → the agent needs to see the image.
             console.log('[reader] visual image, falling through to vision:', f.name);
             visualImages.push(f);
           } else {
-            // OCR'd + ingested into the Brain. Digest only — bytes never sent.
+            // Extracted + ingested into the Brain. Digest only — bytes never sent.
             console.log('[reader] ingested', f.name, '→', d.token_count, 'tok kept out of context');
             digests.push({ name: f.name, summary: d.summary, recall_query: d.recall_query });
           }
         } catch (err) {
-          // Fail-open: never lose the user's image if the Reader is unavailable.
-          console.error('[reader] ingest failed, falling back to image:', f.name, err);
-          visualImages.push(f);
+          if (isImage) {
+            // Fail-open: never lose the user's image if the Reader is unavailable.
+            console.error('[reader] image ingest failed, falling back to image:', f.name, err);
+            visualImages.push(f);
+          } else {
+            // A document the Reader couldn't read — surface it rather than drop
+            // it silently (the old behavior). No base64 path for documents.
+            console.error('[reader] document ingest failed:', f.name, err);
+            digests.push({ name: f.name, summary: '(could not extract text from this file)', recall_query: '' });
+          }
         }
       }
       if (visualImages.length > 0) {
@@ -531,7 +539,9 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     let outgoingText = text;
     if (digests.length > 0) {
       const block = digests
-        .map(d => `📎 ${d.name} — ${d.summary} (recall: "${d.recall_query}")`)
+        .map(d => d.recall_query
+          ? `📎 ${d.name} — ${d.summary} (recall: "${d.recall_query}")`
+          : `📎 ${d.name} — ${d.summary}`)
         .join('\n');
       // Replace the bare "(file upload)" placeholder ChatInput sends for
       // file-only messages; otherwise append.
