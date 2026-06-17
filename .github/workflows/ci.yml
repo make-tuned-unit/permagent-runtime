@@ -20,13 +20,27 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      # Cut debuginfo on the heavy debug build (kuzu/candle/v8/llama rlibs) so
+      # the ubuntu runner clears its disk ceiling at link. line-tables-only keeps
+      # panic/backtrace file:line, so the ubuntu RUST_BACKTRACE=full diagnostics
+      # still work. This is the durable lever — the build graph only grows.
+      CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
+      CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
     steps:
-      - name: Free disk space (ubuntu only)
+      - name: Free disk space (aggressive, ubuntu only)
         if: runner.os == 'Linux'
         uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
         with:
-          tool-cache: false
-          large-packages: false
+          # Max reclaim (~30GB+): the workspace debug build (kuzu+candle+v8+
+          # llama+sherpa) sits at the runner's disk ceiling and ENOSPC'd at the
+          # link stage. The Rust toolchain is installed fresh below, so dropping
+          # the hosted tool-cache is safe; android/dotnet/haskell are unused.
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
           docker-images: true
           swap-storage: true
       - uses: actions/checkout@v6
