@@ -1,0 +1,81 @@
+{
+ "_note": "World V2 combined-scene integration evidence. Captured via CDP harness (ui/command-center/worldcensus.html -> WorldView) in headless Chrome. SwiftShader software WebGL: fps is NOT GPU-representative; draw-call/triangle counts below are renderer-independent scene-graph reads.",
+ "lightCensus": {
+  "before": {
+   "total": 23,
+   "pointLights": 20,
+   "shadowCasters": 1,
+   "byType": {
+    "AmbientLight": 1,
+    "DirectionalLight": 2,
+    "PointLight": 20
+   }
+  },
+  "after": {
+   "total": 12,
+   "pointLights": 9,
+   "shadowCasters": 1,
+   "byType": {
+    "AmbientLight": 1,
+    "DirectionalLight": 2,
+    "PointLight": 9
+   }
+  },
+  "pointLightReduction": "20 -> 9",
+  "cut": [
+   {
+    "group": "Mezzanine library ring sconces",
+    "was": "8x pointLight (amber 0.2 / dist 8)",
+    "now": "8x emissive glow fixtures (core + additive halo)",
+    "file": "areas/hall/MezzanineLibrary.tsx"
+   },
+   {
+    "group": "Hall column rim wash",
+    "was": "3x pointLight (cyan 0.15 / dist 4, one per surviving column)",
+    "now": "3x additive cyan sprite (column already has emissive circuit vein)",
+    "file": "areas/hall/HallStructure.tsx"
+   }
+  ],
+  "preserved": [
+   {
+    "what": "warm directional KEY (the single shadow caster)",
+    "type": "DirectionalLight castShadow"
+   },
+   {
+    "what": "cool directional FILL",
+    "type": "DirectionalLight"
+   },
+   {
+    "what": "Mouth key (world light / portal focal)",
+    "type": "PointLight pale 1.1 / dist 78"
+   },
+   {
+    "what": "Stargate portal focal x2",
+    "type": "PointLight blue 1.2/dist8 + 0.4/dist12"
+   },
+   {
+    "what": "6x ReadingDesk library lamps (genuine focal pools)",
+    "type": "PointLight amber 0.5 / dist 3"
+   },
+   {
+    "what": "Henry presence pool",
+    "type": "emissive RingGeometry mesh (NOT a pointLight)"
+   },
+   {
+    "what": "Librarian lamp",
+    "type": "emissive flame disc (NOT a pointLight; not mounted in live hall)"
+   }
+  ]
+ },
+ "perf": {
+  "harness": "SwiftShader software WebGL (headless Chrome --use-angle=swiftshader)",
+  "fps_swiftshader_software": "~2-3 fps (NOT representative of real GPU; software rasterizer)",
+  "sceneGraph_drawables": 837,
+  "sceneGraph_triangles": 80898,
+  "instancedCopies": 86,
+  "drawCalls_note": "gl.info.render.calls could not be read live: the EffectComposer post chain + the FROZEN PerfSampler's per-frame gl.info.reset() zero render.calls at the sampler read point, and r3f v8 does not expose its store on the DOM canvas for a forced-render probe. Draw calls are bounded above by 837 drawables; the 86 instanced copies collapse into far fewer real GL draws.",
+  "meshes_before": 796,
+  "meshes_after": 815,
+  "meshes_delta": "+19 (cheap unlit emissive sprites replacing 11 per-pixel point lights)"
+ }
+}

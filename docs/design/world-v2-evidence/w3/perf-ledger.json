@@ -1,0 +1,26 @@
+{
+  "renderer": "ANGLE Metal (headless Chrome 1600x1000, dpr 2, full app + WorldPostProcessing chain)",
+  "method": "shared/perf.ts PerfSampler (frozen probe) via window.__worldPerf — whole-frame accumulation including EffectComposer passes. fps numbers are headless-capture-rig bound and only comparable to each other.",
+  "before_v1_characters": {
+    "run": "drive.mjs before — 2026-06-11T02:16Z (CyborgCharacter build, same scene)",
+    "meshcount": { "mesh": 1274, "skinned": 0 },
+    "wide_view": { "fps": 3.5, "calls": 1340, "triangles": 71297, "dpr": 2 }
+  },
+  "after_v2_rig": {
+    "run": "drive.mjs record — 2026-06-12T00:20Z",
+    "meshcount": { "mesh": 856, "skinned": 26 },
+    "wide_view": { "fps": 5.4, "calls": 920, "triangles": 79773, "dpr": 2 }
+  },
+  "per_agent": {
+    "method": "measure-dc.mjs census 2026-06-12T00:40Z — hide each agent's root group, resample PerfSampler, calls delta vs all-visible baseline (921 calls, wide view). Delta includes every post-chain pass that re-draws the agent.",
+    "v1_baseline": "54 static mesh JSX elements per agent in CyborgCharacter.tsx plus state/label extras; measured scene delta v1->v2: 1274 - 856 = 418 plain meshes removed across the 5 agents (~84/agent incl. effects)",
+    "agents": {
+      "henry": { "skinned_meshes": 6, "full_frame_dc_delta": 8 },
+      "librarian": { "skinned_meshes": 5, "full_frame_dc_delta": 7 },
+      "aria": { "skinned_meshes": 5, "full_frame_dc_delta": 7 },
+      "felix": { "skinned_meshes": 5, "full_frame_dc_delta": 7 },
+      "nova": { "skinned_meshes": 5, "full_frame_dc_delta": 7 }
+    },
+    "totals": { "v1_scene_meshes_for_agents": 418, "v2_skinned_draws": 26, "v2_full_frame_dc_delta": 36 }
+  }
+}

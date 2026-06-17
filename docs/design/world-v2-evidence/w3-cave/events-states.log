@@ -1,0 +1,20 @@
+2026-06-15T19:37:57.324Z [harness] world tab click: World
+2026-06-15T19:38:09.336Z [henry-poll] current_state=idle
+2026-06-15T19:38:09.339Z [librarian-poll] state=batch_complete task="Batch complete — described 5 memories"
+2026-06-15T19:38:09.340Z [meshcount] {"mesh":783,"skinned":26}
+2026-06-15T19:38:09.342Z [perf] initial {"fps":10.3,"calls":0,"triangles":0,"geometries":763,"textures":30,"programs":28,"dpr":1.5}
+2026-06-15T19:38:09.838Z [events-ws] librarian_describe_started ts=2026-06-15T19:29:57.832229Z {"memory_key":"chat-20260615_2-2","started_at":"2026-06-15T19:29:57.831512+00:00"}
+2026-06-15T19:38:09.839Z [events-ws] librarian_describe_completed ts=2026-06-15T19:31:17.682602Z {"memory_key":"chat-20260615_2-2","description":"Described the nature of Henry as an AI agent and how his memo
+2026-06-15T19:38:09.839Z [events-ws] librarian_describe_started ts=2026-06-15T19:31:17.683511Z {"memory_key":"scheduled-storage-insights-5","started_at":"2026-06-15T19:31:17.683498+00:00"}
+2026-06-15T19:38:09.840Z [events-ws] librarian_describe_completed ts=2026-06-15T19:32:02.557284Z {"memory_key":"scheduled-storage-insights-5","description":"User requested a storage health scan on their Mac 
+2026-06-15T19:38:09.840Z [events-ws] librarian_describe_started ts=2026-06-15T19:32:02.557431Z {"memory_key":"activity:1781529446:automation_job_completed:019ecb6e","started_at":"2026-06-15T19:32:02.557425
+2026-06-15T19:38:09.840Z [events-ws] librarian_describe_completed ts=2026-06-15T19:32:29.074453Z {"memory_key":"activity:1781529446:automation_job_completed:019ecb6e","description":"Automation named 'storage
+2026-06-15T19:38:09.840Z [events-ws] librarian_describe_started ts=2026-06-15T19:32:29.074697Z {"memory_key":"scheduled-workspace-snapshot-11","started_at":"2026-06-15T19:32:29.074691+00:00"}
+2026-06-15T19:38:09.841Z [events-ws] librarian_describe_completed ts=2026-06-15T19:33:19.676372Z {"memory_key":"scheduled-workspace-snapshot-11","description":"Generated a morning workspace snapshot includin
+2026-06-15T19:38:09.841Z [events-ws] librarian_describe_started ts=2026-06-15T19:33:19.676461Z {"memory_key":"activity:1781529431:automation_job_completed:019ecb6d","started_at":"2026-06-15T19:33:19.676457
+2026-06-15T19:38:09.842Z [events-ws] librarian_describe_completed ts=2026-06-15T19:33:53.716411Z {"memory_key":"activity:1781529431:automation_job_completed:019ecb6d","description":"The automation job named 
+2026-06-15T19:38:11.704Z [frame] 000-1781552291701-30-henry-available.png
+2026-06-15T19:38:14.388Z [frame] 001-1781552294385-31-sim-aria.png
+2026-06-15T19:38:17.233Z [frame] 002-1781552297230-32-sim-nova.png
+2026-06-15T19:38:17.237Z [perf] states {"fps":6.6,"calls":0,"triangles":0,"geometries":774,"textures":30,"programs":43,"dpr":1.5}
+2026-06-15T19:38:17.238Z [harness] done

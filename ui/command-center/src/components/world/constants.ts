@@ -11,36 +11,38 @@ export const COLORS = {
   floorGridGlow: '#1A4D5C',
 } as const;
 
-// Station layout: cardinal points, radius ~10 from center
+// Station pedestals: cardinal points at radius ~10 — threshold markers for the
+// zones beyond (bible §3). Display labels follow the naming law: product tab
+// names EXACTLY (Build, Brain, Automate, Mesh); the Lab keeps "Lab".
+// Ids are unchanged (W2 re-themes pedestals + icons in the detail pass).
 export const STATIONS: StationConfig[] = [
   {
     id: 'workbench',
-    name: 'Workbench',
+    name: 'Lab',
     position: [0, 0, -10] as Vector3Tuple,
-    iconType: 'gear',
-    tooltip: 'Workbench',
+    iconType: 'planets',
+    tooltip: 'Lab',
   },
   {
     id: 'library',
-    name: 'Library',
+    name: 'Build',
     position: [10, 0, 0] as Vector3Tuple,
-    iconType: 'scroll',
-    tooltip: 'Library (Mezzanine) - The Brain',
+    iconType: 'gear',
+    tooltip: 'Build',
   },
   {
     id: 'observatory',
-    name: 'Observatory',
+    name: 'Brain',
     position: [0, 0, 10] as Vector3Tuple,
-    iconType: 'planets',
-    tooltip: 'Observatory',
+    iconType: 'scroll',
+    tooltip: 'Brain',
   },
   {
     id: 'forum-portal',
-    name: 'Forum Portal',
+    name: 'Automate',
     position: [-10, 0, 0] as Vector3Tuple,
     iconType: 'portal',
-    tooltip: 'Mesh Forum (coming soon)',
-    disabled: true,
+    tooltip: 'Automate',
   },
 ];
 

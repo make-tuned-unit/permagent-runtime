@@ -1,0 +1,9 @@
+renderer: "Chrome/149.0.7827.103"
+tab click [World]: null
+# R0 pre-remediation: dpr 2 (device) + antialias ON
+fps	calls	tris	geoms	tex	progs	dpr
+3.5	1340	71297	1248	20	16	2
+3	1340	71297	1328	20	16	2
+3.3	1340	71297	1408	20	16	2
+3.3	1340	71297	1478	20	16	2
+2.7	1340	71297	1538	20	16	2

@@ -2,7 +2,7 @@ import { Suspense } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
-import { StargatePortal } from './components/world/Stargate';
+import { StargatePortal } from './components/world/areas/antechamber/Stargate';
 
 export default function StargateTest() {
   return (

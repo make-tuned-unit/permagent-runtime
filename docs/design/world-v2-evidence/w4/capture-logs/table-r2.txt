@@ -1,0 +1,9 @@
+renderer: "Chrome/149.0.7827.103"
+tab click [World]: World
+# R2 HEAD (committed): dpr cap 1.5 + antialias OFF — resnapped sampler
+fps	calls	tris	geoms	tex	progs	dpr
+5.3	1340	71297	1238	20	16	1.5
+5.1	1340	71297	1248	20	16	1.5
+5.3	1340	71297	1368	20	16	1.5
+5.1	1348	72385	1488	20	16	1.5
+5	1348	72385	1598	20	16	1.5

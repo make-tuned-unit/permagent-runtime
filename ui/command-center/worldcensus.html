@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>World V2 Census + Evidence (dev)</title>
+    <style>
+      html,
+      body,
+      #root {
+        margin: 0;
+        height: 100%;
+        width: 100%;
+        background: #05070d;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Coordinator integration harness for the World V2 / THE CAVE swarm.
+         Mounts the real integrated <WorldView/> standalone so the CDP evidence
+         harness can read window.__worldScene (light census) and window.__worldPerf
+         (fps/calls/triangles) and capture screenshots. vite serves this in dev only;
+         `vite build` emits index.html only, never this file. -->
+    <div id="root"></div>
+    <script type="module" src="/src/components/world/devcensus/main.tsx"></script>
+  </body>
+</html>

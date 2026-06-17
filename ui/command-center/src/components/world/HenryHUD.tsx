@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { COLORS } from './constants';
+import { AGENT_TRIM } from './shared/palette';
 import { api } from '../../lib/api';
 import { HudShell, Section, StatRow, useTabReset } from './HudShell';
 import type { HudTab } from './HudShell';
@@ -23,7 +24,8 @@ interface HenryStatus {
 
 // ── Henry's trim color ──────────────────────────────────────────────
 
-const HENRY_TRIM = '#00D9FF';
+// Warm white-gold (#F0E6D0) per WORLD_VIEW_BIBLE.md §2 / §9 D2 — resolves issue #87.
+const HENRY_TRIM = AGENT_TRIM.henry;
 
 // ── State badge colors ──────────────────────────────────────────────
 

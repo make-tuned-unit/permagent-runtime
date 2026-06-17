@@ -1,0 +1,46 @@
+2026-06-12T00:36:09.486Z [harness] world tab click: World
+2026-06-12T00:36:21.524Z [henry-poll] current_state=idle tool=none
+2026-06-12T00:36:21.531Z [librarian-poll] state=batch_complete task="Batch complete — described 2 memories"
+2026-06-12T00:36:21.535Z [meshcount] {"mesh":856,"skinned":26}
+2026-06-12T00:36:22.022Z [events-ws] librarian_describe_started ts=2026-06-11T17:33:15.053320Z {"memory_key":"chat-20260611_4-2","started_at":"2026-06-11T17:33:15.052422+00:00"}
+2026-06-12T00:36:22.023Z [events-ws] librarian_describe_completed ts=2026-06-11T17:34:53.532562Z {"memory_key":"chat-20260611_4-2","description":"Described the nature of the AI assistant and its memory system. Related
+2026-06-12T00:36:22.024Z [events-ws] librarian_describe_started ts=2026-06-11T17:34:53.549211Z {"memory_key":"chat-20260611_3-2","started_at":"2026-06-11T17:34:53.549177+00:00"}
+2026-06-12T00:36:22.025Z [events-ws] librarian_describe_completed ts=2026-06-11T17:36:10.051154Z {"memory_key":"chat-20260611_3-2","description":"Described the nature of the AI system and its memory functionality. Rel
+2026-06-12T00:36:22.025Z [events-ws] librarian_describe_started ts=2026-06-11T17:36:10.058170Z {"memory_key":"chat-20260611_2-3","started_at":"2026-06-11T17:36:10.058155+00:00"}
+2026-06-12T00:36:22.026Z [events-ws] librarian_describe_completed ts=2026-06-11T17:37:18.895027Z {"memory_key":"chat-20260611_2-3","description":"The memory describes an AI assistant identifying itself as Henry. Relat
+2026-06-12T00:36:22.026Z [events-ws] librarian_describe_started ts=2026-06-12T00:23:00.405487Z {"memory_key":"chat-20260612_2-2","started_at":"2026-06-12T00:23:00.402819+00:00"}
+2026-06-12T00:36:22.026Z [events-ws] librarian_describe_completed ts=2026-06-12T00:24:21.454518Z {"memory_key":"chat-20260612_2-2","description":"Described the nature of the memory system and how it functions. Related
+2026-06-12T00:36:22.026Z [events-ws] librarian_describe_started ts=2026-06-12T00:24:21.467021Z {"memory_key":"chat-20260612_1-2","started_at":"2026-06-12T00:24:21.466951+00:00"}
+2026-06-12T00:36:22.028Z [events-ws] librarian_describe_completed ts=2026-06-12T00:25:45.639604Z {"memory_key":"chat-20260612_1-2","description":"Described the nature of the AI system and its memory functionality. Rel
+2026-06-12T00:36:24.835Z [frame] 0000-1781224584834-sim-wide.jpg
+2026-06-12T00:36:28.639Z [frame] 0001-1781224588638-sim-wide.jpg
+2026-06-12T00:36:32.461Z [frame] 0002-1781224592460-sim-wide.jpg
+2026-06-12T00:36:36.312Z [frame] 0003-1781224596311-sim-wide.jpg
+2026-06-12T00:36:40.069Z [frame] 0004-1781224600068-sim-wide.jpg
+2026-06-12T00:36:43.845Z [frame] 0005-1781224603844-sim-wide.jpg
+2026-06-12T00:36:47.642Z [frame] 0006-1781224607641-sim-wide.jpg
+2026-06-12T00:36:51.442Z [frame] 0007-1781224611439-sim-wide.jpg
+2026-06-12T00:36:55.219Z [frame] 0008-1781224615218-sim-wide.jpg
+2026-06-12T00:36:58.946Z [frame] 0009-1781224618944-sim-wide.jpg
+2026-06-12T00:37:02.711Z [frame] 0010-1781224622710-sim-wide.jpg
+2026-06-12T00:37:06.509Z [frame] 0011-1781224626509-sim-wide.jpg
+2026-06-12T00:37:10.298Z [frame] 0012-1781224630298-sim-wide.jpg
+2026-06-12T00:37:14.093Z [frame] 0013-1781224634092-sim-wide.jpg
+2026-06-12T00:37:17.929Z [frame] 0014-1781224637928-sim-wide.jpg
+2026-06-12T00:37:21.764Z [frame] 0015-1781224641763-sim-wide.jpg
+2026-06-12T00:37:25.562Z [frame] 0016-1781224645561-sim-wide.jpg
+2026-06-12T00:37:29.399Z [frame] 0017-1781224649398-sim-wide.jpg
+2026-06-12T00:37:33.202Z [frame] 0018-1781224653201-sim-wide.jpg
+2026-06-12T00:37:36.986Z [frame] 0019-1781224656986-sim-wide.jpg
+2026-06-12T00:37:40.836Z [frame] 0020-1781224660835-sim-wide.jpg
+2026-06-12T00:37:44.659Z [frame] 0021-1781224664658-sim-wide.jpg
+2026-06-12T00:37:48.447Z [frame] 0022-1781224668446-sim-wide.jpg
+2026-06-12T00:37:52.249Z [frame] 0023-1781224672249-sim-wide.jpg
+2026-06-12T00:37:59.716Z [action] sim closeup aria stationary=true
+2026-06-12T00:38:07.808Z [frame] 0024-1781224687796-sim-aria-closeup.png
+2026-06-12T00:38:12.060Z [action] sim closeup felix stationary=true
+2026-06-12T00:38:19.680Z [frame] 0025-1781224699671-sim-felix-closeup.png
+2026-06-12T00:38:20.453Z [action] sim closeup nova stationary=true
+2026-06-12T00:38:26.032Z [frame] 0026-1781224706028-sim-nova-closeup.png
+2026-06-12T00:38:26.041Z [perf] sim-final {"fps":1,"calls":225,"triangles":63073,"geometries":841,"textures":25,"programs":22,"dpr":2}
+2026-06-12T00:38:26.042Z [harness] done

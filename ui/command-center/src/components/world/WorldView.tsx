@@ -1,17 +1,27 @@
 import { Suspense, useState, useCallback, useEffect, useRef } from 'react';
-import { Canvas } from '@react-three/fiber';
+import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import type { CameraMode } from './types';
+import type { CameraMode, AgentState } from './types';
 import { COLORS, STATIONS } from './constants';
-import { useAgentStates } from './useAgentStates';
 import { WorldSceneContent } from './WorldScene';
-import { WorldCharacters } from './WorldCharacters';
-import { WorldCamera } from './WorldCamera';
+// W3 v2 agent stack (mount swap, bible §5 — replaces legacy WorldCharacters/useAgentStates).
+import { WorldAgents, ROSTER, getAgentPosition, getHenryPresence } from './agents';
+import { getBankSnapshot } from './shared/tendingBank';
+import { getConstructionProgress } from './agents/construction';
+import { WorldCamera } from './camera/WorldCamera';
 import { WorldPostProcessing } from './WorldPostProcessing';
 import { WorldHUD } from './WorldHUD';
 import { LibrarianHUD } from './LibrarianHUD';
 import { HenryHUD } from './HenryHUD';
 import { AgentPicker } from './AgentPicker';
+import { PerfSampler } from './shared/perf';
+import { useWorldVisibility } from './atmosphere/useWorldVisibility';
+import { installDevHarness } from './atmosphere/devHarness';
+import { TourMode } from './camera/TourMode';
+import { TurnFraming } from './camera/TurnFraming';
+
+// DEV-ONLY: window.__worldDev harness for ambience evidence (no-op in prod).
+installDevHarness();
 
 function LoadingShimmer() {
   return (
@@ -47,6 +57,77 @@ function LoadingShimmer() {
   );
 }
 
+// EVIDENCE-ONLY hooks (no-op in production): expose the CDP harness surface the W3
+// rig drives — countMeshes + per-agent live position from the motion store. The camera
+// pin hook (window.__worldDebug.setCam) is owned by WorldScene's WorldDevHooks; this adds
+// the agents reads the harness's drive.mjs expects (window.__worldAgents.getAgentPosition).
+function AgentEvidenceHooks() {
+  const scene = useThree((s) => s.scene);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const w = window as unknown as Record<string, unknown>;
+    w.__worldAgents = { getAgentPosition };
+    // Evidence reads for the tending bank ledger + construction progress + Henry presence.
+    w.__worldBank = () => ({ ...getBankSnapshot(), construction: getConstructionProgress() });
+    w.__worldHenry = () => ({ ...getHenryPresence() });
+    const dbg = (w.__worldDebug ?? {}) as Record<string, unknown>;
+    dbg.countMeshes = () => {
+      let mesh = 0;
+      let skinned = 0;
+      scene.traverse((o) => {
+        const obj = o as THREE.Object3D & { isMesh?: boolean; isSkinnedMesh?: boolean };
+        if (obj.isSkinnedMesh) skinned++;
+        else if (obj.isMesh) mesh++;
+      });
+      return { mesh, skinned };
+    };
+    w.__worldDebug = dbg;
+    return () => {
+      delete w.__worldAgents;
+      delete w.__worldBank;
+      delete w.__worldHenry;
+    };
+  }, [scene]);
+  return null;
+}
+
+// Bridges the autonomous V2 motion store to the (W4-owned) camera's third-person follow.
+// The V2 agents move themselves; this proxies the selected agent's LIVE position into the
+// AgentState shape the camera reads, refreshed each frame. WASD nudging is gone — V2
+// agents are autonomous (no per-user puppeting), so onMoveAgent is a no-op.
+function useSelectedAgentProxy(selectedAgentId: string | null): AgentState | null {
+  const ref = useRef<AgentState | null>(null);
+  useFrame(() => {
+    if (!selectedAgentId) {
+      ref.current = null;
+      return;
+    }
+    const pos = getAgentPosition(selectedAgentId);
+    const id = ROSTER.find((r) => r.id === selectedAgentId);
+    if (!pos || !id) {
+      ref.current = null;
+      return;
+    }
+    if (!ref.current || ref.current.id !== selectedAgentId) {
+      ref.current = {
+        id: id.id,
+        name: id.name,
+        role: id.role,
+        position: { x: pos.x, y: pos.y, z: pos.z },
+        activity: 'idle',
+        currentStation: null,
+        togaTrimColor: id.trimColor,
+        isHenry: id.isHenry,
+      };
+    } else {
+      ref.current.position.x = pos.x;
+      ref.current.position.y = pos.y;
+      ref.current.position.z = pos.z;
+    }
+  });
+  return ref.current;
+}
+
 function SceneContent({
   cameraMode,
   selectedAgentId,
@@ -66,20 +147,13 @@ function SceneContent({
   onHoverStation: (id: string | null) => void;
   onClickStation: (id: string) => void;
 }) {
-  const { agents, moveAgent } = useAgentStates();
-  const selectedAgent = agents.find((a) => a.id === selectedAgentId) ?? null;
-
-  const handleMoveAgent = useCallback((dx: number, dz: number) => {
-    if (selectedAgentId) {
-      moveAgent(selectedAgentId, dx, dz);
-    }
-  }, [selectedAgentId, moveAgent]);
+  const selectedAgent = useSelectedAgentProxy(selectedAgentId);
+  const noopMove = useCallback(() => {}, []);
 
   return (
     <>
       <WorldSceneContent onHoverStation={onHoverStation} onClickStation={onClickStation} />
-      <WorldCharacters
-        agents={agents}
+      <WorldAgents
         hoveredAgent={hoveredAgent}
         onHoverAgent={onHoverAgent}
         onSelectAgent={onSelectAgent}
@@ -88,9 +162,13 @@ function SceneContent({
         mode={cameraMode}
         selectedAgent={selectedAgent}
         onModeChange={onModeChange}
-        onMoveAgent={handleMoveAgent}
+        onMoveAgent={noopMove}
       />
+      <TourMode cameraMode={cameraMode} />
+      {/* THE TURN — day-one wall framing + the 180° reveal (Shift+T). */}
+      <TurnFraming cameraMode={cameraMode} />
       <WorldPostProcessing />
+      {import.meta.env.DEV && <AgentEvidenceHooks />}
     </>
   );
 }
@@ -103,6 +181,11 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
   const [showFps, setShowFps] = useState(false);
   const [activeHud, setActiveHud] = useState<'henry' | 'librarian' | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  // Perf (bible §8 item 2): pause the render loop whenever this view has no
+  // layout box — i.e. its workspace tab is hidden (display:none) or the canvas
+  // has not been sized yet. Prevents GPU burn behind other tabs and the
+  // zero-size GL_INVALID_FRAMEBUFFER_OPERATION spam at startup.
+  const canvasActive = useWorldVisibility(containerRef);
 
   const handleSelectAgent = useCallback((id: string) => {
     if (id === 'henry') {
@@ -171,7 +254,14 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
     <div ref={containerRef} style={{ width: '100%', height: '100%', position: 'relative', background: COLORS.deepVoid }}>
       <Suspense fallback={<LoadingShimmer />}>
         <Canvas
-          shadows="soft"
+          // Bible §8 item 3: explicit PCF — `shadows="soft"` is deprecated in
+          // three 0.184 and silently fell back to PCF anyway. Map size stays
+          // 2048 (set on the key light in atmosphere/Lighting).
+          shadows={{ type: THREE.PCFShadowMap }}
+          // Bible §8 item 1: the scene is fill-rate bound (~4fps at dpr 2).
+          dpr={[1, 1.5]}
+          // Bible §8 item 2: stop rendering when the World tab is hidden.
+          frameloop={canvasActive ? 'always' : 'never'}
           camera={{
             position: [20, 15, 20],
             fov: 50,
@@ -179,7 +269,9 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
             far: 500,
           }}
           gl={{
-            antialias: true,
+            // Bible §8 item 1: MSAA off — the post chain owns AA duties and
+            // antialias:true multiplies the fill-rate cost at full dpr.
+            antialias: false,
             toneMapping: THREE.ACESFilmicToneMapping,
             toneMappingExposure: 1.3,
             outputColorSpace: THREE.SRGBColorSpace,
@@ -201,6 +293,8 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
             onHoverStation={setHoveredStation}
             onClickStation={handleClickStation}
           />
+          {/* Shared perf probe (bible §6): publishes window.__worldPerf 1/s. */}
+          <PerfSampler />
         </Canvas>
       </Suspense>
       <WorldHUD
