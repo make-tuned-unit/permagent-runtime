@@ -38,9 +38,26 @@ async fn reader_payload_diff_evidence() {
         b64_len / 4
     );
 
-    let digest = reader::ingest_image(&bytes, &filename)
-        .await
-        .expect("ingest");
+    let ext = std::path::Path::new(&filename)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let is_image = matches!(
+        ext.as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tiff" | "heic"
+    );
+    let digest = if is_image {
+        reader::ingest_image(&bytes, &filename).await
+    } else {
+        let mime = if ext == "pdf" {
+            "application/pdf"
+        } else {
+            "text/plain"
+        };
+        reader::ingest_document(&bytes, &filename, mime).await
+    }
+    .expect("ingest");
     println!("\n-- Reader digest --");
     println!("{}", serde_json::to_string_pretty(&digest).unwrap());
 
