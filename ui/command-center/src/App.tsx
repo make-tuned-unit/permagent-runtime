@@ -10,6 +10,7 @@ import { ChatLauncher } from './components/chat/ChatLauncher';
 import { DropZone } from './components/chat/DropZone';
 import { VersionSkewBanner } from './components/version/VersionSkewBanner';
 import { api, fileToBase64 } from './lib/api';
+import { createChatWindow } from './lib/chatWindow';
 import type { LayoutNode } from './lib/store';
 import { useAppNavigate } from './hooks/useAppNavigate';
 import { useVersionSkew } from './hooks/useVersionSkew';
@@ -167,11 +168,7 @@ function App() {
     }
 
     // Open a new chat window and wait for it to signal readiness
-    const chatWindow = new WebviewWindow('chat', {
-      url: 'index.html?view=chat', title: 'Permagent Chat',
-      width: 480, height: 700, minWidth: 360, minHeight: 400,
-      center: true, decorations: true, resizable: true, focus: true,
-    });
+    const chatWindow = await createChatWindow(theme);
     chatWindow.once('tauri://error', (e) => console.error('Chat window error:', e));
 
     const ready = await Promise.race([
@@ -185,7 +182,7 @@ function App() {
       console.error('[drop] chat window did not become ready');
       window.alert('Could not deliver files to chat — please try again');
     }
-  }, [activeWorkspace]);
+  }, [activeWorkspace, theme]);
 
   if (phase === 'splash') {
     return <Splash onDone={() => setPhase('loading')} />;
