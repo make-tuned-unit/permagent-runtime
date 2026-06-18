@@ -5,6 +5,7 @@ import { font, ease, setTheme as setThemeFn, setMobiusGlow, setIdleAnim, setShow
 import { useTheme as useThemeHook } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import { ProvidersSection } from './ProvidersSection';
+import { SearchToolsSection } from './SearchToolsSection';
 import { usePersona } from './useSettings';
 import { VoicePicker } from '../voice/VoicePicker';
 import { H1, Section, Row, TextInput, Chip, Toggle, Slider, Kbd, SaveButton } from './atoms';
@@ -526,6 +527,9 @@ function KeysPanel() {
       <H1 sub="Bring your own keys for the providers you use. Add, replace, or remove a key here — keys are encrypted in your system keychain and never leave your device.">API keys</H1>
       <Section title="Providers">
         <ProvidersSection />
+      </Section>
+      <Section title="Search &amp; tools" sub="Web search and other service tools. Add a key, and your agent can search the web.">
+        <SearchToolsSection />
       </Section>
     </div>
   );

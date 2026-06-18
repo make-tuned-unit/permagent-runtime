@@ -259,6 +259,11 @@ interface CommandCenterStore {
   pendingProjectNavigation: string | null;
   setPendingProjectNavigation: (id: string | null) => void;
 
+  // --- In-app browser navigation (chat links, agent tour #353) ---
+  pendingBrowserUrl: string | null;
+  openInBrowser: (url: string) => void;
+  clearPendingBrowserUrl: () => void;
+
   // --- Browser overlay z-order ---
   overlayBlockingBrowser: number;
   pushBrowserOverlay: () => void;
@@ -917,6 +922,17 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   // Project navigation (from agent/voice)
   pendingProjectNavigation: null,
   setPendingProjectNavigation: (id) => set({ pendingProjectNavigation: id }),
+
+  // In-app browser navigation: post a URL + focus the Build workspace (which
+  // hosts the browser). The Browser consumes pendingBrowserUrl on mount, so the
+  // URL still resolves if the workspace was not yet open. Shared by chat-link
+  // clicks and the self-knowledge tour (#353).
+  pendingBrowserUrl: null,
+  openInBrowser: (url) => {
+    set({ pendingBrowserUrl: url });
+    navigateToTool('build');
+  },
+  clearPendingBrowserUrl: () => set({ pendingBrowserUrl: null }),
 
   // Browser overlay z-order
   overlayBlockingBrowser: 0,

@@ -3,9 +3,11 @@ import remarkGfm from 'remark-gfm';
 import { CodeBlock } from './CodeBlock';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
 
 export function MarkdownContent({ content }: { content: string }) {
   const { colors } = useTheme();
+  const openInBrowser = useBrowserNavigate();
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -30,12 +32,17 @@ export function MarkdownContent({ content }: { content: string }) {
           return <>{children}</>;
         },
         a({ href, children }) {
+          // Route http(s) links to the in-app browser (Build tab) rather than
+          // the system browser, so the agent can read the page and guide setup.
+          // Non-web links (mailto:, relative) keep default behavior.
+          const isWeb = !!href && /^https?:\/\//i.test(href);
           return (
             <a
               href={href}
-              target="_blank"
+              target={isWeb ? undefined : '_blank'}
               rel="noopener noreferrer"
-              className="underline transition-colors"
+              onClick={isWeb ? (e) => { e.preventDefault(); openInBrowser(href!); } : undefined}
+              className="underline transition-colors cursor-pointer"
               style={{ color: colors.cyan }}
               onMouseEnter={e => (e.currentTarget.style.opacity = '0.8')}
               onMouseLeave={e => (e.currentTarget.style.opacity = '1')}
