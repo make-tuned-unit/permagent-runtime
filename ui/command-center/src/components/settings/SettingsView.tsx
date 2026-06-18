@@ -70,6 +70,7 @@ function PersonaPanel() {
   const [greeting, setGreeting] = useState('');
   const [tone, setTone] = useState('');
   const [traits, setTraits] = useState<string[]>([]);
+  const [newTrait, setNewTrait] = useState('');
   const [dirty, setDirty] = useState(false);
   const TRAIT_OPTIONS = ['curious', 'direct', 'patient', 'playful', 'formal', 'concise', 'thorough', 'opinionated'];
 
@@ -81,6 +82,11 @@ function PersonaPanel() {
   const changeGreeting = (v: string) => { setGreeting(v); setDirty(true); };
   const changeTone = (v: string) => { setTone(v); setDirty(true); };
   const toggleTrait = (t: string) => { setTraits(p => p.includes(t) ? p.filter(x => x !== t) : [...p, t]); setDirty(true); };
+  const addTrait = () => {
+    const t = newTrait.trim();
+    if (t && !traits.some(x => x.toLowerCase() === t.toLowerCase())) { setTraits(p => [...p, t]); setDirty(true); }
+    setNewTrait('');
+  };
   const handleSave = async () => {
     if (!dirty) return;
     await save({ first_name: name, opening_greeting: greeting, tone, traits });
@@ -102,9 +108,26 @@ function PersonaPanel() {
       </Section>
       <Section title="Tone">
         <Row label="Voice" hint="How they describe their own voice."><TextInput multi value={tone} onChange={changeTone} /></Row>
-        <Row label="Traits" hint="Pick 3-5. The agent will lean into these.">
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            {TRAIT_OPTIONS.map(t => <Chip key={t} on={traits.includes(t)} onClick={() => toggleTrait(t)}>{t}</Chip>)}
+        <Row label="Traits" hint="Pick from suggestions or add your own. The agent will lean into these.">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {/* Selected traits (incl. custom ones not in the suggestion list) — click to remove */}
+              {traits.map(t => <Chip key={t} on onClick={() => toggleTrait(t)}>{t}</Chip>)}
+              {/* Unselected suggestions — click to add */}
+              {TRAIT_OPTIONS.filter(t => !traits.includes(t)).map(t => <Chip key={t} on={false} onClick={() => toggleTrait(t)}>{t}</Chip>)}
+            </div>
+            <input
+              value={newTrait}
+              onChange={e => setNewTrait(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addTrait(); } }}
+              onBlur={addTrait}
+              placeholder="Add a custom trait — type and press Enter"
+              style={{
+                width: '100%', fontFamily: font.body, fontSize: 13, color: colors.text,
+                background: colors.inputBg, border: `1px solid ${colors.border}`,
+                borderRadius: 8, padding: '8px 12px', outline: 'none',
+              }}
+            />
           </div>
         </Row>
       </Section>
