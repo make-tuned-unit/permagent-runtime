@@ -315,6 +315,23 @@ impl OrtKokoroTts {
             default_voice
         );
 
+        // 0b: fail LOUD if a repacked voices-v1.0.bin is missing the keys the
+        // product depends on (the default voice + the seeded British female).
+        // A silently-thinned pack would otherwise surface as a runtime "voice
+        // not found" deep in the picker — assert it up front instead.
+        let names: Vec<&str> = voices.voice_names();
+        for required in [default_voice, "bf_emma"] {
+            if !names.contains(&required) {
+                tracing::error!(
+                    target: "permagentd::voice",
+                    "VOICE PACK INTEGRITY: required voice '{}' missing from voices-v1.0.bin ({} voices present) — \
+                     the pack is incomplete or repacked; voice selection/preview will be degraded",
+                    required,
+                    names.len()
+                );
+            }
+        }
+
         Ok(Self {
             session: Mutex::new(session),
             g2p: Mutex::new(g2p),
@@ -433,6 +450,17 @@ impl TextToSpeech for OrtKokoroTts {
     fn sample_rate(&self) -> u32 {
         SAMPLE_RATE
     }
+
+    fn list_voices(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .voices
+            .voice_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        names.sort();
+        names
+    }
 }
 
 /// Model paths for the standalone Kokoro TTS backend.
@@ -456,5 +484,57 @@ impl OrtKokoroModelPaths {
 
     pub fn models_exist(&self) -> bool {
         self.model_path.exists() && self.voices_path.exists()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Proves `voice_id` actually routes through to Kokoro synthesis: two
+    /// distinct non-default voices produce different waveforms for the same
+    /// text, and a bogus key is rejected (so a silent fallback to the default
+    /// voice can't masquerade as success). Loads the real ~325MB model, so
+    /// `#[ignore]`d — run with the assets present:
+    ///   cargo test -p permagent-daemon --lib ort_kokoro -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn voice_id_routes_through_to_kokoro() {
+        let paths = OrtKokoroModelPaths::default_paths();
+        assert!(
+            paths.models_exist(),
+            "voice models absent at {:?} — cannot run synthesis test",
+            paths.model_path
+        );
+        let tts = OrtKokoroTts::new(&paths.model_path, &paths.voices_path, "bm_lewis")
+            .expect("load Kokoro");
+
+        let text = "Hello there, this is a voice routing test.";
+        let cfg = |v: &str| TtsConfig {
+            voice_id: Some(v.to_string()),
+            speed: 1.0,
+            lexicon: None,
+        };
+
+        // Two non-default, non-seed British females (default=bm_lewis, seed=bf_emma).
+        let a = tts
+            .synthesize(text, &cfg("bf_isabella"))
+            .expect("synth bf_isabella");
+        let b = tts
+            .synthesize(text, &cfg("bf_alice"))
+            .expect("synth bf_alice");
+
+        assert!(!a.samples.is_empty(), "produced no audio");
+        assert_eq!(a.sample_rate, 24_000, "unexpected Kokoro sample rate");
+        assert_ne!(
+            a.samples, b.samples,
+            "voice_id not routing through — identical audio for different voices"
+        );
+
+        // A key absent from the pack must error, not silently fall back.
+        assert!(
+            tts.synthesize(text, &cfg("zz_not_a_voice")).is_err(),
+            "bogus voice_id should be rejected"
+        );
     }
 }

@@ -14,6 +14,7 @@ interface Persona {
   traits: string[];
   tone: string;
   greeting: string;
+  voiceId: string | null;
 }
 
 interface Props {
@@ -25,7 +26,7 @@ export function WizardShell({ onComplete }: Props) {
   const [step, setStep] = useState(0);
   const [intent, setIntent] = useState('');
   const [persona, setPersona] = useState<Persona>({
-    name: '', traits: [], tone: '', greeting: '',
+    name: '', traits: [], tone: '', greeting: '', voiceId: null,
   });
 
   const back = () => setStep(s => Math.max(0, s - 1));
@@ -63,7 +64,7 @@ export function WizardShell({ onComplete }: Props) {
         traits: persona.traits,
         tone: persona.tone,
         opening_greeting: persona.greeting,
-        voice_id: null,
+        voice_id: persona.voiceId,
       };
       await apiFetch<unknown>('/api/agent/identity', {
         method: 'PUT',

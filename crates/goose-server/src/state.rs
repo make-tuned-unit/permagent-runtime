@@ -51,9 +51,16 @@ pub struct AppState {
     pub app_catalog: Arc<permagent::app_catalog::AppCatalog>,
     /// Voice STT provider (Moonshine via sherpa-onnx in dev, swappable).
     pub voice_stt: Option<Arc<dyn crate::voice::SpeechToText>>,
-    /// Voice TTS provider (Kokoro via sherpa-onnx in dev, swappable).
-    pub voice_tts: Option<Arc<dyn crate::voice::TextToSpeech>>,
+    /// Voice TTS provider (Kokoro via ort+misaki). Wrapped in a hot-swappable
+    /// slot so the on-demand model downloader can enable TTS without a daemon
+    /// restart — `None` until the Kokoro models are present and loaded
+    /// (see routes::voice voice-model endpoints).
+    pub voice_tts: SharedTts,
 }
+
+/// Hot-swappable TTS slot — `None` until Kokoro models are downloaded/loaded,
+/// then swapped in place by the on-demand downloader's completion callback.
+pub type SharedTts = Arc<tokio::sync::RwLock<Option<Arc<dyn crate::voice::TextToSpeech>>>>;
 
 impl AppState {
     pub async fn new(tls: bool) -> anyhow::Result<Arc<AppState>> {
@@ -503,7 +510,7 @@ impl AppState {
             ),
             app_catalog,
             voice_stt,
-            voice_tts,
+            voice_tts: Arc::new(tokio::sync::RwLock::new(voice_tts)),
         });
 
         // Agent runtime-state tick (#288 interim A): derive Henry's state from the
@@ -666,28 +673,34 @@ fn init_voice_providers(
     };
 
     // TTS: standalone Kokoro via ort + misaki-rs (GPL-clean shipping backend)
-    let tts_paths = crate::voice::ort_kokoro_backend::OrtKokoroModelPaths::default_paths();
-    let tts: Option<Arc<dyn crate::voice::TextToSpeech>> = if tts_paths.models_exist() {
-        match crate::voice::ort_kokoro_backend::OrtKokoroTts::new(
-            &tts_paths.model_path,
-            &tts_paths.voices_path,
-            "bm_lewis",
-        ) {
-            Ok(t) => {
-                tracing::info!(target: "permagentd::voice", "TTS loaded: Kokoro via ort+misaki-rs (GPL-clean)");
-                Some(Arc::new(t))
-            }
-            Err(e) => {
-                tracing::error!(target: "permagentd::voice", "TTS load failed: {}", e);
-                None
-            }
-        }
-    } else {
-        tracing::info!(target: "permagentd::voice", "TTS models not found — voice TTS disabled");
-        None
-    };
+    (stt, build_kokoro_tts())
+}
 
-    (stt, tts)
+/// Build the Kokoro TTS provider if its model files are present on disk.
+///
+/// Returns `None` (voice TTS disabled) when the ~353MB Kokoro assets have not
+/// been downloaded yet — the on-demand downloader fetches them and then calls
+/// this again to hot-swap a live provider into [`SharedTts`] without a restart.
+pub fn build_kokoro_tts() -> Option<Arc<dyn crate::voice::TextToSpeech>> {
+    let tts_paths = crate::voice::ort_kokoro_backend::OrtKokoroModelPaths::default_paths();
+    if !tts_paths.models_exist() {
+        tracing::info!(target: "permagentd::voice", "TTS models not found — voice TTS disabled");
+        return None;
+    }
+    match crate::voice::ort_kokoro_backend::OrtKokoroTts::new(
+        &tts_paths.model_path,
+        &tts_paths.voices_path,
+        "bm_lewis",
+    ) {
+        Ok(t) => {
+            tracing::info!(target: "permagentd::voice", "TTS loaded: Kokoro via ort+misaki-rs (GPL-clean)");
+            Some(Arc::new(t))
+        }
+        Err(e) => {
+            tracing::error!(target: "permagentd::voice", "TTS load failed: {}", e);
+            None
+        }
+    }
 }
 
 /// Sanitize hostname for use as device_id: lowercase, replace dots/whitespace

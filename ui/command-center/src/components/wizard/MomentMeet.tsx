@@ -3,12 +3,14 @@ import { font } from '../../styles/tokens';
 import { Mobius } from '../mobius/Mobius';
 import { PrimaryButton, Glass, Particles } from './atoms';
 import { useTheme } from '../../styles/useTheme';
+import { VoicePicker } from '../voice/VoicePicker';
 
 interface Persona {
   name: string;
   traits: string[];
   tone: string;
   greeting: string;
+  voiceId: string | null;
 }
 
 interface Props {
@@ -142,6 +144,14 @@ export function MomentMeet({ persona, setPersona, onAdvance }: Props) {
               borderRadius: 8, padding: '10px 12px', outline: 'none', resize: 'none', lineHeight: 1.5,
             }}
           />
+        </div>
+
+        {/* Voice */}
+        <div style={{ marginBottom: 20 }}>
+          <label style={{ fontFamily: font.body, fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', display: 'block', marginBottom: 6 }}>
+            Voice
+          </label>
+          <VoicePicker value={persona.voiceId} onChange={v => updateField('voiceId', v)} />
         </div>
 
         {/* Greeting */}

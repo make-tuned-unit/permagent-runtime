@@ -1,11 +1,12 @@
 import { useRef, useEffect, useMemo, useState, useCallback } from 'react';
-import { FiChevronDown, FiMessageSquare } from 'react-icons/fi';
+import { FiChevronDown, FiMessageSquare, FiVolume2 } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { MessageBubble } from './MessageBubble';
 import { StreamingIndicator } from './StreamingIndicator';
 import { usePersona } from '../settings/useSettings';
+import { useVoicePreview } from '../../lib/useVoices';
 
 export function MessageList() {
   const { colors } = useTheme();
@@ -18,6 +19,12 @@ export function MessageList() {
   // replayed, and vanishes the moment a real message exists.
   const { data: persona } = usePersona();
   const greeting = persona?.opening_greeting?.trim();
+  // W3b: speak the opening greeting in the persona's chosen voice at
+  // conversation start. Auto-attempts once per distinct greeting (degrades
+  // silently when voice assets are absent or autoplay is blocked); the speaker
+  // button on the bubble is the gesture-driven replay/fallback.
+  const { preview: speak, playingId: speaking } = useVoicePreview();
+  const spokenRef = useRef<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -50,6 +57,14 @@ export function MessageList() {
     setShowJump(false);
   };
 
+  // Auto-speak the greeting once when the empty chat first shows it.
+  useEffect(() => {
+    if (timeline.length === 0 && !isStreaming && greeting && spokenRef.current !== greeting) {
+      spokenRef.current = greeting;
+      void speak(persona?.voice_id, greeting);
+    }
+  }, [timeline.length, isStreaming, greeting, persona?.voice_id, speak]);
+
   const showStreamingIndicator = isStreaming && !streamingMessageId;
 
   return (
@@ -77,6 +92,18 @@ export function MessageList() {
                   <span className="text-[11px]" style={{ fontFamily: font.display, fontWeight: 600, color: colors.textMuted }}>
                     {agentName}
                   </span>
+                  <button
+                    onClick={() => void speak(persona?.voice_id, greeting)}
+                    title="Hear greeting"
+                    aria-label="Hear greeting"
+                    className="flex items-center"
+                    style={{
+                      background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                      color: speaking ? colors.cyan : colors.textMuted, opacity: speaking ? 1 : 0.6,
+                    }}
+                  >
+                    <FiVolume2 size={13} />
+                  </button>
                 </div>
                 <div className="text-[13px] leading-relaxed whitespace-pre-wrap" style={{ fontFamily: font.body, color: colors.text }}>
                   {greeting}
