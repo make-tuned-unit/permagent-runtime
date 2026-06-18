@@ -109,6 +109,9 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(cards::routes(state.clone()))
         .merge(decisions::routes(state.clone()))
         .merge(agents::routes(state.clone()))
+        // Voice HTTP endpoints — on-demand model downloader + synth primitive
+        // (the public `/voice` WS is merged above; these are bearer-protected).
+        .merge(voice::http_routes(state.clone()))
         .merge(crate::app_catalog::routes(state.clone()));
 
     #[cfg(feature = "local-inference")]

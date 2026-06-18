@@ -6,6 +6,7 @@ import { useTheme as useThemeHook } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import { ProvidersSection } from './ProvidersSection';
 import { usePersona } from './useSettings';
+import { VoicePicker } from '../voice/VoicePicker';
 import { H1, Section, Row, TextInput, Chip, Toggle, Slider, Kbd, SaveButton } from './atoms';
 
 function PreviewBadge() {
@@ -70,17 +71,19 @@ function PersonaPanel() {
   const [greeting, setGreeting] = useState('');
   const [tone, setTone] = useState('');
   const [traits, setTraits] = useState<string[]>([]);
+  const [voiceId, setVoiceId] = useState<string | null>(null);
   const [newTrait, setNewTrait] = useState('');
   const [dirty, setDirty] = useState(false);
   const TRAIT_OPTIONS = ['curious', 'direct', 'patient', 'playful', 'formal', 'concise', 'thorough', 'opinionated'];
 
   useEffect(() => {
-    if (data) { setName(data.first_name); setGreeting(data.opening_greeting); setTone(data.tone); setTraits(data.traits); setDirty(false); }
+    if (data) { setName(data.first_name); setGreeting(data.opening_greeting); setTone(data.tone); setTraits(data.traits); setVoiceId(data.voice_id); setDirty(false); }
   }, [data]);
 
   const changeName = (v: string) => { setName(v); setDirty(true); };
   const changeGreeting = (v: string) => { setGreeting(v); setDirty(true); };
   const changeTone = (v: string) => { setTone(v); setDirty(true); };
+  const changeVoice = (v: string | null) => { setVoiceId(v); setDirty(true); };
   const toggleTrait = (t: string) => { setTraits(p => p.includes(t) ? p.filter(x => x !== t) : [...p, t]); setDirty(true); };
   const addTrait = () => {
     const t = newTrait.trim();
@@ -89,7 +92,7 @@ function PersonaPanel() {
   };
   const handleSave = async () => {
     if (!dirty) return;
-    await save({ first_name: name, opening_greeting: greeting, tone, traits });
+    await save({ first_name: name, opening_greeting: greeting, tone, traits, voice_id: voiceId });
     setDirty(false);
   };
 
@@ -106,8 +109,13 @@ function PersonaPanel() {
           </div>
         </div>
       </Section>
+      <Section title="Voice">
+        <Row label="Voice" hint="The spoken voice used for voice replies and the greeting. Tap ▶ to audition.">
+          <VoicePicker value={voiceId} onChange={changeVoice} />
+        </Row>
+      </Section>
       <Section title="Tone">
-        <Row label="Voice" hint="How they describe their own voice."><TextInput multi value={tone} onChange={changeTone} /></Row>
+        <Row label="Tone" hint="How they describe their own speaking style (text, not audio)."><TextInput multi value={tone} onChange={changeTone} /></Row>
         <Row label="Traits" hint="Pick from suggestions or add your own. The agent will lean into these.">
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>

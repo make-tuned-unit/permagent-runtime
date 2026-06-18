@@ -234,6 +234,54 @@ export async function readerIngest(file: File): Promise<ReaderDigest> {
   return resp.json() as Promise<ReaderDigest>;
 }
 
+/** One selectable voice from the loaded Kokoro pack (GET /api/voices). */
+export interface VoiceInfo {
+  id: string;        // pack key persisted to persona.voice_id, e.g. "bf_emma"
+  label: string;     // "British English Female — Emma"
+  language: string;  // "British English"
+  gender: string;    // "Female" | "Male" | ""
+}
+
+/** Voice-asset availability (GET /voice/models). */
+export interface VoiceModelStatus {
+  models_present: boolean;
+  tts_loaded: boolean;
+  downloading: boolean;
+}
+
+/** In-flight download progress (GET /voice/models/download). */
+export interface VoiceDownloadProgress {
+  model_id: string;
+  status: 'downloading' | 'completed' | 'failed' | 'cancelled';
+  bytes_downloaded: number;
+  total_bytes: number;
+  progress_percent: number;
+  error: string | null;
+}
+
+/**
+ * Synthesize `text` in `voiceId` and return playable WAV audio.
+ * Returns the Blob (not JSON) — used for per-voice preview, the picker
+ * audition, and the spoken opening greeting. Throws (503) when the voice
+ * assets aren't downloaded yet — callers gate on getVoiceModelStatus first.
+ */
+export async function synthesizeVoice(text: string, voiceId?: string | null): Promise<Blob> {
+  if (!_daemonToken && isTauri) await loadDaemonToken();
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (_daemonToken) headers['Authorization'] = `Bearer ${_daemonToken}`;
+  if (SECRET_KEY) headers['x-secret-key'] = SECRET_KEY;
+  const resp = await fetch(`${API_BASE_URL}/voice/synthesize`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ text, voice_id: voiceId ?? null }),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ message: `HTTP ${resp.status}` }));
+    throw new Error(err.message || `HTTP ${resp.status}`);
+  }
+  return resp.blob();
+}
+
 /** Build a user Message in the format the daemon expects */
 export function buildUserMessage(
   text: string,
@@ -384,6 +432,18 @@ export const api = {
   }) => apiFetch<{ first_name: string; display_name: string }>('/api/agent/identity', {
     method: 'PUT', body: JSON.stringify(update),
   }),
+
+  // Voice
+  getVoices: () => apiFetch<VoiceInfo[]>('/api/voices'),
+
+  getVoiceModelStatus: () =>
+    apiFetch<VoiceModelStatus>('/voice/models'),
+
+  downloadVoiceModels: () =>
+    apiFetch<VoiceModelStatus>('/voice/models/download', { method: 'POST' }),
+
+  getVoiceDownloadProgress: () =>
+    apiFetch<VoiceDownloadProgress>('/voice/models/download'),
 
   // Config
   getConfig: () => apiFetch<PermagentConfig>('/config'),

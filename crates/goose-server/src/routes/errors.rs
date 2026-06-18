@@ -51,6 +51,13 @@ impl ErrorResponse {
             status: StatusCode::UNPROCESSABLE_ENTITY,
         }
     }
+
+    pub(crate) fn service_unavailable(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            status: StatusCode::SERVICE_UNAVAILABLE,
+        }
+    }
 }
 
 impl IntoResponse for ErrorResponse {

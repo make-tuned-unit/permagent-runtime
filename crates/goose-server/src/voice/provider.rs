@@ -77,4 +77,7 @@ pub trait TextToSpeech: Send + Sync {
     /// The native sample rate of this TTS backend.
     #[allow(dead_code)]
     fn sample_rate(&self) -> u32;
+
+    /// All selectable voice keys (e.g. "bf_emma"), for the picker roster.
+    fn list_voices(&self) -> Vec<String>;
 }

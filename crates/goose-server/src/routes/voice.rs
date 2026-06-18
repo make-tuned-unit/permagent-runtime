@@ -12,23 +12,336 @@
 //!     Text: {"type":"reply_end","sample_rate":24000}
 //!     Text: {"type":"error","message":"..."}
 
-use crate::state::AppState;
+use crate::routes::errors::ErrorResponse;
+use crate::state::{build_kokoro_tts, AppState, SharedTts};
 use crate::voice::provider::{SttConfig, TtsConfig};
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Query, State,
     },
+    http::StatusCode,
     response::IntoResponse,
-    routing::get,
-    Router,
+    routing::{get, post},
+    Json, Router,
 };
+use permagent::download_manager::{get_download_manager, DownloadProgress, DownloadStatus};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use subtle;
 
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new().route("/voice", get(voice_ws_handler).with_state(state))
+}
+
+// ── On-demand Kokoro voice-model downloader ────────────────────────────────
+//
+// The ~353MB Kokoro assets are NOT git-tracked or DMG-bundled, so a fresh
+// install has voice TTS silently disabled (state::init_voice_providers finds
+// no models). These authenticated endpoints fetch the assets on demand using
+// the same DownloadManager that backs local-inference model downloads, then
+// hot-swap a live TTS provider into the shared slot — no daemon restart.
+
+/// Canonical kokoro-onnx model release (Apache-2.0). Filenames match the paths
+/// `OrtKokoroModelPaths::default_paths()` expects under the voice models dir.
+const KOKORO_MODEL_URL: &str =
+    "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx";
+const KOKORO_VOICES_URL: &str =
+    "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin";
+/// kokoro-v1.0.onnx (325_532_387) + voices-v1.0.bin (28_214_398).
+const KOKORO_TOTAL_BYTES: u64 = 353_746_785;
+/// DownloadManager key for the Kokoro asset bundle.
+const KOKORO_DOWNLOAD_ID: &str = "kokoro-voice";
+
+/// Bearer-protected voice HTTP routes (the on-demand model downloader + the
+/// standalone synth primitive), merged into the protected router group —
+/// unlike the public `/voice` WS which does its own query-param auth.
+pub fn http_routes(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/voice/models", get(voice_models_status))
+        .route(
+            "/voice/models/download",
+            post(download_voice_models)
+                .get(voice_models_progress)
+                .delete(cancel_voice_models_download),
+        )
+        .route("/voice/synthesize", post(synthesize_voice))
+        .route("/api/voices", get(get_voices))
+        .with_state(state)
+}
+
+/// Snapshot of voice-asset availability for the picker's graceful-absence path.
+#[derive(Serialize)]
+pub struct VoiceModelStatus {
+    /// Both Kokoro asset files are present on disk.
+    pub models_present: bool,
+    /// A live TTS provider is loaded — synthesis/preview works right now.
+    pub tts_loaded: bool,
+    /// A download is currently in progress.
+    pub downloading: bool,
+}
+
+async fn current_status(state: &Arc<AppState>) -> VoiceModelStatus {
+    let models_present =
+        crate::voice::ort_kokoro_backend::OrtKokoroModelPaths::default_paths().models_exist();
+    let tts_loaded = state.voice_tts.read().await.is_some();
+    let downloading = get_download_manager()
+        .get_progress(KOKORO_DOWNLOAD_ID)
+        .is_some_and(|p| p.status == DownloadStatus::Downloading);
+    VoiceModelStatus {
+        models_present,
+        tts_loaded,
+        downloading,
+    }
+}
+
+/// GET /voice/models — is voice synthesis available, and is a download running?
+async fn voice_models_status(State(state): State<Arc<AppState>>) -> Json<VoiceModelStatus> {
+    Json(current_status(&state).await)
+}
+
+/// POST /voice/models/download — fetch the Kokoro assets on demand, then
+/// hot-swap a live TTS provider into the shared slot when complete.
+async fn download_voice_models(
+    State(state): State<Arc<AppState>>,
+) -> Result<(StatusCode, Json<VoiceModelStatus>), ErrorResponse> {
+    let paths = crate::voice::ort_kokoro_backend::OrtKokoroModelPaths::default_paths();
+
+    // Already downloaded: ensure the live provider is loaded, then no-op.
+    if paths.models_exist() {
+        if state.voice_tts.read().await.is_none() {
+            if let Some(tts) = build_kokoro_tts() {
+                *state.voice_tts.write().await = Some(tts);
+            }
+        }
+        return Ok((StatusCode::OK, Json(current_status(&state).await)));
+    }
+
+    let files = vec![
+        (KOKORO_MODEL_URL.to_string(), paths.model_path.clone()),
+        (KOKORO_VOICES_URL.to_string(), paths.voices_path.clone()),
+    ];
+
+    // Build the provider off the blocking pool on completion and swap it in so
+    // /voice + synth work immediately, without a restart.
+    let tts_slot: SharedTts = state.voice_tts.clone();
+    let on_complete: Box<dyn FnOnce() + Send + 'static> = Box::new(move || {
+        tokio::spawn(async move {
+            match tokio::task::spawn_blocking(build_kokoro_tts).await {
+                Ok(Some(tts)) => {
+                    *tts_slot.write().await = Some(tts);
+                    tracing::info!(
+                        target: "permagentd::voice",
+                        "Kokoro TTS hot-loaded after on-demand download — voice enabled"
+                    );
+                }
+                _ => tracing::error!(
+                    target: "permagentd::voice",
+                    "Kokoro download finished but TTS failed to load"
+                ),
+            }
+        });
+    });
+
+    get_download_manager()
+        .download_model_sharded(
+            KOKORO_DOWNLOAD_ID.to_string(),
+            files,
+            KOKORO_TOTAL_BYTES,
+            Some(on_complete),
+        )
+        .await
+        .map_err(|e| {
+            ErrorResponse::internal(format!("Voice model download failed to start: {e}"))
+        })?;
+
+    Ok((StatusCode::ACCEPTED, Json(current_status(&state).await)))
+}
+
+/// GET /voice/models/download — progress of the in-flight Kokoro download.
+async fn voice_models_progress() -> Result<Json<DownloadProgress>, ErrorResponse> {
+    get_download_manager()
+        .get_progress(KOKORO_DOWNLOAD_ID)
+        .map(Json)
+        .ok_or_else(|| ErrorResponse::not_found("No active voice model download"))
+}
+
+/// DELETE /voice/models/download — cancel an in-flight download.
+async fn cancel_voice_models_download() -> Result<StatusCode, ErrorResponse> {
+    get_download_manager()
+        .cancel_download(KOKORO_DOWNLOAD_ID)
+        .map_err(|e| ErrorResponse::bad_request(e.to_string()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ── Standalone synth primitive ─────────────────────────────────────────────
+//
+// The one text→audio path that doesn't exist on the `/voice` WS (which only
+// synthesizes the reply stream). ONE primitive, THREE consumers: per-voice
+// sound preview, the spoken opening greeting, and the picker's audition tap.
+// Returns a self-contained 16-bit PCM WAV so a fresh consumer can play it with
+// `new Audio(URL.createObjectURL(blob))` — no manual AudioBuffer assembly.
+
+#[derive(Deserialize)]
+pub struct SynthesizeRequest {
+    /// Text to speak.
+    pub text: String,
+    /// Voice pack key (e.g. "bf_emma"). `None` → the backend default.
+    #[serde(default)]
+    pub voice_id: Option<String>,
+}
+
+/// POST /voice/synthesize — synthesize `text` in `voice_id` and return WAV.
+/// 503 when the Kokoro assets aren't loaded yet (the picker handles this by
+/// offering the download affordance rather than a dead audition button).
+async fn synthesize_voice(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SynthesizeRequest>,
+) -> Result<impl IntoResponse, ErrorResponse> {
+    let text = req.text.trim().to_string();
+    if text.is_empty() {
+        return Err(ErrorResponse::bad_request("text must not be empty"));
+    }
+
+    // Snapshot the hot-swappable provider; absent → graceful 503.
+    let tts = state.voice_tts.read().await.clone().ok_or_else(|| {
+        ErrorResponse::service_unavailable(
+            "Voice models not loaded — download the voice assets to enable synthesis",
+        )
+    })?;
+
+    let voice_id = req.voice_id.clone();
+    let audio = tokio::task::spawn_blocking(move || {
+        tts.synthesize(
+            &text,
+            &TtsConfig {
+                voice_id,
+                speed: 1.0,
+                lexicon: None,
+            },
+        )
+    })
+    .await
+    .map_err(|e| ErrorResponse::internal(format!("synthesis task panicked: {e}")))?
+    .map_err(|e| ErrorResponse::internal(format!("synthesis failed: {e}")))?;
+
+    let wav = encode_wav_pcm16(&audio)
+        .map_err(|e| ErrorResponse::internal(format!("wav encode failed: {e}")))?;
+
+    Ok(([(axum::http::header::CONTENT_TYPE, "audio/wav")], wav))
+}
+
+// ── Voice picker roster ────────────────────────────────────────────────────
+//
+// The picker is data-driven over the loaded pack's keys (all ~54 voices are
+// free config entries — "add voices as we go" = zero code per voice). Keys are
+// `{accent}{gender}_{name}` (e.g. "bf_emma" → British Female Emma), so we
+// derive a friendly label rather than show cryptic ids.
+
+/// One selectable voice for the picker.
+#[derive(Serialize, PartialEq, Debug)]
+pub struct VoiceInfo {
+    /// Pack key, the value persisted to `persona.voice_id` (e.g. "bf_emma").
+    pub id: String,
+    /// Friendly label, e.g. "British Female — Emma".
+    pub label: String,
+    /// Language/accent group, e.g. "British English" (for picker grouping).
+    pub language: String,
+    /// "Female" / "Male" / "" when unknown.
+    pub gender: String,
+}
+
+/// Decode a Kokoro voice key prefix into (language, gender, display-name).
+fn describe_voice_id(id: &str) -> (String, String, String) {
+    let (prefix, raw_name) = id.split_once('_').unwrap_or(("", id));
+    let mut chars = prefix.chars();
+    let accent = match chars.next() {
+        Some('a') => "American English",
+        Some('b') => "British English",
+        Some('e') => "Spanish",
+        Some('f') => "French",
+        Some('h') => "Hindi",
+        Some('i') => "Italian",
+        Some('j') => "Japanese",
+        Some('p') => "Portuguese",
+        Some('z') => "Chinese",
+        _ => "",
+    };
+    let gender = match chars.next() {
+        Some('f') => "Female",
+        Some('m') => "Male",
+        _ => "",
+    };
+    // Capitalize the first letter of the name (e.g. "emma" → "Emma").
+    let name = {
+        let mut c = raw_name.chars();
+        match c.next() {
+            Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
+            None => raw_name.to_string(),
+        }
+    };
+    (accent.to_string(), gender.to_string(), name)
+}
+
+impl VoiceInfo {
+    fn from_id(id: String) -> Self {
+        let (language, gender, name) = describe_voice_id(&id);
+        // "British English Female — Emma", trimming any empty leading parts.
+        let prefix = [language.as_str(), gender.as_str()]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let label = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix} — {name}")
+        };
+        VoiceInfo {
+            id,
+            label,
+            language,
+            gender,
+        }
+    }
+}
+
+/// Pure transform (kept separate from the handler so it's unit-testable
+/// without constructing an AppState): pack keys → sorted picker roster.
+fn voices_from_ids(ids: Vec<String>) -> Vec<VoiceInfo> {
+    ids.into_iter().map(VoiceInfo::from_id).collect()
+}
+
+/// GET /api/voices — the picker roster from the loaded pack. Empty when the
+/// assets aren't downloaded yet (the picker pairs this with `/voice/models`
+/// to offer the download affordance instead of a dead list).
+async fn get_voices(State(state): State<Arc<AppState>>) -> Json<Vec<VoiceInfo>> {
+    let ids = match state.voice_tts.read().await.clone() {
+        Some(tts) => tts.list_voices(),
+        None => Vec::new(),
+    };
+    Json(voices_from_ids(ids))
+}
+
+/// Encode mono f32 PCM `[-1, 1]` samples as a 16-bit PCM WAV (universally
+/// decodable by WKWebView's `<audio>` / `decodeAudioData`).
+fn encode_wav_pcm16(audio: &crate::voice::provider::AudioOutput) -> anyhow::Result<Vec<u8>> {
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: audio.sample_rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut cursor = std::io::Cursor::new(Vec::<u8>::new());
+    {
+        let mut writer = hound::WavWriter::new(&mut cursor, spec)?;
+        for &s in &audio.samples {
+            let v = (s.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16;
+            writer.write_sample(v)?;
+        }
+        writer.finalize()?;
+    }
+    Ok(cursor.into_inner())
 }
 
 #[derive(Deserialize)]
@@ -87,16 +400,19 @@ async fn handle_voice_socket(
     state: Arc<AppState>,
     session_id: Option<String>,
 ) {
+    // Snapshot the hot-swappable TTS slot once for this session.
+    let tts_opt = state.voice_tts.read().await.clone();
+
     tracing::info!(
         target: "permagentd::voice",
         "Voice WebSocket connected (session_id={:?}, stt={}, tts={})",
         session_id,
         state.voice_stt.is_some(),
-        state.voice_tts.is_some()
+        tts_opt.is_some()
     );
 
     // Check voice providers are available
-    let (stt, tts) = match (&state.voice_stt, &state.voice_tts) {
+    let (stt, tts) = match (&state.voice_stt, &tts_opt) {
         (Some(stt), Some(tts)) => (stt.clone(), tts.clone()),
         _ => {
             tracing::warn!(
@@ -691,4 +1007,81 @@ fn find_speakable_boundary(text: &str) -> Option<(usize, usize)> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use permagent::download_manager::DownloadManager;
+
+    #[test]
+    fn voice_roster_labels_and_sorting() {
+        let roster = voices_from_ids(vec![
+            "bf_emma".to_string(),
+            "am_michael".to_string(),
+            "bm_lewis".to_string(),
+            "af_bella".to_string(),
+        ]);
+
+        // Friendly labels derived from the `{accent}{gender}_{name}` key.
+        let by_id = |id: &str| roster.iter().find(|v| v.id == id).unwrap();
+        assert_eq!(by_id("bf_emma").label, "British English Female — Emma");
+        assert_eq!(by_id("am_michael").label, "American English Male — Michael");
+        assert_eq!(by_id("af_bella").language, "American English");
+        assert_eq!(by_id("bm_lewis").gender, "Male");
+
+        // Unknown prefixes degrade gracefully to a bare capitalized name.
+        let weird = VoiceInfo::from_id("xx_zephyr".to_string());
+        assert_eq!(weird.label, "Zephyr");
+        assert_eq!(weird.language, "");
+    }
+
+    /// End-to-end proof that the shipping Kokoro release URL fetches via the
+    /// production `DownloadManager` and lands the canonical asset. Uses the
+    /// smaller voices file (28MB) and a tempdir — never the real models path.
+    ///
+    /// `#[ignore]`d so CI never pulls 28MB over the network; run explicitly:
+    ///   cargo test -p permagent-daemon --lib voice:: -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn kokoro_voices_url_downloads_via_download_manager() {
+        const VOICES_BYTES: u64 = 28_214_398;
+        let dir = std::env::temp_dir().join(format!("kokoro-dl-test-{}", std::process::id()));
+        let dest = dir.join("voices-v1.0.bin");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let dm = DownloadManager::new();
+        dm.download_model_sharded(
+            "kokoro-voices-test".to_string(),
+            vec![(KOKORO_VOICES_URL.to_string(), dest.clone())],
+            VOICES_BYTES,
+            None,
+        )
+        .await
+        .expect("download should start");
+
+        loop {
+            let p = dm
+                .get_progress("kokoro-voices-test")
+                .expect("progress should exist");
+            assert_ne!(
+                p.status,
+                DownloadStatus::Failed,
+                "download failed: {:?}",
+                p.error
+            );
+            if p.status == DownloadStatus::Completed {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+
+        let meta = std::fs::metadata(&dest).expect("voices file should be present");
+        assert_eq!(
+            meta.len(),
+            VOICES_BYTES,
+            "downloaded voices file size mismatch"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
