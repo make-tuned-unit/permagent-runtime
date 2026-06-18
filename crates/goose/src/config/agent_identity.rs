@@ -6,6 +6,28 @@ use tokio::sync::RwLock;
 
 use crate::config::paths::Paths;
 
+/// Placeholder persona key carried into
+/// [`spectral::graph::RecognitionContext::persona`] at every recall site.
+///
+/// **Spectral does NOT currently key recall on this value.** In the pinned
+/// Spectral rev, `RecognitionContext.persona` is reserved-for-future: its only
+/// read is `is_empty()`, and retrieval, ranking, and the write path never
+/// consult it. Changing this string therefore has **no effect on recall today**.
+/// It exists so the recall sites share one intentional, centrally-changeable
+/// value instead of scattering a bare `"henry"` literal that reads as
+/// load-bearing recall-correctness when it is not.
+///
+/// This is NOT the authorship-origin `"henry"` token (e.g. `decisions::ACTOR_HENRY`,
+/// card `created_by`) — those mean "the system authored this" and are deliberately
+/// left untouched.
+///
+/// Forward path: when Spectral eventually honors persona, this placeholder should
+/// be replaced by a real per-install opaque `persona_id` (minted once at first
+/// identity-save), and the keying semantics designed together with that Spectral
+/// change — not before. Until then this constant is hygiene only. See the deferred
+/// "persona_id real-keying" note.
+pub const DEFAULT_PERSONA_KEY: &str = "henry";
+
 /// Primary agent persona configuration.
 /// Stored at ~/.permagent/agent.yaml under the `primary` key.
 #[derive(Debug, Clone, Serialize, Deserialize)]

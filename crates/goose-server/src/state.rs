@@ -554,8 +554,10 @@ impl AppState {
 
     /// Build a RecognitionContext for recall_cascade from current runtime state.
     ///
-    /// Populates: now (Utc::now), persona ("henry"), session_id (if provided),
-    /// focus_wing (from active project, if any).
+    /// Populates: now (Utc::now), persona (placeholder, see
+    /// [`permagent::config::agent_identity::DEFAULT_PERSONA_KEY`] — inert for
+    /// recall today), session_id (if provided), focus_wing (from active project,
+    /// if any).
     pub fn build_recognition_context(
         &self,
         session_id: Option<&str>,
@@ -566,7 +568,8 @@ impl AppState {
             .and_then(|ing| ing.active_project())
             .map(|ap| ap.wing);
 
-        let mut ctx = spectral::graph::RecognitionContext::empty().with_persona("henry");
+        let mut ctx = spectral::graph::RecognitionContext::empty()
+            .with_persona(permagent::config::agent_identity::DEFAULT_PERSONA_KEY);
 
         if let Some(sid) = session_id {
             ctx = ctx.with_session(sid);

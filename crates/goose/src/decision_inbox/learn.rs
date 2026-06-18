@@ -207,7 +207,7 @@ pub async fn recall_decisions(
     wing: &str,
 ) -> anyhow::Result<Vec<RecalledDecision>> {
     let ctx = spectral::graph::RecognitionContext::empty()
-        .with_persona("henry")
+        .with_persona(crate::config::agent_identity::DEFAULT_PERSONA_KEY)
         .with_focus_wing(wing);
     let result = brain.recall_cascade(query, &ctx).await?;
     Ok(result
