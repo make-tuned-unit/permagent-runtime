@@ -53,8 +53,6 @@ export function InspectionPanel({ onClose }: Props) {
   const { colors } = useTheme();
   const pushOverlay = useCommandCenter(s => s.pushBrowserOverlay);
   const popOverlay = useCommandCenter(s => s.popBrowserOverlay);
-  const switchWorkspace = useCommandCenter(s => s.switchWorkspace);
-  const workspaces = useCommandCenter(s => s.workspaces);
   useEffect(() => { pushOverlay(); return () => { popOverlay(); }; }, [pushOverlay, popOverlay]);
 
   const [status, setStatus] = useState<IngestStatus | null>(null);
@@ -117,6 +115,21 @@ export function InspectionPanel({ onClose }: Props) {
     return () => clearInterval(interval);
   }, [fetchStatus, fetchDigest, fetchMemories, fetchRecentEvents]);
 
+  // The Brain view lives in the MAIN window's workspaces; this panel runs in the
+  // separate chat webview (its own store, no loaded workspaces). So we emit a
+  // global Tauri event the main window honors, then surface that window.
+  const openBrain = async () => {
+    if (!('__TAURI_INTERNALS__' in window)) { onClose(); return; }
+    try {
+      const { emit } = await import('@tauri-apps/api/event');
+      await emit('app_navigate', { tool_type: 'memory', reason: 'Opening Brain' });
+      const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+      const main = await WebviewWindow.getByLabel('main');
+      if (main) { await main.show(); await main.setFocus(); }
+    } catch { /* graceful — non-Tauri or window API unavailable */ }
+    onClose();
+  };
+
   const togglePause = async () => {
     try {
       const endpoint = paused ? '/activity/resume' : '/activity/pause';
@@ -166,10 +179,7 @@ export function InspectionPanel({ onClose }: Props) {
         }}>
           {paused ? 'Resume' : 'Pause'}
         </button>
-        <button onClick={() => {
-          const memoryWs = workspaces.find(w => hasToolType(w.layoutJson, 'memory'));
-          if (memoryWs) { switchWorkspace(memoryWs.id); onClose(); }
-        }} style={{
+        <button onClick={openBrain} style={{
           padding: '4px 10px', borderRadius: 4, fontSize: 11, fontWeight: 500,
           background: colors.surfaceHi, border: `1px solid ${colors.border}`,
           color: colors.textMuted, cursor: 'pointer',
@@ -345,13 +355,4 @@ function surfaceColor(surface: string, colors: { cyan: string; purple: string; s
   if (s.includes('project')) return colors.warning;
   if (s.includes('skill')) return colors.danger;
   return colors.textDim;
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function hasToolType(node: any, toolType: string): boolean {
-  if (node?.type === 'panel') return node.tool === toolType;
-  if (node?.type === 'split' && Array.isArray(node.children)) {
-    return node.children.some((c: any) => hasToolType(c, toolType));
-  }
-  return false;
 }
