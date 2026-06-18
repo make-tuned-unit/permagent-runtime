@@ -356,6 +356,26 @@ workers:
     }
 
     #[test]
+    fn primary_persona_block_injects_user_authored_traits() {
+        // W1: traits the user authors past the wizard presets (incl. custom
+        // free-text) must reach the system prompt verbatim via "Your nature: …".
+        let persona = PrimaryPersona {
+            first_name: "Ada".into(),
+            traits: vec![
+                "precise".into(),
+                "ruthlessly skeptical".into(), // custom free-text trait
+            ],
+            ..Default::default()
+        };
+        let block = persona.system_prompt_block();
+        assert!(
+            block.contains("Your nature: precise, ruthlessly skeptical."),
+            "user-authored traits (preset + custom) must be injected: {}",
+            block
+        );
+    }
+
+    #[test]
     fn worker_persona_block_interpolates_name() {
         let persona = WorkerPersona {
             first_name: "Bolt".into(),
