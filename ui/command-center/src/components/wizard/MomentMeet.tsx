@@ -21,9 +21,23 @@ interface Props {
 export function MomentMeet({ persona, setPersona, onAdvance }: Props) {
   const { colors } = useTheme();
   const [editName, setEditName] = useState(false);
+  const [newTrait, setNewTrait] = useState('');
 
   const updateField = <K extends keyof Persona>(key: K, value: Persona[K]) =>
     setPersona({ ...persona, [key]: value });
+
+  const addTrait = () => {
+    const t = newTrait.trim();
+    if (!t) return;
+    if (persona.traits.some(x => x.toLowerCase() === t.toLowerCase())) {
+      setNewTrait('');
+      return;
+    }
+    updateField('traits', [...persona.traits, t]);
+    setNewTrait('');
+  };
+  const removeTrait = (i: number) =>
+    updateField('traits', persona.traits.filter((_, idx) => idx !== i));
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', position: 'relative' }}>
@@ -74,17 +88,43 @@ export function MomentMeet({ persona, setPersona, onAdvance }: Props) {
           <label style={{ fontFamily: font.body, fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', display: 'block', marginBottom: 8 }}>
             Traits
           </label>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
             {persona.traits.map((trait, i) => (
               <span key={i} style={{
                 fontFamily: font.body, fontSize: 12, fontWeight: 500,
                 color: colors.cyan, background: colors.cyanSoft,
                 borderRadius: 999, padding: '5px 12px',
+                display: 'inline-flex', alignItems: 'center', gap: 6,
               }}>
                 {trait}
+                <span
+                  onClick={() => removeTrait(i)}
+                  role="button"
+                  aria-label={`Remove ${trait}`}
+                  style={{ cursor: 'pointer', color: colors.textDim, fontWeight: 700, lineHeight: 1 }}
+                >
+                  ×
+                </span>
               </span>
             ))}
           </div>
+          <input
+            value={newTrait}
+            onChange={e => setNewTrait(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' || e.key === ',') {
+                e.preventDefault();
+                addTrait();
+              }
+            }}
+            onBlur={addTrait}
+            placeholder="Add a trait — type and press Enter"
+            style={{
+              width: '100%', fontFamily: font.body, fontSize: 13, color: colors.text,
+              background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)',
+              borderRadius: 8, padding: '8px 12px', outline: 'none',
+            }}
+          />
         </div>
 
         {/* Tone */}

@@ -529,7 +529,8 @@ async fn handle_search_memory(
         }
     };
 
-    let ctx = spectral::graph::RecognitionContext::empty().with_persona("henry");
+    let ctx = spectral::graph::RecognitionContext::empty()
+        .with_persona(crate::config::agent_identity::DEFAULT_PERSONA_KEY);
     match brain.recall_cascade(&query, &ctx).await {
         Ok(recall_result) => {
             let hits = &recall_result.merged_hits;

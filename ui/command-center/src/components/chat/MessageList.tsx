@@ -5,12 +5,19 @@ import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { MessageBubble } from './MessageBubble';
 import { StreamingIndicator } from './StreamingIndicator';
+import { usePersona } from '../settings/useSettings';
 
 export function MessageList() {
   const { colors } = useTheme();
   const chatMessages = useCommandCenter(s => s.chatMessages);
   const isStreaming = useCommandCenter(s => s.isStreaming);
   const streamingMessageId = useCommandCenter(s => s._streamingMessageId);
+  const agentName = useCommandCenter(s => s.agentName);
+  // W3a: in-character opening greeting shown at conversation start. Display-only
+  // — never pushed into chatMessages, so it never enters LLM context, is never
+  // replayed, and vanishes the moment a real message exists.
+  const { data: persona } = usePersona();
+  const greeting = persona?.opening_greeting?.trim();
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -53,10 +60,35 @@ export function MessageList() {
         className="h-full overflow-y-auto p-4 space-y-3"
       >
         {timeline.length === 0 && !isStreaming && (
-          <div className="flex flex-col items-center justify-center h-full text-xs text-center gap-2" style={{ color: colors.textMuted, fontFamily: font.body }}>
-            <FiMessageSquare size={24} style={{ opacity: 0.3, color: colors.cyan }} />
-            <div>Send a message to start a conversation with your agent.</div>
-          </div>
+          greeting ? (
+            // Agent's in-character opening, rendered as a top-left assistant
+            // bubble (matches MessageBubble's assistant styling) — the identity
+            // moment. Display-only; not part of the conversation timeline.
+            <div className="flex justify-start">
+              <div
+                className="max-w-[85%] rounded-xl px-3.5 py-2.5"
+                style={{
+                  backgroundColor: colors.surface,
+                  boxShadow: colors.cardHighlight ? `${colors.cardShadow}, ${colors.cardHighlight}` : colors.cardShadow,
+                  overflowWrap: 'break-word', wordBreak: 'break-word', minWidth: 0,
+                }}
+              >
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-[11px]" style={{ fontFamily: font.display, fontWeight: 600, color: colors.textMuted }}>
+                    {agentName}
+                  </span>
+                </div>
+                <div className="text-[13px] leading-relaxed whitespace-pre-wrap" style={{ fontFamily: font.body, color: colors.text }}>
+                  {greeting}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center h-full text-xs text-center gap-2" style={{ color: colors.textMuted, fontFamily: font.body }}>
+              <FiMessageSquare size={24} style={{ opacity: 0.3, color: colors.cyan }} />
+              <div>Send a message to start a conversation with your agent.</div>
+            </div>
+          )
         )}
 
         {timeline.map((msg) => (

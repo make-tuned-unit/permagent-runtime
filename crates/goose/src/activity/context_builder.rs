@@ -158,8 +158,8 @@ impl ContextBuilder {
         let recalled_memories = if let Some(ref query) = opts.include_recall_query {
             let brain = self.brain.raw_blocking_handle();
             let q = query.clone();
-            let recognition_ctx =
-                spectral::graph::RecognitionContext::empty().with_persona("henry");
+            let recognition_ctx = spectral::graph::RecognitionContext::empty()
+                .with_persona(crate::config::agent_identity::DEFAULT_PERSONA_KEY);
             // Called from spawn_blocking context — use raw handle.
             match brain.recall_cascade(&q, &recognition_ctx, &Default::default()) {
                 Ok(result) => result

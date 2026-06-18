@@ -1036,7 +1036,7 @@ async fn execute_job(
 
     if let Some(ref brain_handle) = brain {
         let recognition_ctx = spectral::graph::RecognitionContext::empty()
-            .with_persona("henry")
+            .with_persona(crate::config::agent_identity::DEFAULT_PERSONA_KEY)
             .with_session(session.id.clone());
         match brain_handle
             .recall_cascade(prompt_text, &recognition_ctx)
