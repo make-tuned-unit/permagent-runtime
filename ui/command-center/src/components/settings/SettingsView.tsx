@@ -63,6 +63,9 @@ const CATEGORIES = [
 
 // ── Panels ───────────────────────────────────────────────────────────
 
+// Panels may navigate between settings sections (e.g. Models → API keys).
+type PanelProps = { goto: (key: string) => void };
+
 function PersonaPanel() {
   const { colors } = useThemeHook();
   const { data, loading, saving, error, save } = usePersona();
@@ -350,7 +353,7 @@ function ModelStateBadge({ state }: { state: 'running' | 'installed' | 'missing'
   );
 }
 
-function ModelsPanel() {
+function ModelsPanel({ goto }: PanelProps) {
   const { colors } = useThemeHook();
   const [ollama, setOllama] = useState<OllamaStatus | null>(null);
   const [schedule, setSchedule] = useState<LibSchedule | null>(null);
@@ -396,8 +399,8 @@ function ModelsPanel() {
   return (
     <div>
       <H1 sub="Pick the brains behind the agent. Use stronger models when stakes are high; cheaper for routine work.">Models</H1>
-      <Section title="Providers">
-        <ProvidersSection />
+      <Section title="Providers" sub="Provider credentials live in the API keys tab — add or update a key there, then route to it below.">
+        <button style={ghost(colors)} onClick={() => goto('keys')}>Manage API keys</button>
       </Section>
       <Section title="Routing">
         <Row label="Primary" hint="Used for thinking, planning, and replies."><select style={selectStyle(colors)}><option>Claude Sonnet 4.5</option><option>Claude Opus 4.5</option><option>GPT-5</option><option>Gemini 2.5 Pro</option></select></Row>
@@ -510,57 +513,11 @@ function ModelsPanel() {
 }
 
 function KeysPanel() {
-  const { colors } = useThemeHook();
-  const providers = useCommandCenter(s => s.providers);
-  const loadProviders = useCommandCenter(s => s.loadProviders);
-  const [maskedKeys, setMaskedKeys] = useState<Record<string, string>>({});
-
-  useEffect(() => { loadProviders(); }, [loadProviders]);
-
-  // Load masked values for configured providers' secret keys
-  useEffect(() => {
-    const loadMasked = async () => {
-      const masked: Record<string, string> = {};
-      for (const p of providers) {
-        if (!p.isConfigured) continue;
-        for (const ck of p.configKeys || []) {
-          if (ck.secret) {
-            try {
-              const res = await api.readConfig(ck.name, true);
-              if (res.masked_value) masked[ck.name] = res.masked_value;
-            } catch { /* ignore */ }
-          }
-        }
-      }
-      setMaskedKeys(masked);
-    };
-    if (providers.length > 0) loadMasked();
-  }, [providers]);
-
-  // Show providers that have secret config keys
-  const providersWithKeys = providers.filter(p => p.configKeys?.some(k => k.secret));
-
   return (
     <div>
-      <H1 sub="Bring your own keys for the providers you use. Keys are encrypted and never leave your device.">API keys</H1>
+      <H1 sub="Bring your own keys for the providers you use. Add, replace, or remove a key here — keys are encrypted in your system keychain and never leave your device.">API keys</H1>
       <Section title="Providers">
-        {providersWithKeys.length === 0 && providers.length === 0 && (
-          <div style={{ color: colors.textDim, fontSize: 13 }}>Loading providers...</div>
-        )}
-        {providersWithKeys.length === 0 && providers.length > 0 && (
-          <div style={{ color: colors.textMuted, fontSize: 13 }}>Configure providers in the Models panel to manage API keys.</div>
-        )}
-        {providersWithKeys.map(p => (
-          <Row key={p.name} label={p.displayName}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <TextInput mono value={maskedKeys[`${p.name.toUpperCase()}_API_KEY`] || (p.isConfigured ? '••••••••' : '')} placeholder={p.isConfigured ? '' : 'paste key…'} />
-              <span style={{
-                fontSize: 10, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase',
-                color: p.isConfigured ? colors.success : colors.textDim,
-              }}>{p.isConfigured ? 'set' : 'missing'}</span>
-            </div>
-          </Row>
-        ))}
+        <ProvidersSection />
       </Section>
     </div>
   );
@@ -668,7 +625,7 @@ function DataPanel() {
 
 // ── Panel router ─────────────────────────────────────────────────────
 
-const PANELS: Record<string, () => JSX.Element> = {
+const PANELS: Record<string, (props: PanelProps) => JSX.Element> = {
   agent: PersonaPanel, profile: ProfilePanel, preferences: PreferencesPanel,
   memory: MemoryPanel, autonomy: AutonomyPanel, tools: ToolsPanel,
   models: ModelsPanel, keys: KeysPanel, appearance: AppearancePanel,
@@ -718,7 +675,7 @@ export function SettingsView() {
         ))}
       </div>
       <div style={{ flex: 1, overflow: 'auto', padding: '32px 40px 60px' }}>
-        {Panel && <Panel />}
+        {Panel && <Panel goto={setSection} />}
       </div>
     </div>
   );
