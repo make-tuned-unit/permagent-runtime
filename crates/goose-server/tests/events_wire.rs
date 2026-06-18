@@ -30,7 +30,10 @@ fn assert_envelope(frame: &serde_json::Value, expected_type: &str) {
     assert!(frame["id"].is_string(), "envelope missing id: {frame}");
     assert_eq!(frame["type"], expected_type, "wrong/non-snake_case type");
     assert!(frame["timestamp"].is_string(), "envelope missing timestamp");
-    assert!(frame["payload"].is_object(), "envelope missing payload object");
+    assert!(
+        frame["payload"].is_object(),
+        "envelope missing payload object"
+    );
     eprintln!(
         "  ✓ {expected_type}: {}",
         serde_json::to_string(frame).unwrap()
@@ -50,7 +53,9 @@ async fn all_lanes_emit_to_real_websocket() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        axum::serve(listener, app.into_make_service()).await.unwrap();
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
     });
 
     // Connect a real WebSocket client.
@@ -102,7 +107,10 @@ async fn all_lanes_emit_to_real_websocket() {
             Err(_) => {} // idle read; keep waiting until the deadline
         }
     }
-    eprintln!("\n── captured {} frame(s) off the WebSocket ──", frames.len());
+    eprintln!(
+        "\n── captured {} frame(s) off the WebSocket ──",
+        frames.len()
+    );
 
     // ── Assert each lane's event arrived with the right wire shape ──
     eprintln!("\n── verified emit→WebSocket per lane ──");
@@ -118,24 +126,32 @@ async fn all_lanes_emit_to_real_websocket() {
         "discipline breach: raw content on the bus"
     );
 
-    let f = find(&frames, "memory_recalled", |p| p["source"] == "search_memory")
-        .expect("lane 3 (#324): memory_recalled not delivered over WS");
+    let f = find(&frames, "memory_recalled", |p| {
+        p["source"] == "search_memory"
+    })
+    .expect("lane 3 (#324): memory_recalled not delivered over WS");
     assert_envelope(f, "memory_recalled");
     assert_eq!(f["payload"]["hit_count"], 3);
     assert_eq!(f["payload"]["query"], "when did I switch editors");
 
-    let f = find(&frames, "entity_added", |p| p["entity_id"] == "term:evid-rust")
-        .expect("lane 4 (#325): entity_added not delivered over WS");
+    let f = find(&frames, "entity_added", |p| {
+        p["entity_id"] == "term:evid-rust"
+    })
+    .expect("lane 4 (#325): entity_added not delivered over WS");
     assert_envelope(f, "entity_added");
     assert_eq!(f["payload"]["entity_type"], "term");
 
-    let f = find(&frames, "entity_updated", |p| p["entity_id"] == "cat:evid-tools")
-        .expect("lane 4 (#325): entity_updated not delivered over WS");
+    let f = find(&frames, "entity_updated", |p| {
+        p["entity_id"] == "cat:evid-tools"
+    })
+    .expect("lane 4 (#325): entity_updated not delivered over WS");
     assert_envelope(f, "entity_updated");
     assert_eq!(f["payload"]["entity_type"], "cat");
 
-    let f = find(&frames, "decision_created", |p| p["decision_id"] == "dec-EVID-1")
-        .expect("lane 5 (#302): decision_created not delivered over WS");
+    let f = find(&frames, "decision_created", |p| {
+        p["decision_id"] == "dec-EVID-1"
+    })
+    .expect("lane 5 (#302): decision_created not delivered over WS");
     assert_envelope(f, "decision_created");
     assert_eq!(f["payload"]["kind"], "unblock");
     assert_eq!(f["payload"]["tier"], 2);
