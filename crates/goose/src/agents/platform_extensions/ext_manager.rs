@@ -534,6 +534,12 @@ async fn handle_search_memory(
     match brain.recall_cascade(&query, &ctx).await {
         Ok(recall_result) => {
             let hits = &recall_result.merged_hits;
+            // Live event for World View (recall-as-river). Counts/query only.
+            crate::events::emit(crate::events::memory_recalled(
+                &query,
+                hits.len(),
+                "search_memory",
+            ));
             if hits.is_empty() {
                 return Ok(vec![Content::text(format!(
                     "No memories found matching \"{}\".",
