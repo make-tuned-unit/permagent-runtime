@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { font, ease } from '../../styles/tokens';
 import { api } from '../../lib/api';
 import { useTheme } from '../../styles/useTheme';
+import { createChatWindow } from '../../lib/chatWindow';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
@@ -52,19 +53,7 @@ export function ChatLauncher() {
         return;
       }
 
-      const chatWindow = new WebviewWindow('chat', {
-        url: 'index.html?view=chat',
-        title: 'Permagent Chat',
-        width: 480,
-        height: 700,
-        minWidth: 360,
-        minHeight: 400,
-        center: true,
-        decorations: true,
-        resizable: true,
-        focus: true,
-        theme: theme === 'silver' ? 'light' : 'dark',
-      });
+      const chatWindow = await createChatWindow(theme);
 
       chatWindow.once('tauri://created', async () => {
         setChatWindowOpen(true);
@@ -78,7 +67,7 @@ export function ChatLauncher() {
     } catch (e) {
       console.error('Failed to open chat window:', e);
     }
-  }, []);
+  }, [theme]);
 
   if (chatWindowOpen) return null;
 

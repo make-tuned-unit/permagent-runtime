@@ -17,6 +17,7 @@ import { ModelPicker } from './components/chat/ModelPicker';
 import { InspectionPanel } from './components/inspection/InspectionPanel';
 import { AwarenessIndicator } from './components/awareness/AwarenessIndicator';
 import { PreTurnPreview } from './components/awareness/PreTurnPreview';
+import { trackChatGeometry } from './lib/chatWindow';
 // VoiceButton moved to ChatInput row (beside send button)
 
 function timeAgo(dateStr: string): string {
@@ -49,6 +50,13 @@ export default function ChatApp() {
       } catch { /* ignore */ }
     })();
   }, [theme]);
+
+  // Persist this window's position/size so it reopens where the user left it.
+  useEffect(() => {
+    let cleanup: (() => void) | undefined;
+    trackChatGeometry().then(fn => { cleanup = fn; });
+    return () => { cleanup?.(); };
+  }, []);
 
   const ensureSession = useCommandCenter(s => s.ensureSession);
   const connectSession = useCommandCenter(s => s.connectSession);
