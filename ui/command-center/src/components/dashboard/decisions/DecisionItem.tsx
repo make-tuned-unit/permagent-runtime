@@ -29,6 +29,7 @@ import { choiceOptions, recommendedChoiceId } from './types';
 import type { AnswerResult } from './useDecisions';
 import { EvidenceDigest } from './EvidenceDigest';
 import { formatAge } from './format';
+import { usePersona } from '../../settings/useSettings';
 
 interface Props {
   decision: Decision;
@@ -49,21 +50,21 @@ interface PendingAnswer {
  * documented gated effect (routes/decisions.rs:176-334) — never derived from
  * decision content (A1).
  */
-function effectTextFor(kind: string, answer: 'approve' | 'reject'): string {
+function effectTextFor(kind: string, answer: 'approve' | 'reject', agentName: string): string {
   if (kind === 'approve_review') {
     return answer === 'approve'
-      ? 'Confirm approve — Henry will mark this goal complete and start anything waiting on it.'
-      : 'Confirm reject — Henry will send the work back for another attempt.';
+      ? `Confirm approve — ${agentName} will mark this goal complete and start anything waiting on it.`
+      : `Confirm reject — ${agentName} will send the work back for another attempt.`;
   }
   if (kind === 'unblock') {
     return answer === 'approve'
-      ? 'Confirm approve — Henry will wake this goal up and let it try again.'
+      ? `Confirm approve — ${agentName} will wake this goal up and let it try again.`
       : 'Confirm reject — the goal stays parked.';
   }
   if (kind === 'risk_gate') {
     return answer === 'approve'
-      ? 'Confirm approve — Henry may go ahead with this action.'
-      : 'Confirm reject — Henry will not go ahead with this.';
+      ? `Confirm approve — ${agentName} may go ahead with this action.`
+      : `Confirm reject — ${agentName} will not go ahead with this.`;
   }
   // malformed and anything unknown: recorded only, no state change.
   return answer === 'approve'
@@ -73,6 +74,8 @@ function effectTextFor(kind: string, answer: 'approve' | 'reject'): string {
 
 export function DecisionItem({ decision: d, onAnswer, onConflictSettled }: Props) {
   const { colors, reduceMotion } = useTheme();
+  const { data: persona } = usePersona();
+  const agentName = persona?.display_name ?? 'Aria';
   const [pending, setPending] = useState<PendingAnswer | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [conflict, setConflict] = useState(false);
@@ -166,7 +169,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled }: Props
             borderRadius: radius.pill, background: colors.cyanSoft,
             color: colors.cyan, fontSize: 11, fontWeight: 500, padding: '3px 10px',
           }}>
-            Henry recommends · {recommended.label}
+            {agentName} recommends · {recommended.label}
           </span>
         </div>
       )}
@@ -240,7 +243,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled }: Props
                 onClick={() => setPending({
                   body: { answer: 'approve' },
                   confirmLabel: 'Confirm approve',
-                  effectText: effectTextFor(d.kind, 'approve'),
+                  effectText: effectTextFor(d.kind, 'approve', agentName),
                 })}
               >
                 Approve
@@ -250,7 +253,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled }: Props
                 onClick={() => setPending({
                   body: { answer: 'reject' },
                   confirmLabel: 'Confirm reject',
-                  effectText: effectTextFor(d.kind, 'reject'),
+                  effectText: effectTextFor(d.kind, 'reject', agentName),
                 })}
               >
                 Reject
@@ -265,7 +268,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled }: Props
               onClick={() => setPending({
                 body: { answer: 'choice', choice_id: opt.id },
                 confirmLabel: 'Confirm choice',
-                effectText: `Confirm “${opt.label}” — Henry will go with this option.`,
+                effectText: `Confirm “${opt.label}” — ${agentName} will go with this option.`,
               })}
             >
               {opt.label}

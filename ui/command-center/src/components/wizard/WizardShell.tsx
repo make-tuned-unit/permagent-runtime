@@ -44,7 +44,7 @@ export function WizardShell({ onComplete }: Props) {
 
   const handleIntentDone = () => {
     if (!persona.name) {
-      setPersona(p => ({ ...p, name: 'Henry' }));
+      setPersona(p => ({ ...p, name: 'Aria' }));
     }
     setStep(3);
   };
