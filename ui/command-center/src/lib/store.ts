@@ -314,6 +314,27 @@ function primaryToolType(node: LayoutNode): ToolType | null {
   return null;
 }
 
+/** Deep-search a layout tree for a panel hosting the given tool. */
+function layoutHasTool(node: LayoutNode, tool: ToolType): boolean {
+  if (node.type === 'panel') return node.tool === tool;
+  if (node.type === 'split') return node.children.some(c => layoutHasTool(c, tool));
+  return false;
+}
+
+/**
+ * Switch the main window to the workspace hosting `tool`, closing any overlay.
+ * Shared by in-window callers (Settings) and the chat window's cross-window
+ * app_navigate handler. Returns false if no workspace hosts the tool.
+ */
+export function navigateToTool(tool: ToolType): boolean {
+  const { workspaces, switchWorkspace, setActivePanel } = useCommandCenter.getState();
+  const ws = workspaces.find(w => layoutHasTool(w.layoutJson, tool));
+  if (!ws) return false;
+  setActivePanel('chat');
+  switchWorkspace(ws.id);
+  return true;
+}
+
 /** Build AppContextPayload from current store state. */
 function buildAppContext(state: CommandCenterStore): AppContextPayload | undefined {
   const ws = state.workspaces.find(w => w.id === state.activeWorkspaceId);

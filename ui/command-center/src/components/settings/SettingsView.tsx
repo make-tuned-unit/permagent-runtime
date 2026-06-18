@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useCommandCenter } from '../../lib/store';
+import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { api } from '../../lib/api';
 import { font, ease, setTheme as setThemeFn, setMobiusGlow, setIdleAnim, setShowHeroMobius, setDensity as setDensityFn, setReduceMotion as setReduceMotionFn, type ThemeId, type IdleAnim, type UIDensity } from '../../styles/tokens';
 import { useTheme as useThemeHook } from '../../styles/useTheme';
@@ -187,7 +187,7 @@ function MemoryPanel() {
       </Section>
       <Section title="Manage">
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button style={ghost(colors)}>Open Brain view</button>
+          <button style={ghost(colors)} onClick={() => navigateToTool('memory')}>Open Brain view</button>
           <button style={ghost(colors)}>Export memory</button>
           <button style={{ ...ghost(colors), color: colors.danger, borderColor: 'rgba(255,180,162,0.30)' }}>Forget everything</button>
         </div>
