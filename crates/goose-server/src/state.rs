@@ -482,7 +482,7 @@ impl AppState {
         let voice_paths = crate::voice::sherpa_backend::VoiceModelPaths::default_paths();
         let (voice_stt, voice_tts) = init_voice_providers(&voice_paths);
 
-        Ok(Arc::new(Self {
+        let state = Arc::new(Self {
             agent_manager,
             recipe_file_hash_map: Arc::new(Mutex::new(HashMap::new())),
             recipe_session_tracker: Arc::new(Mutex::new(HashSet::new())),
@@ -504,7 +504,14 @@ impl AppState {
             app_catalog,
             voice_stt,
             voice_tts,
-        }))
+        });
+
+        // Agent runtime-state tick (#288 interim A): derive Henry's state from the
+        // same signals as /api/henry/status and emit agent_state_changed on
+        // transition, so World View reacts live instead of polling.
+        crate::agent_state_tick::spawn(state.clone());
+
+        Ok(state)
     }
 
     pub async fn set_extension_loading_task(

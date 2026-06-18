@@ -112,7 +112,20 @@ let pollTimer: ReturnType<typeof setInterval> | undefined;
 let decayTimer: ReturnType<typeof setInterval> | undefined;
 let ws: WebSocket | null = null;
 let wsRetry: ReturnType<typeof setTimeout> | undefined;
+let entityRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 let closed = false;
+
+// Event-driven graph refresh: an entity_added/_updated means the graph changed.
+// Coalesce bursts (one annotation can surface several entities) into a single
+// poll ~400ms later, so shadows appear within ~½s instead of waiting up to 60s.
+// The slow GRAPH_POLL_MS timer stays as the reconciliation backstop (§4).
+function scheduleGraphRefresh(): void {
+  if (entityRefreshTimer) return;
+  entityRefreshTimer = setTimeout(() => {
+    entityRefreshTimer = undefined;
+    void pollGraph();
+  }, 400);
+}
 
 async function pollGraph(): Promise<void> {
   try {
@@ -162,12 +175,21 @@ function connectEvents(): void {
         memoryCount: signals.memoryCount + 1,
       });
       bumpFlow(1);
+    } else if (type === 'memory_recalled') {
+      // Recall-as-river: a real Brain recall happened. This is the genuine
+      // recall signal (#324) — the river flows on actual retrieval, not a proxy.
+      bumpFlow(1);
+    } else if (type === 'entity_added' || type === 'entity_updated') {
+      // Shadows-on-the-wall (#325): a real entity surfaced on the graph. Refresh
+      // now (event-driven) instead of waiting up to 60s; the API stays the source
+      // of truth for entity shape/dedup/caps.
+      scheduleGraphRefresh();
     } else if (
       type.startsWith('librarian_describe') ||
       type.startsWith('task_')
     ) {
-      // Recall-as-river proxy: describe/task activity keeps the channel running.
-      // (No recall_* event exists today — see filed gap.)
+      // Ambient activity: describe/task work keeps the channel faintly running
+      // between real recalls.
       bumpFlow(0.6);
     }
   };
@@ -203,6 +225,7 @@ export function startWorldSignals(): () => void {
     if (pollTimer) clearInterval(pollTimer);
     if (decayTimer) clearInterval(decayTimer);
     if (wsRetry) clearTimeout(wsRetry);
+    if (entityRefreshTimer) clearTimeout(entityRefreshTimer);
     ws?.close();
     ws = null;
   };

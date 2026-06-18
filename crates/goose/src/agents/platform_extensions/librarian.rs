@@ -853,6 +853,29 @@ pub fn annotate_memory(
         )
     );
 
+    // Classify each entity as new-to-the-graph vs already-known BEFORE inserting
+    // this annotation, so the live event can distinguish entity_added (a new
+    // shadow appears) from entity_updated (an existing shadow re-referenced).
+    let entity_events: Vec<(String, String, bool)> = entity_refs
+        .iter()
+        .map(|er| {
+            let entity_type = er
+                .canonical_id
+                .split(':')
+                .next()
+                .unwrap_or("entity")
+                .to_string();
+            let already_known = conn
+                .query_row(
+                    "SELECT 1 FROM memory_annotations WHERE who LIKE ?1 LIMIT 1",
+                    rusqlite::params![format!("%\"canonical_id\":\"{}\"%", er.canonical_id)],
+                    |_| Ok(()),
+                )
+                .is_ok();
+            (er.canonical_id.clone(), entity_type, !already_known)
+        })
+        .collect();
+
     let who_json = serde_json::to_string(&entity_refs)?;
     conn.execute(
         "INSERT INTO memory_annotations (id, memory_id, description, who, why, where_, when_, how, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -874,6 +897,16 @@ pub fn annotate_memory(
         entity_count = entity_refs.len(),
         "Annotation written"
     );
+
+    // Live events for World View (shadows-on-the-wall). Id/type only, no content.
+    for (entity_id, entity_type, is_new) in &entity_events {
+        let event = if *is_new {
+            crate::events::entity_added(entity_id, entity_type)
+        } else {
+            crate::events::entity_updated(entity_id, entity_type)
+        };
+        crate::events::emit(event);
+    }
 
     Ok(entity_refs.len())
 }

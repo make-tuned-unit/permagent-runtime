@@ -336,6 +336,9 @@ pub async fn create_decision(pool: &Pool<Sqlite>, req: NewDecision) -> Result<De
 
     tx.commit().await.map_err(|e| e.to_string())?;
 
+    // Live event for the Decision Inbox consumer (event-driven, not 15s poll).
+    crate::events::emit(crate::events::decision_created(&id, &kind, tier));
+
     get_decision(pool, &id)
         .await?
         .ok_or_else(|| "Failed to read created decision".to_string())
@@ -701,6 +704,15 @@ pub async fn answer_decision(
     tx.commit()
         .await
         .map_err(|e| AnswerError::Db(e.to_string()))?;
+
+    // Live event for the Decision Inbox consumer (the card leaves the board).
+    crate::events::emit(crate::events::decision_resolved(
+        decision_id,
+        &decision.kind,
+        &answer.answer,
+        acted_by,
+        decision.tier,
+    ));
 
     let updated = get_decision(pool, decision_id)
         .await

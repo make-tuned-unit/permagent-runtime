@@ -105,6 +105,15 @@ pub enum PermagentEventType {
     TaskFailed,
     // Memory
     MemoryAdded,
+    MemoryRecalled,
+    // Entity / knowledge graph
+    EntityAdded,
+    EntityUpdated,
+    // Decision inbox
+    DecisionCreated,
+    DecisionResolved,
+    // Agent runtime state
+    AgentStateChanged,
     // Skills
     SkillProposed,
     SkillSaved,
@@ -203,6 +212,89 @@ pub fn memory_added(
             "key": key,
             "category": category,
             "wing": wing,
+        }),
+    )
+}
+
+/// Emitted when an agent actively recalls memories via Brain search.
+/// Payload discipline: query/counts/source only — never the recalled content.
+pub fn memory_recalled(query: &str, hit_count: usize, source: &str) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::MemoryRecalled,
+        serde_json::json!({
+            "query": query,
+            "hit_count": hit_count,
+            "source": source,
+        }),
+    )
+}
+
+/// Emitted when a memory annotation surfaces an entity reference for the first
+/// time (a new node on the knowledge graph). Payload: id/type only, no content.
+pub fn entity_added(entity_id: &str, entity_type: &str) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::EntityAdded,
+        serde_json::json!({
+            "entity_id": entity_id,
+            "entity_type": entity_type,
+        }),
+    )
+}
+
+/// Emitted when an already-known entity is referenced again by a new annotation.
+pub fn entity_updated(entity_id: &str, entity_type: &str) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::EntityUpdated,
+        serde_json::json!({
+            "entity_id": entity_id,
+            "entity_type": entity_type,
+        }),
+    )
+}
+
+/// Emitted when a decision lands in the inbox. Payload: id/kind/tier only —
+/// never the headline/detail (those are user-facing content).
+pub fn decision_created(decision_id: &str, kind: &str, tier: i64) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::DecisionCreated,
+        serde_json::json!({
+            "decision_id": decision_id,
+            "kind": kind,
+            "tier": tier,
+        }),
+    )
+}
+
+/// Emitted when a decision is answered. Payload: ids/classifications only.
+pub fn decision_resolved(
+    decision_id: &str,
+    kind: &str,
+    answer: &str,
+    acted_by: &str,
+    tier: i64,
+) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::DecisionResolved,
+        serde_json::json!({
+            "decision_id": decision_id,
+            "kind": kind,
+            "answer": answer,
+            "acted_by": acted_by,
+            "tier": tier,
+        }),
+    )
+}
+
+/// Emitted when an agent's coarse runtime state transitions (idle/working/
+/// available). #288 interim A derives this for Henry from active sessions +
+/// in-flight tools; `state` is a HUD state string the World View renders directly.
+pub fn agent_state_changed(agent_id: &str, name: &str, state: &str) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::AgentStateChanged,
+        serde_json::json!({
+            "agent_id": agent_id,
+            "name": name,
+            "state": state,
         }),
     )
 }

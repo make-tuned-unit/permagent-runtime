@@ -7,7 +7,10 @@ import { useTheme } from '../../styles/useTheme';
 const ALL_EVENT_TYPES: PermagentEventType[] = [
   'daemon_started', 'daemon_stopped',
   'task_created', 'task_started', 'task_completed', 'task_failed',
-  'memory_added',
+  'memory_added', 'memory_recalled',
+  'entity_added', 'entity_updated',
+  'decision_created', 'decision_resolved',
+  'agent_state_changed',
   'skill_proposed', 'skill_saved', 'skill_triggered',
   'message_received', 'stream_chunk',
   'integration_connected', 'integration_error',

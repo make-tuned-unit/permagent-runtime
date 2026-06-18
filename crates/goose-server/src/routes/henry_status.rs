@@ -110,15 +110,9 @@ async fn henry_status(State(state): State<Arc<AppState>>) -> Json<HenryStatusRes
     // Current tool: check active session event buses for in-flight requests
     let current_tool = find_current_tool(&state, &active_sessions).await;
 
-    // Determine state
-    let current_state = if current_tool.is_some() {
-        "tool_call"
-    } else if !active_sessions.is_empty() {
-        "in_conversation"
-    } else {
-        "idle"
-    }
-    .to_string();
+    // Determine state (shared with the #288 agent-state tick).
+    let current_state =
+        classify_henry_state(current_tool.is_some(), !active_sessions.is_empty()).to_string();
 
     // Spectral DB queries (tasks, messages, session stats)
     let today_str = today_midnight.format("%Y-%m-%dT%H:%M:%S").to_string();
@@ -179,6 +173,19 @@ async fn henry_status(State(state): State<Arc<AppState>>) -> Json<HenryStatusRes
         },
         next_scheduled,
     })
+}
+
+/// Classify Henry's coarse runtime state from whether a tool is in flight and
+/// whether any session is active. Shared by this route and the #288 agent-state
+/// tick (`crate::agent_state_tick`) so both derive state identically.
+pub(crate) fn classify_henry_state(has_tool: bool, has_active_session: bool) -> &'static str {
+    if has_tool {
+        "tool_call"
+    } else if has_active_session {
+        "in_conversation"
+    } else {
+        "idle"
+    }
 }
 
 /// Check active session buses for in-flight requests.

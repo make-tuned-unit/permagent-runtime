@@ -312,7 +312,7 @@ impl ActivityIngester {
                 confidence: None,
                 visibility: Visibility::Private,
                 compaction_tier: Some(CompactionTier::Raw),
-                wing: wing_override,
+                wing: wing_override.clone(),
                 ..Default::default()
             },
         );
@@ -322,6 +322,14 @@ impl ActivityIngester {
                 if let Ok(mut ts) = self.last_ingested_at.lock() {
                     *ts = Some(chrono::Utc::now());
                 }
+                // Live event for World View consumers (river rainfall / ore bank).
+                // Payload discipline: ids/keys/category only — never raw content.
+                crate::events::emit(crate::events::memory_added(
+                    &result.memory_id,
+                    &key,
+                    &event_type_name,
+                    wing_override.as_deref(),
+                ));
                 if is_aggregated {
                     if let Ok(mut queue) = self.aggregation_queue.lock() {
                         queue.push(result.memory_id);

@@ -97,6 +97,18 @@ export function AgentStateSources() {
             else if (type === 'memory_added') bankEvent('ingest', ref, 'daemon');
           }
 
+          // ── Agent runtime state (#288 interim A): live state, flips sim→daemon ──
+          // Apply even when replayed: the latest buffered transition IS the current
+          // state, and the Henry poll reconciles within 2s either way.
+          if (type === 'agent_state_changed') {
+            const agentId: string = payload.agent_id ?? '';
+            const agentState = payload.state as AgentHudState | undefined;
+            if (agentId && agentState) {
+              setAgentSource(agentId, payload.name ?? agentId, agentState, 'daemon');
+            }
+            return;
+          }
+
           if (!type.startsWith('librarian_')) return;
           if (replayed) return;
 

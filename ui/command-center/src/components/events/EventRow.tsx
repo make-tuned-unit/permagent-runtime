@@ -15,6 +15,12 @@ const TYPE_COLORS: Record<string, { bg: string; text: string }> = {
   message_received:       { bg: 'bg-blue-500/15',    text: 'text-blue-400' },
   stream_chunk:           { bg: 'bg-blue-500/15',    text: 'text-blue-400' },
   memory_added:           { bg: 'bg-blue-500/15',    text: 'text-blue-400' },
+  memory_recalled:        { bg: 'bg-violet-500/15',  text: 'text-violet-400' },
+  entity_added:           { bg: 'bg-teal-500/15',    text: 'text-teal-400' },
+  entity_updated:         { bg: 'bg-teal-500/15',    text: 'text-teal-400' },
+  decision_created:       { bg: 'bg-amber-500/15',   text: 'text-amber-400' },
+  decision_resolved:      { bg: 'bg-emerald-500/15', text: 'text-emerald-400' },
+  agent_state_changed:    { bg: 'bg-indigo-500/15',  text: 'text-indigo-400' },
   skill_proposed:         { bg: 'bg-blue-500/15',    text: 'text-blue-400' },
   skill_triggered:        { bg: 'bg-blue-500/15',    text: 'text-blue-400' },
   task_failed:            { bg: 'bg-red-500/15',     text: 'text-red-400' },
@@ -50,6 +56,18 @@ function summarizePayload(event: EventRecord): string {
       return `Failed: ${(p.error as string) || '?'}`;
     case 'memory_added':
       return `Memory: ${(p.key as string) || '?'}`;
+    case 'memory_recalled':
+      return `Recalled ${(p.hit_count as number) ?? '?'} for "${(p.query as string) || '?'}"`;
+    case 'entity_added':
+      return `New entity: ${(p.entity_id as string) || '?'}`;
+    case 'entity_updated':
+      return `Entity referenced: ${(p.entity_id as string) || '?'}`;
+    case 'decision_created':
+      return `Decision (T${(p.tier as number) ?? '?'} ${(p.kind as string) || '?'})`;
+    case 'decision_resolved':
+      return `Resolved: ${(p.answer as string) || '?'} by ${(p.acted_by as string) || '?'}`;
+    case 'agent_state_changed':
+      return `${(p.name as string) || (p.agent_id as string) || '?'} → ${(p.state as string) || '?'}`;
     case 'skill_proposed':
       return `Proposed: ${(p.name as string) || (p.description as string) || '?'}`;
     case 'skill_saved':

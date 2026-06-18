@@ -64,17 +64,17 @@ function useLibrarianTokenStream(active: boolean): StreamState {
         const event = JSON.parse(ev.data);
         const eventType: string = event.event_type ?? event.type ?? '';
 
-        if (eventType === 'LibrarianDescribeStarted') {
+        if (eventType === 'librarian_describe_started') {
           currentKeyRef.current = event.payload?.memory_key ?? null;
           setState({ tokens: '', retrying: false, lastQuality: null });
-        } else if (eventType === 'LibrarianDescribeRetry') {
+        } else if (eventType === 'librarian_describe_retry') {
           setState((prev) => ({ ...prev, tokens: '', retrying: true }));
-        } else if (eventType === 'LibrarianDescribeToken') {
+        } else if (eventType === 'librarian_describe_token') {
           const key = event.payload?.memory_key;
           if (key === currentKeyRef.current) {
             setState((prev) => ({ ...prev, tokens: prev.tokens + (event.payload?.token ?? '') }));
           }
-        } else if (eventType === 'LibrarianDescribeCompleted') {
+        } else if (eventType === 'librarian_describe_completed') {
           const quality = event.payload?.quality === 'fallback' ? 'fallback' as const : 'structured' as const;
           setState((prev) => ({ ...prev, retrying: false, lastQuality: quality }));
           currentKeyRef.current = null;
