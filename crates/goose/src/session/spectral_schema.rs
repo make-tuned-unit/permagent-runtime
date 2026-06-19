@@ -21,9 +21,14 @@ use tracing::{info, warn};
 /// over either a v8 or a v9 base.
 ///
 /// v11 = recognition instrumentation (recognition_events, recognition_set_members),
-/// the AmbientFrame emit-side substrate. New-tables-only, additive. This branch
-/// OWNS v11; the CRM build takes v12 (do not let the two collide).
-pub const SPECTRAL_SCHEMA_VERSION: i32 = 11;
+/// the AmbientFrame emit-side substrate. New-tables-only, additive. Landed on
+/// main via the Recognition branch; `migrate_v10_to_v11` applies it.
+///
+/// v12 = CRM people table. New-tables-only, additive. The chain is
+/// v10 -> v11 -> v12, each step base-independent (idempotent additive
+/// `CREATE TABLE IF NOT EXISTS`), so a v10 DB runs v11 then v12 and a v11 DB
+/// runs only v12. `migrate_v11_to_v12` applies it.
+pub const SPECTRAL_SCHEMA_VERSION: i32 = 12;
 
 /// Initialize the Spectral database schema from scratch.
 /// Creates all tables, indexes, FTS virtual tables, triggers, and views.
@@ -761,6 +766,9 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // migrate_v10_to_v11 for existing installs.
     apply_recognition_schema(pool).await?;
 
+    // CRM people table (schema v12). Idempotent; shared with migrate_v11_to_v12.
+    apply_people_schema(pool).await?;
+
     info!(
         "Spectral schema v{} initialized successfully",
         SPECTRAL_SCHEMA_VERSION
@@ -842,21 +850,89 @@ pub async fn apply_recognition_schema(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
+/// Apply the CRM people schema: a typed person table keyed on an opaque,
+/// immutable `entity_uuid` (the persona_id pattern), with `canonical_id` as a
+/// mutable UNIQUE lookup column. Carries CRM attributes the Brain graph entity
+/// lacks (role/company/email/phone/last_contact/notes).
+///
+/// Fully idempotent — every statement uses `IF NOT EXISTS` so it is safe to run
+/// on every boot and on fresh installs. See [`crate::people`] for the access
+/// layer and the opaque-id rationale.
+pub async fn apply_people_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool.begin().await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS people (
+            entity_uuid     TEXT PRIMARY KEY,
+            canonical_id    TEXT NOT NULL UNIQUE,
+            display_name    TEXT NOT NULL,
+            role            TEXT,
+            company         TEXT,
+            email           TEXT,
+            phone           TEXT,
+            notes           TEXT,
+            last_contact_at TEXT,
+            created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_people_company ON people(company)")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_people_role ON people(role)")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_people_email ON people(email)")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_people_last_contact ON people(last_contact_at DESC)",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
 /// Migrate an existing database to the recognition-instrumentation schema (v11).
 ///
 /// Purely additive (CREATE TABLE / INDEX IF NOT EXISTS), base-version
-/// independent. Records v11 in `schema_version`.
+/// independent. Records v11 in `schema_version` (hardcoded, so it stays correct
+/// as SPECTRAL_SCHEMA_VERSION advances; the v11 -> v12 step is applied separately
+/// by migrate_v11_to_v12 — mirrors the migrate_v9_to_v10 precedent).
 pub async fn migrate_v10_to_v11(pool: &Pool<Sqlite>) -> Result<()> {
     info!("Migrating Spectral schema v10 -> v11 (recognition instrumentation)");
 
     apply_recognition_schema(pool).await?;
+
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (11)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v11 (recognition instrumentation)");
+
+    Ok(())
+}
+
+/// Migrate an existing database to the CRM people schema (schema v12).
+///
+/// Additive and base-version independent (purely `CREATE TABLE IF NOT EXISTS` /
+/// `CREATE INDEX IF NOT EXISTS`), so it applies cleanly over either a v10 or a
+/// v11 base. Records v12 in `schema_version`.
+pub async fn migrate_v11_to_v12(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v11 -> v12 (CRM people)");
+
+    apply_people_schema(pool).await?;
 
     sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (?)")
         .bind(SPECTRAL_SCHEMA_VERSION)
         .execute(pool)
         .await?;
     info!(
-        "Spectral schema migrated to v{} (recognition instrumentation)",
+        "Spectral schema migrated to v{} (CRM people)",
         SPECTRAL_SCHEMA_VERSION
     );
 
@@ -1512,11 +1588,13 @@ mod recognition_schema_tests {
         let pool = mem_pool().await;
         init_spectral_db(&pool).await.unwrap();
 
+        // Fresh init lands at the current schema version (now v12, post CRM
+        // merge). The recognition tables must still be present regardless of the
+        // version bump.
         assert_eq!(
             verify_schema_version(&pool).await.unwrap(),
             SPECTRAL_SCHEMA_VERSION
         );
-        assert_eq!(SPECTRAL_SCHEMA_VERSION, 11);
         assert!(table_exists(&pool, "recognition_events").await);
         assert!(table_exists(&pool, "recognition_set_members").await);
     }
@@ -1554,5 +1632,80 @@ mod recognition_schema_tests {
         // Idempotent: a second run is a clean no-op.
         migrate_v10_to_v11(&pool).await.unwrap();
         assert_eq!(verify_schema_version(&pool).await.unwrap(), 11);
+    }
+}
+
+#[cfg(test)]
+mod people_schema_tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn mem_pool() -> Pool<Sqlite> {
+        SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap()
+    }
+
+    async fn people_table_exists(pool: &Pool<Sqlite>) -> bool {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT name FROM sqlite_master WHERE type='table' AND name='people')",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    async fn current_version(pool: &Pool<Sqlite>) -> i32 {
+        sqlx::query_scalar::<_, i32>("SELECT MAX(version) FROM schema_version")
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn fresh_install_has_people_at_v12() {
+        let pool = mem_pool().await;
+        init_spectral_db(&pool).await.unwrap();
+
+        assert!(people_table_exists(&pool).await);
+        assert_eq!(current_version(&pool).await, SPECTRAL_SCHEMA_VERSION);
+        assert_eq!(SPECTRAL_SCHEMA_VERSION, 12);
+    }
+
+    /// migrate_v11_to_v12 is base-independent: it must add the people table and
+    /// stamp v12 whether the existing DB reports v10 (a recognition-less base) or
+    /// v11.
+    #[tokio::test]
+    async fn migration_is_base_independent() {
+        for base in [10, 11] {
+            let pool = mem_pool().await;
+            // Minimal pre-v12 DB: only the version ledger seeded at `base`.
+            sqlx::query(
+                "CREATE TABLE schema_version (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO schema_version (version) VALUES (?)")
+                .bind(base)
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            assert!(!people_table_exists(&pool).await);
+
+            migrate_v11_to_v12(&pool).await.unwrap();
+
+            assert!(people_table_exists(&pool).await, "base v{base}: table");
+            assert_eq!(current_version(&pool).await, 12, "base v{base}: version");
+
+            // Idempotent: a second run is a no-op, not an error.
+            migrate_v11_to_v12(&pool).await.unwrap();
+        }
     }
 }
