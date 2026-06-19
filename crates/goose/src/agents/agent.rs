@@ -22,6 +22,7 @@ use crate::agents::extension_manager::{
 };
 use crate::agents::final_output_tool::{FINAL_OUTPUT_CONTINUATION_MESSAGE, FINAL_OUTPUT_TOOL_NAME};
 use crate::agents::platform_extensions::MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE;
+use crate::agents::platform_tools::PLATFORM_LOAD_FEATURE_LESSON_TOOL_NAME;
 use crate::agents::platform_tools::PLATFORM_MANAGE_SCHEDULE_TOOL_NAME;
 use crate::agents::prompt_manager::PromptManager;
 use crate::agents::retry::{RetryManager, RetryResult};
@@ -548,6 +549,19 @@ impl Agent {
             return (request_id, Ok(ToolCallResult::from(wrapped_result)));
         }
 
+        if tool_call.name == PLATFORM_LOAD_FEATURE_LESSON_TOOL_NAME {
+            let feature_id = tool_call
+                .arguments
+                .as_ref()
+                .and_then(|a| a.get("feature_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let result = self.handle_load_feature_lesson(&feature_id);
+            let wrapped_result = result.map(CallToolResult::success);
+            return (request_id, Ok(ToolCallResult::from(wrapped_result)));
+        }
+
         if tool_call.name == FINAL_OUTPUT_TOOL_NAME {
             return if let Some(final_output_tool) = self.final_output_tool.lock().await.as_mut() {
                 let result = final_output_tool.execute_tool_call(tool_call.clone()).await;
@@ -954,6 +968,11 @@ impl Agent {
             && self.config.scheduler_service.is_some()
         {
             prefixed_tools.push(platform_tools::manage_schedule_tool());
+        }
+
+        // Guided-tour lesson loader — always available (read-only, no deps).
+        if extension_name.is_none() || extension_name.as_deref() == Some("platform") {
+            prefixed_tools.push(platform_tools::load_feature_lesson_tool());
         }
 
         if extension_name.is_none() {

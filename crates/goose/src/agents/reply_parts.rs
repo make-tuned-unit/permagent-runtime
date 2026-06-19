@@ -217,6 +217,24 @@ impl Agent {
             }
         }
 
+        // First-run guided-tour offer (once). Suppressed once the user engages or
+        // declines (the `load_feature_lesson` tool sets `tour_completed`).
+        let tour_completed = crate::config::Config::global()
+            .get_param::<bool>(crate::agents::self_knowledge::TOUR_COMPLETED_KEY)
+            .unwrap_or(false);
+        if !tour_completed {
+            let mut pm = self.prompt_manager.lock().await;
+            pm.add_system_prompt_extra(
+                "tour_offer".to_string(),
+                "This user has not been shown around yet. Early in the conversation, once, \
+                 warmly offer a short guided tour of what you can do. If they accept, run it \
+                 with the `tour` skill (call `load_feature_lesson` per feature). If they \
+                 decline, call `load_feature_lesson` with feature_id \"decline\" so you don't \
+                 ask again. Offer only once — never nag."
+                    .to_string(),
+            );
+        }
+
         // Prepare system prompt
         let extensions_info = self
             .extension_manager

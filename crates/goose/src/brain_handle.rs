@@ -16,6 +16,42 @@
 
 use std::sync::Arc;
 
+/// Self-knowledge descriptor for the Brain surface (the memory view). Added in
+/// Phase 2 — Phase 1 had no Brain descriptor. Static for brief rendering (the
+/// surface section is editorial), but its lesson confirms via the queryable
+/// `MemoryRecallable` proxy (`search_memory`). Co-located here; aggregated by
+/// `crate::agents::self_knowledge`.
+pub const BRAIN_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "brain",
+        display_name: "Brain",
+        category: crate::agents::self_knowledge::FeatureCategory::Surface,
+        what_it_does:
+            "Your persistent memory — durable facts, conversations, and ingested content that survive across every session",
+        why_it_matters:
+            "It is what makes you continuous rather than a fresh chatbot each time; recall it before assuming you do not know something",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        teaching: &[
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Open your Brain",
+                body: "Show them where their memories live — this is the heart of what makes you persistent.",
+                open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                    tab: "Brain",
+                    section: None,
+                }),
+                confirm: None,
+            },
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Prove it remembers",
+                body: "Ask them to tell you one durable fact about themselves, save it to memory, then recall it back — unlike an ordinary chatbot, you will still know it tomorrow and in every future session.",
+                open_surface: None,
+                confirm: Some(crate::agents::self_knowledge::ConfirmCheck::MemoryRecallable(
+                    "the fact they just told you about themselves",
+                )),
+            },
+        ],
+    };
+
 /// Simplified cascade result carrying only the merged hits.
 ///
 /// Wraps the fields callers actually use from the full CascadeResult

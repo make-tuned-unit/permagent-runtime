@@ -28,6 +28,40 @@ use crate::config::paths::Paths;
 /// "persona_id real-keying" note.
 pub const DEFAULT_PERSONA_KEY: &str = "henry";
 
+/// Self-knowledge descriptor for the Persona picker surface (name, voice,
+/// audition). Added in Phase 2. Static for brief rendering, but its lesson
+/// confirms via `PersonaConfigured` — a real queryable read-back, since a
+/// personalized name surfaces in the brief's "You are <name>" line next turn.
+/// Co-located here; aggregated by `crate::agents::self_knowledge`.
+pub const PERSONA_PICKER_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "persona",
+        display_name: "Persona picker",
+        category: crate::agents::self_knowledge::FeatureCategory::Surface,
+        what_it_does:
+            "Where the user names you, picks your voice, and hears an audition before settling on one",
+        why_it_matters:
+            "It is the one thing that makes you feel like theirs rather than a generic assistant — lead with it warmly",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        teaching: &[
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Make me yours",
+                body: "Open the identity settings so they can give you a name, choose a voice, and hear it audition out loud. Invite them to make it personal.",
+                open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                    tab: "Settings",
+                    section: Some("identity"),
+                }),
+                confirm: None,
+            },
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Confirm the new you",
+                body: "Once they have chosen a name (and maybe a voice), acknowledge it warmly in your own words — they have just made you theirs.",
+                open_surface: None,
+                confirm: Some(crate::agents::self_knowledge::ConfirmCheck::PersonaConfigured),
+            },
+        ],
+    };
+
 /// Primary agent persona configuration.
 /// Stored at ~/.permagent/agent.yaml under the `primary` key.
 #[derive(Debug, Clone, Serialize, Deserialize)]
