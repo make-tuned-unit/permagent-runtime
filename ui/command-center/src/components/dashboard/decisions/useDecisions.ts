@@ -9,6 +9,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { getApiBaseUrl } from '../../../lib/api';
+import { wireEventType } from '../../../lib/wireEvent';
 import { decisionsClient } from './client';
 import type { AnswerBody, Decision, DecisionsResponse, HistoryItem } from './types';
 import { DecisionConflictError } from './types';
@@ -62,7 +63,7 @@ export function useDecisions() {
         } catch {
           return;
         }
-        const type = parsed.type ?? parsed.event_type ?? '';
+        const type = wireEventType(parsed);
         const ts = Date.parse(parsed.timestamp ?? '');
         if (Number.isFinite(ts) && ts < mountedAt) return; // skip replayed buffer
         if (type === 'decision_created' || type === 'decision_resolved') {

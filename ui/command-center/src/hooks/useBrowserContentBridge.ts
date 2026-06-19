@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { getApiBaseUrl, apiFetch } from '../lib/api';
+import { wireEventType } from '../lib/wireEvent';
 
 /**
  * Subscribes to the daemon's global event bus (/events WebSocket).
@@ -25,7 +26,7 @@ export function useBrowserContentBridge(activeWebviewId: string | null | undefin
       ws.onmessage = async (ev) => {
         try {
           const event = JSON.parse(ev.data);
-          const eventType: string = event.event_type ?? event.type ?? '';
+          const eventType = wireEventType(event);
           if (eventType !== 'browser_content_requested') return;
 
           const requestId = event.payload?.request_id;

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { getApiBaseUrl } from '../lib/api';
+import { wireEventType } from '../lib/wireEvent';
 import { useCommandCenter } from '../lib/store';
 import type { ActivePanel } from '../lib/store';
 
@@ -76,7 +77,7 @@ export function useAppNavigate() {
       ws.onmessage = (ev) => {
         try {
           const event = JSON.parse(ev.data);
-          const eventType: string = event.event_type ?? event.type ?? '';
+          const eventType = wireEventType(event);
           if (eventType !== 'app_navigate') return;
           navigateRef.current(event.payload ?? {});
         } catch {

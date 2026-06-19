@@ -18,6 +18,7 @@
 
 import { useEffect } from 'react';
 import { api, getApiBaseUrl } from '../../../lib/api';
+import { wireEventType } from '../../../lib/wireEvent';
 import { setAgentSource } from '../shared/agentStatus';
 import { bankEvent } from '../shared/tendingBank';
 import { noteDescribe } from './librarianMining';
@@ -80,7 +81,7 @@ export function AgentStateSources() {
         try {
           const event = JSON.parse(ev.data);
           // Wire shape: { id, type: "librarian_describe_started", timestamp, payload }
-          const type: string = event.type ?? event.event_type ?? '';
+          const type = wireEventType(event);
           // /events replays its buffer on connect — skip pre-mount history so the
           // Librarian stays "idle until first event" AND the tending bank only ever
           // counts work seen live (bible §6; tendingBank honesty note).

@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { font, ease } from '../../styles/tokens';
 import { api } from '../../lib/api';
+import { wireEventType } from '../../lib/wireEvent';
 import { useCommandCenter } from '../../lib/store';
 import { useTheme } from '../../styles/useTheme';
 
@@ -238,7 +239,7 @@ export function InspectionPanel({ onClose }: Props) {
         {filteredEvents.slice().reverse().map((event: any, i: number) => {
           const ts = event.timestamp ? new Date(event.timestamp).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
           const surface = event.source_surface ?? '?';
-          const type = event.event_type ?? '?';
+          const type = wireEventType(event) || '?';
           const isExpanded = expandedEvent === i;
           return (
             <div key={i} onClick={() => setExpandedEvent(isExpanded ? null : i)} style={{
