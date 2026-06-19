@@ -4,6 +4,7 @@ import { useTheme } from '../../styles/useTheme';
 import { cronToEnglish } from '../../lib/schedule-format';
 import { useCommandCenter } from '../../lib/store';
 import { apiFetch } from '../../lib/api';
+import { usePersona } from '../settings/useSettings';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -102,6 +103,8 @@ type DetailTarget =
 // ═══════════════════════════════════════════════════════════════════════
 
 export function AutomateView() {
+  const { data: persona } = usePersona();
+  const agentName = persona?.display_name ?? 'Aria';
   const [jobs, setJobs] = useState<ScheduledJob[]>([]);
   const [sessions, setSessions] = useState<Map<string, SessionInfo[]>>(new Map());
   const [extensions, setExtensions] = useState<ExtensionInfo[]>([]);
@@ -319,8 +322,8 @@ export function AutomateView() {
               Your agent can do a lot already
             </div>
             <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.6, maxWidth: 420, margin: '0 auto' }}>
-              Try asking Henry to summarize your Downloads folder — if you like the result,
-              ask him to remember how. Skills appear here when you save them.
+              Try asking {agentName} to summarize your Downloads folder — if you like the result,
+              ask to remember how. Skills appear here when you save them.
             </div>
             <div style={{ marginTop: 16, display: 'flex', gap: 12, justifyContent: 'center' }}>
               <button onClick={() => setShowModal(true)} style={{
@@ -379,12 +382,12 @@ export function AutomateView() {
               background: 'rgba(141,68,174,0.04)', border: '1px solid rgba(141,68,174,0.12)',
             }}>
               <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.6 }}>
-                When you repeat tasks, Henry notices patterns and offers to save them.
+                When you repeat tasks, {agentName} notices patterns and offers to save them.
                 Your first skill will appear here.
               </div>
               <div style={{ fontSize: 12, color: colors.textDim, marginTop: 8 }}>
-                Try asking Henry to do something twice — like "summarize my Downloads folder"
-                — and he'll offer to remember how.
+                Try asking {agentName} to do something twice — like "summarize my Downloads folder"
+                — and you'll be offered a way to remember how.
               </div>
             </div>
           ) : (
@@ -456,7 +459,7 @@ export function AutomateView() {
               background: 'none', border: 'none', color: colors.textMuted, cursor: 'pointer',
               fontSize: 12, fontFamily: font.body, padding: '4px 0', textAlign: 'left',
             }}>
-              Henry has {extensions.length} capabilities &middot; <span style={{ color: colors.cyan }}>Show what your agent can do &rarr;</span>
+              {agentName} has {extensions.length} capabilities &middot; <span style={{ color: colors.cyan }}>Show what your agent can do &rarr;</span>
             </button>
           ) : (
             <>

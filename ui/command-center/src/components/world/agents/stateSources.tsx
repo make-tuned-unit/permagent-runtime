@@ -49,10 +49,10 @@ export function AgentStateSources() {
       try {
         const s = await api.getHenryStatus();
         if (cancelled) return;
-        const name = s.identity?.name || 'Henry';
+        const name = s.identity?.name || 'Aria';
         setAgentSource('henry', name, mapHenryState(s.current_state), 'daemon');
       } catch {
-        if (!cancelled) setAgentSource('henry', 'Henry', 'error', 'daemon');
+        if (!cancelled) setAgentSource('henry', 'Aria', 'error', 'daemon');
       }
     };
     poll();

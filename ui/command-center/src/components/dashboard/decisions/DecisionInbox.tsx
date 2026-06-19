@@ -16,6 +16,7 @@ import type { HistoryItem } from './types';
 import { resolutionText } from './types';
 import { DecisionItem } from './DecisionItem';
 import { formatAge } from './format';
+import { usePersona } from '../../settings/useSettings';
 
 interface Props {
   inbox: ReturnType<typeof useDecisions>;
@@ -25,6 +26,8 @@ interface Props {
 export function DecisionInbox({ inbox, onClose }: Props) {
   const { colors, reduceMotion } = useTheme();
   const { data, loading } = inbox;
+  const { data: persona } = usePersona();
+  const agentName = persona?.display_name ?? 'Aria';
   const [view, setView] = useState<'list' | 'history'>('list');
   const [history, setHistory] = useState<HistoryItem[] | null>(null);
   const [tier1Open, setTier1Open] = useState(false);
@@ -119,7 +122,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
             <HistoryList items={history} />
           ) : loading && !data ? (
             <div style={{ padding: '48px 18px', textAlign: 'center', fontSize: 12, color: colors.textDim }}>
-              Checking with Henry…
+              Checking with {agentName}…
             </div>
           ) : total === 0 ? (
             <div style={{ padding: '48px 18px', textAlign: 'center' }}>
@@ -175,7 +178,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                       background: colors.success, flexShrink: 0,
                     }} />
                     <span style={{ fontSize: 13, fontWeight: 500, color: colors.text, flex: 1 }}>
-                      Henry handled {handled} routine item{handled === 1 ? '' : 's'} overnight
+                      {agentName} handled {handled} routine item{handled === 1 ? '' : 's'} overnight
                     </span>
                     <span style={{
                       color: colors.textDim, fontSize: 11,
@@ -255,6 +258,8 @@ export function DecisionInbox({ inbox, onClose }: Props) {
 /** Read-only audit list: every resolved decision, incl. Tier-1 auto-handled. */
 function HistoryList({ items }: { items: HistoryItem[] | null }) {
   const { colors } = useTheme();
+  const { data: persona } = usePersona();
+  const agentName = persona?.display_name ?? 'Aria';
   if (items === null) {
     return (
       <div style={{ padding: '32px 18px', textAlign: 'center', fontSize: 12, color: colors.textDim }}>
@@ -288,7 +293,7 @@ function HistoryList({ items }: { items: HistoryItem[] | null }) {
               color: item.tier === 1 ? colors.success : colors.cyan,
               background: item.tier === 1 ? colors.success + '26' : colors.cyanSoft,
             }}>
-              {item.tier === 1 ? 'henry' : 'you'}
+              {item.tier === 1 ? agentName : 'you'}
             </span>
             <span style={{
               fontSize: 13, fontWeight: 500, color: colors.text, flex: 1,
@@ -301,7 +306,7 @@ function HistoryList({ items }: { items: HistoryItem[] | null }) {
             </span>
           </div>
           <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4 }}>
-            {resolutionText(item)}
+            {resolutionText(item, agentName)}
           </div>
         </div>
       ))}

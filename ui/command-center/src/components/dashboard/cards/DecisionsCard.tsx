@@ -11,11 +11,14 @@ import { useTheme } from '../../../styles/useTheme';
 import { useDecisions } from '../decisions/useDecisions';
 import { DecisionInbox } from '../decisions/DecisionInbox';
 import { formatAge } from '../decisions/format';
+import { usePersona } from '../../settings/useSettings';
 
 export function DecisionsCard() {
   const { colors, reduceMotion } = useTheme();
   const inbox = useDecisions();
   const { data } = inbox;
+  const { data: persona } = usePersona();
+  const agentName = persona?.display_name ?? 'Aria';
   const [open, setOpen] = useState(false);
   const [hover, setHover] = useState(false);
 
@@ -88,8 +91,8 @@ export function DecisionsCard() {
             </div>
             <div style={{ fontFamily: font.body, fontSize: 13, fontWeight: 600, color: colors.text, marginTop: 2 }}>
               {data === null
-                ? 'Checking with Henry…'
-                : `Henry needs ${count} answer${count === 1 ? '' : 's'}`}
+                ? `Checking with ${agentName}…`
+                : `${agentName} needs ${count} answer${count === 1 ? '' : 's'}`}
             </div>
             {oldest && (
               <div style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, marginTop: 6 }}>
@@ -98,7 +101,7 @@ export function DecisionsCard() {
             )}
             {handled > 0 && (
               <div style={{ fontFamily: font.body, fontSize: 11, color: colors.textMuted, marginTop: 14 }}>
-                Henry handled {handled} routine item{handled === 1 ? '' : 's'} overnight →
+                {agentName} handled {handled} routine item{handled === 1 ? '' : 's'} overnight →
               </div>
             )}
             <div style={{ marginTop: 'auto', fontFamily: font.body, fontSize: 12, fontWeight: 500, color: colors.cyan }}>

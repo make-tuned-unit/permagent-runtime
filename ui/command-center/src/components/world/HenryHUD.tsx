@@ -108,7 +108,7 @@ export function HenryHUD({ visible, onClose }: HenryHUDProps) {
 
   const state = status ? ((status.current_state as HenryState) || 'idle') : 'idle';
   const colors = STATE_COLORS[state] ?? STATE_COLORS.idle;
-  const displayName = status?.identity?.name?.toUpperCase() ?? 'HENRY';
+  const displayName = status?.identity?.name?.toUpperCase() ?? 'ARIA';
 
   const statusPill = (
     <div style={{

@@ -214,7 +214,7 @@ export function recommendedChoiceId(d: Decision): string | null {
  * from the answer enum only (approve|reject|choice|input — decisions.rs:27);
  * free text (note, option labels, input) is appended verbatim.
  */
-export function resolutionText(d: Decision): string {
+export function resolutionText(d: Decision, agentName = 'Aria'): string {
   const verb =
     d.answer === 'approve' ? 'Approved'
     : d.answer === 'reject' ? 'Rejected'
@@ -222,7 +222,7 @@ export function resolutionText(d: Decision): string {
     : d.answer === 'input' ? 'Answered with a written reply'
     : 'Resolved';
   const by =
-    d.acted_by === 'henry-policy' ? ' by Henry'
+    d.acted_by === 'henry-policy' ? ` by ${agentName}`
     : d.acted_by === 'system' ? ' automatically'
     : '';
   return d.answer_note ? `${verb}${by} — note: ${d.answer_note}` : `${verb}${by}`;
