@@ -49,7 +49,24 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
         why_it_matters:
             "You can discuss a file the user dropped without them pasting its contents, and ingestion costs no model tokens",
         state_source: crate::agents::self_knowledge::StateSource::Static,
-        teaching: &[],
+        // Reader is Static (no live brief state), so its lesson confirms BY PROXY
+        // via MemoryRecallable — the Reader writes ingested text to the Brain.
+        teaching: &[
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Drop a file in",
+                body: "Ask them to drag a screenshot, PDF, or document straight onto the chat — no upload dialog, no copy-paste, no file paths.",
+                open_surface: None,
+                confirm: None,
+            },
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Show the magic",
+                body: "When they drop it, the Reader OCRs or extracts the text locally and stores it in your Brain — you receive only a compact digest, so even a huge file costs you almost no context. Tell them what you can now see in it.",
+                open_surface: None,
+                confirm: Some(crate::agents::self_knowledge::ConfirmCheck::MemoryRecallable(
+                    "a distinctive phrase from the file they just dropped",
+                )),
+            },
+        ],
     };
 
 // ── The is_visual thresholds (tuning surface — see module docs) ────────────

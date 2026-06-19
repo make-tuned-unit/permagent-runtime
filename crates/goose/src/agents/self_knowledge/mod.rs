@@ -56,13 +56,57 @@ pub enum StateSource {
     Static,
 }
 
-/// A single teaching step — the Phase-2 extension point. Empty (`&[]`) in
-/// Phase 1; Phase 2 will populate these to teach the agent how to drive a
-/// feature, without changing the descriptor contract.
+/// A static reference to an app surface the agent can open during a lesson,
+/// via the existing `navigate_app` tool (NOT a new nav wire). Static-friendly —
+/// `&'static str` only, no `serde_json::Value` (it must live in a `const`). A
+/// deep-link `state` (e.g. a project id) is intentionally omitted in v1; add a
+/// `state_json: Option<&'static str>` parsed at runtime if a lesson ever needs
+/// one.
+#[derive(Debug, Clone, Copy)]
+pub struct SurfaceRef {
+    /// app_catalog tab name, e.g. "Brain", "Automate", "Settings".
+    pub tab: &'static str,
+    /// Optional sub-section within the tab, e.g. Some("identity").
+    pub section: Option<&'static str>,
+}
+
+/// A read-back check that confirms the user actually did a lesson step. Every
+/// variant maps to a **queryable** predicate — the agent verifies it by reading
+/// the live state already rendered in the `permagent_self` brief (job count,
+/// librarian progress, persona name, tool `[active]` flags) or, for
+/// [`Self::MemoryRecallable`], via the `search_memory` tool. This is the Phase-1
+/// `StateSource` guard in action: a confirm step is only expressible through a
+/// queryable signal, so a `Static` surface (Reader) confirms *by proxy*
+/// (`MemoryRecallable`), never by claiming live status it cannot observe.
+#[derive(Debug, Clone, Copy)]
+pub enum ConfirmCheck {
+    /// A platform extension is enabled — shows `[active]` in the brief's Tools list.
+    ExtensionEnabled(&'static str),
+    /// At least one scheduled job exists — the brief's Scheduler line goes `0 → 1`.
+    HasScheduledJob,
+    /// The Librarian has described ≥1 memory — visible in the brief's Librarian line.
+    LibrarianDescribedAtLeastOne,
+    /// A memory matching this phrase is recallable — verify with `search_memory`.
+    /// The proxy confirm for Static surfaces that write to the Brain (Reader).
+    MemoryRecallable(&'static str),
+    /// The persona has been personalized (a name other than the default, or a
+    /// voice set) — the brief's "You are <name>" line reflects it next turn.
+    PersonaConfigured,
+}
+
+/// A single teaching step — the Phase-2 lesson unit hung off a
+/// [`FeatureDescriptor`]. `&[]` for features without a lesson yet.
 #[derive(Debug, Clone, Copy)]
 pub struct TeachingStep {
+    /// Short step label.
     pub title: &'static str,
+    /// What the agent says/does this step (persona-neutral — no name literal).
     pub body: &'static str,
+    /// An app surface to open this step, via `navigate_app`. `None` = no surface
+    /// (e.g. a drag-and-drop demo).
+    pub open_surface: Option<SurfaceRef>,
+    /// An optional read-back to confirm the user acted. `None` = no confirmation.
+    pub confirm: Option<ConfirmCheck>,
 }
 
 /// Authoritative description of one capability. The unit the `permagent_self`
@@ -93,6 +137,8 @@ pub static WORKER_DESCRIPTORS: &[FeatureDescriptor] = &[
 pub static SURFACE_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::reader::SELF_KNOWLEDGE_FEATURE,
     crate::events::WORLD_VIEW_FEATURE,
+    crate::brain_handle::BRAIN_FEATURE,
+    crate::config::agent_identity::PERSONA_PICKER_FEATURE,
 ];
 
 /// Tool ids that are described under another category and therefore skipped in
@@ -220,6 +266,102 @@ impl SelfKnowledgeBuilder {
     }
 }
 
+// ── Lessons (Phase 2) ───────────────────────────────────────────────────
+
+/// Config flag: set once the user has engaged with (or declined) the guided
+/// tour. Mirrors `onboarding_memories_seeded` idempotency — a plain config
+/// bool, no DB schema/migration. Gates the one-time first-run tour offer.
+pub const TOUR_COMPLETED_KEY: &str = "tour_completed";
+
+/// The Phase-2-v1 lesson set, in tour order.
+pub const V1_TOUR_LESSONS: &[&str] = &["reader", "brain", "scheduler", "persona"];
+
+/// Find a feature's descriptor by id across tools, workers, and surfaces.
+pub fn find_descriptor(id: &str) -> Option<FeatureDescriptor> {
+    if let Some(d) = WORKER_DESCRIPTORS.iter().find(|d| d.id == id) {
+        return Some(*d);
+    }
+    if let Some(d) = SURFACE_DESCRIPTORS.iter().find(|d| d.id == id) {
+        return Some(*d);
+    }
+    PLATFORM_EXTENSIONS
+        .values()
+        .find(|def| def.name == id)
+        .map(|def| def.descriptor())
+}
+
+/// Render a feature's teaching steps into agent-facing lesson text. Returns
+/// `None` for an unknown feature, or a "no lesson yet" note for a known feature
+/// whose `teaching` is still empty. Used by the `load_feature_lesson` tool so
+/// the per-turn prompt stays lean — lessons are fetched only when teaching.
+pub fn lesson_for(id: &str) -> Option<String> {
+    let d = find_descriptor(id)?;
+    let mut out = String::new();
+    writeln!(out, "# Lesson: {}", d.display_name).ok();
+    writeln!(out, "\n{}. {}\n", d.what_it_does, d.why_it_matters).ok();
+
+    if d.teaching.is_empty() {
+        writeln!(
+            out,
+            "(No step-by-step lesson authored yet — explain it in your own words \
+             using the description above.)"
+        )
+        .ok();
+        return Some(out);
+    }
+
+    for (i, step) in d.teaching.iter().enumerate() {
+        writeln!(out, "**Step {} — {}**", i + 1, step.title).ok();
+        writeln!(out, "{}", step.body).ok();
+        if let Some(s) = step.open_surface {
+            match s.section {
+                Some(sec) => writeln!(
+                    out,
+                    "→ Open it for them: call `navigate_app` with tab \"{}\", section \"{}\".",
+                    s.tab, sec
+                ),
+                None => writeln!(
+                    out,
+                    "→ Open it for them: call `navigate_app` with tab \"{}\".",
+                    s.tab
+                ),
+            }
+            .ok();
+        }
+        if let Some(c) = step.confirm {
+            writeln!(out, "✓ Confirm before moving on: {}", confirm_hint(&c)).ok();
+        }
+        writeln!(out).ok();
+    }
+    Some(out)
+}
+
+/// Human-facing guidance for verifying a [`ConfirmCheck`]. The read-back reuses
+/// the live state already in the brief (no new endpoint), except
+/// `MemoryRecallable` which uses the `search_memory` tool.
+fn confirm_hint(c: &ConfirmCheck) -> String {
+    match c {
+        ConfirmCheck::ExtensionEnabled(id) => {
+            format!("check your capabilities brief — the \"{id}\" tool should now read [active].")
+        }
+        ConfirmCheck::HasScheduledJob => "re-read your capabilities brief — the Scheduler line \
+             should now show 1 (or more) job(s) scheduled, up from 0."
+            .to_string(),
+        ConfirmCheck::LibrarianDescribedAtLeastOne => {
+            "re-read your capabilities brief — the Librarian line should show at least one \
+             memory described."
+                .to_string()
+        }
+        ConfirmCheck::MemoryRecallable(phrase) => format!(
+            "call `search_memory` for \"{phrase}\" — it should now return a result, proving \
+             the content was ingested into the Brain."
+        ),
+        ConfirmCheck::PersonaConfigured => "re-read your capabilities brief — the opening \
+             \"You are …\" line should now show the name they chose, not the default."
+            .to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,7 +370,9 @@ mod tests {
     /// added without a co-located descriptor wired into [`WORKER_DESCRIPTORS`].
     const KNOWN_WORKER_IDS: &[&str] = &["scheduler", "librarian"];
     /// Every known surface id must have exactly one descriptor.
-    const KNOWN_SURFACE_IDS: &[&str] = &["reader", "world_view"];
+    const KNOWN_SURFACE_IDS: &[&str] = &["reader", "world_view", "brain", "persona"];
+    /// The Phase-2-v1 lesson set — each must resolve to a descriptor with steps.
+    const V1_LESSON_IDS: &[&str] = &["reader", "brain", "scheduler", "persona"];
 
     #[test]
     fn every_known_worker_has_a_descriptor() {
@@ -279,6 +423,43 @@ mod tests {
     }
 
     #[test]
+    fn v1_lessons_have_authored_steps() {
+        for id in V1_LESSON_IDS {
+            let d = find_descriptor(id)
+                .unwrap_or_else(|| panic!("lesson feature {id:?} has no descriptor"));
+            assert!(
+                !d.teaching.is_empty(),
+                "lesson feature {id:?} must have authored teaching steps"
+            );
+            let lesson = lesson_for(id).expect("lesson_for must render a known feature");
+            assert!(lesson.contains("# Lesson:"));
+            assert!(lesson.contains("Step 1"));
+        }
+    }
+
+    #[test]
+    fn unknown_feature_has_no_lesson() {
+        assert!(lesson_for("not_a_real_feature").is_none());
+    }
+
+    #[test]
+    fn confirm_checks_only_on_queryable_signals() {
+        // Every authored confirm maps to a queryable read-back. Static surfaces
+        // (Reader) are allowed a confirm only via the MemoryRecallable proxy.
+        for id in V1_LESSON_IDS {
+            let d = find_descriptor(id).unwrap();
+            for step in d.teaching {
+                if let Some(ConfirmCheck::MemoryRecallable(p)) = step.confirm {
+                    assert!(
+                        !p.is_empty(),
+                        "{id}: MemoryRecallable phrase must be non-empty"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn brief_renders_every_category() {
         let brief = SelfKnowledgeBuilder {
             agent_display_name: "Aria".to_string(),
@@ -299,6 +480,9 @@ mod tests {
         assert!(brief.contains("**Librarian**"));
         assert!(brief.contains("**Reader**"));
         assert!(brief.contains("**World View**"));
+        // Phase-2 surfaces added to the registry.
+        assert!(brief.contains("**Brain**"));
+        assert!(brief.contains("**Persona"));
         // Queryable scheduler state merged in.
         assert!(brief.contains("3 job(s) scheduled"));
     }

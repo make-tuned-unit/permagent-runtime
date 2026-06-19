@@ -24,7 +24,25 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
         why_it_matters:
             "Lets you promise recurring or future work and actually deliver it without the user re-asking",
         state_source: crate::agents::self_knowledge::StateSource::Queryable,
-        teaching: &[],
+        // Queryable → the cleanest read-back loop in the tour: HasScheduledJob is
+        // visible directly in the brief (the Scheduler line goes 0 → 1).
+        teaching: &[
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Open Automate",
+                body: "Show them where recurring automations and reminders live.",
+                open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                    tab: "Automate",
+                    section: None,
+                }),
+                confirm: None,
+            },
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Schedule something real",
+                body: "Offer to set up a simple recurring job — a daily digest, a weekly check-in — and create it for them so they see it actually works.",
+                open_surface: None,
+                confirm: Some(crate::agents::self_knowledge::ConfirmCheck::HasScheduledJob),
+            },
+        ],
     };
 
 use crate::agents::AgentEvent;
