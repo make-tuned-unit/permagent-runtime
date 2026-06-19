@@ -20,6 +20,23 @@ use tokio_util::sync::CancellationToken;
 
 pub static EXTENSION_NAME: &str = "librarian";
 
+/// Self-knowledge descriptor for the Librarian *worker* (the background memory
+/// archivist). The librarian is also a platform extension, but the brief
+/// describes it once — here, as a Queryable worker — and skips the tool entry
+/// to avoid double-listing. Live phase/progress merged via `librarian_state`.
+pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "librarian",
+        display_name: "Librarian",
+        category: crate::agents::self_knowledge::FeatureCategory::Worker,
+        what_it_does:
+            "A local LLM that writes prose descriptions for new Brain memories during idle windows",
+        why_it_matters:
+            "Keeps long-term memory searchable, so later recall surfaces the right context",
+        state_source: crate::agents::self_knowledge::StateSource::Queryable,
+        teaching: &[],
+    };
+
 // ---------------------------------------------------------------------------
 // System prompt for the Librarian (sent to Qwen via Ollama)
 // ---------------------------------------------------------------------------

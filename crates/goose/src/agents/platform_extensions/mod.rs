@@ -110,6 +110,9 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
+                why_it_matters:
+                    "Reach for it before editing unfamiliar code — it maps structure and call graphs so you change the right thing.",
+                teaching: &[],
                 client_factory: |ctx| Box::new(analyze::AnalyzeClient::new(ctx).unwrap()),
             },
         );
@@ -123,6 +126,9 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
+                why_it_matters:
+                    "Use it to read what the user is actually looking at instead of guessing or asking them to paste.",
+                teaching: &[],
                 client_factory: |ctx| Box::new(browser::BrowserClient::new(ctx).unwrap()),
             },
         );
@@ -137,6 +143,8 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 default_enabled: true,
                 unprefixed_tools: false,
                 hidden: false,
+                why_it_matters: "Track multi-step work so nothing is dropped across a long task.",
+                teaching: &[],
                 client_factory: |ctx| Box::new(todo::TodoClient::new(ctx).unwrap()),
             },
         );
@@ -151,6 +159,9 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 default_enabled: true,
                 unprefixed_tools: false,
                 hidden: false,
+                why_it_matters:
+                    "Build the user a small interactive tool on the spot instead of just describing one.",
+                teaching: &[],
                 client_factory: |ctx| Box::new(apps::AppsManagerClient::new(ctx).unwrap()),
             },
         );
@@ -165,6 +176,9 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 default_enabled: false,
                 unprefixed_tools: false,
                 hidden: false,
+                why_it_matters:
+                    "Recover context from past conversations so the user does not have to repeat themselves.",
+                teaching: &[],
                 client_factory: |ctx| Box::new(chatrecall::ChatRecallClient::new(ctx).unwrap()),
             },
         );
@@ -179,6 +193,9 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 default_enabled: true,
                 unprefixed_tools: false,
                 hidden: false,
+                why_it_matters:
+                    "Turn capabilities on and off mid-task so you always have the right tools loaded.",
+                teaching: &[],
                 client_factory: |ctx| Box::new(ext_manager::ExtensionManagerClient::new(ctx).unwrap()),
             },
         );
@@ -192,6 +209,9 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
+                why_it_matters:
+                    "Delegate heavy or parallel subtasks to subagents instead of doing everything in one context.",
+                teaching: &[],
                 client_factory: |ctx| Box::new(summon::SummonClient::new(ctx).unwrap()),
             },
         );
@@ -205,6 +225,9 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 default_enabled: false,
                 unprefixed_tools: false,
                 hidden: false,
+                why_it_matters:
+                    "Digest large files or directories in one call rather than reading them piecemeal.",
+                teaching: &[],
                 client_factory: |ctx| Box::new(summarize::SummarizeClient::new(ctx).unwrap()),
             },
         );
@@ -219,6 +242,9 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 default_enabled: false,
                 unprefixed_tools: true,
                 hidden: false,
+                why_it_matters:
+                    "Batch many tool calls into one code block to save tokens on complex work.",
+                teaching: &[],
                 client_factory: |ctx| {
                     Box::new(
                         code_execution::CodeExecutionClient::new(
@@ -240,6 +266,9 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
+                why_it_matters:
+                    "Your primary hands — read, write, and run things on the user's machine.",
+                teaching: &[],
                 client_factory: |ctx| Box::new(developer::DeveloperClient::new(ctx).unwrap()),
             },
         );
@@ -254,6 +283,9 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 default_enabled: true,
                 unprefixed_tools: false,
                 hidden: false,
+                why_it_matters:
+                    "Start, watch, and steer other agent sessions when one agent is not enough.",
+                teaching: &[],
                 client_factory: |ctx| Box::new(orchestrator::OrchestratorClient::new(ctx).unwrap()),
             },
         );
@@ -268,6 +300,9 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 default_enabled: true,
                 unprefixed_tools: false,
                 hidden: false,
+                why_it_matters:
+                    "Inject standing context into every turn so persistent facts are never forgotten.",
+                teaching: &[],
                 client_factory: |ctx| Box::new(tom::TomClient::new(ctx).unwrap()),
             },
         );
@@ -281,6 +316,9 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
+                why_it_matters:
+                    "Pull in proven step-by-step procedures instead of improvising a workflow.",
+                teaching: &[],
                 client_factory: |ctx| Box::new(skills::SkillsClient::new(ctx).unwrap()),
             },
         );
@@ -295,6 +333,9 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 default_enabled: true,
                 unprefixed_tools: false,
                 hidden: false,
+                why_it_matters:
+                    "Generates prose descriptions for memories in the background so later recall stays sharp.",
+                teaching: &[],
                 client_factory: |ctx| Box::new(librarian::LibrarianClient::new(ctx).unwrap()),
             },
         );
@@ -308,6 +349,9 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
+                why_it_matters:
+                    "Take the user straight to the right view instead of telling them where to click.",
+                teaching: &[],
                 client_factory: |ctx| {
                     Box::new(app_conductor::AppConductorClient::new(ctx).unwrap())
                 },
@@ -324,6 +368,9 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
+                why_it_matters:
+                    "Turn a repeatable task into a saved automation or schedule the user can rely on.",
+                teaching: &[],
                 client_factory: |ctx| {
                     Box::new(recipe_author::RecipeAuthorClient::new(ctx).unwrap())
                 },
@@ -340,6 +387,9 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
+                why_it_matters:
+                    "Find and reclaim wasted disk before it becomes a problem.",
+                teaching: &[],
                 client_factory: |ctx| {
                     Box::new(storage_health::StorageHealthClient::new(ctx).unwrap())
                 },
@@ -356,6 +406,9 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 default_enabled: false,
                 unprefixed_tools: true,
                 hidden: true,
+                why_it_matters:
+                    "Gates destructive git operations behind human approval so autonomous repo work stays safe.",
+                teaching: &[],
                 client_factory: |ctx| Box::new(steward::StewardClient::new(ctx).unwrap()),
             },
         );
@@ -370,6 +423,9 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
+                why_it_matters:
+                    "Keep the user's workspaces, paths, and URLs organized so project context is one lookup away.",
+                teaching: &[],
                 client_factory: |ctx| {
                     Box::new(project_manager::ProjectManagerClient::new(ctx).unwrap())
                 },
@@ -444,5 +500,30 @@ pub struct PlatformExtensionDef {
     pub unprefixed_tools: bool,
     /// If true, the extension is not shown in the UI or discoverable via search_available_extensions.
     pub hidden: bool,
+    /// Self-knowledge: why the agent should reach for this tool. Non-`Option` so
+    /// every registry entry must supply it — a missing one is a compile error.
+    /// See [`crate::agents::self_knowledge`].
+    pub why_it_matters: &'static str,
+    /// Self-knowledge Phase-2 hook: how to drive this tool. `&[]` in Phase 1.
+    pub teaching: &'static [crate::agents::self_knowledge::TeachingStep],
     pub client_factory: fn(PlatformExtensionContext) -> Box<dyn McpClientTrait>,
+}
+
+impl PlatformExtensionDef {
+    /// Derive the self-knowledge [`FeatureDescriptor`] for this tool. Tools are
+    /// always `Tool`/`Queryable` (their enabled state is checked via
+    /// `config::extensions::is_extension_enabled`).
+    ///
+    /// [`FeatureDescriptor`]: crate::agents::self_knowledge::FeatureDescriptor
+    pub fn descriptor(&self) -> crate::agents::self_knowledge::FeatureDescriptor {
+        crate::agents::self_knowledge::FeatureDescriptor {
+            id: self.name,
+            display_name: self.display_name,
+            category: crate::agents::self_knowledge::FeatureCategory::Tool,
+            what_it_does: self.description,
+            why_it_matters: self.why_it_matters,
+            state_source: crate::agents::self_knowledge::StateSource::Queryable,
+            teaching: self.teaching,
+        }
+    }
 }
