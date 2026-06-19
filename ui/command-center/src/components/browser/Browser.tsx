@@ -88,6 +88,8 @@ let persistedActiveTabId: string | null = null;
 export function Browser() {
   const { colors } = useTheme();
   const overlayBlocking = useCommandCenter(s => s.overlayBlockingBrowser);
+  const pendingBrowserUrl = useCommandCenter(s => s.pendingBrowserUrl);
+  const clearPendingBrowserUrl = useCommandCenter(s => s.clearPendingBrowserUrl);
 
   const [tabs, setTabs] = useState<BrowserTab[]>(() => {
     if (persistedTabs) return persistedTabs;
@@ -355,6 +357,15 @@ export function Browser() {
     },
     [],
   );
+
+  // ── Open a URL pushed from elsewhere (chat-link click, agent tour #353) ──
+  // Waits for the Tauri API to be ready, opens it in a new tab, then clears the
+  // signal so it fires once.
+  useEffect(() => {
+    if (!pendingBrowserUrl || !api) return;
+    handleOpenUrl(pendingBrowserUrl);
+    clearPendingBrowserUrl();
+  }, [pendingBrowserUrl, api, handleOpenUrl, clearPendingBrowserUrl]);
 
   const handleNavigate = useCallback(
     async (url: string) => {

@@ -187,6 +187,7 @@ Manage the user's automations (scheduled recipes) and saved skills. Use create_r
 
 You have these skills at your disposal, when it is clear they can help you solve a problem or you are asked to use them:
 • goose-doc-guide - Reference goose documentation to create, configure, or explain goose-specific features like recipes, extensions, sessions, and providers. You MUST fetch relevant goose docs before answering. You MUST NOT rely on training data or assumptions for any goose-specific fields, values, names, syntax, or commands.
+• web-search-setup - Guide the user through enabling web search by connecting the Brave and/or Tavily MCP providers. Use when the user asks to set up, enable, or turn on web search, or wants you to be able to search the web and you currently cannot. Walk them through getting an API key and pasting it into the credential manager.
 ## steward
 
 ### Instructions

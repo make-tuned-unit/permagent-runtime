@@ -352,6 +352,26 @@ export async function parseSSEStream(
 
 // --- API ---
 
+/** Mirrors the backend ExtensionQuery (POST /config/extensions). The config is
+ *  a tagged ExtensionConfig — `type` selects the transport. v1 search uses the
+ *  `stdio` variant; the API key is read from the keychain via `env_keys`. */
+export interface ExtensionQuery {
+  name: string;
+  enabled: boolean;
+  config: {
+    type: 'stdio' | 'streamable_http' | 'builtin' | 'platform';
+    name: string;
+    description: string;
+    cmd?: string;
+    args?: string[];
+    uri?: string;
+    headers?: Record<string, string>;
+    env_keys?: string[];
+    timeout?: number;
+    [key: string]: unknown;
+  };
+}
+
 export const api = {
   // Health
   getHealth: () => apiFetch<{ status: string }>('/status'),
@@ -466,6 +486,18 @@ export const api = {
     apiFetch<unknown>('/config/upsert', {
       method: 'POST',
       body: JSON.stringify({ key, value, is_secret: isSecret ?? false }),
+    }),
+
+  // Add or update an MCP extension (persists to config.yaml). Used to register
+  // the Brave / Tavily search connectors once their key is stored.
+  addExtension: (query: ExtensionQuery) =>
+    apiFetch<string>('/config/extensions', {
+      method: 'POST', body: JSON.stringify(query),
+    }),
+
+  removeExtension: (name: string) =>
+    apiFetch<string>(`/config/extensions/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
     }),
 
   // Providers

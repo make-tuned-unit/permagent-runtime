@@ -5,6 +5,7 @@ import { MomentWelcome } from './MomentWelcome';
 import { MomentCalibration } from './MomentCalibration';
 import { MomentIntent } from './MomentIntent';
 import { MomentMeet } from './MomentMeet';
+import { MomentWebSearch } from './MomentWebSearch';
 import { MomentChat } from './MomentChat';
 import { api, apiFetch } from '../../lib/api';
 import { useTheme } from '../../styles/useTheme';
@@ -54,6 +55,10 @@ export function WizardShell({ onComplete }: Props) {
     setStep(4);
   };
 
+  const handleWebSearchDone = () => {
+    setStep(5);
+  };
+
   const handleComplete = async () => {
     try {
       // Save persona to backend
@@ -83,6 +88,7 @@ export function WizardShell({ onComplete }: Props) {
     <MomentCalibration key="calibration" onAdvance={handleCalibrationDone} onBack={back} />,
     <MomentIntent key="intent" intent={intent} setIntent={setIntent} onAdvance={handleIntentDone} onBack={back} />,
     <MomentMeet key="meet" persona={persona} setPersona={setPersona} onAdvance={handleMeetDone} onBack={back} />,
+    <MomentWebSearch key="websearch" personaName={persona.name} onAdvance={handleWebSearchDone} onBack={back} />,
     <MomentChat key="chat" persona={persona} onComplete={handleComplete} />,
   ];
 
@@ -94,10 +100,10 @@ export function WizardShell({ onComplete }: Props) {
       overflow: 'hidden',
     }}>
       {/* Top bar: back + dots */}
-      {step > 0 && step < 4 && (
+      {step > 0 && step < 5 && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px' }}>
           <BackChevron onClick={back} />
-          <ProgressDots count={4} current={step - 1} />
+          <ProgressDots count={5} current={step - 1} />
           <div style={{ width: 60 }} />
         </div>
       )}
