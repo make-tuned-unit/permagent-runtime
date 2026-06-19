@@ -34,6 +34,7 @@ pub async fn inject_recall(
     agent: &Arc<permagent::agents::Agent>,
     user_query: &str,
     recognition_ctx: spectral::graph::RecognitionContext,
+    recognition_pool: Option<sqlx::Pool<sqlx::Sqlite>>,
 ) -> usize {
     if user_query.is_empty() {
         return 0;
@@ -42,6 +43,26 @@ pub async fn inject_recall(
     let query_for_log = user_query.chars().take(80).collect::<String>();
     match brain.recall_cascade(user_query, &recognition_ctx).await {
         Ok(result) => {
+            // Recognition instrumentation: persist the recall event + its WHOLE
+            // retrieved set UNCONDITIONALLY (the falsifiable AmbientFrame
+            // substrate), minting a retrieval_id for later outcome write-back.
+            // Captures the full set before the top-K injection filter narrows it.
+            if let Some(pool) = recognition_pool {
+                let members: Vec<permagent::recognition::SetMember> = result
+                    .merged_hits
+                    .iter()
+                    .enumerate()
+                    .map(|(rank, hit)| (hit.id.clone(), hit.signal_score, rank as i64))
+                    .collect();
+                permagent::recognition::spawn_persist_recognition(
+                    pool,
+                    recognition_ctx.clone(),
+                    user_query.to_string(),
+                    "cascade".to_string(),
+                    members,
+                );
+            }
+
             let top_hits = filter_recall_hits(&result.merged_hits);
 
             if top_hits.is_empty() {

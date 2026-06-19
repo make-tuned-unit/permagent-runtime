@@ -629,6 +629,11 @@ impl SessionStorage {
                     if version < 10 {
                         spectral_schema::migrate_v9_to_v10(&self.pool).await?;
                     }
+                    // Recognition instrumentation (schema v11). Additive
+                    // new-tables-only; base-independent.
+                    if version < 11 {
+                        spectral_schema::migrate_v10_to_v11(&self.pool).await?;
+                    }
                 } else {
                     info!("Initializing Spectral schema at {:?}", self.db_path);
                     spectral_schema::init_spectral_db(&self.pool).await?;

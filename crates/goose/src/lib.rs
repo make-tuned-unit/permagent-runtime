@@ -45,6 +45,7 @@ pub mod providers;
 pub mod reader;
 pub mod recipe;
 pub mod recipe_deeplink;
+pub mod recognition;
 pub mod scheduler;
 pub mod scheduler_trait;
 pub mod security;

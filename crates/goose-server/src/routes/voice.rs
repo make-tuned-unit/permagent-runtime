@@ -729,7 +729,15 @@ async fn stream_reply_with_tts(
     let t_recall = std::time::Instant::now();
     if let Some(ref brain) = state.brain {
         let recognition_ctx = state.build_recognition_context(Some(&sid));
-        let n = crate::brain_ops::inject_recall(brain, &agent, transcript, recognition_ctx).await;
+        let recognition_pool = state.session_manager().pool_clone().await.ok();
+        let n = crate::brain_ops::inject_recall(
+            brain,
+            &agent,
+            transcript,
+            recognition_ctx,
+            recognition_pool,
+        )
+        .await;
         tracing::info!(target: "permagentd::voice", "  recall: {}ms ({} hits)", t_recall.elapsed().as_millis(), n);
     }
     let recall_ms = t_recall.elapsed().as_millis();
