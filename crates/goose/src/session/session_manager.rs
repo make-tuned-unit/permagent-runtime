@@ -634,6 +634,12 @@ impl SessionStorage {
                     if version < 11 {
                         spectral_schema::migrate_v10_to_v11(&self.pool).await?;
                     }
+                    // CRM people (schema v12). Additive new-tables-only;
+                    // base-independent. Runs sequentially after v11: a v10 DB runs
+                    // v11 then v12, a v11 DB runs only v12.
+                    if version < 12 {
+                        spectral_schema::migrate_v11_to_v12(&self.pool).await?;
+                    }
                 } else {
                     info!("Initializing Spectral schema at {:?}", self.db_path);
                     spectral_schema::init_spectral_db(&self.pool).await?;

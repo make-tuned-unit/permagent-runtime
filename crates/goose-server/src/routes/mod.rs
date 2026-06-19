@@ -22,6 +22,7 @@ pub mod librarian;
 #[cfg(feature = "local-inference")]
 pub mod local_inference;
 pub mod ollama;
+pub mod people;
 pub mod projects;
 pub mod prompts;
 pub mod reader;
@@ -97,6 +98,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(attachments::routes(state.clone()))
         .merge(reader::routes(state.clone()))
         .merge(brain::routes(state.clone()))
+        .merge(people::routes(state.clone()))
         .merge(dashboard::routes(state.clone()))
         .merge(identity::routes(state.clone()))
         .merge(workers::routes(state.clone()))

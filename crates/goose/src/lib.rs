@@ -36,6 +36,7 @@ pub mod model;
 pub mod oauth;
 #[cfg(feature = "otel")]
 pub mod otel;
+pub mod people;
 pub mod permission;
 #[cfg(feature = "telemetry")]
 pub mod posthog;
