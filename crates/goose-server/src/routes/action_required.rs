@@ -28,7 +28,7 @@ fn default_principal_type() -> PrincipalType {
     request_body = ConfirmToolActionRequest,
     responses(
         (status = 200, description = "Tool confirmation action is confirmed", body = Value),
-        (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token"),
         (status = 500, description = "Internal server error")
     )
 )]

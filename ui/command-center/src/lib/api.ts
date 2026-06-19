@@ -12,8 +12,6 @@ const API_BASE_URL = (
 
 export function getApiBaseUrl(): string { return API_BASE_URL; }
 
-const SECRET_KEY = (import.meta.env.VITE_SECRET_KEY as string | undefined) || '';
-
 // Daemon Bearer token — loaded at runtime from Tauri IPC (not baked into the build).
 let _daemonToken: string | null = null;
 let _daemonTokenPromise: Promise<string | null> | null = null;
@@ -161,7 +159,6 @@ export interface PermagentEvent {
 function authHeaders(): Record<string, string> {
   const h: Record<string, string> = { 'Content-Type': 'application/json' };
   if (_daemonToken) h['Authorization'] = `Bearer ${_daemonToken}`;
-  if (SECRET_KEY) h['x-secret-key'] = SECRET_KEY;
   return h;
 }
 
@@ -224,7 +221,6 @@ export async function readerIngest(file: File): Promise<ReaderDigest> {
   // Do NOT set Content-Type — the browser adds the multipart boundary.
   const headers: Record<string, string> = {};
   if (_daemonToken) headers['Authorization'] = `Bearer ${_daemonToken}`;
-  if (SECRET_KEY) headers['x-secret-key'] = SECRET_KEY;
   const resp = await fetch(`${API_BASE_URL}/api/reader/ingest`, {
     method: 'POST',
     headers,
@@ -269,7 +265,6 @@ export async function synthesizeVoice(text: string, voiceId?: string | null): Pr
   if (!_daemonToken && isTauri) await loadDaemonToken();
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (_daemonToken) headers['Authorization'] = `Bearer ${_daemonToken}`;
-  if (SECRET_KEY) headers['x-secret-key'] = SECRET_KEY;
   const resp = await fetch(`${API_BASE_URL}/voice/synthesize`, {
     method: 'POST',
     headers,
@@ -617,8 +612,9 @@ export const api = {
     for (const file of files) {
       form.append('files', file, file.name);
     }
+    if (!_daemonToken && isTauri) await loadDaemonToken();
     const headers: Record<string, string> = {};
-    if (SECRET_KEY) headers['x-secret-key'] = SECRET_KEY;
+    if (_daemonToken) headers['Authorization'] = `Bearer ${_daemonToken}`;
 
     const response = await fetch(
       `${API_BASE_URL}/api/sessions/${encodeURIComponent(sessionId)}/upload`,
@@ -650,7 +646,7 @@ export const api = {
 
   /** Fetch with daemon Bearer token auth (for /activity/* endpoints). */
   fetchAuthed: async (endpoint: string, options?: RequestInit): Promise<Response> => {
-    const token = _daemonToken ?? await loadDaemonToken() ?? SECRET_KEY;
+    const token = _daemonToken ?? await loadDaemonToken();
     const url = `${API_BASE_URL}${endpoint}`;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',

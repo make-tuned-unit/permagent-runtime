@@ -71,7 +71,7 @@ const MAX_NAME_LENGTH: usize = 200;
     path = "/sessions",
     responses(
         (status = 200, description = "List of available sessions retrieved successfully", body = SessionListResponse),
-        (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token"),
         (status = 500, description = "Internal server error")
     ),
     security(
@@ -99,7 +99,7 @@ async fn list_sessions(
     ),
     responses(
         (status = 200, description = "Session history retrieved successfully", body = Session),
-        (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token"),
         (status = 404, description = "Session not found"),
         (status = 500, description = "Internal server error")
     ),
@@ -125,7 +125,7 @@ async fn get_session(
     path = "/sessions/insights",
     responses(
         (status = 200, description = "Session insights retrieved successfully", body = SessionInsights),
-        (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token"),
         (status = 500, description = "Internal server error")
     ),
     security(
@@ -154,7 +154,7 @@ async fn get_session_insights(
     responses(
         (status = 200, description = "Session name updated successfully"),
         (status = 400, description = "Bad request - Name too long (max 200 characters)"),
-        (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token"),
         (status = 404, description = "Session not found"),
         (status = 500, description = "Internal server error")
     ),
@@ -196,7 +196,7 @@ async fn update_session_name(
     ),
     responses(
         (status = 200, description = "Session user recipe values updated successfully", body = UpdateSessionUserRecipeValuesResponse),
-        (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token"),
         (status = 404, description = "Session not found", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
@@ -271,7 +271,7 @@ async fn update_session_user_recipe_values(
     ),
     responses(
         (status = 200, description = "Session deleted successfully"),
-        (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token"),
         (status = 404, description = "Session not found"),
         (status = 500, description = "Internal server error")
     ),
@@ -314,7 +314,7 @@ async fn delete_session(
     ),
     responses(
         (status = 200, description = "Session exported successfully", body = String),
-        (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token"),
         (status = 404, description = "Session not found"),
         (status = 500, description = "Internal server error")
     ),
@@ -342,7 +342,7 @@ async fn export_session(
     request_body = ImportSessionRequest,
     responses(
         (status = 200, description = "Session imported successfully", body = Session),
-        (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token"),
         (status = 400, description = "Bad request - Invalid JSON"),
         (status = 500, description = "Internal server error")
     ),
@@ -374,7 +374,7 @@ async fn import_session(
     responses(
         (status = 200, description = "Session forked successfully", body = ForkResponse),
         (status = 400, description = "Bad request - truncate=true requires timestamp"),
-        (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token"),
         (status = 404, description = "Session not found"),
         (status = 500, description = "Internal server error")
     ),
@@ -471,7 +471,7 @@ pub struct SessionExtensionsResponse {
     ),
     responses(
         (status = 200, description = "Session extensions retrieved successfully", body = SessionExtensionsResponse),
-        (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token"),
         (status = 404, description = "Session not found"),
         (status = 500, description = "Internal server error")
     ),
