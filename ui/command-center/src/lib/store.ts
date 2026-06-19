@@ -218,6 +218,13 @@ interface CommandCenterStore {
   // --- SSE streaming ---
   isStreaming: boolean;
   sendMessage: (text: string, files?: File[]) => Promise<void>;
+  /**
+   * Decision Inbox deep-link (#303): open a fresh chat session seeded with a
+   * decision's context and a context-aware opening turn. Set transiently while
+   * the seed turn is sent so buildAppContext can carry the id to the daemon.
+   */
+  discussSeedDecisionId: string | null;
+  discussDecision: (decisionId: string, headline: string) => Promise<void>;
   switchToSession: (sessionId: string) => Promise<void>;
   deleteSession: (sessionId: string) => Promise<void>;
   renameSession: (sessionId: string, name: string) => Promise<void>;
@@ -352,6 +359,12 @@ function buildAppContext(state: CommandCenterStore): AppContextPayload | undefin
   if (state.activePanel !== 'chat') {
     ctx.active_panel = state.activePanel;
   }
+  // Decision Inbox deep-link (#303): when a "Discuss with {persona}" click seeded
+  // this session, ride the decision id out so the daemon loads + injects its full
+  // context on the opening turn. Set only for the seed turn, then cleared.
+  if (state.discussSeedDecisionId) {
+    ctx.view_state = { discuss_decision_id: state.discussSeedDecisionId };
+  }
   return ctx;
 }
 
@@ -462,6 +475,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   })(),
   _streamingMessageId: null,
   _pendingContext: null,
+  discussSeedDecisionId: null,
 
   addChatMessage: (msg) => set(s => ({ chatMessages: [...s.chatMessages, msg] })),
 
@@ -620,6 +634,38 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
           timestamp: new Date().toISOString(),
         }],
       }));
+    }
+  },
+
+  /**
+   * Decision Inbox deep-link (#303). Open a FRESH chat session (so the
+   * discussion isn't tangled with prior chat), focus the chat panel, then send
+   * a seed opener. The decision id rides app_context.view_state (set transiently
+   * via discussSeedDecisionId → buildAppContext); the daemon loads the decision
+   * authoritatively and injects its full context, so the agent's reply opens
+   * already knowing the goal, proposal, and reasoning — not a cold "what's up?".
+   */
+  discussDecision: async (decisionId: string, headline: string) => {
+    let sessionId: string;
+    try {
+      const session = await api.createSession();
+      sessionId = session.id;
+    } catch (err) {
+      console.error('discussDecision: createSession failed', err);
+      return;
+    }
+    get().disconnectSession();
+    set({ chatSessionId: sessionId, chatMessages: [], isStreaming: false, _streamingMessageId: null });
+    try { localStorage.setItem('permagent-chat-session-id', sessionId); } catch { /* */ }
+    get().connectSession(sessionId);
+    get().setActivePanel('chat');
+    // Seed turn carries the decision id; clear it after so later turns don't re-send
+    // (the daemon's injected context persists for the session after the first turn).
+    set({ discussSeedDecisionId: decisionId });
+    try {
+      await get().sendMessage(`I'd like to talk through this decision: "${headline}".`);
+    } finally {
+      set({ discussSeedDecisionId: null });
     }
   },
 

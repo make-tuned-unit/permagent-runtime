@@ -30,6 +30,7 @@ import type { AnswerResult } from './useDecisions';
 import { EvidenceDigest } from './EvidenceDigest';
 import { formatAge } from './format';
 import { usePersona } from '../../settings/useSettings';
+import { useCommandCenter } from '../../../lib/store';
 
 interface Props {
   decision: Decision;
@@ -76,6 +77,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled }: Props
   const { colors, reduceMotion } = useTheme();
   const { data: persona } = usePersona();
   const agentName = persona?.display_name ?? 'Aria';
+  const discussDecision = useCommandCenter(s => s.discussDecision);
   const [pending, setPending] = useState<PendingAnswer | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [conflict, setConflict] = useState(false);
@@ -280,6 +282,12 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled }: Props
           )}
 
           <Btn onClick={() => setNoteOpen(o => !o)}>Add note</Btn>
+
+          {/* Deep-link into a context-preloaded chat (#303) — available on every
+              kind; discuss-only in v1, the decision stays answerable from here. */}
+          <Btn onClick={() => discussDecision(d.id, d.headline)}>
+            Discuss with {agentName}
+          </Btn>
 
           {hasEvidence && (
             <button
