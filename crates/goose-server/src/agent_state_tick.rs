@@ -37,7 +37,7 @@ pub fn spawn(state: Arc<AppState>) {
             let name = {
                 let persona = state.persona.read().await;
                 if persona.first_name.is_empty() {
-                    "Henry".to_string()
+                    "Aria".to_string()
                 } else {
                     persona.first_name.clone()
                 }
