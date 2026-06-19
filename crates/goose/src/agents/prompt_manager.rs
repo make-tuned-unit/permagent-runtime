@@ -45,6 +45,9 @@ impl Default for PromptManager {
 struct SystemPromptContext {
     agent_persona_block: String,
     agent_display_name: String,
+    /// The `permagent_self` brief — an authoritative, live inventory of the
+    /// agent's own capabilities. Assembled each turn; empty string when not set.
+    permagent_self_block: String,
     extensions: Vec<ExtensionInfo>,
     current_date_time: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -67,6 +70,10 @@ pub struct SystemPromptBuilder<'a, M> {
     hints: Option<String>,
     code_execution_mode: bool,
     goose_mode: Option<GooseMode>,
+    /// Live scheduled-job count for the self-knowledge brief (Queryable). Fetched
+    /// async at the call site (the scheduler is not reachable in `build()`).
+    /// `None` → the Scheduler worker renders without a live status.
+    scheduled_job_count: Option<usize>,
 }
 
 impl<'a> SystemPromptBuilder<'a, PromptManager> {
@@ -120,6 +127,12 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
 
     pub fn with_goose_mode(mut self, mode: GooseMode) -> Self {
         self.goose_mode = Some(mode);
+        self
+    }
+
+    /// Provide the live scheduled-job count for the self-knowledge brief.
+    pub fn with_scheduled_job_count(mut self, count: Option<usize>) -> Self {
+        self.scheduled_job_count = count;
         self
     }
 
@@ -190,9 +203,19 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
                 (persona.system_prompt_block(), persona.display_name())
             };
 
+        // Assemble the permagent_self brief from the resolved display name (so
+        // the persona name is interpolated, never hardcoded) plus any live
+        // scheduled-job count fetched at the call site.
+        let permagent_self_block = crate::agents::self_knowledge::SelfKnowledgeBuilder {
+            agent_display_name: display_name.clone(),
+            scheduled_job_count: self.scheduled_job_count,
+        }
+        .build();
+
         let context = SystemPromptContext {
             agent_persona_block: persona_block.clone(),
             agent_display_name: display_name,
+            permagent_self_block,
             extensions: sanitized_extensions_info,
             current_date_time: self.manager.current_date_timestamp.clone(),
             extension_tool_limits,
@@ -318,6 +341,7 @@ impl PromptManager {
             hints: None,
             code_execution_mode: false,
             goose_mode: None,
+            scheduled_job_count: None,
         }
     }
 

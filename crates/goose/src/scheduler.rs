@@ -12,6 +12,21 @@ use tokio::sync::Mutex;
 use tokio_cron_scheduler::{job::JobId, Job, JobScheduler as TokioJobScheduler};
 use tokio_util::sync::CancellationToken;
 
+/// Self-knowledge descriptor for the Scheduler worker. Co-located with the
+/// worker it describes; aggregated by `crate::agents::self_knowledge`. Queryable
+/// — live job count is merged into the brief via `list_scheduled_jobs`.
+pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "scheduler",
+        display_name: "Scheduler",
+        category: crate::agents::self_knowledge::FeatureCategory::Worker,
+        what_it_does: "Runs saved recipes and reminders on a cron schedule in the background",
+        why_it_matters:
+            "Lets you promise recurring or future work and actually deliver it without the user re-asking",
+        state_source: crate::agents::self_knowledge::StateSource::Queryable,
+        teaching: &[],
+    };
+
 use crate::agents::AgentEvent;
 use crate::agents::{Agent, SessionConfig};
 use crate::config::paths::Paths;

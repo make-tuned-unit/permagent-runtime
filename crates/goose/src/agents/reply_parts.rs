@@ -233,6 +233,14 @@ impl Agent {
 
         let goose_mode = *self.current_goose_mode.lock().await;
 
+        // Live scheduled-job count for the self-knowledge brief (Queryable). The
+        // scheduler is only reachable here (async, with the service handle), not
+        // inside the synchronous prompt builder.
+        let scheduled_job_count = match self.config.scheduler_service.as_ref() {
+            Some(scheduler) => Some(scheduler.list_scheduled_jobs().await.len()),
+            None => None,
+        };
+
         let prompt_manager = self.prompt_manager.lock().await;
         let mut system_prompt = prompt_manager
             .builder()
@@ -242,6 +250,7 @@ impl Agent {
             .with_code_execution_mode(code_execution_active)
             .with_hints(working_dir)
             .with_goose_mode(goose_mode)
+            .with_scheduled_job_count(scheduled_job_count)
             .build();
 
         // Handle toolshim if enabled

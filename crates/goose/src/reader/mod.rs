@@ -35,6 +35,23 @@ use spectral::{RememberOpts, Visibility};
 /// `source` tag recorded on every memory the Reader writes.
 pub const READER_SOURCE: &str = "permagent.reader";
 
+/// Self-knowledge descriptor for the Reader surface. Co-located here; aggregated
+/// by `crate::agents::self_knowledge`. Static — the ingest route is always-on
+/// (registered unconditionally, no enable flag), so it renders editorially with
+/// no live status claim.
+pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "reader",
+        display_name: "Reader",
+        category: crate::agents::self_knowledge::FeatureCategory::Surface,
+        what_it_does:
+            "Intercepts dropped files and ingests them locally — OCR for images, text extraction for PDFs and documents",
+        why_it_matters:
+            "You can discuss a file the user dropped without them pasting its contents, and ingestion costs no model tokens",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        teaching: &[],
+    };
+
 // ── The is_visual thresholds (tuning surface — see module docs) ────────────
 const MIN_CHARS_KEY: &str = "reader_ocr_min_chars";
 const MIN_CONFIDENCE_KEY: &str = "reader_ocr_min_confidence";
