@@ -406,7 +406,11 @@ fn aggregate_record(
             .unwrap_or(0),
     );
 
+    let persona_name = permagent::config::agent_identity::load_agent_config()
+        .primary
+        .display_name();
     let evidence_digest = digest::assemble_digest(
+        &persona_name,
         goal_id,
         goal_title,
         declared_checks,

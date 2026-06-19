@@ -94,7 +94,8 @@ pub struct EvidenceDigest {
     pub goal_title: String,
     // ── Summary layer (rendered first by the UI) ──
     pub checks_summary: ChecksSummary,
-    /// One-liner like "Henry's reviewer confirmed the work matches what was approved".
+    /// One-liner like "Aria's reviewer confirmed the work matches what was approved"
+    /// (the configured persona name, resolved at assembly).
     pub verifier_summary: String,
     pub costs: Costs,
     // ── Detail layer ──
@@ -143,21 +144,23 @@ pub fn checks_one_line(passed: usize, total: usize, tests_run: Option<u64>) -> S
     }
 }
 
-pub fn verifier_one_line(status: VerdictStatus, degraded_reason: Option<&str>) -> String {
+pub fn verifier_one_line(
+    persona_name: &str,
+    status: VerdictStatus,
+    degraded_reason: Option<&str>,
+) -> String {
     match (status, degraded_reason) {
         (_, Some(reason)) => format!(
-            "Henry's reviewer could not complete its review ({}) — a human decision is needed",
-            reason
+            "{persona_name}'s reviewer could not complete its review ({reason}) — a human decision is needed"
         ),
         (VerdictStatus::Pass, None) => {
-            "Henry's reviewer confirmed the work matches what was approved".to_string()
+            format!("{persona_name}'s reviewer confirmed the work matches what was approved")
         }
         (VerdictStatus::Fail, None) => {
-            "Henry's reviewer found the work does not match what was approved".to_string()
+            format!("{persona_name}'s reviewer found the work does not match what was approved")
         }
         (VerdictStatus::Uncertain, None) => {
-            "Henry's reviewer could not confirm the work matches what was approved — a human decision is needed"
-                .to_string()
+            format!("{persona_name}'s reviewer could not confirm the work matches what was approved — a human decision is needed")
         }
     }
 }
@@ -231,6 +234,7 @@ fn excerpt_for(result: &CheckResult) -> String {
 /// Deterministic digest assembly (no LLM).
 #[allow(clippy::too_many_arguments)]
 pub fn assemble_digest(
+    persona_name: &str,
     goal_id: &str,
     goal_title: &str,
     checks: &[CompletionCheck],
@@ -285,6 +289,7 @@ pub fn assemble_digest(
             one_line: checks_one_line(passed, total, tests_run),
         },
         verifier_summary: verifier_one_line(
+            persona_name,
             verifier_status,
             verifier_run.degraded_reason.as_deref(),
         ),
@@ -387,14 +392,32 @@ mod tests {
 
     #[test]
     fn verifier_one_line_variants() {
-        assert!(verifier_one_line(VerdictStatus::Pass, None).contains("confirmed the work matches"));
-        assert!(verifier_one_line(VerdictStatus::Fail, None).contains("does not match"));
-        assert!(
-            verifier_one_line(VerdictStatus::Uncertain, None).contains("human decision is needed")
-        );
-        let degraded = verifier_one_line(VerdictStatus::Uncertain, Some("Ollama unreachable"));
+        assert!(verifier_one_line("Aria", VerdictStatus::Pass, None)
+            .contains("confirmed the work matches"));
+        assert!(verifier_one_line("Aria", VerdictStatus::Fail, None).contains("does not match"));
+        assert!(verifier_one_line("Aria", VerdictStatus::Uncertain, None)
+            .contains("human decision is needed"));
+        let degraded =
+            verifier_one_line("Aria", VerdictStatus::Uncertain, Some("Ollama unreachable"));
         assert!(degraded.contains("could not complete"));
         assert!(degraded.contains("Ollama unreachable"));
+    }
+
+    #[test]
+    fn verifier_one_line_uses_configured_persona_name() {
+        // The persona name is interpolated — no hardcoded "Henry" leak.
+        for status in [
+            VerdictStatus::Pass,
+            VerdictStatus::Fail,
+            VerdictStatus::Uncertain,
+        ] {
+            let line = verifier_one_line("Nova", status, None);
+            assert!(line.starts_with("Nova's reviewer"), "got: {line}");
+            assert!(!line.contains("Henry"), "leaked Henry: {line}");
+        }
+        let degraded = verifier_one_line("Nova", VerdictStatus::Pass, Some("offline"));
+        assert!(degraded.starts_with("Nova's reviewer"));
+        assert!(!degraded.contains("Henry"));
     }
 
     #[test]
@@ -427,6 +450,7 @@ mod tests {
     #[test]
     fn digest_round_trips_with_deny_unknown_fields() {
         let digest = assemble_digest(
+            "Aria",
             "g-1",
             "Toy goal",
             &[],
@@ -472,6 +496,7 @@ mod tests {
             })
             .collect();
         let digest = assemble_digest(
+            "Aria",
             "g-1",
             "Big goal",
             &[],
@@ -508,6 +533,7 @@ mod tests {
         let mut r = passing_result(Some(&big));
         r.evidence.stderr_tail = Some(big.clone());
         let digest = assemble_digest(
+            "Aria",
             "g-1",
             "Goal",
             &[],
