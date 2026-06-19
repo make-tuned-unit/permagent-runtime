@@ -536,7 +536,15 @@ pub async fn session_reply(
         if let Some(brain) = task_state.brain.as_ref() {
             let user_query = user_message.as_concat_text();
             let recognition_ctx = task_state.build_recognition_context(Some(&task_session_id));
-            crate::brain_ops::inject_recall(brain, &agent, &user_query, recognition_ctx).await;
+            let recognition_pool = task_state.session_manager().pool_clone().await.ok();
+            crate::brain_ops::inject_recall(
+                brain,
+                &agent,
+                &user_query,
+                recognition_ctx,
+                recognition_pool,
+            )
+            .await;
         }
 
         // ── Phase 3c: Inject app catalog + current UI state ──

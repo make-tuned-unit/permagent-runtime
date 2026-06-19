@@ -218,6 +218,9 @@ async fn execute_effect(
             if let Some(ref project_id) = decision.project_id {
                 let _ = goal_transition::promote_eligible_dependents(pool, project_id).await;
             }
+            // Recognition write-back (SECONDARY proxy): approval is a positive
+            // outcome. 2-hop join goal_id → worker_session_id → recognition events.
+            permagent::recognition::write_back_decision_outcome(pool, goal_id, true).await;
             Ok(Some("goal approved: Review → Complete".to_string()))
         }
         // Review rejected → bounce back for rework, or park on attempt exhaustion.
@@ -226,6 +229,10 @@ async fn execute_effect(
                 Some(g) => g,
                 None => return Ok(None),
             };
+            // Recognition write-back (SECONDARY proxy): a bounce is a negative
+            // outcome for the goal's worker-session recalls, whether it parks or
+            // returns for rework.
+            permagent::recognition::write_back_decision_outcome(pool, goal_id, false).await;
             let card = permagent::cards::get_card(pool, goal_id)
                 .await
                 .map_err(GuardError::Db)?

@@ -19,7 +19,11 @@ use tracing::{info, warn};
 /// renumbers to sit directly above the first (see the integration-PR
 /// sequencing note); `migrate_v9_to_v10` is base-independent so it is correct
 /// over either a v8 or a v9 base.
-pub const SPECTRAL_SCHEMA_VERSION: i32 = 10;
+///
+/// v11 = recognition instrumentation (recognition_events, recognition_set_members),
+/// the AmbientFrame emit-side substrate. New-tables-only, additive. This branch
+/// OWNS v11; the CRM build takes v12 (do not let the two collide).
+pub const SPECTRAL_SCHEMA_VERSION: i32 = 11;
 
 /// Initialize the Spectral database schema from scratch.
 /// Creates all tables, indexes, FTS virtual tables, triggers, and views.
@@ -753,10 +757,109 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // Idempotent; shared with migrate_v9_to_v10 for existing installs.
     apply_decision_inbox_schema(pool).await?;
 
+    // Recognition instrumentation tables (v11). Idempotent; shared with
+    // migrate_v10_to_v11 for existing installs.
+    apply_recognition_schema(pool).await?;
+
     info!(
         "Spectral schema v{} initialized successfully",
         SPECTRAL_SCHEMA_VERSION
     );
+    Ok(())
+}
+
+/// Apply the recognition-instrumentation schema (v11): `recognition_events`
+/// (one row per recall, persisted unconditionally — the falsifiable AmbientFrame
+/// substrate) and `recognition_set_members` (the retrieved set, one row per hit).
+///
+/// Outcome columns are nullable and filled later by async write-back keyed on
+/// `retrieval_id` (task-resolution + decision approve/bounce). Distinct names
+/// avoid collision with Spectral's own precursor `retrieval_events` table.
+///
+/// Fully idempotent — every statement uses IF NOT EXISTS — so it is safe on
+/// fresh installs and on every boot.
+pub async fn apply_recognition_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool.begin().await?;
+
+    // ── RECOGNITION EVENTS ──
+    // One row per recall. retrieval_id is minted (UUID) at recall time and is
+    // the join key for later outcome write-back. The outcome_* wing is all-NULL
+    // until a task resolves or a decision is answered.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS recognition_events (
+            retrieval_id        TEXT PRIMARY KEY,
+            session_id          TEXT NOT NULL,
+            query               TEXT NOT NULL,
+            retrieved_at        TEXT NOT NULL,
+            rc_persona          TEXT NOT NULL,
+            rc_session_id       TEXT,
+            rc_focus_wing       TEXT,
+            strategy            TEXT NOT NULL,
+            outcome_kind        TEXT,
+            outcome_polarity    TEXT,
+            outcome_source      TEXT,
+            outcome_observed_at TEXT,
+            cited_memory_ids    TEXT NOT NULL DEFAULT '[]'
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_recognition_strategy ON recognition_events(strategy)",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_recognition_session ON recognition_events(session_id)",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    // ── RECOGNITION SET MEMBERS ──
+    // The whole retrieved set for a recall (outcome scores vs the set, not per
+    // memory). Child of recognition_events; relational so the null-baseline
+    // recompute (per-memory frequency/co-occurrence) stays cheap on every pass.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS recognition_set_members (
+            retrieval_id  TEXT NOT NULL REFERENCES recognition_events(retrieval_id) ON DELETE CASCADE,
+            memory_id     TEXT NOT NULL,
+            signal_score  REAL,
+            rank          INTEGER,
+            PRIMARY KEY (retrieval_id, memory_id)
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_recognition_members_memory ON recognition_set_members(memory_id)",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Migrate an existing database to the recognition-instrumentation schema (v11).
+///
+/// Purely additive (CREATE TABLE / INDEX IF NOT EXISTS), base-version
+/// independent. Records v11 in `schema_version`.
+pub async fn migrate_v10_to_v11(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v10 -> v11 (recognition instrumentation)");
+
+    apply_recognition_schema(pool).await?;
+
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (?)")
+        .bind(SPECTRAL_SCHEMA_VERSION)
+        .execute(pool)
+        .await?;
+    info!(
+        "Spectral schema migrated to v{} (recognition instrumentation)",
+        SPECTRAL_SCHEMA_VERSION
+    );
+
     Ok(())
 }
 
@@ -935,14 +1038,13 @@ pub async fn migrate_v9_to_v10(pool: &Pool<Sqlite>) -> Result<()> {
 
     apply_decision_inbox_schema(pool).await?;
 
-    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (?)")
-        .bind(SPECTRAL_SCHEMA_VERSION)
+    // This migration lands the decision-inbox schema only (v10). The version is
+    // hardcoded so it stays correct as SPECTRAL_SCHEMA_VERSION advances; the
+    // v10 -> v11 step is applied separately by migrate_v10_to_v11.
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (10)")
         .execute(pool)
         .await?;
-    info!(
-        "Spectral schema migrated to v{} (decision inbox)",
-        SPECTRAL_SCHEMA_VERSION
-    );
+    info!("Spectral schema migrated to v10 (decision inbox)");
 
     Ok(())
 }
@@ -1382,4 +1484,75 @@ pub async fn is_schema_initialized(pool: &Pool<Sqlite>) -> Result<bool> {
     .await?;
 
     Ok(exists)
+}
+
+#[cfg(test)]
+mod recognition_schema_tests {
+    use super::*;
+
+    async fn mem_pool() -> Pool<Sqlite> {
+        sqlx::sqlite::SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap()
+    }
+
+    async fn table_exists(pool: &Pool<Sqlite>, name: &str) -> bool {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
+        )
+        .bind(name)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn fresh_init_lands_v11_with_recognition_tables() {
+        let pool = mem_pool().await;
+        init_spectral_db(&pool).await.unwrap();
+
+        assert_eq!(
+            verify_schema_version(&pool).await.unwrap(),
+            SPECTRAL_SCHEMA_VERSION
+        );
+        assert_eq!(SPECTRAL_SCHEMA_VERSION, 11);
+        assert!(table_exists(&pool, "recognition_events").await);
+        assert!(table_exists(&pool, "recognition_set_members").await);
+    }
+
+    #[tokio::test]
+    async fn migrate_v10_to_v11_creates_tables_and_stamps_version() {
+        let pool = mem_pool().await;
+        init_spectral_db(&pool).await.unwrap();
+
+        // Simulate a pre-v11 database: drop the recognition tables and roll the
+        // recorded version back to 10.
+        sqlx::query("DROP TABLE recognition_set_members")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE recognition_events")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM schema_version")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO schema_version (version) VALUES (10)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        migrate_v10_to_v11(&pool).await.unwrap();
+
+        assert_eq!(verify_schema_version(&pool).await.unwrap(), 11);
+        assert!(table_exists(&pool, "recognition_events").await);
+        assert!(table_exists(&pool, "recognition_set_members").await);
+
+        // Idempotent: a second run is a clean no-op.
+        migrate_v10_to_v11(&pool).await.unwrap();
+        assert_eq!(verify_schema_version(&pool).await.unwrap(), 11);
+    }
 }

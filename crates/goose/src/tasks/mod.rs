@@ -116,6 +116,21 @@ impl TaskLogger {
             warn!("Failed to log task_completed: {}", e);
         }
 
+        // Recognition write-back (PRIMARY proxy): a resolved task is a positive
+        // outcome for the recalls in its session. Attribute-by-key-later — read
+        // the session off the task row (log_task_completed has no session_id
+        // param) and resolve still-unattributed recognition events for it.
+        let task_session_id: Option<String> =
+            sqlx::query_scalar("SELECT session_id FROM tasks WHERE id = ?")
+                .bind(task_id)
+                .fetch_optional(&self.pool)
+                .await
+                .ok()
+                .flatten();
+        if let Some(sid) = task_session_id {
+            crate::recognition::write_back_task_outcome(&self.pool, &sid).await;
+        }
+
         events::emit(events::task_completed(task_id, output_json, duration_ms));
     }
 
