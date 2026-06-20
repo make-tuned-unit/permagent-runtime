@@ -81,14 +81,44 @@ const MAX_NAME_LENGTH: usize = 200;
 )]
 async fn list_sessions(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<SessionListResponse>, StatusCode> {
+) -> Result<axum::response::Response, StatusCode> {
+    use axum::response::IntoResponse;
+
+    // #341 instrumentation: split backend wall-time into fetch (query + per-row
+    // deserialize, itself split into pool-acquire/SQL-exec in session_manager)
+    // vs. response serialization, and record payload size. PR #340 falsified the
+    // DB-layer hypotheses for the 2-5.6s list latency; these logs prove on every
+    // real load that the daemon path is ms-scale and the seconds are client-side.
+    let fetch_start = std::time::Instant::now();
     let sessions = state
         .session_manager()
         .list_sessions()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let fetch_ms = fetch_start.elapsed().as_secs_f64() * 1000.0;
+    let session_count = sessions.len();
 
-    Ok(Json(SessionListResponse { sessions }))
+    let ser_start = std::time::Instant::now();
+    let body = serde_json::to_vec(&SessionListResponse { sessions })
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let ser_ms = ser_start.elapsed().as_secs_f64() * 1000.0;
+    let payload_bytes = body.len();
+
+    tracing::info!(
+        target: "session_perf",
+        session_count,
+        fetch_ms,
+        ser_ms,
+        payload_bytes,
+        "GET /sessions: fetch + serialize timing"
+    );
+
+    Ok((
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        body,
+    )
+        .into_response())
 }
 
 #[utoipa::path(

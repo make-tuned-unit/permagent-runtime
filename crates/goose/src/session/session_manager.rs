@@ -1014,7 +1014,26 @@ impl SessionStorage {
         }
 
         let pool = self.pool().await?;
-        q.fetch_all(pool).await.map_err(Into::into)
+
+        // #341 instrumentation: separate pool-acquire wait from SQL execution
+        // time. PR #340 showed the query is single-digit ms even at 32x scale;
+        // this confirms it in-process and rules acquire-wait in or out.
+        let acquire_start = std::time::Instant::now();
+        let mut conn = pool.acquire().await?;
+        let acquire_ms = acquire_start.elapsed().as_secs_f64() * 1000.0;
+
+        let exec_start = std::time::Instant::now();
+        let rows = q.fetch_all(&mut *conn).await?;
+        let exec_ms = exec_start.elapsed().as_secs_f64() * 1000.0;
+
+        info!(
+            target: "session_perf",
+            acquire_ms,
+            exec_ms,
+            row_count = rows.len(),
+            "list_sessions_by_types: pool-acquire + SQL exec timing"
+        );
+        Ok(rows)
     }
 
     async fn list_sessions(&self) -> Result<Vec<Session>> {

@@ -777,8 +777,14 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   // Sessions
   sessions: [],
   loadSessions: async () => {
+    // #341 instrumentation: time fetch+parse vs the map+store-commit (which
+    // triggers the React re-render of the session list). The map projects away
+    // the heavy JSON columns (extension_data/recipe_json/model_config_json) the
+    // list never uses — they cost transfer + parse but are discarded here.
+    const t0 = performance.now();
     try {
       const sessions = await api.getSessions();
+      const tFetched = performance.now();
       set({
         sessions: sessions.map((s: Session) => ({
           id: s.id,
@@ -788,6 +794,10 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
           message_count: s.message_count,
         })),
       });
+      console.info(
+        `[session-perf] loadSessions fetch+parse=${(tFetched - t0).toFixed(1)}ms ` +
+          `map+set=${(performance.now() - tFetched).toFixed(1)}ms count=${sessions.length}`,
+      );
     } catch {
       set({ sessions: [] });
     }
