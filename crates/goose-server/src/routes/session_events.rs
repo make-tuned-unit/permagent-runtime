@@ -107,6 +107,33 @@ fn format_sse_event(seq: u64, json: &str) -> String {
     format!("id: {}\ndata: {}\n\n", seq, json)
 }
 
+/// Build the system-prompt-extra block for a "Discuss with {persona}" deep-link
+/// (#303). Renders the decision's substance and instructs the agent to open the
+/// conversation already knowing it — no persona name is hardcoded here; the
+/// agent's identity comes from the global persona prompt, so the opening turn is
+/// in character automatically. `detail` already carries attribution, evidence
+/// refs, and (for choices) option consequences (decision sink), so it is the
+/// richest single field to seed.
+fn format_decision_discussion_block(d: &permagent::decisions::Decision) -> String {
+    let mut b = String::from(
+        "The user opened this chat from their Decision Inbox to talk through a specific \
+decision with you. You already have its full context below — do not ask them to re-explain \
+it. Open the conversation in character: briefly recap what the decision is about, what was \
+proposed and why, then ask what their question or concern is. Do not give a generic \
+\"what would you like to discuss?\" opener.\n\nDecision under discussion:\n",
+    );
+    b.push_str(&format!("- Summary: {}\n", d.headline));
+    b.push_str(&format!("- Type: {}\n", d.kind));
+    b.push_str(&format!("- Status: {}\n", d.status));
+    if let Some(ref goal) = d.goal_id {
+        b.push_str(&format!("- Related goal id: {}\n", goal));
+    }
+    if !d.detail.trim().is_empty() {
+        b.push_str(&format!("- Details: {}\n", d.detail.trim()));
+    }
+    b
+}
+
 fn serialize_session_event(seq: u64, request_id: Option<&str>, event: &MessageEvent) -> String {
     // Build JSON payload: { request_id?: string, ...event_fields }
     // We flatten request_id into the event JSON.
@@ -572,6 +599,42 @@ pub async fn session_reply(
                 agent
                     .extend_system_prompt("app_context".to_string(), block)
                     .await;
+            }
+
+            // Decision Inbox deep-link (#303): if the user opened this chat to
+            // discuss a specific decision, load it authoritatively (never trust
+            // the frontend for the substance) and inject its full context so the
+            // agent's opening turn already knows the goal, proposal, and reasoning
+            // — no re-explaining. The id rides app_context.view_state. Recall over
+            // the seed query (Phase 3 inject_recall above) covers Recognition.
+            if let Some(decision_id) = app_context
+                .as_ref()
+                .and_then(|c| c.view_state.as_ref())
+                .and_then(|v| v.get("discuss_decision_id"))
+                .and_then(|v| v.as_str())
+            {
+                match task_state.session_manager().pool_clone().await {
+                    Ok(pool) => {
+                        match permagent::decisions::get_decision(&pool, decision_id).await {
+                            Ok(Some(decision)) => {
+                                agent
+                                    .extend_system_prompt(
+                                        "discuss_decision".to_string(),
+                                        format_decision_discussion_block(&decision),
+                                    )
+                                    .await;
+                            }
+                            Ok(None) => tracing::warn!(
+                                "discuss_decision: decision {} not found",
+                                decision_id
+                            ),
+                            Err(e) => {
+                                tracing::warn!("discuss_decision: load failed: {}", e)
+                            }
+                        }
+                    }
+                    Err(e) => tracing::warn!("discuss_decision: pool unavailable: {}", e),
+                }
             }
         }
 
