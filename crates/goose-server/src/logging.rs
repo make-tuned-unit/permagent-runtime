@@ -40,6 +40,9 @@ pub fn setup_logging(name: Option<&str>) -> Result<()> {
             .add_directive("goose_server=info".parse().unwrap())
             .add_directive("permagentd=info".parse().unwrap())
             .add_directive("tower_http=info".parse().unwrap())
+            // #341: dedicated target for session-list latency instrumentation,
+            // visible regardless of crate-name filter drift.
+            .add_directive("session_perf=info".parse().unwrap())
             .add_directive(LevelFilter::WARN.into())
     });
 

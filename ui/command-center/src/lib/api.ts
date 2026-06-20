@@ -372,9 +372,30 @@ export const api = {
   getHealth: () => apiFetch<{ status: string }>('/status'),
 
   // Sessions — GET /api/sessions returns { sessions: [...] }
+  // #341 instrumentation: split the client-perceived cost into round-trip
+  // (network + backend), body-download, and JSON.parse, plus payload size. The
+  // daemon serves ~700KB/267 sessions in single-digit ms (PR #340 + handler
+  // session_perf logs); this pins where the 2-5.6s the user *feels* actually go.
   getSessions: async (): Promise<Session[]> => {
-    const res = await apiFetch<SessionListResponse>('/api/sessions');
-    return res.sessions;
+    const t0 = performance.now();
+    if (!_daemonToken && isTauri) await loadDaemonToken();
+    const res = await fetch(`${API_BASE_URL}/api/sessions`, { headers: authHeaders() });
+    const tResp = performance.now();
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ message: 'Unknown error' }));
+      throw new Error(err.message || err.error || `HTTP ${res.status}`);
+    }
+    const text = await res.text();
+    const tBody = performance.now();
+    const parsed = JSON.parse(text) as SessionListResponse;
+    const tParse = performance.now();
+    const count = parsed.sessions?.length ?? 0;
+    console.info(
+      `[session-perf] GET /api/sessions roundtrip=${(tResp - t0).toFixed(1)}ms ` +
+        `body=${(tBody - tResp).toFixed(1)}ms parse=${(tParse - tBody).toFixed(1)}ms ` +
+        `total=${(tParse - t0).toFixed(1)}ms bytes=${text.length} count=${count}`,
+    );
+    return parsed.sessions;
   },
 
   // Session detail — GET /api/sessions/{id} returns Session with conversation
