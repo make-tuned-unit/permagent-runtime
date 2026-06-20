@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { api, apiFetch, extractText, fileToBase64, readerIngest } from './api';
-import type { Session, DaemonMessage, SSEEvent, AppContextPayload } from './api';
+import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload } from './api';
 import { startEventPruning } from './eventBus';
 
 // --- Types ---
@@ -832,7 +832,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       const sessions = await api.getSessions();
       const tFetched = performance.now();
       set({
-        sessions: sessions.map((s: Session) => ({
+        sessions: sessions.map((s: SessionSummary) => ({
           id: s.id,
           name: s.name,
           created_at: s.created_at,
