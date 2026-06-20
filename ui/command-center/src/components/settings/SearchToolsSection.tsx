@@ -73,7 +73,7 @@ export function SearchToolsSection() {
     patch(p.id, { busy: true, enabled: on });
     try {
       // Keep the entry (preserves config); just flip its enabled flag.
-      await api.addExtension(buildSearchExtensionQuery(p, on));
+      await api.addExtension(await buildSearchExtensionQuery(p, on));
     } catch (e) {
       console.error('Failed to toggle search provider:', e);
       patch(p.id, { enabled: !on });
