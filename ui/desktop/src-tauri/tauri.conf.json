@@ -49,7 +49,10 @@
       "signingIdentity": null,
       "entitlements": null
     },
-    "externalBin": ["binaries/permagentd"]
+    "externalBin": ["binaries/permagentd"],
+    "resources": {
+      "resources/mcp-runtime/": "mcp-runtime/"
+    }
   },
   "plugins": {
     "shell": {

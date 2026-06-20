@@ -8,8 +8,9 @@
     "build:ui": "cd ../command-center && npm ci && npm run build",
     "build:daemon": "cd ../.. && cargo build --release --bin permagentd",
     "build:sidecar": "scripts/copy-sidecar.sh",
+    "build:mcp-runtime": "scripts/copy-mcp-runtime.sh",
     "build:icons": "cd ../.. && bash scripts/generate_icons.sh",
-    "build:all": "npm run build:icons && npm run build:ui && npm run build:daemon && npm run build:sidecar && npm run tauri build",
+    "build:all": "npm run build:icons && npm run build:ui && npm run build:daemon && npm run build:sidecar && npm run build:mcp-runtime && npm run tauri build",
     "build": "npm run tauri build"
   },
   "devDependencies": {

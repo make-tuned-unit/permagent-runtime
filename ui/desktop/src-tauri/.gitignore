@@ -5,5 +5,9 @@ target/
 binaries/permagentd-*
 binaries/*.dylib
 
+# Bundled MCP runtime: Node binary + web-search server packages (built by
+# scripts/copy-mcp-runtime.sh, not committed — ~140MB) (#358)
+resources/mcp-runtime/
+
 # Node
 node_modules/
