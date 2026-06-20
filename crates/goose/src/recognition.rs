@@ -215,6 +215,83 @@ async fn write_back_outcome(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Read side (the #360 initiative-layer glue).
+//
+// These are the ONLY query accessors over `recognition_events`. They expose the
+// novelty + frequency signals the ambient goal-origination loop uses to prune
+// timing and suppress already-declined proposals. Both are best-effort: a read
+// failure degrades to "no signal" (count 0 / None), never an error path.
+// ---------------------------------------------------------------------------
+
+/// A prior recognition of an observation: when it was last seen and how it
+/// resolved. `outcome_*` stay `None` until a write-back attributes the row.
+#[derive(Debug, Clone)]
+pub struct RecognitionSeen {
+    pub retrieved_at: String,
+    pub outcome_kind: Option<String>,
+    pub outcome_polarity: Option<String>,
+}
+
+impl RecognitionSeen {
+    /// True when a prior proposal for this observation was declined — the
+    /// caller should suppress re-origination (the quality half of the flywheel).
+    pub fn was_bounced(&self) -> bool {
+        self.outcome_polarity.as_deref() == Some("Negative")
+    }
+}
+
+/// Count recognition events for a session within the last `within_secs` (the
+/// frequency signal). `retrieved_at` is fixed-format UTC ISO-8601, which sorts
+/// lexically as chronologically, so a string lower-bound is exact. Returns 0
+/// on empty session or any error.
+pub async fn recent_recognition_count(
+    pool: &Pool<Sqlite>,
+    session_id: &str,
+    within_secs: i64,
+) -> i64 {
+    if session_id.is_empty() {
+        return 0;
+    }
+    let cutoff = (Utc::now() - chrono::Duration::seconds(within_secs.max(0)))
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string();
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM recognition_events
+          WHERE session_id = ? AND retrieved_at >= ?",
+    )
+    .bind(session_id)
+    .bind(&cutoff)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0)
+}
+
+/// Look up whether an observation (exact `query` string) has been recognized
+/// before, returning the MOST RECENT prior occurrence (the novelty + pruning
+/// signal). `None` = never seen → novel, ripe to originate. A returned row with
+/// `was_bounced()` means a prior proposal was declined. `None` on error.
+pub async fn seen_observation(pool: &Pool<Sqlite>, query: &str) -> Option<RecognitionSeen> {
+    use sqlx::Row;
+    let row = sqlx::query(
+        "SELECT retrieved_at, outcome_kind, outcome_polarity
+           FROM recognition_events
+          WHERE query = ?
+          ORDER BY retrieved_at DESC
+          LIMIT 1",
+    )
+    .bind(query)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()?;
+    Some(RecognitionSeen {
+        retrieved_at: row.get("retrieved_at"),
+        outcome_kind: row.get("outcome_kind"),
+        outcome_polarity: row.get("outcome_polarity"),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,6 +443,119 @@ mod tests {
         assert_eq!(
             row.get::<Option<String>, _>("outcome_source").as_deref(),
             Some("Decision")
+        );
+    }
+
+    // ----- read side (#360 glue) -----
+
+    #[tokio::test]
+    async fn seen_observation_novel_is_none() {
+        let pool = test_pool().await;
+        assert!(
+            seen_observation(&pool, "git status && git pull")
+                .await
+                .is_none(),
+            "an unseen observation is novel"
+        );
+    }
+
+    #[tokio::test]
+    async fn seen_observation_returns_positive_outcome() {
+        let pool = test_pool().await;
+        let q = "git status && git pull --ff-only";
+        persist_recognition(&pool, &ctx("sess-pos"), q, "cascade", &[])
+            .await
+            .unwrap();
+        write_back_task_outcome(&pool, "sess-pos").await;
+
+        let seen = seen_observation(&pool, q).await.expect("observation seen");
+        assert_eq!(seen.outcome_kind.as_deref(), Some("TaskResolved"));
+        assert_eq!(seen.outcome_polarity.as_deref(), Some("Positive"));
+        assert!(!seen.was_bounced(), "positive outcome is not a bounce");
+    }
+
+    #[tokio::test]
+    async fn seen_observation_flags_bounced() {
+        let pool = test_pool().await;
+        let worker_session = "worker-sess-bounce";
+        let q = "npm run build:all";
+        persist_recognition(&pool, &ctx(worker_session), q, "cascade", &[])
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO cards (id, project_id, card_type, title, column_id, metadata_json)
+             VALUES ('goal-b', '00000000-0000-0000-0000-000000000001', 'goal', 'G',
+                     'col-personal-backlog', ?)",
+        )
+        .bind(serde_json::json!({ "worker_session_id": worker_session }).to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+        write_back_decision_outcome(&pool, "goal-b", false).await;
+
+        let seen = seen_observation(&pool, q).await.expect("observation seen");
+        assert!(seen.was_bounced(), "declined proposal must read as bounced");
+    }
+
+    #[tokio::test]
+    async fn seen_observation_returns_most_recent() {
+        let pool = test_pool().await;
+        let q = "cargo test -p permagent";
+        // An older row (resolved) then a newer one (still open).
+        sqlx::query(
+            "INSERT INTO recognition_events
+                (retrieval_id, session_id, query, retrieved_at, rc_persona, strategy, outcome_kind)
+             VALUES ('r-old', 'sess-1', ?, '2020-01-01T00:00:00.000Z', '', 'cascade', 'TaskResolved')",
+        )
+        .bind(q)
+        .execute(&pool)
+        .await
+        .unwrap();
+        persist_recognition(&pool, &ctx("sess-1"), q, "cascade", &[])
+            .await
+            .unwrap();
+
+        let seen = seen_observation(&pool, q).await.expect("seen");
+        assert!(
+            seen.outcome_kind.is_none(),
+            "most-recent row wins (the still-open one)"
+        );
+    }
+
+    #[tokio::test]
+    async fn recent_count_windows_by_time() {
+        let pool = test_pool().await;
+        // Two fresh events in the session.
+        persist_recognition(&pool, &ctx("sess-c"), "q1", "cascade", &[])
+            .await
+            .unwrap();
+        persist_recognition(&pool, &ctx("sess-c"), "q2", "cascade", &[])
+            .await
+            .unwrap();
+        // One ancient event in the same session, outside any sane window.
+        sqlx::query(
+            "INSERT INTO recognition_events
+                (retrieval_id, session_id, query, retrieved_at, rc_persona, strategy)
+             VALUES ('r-ancient', 'sess-c', 'q-old', '2020-01-01T00:00:00.000Z', '', 'cascade')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            recent_recognition_count(&pool, "sess-c", 3600).await,
+            2,
+            "only the two fresh events fall inside the hour window"
+        );
+        assert_eq!(
+            recent_recognition_count(&pool, "other", 3600).await,
+            0,
+            "unrelated session has none"
+        );
+        assert_eq!(
+            recent_recognition_count(&pool, "", 3600).await,
+            0,
+            "empty session short-circuits"
         );
     }
 }
