@@ -29,6 +29,7 @@ pub mod goal_transition;
 pub mod goose_apps;
 pub mod hints;
 pub mod identity;
+pub mod initiative;
 pub mod instance_id;
 pub mod logging;
 pub mod mcp_utils;
