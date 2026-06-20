@@ -30,6 +30,10 @@ pub struct SessionEventBus {
     buffer: Mutex<VecDeque<SessionEvent>>,
     next_seq: AtomicU64,
     active_requests: Mutex<HashMap<String, CancellationToken>>,
+    /// Name of the tool currently in flight for this session's active request,
+    /// or `None` when no tool is executing (model still generating, or idle).
+    /// Read by `/api/henry/status` (#84) so the HUD can show "working: <tool>".
+    current_tool: Mutex<Option<String>>,
 }
 
 impl SessionEventBus {
@@ -40,6 +44,7 @@ impl SessionEventBus {
             buffer: Mutex::new(VecDeque::with_capacity(REPLAY_BUFFER_CAPACITY)),
             next_seq: AtomicU64::new(1),
             active_requests: Mutex::new(HashMap::new()),
+            current_tool: Mutex::new(None),
         }
     }
 
@@ -116,6 +121,18 @@ impl SessionEventBus {
         requests.keys().cloned().collect()
     }
 
+    /// Record the name of the tool now executing for this session (#84). Set
+    /// when a `ToolRequest` is observed in the reply stream; cleared on the
+    /// matching `ToolResponse` and on request cleanup/cancel.
+    pub async fn set_current_tool(&self, name: Option<String>) {
+        *self.current_tool.lock().await = name;
+    }
+
+    /// Return the name of the tool currently in flight, if any.
+    pub async fn current_tool(&self) -> Option<String> {
+        self.current_tool.lock().await.clone()
+    }
+
     #[cfg(test)]
     pub async fn register_request(&self, request_id: String) -> CancellationToken {
         let token = CancellationToken::new();
@@ -156,12 +173,17 @@ impl SessionEventBus {
         for token in requests.values() {
             token.cancel();
         }
+        drop(requests);
+        self.set_current_tool(None).await;
     }
 
     /// Remove the cancellation token for a completed request.
     pub async fn cleanup_request(&self, request_id: &str) {
         let mut requests = self.active_requests.lock().await;
         requests.remove(request_id);
+        drop(requests);
+        // The request is done — never leave a stale in-flight tool name behind.
+        self.set_current_tool(None).await;
     }
 }
 
@@ -302,5 +324,26 @@ mod tests {
         // Should return false since it was cleaned up
         let cancelled = bus.cancel_request("req-1").await;
         assert!(!cancelled);
+    }
+
+    #[tokio::test]
+    async fn test_current_tool_set_clear_and_cleanup() {
+        let bus = SessionEventBus::new();
+
+        // Starts with no tool in flight.
+        assert_eq!(bus.current_tool().await, None);
+
+        // Set on tool start, cleared on tool complete (#84).
+        bus.set_current_tool(Some("read_file".to_string())).await;
+        assert_eq!(bus.current_tool().await, Some("read_file".to_string()));
+        bus.set_current_tool(None).await;
+        assert_eq!(bus.current_tool().await, None);
+
+        // cleanup_request must never leave a stale tool name behind.
+        bus.register_request("req-1".to_string()).await;
+        bus.set_current_tool(Some("search_memory".to_string()))
+            .await;
+        bus.cleanup_request("req-1").await;
+        assert_eq!(bus.current_tool().await, None);
     }
 }

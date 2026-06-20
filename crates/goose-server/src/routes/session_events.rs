@@ -671,6 +671,21 @@ pub async fn session_reply(
                         Ok(Some(Ok(AgentEvent::Message(message)))) => {
                             for content in &message.content {
                                 track_tool_telemetry(content, all_messages.messages());
+                                // #84: track the in-flight tool name on the bus so
+                                // /api/henry/status can surface "working: <tool>".
+                                match content {
+                                    permagent::conversation::message::MessageContent::ToolRequest(req) => {
+                                        if let Ok(tool_call) = &req.tool_call {
+                                            task_bus
+                                                .set_current_tool(Some(tool_call.name.to_string()))
+                                                .await;
+                                        }
+                                    }
+                                    permagent::conversation::message::MessageContent::ToolResponse(_) => {
+                                        task_bus.set_current_tool(None).await;
+                                    }
+                                    _ => {}
+                                }
                             }
                             all_messages.push(message.clone());
                             let token_state = get_token_state(

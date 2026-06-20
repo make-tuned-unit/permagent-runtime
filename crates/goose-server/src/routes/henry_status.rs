@@ -195,13 +195,20 @@ pub(crate) fn classify_henry_state(has_tool: bool, has_active_session: bool) -> 
     }
 }
 
-/// Check active session buses for in-flight requests.
+/// Check active session buses for in-flight requests, returning the name of the
+/// tool currently executing (#84). Falls back to `"active"` when a request is in
+/// flight but no specific tool is running yet (e.g. the model is still
+/// generating) — preserving the pre-#84 "is Henry busy" signal.
 async fn find_current_tool(state: &AppState, active_sessions: &[ActiveSession]) -> Option<String> {
     for session in active_sessions {
         if let Some(bus) = state.get_event_bus(&session.id).await {
             let request_ids = bus.active_request_ids().await;
             if !request_ids.is_empty() {
-                return Some("active".to_string());
+                return Some(
+                    bus.current_tool()
+                        .await
+                        .unwrap_or_else(|| "active".to_string()),
+                );
             }
         }
     }
