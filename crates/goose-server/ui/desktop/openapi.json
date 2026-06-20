@@ -46,7 +46,7 @@
             }
           },
           "401": {
-            "description": "Unauthorized - invalid secret key"
+            "description": "Unauthorized - missing or invalid bearer token"
           },
           "424": {
             "description": "Agent not initialized"
@@ -401,7 +401,7 @@
             }
           },
           "401": {
-            "description": "Unauthorized - invalid secret key"
+            "description": "Unauthorized - missing or invalid bearer token"
           },
           "500": {
             "description": "Internal server error"
@@ -437,7 +437,7 @@
             }
           },
           "401": {
-            "description": "Unauthorized - Invalid or missing API key"
+            "description": "Unauthorized - missing or invalid bearer token"
           },
           "412": {
             "description": "Precondition failed - Agent not available"
@@ -831,7 +831,7 @@
             }
           },
           "401": {
-            "description": "Unauthorized - Invalid or missing API key"
+            "description": "Unauthorized - missing or invalid bearer token"
           },
           "500": {
             "description": "Internal server error"
@@ -873,7 +873,7 @@
             }
           },
           "401": {
-            "description": "Unauthorized - Invalid or missing API key"
+            "description": "Unauthorized - missing or invalid bearer token"
           },
           "404": {
             "description": "Session not found"

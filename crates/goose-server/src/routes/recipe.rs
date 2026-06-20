@@ -299,7 +299,7 @@ async fn scan_recipe(
     path = "/recipes/list",
     responses(
         (status = 200, description = "Get recipe list successfully", body = ListRecipeResponse),
-        (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token"),
         (status = 500, description = "Internal server error")
     ),
     tag = "Recipe Management"
@@ -345,7 +345,7 @@ async fn list_recipes(
     request_body = DeleteRecipeRequest,
     responses(
         (status = 204, description = "Recipe deleted successfully"),
-        (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token"),
         (status = 404, description = "Recipe not found"),
         (status = 500, description = "Internal server error")
     ),
@@ -437,7 +437,7 @@ async fn set_recipe_slash_command(
     request_body = SaveRecipeRequest,
     responses(
         (status = 204, description = "Recipe saved to file successfully", body = SaveRecipeResponse),
-        (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token"),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 404, description = "Not found", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)

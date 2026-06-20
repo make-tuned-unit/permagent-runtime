@@ -188,7 +188,7 @@ pub struct RestartAgentResponse {
     responses(
         (status = 200, description = "Agent started successfully", body = Session),
         (status = 400, description = "Bad request", body = ErrorResponse),
-        (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token"),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
@@ -365,7 +365,7 @@ async fn start_agent(
     responses(
         (status = 200, description = "Agent started successfully", body = ResumeAgentResponse),
         (status = 400, description = "Bad request - invalid working directory"),
-        (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token"),
         (status = 500, description = "Internal server error")
     )
 )]
@@ -455,7 +455,7 @@ async fn resume_agent(
     request_body = UpdateFromSessionRequest,
     responses(
         (status = 200, description = "Update agent from session data successfully"),
-        (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token"),
         (status = 424, description = "Agent not initialized"),
     ),
 )]
@@ -516,7 +516,7 @@ async fn update_from_session(
     ),
     responses(
         (status = 200, description = "Tools retrieved successfully", body = Vec<ToolInfo>),
-        (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token"),
         (status = 424, description = "Agent not initialized"),
         (status = 500, description = "Internal server error")
     )
@@ -573,7 +573,7 @@ async fn get_tools(
     responses(
         (status = 200, description = "Provider updated successfully"),
         (status = 400, description = "Bad request - missing or invalid parameters"),
-        (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token"),
         (status = 424, description = "Agent not initialized"),
         (status = 500, description = "Internal server error")
     )
@@ -691,7 +691,7 @@ async fn update_session(
     request_body = AddExtensionRequest,
     responses(
         (status = 200, description = "Extension added", body = String),
-        (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token"),
         (status = 424, description = "Agent not initialized"),
         (status = 500, description = "Internal server error")
     )
@@ -724,7 +724,7 @@ async fn agent_add_extension(
     request_body = RemoveExtensionRequest,
     responses(
         (status = 200, description = "Extension removed", body = String),
-        (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token"),
         (status = 424, description = "Agent not initialized"),
         (status = 500, description = "Internal server error")
     )
@@ -755,7 +755,7 @@ async fn agent_remove_extension(
     request_body = SetContainerRequest,
     responses(
         (status = 200, description = "Container set successfully"),
-        (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token"),
         (status = 424, description = "Agent not initialized"),
         (status = 500, description = "Internal server error")
     )
@@ -778,7 +778,7 @@ async fn set_container(
     request_body = StopAgentRequest,
     responses(
         (status = 200, description = "Agent stopped successfully", body = String),
-        (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token"),
         (status = 404, description = "Session not found"),
         (status = 500, description = "Internal server error")
     )
@@ -860,7 +860,7 @@ async fn restart_agent_internal(
     request_body = RestartAgentRequest,
     responses(
         (status = 200, description = "Agent restarted successfully", body = RestartAgentResponse),
-        (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token"),
         (status = 404, description = "Session not found"),
         (status = 500, description = "Internal server error")
     )
@@ -895,7 +895,7 @@ async fn restart_agent(
     responses(
         (status = 200, description = "Working directory updated and agent restarted successfully"),
         (status = 400, description = "Bad request - invalid directory path"),
-        (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token"),
         (status = 404, description = "Session not found"),
         (status = 500, description = "Internal server error")
     )
@@ -971,7 +971,7 @@ async fn ensure_extensions_loaded(state: &AppState, session_id: &str) {
     request_body = ReadResourceRequest,
     responses(
         (status = 200, description = "Resource read successfully", body = ReadResourceResponse),
-        (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token"),
         (status = 424, description = "Agent not initialized"),
         (status = 404, description = "Resource not found"),
         (status = 500, description = "Internal server error")
@@ -1054,7 +1054,7 @@ async fn read_resource(
     request_body = CallToolRequest,
     responses(
         (status = 200, description = "Resource read successfully", body = CallToolResponse),
-        (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token"),
         (status = 424, description = "Agent not initialized"),
         (status = 404, description = "Resource not found"),
         (status = 500, description = "Internal server error")
@@ -1141,7 +1141,7 @@ pub struct ListAppsResponse {
     ),
     responses(
         (status = 200, description = "List of apps retrieved successfully", body = ListAppsResponse),
-        (status = 401, description = "Unauthorized - Invalid or missing API key", body = ErrorResponse),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse),
     ),
     security(
