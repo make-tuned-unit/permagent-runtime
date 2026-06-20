@@ -1,15 +1,14 @@
-//! Agent runtime-state tick — #288 interim approach (A).
+//! Agent runtime-state tick — emits `agent_state_changed` on transition.
 //!
-//! Derives Henry's coarse runtime state from the SAME signals as
-//! `/api/henry/status` (active sessions + in-flight tools, see
-//! [`crate::routes::henry_status::classify_henry_state`]) and emits an
-//! `agent_state_changed` event ONLY on transition, so World View reacts live
-//! instead of polling. Zero `session_manager` surgery.
-//!
-//! BOUNDARY (interim A): caps at `available`/`working` — `idle` backend state
-//! maps to `available`, matching the frontend `mapHenryState`. It NEVER emits
-//! `error`: a real per-agent error signal needs the session lifecycle hooks
-//! deferred to #288 follow-up (B). Daemon-unreachable error stays a frontend
+//! As of #348 the state is sourced from the REAL agent lifecycle registry
+//! ([`permagent::events::agent_runtime_state`]) — fed by the actual reply loop —
+//! so `working` is a live in-flight turn and `error` is a real latched failure,
+//! not the #288 interim-A derived-on-tick guess. This tick remains the single
+//! emitter (it holds the persona name) and the reconciling heartbeat: it reads
+//! the registry and pushes `agent_state_changed` ONLY on transition, so World
+//! View reacts live instead of polling. Before the agent's first reply turn the
+//! registry is empty and we fall back to the original session-activity derive,
+//! so the HUD always shows something. Daemon-unreachable error stays a frontend
 //! signal (the status poll failing).
 
 use crate::routes::henry_status::classify_henry_state;
@@ -47,9 +46,17 @@ pub fn spawn(state: Arc<AppState>) {
     });
 }
 
-/// Derive Henry's HUD state (`working` | `available`) from active sessions and
-/// in-flight tools, mirroring `mapHenryState` on the frontend.
+/// Henry's HUD state (`working` | `available` | `error`). Real lifecycle state
+/// (#348) is authoritative once the agent has run at least one reply turn; the
+/// session-activity derive is only a pre-first-turn fallback.
 async fn derive_henry_hud_state(state: &AppState) -> &'static str {
+    // Authoritative: real reply-loop lifecycle (in-flight ref-count + error latch).
+    if let Some(rt) = permagent::events::agent_runtime_state("henry") {
+        return rt.as_str();
+    }
+
+    // Pre-first-turn fallback: derive from active sessions + in-flight tools,
+    // mirroring `mapHenryState` on the frontend.
     let two_min_ago = chrono::Utc::now() - chrono::Duration::seconds(ACTIVE_WINDOW_SECS);
     let sessions = state
         .session_manager()

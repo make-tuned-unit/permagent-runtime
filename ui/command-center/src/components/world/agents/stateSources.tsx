@@ -2,6 +2,9 @@
 //
 //   Henry      'daemon'  poll /api/henry/status:
 //                          idle → available, in_conversation|tool_call → working,
+//                          error → error (#348: real reply-loop failure, latched
+//                          in the daemon runtime registry — the poll reports it so
+//                          it survives instead of being clobbered back to working),
 //                          fetch/parse failure → error (daemon unreachable IS a real signal)
 //   Librarian  'daemon'  /events WebSocket (read-only). Wire types are
 //                          snake_case (PermagentEventType has
@@ -35,6 +38,8 @@ function mapHenryState(currentState: string): AgentHudState {
     case 'in_conversation':
     case 'tool_call':
       return 'working';
+    case 'error':
+      return 'error';
     case 'idle':
     default:
       return 'available';

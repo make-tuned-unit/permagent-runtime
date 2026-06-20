@@ -9,7 +9,7 @@ pub mod activity;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{LazyLock, Mutex};
 use tokio::sync::broadcast;
 use uuid::Uuid;
@@ -82,6 +82,104 @@ pub fn buffered_events_after(resume_from: &str) -> Option<Vec<PermagentEvent>> {
     let buf = EVENT_BUS.buffer.lock().ok()?;
     let pos = buf.iter().position(|e| e.id == resume_from);
     pos.map(|idx| buf.iter().skip(idx + 1).cloned().collect())
+}
+
+// ── Agent runtime-state registry (#348) ──────────────────────────────────────
+//
+// The authoritative, real-lifecycle source of an agent's coarse runtime state.
+// Fed by the actual reply loop (`crate::agents::agent::Agent::reply_internal` via
+// a Drop guard) — `working` is a live in-flight ref-count and `error` is a real
+// failure latch, NOT the #288 interim-A derived-on-tick guess (which capped at
+// `available`/`working` and could only SIMULATE error). Read by the World View
+// signals: the `/api/henry/status` poll and the agent-state tick both consult
+// this so the live `/events` push and the 2s poll agree on a real error instead
+// of clobbering it.
+
+/// An agent's coarse runtime state, as rendered by the World View HUD.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AgentRuntimeState {
+    /// At least one reply turn is in flight (amber).
+    Working,
+    /// Idle, ready, no error (cyan steady-state).
+    Available,
+    /// The last reply turn ended in a real failure; latched until the next turn
+    /// starts (red).
+    Error,
+}
+
+impl AgentRuntimeState {
+    /// HUD state string consumed directly by the frontend `agent_state_changed`
+    /// handler and `mapHenryState`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Working => "working",
+            Self::Available => "available",
+            Self::Error => "error",
+        }
+    }
+}
+
+#[derive(Default)]
+struct AgentRuntime {
+    /// In-flight reply turns. Ref-counted so concurrent sessions compose.
+    active: i64,
+    /// Latched after a real failure; cleared when the next turn starts.
+    errored: bool,
+}
+
+static AGENT_RUNTIME: LazyLock<Mutex<HashMap<String, AgentRuntime>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Real lifecycle hook: an agent has started a reply turn. Increments the
+/// in-flight count and clears any prior error latch (new work = recovery).
+pub fn record_agent_working(agent_id: &str) {
+    if let Ok(mut m) = AGENT_RUNTIME.lock() {
+        let e = m.entry(agent_id.to_string()).or_default();
+        e.active += 1;
+        e.errored = false;
+    }
+}
+
+/// Real lifecycle hook: an agent finished a reply turn cleanly.
+pub fn record_agent_done(agent_id: &str) {
+    if let Ok(mut m) = AGENT_RUNTIME.lock() {
+        if let Some(e) = m.get_mut(agent_id) {
+            e.active = (e.active - 1).max(0);
+        }
+    }
+}
+
+/// Real lifecycle hook: an agent's reply turn ended in a real failure. Latches
+/// `error` until the next turn starts.
+pub fn record_agent_error(agent_id: &str) {
+    if let Ok(mut m) = AGENT_RUNTIME.lock() {
+        let e = m.entry(agent_id.to_string()).or_default();
+        e.active = (e.active - 1).max(0);
+        e.errored = true;
+    }
+}
+
+/// Current runtime state, or `None` if the agent has never run a turn (callers
+/// fall back to their own heuristic). An in-flight turn outranks a stale error
+/// latch — work in progress means the agent is working, not failed.
+pub fn agent_runtime_state(agent_id: &str) -> Option<AgentRuntimeState> {
+    let m = AGENT_RUNTIME.lock().ok()?;
+    let e = m.get(agent_id)?;
+    Some(if e.active > 0 {
+        AgentRuntimeState::Working
+    } else if e.errored {
+        AgentRuntimeState::Error
+    } else {
+        AgentRuntimeState::Available
+    })
+}
+
+/// Whether the agent is currently latched in a real error state.
+pub fn agent_errored(agent_id: &str) -> bool {
+    matches!(
+        agent_runtime_state(agent_id),
+        Some(AgentRuntimeState::Error)
+    )
 }
 
 // ── Event types ─────────────────────────────────────────────────────────────
@@ -302,8 +400,9 @@ pub fn decision_resolved(
 }
 
 /// Emitted when an agent's coarse runtime state transitions (idle/working/
-/// available). #288 interim A derives this for Henry from active sessions +
-/// in-flight tools; `state` is a HUD state string the World View renders directly.
+/// available/error). `state` is a HUD state string the World View renders
+/// directly. As of #348 the emitter sources `state` from the real lifecycle
+/// registry ([`agent_runtime_state`]) rather than the #288 interim-A derive.
 pub fn agent_state_changed(agent_id: &str, name: &str, state: &str) -> PermagentEvent {
     PermagentEvent::new(
         PermagentEventType::AgentStateChanged,
@@ -499,5 +598,61 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| e.event_type == PermagentEventType::DaemonStopped));
+    }
+
+    #[test]
+    fn test_agent_runtime_state_lifecycle() {
+        // Distinct id per test — the registry is a process-global.
+        let id = "test_agent_lifecycle";
+        assert_eq!(agent_runtime_state(id), None, "unknown agent → None");
+
+        record_agent_working(id);
+        assert_eq!(agent_runtime_state(id), Some(AgentRuntimeState::Working));
+        assert!(!agent_errored(id));
+
+        record_agent_done(id);
+        assert_eq!(
+            agent_runtime_state(id),
+            Some(AgentRuntimeState::Available),
+            "clean finish → available"
+        );
+
+        record_agent_working(id);
+        record_agent_error(id);
+        assert_eq!(agent_runtime_state(id), Some(AgentRuntimeState::Error));
+        assert!(agent_errored(id), "real failure latches error");
+
+        // A new turn starting clears the stale error latch (recovery).
+        record_agent_working(id);
+        assert_eq!(agent_runtime_state(id), Some(AgentRuntimeState::Working));
+        assert!(!agent_errored(id));
+        record_agent_done(id);
+    }
+
+    #[test]
+    fn test_agent_runtime_state_refcount() {
+        // Concurrent reply turns compose: working until the last one finishes.
+        let id = "test_agent_refcount";
+        record_agent_working(id);
+        record_agent_working(id);
+        assert_eq!(agent_runtime_state(id), Some(AgentRuntimeState::Working));
+        record_agent_done(id);
+        assert_eq!(
+            agent_runtime_state(id),
+            Some(AgentRuntimeState::Working),
+            "still one turn in flight"
+        );
+        record_agent_done(id);
+        assert_eq!(agent_runtime_state(id), Some(AgentRuntimeState::Available));
+        // Saturating: extra done never drives the count negative.
+        record_agent_done(id);
+        assert_eq!(agent_runtime_state(id), Some(AgentRuntimeState::Available));
+    }
+
+    #[test]
+    fn test_agent_runtime_state_str() {
+        assert_eq!(AgentRuntimeState::Working.as_str(), "working");
+        assert_eq!(AgentRuntimeState::Available.as_str(), "available");
+        assert_eq!(AgentRuntimeState::Error.as_str(), "error");
     }
 }
