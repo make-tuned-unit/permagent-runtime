@@ -110,9 +110,16 @@ async fn henry_status(State(state): State<Arc<AppState>>) -> Json<HenryStatusRes
     // Current tool: check active session event buses for in-flight requests
     let current_tool = find_current_tool(&state, &active_sessions).await;
 
-    // Determine state (shared with the #288 agent-state tick).
-    let current_state =
-        classify_henry_state(current_tool.is_some(), !active_sessions.is_empty()).to_string();
+    // Determine state. A real error from the agent's actual reply lifecycle
+    // (#348, latched in the runtime registry) outranks the session-activity
+    // derive — otherwise this 2s poll would clobber a real failure back to
+    // available/working. Working/available themselves still agree with the
+    // session derive (an in-flight reply IS an active session).
+    let current_state = if permagent::events::agent_errored("henry") {
+        "error".to_string()
+    } else {
+        classify_henry_state(current_tool.is_some(), !active_sessions.is_empty()).to_string()
+    };
 
     // Spectral DB queries (tasks, messages, session stats)
     let today_str = today_midnight.format("%Y-%m-%dT%H:%M:%S").to_string();

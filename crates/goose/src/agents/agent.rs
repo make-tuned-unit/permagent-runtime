@@ -1258,6 +1258,35 @@ impl Agent {
         session: Session,
         cancel_token: Option<CancellationToken>,
     ) -> Result<BoxStream<'_, Result<AgentEvent>>> {
+        // #348 — real agent lifecycle hook for the World View. This Drop guard ties
+        // the primary agent's runtime state to the ACTUAL reply turn: `working` on
+        // entry, and on drop `error` (a real provider failure that set the latch) or
+        // else `done` → available. Covers every exit path — clean break, max-turns,
+        // cancellation, panic. The `/api/henry/status` poll and the agent-state tick
+        // read this registry, so a real error survives instead of being clobbered by
+        // the 2s session-activity derive. Replaces the #288 interim-A simulated error.
+        struct ReplyStateGuard {
+            errored: bool,
+        }
+        impl ReplyStateGuard {
+            fn start() -> Self {
+                crate::events::record_agent_working("henry");
+                Self { errored: false }
+            }
+            fn mark_error(&mut self) {
+                self.errored = true;
+            }
+        }
+        impl Drop for ReplyStateGuard {
+            fn drop(&mut self) {
+                if self.errored {
+                    crate::events::record_agent_error("henry");
+                } else {
+                    crate::events::record_agent_done("henry");
+                }
+            }
+        }
+
         let context = self
             .prepare_reply_context(&session.id, conversation, session.working_dir.as_path())
             .await?;
@@ -1299,6 +1328,8 @@ impl Agent {
         let working_dir = session.working_dir.clone();
         let reply_stream_span = tracing::info_span!(target: "permagent::agents::agent", "reply_stream", session.id = %session_config.id);
         let inner = Box::pin(async_stream::try_stream! {
+            // Working on entry; Drop records done/error on every exit path (#348).
+            let mut state_guard = ReplyStateGuard::start();
             let mut turns_taken = 0u32;
             let max_turns = session_config.max_turns.unwrap_or_else(|| {
                 Config::global()
@@ -1668,6 +1699,7 @@ impl Agent {
                                         "Unable to continue: Context limit still exceeded after compaction. Try using a shorter message, a model with a larger context window, or start a new session."
                                     )
                                 );
+                                state_guard.mark_error();
                                 break;
                             }
 
@@ -1709,6 +1741,7 @@ impl Agent {
                                             format!("Ran into this error trying to compact: {e}.\n\nPlease try again or create a new session")
                                         )
                                     );
+                                    state_guard.mark_error();
                                     break;
                                 }
                             }
@@ -1735,6 +1768,7 @@ impl Agent {
                                     notification_data,
                                 )
                             );
+                            state_guard.mark_error();
                             break;
                         }
                         Err(ref provider_err @ ProviderError::NetworkError(_)) => {
@@ -1746,6 +1780,7 @@ impl Agent {
                                     format!("{provider_err}\n\nPlease resend your message to try again.")
                                 )
                             );
+                            state_guard.mark_error();
                             break;
                         }
                         Err(ref provider_err) => {
@@ -1757,6 +1792,7 @@ impl Agent {
                                     format!("Ran into this error: {provider_err}.\n\nPlease retry if you think this is a transient or recoverable error.")
                                 )
                             );
+                            state_guard.mark_error();
                             break;
                         }
                     }
