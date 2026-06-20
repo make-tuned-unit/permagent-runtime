@@ -70,6 +70,54 @@ impl Drop for CancelTokenGuard {
 
 const DEFAULT_LIST_LIMIT: usize = 10;
 
+// Cost-aware routing for roadmap decomposition (#249).
+//
+// Decomposition (objective -> dependency-ordered goals) is a structured,
+// low-creativity task that a cheap/local model handles well. We route it to a
+// cheaper model by default — mirroring the #360 tiered cost model — and escalate
+// to the session's default (strong) provider only if the cheap pass fails to
+// produce parseable goals. The route is config-surfaced, not hidden:
+//   ORCHESTRATOR_DECOMPOSITION_PROVIDER  (default: "ollama")
+//   ORCHESTRATOR_DECOMPOSITION_MODEL     (default: "qwen2.5:7b")
+// Set either to an empty string to disable cheap routing and always use the
+// session provider.
+const DEFAULT_DECOMPOSITION_PROVIDER: &str = "ollama";
+const DEFAULT_DECOMPOSITION_MODEL: &str = "qwen2.5:7b";
+
+/// Failure mode of a single decomposition pass, used to decide escalation.
+enum DecompositionError {
+    /// The provider/model call itself failed (e.g. local model not running).
+    /// Escalation candidate.
+    Provider(String),
+    /// A response came back but could not be parsed into goals even after a
+    /// stricter retry. Carries the raw text + parse error for the user-facing
+    /// fallback message. Also an escalation candidate (quality gate).
+    Unparseable { raw: String, err: String },
+}
+
+/// Outcome of the final (non-escalatable) decomposition attempt: either goals,
+/// or an unparseable response the user is asked to help refine.
+#[derive(Debug)]
+enum DecompositionOutcome {
+    Goals(Vec<goal_state::ProposedGoal>),
+    Unparseable { raw: String, err: String },
+}
+
+/// Convert a final decomposition result into a user-facing outcome. A hard
+/// provider error (model unreachable etc.) is propagated as `Err` so the tool
+/// call surfaces it; an unparseable response becomes a refine-this message.
+fn finalize_decomposition(
+    result: Result<Vec<goal_state::ProposedGoal>, DecompositionError>,
+) -> Result<DecompositionOutcome, String> {
+    match result {
+        Ok(g) => Ok(DecompositionOutcome::Goals(g)),
+        Err(DecompositionError::Unparseable { raw, err }) => {
+            Ok(DecompositionOutcome::Unparseable { raw, err })
+        }
+        Err(DecompositionError::Provider(e)) => Err(e),
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ListSessionsParams {
     /// Filter by session type: "user", "sub_agent", "scheduled", "hidden", "terminal", "gateway".
@@ -346,6 +394,47 @@ impl OrchestratorClient {
             .as_ref()
             .cloned()
             .ok_or_else(|| "Provider not available".to_string())
+    }
+
+    /// Resolve the cheaper provider used for the roadmap decomposition pass
+    /// (#249). Returns `None` when cheap routing is disabled (empty config) or
+    /// the cheap provider can't be built — callers then use the default
+    /// session provider, so this never blocks decomposition.
+    async fn resolve_decomposition_provider(&self) -> Option<Arc<dyn Provider>> {
+        let config = Config::global();
+        let provider_name = config
+            .get_param::<String>("ORCHESTRATOR_DECOMPOSITION_PROVIDER")
+            .unwrap_or_else(|_| DEFAULT_DECOMPOSITION_PROVIDER.to_string());
+        let model_name = config
+            .get_param::<String>("ORCHESTRATOR_DECOMPOSITION_MODEL")
+            .unwrap_or_else(|_| DEFAULT_DECOMPOSITION_MODEL.to_string());
+
+        // Explicit opt-out: empty provider/model disables cheap routing.
+        if provider_name.trim().is_empty() || model_name.trim().is_empty() {
+            return None;
+        }
+
+        match providers::create_with_named_model(&provider_name, &model_name, Vec::new()).await {
+            Ok(provider) => {
+                tracing::debug!(
+                    target: "permagentd::orchestrator",
+                    "Routing roadmap decomposition to cheap model {}/{}",
+                    provider_name,
+                    model_name
+                );
+                Some(provider)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "permagentd::orchestrator",
+                    "Cheap decomposition provider {}/{} unavailable ({}); using default provider",
+                    provider_name,
+                    model_name,
+                    e
+                );
+                None
+            }
+        }
     }
 
     fn parent_extensions(&self) -> Vec<ExtensionConfig> {
@@ -1518,44 +1607,47 @@ impl OrchestratorClient {
 
         let user_message = crate::conversation::message::Message::user().with_text(user_text);
 
-        let provider = self.get_provider().await?;
-        let (response, _usage) = provider
-            .complete_fast(session_id, system, &[user_message.clone()], &[])
-            .await
-            .map_err(|e| format!("LLM decomposition failed: {}", e))?;
-
-        let response_text = response.as_concat_text();
-
-        // Parse with resilience — strip fences, tolerate prose
-        let goals = match parse_roadmap_response(&response_text) {
-            Ok(g) => g,
-            Err(first_err) => {
-                // Retry once with a stricter prompt
-                let retry_msg = crate::conversation::message::Message::user().with_text(
-                    "Your previous response could not be parsed as JSON. \
-                     Output ONLY the JSON object with the \"goals\" array. No prose, no markdown fences."
-                        .to_string(),
-                );
-                let (retry_resp, _) = provider
-                    .complete_fast(
-                        session_id,
-                        system,
-                        &[user_message, response, retry_msg],
-                        &[],
-                    )
-                    .await
-                    .map_err(|e| format!("LLM retry failed: {}", e))?;
-
-                match parse_roadmap_response(&retry_resp.as_concat_text()) {
-                    Ok(g) => g,
-                    Err(_) => {
-                        return Ok(CallToolResult::success(vec![Content::text(format!(
-                            "I couldn't structure the decomposition into valid goals. \
-                             Here's what I got (please help me refine it):\n\n{}\n\nParse error: {}",
-                            response_text, first_err
-                        ))]));
+        // Cost-aware routing (#249): try a cheaper/local model first, escalate
+        // to the session's default provider only if the cheap pass fails.
+        let goals = match self.resolve_decomposition_provider().await {
+            Some(cheap) => {
+                match run_decomposition(&cheap, session_id, system, &user_message).await {
+                    Ok(g) => DecompositionOutcome::Goals(g),
+                    Err(cheap_err) => {
+                        let reason = match &cheap_err {
+                            DecompositionError::Provider(e) => e.clone(),
+                            DecompositionError::Unparseable { err, .. } => {
+                                format!("unparseable output ({})", err)
+                            }
+                        };
+                        tracing::warn!(
+                            target: "permagentd::orchestrator",
+                            "Cheap decomposition failed ({}); escalating to default provider",
+                            reason
+                        );
+                        let default = self.get_provider().await?;
+                        finalize_decomposition(
+                            run_decomposition(&default, session_id, system, &user_message).await,
+                        )?
                     }
                 }
+            }
+            None => {
+                let default = self.get_provider().await?;
+                finalize_decomposition(
+                    run_decomposition(&default, session_id, system, &user_message).await,
+                )?
+            }
+        };
+
+        let goals = match goals {
+            DecompositionOutcome::Goals(g) => g,
+            DecompositionOutcome::Unparseable { raw, err } => {
+                return Ok(CallToolResult::success(vec![Content::text(format!(
+                    "I couldn't structure the decomposition into valid goals. \
+                     Here's what I got (please help me refine it):\n\n{}\n\nParse error: {}",
+                    raw, err
+                ))]));
             }
         };
 
@@ -2089,6 +2181,53 @@ fn parse_roadmap_response(response: &str) -> Result<Vec<goal_state::ProposedGoal
     // Try parsing as bare array
     serde_json::from_str::<Vec<goal_state::ProposedGoal>>(json_str)
         .map_err(|e| format!("Failed to parse response as goals: {}", e))
+}
+
+/// Run one decomposition pass against `provider`: call the model, parse goals,
+/// and retry once with a stricter prompt if the first parse fails. Used for
+/// both the cheap pass and the strong-model escalation (#249).
+async fn run_decomposition(
+    provider: &Arc<dyn Provider>,
+    session_id: &str,
+    system: &str,
+    user_message: &crate::conversation::message::Message,
+) -> Result<Vec<goal_state::ProposedGoal>, DecompositionError> {
+    let (response, _usage) = provider
+        .complete_fast(session_id, system, std::slice::from_ref(user_message), &[])
+        .await
+        .map_err(|e| DecompositionError::Provider(format!("LLM decomposition failed: {}", e)))?;
+
+    let response_text = response.as_concat_text();
+
+    // Parse with resilience — strip fences, tolerate prose
+    match parse_roadmap_response(&response_text) {
+        Ok(g) => Ok(g),
+        Err(first_err) => {
+            // Retry once with a stricter prompt
+            let retry_msg = crate::conversation::message::Message::user().with_text(
+                "Your previous response could not be parsed as JSON. \
+                 Output ONLY the JSON object with the \"goals\" array. No prose, no markdown fences."
+                    .to_string(),
+            );
+            let (retry_resp, _) = provider
+                .complete_fast(
+                    session_id,
+                    system,
+                    &[user_message.clone(), response, retry_msg],
+                    &[],
+                )
+                .await
+                .map_err(|e| DecompositionError::Provider(format!("LLM retry failed: {}", e)))?;
+
+            match parse_roadmap_response(&retry_resp.as_concat_text()) {
+                Ok(g) => Ok(g),
+                Err(_) => Err(DecompositionError::Unparseable {
+                    raw: response_text,
+                    err: first_err,
+                }),
+            }
+        }
+    }
 }
 
 /// Find and dispatch goals whose dependencies are all complete.
@@ -3377,6 +3516,46 @@ mod tests {
     fn parse_roadmap_response_invalid() {
         let result = parse_roadmap_response("not json at all");
         assert!(result.is_err());
+    }
+
+    // --- Cost-aware decomposition routing (#249) ---
+
+    #[test]
+    fn finalize_decomposition_passes_goals_through() {
+        let goals = vec![goal_state::ProposedGoal {
+            title: "A".to_string(),
+            description: "do A".to_string(),
+            acceptance_criteria: vec![],
+            tags: vec![],
+            depends_on: vec![],
+        }];
+        match finalize_decomposition(Ok(goals)) {
+            Ok(DecompositionOutcome::Goals(g)) => assert_eq!(g.len(), 1),
+            _ => panic!("expected Goals outcome"),
+        }
+    }
+
+    #[test]
+    fn finalize_decomposition_unparseable_becomes_refine_message() {
+        let err = DecompositionError::Unparseable {
+            raw: "garbage".to_string(),
+            err: "bad json".to_string(),
+        };
+        match finalize_decomposition(Err(err)) {
+            Ok(DecompositionOutcome::Unparseable { raw, err }) => {
+                assert_eq!(raw, "garbage");
+                assert_eq!(err, "bad json");
+            }
+            _ => panic!("expected Unparseable outcome"),
+        }
+    }
+
+    #[test]
+    fn finalize_decomposition_provider_error_propagates() {
+        let err = DecompositionError::Provider("ollama unreachable".to_string());
+        let result = finalize_decomposition(Err(err));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("ollama unreachable"));
     }
 
     #[tokio::test]
