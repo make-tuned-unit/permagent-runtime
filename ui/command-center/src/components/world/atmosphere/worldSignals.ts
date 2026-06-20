@@ -26,6 +26,7 @@
 
 import { useSyncExternalStore } from 'react';
 import { apiFetch, getApiBaseUrl } from '../../../lib/api';
+import { wireEventType } from '../../../lib/wireEvent';
 
 /** A real Brain entity, shadow-projected onto the cave wall (bible §2 "The Turn"). */
 export interface SignalEntity {
@@ -163,7 +164,7 @@ function connectEvents(): void {
     } catch {
       return;
     }
-    const type = parsed.type ?? parsed.event_type ?? '';
+    const type = wireEventType(parsed);
     const ts = Date.parse(parsed.timestamp ?? '');
     if (Number.isFinite(ts) && ts < mountedAt) return; // skip replayed buffer
     if (type === 'memory_added') {

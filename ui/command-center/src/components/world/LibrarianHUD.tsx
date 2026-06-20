@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { COLORS } from './constants';
 import { api, getApiBaseUrl } from '../../lib/api';
+import { wireEventType } from '../../lib/wireEvent';
 import { HudShell, Section, StatRow } from './HudShell';
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -62,7 +63,7 @@ function useLibrarianTokenStream(active: boolean): StreamState {
     ws.onmessage = (ev) => {
       try {
         const event = JSON.parse(ev.data);
-        const eventType: string = event.event_type ?? event.type ?? '';
+        const eventType = wireEventType(event);
 
         if (eventType === 'librarian_describe_started') {
           currentKeyRef.current = event.payload?.memory_key ?? null;
