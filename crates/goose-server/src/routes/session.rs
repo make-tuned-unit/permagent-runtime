@@ -12,7 +12,7 @@ use axum::{
 use permagent::agents::ExtensionConfig;
 use permagent::recipe::Recipe;
 use permagent::session::session_manager::{SessionInsights, SessionType};
-use permagent::session::{EnabledExtensionsState, Session};
+use permagent::session::{EnabledExtensionsState, Session, SessionSummary};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -21,8 +21,8 @@ use utoipa::ToSchema;
 #[derive(Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionListResponse {
-    /// List of available session information objects
-    sessions: Vec<Session>,
+    /// List of available session summaries (lean LIST projection — see SessionSummary)
+    sessions: Vec<SessionSummary>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -92,7 +92,7 @@ async fn list_sessions(
     let fetch_start = std::time::Instant::now();
     let sessions = state
         .session_manager()
-        .list_sessions()
+        .list_session_summaries()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let fetch_ms = fetch_start.elapsed().as_secs_f64() * 1000.0;

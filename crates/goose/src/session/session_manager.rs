@@ -321,6 +321,15 @@ impl SessionManager {
         self.storage.list_sessions_by_types(None).await
     }
 
+    /// Lean session list (User + Scheduled) for LIST views — see
+    /// [`SessionSummary`]. Use this for the HTTP `/api/sessions` list path;
+    /// the heavy [`Session`] fields are served only on single-session GET.
+    pub async fn list_session_summaries(&self) -> Result<Vec<SessionSummary>> {
+        self.storage
+            .list_session_summaries(Some(&[SessionType::User, SessionType::Scheduled]))
+            .await
+    }
+
     pub async fn delete_session(&self, id: &str) -> Result<()> {
         self.storage.delete_session(id).await
     }
@@ -538,6 +547,53 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Session {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or_default(),
             thread_id: row.try_get("thread_id").ok().flatten(),
+        })
+    }
+}
+
+/// Lean projection of a session for LIST views. Excludes the heavy JSON blobs
+/// (extension_data, recipe_json, user_recipe_values_json, model_config_json) and
+/// the conversation, which the session-list UI discards anyway. The full
+/// [`Session`] is served only on single-session GET. See #341/#371.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SessionSummary {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub user_set_name: bool,
+    #[serde(default)]
+    pub session_type: SessionType,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub message_count: usize,
+}
+
+impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for SessionSummary {
+    fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
+        use sqlx::Row;
+
+        let name: String = {
+            let name_val: String = row.try_get("name").unwrap_or_default();
+            if !name_val.is_empty() {
+                name_val
+            } else {
+                row.try_get("description").unwrap_or_default()
+            }
+        };
+
+        let session_type_str: String = row
+            .try_get("session_type")
+            .unwrap_or_else(|_| "user".to_string());
+        let session_type = session_type_str.parse().unwrap_or_default();
+
+        Ok(SessionSummary {
+            id: row.try_get("id")?,
+            name,
+            user_set_name: row.try_get("user_set_name").unwrap_or(false),
+            session_type,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+            message_count: row.try_get("message_count").unwrap_or(0) as usize,
         })
     }
 }
@@ -1039,6 +1095,47 @@ impl SessionStorage {
     async fn list_sessions(&self) -> Result<Vec<Session>> {
         self.list_sessions_by_types(Some(&[SessionType::User, SessionType::Scheduled]))
             .await
+    }
+
+    /// Lean LIST query: selects only the cheap scalar columns the session-list
+    /// UI uses, skipping the heavy JSON blobs that the full [`Session`] query
+    /// drags along (extension_data / recipe_json / user_recipe_values_json /
+    /// model_config_json). See #341/#371.
+    async fn list_session_summaries(
+        &self,
+        types: Option<&[SessionType]>,
+    ) -> Result<Vec<SessionSummary>> {
+        let (where_clause, binds): (String, Vec<String>) = match types {
+            Some(t) if !t.is_empty() => {
+                let placeholders: String = t.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+                (
+                    format!("WHERE s.session_type IN ({})", placeholders),
+                    t.iter().map(|t| t.to_string()).collect(),
+                )
+            }
+            Some(_) => return Ok(Vec::new()),
+            None => (String::new(), Vec::new()),
+        };
+
+        let query = format!(
+            r#"
+            SELECT s.id, s.name, s.description, s.user_set_name, s.session_type,
+                   s.created_at, s.updated_at,
+                   (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) as message_count
+            FROM sessions s
+            {}
+            ORDER BY s.updated_at DESC
+            "#,
+            where_clause
+        );
+
+        let mut q = sqlx::query_as::<_, SessionSummary>(&query);
+        for b in &binds {
+            q = q.bind(b);
+        }
+
+        let pool = self.pool().await?;
+        q.fetch_all(pool).await.map_err(Into::into)
     }
 
     async fn delete_session(&self, session_id: &str) -> Result<()> {
@@ -1602,6 +1699,54 @@ mod tests {
             .unwrap();
         assert_eq!(acp_sessions.len(), 1);
         assert_eq!(acp_sessions[0].name, "ACP session");
+    }
+
+    #[tokio::test]
+    async fn test_list_session_summaries_lean_projection() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let user_session = sm
+            .create_session(
+                PathBuf::from("/tmp/test"),
+                "User session".to_string(),
+                SessionType::User,
+                GooseMode::default(),
+            )
+            .await
+            .unwrap();
+
+        sm.add_message(
+            &user_session.id,
+            &Message {
+                id: None,
+                role: Role::User,
+                created: chrono::Utc::now().timestamp_millis(),
+                content: vec![MessageContent::text("hello world")],
+                metadata: Default::default(),
+            },
+        )
+        .await
+        .unwrap();
+
+        // ACP sessions must be excluded by the User+Scheduled filter, same as list_sessions().
+        sm.create_session(
+            PathBuf::from("/tmp/test"),
+            "ACP session".to_string(),
+            SessionType::Acp,
+            GooseMode::default(),
+        )
+        .await
+        .unwrap();
+
+        let summaries = sm.list_session_summaries().await.unwrap();
+        assert_eq!(summaries.len(), 1);
+        let s = &summaries[0];
+        assert_eq!(s.id, user_session.id);
+        assert_eq!(s.name, "User session");
+        assert_eq!(s.session_type, SessionType::User);
+        // message_count is computed by the lean query's subselect, not dropped.
+        assert_eq!(s.message_count, 1);
     }
 
     #[tokio::test]

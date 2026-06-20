@@ -91,8 +91,21 @@ export interface Session {
   provider_name?: string | null;
 }
 
+/** Lean session projection returned by the LIST path (GET /api/sessions).
+ *  Excludes the heavy fields (extension_data, recipe, model_config, conversation)
+ *  that the full Session carries — those come from single-session GET. See #341/#371. */
+export interface SessionSummary {
+  id: string;
+  name: string;
+  user_set_name: boolean;
+  session_type: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+}
+
 export interface SessionListResponse {
-  sessions: Session[];
+  sessions: SessionSummary[];
 }
 
 /** SSE MessageEvent types from the daemon */
@@ -371,12 +384,12 @@ export const api = {
   // Health
   getHealth: () => apiFetch<{ status: string }>('/status'),
 
-  // Sessions — GET /api/sessions returns { sessions: [...] }
+  // Sessions — GET /api/sessions returns { sessions: [...] } (lean SessionSummary)
   // #341 instrumentation: split the client-perceived cost into round-trip
   // (network + backend), body-download, and JSON.parse, plus payload size. The
-  // daemon serves ~700KB/267 sessions in single-digit ms (PR #340 + handler
-  // session_perf logs); this pins where the 2-5.6s the user *feels* actually go.
-  getSessions: async (): Promise<Session[]> => {
+  // lean projection (#341b) drops the heavy JSON blobs the consumer discarded —
+  // watch `bytes` fall from ~700KB toward ~55KB for the same session count.
+  getSessions: async (): Promise<SessionSummary[]> => {
     const t0 = performance.now();
     if (!_daemonToken && isTauri) await loadDaemonToken();
     const res = await fetch(`${API_BASE_URL}/api/sessions`, { headers: authHeaders() });
