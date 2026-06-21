@@ -5,6 +5,7 @@
 //! live stream plus access to the replay buffer (last 1000 events).
 
 pub mod activity;
+pub mod nav_intercept;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

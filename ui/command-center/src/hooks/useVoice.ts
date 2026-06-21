@@ -26,6 +26,16 @@ export interface VoiceEvent {
   error?: string;
 }
 
+/** A deferred navigation forwarded over the voice socket (speak-then-act). */
+interface NavPayload {
+  tab?: string;
+  tool_type?: string;
+  panel_type?: string;
+  section?: string | null;
+  state?: unknown;
+  reason?: string;
+}
+
 interface UseVoiceOptions {
   sessionId?: string;
   sampleRate?: number;
@@ -58,10 +68,44 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const stateRef = useRef<VoiceState>('idle');
   // Frame counter for diagnostics
   const frameCountRef = useRef(0);
+  // Speak-then-act: a navigation forwarded by the backend AFTER the turn's
+  // narration. Held until audio playback fully drains, then fired — so the view
+  // switches when the agent stops speaking, not the moment the tool resolves.
+  const pendingNavRef = useRef<NavPayload | null>(null);
 
   const emit = useCallback((event: VoiceEvent) => {
     onEventRef.current?.(event);
   }, []);
+
+  // Apply a deferred navigation by re-broadcasting it as the cross-window Tauri
+  // 'app_navigate' event that the main window's useAppNavigate already honors.
+  const fireNav = useCallback((payload: NavPayload) => {
+    (async () => {
+      try {
+        if ('__TAURI_INTERNALS__' in window) {
+          const { emit: tauriEmit } = await import('@tauri-apps/api/event');
+          await tauriEmit('app_navigate', payload);
+        }
+      } catch (e) {
+        console.error('[useVoice] deferred nav emit failed:', e);
+      }
+    })();
+  }, []);
+
+  // Fire the pending nav only once nothing is left to play — the real
+  // "narration finished" signal. Safe to call redundantly (idle-guarded).
+  const flushNavIfIdle = useCallback(() => {
+    if (
+      pendingNavRef.current &&
+      !playingRef.current &&
+      audioQueueRef.current.length === 0 &&
+      !pendingAudioRef.current
+    ) {
+      const nav = pendingNavRef.current;
+      pendingNavRef.current = null;
+      fireNav(nav);
+    }
+  }, [fireNav]);
 
   const setStateAndEmit = useCallback((newState: VoiceState) => {
     stateRef.current = newState;
@@ -79,6 +123,8 @@ export function useVoice(options: UseVoiceOptions = {}) {
         playbackCtxRef.current = null;
         if (wsRef.current?.readyState === WebSocket.OPEN) {
           setStateAndEmit('ready');
+          // Narration finished playing — release any deferred navigation now.
+          flushNavIfIdle();
         }
       }
       return;
@@ -103,7 +149,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
       playingRef.current = false;
       pendingAudioRef.current = false;
     }
-  }, [setStateAndEmit]);
+  }, [setStateAndEmit, flushNavIfIdle]);
 
   // --- WebSocket message handler ---
   const handleWsMessage = useCallback((event: MessageEvent) => {
@@ -133,6 +179,21 @@ export function useVoice(options: UseVoiceOptions = {}) {
             if (!playingRef.current && audioQueueRef.current.length === 0) {
               setStateAndEmit('ready');
             }
+            // Covers a reply whose audio already drained before reply_end.
+            flushNavIfIdle();
+            break;
+          case 'navigate':
+            // Deferred navigation: hold it behind the audio queue, then fire
+            // once playback drains. If nothing is playing it fires immediately.
+            pendingNavRef.current = {
+              tab: msg.tab,
+              tool_type: msg.tool_type,
+              panel_type: msg.panel_type,
+              section: msg.section,
+              state: msg.state,
+              reason: msg.reason,
+            };
+            flushNavIfIdle();
             break;
           case 'error':
             setError(msg.message ?? 'Unknown voice error');
@@ -159,7 +220,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
         emit({ type: 'reply_audio', audio: { samples, sampleRate: 24000 } });
       }
     }
-  }, [setStateAndEmit, emit, playNextChunk]);
+  }, [setStateAndEmit, emit, playNextChunk, flushNavIfIdle]);
 
   // --- Core connect ---
   const connectSocket = useCallback(async (): Promise<void> => {
@@ -305,6 +366,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     playingRef.current = false;
     audioQueueRef.current = [];
     pendingAudioRef.current = false;
+    pendingNavRef.current = null;
     playbackCtxRef.current?.close().catch(() => {});
     playbackCtxRef.current = null;
     // Close socket

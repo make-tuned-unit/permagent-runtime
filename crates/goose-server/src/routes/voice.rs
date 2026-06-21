@@ -385,10 +385,34 @@ enum ServerMessage {
     ReplyEnd { sample_rate: u32 },
     #[serde(rename = "reply_text")]
     ReplyText { text: String },
+    /// Deferred navigation for the speak-then-act seam. Sent AFTER all narration
+    /// audio for the turn so the client fires it only once playback drains —
+    /// otherwise the view switches before the agent finishes saying it will.
+    #[serde(rename = "navigate")]
+    Navigate {
+        tab: String,
+        tool_type: String,
+        panel_type: String,
+        section: Option<String>,
+        state: Option<serde_json::Value>,
+        reason: String,
+    },
     #[serde(rename = "error")]
     Error { message: String },
     #[serde(rename = "ready")]
     Ready,
+}
+
+/// RAII cleanup for navigation interception: guarantees the session's entry is
+/// removed from the registry on every exit path (including mid-stream client
+/// disconnect), so a dropped voice turn can never leave a stale interceptor that
+/// would swallow a later text-turn navigation for the same session.
+struct NavInterceptGuard(String);
+
+impl Drop for NavInterceptGuard {
+    fn drop(&mut self) {
+        let _ = permagent::events::nav_intercept::take(&self.0);
+    }
 }
 
 fn send_json(msg: &ServerMessage) -> Message {
@@ -702,6 +726,14 @@ async fn stream_reply_with_tts(
             .ok_or_else(|| anyhow::anyhow!("No session available for voice"))?
     };
 
+    // Speak-then-act: intercept this turn's navigations so `navigate_app` hands
+    // them off here (instead of emitting to the global bus for instant switch).
+    // We forward them down THIS socket after the narration, and the client fires
+    // them only once audio playback drains. The guard removes the interceptor on
+    // every exit path, including mid-stream disconnect.
+    permagent::events::nav_intercept::begin(&sid);
+    let _nav_guard = NavInterceptGuard(sid.clone());
+
     let user_msg = ChatMessage::user().with_text(transcript);
     let agent = state
         .get_agent(sid.clone())
@@ -935,6 +967,23 @@ async fn stream_reply_with_tts(
             text: full_reply.clone(),
         }))
         .await;
+
+    // Forward any navigations captured during this turn AFTER all narration
+    // audio — they ride this ordered socket, so by the time the client sees them
+    // every audio chunk is already queued. The client fires them only once the
+    // audio queue drains, so the view switches when the agent stops speaking.
+    for nav in permagent::events::nav_intercept::take(&sid) {
+        let _ = socket
+            .send(send_json(&ServerMessage::Navigate {
+                tab: nav.tab,
+                tool_type: nav.tool_type,
+                panel_type: nav.panel_type,
+                section: nav.section,
+                state: nav.state,
+                reason: nav.reason,
+            }))
+            .await;
+    }
 
     let reply_ms = t_reply.elapsed().as_millis();
     let _ = socket
