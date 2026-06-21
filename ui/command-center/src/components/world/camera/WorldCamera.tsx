@@ -4,6 +4,7 @@ import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import type { CameraMode, AgentState } from '../types';
 import { useTourActive } from './tourState';
+import { useDescentActive } from './descentState';
 
 interface WorldCameraProps {
   mode: CameraMode;
@@ -39,6 +40,9 @@ export function WorldCamera({ mode, selectedAgent, onModeChange, onMoveAgent }: 
   // While the tour owns the camera, OrbitControls must unmount (its damped
   // update loop would fight the spline every frame).
   const tourActive = useTourActive();
+  // Descent owns the camera via its own vertical rail (see camera/DescentMode.tsx).
+  // OrbitControls must unmount so its damped loop + polar clamp don't fight the rail.
+  const descentActive = useDescentActive();
   const controlsRef = useRef<React.ComponentRef<typeof OrbitControls>>(null);
   const lastInteraction = useRef(Date.now());
   const transitionRef = useRef<{
@@ -224,7 +228,7 @@ export function WorldCamera({ mode, selectedAgent, onModeChange, onMoveAgent }: 
     lastInteraction.current = Date.now();
   }, []);
 
-  if (mode === 'third-person' || tourActive) {
+  if (mode !== 'orbit' || tourActive || descentActive) {
     return null;
   }
 
@@ -232,12 +236,20 @@ export function WorldCamera({ mode, selectedAgent, onModeChange, onMoveAgent }: 
     <OrbitControls
       ref={controlsRef}
       args={[camera, gl.domElement]}
+      // Wheel-zoom range (nav-bug #2): intentional — 8m keeps the camera outside the
+      // colonnade, 50m frames the whole crown + cave mouth. Confirmed reads as designed.
       minDistance={8}
       maxDistance={50}
       minPolarAngle={0.2}
       maxPolarAngle={Math.PI / 2 - 0.1}
       enableDamping
       dampingFactor={0.05}
+      // nav-bug #2: enable arrow-key panning in orbit (was dead). `keyEvents` binds
+      // the controls' key listener to the window so arrow keys pan the orbit target;
+      // keyPanSpeed sets the step. Previously panning was implicitly off (no keyEvents).
+      enablePan
+      keyPanSpeed={12}
+      keyEvents={typeof window !== 'undefined'}
       autoRotate
       autoRotateSpeed={0.3}
       onChange={handleOrbitInteraction}

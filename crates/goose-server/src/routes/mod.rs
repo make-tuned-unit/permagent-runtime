@@ -44,6 +44,7 @@ pub mod version;
 pub mod voice;
 pub mod workers;
 pub mod workspaces;
+pub mod world;
 
 use std::sync::Arc;
 
@@ -107,6 +108,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(ollama::routes(state.clone()))
         .merge(librarian::routes(state.clone()))
         .merge(henry_status::routes(state.clone()))
+        .merge(world::routes(state.clone()))
         .merge(projects::routes(state.clone()))
         .merge(cards::routes(state.clone()))
         .merge(decisions::routes(state.clone()))

@@ -23,10 +23,13 @@ import { useEffect } from 'react';
 import { api, getApiBaseUrl } from '../../../lib/api';
 import { wireEventType } from '../../../lib/wireEvent';
 import { setAgentSource } from '../shared/agentStatus';
-import { bankEvent } from '../shared/tendingBank';
+import { bankEvent, hydrateBank } from '../shared/tendingBank';
 import { noteDescribe } from './librarianMining';
 import type { AgentHudState } from '../shared/palette';
 import { ROSTER } from './roster';
+import { computeDepth } from '../areas/strata/strata';
+import { seedStrata, getStrata } from '../areas/strata/strataState';
+import { seedConstruction } from './construction';
 
 const HENRY_POLL_MS = 2000;
 const WS_RETRY_MS = 3000;
@@ -48,6 +51,48 @@ function mapHenryState(currentState: string): AgentHudState {
 
 /** Non-visual: feeds setAgentSource from the real daemon signals + local sim. */
 export function AgentStateSources() {
+  // ── Carved Cave backfill — ONE-SHOT seed from real memory history ──
+  // This is structure HISTORY, not live ambience. We read /api/world/strata
+  // (a read-only count of real rows), run the locked depth curve, and SEED the
+  // derived strata + tending bank + construction ONCE. We do NOT replay events:
+  // the live-ambience honesty gate below (mountedAt) is untouched — inferring
+  // "working now" from old events would be a lie; reflecting a real lifetime
+  // memory count as carved structure is the truth (HONESTY LAW).
+  useEffect(() => {
+    let cancelled = false;
+    const seed = async () => {
+      try {
+        // First call learns the real total (total_memories is returned for any N);
+        // the depth curve then says how many chambers/slices the cave actually has.
+        const probe = await api.getWorldStrata(1);
+        if (cancelled) return;
+        const total = probe.total_memories ?? 0;
+        const depth = computeDepth(total);
+
+        // Second call fetches the real time-slices at the curve's chamber count.
+        const data =
+          depth.slices === 1 ? probe : await api.getWorldStrata(depth.slices);
+        if (cancelled) return;
+
+        // Seed the single source of truth for the cave's shape (chambers, plaques,
+        // descent, construction all read this). Honest-empty if the Brain returned
+        // no slices — deriveStrata falls back to one shallow chamber.
+        seedStrata(data.slices, depth.carving, data.total_memories, data.first_memory_at);
+        // Backfill banked history (lifetime volume) — no per-unit event loop.
+        hydrateBank({ total_memories: data.total_memories });
+        // Set the seeded chambers as built / the verge as carving from the curve.
+        seedConstruction(getStrata());
+      } catch {
+        // Honest-empty cave: leave the default single shallow chamber. No crash,
+        // no fabricated structure — the descent still works at zero memories.
+      }
+    };
+    seed();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // ── Henry — daemon status poll ─────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
