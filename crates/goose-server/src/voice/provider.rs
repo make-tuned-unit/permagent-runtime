@@ -14,14 +14,55 @@ pub struct AudioOutput {
     pub sample_rate: u32,
 }
 
-/// A pronunciation override map: surface-form word → phoneme token string.
-/// Consulted BEFORE the backend's default G2P dictionary.
-/// Phase 1 leaves this empty; Phase 2 populates it from seeded + user lexicons.
+/// A pronunciation override map: surface-form word (or short phrase) → phoneme
+/// string. Consulted BEFORE the backend's default G2P dictionary, so proper
+/// nouns and acronyms the G2P mishears ("Claude" → "Cloud", "API" → "appy")
+/// are spoken correctly.
+///
+/// Keys are lowercased; values are in the backend's phoneme format (IPA for the
+/// shipping ort+misaki Kokoro backend). A backend that doesn't support phoneme
+/// injection ignores the lexicon.
 #[derive(Default, Clone)]
-#[allow(dead_code)]
 pub struct PronunciationLexicon {
-    /// word (lowercase) → phoneme representation (backend-specific format)
+    /// lowercased word/phrase → phoneme representation (backend-specific format)
     pub entries: HashMap<String, String>,
+}
+
+impl PronunciationLexicon {
+    /// Build a lexicon from `(surface, phonemes)` pairs. Surfaces are lowercased
+    /// so lookup is case-insensitive.
+    pub fn from_pairs<I, S>(pairs: I) -> Self
+    where
+        I: IntoIterator<Item = (S, S)>,
+        S: Into<String>,
+    {
+        Self {
+            entries: pairs
+                .into_iter()
+                .map(|(k, v)| (k.into().to_lowercase(), v.into()))
+                .collect(),
+        }
+    }
+
+    /// Look up the phoneme override for `word_or_phrase` (case-insensitive).
+    pub fn get(&self, word_or_phrase: &str) -> Option<&str> {
+        self.entries
+            .get(&word_or_phrase.to_lowercase())
+            .map(String::as_str)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Largest key word-count, for greedy longest-phrase matching.
+    pub fn max_phrase_words(&self) -> usize {
+        self.entries
+            .keys()
+            .map(|k| k.split_whitespace().count())
+            .max()
+            .unwrap_or(0)
+    }
 }
 
 /// Configuration for a TTS synthesis call.
@@ -30,8 +71,8 @@ pub struct TtsConfig {
     pub voice_id: Option<String>,
     /// Speech speed multiplier (1.0 = normal).
     pub speed: f32,
-    /// Optional pronunciation overrides injected before default G2P (Phase 2).
-    #[allow(dead_code)]
+    /// Per-call pronunciation overrides, consulted before the backend default
+    /// G2P. `None` lets the backend use its own built-in technical lexicon.
     pub lexicon: Option<PronunciationLexicon>,
 }
 
