@@ -1,9 +1,10 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import { useDashboard } from '../dashboard/useDashboard';
+import { useCommandCenter } from '../../lib/store';
 import { TerminalManager } from '../terminal/TerminalManager';
 import type { TerminalManagerHandle } from '../terminal/TerminalManager';
 import { Browser } from '../browser';
@@ -29,6 +30,18 @@ export function BuildView() {
   };
   const { data } = useDashboard();
   const terminalRef = useRef<TerminalManagerHandle>(null);
+
+  // Agent-driven launch (project_launch event): useAppNavigate switches to this
+  // tab and queues a pending launch; consume it here via the TerminalManager ref
+  // — the same createProjectTab path a human gets from the project's launch button.
+  const pendingTerminalLaunch = useCommandCenter(s => s.pendingTerminalLaunch);
+  const setPendingTerminalLaunch = useCommandCenter(s => s.setPendingTerminalLaunch);
+  useEffect(() => {
+    if (!pendingTerminalLaunch) return;
+    const { rootPath, label, command } = pendingTerminalLaunch;
+    terminalRef.current?.createProjectTab(rootPath, label, command);
+    setPendingTerminalLaunch(null);
+  }, [pendingTerminalLaunch, setPendingTerminalLaunch]);
 
   const agentName = data?.agent.name ?? 'Agent';
   const hasActive = (data?.in_flight.length ?? 0) > 0;

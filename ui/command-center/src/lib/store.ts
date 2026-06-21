@@ -266,6 +266,12 @@ interface CommandCenterStore {
   pendingProjectNavigation: string | null;
   setPendingProjectNavigation: (id: string | null) => void;
 
+  // --- Project terminal launch (from agent: project_launch event) ---
+  pendingTerminalLaunch: { rootPath: string; label: string; command?: string } | null;
+  setPendingTerminalLaunch: (
+    launch: { rootPath: string; label: string; command?: string } | null,
+  ) => void;
+
   // --- In-app browser navigation (chat links, agent tour #353) ---
   pendingBrowserUrl: string | null;
   openInBrowser: (url: string) => void;
@@ -978,6 +984,9 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   // Project navigation (from agent/voice)
   pendingProjectNavigation: null,
   setPendingProjectNavigation: (id) => set({ pendingProjectNavigation: id }),
+
+  pendingTerminalLaunch: null,
+  setPendingTerminalLaunch: (launch) => set({ pendingTerminalLaunch: launch }),
 
   // In-app browser navigation: post a URL + focus the Build workspace (which
   // hosts the browser). The Browser consumes pendingBrowserUrl on mount, so the

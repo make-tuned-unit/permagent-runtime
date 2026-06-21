@@ -249,6 +249,8 @@ pub enum PermagentEventType {
     BrowserContentRequested,
     // App navigation (chat agent → frontend)
     AppNavigate,
+    // Project terminal launch (chat agent → frontend Build tab)
+    ProjectLaunch,
 }
 
 // ── Convenience constructors ────────────────────────────────────────────────
@@ -551,6 +553,29 @@ pub fn app_navigate(
             "panel_type": panel_type,
             "section": section,
             "state": state,
+            "reason": reason,
+        }),
+    )
+}
+
+/// Emitted when the chat agent asks the frontend to open a project-aware
+/// terminal in the Build tab. Mirrors [`app_navigate`]: the agent does not
+/// spawn the PTY directly — the command-center catches this and calls the
+/// existing `createProjectTab` launch path (BuildView → terminal.rs).
+pub fn project_launch(
+    root_path: &str,
+    label: &str,
+    command: Option<&str>,
+    project_slug: &str,
+    reason: &str,
+) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::ProjectLaunch,
+        serde_json::json!({
+            "root_path": root_path,
+            "label": label,
+            "command": command,
+            "project_slug": project_slug,
             "reason": reason,
         }),
     )
