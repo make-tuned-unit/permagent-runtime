@@ -1,0 +1,16 @@
+{
+  "//": "Permagent .claude/settings.json — register the hooks. Merge this into your existing settings.json if you have one (don't blindly overwrite).",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/rustfmt-on-edit.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
