@@ -57,7 +57,6 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
   const onCwdChangeRef = useRef(onCwdChange);
   const cwdRef = useRef(cwd);
   const initialCommandRef = useRef(initialCommand);
-  const isVisibleRef = useRef(isVisible);
 
   sessionIdRef.current = sessionId;
   onSessionSpawnedRef.current = onSessionSpawned;
@@ -65,7 +64,6 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
   onCwdChangeRef.current = onCwdChange;
   cwdRef.current = cwd;
   initialCommandRef.current = initialCommand;
-  isVisibleRef.current = isVisible;
 
   // ── Single setup effect — runs once on mount, cleans up on unmount ──
   useEffect(() => {
@@ -290,7 +288,18 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
       const resizeObserver = new ResizeObserver(() => {
         if (resizeTimer) clearTimeout(resizeTimer);
         resizeTimer = setTimeout(() => {
-          if (fitAddonRef.current && isVisibleRef.current) {
+          // Gate on REAL rendered size, not `isVisible`. When an ancestor
+          // (the workspace div in App.tsx, or the settings overlay) is hidden
+          // with display:none, this terminal's tab can still be "active"
+          // (isVisible === true), so an isVisible gate would let the observer's
+          // collapse-fire run fit() on a 0-box. FitAddon then reads a stale
+          // computed width (~100px) and reflows the terminal to a ~10-col
+          // sliver — the reflow-on-tab-return bug. offsetWidth/Height are 0
+          // whenever any ancestor is display:none, so this guard skips the
+          // corrupting fit AND, because the show transition (0 -> full) also
+          // fires this observer, re-fits to full width on return.
+          const el = containerRef.current;
+          if (fitAddonRef.current && el && el.offsetWidth > 0 && el.offsetHeight > 0) {
             try {
               fitAddonRef.current.fit();
             } catch {
@@ -341,14 +350,20 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
     }
   }, [theme, colors]);
 
-  // Re-fit when visibility changes
+  // Re-fit when this tab becomes the active tab (fast path for the in-manager
+  // tab switch). Guarded on real size for the same reason as the ResizeObserver:
+  // never fit a collapsed (display:none-ancestor) container, or it reflows to a
+  // ~10-col sliver.
   useEffect(() => {
     if (isVisible && fitAddonRef.current) {
       const timer = setTimeout(() => {
-        try {
-          fitAddonRef.current?.fit();
-        } catch {
-          // ignore
+        const el = containerRef.current;
+        if (fitAddonRef.current && el && el.offsetWidth > 0 && el.offsetHeight > 0) {
+          try {
+            fitAddonRef.current.fit();
+          } catch {
+            // ignore
+          }
         }
       }, 50);
       return () => clearTimeout(timer);
