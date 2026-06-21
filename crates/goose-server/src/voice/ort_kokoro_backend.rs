@@ -6,7 +6,7 @@
 //!
 //! Measured: 0.24x realtime on Apple Silicon (CPU provider, release build).
 
-use super::provider::{AudioOutput, TextToSpeech, TtsConfig};
+use super::provider::{AudioOutput, PronunciationLexicon, TextToSpeech, TtsConfig};
 use anyhow::{bail, Context};
 use misaki_rs::{Language, G2P};
 use std::collections::HashMap;
@@ -182,6 +182,124 @@ fn phonemes_to_tokens(phonemes: &str, vocab: &HashMap<char, i64>) -> Vec<i64> {
     tokens
 }
 
+/// Built-in pronunciation overrides for technical terms misaki's G2P mishears.
+///
+/// Values are Kokoro IPA (the same alphabet `build_vocab` tokenizes); `ˈ`/`ˌ`
+/// mark primary/secondary stress and `ː` marks length. Acronyms are spelled out
+/// letter-by-letter so they aren't read as words ("API" → "appy", "URL" →
+/// "earl"). Edit a value here to retune a term — no audio rebuild required.
+fn technical_lexicon() -> PronunciationLexicon {
+    PronunciationLexicon::from_pairs([
+        // Product names — the headline fix: "Claude" must not become "Cloud".
+        ("claude code", "klˈɔːd kˈəʊd"),
+        ("claude", "klˈɔːd"),
+        ("dropdown", "drˈɒpdaʊn"),
+        // Acronyms, spelled out letter-by-letter.
+        ("api", "ˌeɪpˌiːˈaɪ"),
+        ("url", "jˌuːˌɑːrˈɛl"),
+        ("cli", "sˌiːˌɛlˈaɪ"),
+        ("uuid", "jˌuːjˌuːˌaɪdˈiː"),
+    ])
+}
+
+/// A planned phoneme segment: either a verbatim override pulled from the
+/// lexicon, or raw text still to be run through misaki G2P.
+#[derive(Debug, PartialEq, Eq)]
+enum Segment {
+    /// Override phonemes (already in IPA), used verbatim.
+    Override(String),
+    /// Source text to be phonemized by G2P.
+    Text(String),
+}
+
+/// Lowercase a token with leading/trailing ASCII punctuation stripped, for
+/// case- and punctuation-insensitive lexicon matching.
+fn match_key(token: &str) -> String {
+    token
+        .trim_matches(|c: char| c.is_ascii_punctuation())
+        .to_lowercase()
+}
+
+/// Split `sentence` into segments, replacing whole-word (and multi-word) lexicon
+/// hits with `Override` phonemes and leaving everything else as `Text` for G2P.
+/// Greedy longest-phrase match so "claude code" wins over "claude".
+///
+/// Pure (no G2P) so it can be unit-tested without the model. When the sentence
+/// contains no lexicon term the result is a single `Text` segment — the caller's
+/// common path stays byte-identical to plain G2P.
+fn plan_segments(sentence: &str, lexicon: &PronunciationLexicon) -> Vec<Segment> {
+    if lexicon.is_empty() {
+        return vec![Segment::Text(sentence.to_string())];
+    }
+    let words: Vec<&str> = sentence.split_whitespace().collect();
+    let max_phrase = lexicon.max_phrase_words().max(1);
+
+    let mut segments: Vec<Segment> = Vec::new();
+    let mut pending: Vec<&str> = Vec::new();
+    let mut i = 0;
+    while i < words.len() {
+        // Try the longest phrase first, down to a single word.
+        let mut matched = None;
+        let upper = max_phrase.min(words.len() - i);
+        for len in (1..=upper).rev() {
+            let key = words[i..i + len]
+                .iter()
+                .map(|w| match_key(w))
+                .collect::<Vec<_>>()
+                .join(" ");
+            if let Some(phonemes) = lexicon.get(&key) {
+                matched = Some((len, phonemes.to_string()));
+                break;
+            }
+        }
+        if let Some((len, phonemes)) = matched {
+            if !pending.is_empty() {
+                segments.push(Segment::Text(pending.join(" ")));
+                pending.clear();
+            }
+            // Preserve any trailing punctuation on the last matched word so
+            // sentence-final pauses survive ("...Claude Code." keeps the ".").
+            let last = words[i + len - 1];
+            let trailing: String = last
+                .chars()
+                .rev()
+                .take_while(|c| c.is_ascii_punctuation())
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            segments.push(Segment::Override(format!("{phonemes}{trailing}")));
+            i += len;
+        } else {
+            pending.push(words[i]);
+            i += 1;
+        }
+    }
+    if !pending.is_empty() {
+        segments.push(Segment::Text(pending.join(" ")));
+    }
+    segments
+}
+
+/// Phonemize `sentence` to a single IPA string, consulting `lexicon` for
+/// overrides before falling back to misaki G2P for the rest.
+fn phonemize(g2p: &G2P, sentence: &str, lexicon: &PronunciationLexicon) -> anyhow::Result<String> {
+    let mut out = String::new();
+    for seg in plan_segments(sentence, lexicon) {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        match seg {
+            Segment::Override(p) => out.push_str(&p),
+            Segment::Text(t) => {
+                let (phonemes, _tokens) = g2p.g2p(&t)?;
+                out.push_str(&phonemes);
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Voice style vectors loaded from voices-v1.0.bin (NPZ format).
 struct VoiceStyles {
     /// voice_name → style tensor [510, 1, 256]
@@ -290,6 +408,9 @@ pub struct OrtKokoroTts {
     vocab: HashMap<char, i64>,
     voices: VoiceStyles,
     default_voice: String,
+    /// Built-in technical-term pronunciation overrides, consulted before G2P
+    /// unless a per-call `TtsConfig.lexicon` is supplied.
+    lexicon: PronunciationLexicon,
 }
 
 impl OrtKokoroTts {
@@ -338,6 +459,7 @@ impl OrtKokoroTts {
             vocab: build_vocab(),
             voices,
             default_voice: default_voice.to_string(),
+            lexicon: technical_lexicon(),
         })
     }
 }
@@ -358,6 +480,8 @@ impl TextToSpeech for OrtKokoroTts {
 
         let mut all_samples: Vec<f32> = Vec::new();
         let voice_name = config.voice_id.as_deref().unwrap_or(&self.default_voice);
+        // Per-call lexicon overrides the built-in technical one when supplied.
+        let lexicon = config.lexicon.as_ref().unwrap_or(&self.lexicon);
 
         for (i, sentence) in sentences.iter().enumerate() {
             if sentence.trim().is_empty() {
@@ -366,15 +490,14 @@ impl TextToSpeech for OrtKokoroTts {
 
             let chunk_start = std::time::Instant::now();
 
-            // G2P
+            // G2P (lexicon overrides consulted before misaki for each word)
             let t_g2p = std::time::Instant::now();
             let phonemes = {
                 let g2p = self
                     .g2p
                     .lock()
                     .map_err(|e| anyhow::anyhow!("G2P lock: {}", e))?;
-                let (phonemes, _tokens) = g2p.g2p(sentence)?;
-                phonemes
+                phonemize(&g2p, sentence, lexicon)?
             };
             let g2p_ms = t_g2p.elapsed().as_millis();
 
@@ -536,5 +659,83 @@ mod tests {
             tts.synthesize(text, &cfg("zz_not_a_voice")).is_err(),
             "bogus voice_id should be rejected"
         );
+    }
+
+    // ── Pronunciation lexicon (model-free) ──
+
+    #[test]
+    fn claude_code_resolves_in_lexicon() {
+        let lex = technical_lexicon();
+        // Case-insensitive lookup of the headline term.
+        assert!(lex.get("Claude Code").is_some(), "Claude Code must resolve");
+        assert_eq!(lex.get("Claude Code"), lex.get("claude code"));
+        assert!(lex.get("claude").is_some());
+    }
+
+    #[test]
+    fn plan_substitutes_claude_code_phrase() {
+        let lex = technical_lexicon();
+        let segs = plan_segments("open Claude Code now", &lex);
+        // Expect: Text("open") , Override(claude code) , Text("now")
+        let claude_code = lex.get("claude code").unwrap().to_string();
+        assert_eq!(
+            segs,
+            vec![
+                Segment::Text("open".into()),
+                Segment::Override(claude_code),
+                Segment::Text("now".into()),
+            ],
+        );
+    }
+
+    #[test]
+    fn plan_prefers_longest_phrase() {
+        // "claude code" (2 words) wins over "claude" (1 word).
+        let lex = technical_lexicon();
+        let segs = plan_segments("Claude Code", &lex);
+        assert_eq!(
+            segs,
+            vec![Segment::Override(lex.get("claude code").unwrap().into())],
+        );
+    }
+
+    #[test]
+    fn plan_preserves_trailing_punctuation() {
+        let lex = technical_lexicon();
+        let segs = plan_segments("use the API.", &lex);
+        let api = lex.get("api").unwrap();
+        assert_eq!(
+            segs,
+            vec![
+                Segment::Text("use the".into()),
+                Segment::Override(format!("{api}.")),
+            ],
+        );
+    }
+
+    #[test]
+    fn plan_no_hit_is_single_text_segment() {
+        // The common path: no lexicon term → one Text segment, so the caller's
+        // behavior is identical to plain G2P.
+        let lex = technical_lexicon();
+        assert_eq!(
+            plan_segments("just ordinary words here", &lex),
+            vec![Segment::Text("just ordinary words here".into())],
+        );
+    }
+
+    #[test]
+    fn lexicon_phonemes_tokenize_against_vocab() {
+        // Every override must be expressible in the Kokoro vocab, else the
+        // phonemes are silently dropped at tokenization.
+        let vocab = build_vocab();
+        for (surface, ipa) in technical_lexicon().entries.iter() {
+            let tokens = phonemes_to_tokens(ipa, &vocab);
+            // start pad + at least one real phoneme + end pad
+            assert!(
+                tokens.len() > 2,
+                "'{surface}' phonemes '{ipa}' produced no vocab tokens"
+            );
+        }
     }
 }
