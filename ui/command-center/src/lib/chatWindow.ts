@@ -62,6 +62,15 @@ export async function createChatWindow(appTheme: string): Promise<WebviewWindowT
     decorations: true,
     resizable: true,
     focus: true,
+    // The in-app browser is a native child webview of the MAIN window. Native
+    // child webviews always paint above the main window's HTML, and they ride
+    // the main window's z-order — so the moment the user clicks the browser,
+    // the main window (and its browser webview) comes forward and paints over
+    // any overlapping part of the chat window, clipping it at the browser's
+    // edge. `focus` alone only front-orders once and is lost on that next
+    // click. `alwaysOnTop` decouples the chat window from the main window's
+    // z-order entirely, so the browser can never clip it.
+    alwaysOnTop: true,
     theme: appTheme === 'silver' ? 'light' : 'dark',
     ...placement,
   });
