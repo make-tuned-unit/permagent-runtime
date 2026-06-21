@@ -10,7 +10,9 @@ import * as THREE from 'three';
 import { ENV } from '../../shared/palette';
 import { blockoutMat } from '../blockout';
 import { InstancedProp, type InstanceTransform } from '../../shared/instancing';
-import { THROAT, CAVE_FLOOR } from './strata';
+import { THROAT } from './strata';
+import { useStrata } from './strataState';
+import { caveFloorFor } from './strata';
 
 // DoubleSide shaft wall material so the bored throat reads from inside the abyss
 // and from the bridge looking down. Stone tier, matte. Module singleton.
@@ -31,9 +33,10 @@ const toothGeo = new THREE.ConeGeometry(1, 2.6, 5);
 /** The bored shaft wall (clean upper) + raw-rock funnel (lower). */
 function ThroatShaft() {
   const [cx, , cz] = THROAT.center;
+  const caveFloor = caveFloorFor(useStrata());
   const topY = -2;
   const boreHeight = topY - THROAT.rawRockY;
-  const rawHeight = THROAT.rawRockY - CAVE_FLOOR;
+  const rawHeight = THROAT.rawRockY - caveFloor;
   return (
     <group position={[cx, 0, cz]}>
       {/* Clean bored shaft (crown → rawRockY): open cylinder, smooth radius. */}
@@ -44,7 +47,7 @@ function ThroatShaft() {
       </mesh>
       {/* Raw-rock funnel (rawRockY → floor): widens, jagged segment count. */}
       <mesh
-        position={[0, (THROAT.rawRockY + CAVE_FLOOR) / 2, 0]}
+        position={[0, (THROAT.rawRockY + caveFloor) / 2, 0]}
         material={shaftMat}
         receiveShadow
       >
@@ -93,6 +96,7 @@ function ShelfRings() {
 /** Raw-rock teeth ringing the funnel where the bore gives way to raw rock. */
 function RawRockTeeth() {
   const [cx, , cz] = THROAT.center;
+  const caveFloor = caveFloorFor(useStrata());
   const transforms = useMemo<InstanceTransform[]>(() => {
     const t: InstanceTransform[] = [];
     let seed = 71.3;
@@ -103,7 +107,7 @@ function RawRockTeeth() {
     const count = 18;
     for (let i = 0; i < count; i++) {
       const ang = (i / count) * Math.PI * 2 + rnd() * 0.2;
-      const y = THROAT.rawRockY - rnd() * (THROAT.rawRockY - CAVE_FLOOR) * 0.8;
+      const y = THROAT.rawRockY - rnd() * (THROAT.rawRockY - caveFloor) * 0.8;
       const r = THROAT.radiusTop + rnd() * 1.5;
       const size = 0.8 + rnd() * 1.4;
       t.push({
@@ -113,7 +117,7 @@ function RawRockTeeth() {
       });
     }
     return t;
-  }, [cx, cz]);
+  }, [cx, cz, caveFloor]);
 
   return (
     <InstancedProp

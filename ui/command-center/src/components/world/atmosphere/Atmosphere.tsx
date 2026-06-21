@@ -14,6 +14,8 @@ import { startWorldSignals } from './worldSignals';
 import { MouthShaft } from './MouthShaft';
 import { Water } from './Water';
 import { ShadowsOnTheWall } from './ShadowsOnTheWall';
+import { useStrata } from '../areas/strata/strataState';
+import { caveFloorFor } from '../areas/strata/strata';
 
 // Bible §1 light formula: one warm key (shadows), one cool fill (no shadows),
 // near-black ambient 0.08. These are the established §1 colors — they are
@@ -415,9 +417,17 @@ export function Atmosphere() {
 
 // Distant void grid below the platform — kept from the Phase-A verbatim move
 // (not part of the reactive stack; mounted separately by WorldScene).
+//
+// CARVED CAVE: the cave floor is now DERIVED (deepest at -35 for a 6-chamber cave),
+// so the grid must sit BELOW it or the deepest chamber clips through. It reads the
+// derived floor and drops a margin beneath it, never rising above the original -30
+// (so a shallow cave keeps the "distant void" feel).
+const GRID_MARGIN = 3;
 export function DistantGrid() {
+  const caveFloor = caveFloorFor(useStrata());
+  const y = Math.min(-30, caveFloor - GRID_MARGIN);
   return (
-    <mesh rotation-x={-Math.PI / 2} position-y={-30}>
+    <mesh rotation-x={-Math.PI / 2} position-y={y}>
       <planeGeometry args={[400, 400, 80, 80]} />
       <meshBasicMaterial color={ENV.floorGridGlow} wireframe transparent opacity={0.15} />
     </mesh>

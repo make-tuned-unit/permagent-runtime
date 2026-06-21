@@ -754,6 +754,17 @@ export const api = {
       next_scheduled: { id: string; cron: string; currently_running: boolean } | null;
     }>('/api/henry/status'),
 
+  // World View "Carved Cave" depth strata — real memory history sliced by time.
+  // N is clamped to 1..6 by the daemon (the depth curve). Honest-empty on read
+  // failure (zeros / empty slices), never throws an error wall.
+  getWorldStrata: (slices: number) =>
+    apiFetch<{
+      total_memories: number;
+      described_count: number;
+      first_memory_at: string | null;
+      slices: { start: string; end: string; memory_count: number; described_count: number }[];
+    }>(`/api/world/strata?slices=${encodeURIComponent(String(slices))}`),
+
   getBrainMemories: (params: { q?: string; before?: string; before_id?: string; after?: string; offset?: number; limit?: number }) => {
     const qs = new URLSearchParams();
     if (params.q) qs.set('q', params.q);

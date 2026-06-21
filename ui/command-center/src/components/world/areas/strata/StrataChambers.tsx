@@ -12,7 +12,8 @@ import * as THREE from 'three';
 import { ENV } from '../../shared/palette';
 import { blockoutMat } from '../blockout';
 import { InstancedProp, type InstanceTransform } from '../../shared/instancing';
-import { STRATA, type StratumDef } from './strata';
+import { type StratumDef } from './strata';
+import { useStrata } from './strataState';
 
 // A rough rock-chunk geometry shared by every stratum's wall studs (low-poly,
 // chamfered mass per bible §1 silhouette law). Module singleton — one geometry.
@@ -82,11 +83,12 @@ function StratumStuds({ s }: { s: StratumDef }) {
   );
 }
 
-/** All five strata walls + their instanced rock studs. */
+/** Derived strata walls + their instanced rock studs (N from the depth curve). */
 export function StrataChambers() {
+  const strata = useStrata();
   return (
     <group>
-      {STRATA.map((s) => (
+      {strata.map((s) => (
         <group key={s.id}>
           <StratumWall s={s} />
           <StratumStuds s={s} />

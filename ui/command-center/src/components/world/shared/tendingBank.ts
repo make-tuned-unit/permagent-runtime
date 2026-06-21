@@ -81,6 +81,29 @@ export function bankEvent(kind: BankedUnit['kind'], ref: string, source: BankSou
 }
 
 /**
+ * Backfill the bank from REAL history (Carved Cave correction). Sets the running
+ * totals directly from the one-shot /api/world/strata seed — no per-unit bankEvent
+ * loop (that would fabricate `recent` deposits and spam the ledger). `totalBanked`
+ * becomes the real lifetime memory count; `level` (available to construct) is set so
+ * the seeded structure reads as already-built without inventing live events.
+ *
+ * Honesty: this is structure HISTORY, not live ambience — it reflects work that truly
+ * happened. Live `bankEvent` deposits (in-session growth) are untouched and continue
+ * to accrue on top. Idempotent: called once at mount before any live event.
+ */
+export function hydrateBank({ total_memories }: { total_memories: number }): void {
+  const total = Math.max(0, Math.floor(total_memories));
+  // Reflect lifetime volume as banked history. `available` stays empty — the seeded
+  // construction is set directly (seedConstruction), so we don't need consumable units
+  // sitting in the queue; we only record the real totals for the ledger/HUD.
+  totalBanked = total;
+  totalSpent = total;
+  available.length = 0;
+  // Preserve any deposit seq already advanced; do not reset live counters.
+  publish();
+}
+
+/**
  * Spend up to `n` banked units (construction consumes the bank). Returns how many were
  * actually spent — fewer than `n` if the bank ran low. Spending the last unit drops the
  * bank to 0 and tending stops (idle, not tending — bible §4).

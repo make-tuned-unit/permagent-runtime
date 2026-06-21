@@ -7,6 +7,12 @@ interface WorldHUDProps {
   showFps: boolean;
   hoveredStation: string | null;
   stationTooltip: string | null;
+  /** Enter the Carved Cave descent (C-nav). */
+  onDescend: () => void;
+  /** Step down/up a stratum stop while descending. */
+  onDescentStep: (dir: 1 | -1) => void;
+  /** Ascend out of descent back to orbit. */
+  onAscend: () => void;
 }
 
 function FpsCounter() {
@@ -33,7 +39,15 @@ function FpsCounter() {
   return <span>{fps} FPS</span>;
 }
 
-export function WorldHUD({ mode, showFps, hoveredStation, stationTooltip }: WorldHUDProps) {
+export function WorldHUD({
+  mode,
+  showFps,
+  hoveredStation,
+  stationTooltip,
+  onDescend,
+  onDescentStep,
+  onAscend,
+}: WorldHUDProps) {
   const hudStyle: React.CSSProperties = {
     position: 'absolute',
     bottom: 16,
@@ -57,15 +71,48 @@ export function WorldHUD({ mode, showFps, hoveredStation, stationTooltip }: Worl
     backdropFilter: 'blur(4px)',
   };
 
+  // Interactive controls must re-enable pointer events (the HUD container disables them).
+  const ctrlStyle: React.CSSProperties = {
+    ...badgeStyle,
+    cursor: 'pointer',
+    pointerEvents: 'auto',
+    color: COLORS.neonCyan,
+    userSelect: 'none',
+  };
+
   return (
     <>
       <div style={hudStyle}>
         <div style={badgeStyle}>
-          {mode === 'orbit' ? 'ORBIT' : 'FOLLOWING'}
+          {mode === 'orbit' ? 'ORBIT' : mode === 'descent' ? 'DESCENT' : 'FOLLOWING'}
           {mode === 'third-person' && (
             <span style={{ opacity: 0.6, marginLeft: 8 }}>ESC to exit</span>
           )}
+          {mode === 'descent' && (
+            <span style={{ opacity: 0.6, marginLeft: 8 }}>W/S · ESC to exit</span>
+          )}
         </div>
+
+        {/* Carved Cave descent affordance (C-nav, entry point A). */}
+        {mode === 'orbit' && (
+          <div style={ctrlStyle} onClick={onDescend} role="button" tabIndex={0}>
+            ↓ Descend
+          </div>
+        )}
+        {mode === 'descent' && (
+          <div style={{ display: 'flex', gap: 6 }}>
+            <div style={ctrlStyle} onClick={() => onDescentStep(-1)} role="button" tabIndex={0}>
+              ▲
+            </div>
+            <div style={ctrlStyle} onClick={() => onDescentStep(1)} role="button" tabIndex={0}>
+              ▼
+            </div>
+            <div style={ctrlStyle} onClick={onAscend} role="button" tabIndex={0}>
+              ⤴ Ascend
+            </div>
+          </div>
+        )}
+
         {showFps && (
           <div style={badgeStyle}>
             <FpsCounter />

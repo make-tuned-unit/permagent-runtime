@@ -19,6 +19,11 @@ import { useWorldVisibility } from './atmosphere/useWorldVisibility';
 import { installDevHarness } from './atmosphere/devHarness';
 import { TourMode } from './camera/TourMode';
 import { TurnFraming } from './camera/TurnFraming';
+import { DescentMode } from './camera/DescentMode';
+import { setDescentStop, getDescentStop, useDescentActive } from './camera/descentState';
+import { getStrata } from './areas/strata/strataState';
+import { StratumPlaque } from './hud/StratumPlaque';
+import { requestCaveLoad } from './areas/strata/CaveSystem';
 
 // DEV-ONLY: window.__worldDev harness for ambience evidence (no-op in prod).
 installDevHarness();
@@ -171,6 +176,8 @@ function SceneContent({
         onMoveAgent={handleMoveAgent}
       />
       <TourMode cameraMode={cameraMode} />
+      {/* Carved Cave descent — vertical rail down the throat, stops per stratum. */}
+      <DescentMode cameraMode={cameraMode} onAscend={() => onModeChange('orbit')} />
       {/* THE TURN — day-one wall framing + the 180° reveal (Shift+T). */}
       <TurnFraming cameraMode={cameraMode} />
       <WorldPostProcessing />
@@ -192,6 +199,16 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
   // has not been sized yet. Prevents GPU burn behind other tabs and the
   // zero-size GL_INVALID_FRAMEBUFFER_OPERATION spam at startup.
   const canvasActive = useWorldVisibility(containerRef);
+
+  // The throat-collar click (entry point B, inside the Canvas) sets descentActive
+  // directly — sync that to cameraMode so the camera actually descends. Orbit-side
+  // ascent clears the flag via handleAscend → handleModeChange.
+  const descentActive = useDescentActive();
+  useEffect(() => {
+    if (descentActive) {
+      setCameraMode((m) => (m === 'descent' ? m : 'descent'));
+    }
+  }, [descentActive]);
 
   const handleSelectAgent = useCallback((id: string) => {
     if (id === 'henry') {
@@ -216,6 +233,24 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
   // TODO: Wire station clicks to real actions in future prompt
   const handleClickStation = useCallback((id: string) => {
     setHoveredStation(id);
+  }, []);
+
+  // ── Carved Cave descent controls (C-nav) ──
+  // Entry point A: the ↓ Descend HUD control. Also force the cave chunk to load
+  // (folds in nav-bug #1: don't rely on the proximity-only trigger).
+  const handleDescend = useCallback(() => {
+    requestCaveLoad();
+    setCameraMode('descent');
+  }, []);
+  const handleAscend = useCallback(() => {
+    setCameraMode('orbit');
+  }, []);
+  // HUD ▲/▼ step the stratum stop; DescentMode reacts to the store change and glides.
+  // Rail stops = verge (0) + one per chamber (1..N) + the floor (N+1) → max index N+1.
+  const handleDescentStep = useCallback((dir: 1 | -1) => {
+    const maxIndex = getStrata().length + 1;
+    const next = Math.max(0, Math.min(maxIndex, getDescentStop() + dir));
+    setDescentStop(next);
   }, []);
 
   // Toggle FPS with ~ key
@@ -308,7 +343,12 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
         showFps={showFps}
         hoveredStation={hoveredStation}
         stationTooltip={stationTooltip}
+        onDescend={handleDescend}
+        onDescentStep={handleDescentStep}
+        onAscend={handleAscend}
       />
+      {/* Descent legibility plaque — leads with real range + counts (knob 1). */}
+      <StratumPlaque cameraMode={cameraMode} />
       <HenryHUD
         visible={activeHud === 'henry'}
         onClose={() => setActiveHud(null)}
