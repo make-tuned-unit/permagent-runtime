@@ -249,6 +249,25 @@ Aria/Felix/Nova wander as gray/cyan ambient life. The clamp is **enforced in
 `AgentStateChanged` follow-up ships, sim agents graduate to the full state range
 automatically through the same boundary — no W3 code change.
 
+### Manual character control — puppeting RELAXED (Jesse's ruling, 2026-06-20, LAW)
+The earlier "no per-user puppeting" stance is **lifted**. When zoomed into an agent
+(third-person), arrow keys / WASD **drive that agent**, overriding its autonomous walk
+*while the keys are held*; on release the behavior layer resumes autonomy at the new
+position. This is an **intended feature, not a regression** — a future audit must not
+flag puppeting as a bug.
+
+Reasoning: the World View is a **place you inhabit and walk through**, not just an
+orbiting view — the same instinct as descending into the cave. You can take the wheel
+and explore as a character. Implemented via `nudgeAgent()` in `agents/motion.ts`
+(clears the autonomous path so the nudge sticks, faces travel direction, honors the
+Librarian ring lock); wired through `WorldView`'s `onMoveAgent` → `WorldCamera`
+third-person handler. The autonomy law (§4 locomotion, sim-state clamp) otherwise stands:
+manual control is a transient override, never a new state source.
+
+> Composition note (forward): when the cave descent (THE_CAVE Phase 1) lands, puppet-walk
+> and the descent-rail must **compose, not fight** — see THE_CAVE bible §8a. The intended
+> flow is *drive the character to the throat, then descend.*
+
 ---
 
 ## 5. Module layout & lane ownership

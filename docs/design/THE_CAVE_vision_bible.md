@@ -77,6 +77,13 @@ Every user's first earned wing inherits a template whose **form** derives from t
 - 60fps on Apple Silicon, the instancing mandates, dpr/AA policy, lazy strata loading (the chunk architecture maps onto depth), reduceMotion fallbacks — all engineering law from the original bible §8/§10 stands. Propose the dream; build the performant path to it.
 - The Mouth's threshold is sacred: nothing crosses without the user. The privacy politics are in the geography.
 
+### 8a. Two movement systems must compose, not fight (forward note, 2026-06-20)
+The World View now supports **manual character control** — when zoomed into an agent, arrow keys / WASD drive that agent, overriding its autonomous walk while held (Jesse's ruling; WORLD_VIEW_BIBLE §4 "Manual character control"). The World is a place you *walk through*, not just observe — the same instinct as descending into the cave.
+
+This connects directly to the **descent** (Phase 1, building). The throat / descending abyss is currently imagined as a **camera move** (the "First Light" pull-up, the bridge over the abyss). Now that the user can *drive Henry*, the open question for when the cave lands: can the user **walk the character down into the cave**, not only camera-descend?
+
+The two systems — **puppet-walk** (per-user character drive, `agents/motion.ts nudgeAgent`) and **descent-rail** (the camera spline down the throat) — must be **designed to compose**, not collide. Intended composition: *the user drives Henry to the throat, then the descent takes over* (a hand-off, e.g. crossing a threshold trigger arms the rail), rather than two controllers fighting for the camera/agent each frame. Decide the hand-off seam when speccing the descent; do not let the rail hard-disable manual control mid-walk, and do not let manual control fight an in-progress descent. Tour mode already owns the camera exclusively (`camera/TourMode.tsx`) — the descent-rail should follow that same "one owner at a time" pattern, with a clean arm/release handshake to puppet-walk.
+
 ## 9. Handoff to the disciplined swarm
 
 - **W1 (areas):** layout approved and re-meant — no spatial rebuild. New scope: the vertical cave system beneath the crown (strata, the throat, the Mouth sightline), survey-line footprints, scaffold states.
