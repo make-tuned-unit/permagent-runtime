@@ -733,7 +733,7 @@ async fn stream_reply_with_tts(
     // slower of the two, not their sum. They inject under different system-prompt
     // keys ("ambient_context" vs "memory_recall") so there's no write conflict.
     let t_ctx = std::time::Instant::now();
-    let ambient_fut = crate::brain_ops::inject_ambient_context(state, &agent, transcript);
+    let ambient_fut = crate::brain_ops::inject_ambient_context(state, &agent);
     let recall_hits = if let Some(ref brain) = state.brain {
         let recognition_ctx = state.build_recognition_context(Some(&sid));
         let recognition_pool = state.session_manager().pool_clone().await.ok();
