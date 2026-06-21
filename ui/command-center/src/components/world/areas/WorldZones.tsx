@@ -23,15 +23,15 @@ const AntechamberZone = lazy(() => import('./antechamber/AntechamberZone'));
 
 const byId = Object.fromEntries(ZONES.map((z) => [z.id, z]));
 
-export function Zones() {
+export function Zones({ onClickZone }: { onClickZone: (id: string) => void }) {
   return (
     <group>
       <Thresholds />
-      <ZoneMount zone={byId.build} component={BuildZone} imposter={<BuildImposter />} />
-      <ZoneMount zone={byId.brain} component={BrainZone} imposter={<BrainImposter />} />
-      <ZoneMount zone={byId.lab} component={LabZone} imposter={<LabImposter />} />
-      <ZoneMount zone={byId.automate} component={AutomateZone} imposter={<AutomateImposter />} />
-      <ZoneMount zone={byId.antechamber} component={AntechamberZone} imposter={<AntechamberImposter />} />
+      <ZoneMount zone={byId.build} component={BuildZone} imposter={<BuildImposter />} onClickZone={onClickZone} />
+      <ZoneMount zone={byId.brain} component={BrainZone} imposter={<BrainImposter />} onClickZone={onClickZone} />
+      <ZoneMount zone={byId.lab} component={LabZone} imposter={<LabImposter />} onClickZone={onClickZone} />
+      <ZoneMount zone={byId.automate} component={AutomateZone} imposter={<AutomateImposter />} onClickZone={onClickZone} />
+      <ZoneMount zone={byId.antechamber} component={AntechamberZone} imposter={<AntechamberImposter />} onClickZone={onClickZone} />
     </group>
   );
 }

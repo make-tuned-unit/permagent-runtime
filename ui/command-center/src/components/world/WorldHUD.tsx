@@ -7,6 +7,8 @@ interface WorldHUDProps {
   showFps: boolean;
   hoveredStation: string | null;
   stationTooltip: string | null;
+  /** Display label of the zone the camera is parked at (mode === 'zone'). */
+  focusZoneLabel?: string | null;
 }
 
 function FpsCounter() {
@@ -33,7 +35,7 @@ function FpsCounter() {
   return <span>{fps} FPS</span>;
 }
 
-export function WorldHUD({ mode, showFps, hoveredStation, stationTooltip }: WorldHUDProps) {
+export function WorldHUD({ mode, showFps, hoveredStation, stationTooltip, focusZoneLabel }: WorldHUDProps) {
   const hudStyle: React.CSSProperties = {
     position: 'absolute',
     bottom: 16,
@@ -61,8 +63,12 @@ export function WorldHUD({ mode, showFps, hoveredStation, stationTooltip }: Worl
     <>
       <div style={hudStyle}>
         <div style={badgeStyle}>
-          {mode === 'orbit' ? 'ORBIT' : 'FOLLOWING'}
-          {mode === 'third-person' && (
+          {mode === 'orbit'
+            ? 'ORBIT'
+            : mode === 'zone'
+              ? `VIEWING ${focusZoneLabel ?? 'ZONE'}`
+              : 'FOLLOWING'}
+          {mode !== 'orbit' && (
             <span style={{ opacity: 0.6, marginLeft: 8 }}>ESC to exit</span>
           )}
         </div>

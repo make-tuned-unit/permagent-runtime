@@ -9,6 +9,7 @@ import { WorldAgents, ROSTER, getAgentPosition, getHenryPresence, nudgeAgent } f
 import { getBankSnapshot } from './shared/tendingBank';
 import { getConstructionProgress } from './agents/construction';
 import { WorldCamera } from './camera/WorldCamera';
+import { ZONES, type ZoneDef } from './areas/zones';
 import { WorldPostProcessing } from './WorldPostProcessing';
 import { WorldHUD } from './WorldHUD';
 import { LibrarianHUD } from './LibrarianHUD';
@@ -132,21 +133,25 @@ function useSelectedAgentProxy(selectedAgentId: string | null): AgentState | nul
 function SceneContent({
   cameraMode,
   selectedAgentId,
+  focusZone,
   onModeChange,
   onHoverAgent,
   onSelectAgent,
   hoveredAgent,
   onHoverStation,
   onClickStation,
+  onClickZone,
 }: {
   cameraMode: CameraMode;
   selectedAgentId: string | null;
+  focusZone: ZoneDef | null;
   onModeChange: (mode: CameraMode) => void;
   onHoverAgent: (id: string | null) => void;
   onSelectAgent: (id: string) => void;
   hoveredAgent: string | null;
   onHoverStation: (id: string | null) => void;
   onClickStation: (id: string) => void;
+  onClickZone: (id: string) => void;
 }) {
   const selectedAgent = useSelectedAgentProxy(selectedAgentId);
   const handleMoveAgent = useCallback(
@@ -158,7 +163,11 @@ function SceneContent({
 
   return (
     <>
-      <WorldSceneContent onHoverStation={onHoverStation} onClickStation={onClickStation} />
+      <WorldSceneContent
+        onHoverStation={onHoverStation}
+        onClickStation={onClickStation}
+        onClickZone={onClickZone}
+      />
       <WorldAgents
         hoveredAgent={hoveredAgent}
         onHoverAgent={onHoverAgent}
@@ -167,6 +176,7 @@ function SceneContent({
       <WorldCamera
         mode={cameraMode}
         selectedAgent={selectedAgent}
+        focusZone={focusZone}
         onModeChange={onModeChange}
         onMoveAgent={handleMoveAgent}
       />
@@ -184,6 +194,7 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
   const [hoveredAgent, setHoveredAgent] = useState<string | null>(null);
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [hoveredStation, setHoveredStation] = useState<string | null>(null);
+  const [focusZone, setFocusZone] = useState<ZoneDef | null>(null);
   const [showFps, setShowFps] = useState(false);
   const [activeHud, setActiveHud] = useState<'henry' | 'librarian' | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -210,12 +221,26 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
     if (mode === 'orbit') {
       setSelectedAgent(null);
       setActiveHud(null);
+      setFocusZone(null);
     }
   }, []);
 
   // TODO: Wire station clicks to real actions in future prompt
   const handleClickStation = useCallback((id: string) => {
     setHoveredStation(id);
+  }, []);
+
+  // Click a zone → travel the camera to it (camera owner: 'zone' mode; ESC
+  // returns to the rotunda, mirroring the agent return-to-orbit contract).
+  // Clears the agent selection/HUD so only one camera owner is ever armed.
+  const handleClickZone = useCallback((id: string) => {
+    const zone = ZONES.find((z) => z.id === id);
+    if (!zone) return;
+    setActiveHud(null);
+    setSelectedAgent(null);
+    setHoveredStation(null);
+    setFocusZone(zone);
+    setCameraMode('zone');
   }, []);
 
   // Toggle FPS with ~ key
@@ -292,12 +317,14 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
           <SceneContent
             cameraMode={cameraMode}
             selectedAgentId={selectedAgent}
+            focusZone={focusZone}
             onModeChange={handleModeChange}
             onHoverAgent={setHoveredAgent}
             onSelectAgent={handleSelectAgent}
             hoveredAgent={hoveredAgent}
             onHoverStation={setHoveredStation}
             onClickStation={handleClickStation}
+            onClickZone={handleClickZone}
           />
           {/* Shared perf probe (bible §6): publishes window.__worldPerf 1/s. */}
           <PerfSampler />
@@ -308,6 +335,7 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
         showFps={showFps}
         hoveredStation={hoveredStation}
         stationTooltip={stationTooltip}
+        focusZoneLabel={focusZone?.label ?? null}
       />
       <HenryHUD
         visible={activeHud === 'henry'}

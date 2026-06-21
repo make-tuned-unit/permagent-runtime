@@ -69,9 +69,11 @@ function WorldDevHooks() {
 export function WorldSceneContent({
   onHoverStation,
   onClickStation,
+  onClickZone,
 }: {
   onHoverStation: (id: string | null) => void;
   onClickStation: (id: string) => void;
+  onClickZone: (id: string) => void;
 }) {
   return (
     <>
@@ -88,7 +90,7 @@ export function WorldSceneContent({
       <MezzanineLibrary />
 
       {/* Five zones off the rotunda — thresholds always on, interiors lazy (§3) */}
-      <Zones />
+      <Zones onClickZone={onClickZone} />
 
       {/* The vertical cave beneath the crown — strata, throat, Mouth sightline,
           survey footprints, scaffold mounts. Lazy depth chunks; the Mouth aperture

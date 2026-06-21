@@ -4,7 +4,7 @@
 // silhouette renders. Once loaded, a zone stays mounted.
 
 import { Suspense, useState, useRef, useCallback, type ReactNode, type LazyExoticComponent, type ComponentType } from 'react';
-import { useFrame, useThree } from '@react-three/fiber';
+import { useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import { ZONE_LOAD_DISTANCE, zoneCenter, type ZoneDef } from './zones';
 
 export interface ZoneContentProps {
@@ -18,9 +18,11 @@ interface ZoneMountProps {
   component: LazyExoticComponent<ComponentType<ZoneContentProps>>;
   /** ≤3-mesh distant silhouette of the zone's landmark (always cheap). */
   imposter: ReactNode;
+  /** Click anywhere in the zone (imposter or interior) → travel the camera. */
+  onClickZone: (id: string) => void;
 }
 
-export function ZoneMount({ zone, component: Zone, imposter }: ZoneMountProps) {
+export function ZoneMount({ zone, component: Zone, imposter, onClickZone }: ZoneMountProps) {
   const camera = useThree((s) => s.camera);
   const [load, setLoad] = useState(false);
   const [ready, setReady] = useState(false);
@@ -40,8 +42,28 @@ export function ZoneMount({ zone, component: Zone, imposter }: ZoneMountProps) {
 
   const handleReady = useCallback(() => setReady(true), []);
 
+  const handleClick = useCallback(
+    (e: ThreeEvent<MouseEvent>) => {
+      e.stopPropagation();
+      onClickZone(zone.id);
+    },
+    [onClickZone, zone.id],
+  );
+  const handlePointerOver = useCallback((e: ThreeEvent<PointerEvent>) => {
+    e.stopPropagation();
+    document.body.style.cursor = 'pointer';
+  }, []);
+  const handlePointerOut = useCallback(() => {
+    document.body.style.cursor = 'auto';
+  }, []);
+
   return (
-    <group rotation-y={-zone.angle}>
+    <group
+      rotation-y={-zone.angle}
+      onClick={handleClick}
+      onPointerOver={handlePointerOver}
+      onPointerOut={handlePointerOut}
+    >
       {!ready && imposter}
       {load && (
         <Suspense fallback={null}>

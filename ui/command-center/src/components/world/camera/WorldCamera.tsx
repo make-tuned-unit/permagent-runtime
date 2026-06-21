@@ -4,10 +4,13 @@ import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import type { CameraMode, AgentState } from '../types';
 import { useTourActive } from './tourState';
+import { zoneCenter, type ZoneDef } from '../areas/zones';
 
 interface WorldCameraProps {
   mode: CameraMode;
   selectedAgent: AgentState | null;
+  /** When mode === 'zone', the zone the camera travels to (null otherwise). */
+  focusZone: ZoneDef | null;
   onModeChange: (mode: CameraMode) => void;
   onMoveAgent: (dx: number, dz: number) => void;
 }
@@ -20,6 +23,13 @@ const TRANSITION_DURATION = 1.5;
 // Third-person offset: behind + above the agent
 const TP_OFFSET = new THREE.Vector3(0, 3, 6);
 const TP_LOOK_OFFSET = new THREE.Vector3(0, 1.5, 0);
+
+// Zone-travel framing: stand back from the zone's room center toward the hall,
+// elevated, looking at the zone. ZONE_BACK pulls the eye toward the rotunda so
+// the threshold reads in frame; ZONE_HEIGHT/ZONE_LOOK_Y set the descent angle.
+const ZONE_BACK = 13;
+const ZONE_HEIGHT = 9;
+const ZONE_LOOK_Y = 2.5;
 
 // Scratch vectors — bible §8: zero per-frame allocations in useFrame.
 // Single camera instance, so module-level scratch is safe.
@@ -34,7 +44,7 @@ function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
 
-export function WorldCamera({ mode, selectedAgent, onModeChange, onMoveAgent }: WorldCameraProps) {
+export function WorldCamera({ mode, selectedAgent, focusZone, onModeChange, onMoveAgent }: WorldCameraProps) {
   const { camera, gl } = useThree();
   // While the tour owns the camera, OrbitControls must unmount (its damped
   // update loop would fight the spline every frame).
@@ -72,7 +82,8 @@ export function WorldCamera({ mode, selectedAgent, onModeChange, onMoveAgent }: 
   // ESC, right-click, and movement keys for third-person
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && mode === 'third-person') {
+      // ESC returns to the rotunda from any non-orbit owner (follow or zone).
+      if (e.key === 'Escape' && mode !== 'orbit') {
         startTransitionToOrbit();
       }
       if (mode === 'third-person') {
@@ -131,6 +142,33 @@ export function WorldCamera({ mode, selectedAgent, onModeChange, onMoveAgent }: 
       smoothCamTarget.current.copy(lookAt);
     }
   }, [mode, selectedAgent?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Travel to a zone when one is clicked. Reuses the SAME transition primitive
+  // as agent click-to-zoom — one camera owner at a time (composes with Tour,
+  // which gates on orbit, and the puppet-walk/cave-descent rulings: a discrete,
+  // mutually-exclusive mode that holds a static framing once it arrives).
+  useEffect(() => {
+    if (mode === 'zone' && focusZone) {
+      const [cx, , cz] = zoneCenter(focusZone);
+      const center = new THREE.Vector3(cx, 0, cz);
+      const outward = new THREE.Vector3(Math.cos(focusZone.angle), 0, Math.sin(focusZone.angle));
+      const endPos = center.clone().addScaledVector(outward, -ZONE_BACK);
+      endPos.y = ZONE_HEIGHT;
+      const endTarget = center.clone();
+      endTarget.y = ZONE_LOOK_Y;
+
+      transitionRef.current = {
+        active: true,
+        startTime: performance.now() / 1000,
+        startPos: camera.position.clone(),
+        endPos,
+        startTarget: ORBIT_TARGET.clone(),
+        endTarget,
+      };
+      smoothCamPos.current.copy(endPos);
+      smoothCamTarget.current.copy(endTarget);
+    }
+  }, [mode, focusZone?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useFrame(({ scene }) => {
     // Tour mode owns the camera entirely (see camera/TourMode.tsx).
@@ -224,7 +262,7 @@ export function WorldCamera({ mode, selectedAgent, onModeChange, onMoveAgent }: 
     lastInteraction.current = Date.now();
   }, []);
 
-  if (mode === 'third-person' || tourActive) {
+  if (mode === 'third-person' || mode === 'zone' || tourActive) {
     return null;
   }
 
