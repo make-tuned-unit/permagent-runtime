@@ -142,6 +142,38 @@ struct ColumnDeleteParams {
     column_id: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct ProjectLaunchParams {
+    /// Project ID (UUID) or slug to launch a terminal for. The project must
+    /// have a root_path set.
+    id_or_slug: String,
+    /// Optional command to run in the terminal once it opens (e.g. "claude" to
+    /// start Claude Code, "npm run dev", etc). If omitted, an interactive shell
+    /// is opened at the project root with no command.
+    #[serde(default)]
+    command: Option<String>,
+}
+
+/// Self-knowledge descriptor for the Build tab — the project-aware terminal +
+/// browser workspace. Co-located with the `project_launch` tool that drives it;
+/// aggregated by `crate::agents::self_knowledge`. Static — always-on surface.
+pub const BUILD_TAB_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "build",
+        display_name: "Build tab",
+        category: crate::agents::self_knowledge::FeatureCategory::Surface,
+        what_it_does:
+            "A workspace with project-aware terminals and an in-app browser. You can open a \
+             terminal rooted at any project's directory — and run a command in it (e.g. start \
+             Claude Code) — by calling the project_launch tool",
+        why_it_matters:
+            "It is your native way to run commands and drive coding work inside a project. Reach \
+             for project_launch (not a one-shot shell) when the user wants to launch a project, \
+             open a terminal, or run an interactive tool like Claude Code in a project",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        teaching: &[],
+    };
+
 pub struct ProjectManagerClient {
     info: InitializeResult,
     context: PlatformExtensionContext,
@@ -350,6 +382,61 @@ impl ProjectManagerClient {
             .await?
             .ok_or_else(|| format!("Project '{}' not found", id_or_slug))?;
         Ok((project, pool))
+    }
+
+    async fn handle_launch(&self, arguments: Option<JsonObject>) -> Result<Vec<Content>, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let id_or_slug = args
+            .get("id_or_slug")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing required parameter: id_or_slug")?;
+        let command = args
+            .get("command")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty());
+
+        let (project, _pool) = self.resolve_project(id_or_slug).await?;
+
+        let root_path = project
+            .root_path
+            .clone()
+            .filter(|p| !p.trim().is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "Project \"{}\" has no root_path set, so there is nowhere to open a terminal. \
+                 Set one with project_update first.",
+                    project.name
+                )
+            })?;
+
+        let label = match command {
+            Some(cmd) => format!("{} · {}", project.slug, cmd),
+            None => project.slug.clone(),
+        };
+        let reason = match command {
+            Some(cmd) => format!(
+                "Opening a terminal in {} and running `{}`",
+                project.name, cmd
+            ),
+            None => format!("Opening a terminal in {}", project.name),
+        };
+
+        crate::events::emit(crate::events::project_launch(
+            &root_path,
+            &label,
+            command,
+            &project.slug,
+            &reason,
+        ));
+
+        Ok(vec![Content::text(format!(
+            "Launched a terminal for \"{}\" at {}{}.",
+            project.name,
+            root_path,
+            command
+                .map(|c| format!(" running `{}`", c))
+                .unwrap_or_default()
+        ))])
     }
 
     async fn resolve_column(
@@ -883,6 +970,7 @@ impl ProjectManagerClient {
         let col_create_schema = serde_json::to_value(schema_for!(ColumnCreateParams)).unwrap();
         let col_delete_schema = serde_json::to_value(schema_for!(ColumnDeleteParams)).unwrap();
         let board_summary_schema = serde_json::to_value(schema_for!(BoardSummaryParams)).unwrap();
+        let launch_schema = serde_json::to_value(schema_for!(ProjectLaunchParams)).unwrap();
 
         vec![
             Tool::new(
@@ -1094,6 +1182,32 @@ impl ProjectManagerClient {
                 Some(false),
                 Some(false),
             )),
+            // ── Project launch (terminal) ──
+            Tool::new(
+                "project_launch".to_string(),
+                indoc! {r#"
+                Open a project-aware terminal in the Build tab, rooted at the project's
+                directory, optionally running a command. This is your native way to launch
+                a project and run interactive tools inside it.
+
+                Use this — NOT a one-shot shell — whenever the user asks to "launch project X",
+                "open a terminal in Y", "start Claude Code in the grocery-saver project", "run
+                the dev server for Z", or similar. To start Claude Code, pass command="claude".
+                For an interactive shell with no command, omit `command`.
+
+                Resolve the project name with project_resolve first if you only have a spoken
+                name. The project must have a root_path set.
+            "#}
+                .to_string(),
+                launch_schema.as_object().unwrap().clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Launch Project Terminal".to_string()),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+            )),
         ]
     }
 }
@@ -1133,6 +1247,7 @@ impl McpClientTrait for ProjectManagerClient {
             "column_create" => self.handle_column_create(arguments).await,
             "column_delete" => self.handle_column_delete(arguments).await,
             "board_summary" => self.handle_board_summary(arguments).await,
+            "project_launch" => self.handle_launch(arguments).await,
             _ => Err(format!("Unknown tool: {}", name)),
         };
         match content {

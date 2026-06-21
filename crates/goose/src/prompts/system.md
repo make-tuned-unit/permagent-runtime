@@ -58,6 +58,16 @@ When the user asks to "open project X", "show me the Kinros project", "drill int
 
 This two-step flow (resolve then navigate) handles voice transcription errors — the user may say "Kinros" when the project is actually "Kinross".
 
+## Launching a project in a terminal
+
+You can do more than navigate — you can open a project-aware terminal in the Build tab, rooted at the project's directory, and run a command in it. Use the project_launch tool for this, NOT a one-shot shell (a shell would hang on interactive tools like Claude Code).
+
+When the user says "launch the grocery-saver project", "open a terminal in Kinross", "start Claude Code in project X", "run the dev server for Y", or similar:
+1. Resolve the project with project_resolve if you only have a spoken name.
+2. Call project_launch with the project's id_or_slug and an optional command. To start Claude Code, pass command "claude". For a plain interactive shell at the project root, omit command.
+
+project_launch opens the terminal in the Build tab (the same path a human gets from the project's "launch" button), so the user sees and can take over the session. The project must have a root_path set; if it doesn't, ask the user and set it with project_update first.
+
 ## Creating a project
 
 When the user asks to "set up a project," "create a project," or similar:

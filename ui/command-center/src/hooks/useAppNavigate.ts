@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { getApiBaseUrl } from '../lib/api';
 import { wireEventType } from '../lib/wireEvent';
-import { useCommandCenter } from '../lib/store';
+import { useCommandCenter, navigateToTool } from '../lib/store';
 import type { ActivePanel } from '../lib/store';
 
 const VALID_TOOL_TYPES = new Set<string>([
@@ -17,6 +17,7 @@ export function useAppNavigate() {
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
   const workspaces = useCommandCenter(s => s.workspaces);
   const setPendingProjectNavigation = useCommandCenter(s => s.setPendingProjectNavigation);
+  const setPendingTerminalLaunch = useCommandCenter(s => s.setPendingTerminalLaunch);
 
   // Keep refs so the WebSocket callback always sees latest state
   const workspacesRef = useRef(workspaces);
@@ -27,6 +28,8 @@ export function useAppNavigate() {
   setActivePanelRef.current = setActivePanel;
   const setPendingProjectNavigationRef = useRef(setPendingProjectNavigation);
   setPendingProjectNavigationRef.current = setPendingProjectNavigation;
+  const setPendingTerminalLaunchRef = useRef(setPendingTerminalLaunch);
+  setPendingTerminalLaunchRef.current = setPendingTerminalLaunch;
 
   // Shared navigation logic — used by both the daemon WS bus and the
   // cross-window Tauri event (the chat window's "Open Brain" button).
@@ -64,6 +67,29 @@ export function useAppNavigate() {
   const navigateRef = useRef(navigate);
   navigateRef.current = navigate;
 
+  // Agent project_launch → open a project-aware terminal in the Build tab.
+  // Mirrors the human launch path: switch to the Build workspace, then queue a
+  // pending launch that BuildView consumes via its TerminalManager ref
+  // (createProjectTab → terminal.rs PTY). The agent never spawns the PTY itself.
+  const launch = (payload: {
+    root_path?: string;
+    label?: string;
+    command?: string | null;
+    reason?: string;
+  }) => {
+    const { root_path, label, command, reason } = payload ?? {};
+    if (!root_path) return;
+    if (!navigateToTool('build')) return;
+    setPendingTerminalLaunchRef.current({
+      rootPath: root_path,
+      label: label || root_path,
+      command: command ?? undefined,
+    });
+    if (reason) showNavigationCue(reason);
+  };
+  const launchRef = useRef(launch);
+  launchRef.current = launch;
+
   useEffect(() => {
     let ws: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -78,6 +104,10 @@ export function useAppNavigate() {
         try {
           const event = JSON.parse(ev.data);
           const eventType = wireEventType(event);
+          if (eventType === 'project_launch') {
+            launchRef.current(event.payload ?? {});
+            return;
+          }
           if (eventType !== 'app_navigate') return;
           navigateRef.current(event.payload ?? {});
         } catch {
@@ -119,7 +149,12 @@ export function useAppNavigate() {
           'app_navigate',
           (ev) => navigateRef.current(ev.payload ?? {}),
         );
-        if (disposed) stop(); else unlisten = stop;
+        const stopLaunch = await listen<{ root_path?: string; label?: string; command?: string | null; reason?: string }>(
+          'project_launch',
+          (ev) => launchRef.current(ev.payload ?? {}),
+        );
+        const stopBoth = () => { stop(); stopLaunch(); };
+        if (disposed) stopBoth(); else unlisten = stopBoth;
       } catch { /* not in Tauri / event API unavailable */ }
     })();
     return () => { disposed = true; unlisten?.(); };
