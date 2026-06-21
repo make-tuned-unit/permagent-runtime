@@ -32,6 +32,7 @@ export const AGENT_TRIM = {
   felix: '#FF6B9D',
   nova: '#A78BFA',
   librarian: '#8B7E6F',
+  reader: '#4FD1C5', // cool teal — the OCR/document ingest pipeline (#336/#342)
 } as const;
 
 export type AgentHudState = keyof typeof STATE;

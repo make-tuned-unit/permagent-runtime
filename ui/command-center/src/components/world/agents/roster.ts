@@ -1,4 +1,4 @@
-// Agent roster — identity config for the five inhabitants. WORLD_VIEW_BIBLE.md §2, §4.
+// Agent roster — identity config for the six inhabitants. WORLD_VIEW_BIBLE.md §2, §4.
 // Identity (trim color, crown) is fixed here; state NEVER repaints identity trim.
 
 import { AGENT_TRIM } from '../shared/palette';
@@ -71,6 +71,21 @@ export const ROSTER: AgentIdentity[] = [
     mezzanineLocked: true,
     home: { x: MEZZ_RADIUS, y: MEZZ_Y, z: 0 },
     weathering: 0.4,
+  },
+  {
+    // The Reader — local OCR/document-ingest pipeline (#336/#342). Backend worker
+    // gains a ground-floor presence here; renders + click-to-zoom for free via the
+    // ROSTER fan-out (WorldAgents + behavior.ensureMotion + the camera follow proxy).
+    // No crown (isHenry:false). State is sim-ambient for v1 like aria/felix/nova;
+    // a real reader-event live wire is a follow-up.
+    id: 'reader',
+    name: 'The Reader',
+    role: 'agent',
+    trimColor: AGENT_TRIM.reader,
+    isHenry: false,
+    mezzanineLocked: false,
+    home: { x: 5, y: 0, z: -2 },
+    weathering: 0,
   },
 ];
 
