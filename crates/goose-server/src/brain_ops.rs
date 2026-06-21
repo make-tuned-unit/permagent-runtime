@@ -176,16 +176,16 @@ pub async fn inject_ambient_context(
         .and_then(|ing| ing.active_project())
         .map(|ap| ap.wing.clone());
 
-    let recall_query = if user_text.len() > 20 {
-        Some(user_text.to_string())
-    } else {
-        None
-    };
-
+    // NOTE: deliberately NO `include_recall_query` here. Every caller of
+    // inject_ambient_context follows it with inject_recall(), which runs the
+    // SAME recall_cascade(user_text) but with the REAL RecognitionContext
+    // (this path could only supply an empty one). Letting the digest recall too
+    // was a redundant, inferior second cascade — ~5-6s of duplicate Brain work
+    // on every reply turn. Ambient context is now probe-only; recall is owned
+    // by inject_recall. See voice pre-stream latency fix.
     let digest_opts = permagent::activity::context_builder::DigestOpts {
         include_probe: true,
         focus_wing,
-        include_recall_query: recall_query,
         ..Default::default()
     };
 

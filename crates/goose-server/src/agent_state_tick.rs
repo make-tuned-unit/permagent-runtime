@@ -58,9 +58,10 @@ async fn derive_henry_hud_state(state: &AppState) -> &'static str {
     // Pre-first-turn fallback: derive from active sessions + in-flight tools,
     // mirroring `mapHenryState` on the frontend.
     let two_min_ago = chrono::Utc::now() - chrono::Duration::seconds(ACTIVE_WINDOW_SECS);
+    // Lean projection — this 2s-interval fallback only needs id/type/updated_at.
     let sessions = state
         .session_manager()
-        .list_sessions()
+        .list_session_summaries()
         .await
         .unwrap_or_default();
 

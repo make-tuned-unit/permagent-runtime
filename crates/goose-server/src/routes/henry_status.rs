@@ -79,9 +79,14 @@ async fn henry_status(State(state): State<Arc<AppState>>) -> Json<HenryStatusRes
     drop(persona);
 
     // Sessions — active + totals
+    // Lean projection (SessionSummary): this endpoint is polled every 1s by the
+    // HenryHUD and only reads id/name/type/created_at/updated_at — never the
+    // heavy JSON blobs. The fat list_sessions() ran 1-3.5s on 273 sessions every
+    // second, a self-inflicted query storm that contended the shared pool. See
+    // #341/#371.
     let sessions = state
         .session_manager()
-        .list_sessions()
+        .list_session_summaries()
         .await
         .unwrap_or_default();
 

@@ -55,10 +55,11 @@ async fn get_dashboard(State(state): State<Arc<AppState>>) -> Json<DashboardResp
     let now = Utc::now();
     let today_midnight = now.date_naive().and_time(NaiveTime::MIN).and_utc();
 
-    // Fetch all sessions
+    // Fetch all sessions — lean projection (SessionSummary). This view only
+    // reads scalar fields/counts, never the heavy JSON blobs. See #341/#371.
     let sessions = state
         .session_manager()
-        .list_sessions()
+        .list_session_summaries()
         .await
         .unwrap_or_default();
 
