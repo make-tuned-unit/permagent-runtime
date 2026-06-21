@@ -714,7 +714,13 @@ async fn stream_reply_with_tts(
             "The user is speaking to you by voice. Reply in natural conversational speech: \
              short sentences, contractions, concise and direct. No markdown, no bullet points, \
              no numbered lists, no code blocks. Keep replies brief — 1-3 sentences for simple \
-             questions. Speak as you would in a real conversation."
+             questions. Speak as you would in a real conversation. \
+             Verbalize outcomes, not interface mechanics: don't read out UI labels, button names, \
+             menu paths, file paths, URLs, or settings keys, and don't narrate the individual \
+             steps you take to do something. Say what happened or what the user should do in plain \
+             spoken terms — e.g. 'I turned on web search' rather than 'I clicked the Search and \
+             tools toggle in Settings'. If a literal name, path, or value is essential, give just \
+             that one item, not the surrounding navigation."
                 .to_string(),
         )
         .await;
