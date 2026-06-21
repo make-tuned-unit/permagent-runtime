@@ -55,6 +55,7 @@ const CATEGORIES = [
     { key: 'tools',       label: 'Tools & MCPs',     icon: 'M14.7 6.3a1 1 0 011.4 0l1.6 1.6a1 1 0 010 1.4l-9 9-3 .6.6-3 9-9.6zM3 21h18' },
     { key: 'models',      label: 'Models',           icon: 'M3 12h4l3-9 4 18 3-9h4' },
     { key: 'keys',        label: 'API keys',         icon: 'M14 8a4 4 0 100 8 4 4 0 000-8zm0 4l-9 9m4-4l3 3' },
+    { key: 'search',      label: 'Search & tools',   icon: 'M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z' },
   ]},
   { group: 'System', items: [
     { key: 'appearance',  label: 'Appearance',       icon: 'M12 3a9 9 0 100 18 9 9 0 000-18zM12 3v18M3 12h18' },
@@ -528,7 +529,15 @@ function KeysPanel() {
       <Section title="Providers">
         <ProvidersSection />
       </Section>
-      <Section title="Search &amp; tools" sub="Web search and other service tools. Add a key, and your agent can search the web.">
+    </div>
+  );
+}
+
+function SearchPanel() {
+  return (
+    <div>
+      <H1 sub="Web search and other service tools. Add a key, and your agent can search the web. Keys are encrypted in your system keychain and never leave your device.">Search &amp; tools</H1>
+      <Section title="Search providers">
         <SearchToolsSection />
       </Section>
     </div>
@@ -640,8 +649,8 @@ function DataPanel() {
 const PANELS: Record<string, (props: PanelProps) => JSX.Element> = {
   agent: PersonaPanel, profile: ProfilePanel, preferences: PreferencesPanel,
   memory: MemoryPanel, autonomy: AutonomyPanel, tools: ToolsPanel,
-  models: ModelsPanel, keys: KeysPanel, appearance: AppearancePanel,
-  shortcuts: ShortcutsPanel, data: DataPanel,
+  models: ModelsPanel, keys: KeysPanel, search: SearchPanel,
+  appearance: AppearancePanel, shortcuts: ShortcutsPanel, data: DataPanel,
 };
 
 // ── Main Settings View ───────────────────────────────────────────────
