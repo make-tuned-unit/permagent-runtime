@@ -5,7 +5,7 @@ import type { CameraMode, AgentState } from './types';
 import { COLORS, STATIONS } from './constants';
 import { WorldSceneContent } from './WorldScene';
 // W3 v2 agent stack (mount swap, bible §5 — replaces legacy WorldCharacters/useAgentStates).
-import { WorldAgents, ROSTER, getAgentPosition, getHenryPresence } from './agents';
+import { WorldAgents, ROSTER, getAgentPosition, getHenryPresence, nudgeAgent } from './agents';
 import { getBankSnapshot } from './shared/tendingBank';
 import { getConstructionProgress } from './agents/construction';
 import { WorldCamera } from './camera/WorldCamera';
@@ -93,8 +93,9 @@ function AgentEvidenceHooks() {
 
 // Bridges the autonomous V2 motion store to the (W4-owned) camera's third-person follow.
 // The V2 agents move themselves; this proxies the selected agent's LIVE position into the
-// AgentState shape the camera reads, refreshed each frame. WASD nudging is gone — V2
-// agents are autonomous (no per-user puppeting), so onMoveAgent is a no-op.
+// AgentState shape the camera reads, refreshed each frame. When zoomed in (third-person),
+// arrow keys / WASD drive the selected agent via nudgeAgent — manual control overrides the
+// agent's autonomous walk while the user holds the keys (see motion.ts nudgeAgent).
 function useSelectedAgentProxy(selectedAgentId: string | null): AgentState | null {
   const ref = useRef<AgentState | null>(null);
   useFrame(() => {
@@ -148,7 +149,12 @@ function SceneContent({
   onClickStation: (id: string) => void;
 }) {
   const selectedAgent = useSelectedAgentProxy(selectedAgentId);
-  const noopMove = useCallback(() => {}, []);
+  const handleMoveAgent = useCallback(
+    (dx: number, dz: number) => {
+      if (selectedAgentId) nudgeAgent(selectedAgentId, dx, dz);
+    },
+    [selectedAgentId],
+  );
 
   return (
     <>
@@ -162,7 +168,7 @@ function SceneContent({
         mode={cameraMode}
         selectedAgent={selectedAgent}
         onModeChange={onModeChange}
-        onMoveAgent={noopMove}
+        onMoveAgent={handleMoveAgent}
       />
       <TourMode cameraMode={cameraMode} />
       {/* THE TURN — day-one wall framing + the 180° reveal (Shift+T). */}

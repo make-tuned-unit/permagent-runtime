@@ -6,6 +6,7 @@
 import { useEffect } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { useAgentRuntimeStates } from '../shared/agentStatus';
+import { useOrchestratorName } from '../shared/useOrchestratorName';
 import type { AgentHudState } from '../shared/palette';
 import { ROSTER } from './roster';
 import { AgentStateSources } from './stateSources';
@@ -25,6 +26,12 @@ export function WorldAgents({ hoveredAgent, onHoverAgent, onSelectAgent }: World
   const states = useAgentRuntimeStates();
   useAgentBehavior(states);
 
+  // Resolve the orchestrator's nameplate through the configured identity (e.g.
+  // "Henry") instead of the roster's hardcoded placeholder — same source the
+  // Chat launcher uses. Only the orchestrator (isHenry) is overridden; the named
+  // sim workers keep their roster names.
+  const orchestratorName = useOrchestratorName();
+
   // Dev-only time-lapse driver (bible §7) — no-op in production; installs the
   // window.__worldTimeLapse handle for demos/evidence of the tending+construction loop.
   useEffect(() => installTimeLapse(), []);
@@ -40,17 +47,23 @@ export function WorldAgents({ hoveredAgent, onHoverAgent, onSelectAgent }: World
       <AgentStateSources />
       {/* Construction sites — scaffolds rise as real banked material is spent (§4). */}
       <ConstructionSite />
-      {ROSTER.map((identity) => (
-        <AgentCharacterV2
-          key={identity.id}
-          identity={identity}
-          hudState={hudFor(identity.id)}
-          hovered={hoveredAgent === identity.id}
-          onPointerOver={() => onHoverAgent(identity.id)}
-          onPointerOut={() => onHoverAgent(null)}
-          onClick={() => onSelectAgent(identity.id)}
-        />
-      ))}
+      {ROSTER.map((identity) => {
+        const resolved =
+          identity.isHenry && orchestratorName
+            ? { ...identity, name: orchestratorName }
+            : identity;
+        return (
+          <AgentCharacterV2
+            key={identity.id}
+            identity={resolved}
+            hudState={hudFor(identity.id)}
+            hovered={hoveredAgent === identity.id}
+            onPointerOver={() => onHoverAgent(identity.id)}
+            onPointerOut={() => onHoverAgent(null)}
+            onClick={() => onSelectAgent(identity.id)}
+          />
+        );
+      })}
     </group>
   );
 }
