@@ -85,6 +85,39 @@ export function setPath(id: string, waypoints: Waypoint[], onArrive?: () => void
   m.walking = m.queue.length > 0;
 }
 
+/**
+ * User puppeting (W4 third-person — arrow keys / WASD). Nudges the selected agent
+ * directly and drops any autonomous path so the manual drive isn't fought by
+ * advanceMotion on the next frame. Honors the Librarian's mezzanine ring lock.
+ *
+ * NOTE (bible §4 autonomy fence): this is deliberate per-user control — while the
+ * user holds the keys the agent's autonomous locomotion is overridden. It resumes
+ * autonomously once a new path is assigned by the behavior/state sources.
+ */
+export function nudgeAgent(id: string, dx: number, dz: number): void {
+  const m = store.get(id);
+  if (!m) return;
+  // Take the wheel: clear the autonomous queue so the nudge sticks.
+  m.queue.length = 0;
+  m.onArrive = null;
+  m.waitUntil = 0;
+  m.engaged = 'none';
+  m.x += dx;
+  m.z += dz;
+  if (dx !== 0 || dz !== 0) {
+    m.targetHeading = Math.atan2(dx, dz);
+    m.walking = true;
+  }
+  // Mezzanine ring lock — never leave the ring (Librarian).
+  if (m.ringLock !== null) {
+    const r = Math.sqrt(m.x * m.x + m.z * m.z);
+    if (r > 0.1) {
+      m.x = (m.x / r) * m.ringLock;
+      m.z = (m.z / r) * m.ringLock;
+    }
+  }
+}
+
 export function stopAgent(id: string): void {
   const m = store.get(id);
   if (!m) return;

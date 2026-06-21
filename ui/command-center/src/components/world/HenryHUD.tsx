@@ -5,6 +5,7 @@ import { api } from '../../lib/api';
 import { HudShell, Section, StatRow, useTabReset } from './HudShell';
 import type { HudTab } from './HudShell';
 import { HenryIdentityTab } from './HenryIdentityTab';
+import { useOrchestratorName } from './shared/useOrchestratorName';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -85,6 +86,7 @@ interface HenryHUDProps {
 export function HenryHUD({ visible, onClose }: HenryHUDProps) {
   const [status, setStatus] = useState<HenryStatus | null>(null);
   const [activeTab, setActiveTab] = useTabReset(visible, 'status');
+  const orchestratorName = useOrchestratorName();
 
   // Poll /api/henry/status at 1s
   useEffect(() => {
@@ -108,7 +110,7 @@ export function HenryHUD({ visible, onClose }: HenryHUDProps) {
 
   const state = status ? ((status.current_state as HenryState) || 'idle') : 'idle';
   const colors = STATE_COLORS[state] ?? STATE_COLORS.idle;
-  const displayName = status?.identity?.name?.toUpperCase() ?? 'ARIA';
+  const displayName = (status?.identity?.name ?? orchestratorName ?? 'AGENT').toUpperCase();
 
   const statusPill = (
     <div style={{
