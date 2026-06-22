@@ -84,6 +84,11 @@ function MezzanineRing() {
         <ringGeometry args={[MEZZ_OUTER_R - 0.03, MEZZ_OUTER_R + 0.03, 64, 1, rStart, rLength]} />
         <primitive object={darkStone} attach="material" />
       </mesh>
+      {/* Rounded handrail cap on top of the balusters */}
+      <mesh position-y={0.82} rotation-x={Math.PI / 2}>
+        <torusGeometry args={[MEZZ_OUTER_R, 0.05, 6, 64]} />
+        <primitive object={darkStone} attach="material" />
+      </mesh>
 
       {/* Cyan glow on outer edge */}
       <mesh position-y={0.02}>

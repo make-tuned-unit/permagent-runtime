@@ -8,6 +8,7 @@ import { Float } from '@react-three/drei';
 import * as THREE from 'three';
 import { COLORS, STATIONS, COLUMN_COUNT, ROTUNDA_RADIUS, DOME_HEIGHT, PLATFORM_RADIUS } from '../../constants';
 import { isPunchedAngle } from '../zones';
+import { HallDetail } from './HallDetail';
 // W4 reactivity seam (bible §7): the colonnade veins brighten with the live
 // working-agent count. The driving signal stays in the atmosphere lane; this is
 // the one cross-lane read W4 flagged in its PR for W1 awareness.
@@ -257,6 +258,16 @@ function StationPedestal({
         <cylinderGeometry args={[0.6, 0.8, pedestalHeight, isPortal ? 8 : 6]} />
         <meshStandardMaterial color={COLORS.primaryMarble} roughness={0.3} metalness={0.1} />
       </mesh>
+      {/* Base plinth + torus molding */}
+      <mesh position-y={0.1}>
+        <cylinderGeometry args={[0.95, 1.05, 0.2, isPortal ? 8 : 6]} />
+        <meshStandardMaterial color={COLORS.marbleVeining} roughness={0.35} metalness={0.15} />
+      </mesh>
+      {/* Cap molding under the icon */}
+      <mesh position-y={pedestalHeight + 0.06}>
+        <cylinderGeometry args={[0.78, 0.62, 0.14, isPortal ? 8 : 6]} />
+        <meshStandardMaterial color={COLORS.marbleVeining} roughness={0.35} metalness={0.15} />
+      </mesh>
       {/* Floating icon */}
       <Float speed={2} rotationIntensity={0.3} floatIntensity={0.5}>
         <group position-y={pedestalHeight + 1.2}>
@@ -335,6 +346,9 @@ export function HallStructure({
       <RotundaFloor />
       <Columns />
       <Dome />
+      {/* Second layer of architectural detail — entablature, fluting, dome ribs,
+          floor inlay, platform rim (areas/hall/HallDetail.tsx). */}
+      <HallDetail />
       <StationPedestals onHoverStation={onHoverStation} onClickStation={onClickStation} />
 
       {/* Orbital arcs — signature dynamic visual */}
