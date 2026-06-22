@@ -498,4 +498,33 @@ mod tests {
         // It appears once (under workers). Exactly one bold occurrence.
         assert_eq!(brief.matches("**Librarian**").count(), 1);
     }
+
+    /// The orchestrator self-describes its real capability — goal orchestration
+    /// and the supervised Decision Inbox — not just bare session management. The
+    /// text is auto-rendered from its `PlatformExtensionDef` (no hand-listed
+    /// descriptor); this locks the enriched copy in place so a future trim of
+    /// the registry strings can't silently strip Henry's self-knowledge of it.
+    #[test]
+    fn orchestrator_self_describes_goal_orchestration_and_decision_inbox() {
+        let brief = SelfKnowledgeBuilder {
+            agent_display_name: "Aria".to_string(),
+            scheduled_job_count: None,
+        }
+        .build();
+        // Rendered once, under Tools (it is a platform extension, not hidden).
+        assert_eq!(brief.matches("**Orchestrator**").count(), 1);
+        // The capability narrative the audited #390 work cares about.
+        assert!(
+            brief.contains("dispatch roadmap goals"),
+            "orchestrator brief must mention goal dispatch"
+        );
+        assert!(
+            brief.contains("Decision Inbox"),
+            "orchestrator brief must mention the Decision Inbox"
+        );
+        assert!(
+            brief.contains("supervised approval"),
+            "orchestrator brief must mention supervised approval"
+        );
+    }
 }

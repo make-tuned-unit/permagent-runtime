@@ -279,12 +279,12 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: orchestrator::EXTENSION_NAME,
                 display_name: "Orchestrator",
                 description:
-                    "Manage agent sessions: list, view, start, send messages, interrupt, and stop agents",
+                    "Orchestrate work across agent sessions: list, view, start, message, interrupt, and stop agents; dispatch roadmap goals to worker agents; and surface decisions in the Decision Inbox for supervised approval",
                 default_enabled: true,
                 unprefixed_tools: false,
                 hidden: false,
                 why_it_matters:
-                    "Start, watch, and steer other agent sessions when one agent is not enough.",
+                    "Run multi-agent work — dispatch goals, track roadmaps, and steer other sessions when one agent is not enough — escalating decisions to the user for approval rather than acting unsupervised.",
                 teaching: &[],
                 client_factory: |ctx| Box::new(orchestrator::OrchestratorClient::new(ctx).unwrap()),
             },
