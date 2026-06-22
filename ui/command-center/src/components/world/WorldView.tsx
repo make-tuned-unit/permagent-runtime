@@ -6,24 +6,17 @@ import { COLORS, STATIONS } from './constants';
 import { WorldSceneContent } from './WorldScene';
 // W3 v2 agent stack (mount swap, bible §5 — replaces legacy WorldCharacters/useAgentStates).
 import { WorldAgents, ROSTER, getAgentPosition, getHenryPresence, nudgeAgent } from './agents';
-import { getBankSnapshot } from './shared/tendingBank';
-import { getConstructionProgress } from './agents/construction';
 import { WorldCamera } from './camera/WorldCamera';
 import { WorldPostProcessing } from './WorldPostProcessing';
 import { WorldHUD } from './WorldHUD';
 import { LibrarianHUD } from './LibrarianHUD';
 import { HenryHUD } from './HenryHUD';
+import { ReaderHUD } from './ReaderHUD';
 import { AgentPicker } from './AgentPicker';
 import { PerfSampler } from './shared/perf';
 import { useWorldVisibility } from './atmosphere/useWorldVisibility';
 import { installDevHarness } from './atmosphere/devHarness';
 import { TourMode } from './camera/TourMode';
-import { TurnFraming } from './camera/TurnFraming';
-import { DescentMode } from './camera/DescentMode';
-import { setDescentStop, getDescentStop, useDescentActive } from './camera/descentState';
-import { getStrata } from './areas/strata/strataState';
-import { StratumPlaque } from './hud/StratumPlaque';
-import { requestCaveLoad } from './areas/strata/CaveSystem';
 
 // DEV-ONLY: window.__worldDev harness for ambience evidence (no-op in prod).
 installDevHarness();
@@ -72,8 +65,7 @@ function AgentEvidenceHooks() {
     if (!import.meta.env.DEV) return;
     const w = window as unknown as Record<string, unknown>;
     w.__worldAgents = { getAgentPosition };
-    // Evidence reads for the tending bank ledger + construction progress + Henry presence.
-    w.__worldBank = () => ({ ...getBankSnapshot(), construction: getConstructionProgress() });
+    // Evidence read for Henry presence.
     w.__worldHenry = () => ({ ...getHenryPresence() });
     const dbg = (w.__worldDebug ?? {}) as Record<string, unknown>;
     dbg.countMeshes = () => {
@@ -89,7 +81,6 @@ function AgentEvidenceHooks() {
     w.__worldDebug = dbg;
     return () => {
       delete w.__worldAgents;
-      delete w.__worldBank;
       delete w.__worldHenry;
     };
   }, [scene]);
@@ -176,10 +167,6 @@ function SceneContent({
         onMoveAgent={handleMoveAgent}
       />
       <TourMode cameraMode={cameraMode} />
-      {/* Carved Cave descent — vertical rail down the throat, stops per stratum. */}
-      <DescentMode cameraMode={cameraMode} onAscend={() => onModeChange('orbit')} />
-      {/* THE TURN — day-one wall framing + the 180° reveal (Shift+T). */}
-      <TurnFraming cameraMode={cameraMode} />
       <WorldPostProcessing />
       {import.meta.env.DEV && <AgentEvidenceHooks />}
     </>
@@ -192,7 +179,7 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [hoveredStation, setHoveredStation] = useState<string | null>(null);
   const [showFps, setShowFps] = useState(false);
-  const [activeHud, setActiveHud] = useState<'henry' | 'librarian' | null>(null);
+  const [activeHud, setActiveHud] = useState<'henry' | 'librarian' | 'reader' | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   // Perf (bible §8 item 2): pause the render loop whenever this view has no
   // layout box — i.e. its workspace tab is hidden (display:none) or the canvas
@@ -200,21 +187,13 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
   // zero-size GL_INVALID_FRAMEBUFFER_OPERATION spam at startup.
   const canvasActive = useWorldVisibility(containerRef);
 
-  // The throat-collar click (entry point B, inside the Canvas) sets descentActive
-  // directly — sync that to cameraMode so the camera actually descends. Orbit-side
-  // ascent clears the flag via handleAscend → handleModeChange.
-  const descentActive = useDescentActive();
-  useEffect(() => {
-    if (descentActive) {
-      setCameraMode((m) => (m === 'descent' ? m : 'descent'));
-    }
-  }, [descentActive]);
-
   const handleSelectAgent = useCallback((id: string) => {
     if (id === 'henry') {
       setActiveHud('henry');
     } else if (id === 'librarian') {
       setActiveHud('librarian');
+    } else if (id === 'reader') {
+      setActiveHud('reader');
     } else {
       setActiveHud(null);
     }
@@ -233,24 +212,6 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
   // TODO: Wire station clicks to real actions in future prompt
   const handleClickStation = useCallback((id: string) => {
     setHoveredStation(id);
-  }, []);
-
-  // ── Carved Cave descent controls (C-nav) ──
-  // Entry point A: the ↓ Descend HUD control. Also force the cave chunk to load
-  // (folds in nav-bug #1: don't rely on the proximity-only trigger).
-  const handleDescend = useCallback(() => {
-    requestCaveLoad();
-    setCameraMode('descent');
-  }, []);
-  const handleAscend = useCallback(() => {
-    setCameraMode('orbit');
-  }, []);
-  // HUD ▲/▼ step the stratum stop; DescentMode reacts to the store change and glides.
-  // Rail stops = verge (0) + one per chamber (1..N) + the floor (N+1) → max index N+1.
-  const handleDescentStep = useCallback((dir: 1 | -1) => {
-    const maxIndex = getStrata().length + 1;
-    const next = Math.max(0, Math.min(maxIndex, getDescentStop() + dir));
-    setDescentStop(next);
   }, []);
 
   // Toggle FPS with ~ key
@@ -343,18 +304,17 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
         showFps={showFps}
         hoveredStation={hoveredStation}
         stationTooltip={stationTooltip}
-        onDescend={handleDescend}
-        onDescentStep={handleDescentStep}
-        onAscend={handleAscend}
       />
-      {/* Descent legibility plaque — leads with real range + counts (knob 1). */}
-      <StratumPlaque cameraMode={cameraMode} />
       <HenryHUD
         visible={activeHud === 'henry'}
         onClose={() => setActiveHud(null)}
       />
       <LibrarianHUD
         visible={activeHud === 'librarian'}
+        onClose={() => setActiveHud(null)}
+      />
+      <ReaderHUD
+        visible={activeHud === 'reader'}
         onClose={() => setActiveHud(null)}
       />
       <AgentPicker

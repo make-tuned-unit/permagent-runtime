@@ -7,6 +7,8 @@
 // Locomotion is straight-line + ease between waypoints. NO pathfinding engine
 // (explicit scope fence, bible §4).
 
+import { STAIR, MEZZ_INNER_R, MEZZ_OUTER_R, MEZZ_HEIGHT } from '../areas/hall/MezzanineLibrary';
+
 export interface Waypoint {
   x: number;
   y: number;
@@ -38,6 +40,62 @@ export interface MotionState {
 const WALK_SPEED = 3; // u/s — existing system speed
 const ARRIVE_DIST = 0.2;
 const TURN_RATE = 8; // rad/s damping factor
+
+// Walkable-surface follow + edge containment for free-roaming agents.
+//
+// Three surfaces: the rotunda ground (y=0, radius ≤ EDGE_R), the spiral staircase, and
+// the mezzanine ring (y=MEZZ_HEIGHT). An agent's Y tracks whichever it's on, so it can
+// walk UP the stairs (autonomous OR third-person puppeted) — and it can't walk off the
+// rotunda edge into the void. The ring-locked Librarian keeps its own projection.
+const EDGE_R = 14.2;
+const STAIR_FLOOR_Y = 5;
+const STAIR_HALF_W = 1.4; // half the step width (steps ~2.6 wide)
+const STAIR_START = STAIR.gapCenter - STAIR.arcSpan; // bottom-of-stairs angle
+const CLIMB_TOL = 2.0; // currentY must be ~this close to the stair surface to be "on" it
+
+/** Stair surface height at (r, ang), or NaN if not over the spiral stair. */
+function stairHeightAt(r: number, ang: number): number {
+  if (r < STAIR.radius - STAIR_HALF_W || r > STAIR.radius + STAIR_HALF_W) return NaN;
+  if (ang < STAIR_START - 0.05 || ang > STAIR.gapCenter + 0.05) return NaN;
+  const t = (ang - STAIR_START) / STAIR.arcSpan;
+  return t * STAIR.height;
+}
+
+/** Walkable height under a free agent. currentY disambiguates the ground/mezzanine
+ *  overlap and whether the agent is actually ON the stairs (climbing) vs under them. */
+function surfaceYAt(x: number, z: number, currentY: number): number {
+  const r = Math.sqrt(x * x + z * z);
+  const sy = stairHeightAt(r, Math.atan2(z, x));
+  if (!Number.isNaN(sy) && Math.abs(currentY - sy) < CLIMB_TOL) return sy; // on the stairs
+  if (r >= MEZZ_INNER_R && r <= MEZZ_OUTER_R && currentY > STAIR_FLOOR_Y) return MEZZ_HEIGHT;
+  return 0; // ground
+}
+
+/** Floor-follow + keep the agent on a walkable surface. Scalar, no allocation.
+ *  Clamps horizontally FIRST (using the level the agent is currently on) so an agent
+ *  high on the stairs/mezzanine can't step inward off the band and drop — then follows
+ *  the surface height at the contained position. */
+function applyLevel(m: MotionState): void {
+  if (m.ringLock !== null) return; // Librarian: own ring projection + fixed Y
+  const r = Math.sqrt(m.x * m.x + m.z * m.z);
+  if (m.y >= STAIR_FLOOR_Y) {
+    // up on the stairs/mezzanine — stay within the ring band (no stepping off into air)
+    const lo = MEZZ_INNER_R + 0.15;
+    const hi = MEZZ_OUTER_R - 0.15;
+    if (r > hi && r > 0.001) {
+      m.x = (m.x / r) * hi;
+      m.z = (m.z / r) * hi;
+    } else if (r < lo && r > 0.001) {
+      m.x = (m.x / r) * lo;
+      m.z = (m.z / r) * lo;
+    }
+  } else if (r > EDGE_R) {
+    // ground / lower stairs — stay on the rotunda floor (can't walk off the edge)
+    m.x = (m.x / r) * EDGE_R;
+    m.z = (m.z / r) * EDGE_R;
+  }
+  m.y = surfaceYAt(m.x, m.z, m.y);
+}
 
 const store = new Map<string, MotionState>();
 
@@ -116,6 +174,8 @@ export function nudgeAgent(id: string, dx: number, dz: number): void {
       m.z = (m.z / r) * m.ringLock;
     }
   }
+  // Floor-follow + can't be puppeted off the rotunda edge.
+  applyLevel(m);
 }
 
 export function stopAgent(id: string): void {
@@ -143,6 +203,9 @@ export function advanceMotion(dt: number): void {
   for (const m of store.values()) {
     // Heading damping always runs (also used for arrival facing).
     m.heading += shortestAngle(m.targetHeading - m.heading) * Math.min(1, TURN_RATE * dt);
+
+    // Floor-follow + edge containment (runs for nudged/idle/moving agents alike).
+    applyLevel(m);
 
     if (m.queue.length === 0) {
       m.walking = false;
@@ -182,8 +245,11 @@ export function advanceMotion(dt: number): void {
     const step = Math.min(WALK_SPEED * dt, dist);
     m.x += (dx / dist) * step;
     m.z += (dz / dist) * step;
-    // Vertical: ease toward waypoint y proportionally to horizontal progress.
-    m.y += (wp.y - m.y) * Math.min(1, step / Math.max(dist, 0.001));
+    // Vertical: the ring-locked Librarian eases toward its waypoint y; everyone else's
+    // Y is owned by the walkable-surface follow (applyLevel, top of loop).
+    if (m.ringLock !== null) {
+      m.y += (wp.y - m.y) * Math.min(1, step / Math.max(dist, 0.001));
+    }
 
     // Mezzanine ring lock — never cut across the void.
     if (m.ringLock !== null) {

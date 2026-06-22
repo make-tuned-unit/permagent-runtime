@@ -383,9 +383,10 @@ function stateChunks(withGems: boolean): ChunkSpec[] {
   if (withGems) {
     // Crown gems — the ONE sanctioned identity/state crossover (bible §4):
     // Henry's gems pick up his current state color so it reads across the room.
+    // Seated on the FRONT of the circlet band (y≈2.0), flanking the centre point.
     chunks.push(
-      { geo: sphere(0.04, 8, 8), p: [0.25, 2.43, 0], bone: 'head' },
-      { geo: sphere(0.04, 8, 8), p: [-0.25, 2.43, 0], bone: 'head' },
+      { geo: sphere(0.03, 10, 10), p: [0.085, 2.02, 0.215], bone: 'head' },
+      { geo: sphere(0.03, 10, 10), p: [-0.085, 2.02, 0.215], bone: 'head' },
     );
   }
   return chunks;
@@ -406,14 +407,22 @@ function visorChunks(): ChunkSpec[] {
 }
 
 function crownChunks(): ChunkSpec[] {
+  // A refined circlet seated ON the upper skull (top ≈ 2.19), not a spiky halo
+  // floating above it: a smooth horizontal band + a fine upper rim, ringed by
+  // alternating tall/short merlon points (the classic crown silhouette).
+  const R = 0.235; // wraps the skull, sitting slightly proud
+  const yBand = 2.0;
   const chunks: ChunkSpec[] = [
-    { geo: torus(0.25, 0.04, 8, 5), p: [0, 2.38, 0], bone: 'head' },
+    { geo: torus(R, 0.02, 10, 32), p: [0, yBand, 0], r: [Math.PI / 2, 0, 0], bone: 'head' },
+    { geo: torus(R - 0.004, 0.009, 8, 32), p: [0, yBand + 0.05, 0], r: [Math.PI / 2, 0, 0], bone: 'head' },
   ];
-  for (let i = 0; i < 5; i++) {
-    const angle = (i / 5) * Math.PI * 2;
+  const N = 8;
+  for (let i = 0; i < N; i++) {
+    const angle = (i / N) * Math.PI * 2;
+    const h = i % 2 === 0 ? 0.17 : 0.1; // alternating merlons
     chunks.push({
-      geo: new THREE.ConeGeometry(0.06, 0.2, 4),
-      p: [Math.cos(angle) * 0.25, 2.53, Math.sin(angle) * 0.25],
+      geo: new THREE.ConeGeometry(0.025, h, 6),
+      p: [Math.cos(angle) * R, yBand + 0.03 + h / 2, Math.sin(angle) * R],
       bone: 'head',
     });
   }

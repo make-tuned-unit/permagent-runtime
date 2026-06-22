@@ -1,37 +1,28 @@
-// Zones — five lazy-loaded rooms off the rotunda (WORLD_VIEW_BIBLE.md §3).
-// Each interior is its own chunk (React.lazy); unloaded zones render only the
-// ≤3-mesh imposter silhouette. Thresholds (portal frames + relocated Stargate)
-// are always loaded so every zone reads from the hall center.
+// Zones — the rotunda's threshold ring (WORLD_VIEW_BIBLE.md §3).
+//
+// History: this once mounted five satellite zone ROOMS (Build/Brain/Lab/Automate/
+// Mesh interiors) — dark blockout boxes hanging off the rotunda that read as junk.
+// Those were dropped. Then a "Thresholds" ring of framed portal openings + floating
+// zone labels remained, but with the rooms gone the labels pointed at nothing ("why
+// does it say Build here?"). Per Jesse: remove ALL of it — frames, floor seams, and
+// labels. The colonnade is now a clean unbroken ring (HallStructure punches only the
+// one opening below) and the single thing kept is the relocated Mesh Stargate.
 
-import { lazy } from 'react';
 import { ZONES } from './zones';
-import { ZoneMount } from './ZoneMount';
-import { Thresholds } from './Thresholds';
-import {
-  BuildImposter,
-  BrainImposter,
-  LabImposter,
-  AutomateImposter,
-  AntechamberImposter,
-} from './imposters';
+import { StargatePortal } from './antechamber/Stargate';
 
-const BuildZone = lazy(() => import('./build/BuildZone'));
-const BrainZone = lazy(() => import('./brain/BrainZone'));
-const LabZone = lazy(() => import('./lab/LabZone'));
-const AutomateZone = lazy(() => import('./automate/AutomateZone'));
-const AntechamberZone = lazy(() => import('./antechamber/AntechamberZone'));
-
-const byId = Object.fromEntries(ZONES.map((z) => [z.id, z]));
+const MESH = ZONES.find((z) => z.id === 'antechamber')!;
 
 export function Zones() {
   return (
     <group>
-      <Thresholds />
-      <ZoneMount zone={byId.build} component={BuildZone} imposter={<BuildImposter />} />
-      <ZoneMount zone={byId.brain} component={BrainZone} imposter={<BrainImposter />} />
-      <ZoneMount zone={byId.lab} component={LabZone} imposter={<LabImposter />} />
-      <ZoneMount zone={byId.automate} component={AutomateZone} imposter={<AutomateImposter />} />
-      <ZoneMount zone={byId.antechamber} component={AntechamberZone} imposter={<AntechamberImposter />} />
+      {/* The relocated Stargate stands in the single colonnade opening (§3 A5). */}
+      <group
+        position={[Math.cos(MESH.angle) * 14.6, 0, Math.sin(MESH.angle) * 14.6]}
+        rotation-y={Math.PI / 2 - MESH.angle}
+      >
+        <StargatePortal />
+      </group>
     </group>
   );
 }

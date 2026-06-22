@@ -4,7 +4,6 @@ import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import type { CameraMode, AgentState } from '../types';
 import { useTourActive } from './tourState';
-import { useDescentActive } from './descentState';
 
 interface WorldCameraProps {
   mode: CameraMode;
@@ -40,9 +39,6 @@ export function WorldCamera({ mode, selectedAgent, onModeChange, onMoveAgent }: 
   // While the tour owns the camera, OrbitControls must unmount (its damped
   // update loop would fight the spline every frame).
   const tourActive = useTourActive();
-  // Descent owns the camera via its own vertical rail (see camera/DescentMode.tsx).
-  // OrbitControls must unmount so its damped loop + polar clamp don't fight the rail.
-  const descentActive = useDescentActive();
   const controlsRef = useRef<React.ComponentRef<typeof OrbitControls>>(null);
   const lastInteraction = useRef(Date.now());
   const transitionRef = useRef<{
@@ -228,7 +224,7 @@ export function WorldCamera({ mode, selectedAgent, onModeChange, onMoveAgent }: 
     lastInteraction.current = Date.now();
   }, []);
 
-  if (mode !== 'orbit' || tourActive || descentActive) {
+  if (mode !== 'orbit' || tourActive) {
     return null;
   }
 

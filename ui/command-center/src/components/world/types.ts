@@ -20,7 +20,7 @@ export interface StationConfig {
   disabled?: boolean;
 }
 
-export type CameraMode = 'orbit' | 'third-person' | 'descent';
+export type CameraMode = 'orbit' | 'third-person';
 
 export interface WorldContextState {
   cameraMode: CameraMode;
