@@ -19,7 +19,6 @@ import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { blockoutMat } from '../blockout';
 import { THROAT } from './strata';
-import { setDescentActive } from '../../camera/descentState';
 
 const CaveInterior = lazy(() => import('./CaveInterior'));
 const MouthChunk = lazy(() => import('./MouthChunk'));
@@ -41,9 +40,9 @@ function isCaveLoadRequested(): boolean {
 }
 
 // Throat-collar imposter: a thin gray ring at the crown floor marking the abyss
-// lip, always loaded (≤3 meshes) so the descent reads before the chunk loads.
-// Carved Cave: clicking the collar enters descent (entry point B) AND forces the
-// interior to load — the real trigger replacing the incidental proximity load.
+// lip, always loaded (≤3 meshes) so the well reads before the chunk loads.
+// Walkable cave: clicking the collar forces the interior to load so the descent
+// path is there to walk down; entering the cave is just walking (no special mode).
 function ThroatCollar() {
   const [cx, , cz] = THROAT.center;
   return (
@@ -54,7 +53,6 @@ function ThroatCollar() {
         onClick={(e) => {
           e.stopPropagation();
           requestCaveLoad();
-          setDescentActive(true);
         }}
         onPointerOver={() => {
           document.body.style.cursor = 'pointer';

@@ -230,3 +230,119 @@ export function maturityAtDepth(y: number, strata: StratumDef[]): number {
   }
   return 0;
 }
+
+// ── WALKABLE CAVE SURFACE (rebuild §5: floors, ramps, floor-follow) ──────────
+// The cave is WALKED now, not railed. The walkable surface is ONE continuous path
+// that descends while spiralling AROUND the throat well: you walk around the well,
+// peer down it, and ramp down into each chamber (the flat landings = the rooms).
+// `floorYAt` returns that surface height. The descent sweeps < 2π, so it stays
+// single-valued in (x,z) (the mouth and the deepest landing never wrap onto each
+// other). Surface height varies only with bearing around the throat (radially flat),
+// so each landing is a level room and ramps tilt only along the walk direction.
+// Analytic, scalar, zero per-frame allocation (the LAW in these files).
+
+/** Inner edge of the walkable annulus — the throat well. Inside this is the open
+ *  abyss (no floor); locomotion soft-clamps agents to the rim (§7 fall = deferred). */
+export const WELL_RADIUS = THROAT.radiusTop; // 4
+/** Outer edge of the walkable annulus once below the chamber ceiling (room radius). */
+export const RAMP_OUTER = 11; // chamber wall is 13→10; keep a margin
+/** Narrow entry-chute outer radius near the surface (fits the rotunda mouth hole). */
+const CHUTE_OUTER = 6;
+/** The descent begins on the rotunda-centre-facing (north) side of the throat — the
+ *  mouth — so the agent steps off the rotunda straight onto the chute (Jesse's call). */
+export const MOUTH_BEARING = -Math.PI / 2; // toward origin / -z from the throat
+/** Spiral direction around the well (CCW). */
+export const DESCENT_DIR = 1;
+/** Total angle the descent sweeps (< 2π keeps floorYAt single-valued). ~310°. */
+export const DESCENT_SWEEP = Math.PI * 1.72;
+/** The mouth wedge cut in the rotunda floor: bearing span + radius, around the throat.
+ *  Used by BOTH the floor-follow (where the rotunda is "open") and the floor-hole mesh
+ *  so they are consistent by construction. */
+export const MOUTH_WEDGE = {
+  b0: MOUTH_BEARING - 0.45,
+  b1: MOUTH_BEARING + 1.05,
+  radius: 7,
+} as const;
+
+const ROTUNDA_Y = 0;
+const ROTUNDA_RADIUS = 15; // mirrors constants.ts (rotunda floor extent)
+const LANDING_FRAC = 0.5; // half of each chamber's arc is flat room; half is the ramp
+
+function smoothstep(t: number): number {
+  const c = t < 0 ? 0 : t > 1 ? 1 : t;
+  return c * c * (3 - 2 * c);
+}
+
+/** Outer radius of the walkable annulus at a given surface height: a narrow chute near
+ *  the surface (so the entry fits the rotunda mouth hole and never clips the floor),
+ *  widening to the full room radius once below the chamber ceiling (~-2.5). */
+export function rampOuterAtY(caveY: number): number {
+  const t = smoothstep((-2.5 - caveY) / 2.5); // 0 at/above -2.5, 1 by -5
+  return CHUTE_OUTER + (RAMP_OUTER - CHUTE_OUTER) * t;
+}
+
+/** Walkable-path height at descent param u∈[0,1] (mouth → deepest floor). Flat landings
+ *  (the rooms) joined by smooth ramps. Pure f(u, band floors). */
+export function cavePathHeight(u: number, strata: StratumDef[]): number {
+  const n = strata.length;
+  if (n === 0) return ROTUNDA_Y;
+  const fu = u < 0 ? 0 : u > 0.999999 ? 0.999999 : u;
+  const seg = Math.min(n - 1, Math.floor(fu * n));
+  const localU = fu * n - seg; // 0..1 within this chamber's arc
+  const prevFloor = seg === 0 ? ROTUNDA_Y : strata[seg - 1].floor;
+  const thisFloor = strata[seg].floor;
+  const rampEnd = 1 - LANDING_FRAC;
+  if (localU < rampEnd) {
+    return prevFloor + (thisFloor - prevFloor) * smoothstep(localU / rampEnd);
+  }
+  return thisFloor; // flat landing (the room)
+}
+
+const TAU = Math.PI * 2;
+
+/** Descent param u∈[0,1] for a horizontal point, or -1 if it is not over the walkable
+ *  path (over the well, outside the room radius, or in the non-walkable back-gap arc). */
+export function caveParamAt(x: number, z: number, strata: StratumDef[]): number {
+  if (strata.length === 0) return -1;
+  const rx = x - THROAT.center[0];
+  const rz = z - THROAT.center[2];
+  const r = Math.sqrt(rx * rx + rz * rz);
+  if (r < WELL_RADIUS - 0.01 || r > RAMP_OUTER + 0.5) return -1;
+  let d = DESCENT_DIR * (Math.atan2(rz, rx) - MOUTH_BEARING);
+  d -= Math.floor(d / TAU) * TAU; // → [0, 2π)
+  if (d > DESCENT_SWEEP) return -1; // the back-gap (a wall, not walkable)
+  const u = d / DESCENT_SWEEP;
+  const caveY = cavePathHeight(u, strata);
+  if (r > rampOuterAtY(caveY) + 0.5) return -1; // outside the chute/room width here
+  return u;
+}
+
+/** Is (x,z) inside the cave-mouth wedge (where the rotunda floor is cut open)? */
+export function inMouthWedge(x: number, z: number): boolean {
+  const rx = x - THROAT.center[0];
+  const rz = z - THROAT.center[2];
+  if (rx * rx + rz * rz > MOUTH_WEDGE.radius * MOUTH_WEDGE.radius) return false;
+  let d = Math.atan2(rz, rx) - MOUTH_WEDGE.b0;
+  d -= Math.floor(d / TAU) * TAU; // angle past b0, in [0, 2π)
+  return d <= MOUTH_WEDGE.b1 - MOUTH_WEDGE.b0;
+}
+
+/**
+ * Walkable surface height under an agent at (x,z), given its current height. The
+ * rotunda floor (y≈0) and the cave path below it overlap in plan view; the agent only
+ * crosses between them through the open mouth, so we disambiguate with `currentY`:
+ * standing on the rotunda keeps you on it until you reach the mouth and descend.
+ * (rebuild §5c — analytic, scalar, zero allocation.)
+ */
+export function floorYAt(x: number, z: number, currentY: number, strata: StratumDef[]): number {
+  if (strata.length === 0) return ROTUNDA_Y;
+  const u = caveParamAt(x, z, strata);
+  if (u < 0) return ROTUNDA_Y; // not over the cave path → rotunda / ground level
+  const caveY = cavePathHeight(u, strata);
+  // Rotunda floor is solid here (footprint overlap, and not the open mouth): the agent
+  // stays on the rotunda until it has actually descended toward the cave surface.
+  const rotundaSolid =
+    x * x + z * z <= ROTUNDA_RADIUS * ROTUNDA_RADIUS && !inMouthWedge(x, z);
+  if (rotundaSolid && currentY > caveY + 1.0) return ROTUNDA_Y;
+  return caveY;
+}

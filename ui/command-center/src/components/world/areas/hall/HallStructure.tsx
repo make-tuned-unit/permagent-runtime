@@ -8,6 +8,7 @@ import { Float } from '@react-three/drei';
 import * as THREE from 'three';
 import { COLORS, STATIONS, COLUMN_COUNT, ROTUNDA_RADIUS, DOME_HEIGHT, PLATFORM_RADIUS } from '../../constants';
 import { isPunchedAngle } from '../zones';
+import { THROAT, MOUTH_WEDGE } from '../strata/strata';
 // W4 reactivity seam (bible §7): the colonnade veins brighten with the live
 // working-agent count. The driving signal stays in the atmosphere lane; this is
 // the one cross-lane read W4 flagged in its PR for W1 awareness.
@@ -28,11 +29,34 @@ function RotundaFloor() {
     []
   );
 
+  // Walkable cave (rebuild §5): the marble disc is cut open at the cave mouth — a
+  // wedge on the rotunda-centre side of the throat — so the agent can walk down into
+  // the cave. The hole is the SAME MOUTH_WEDGE the floor-follow treats as "open", so
+  // the opening you see is exactly where the ground drops away. Shape is built in the
+  // mesh's local XY plane (rotation-x=-π/2 lays it flat): world (x,z) → shape (x,-z).
+  const floorGeometry = useMemo(() => {
+    const shape = new THREE.Shape();
+    shape.absarc(0, 0, ROTUNDA_RADIUS, 0, Math.PI * 2, false);
+    const [tx, , tz] = THROAT.center;
+    const hole = new THREE.Path();
+    hole.moveTo(tx, -tz); // throat centre, in shape space
+    const STEPS = 28;
+    for (let i = 0; i <= STEPS; i++) {
+      const b = MOUTH_WEDGE.b0 + (MOUTH_WEDGE.b1 - MOUTH_WEDGE.b0) * (i / STEPS);
+      const wx = tx + Math.cos(b) * MOUTH_WEDGE.radius;
+      const wz = tz + Math.sin(b) * MOUTH_WEDGE.radius;
+      hole.lineTo(wx, -wz);
+    }
+    hole.lineTo(tx, -tz);
+    shape.holes.push(hole);
+    return new THREE.ShapeGeometry(shape, 64);
+  }, []);
+
   return (
     <group position-y={0.05}>
-      {/* Main marble floor — raised above platform to avoid z-fighting */}
-      <mesh rotation-x={-Math.PI / 2} receiveShadow>
-        <circleGeometry args={[ROTUNDA_RADIUS, 64]} />
+      {/* Main marble floor — raised above platform to avoid z-fighting; cut open at
+          the cave mouth (the throat-side wedge) so the descent is walkable. */}
+      <mesh rotation-x={-Math.PI / 2} receiveShadow geometry={floorGeometry}>
         <primitive object={floorMaterial} attach="material" />
       </mesh>
       {/* Circuit mandala glow lines */}

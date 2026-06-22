@@ -8,6 +8,7 @@
 // blockout mass (BuiltWings) — W2 has no finished-wing prop yet.
 
 import { StrataChambers } from './StrataChambers';
+import { CaveFloors } from './CaveFloors';
 import { Throat } from './Throat';
 import { CaveConstruction } from './CaveConstruction';
 import { BuiltWings } from './ScaffoldMounts';
@@ -15,6 +16,8 @@ import { BuiltWings } from './ScaffoldMounts';
 export default function CaveInterior() {
   return (
     <group>
+      {/* Walkable surface — chamber floors + connecting ramps (rebuild §5). */}
+      <CaveFloors />
       <StrataChambers />
       <Throat />
       <CaveConstruction />
