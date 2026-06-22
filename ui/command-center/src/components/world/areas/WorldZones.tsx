@@ -1,19 +1,13 @@
 // Zones — five lazy-loaded rooms off the rotunda (WORLD_VIEW_BIBLE.md §3).
-// Each interior is its own chunk (React.lazy); unloaded zones render only the
-// ≤3-mesh imposter silhouette. Thresholds (portal frames + relocated Stargate)
-// are always loaded so every zone reads from the hall center.
+// Each interior is its own chunk (React.lazy), loaded when the camera approaches.
+// Thresholds (portal frames + relocated Stargate) are always loaded so every zone
+// reads from the hall center. The old distant "imposter" silhouettes were removed —
+// they read as dark shapes floating outside the rotunda before a zone loaded.
 
 import { lazy } from 'react';
 import { ZONES } from './zones';
 import { ZoneMount } from './ZoneMount';
 import { Thresholds } from './Thresholds';
-import {
-  BuildImposter,
-  BrainImposter,
-  LabImposter,
-  AutomateImposter,
-  AntechamberImposter,
-} from './imposters';
 
 const BuildZone = lazy(() => import('./build/BuildZone'));
 const BrainZone = lazy(() => import('./brain/BrainZone'));
@@ -27,11 +21,11 @@ export function Zones() {
   return (
     <group>
       <Thresholds />
-      <ZoneMount zone={byId.build} component={BuildZone} imposter={<BuildImposter />} />
-      <ZoneMount zone={byId.brain} component={BrainZone} imposter={<BrainImposter />} />
-      <ZoneMount zone={byId.lab} component={LabZone} imposter={<LabImposter />} />
-      <ZoneMount zone={byId.automate} component={AutomateZone} imposter={<AutomateImposter />} />
-      <ZoneMount zone={byId.antechamber} component={AntechamberZone} imposter={<AntechamberImposter />} />
+      <ZoneMount zone={byId.build} component={BuildZone} imposter={null} />
+      <ZoneMount zone={byId.brain} component={BrainZone} imposter={null} />
+      <ZoneMount zone={byId.lab} component={LabZone} imposter={null} />
+      <ZoneMount zone={byId.automate} component={AutomateZone} imposter={null} />
+      <ZoneMount zone={byId.antechamber} component={AntechamberZone} imposter={null} />
     </group>
   );
 }
