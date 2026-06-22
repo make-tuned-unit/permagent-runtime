@@ -120,8 +120,8 @@ function Columns() {
     }
   });
 
-  // Threshold columns are punched out of the colonnade (bible §3); the portal
-  // frames in areas/Thresholds.tsx provide flanking columns in their place.
+  // The colonnade is a full unbroken ring except the single opening where the
+  // Mesh Stargate stands (isPunchedAngle — only the antechamber axis now).
   const columns = useMemo(() => {
     return Array.from({ length: COLUMN_COUNT }, (_, i) => {
       const angle = (i / COLUMN_COUNT) * Math.PI * 2;

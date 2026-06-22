@@ -35,7 +35,7 @@ const baseGeo = new THREE.TorusGeometry(0.82, 0.1, 6, 24);
 
 const COL_R = ROTUNDA_RADIUS - 1; // 14 — colonnade line
 
-/** The surviving colonnade columns (5 of 8 are punched out for zone thresholds). */
+/** The colonnade columns (only the Mesh Stargate opening is punched out now). */
 const COLUMNS: [number, number][] = Array.from({ length: COLUMN_COUNT }, (_, i) => (i / COLUMN_COUNT) * Math.PI * 2)
   .filter((a) => !isPunchedAngle(a))
   .map((a) => [Math.cos(a) * COL_R, Math.sin(a) * COL_R]);

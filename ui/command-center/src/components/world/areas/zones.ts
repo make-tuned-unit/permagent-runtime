@@ -28,8 +28,13 @@ export const ZONES: ZoneDef[] = [
   { id: 'antechamber', label: 'Mesh',     angle: (Math.PI * 5) / 4, centerDist: 26.9, accent: ENV.horizonBlue },
 ];
 
-/** Colonnade angles whose column is punched out for a threshold (matches ZONES). */
-export const PUNCHED_COLUMN_ANGLES = ZONES.map((z) => z.angle);
+/**
+ * Colonnade angles whose column is punched out. The satellite zone thresholds
+ * were removed (the rooms behind them are gone — the direction is to grow the
+ * rotunda itself), so the colonnade is a clean unbroken ring except for the one
+ * opening the Mesh Stargate stands in.
+ */
+export const PUNCHED_COLUMN_ANGLES = ZONES.filter((z) => z.id === 'antechamber').map((z) => z.angle);
 
 /** Radius of the colonnade line (columns sit at ROTUNDA_RADIUS - 1). */
 export const COLONNADE_R = 14;
