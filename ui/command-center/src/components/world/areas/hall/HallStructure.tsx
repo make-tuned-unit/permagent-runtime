@@ -8,7 +8,6 @@ import { Float } from '@react-three/drei';
 import * as THREE from 'three';
 import { COLORS, STATIONS, COLUMN_COUNT, ROTUNDA_RADIUS, DOME_HEIGHT, PLATFORM_RADIUS } from '../../constants';
 import { isPunchedAngle } from '../zones';
-import { THROAT, MOUTH_WEDGE } from '../strata/strata';
 // W4 reactivity seam (bible §7): the colonnade veins brighten with the live
 // working-agent count. The driving signal stays in the atmosphere lane; this is
 // the one cross-lane read W4 flagged in its PR for W1 awareness.
@@ -29,41 +28,11 @@ function RotundaFloor() {
     []
   );
 
-  // Walkable cave (rebuild §5): the marble disc is cut open ONLY at the cave mouth — an
-  // annular notch at the south rim (MOUTH_WEDGE) by the Brain threshold — so the agent
-  // walks across the rotunda (over the still-solid throat top) to the rim and descends.
-  // It is the SAME MOUTH_WEDGE the floor-follow treats as "open", so the opening you see
-  // is exactly where the ground drops away. Shape is in the mesh's local XY plane
-  // (rotation-x=-π/2 lays it flat): world (x,z) → shape (x,-z).
-  const floorGeometry = useMemo(() => {
-    const shape = new THREE.Shape();
-    shape.absarc(0, 0, ROTUNDA_RADIUS, 0, Math.PI * 2, false);
-    const [tx, , tz] = THROAT.center;
-    const STEPS = 28;
-    const hole = new THREE.Path();
-    // outer arc (b0 → b1) at rOuter, then inner arc (b1 → b0) at rInner = annular sector
-    for (let i = 0; i <= STEPS; i++) {
-      const b = MOUTH_WEDGE.b0 + (MOUTH_WEDGE.b1 - MOUTH_WEDGE.b0) * (i / STEPS);
-      const wx = tx + Math.cos(b) * MOUTH_WEDGE.rOuter;
-      const wz = tz + Math.sin(b) * MOUTH_WEDGE.rOuter;
-      if (i === 0) hole.moveTo(wx, -wz);
-      else hole.lineTo(wx, -wz);
-    }
-    for (let i = STEPS; i >= 0; i--) {
-      const b = MOUTH_WEDGE.b0 + (MOUTH_WEDGE.b1 - MOUTH_WEDGE.b0) * (i / STEPS);
-      const wx = tx + Math.cos(b) * MOUTH_WEDGE.rInner;
-      const wz = tz + Math.sin(b) * MOUTH_WEDGE.rInner;
-      hole.lineTo(wx, -wz);
-    }
-    shape.holes.push(hole);
-    return new THREE.ShapeGeometry(shape, 64);
-  }, []);
-
   return (
     <group position-y={0.05}>
-      {/* Main marble floor — raised above platform to avoid z-fighting; cut open at
-          the cave mouth (the throat-side wedge) so the descent is walkable. */}
-      <mesh rotation-x={-Math.PI / 2} receiveShadow geometry={floorGeometry}>
+      {/* Main marble floor — raised above platform to avoid z-fighting */}
+      <mesh rotation-x={-Math.PI / 2} receiveShadow>
+        <circleGeometry args={[ROTUNDA_RADIUS, 64]} />
         <primitive object={floorMaterial} attach="material" />
       </mesh>
       {/* Circuit mandala glow lines */}

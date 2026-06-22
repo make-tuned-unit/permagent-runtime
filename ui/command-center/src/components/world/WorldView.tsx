@@ -6,8 +6,6 @@ import { COLORS, STATIONS } from './constants';
 import { WorldSceneContent } from './WorldScene';
 // W3 v2 agent stack (mount swap, bible §5 — replaces legacy WorldCharacters/useAgentStates).
 import { WorldAgents, ROSTER, getAgentPosition, getHenryPresence, nudgeAgent } from './agents';
-import { getBankSnapshot } from './shared/tendingBank';
-import { getConstructionProgress } from './agents/construction';
 import { WorldCamera } from './camera/WorldCamera';
 import { WorldPostProcessing } from './WorldPostProcessing';
 import { WorldHUD } from './WorldHUD';
@@ -67,8 +65,7 @@ function AgentEvidenceHooks() {
     if (!import.meta.env.DEV) return;
     const w = window as unknown as Record<string, unknown>;
     w.__worldAgents = { getAgentPosition };
-    // Evidence reads for the tending bank ledger + construction progress + Henry presence.
-    w.__worldBank = () => ({ ...getBankSnapshot(), construction: getConstructionProgress() });
+    // Evidence read for Henry presence.
     w.__worldHenry = () => ({ ...getHenryPresence() });
     const dbg = (w.__worldDebug ?? {}) as Record<string, unknown>;
     dbg.countMeshes = () => {
@@ -84,7 +81,6 @@ function AgentEvidenceHooks() {
     w.__worldDebug = dbg;
     return () => {
       delete w.__worldAgents;
-      delete w.__worldBank;
       delete w.__worldHenry;
     };
   }, [scene]);
