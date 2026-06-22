@@ -166,7 +166,6 @@ pub fn spawn_persist_chat_turn(
 pub async fn inject_ambient_context(
     state: &crate::state::AppState,
     agent: &Arc<permagent::agents::Agent>,
-    user_text: &str,
 ) -> Option<permagent::activity::context_builder::Digest> {
     let context_builder = state.context_builder.as_ref()?;
 
@@ -176,16 +175,16 @@ pub async fn inject_ambient_context(
         .and_then(|ing| ing.active_project())
         .map(|ap| ap.wing.clone());
 
-    let recall_query = if user_text.len() > 20 {
-        Some(user_text.to_string())
-    } else {
-        None
-    };
-
+    // NOTE: deliberately probe-only — no `include_recall_query`, so this takes
+    // no user text. Every caller follows inject_ambient_context with
+    // inject_recall(), which runs the recall_cascade on the user text with the
+    // REAL RecognitionContext (this path could only supply an empty one).
+    // Letting the digest recall too was a redundant, inferior second cascade —
+    // ~5-6s of duplicate Brain work on every reply turn. Recall is owned by
+    // inject_recall. See voice pre-stream latency fix.
     let digest_opts = permagent::activity::context_builder::DigestOpts {
         include_probe: true,
         focus_wing,
-        include_recall_query: recall_query,
         ..Default::default()
     };
 

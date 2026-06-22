@@ -719,7 +719,8 @@ async fn stream_reply_with_tts(
     let sid = if let Some(id) = ctx.session_id {
         id.to_string()
     } else {
-        let sessions = state.session_manager().list_sessions().await?;
+        // Lean projection — we only need the most-recent session's id.
+        let sessions = state.session_manager().list_session_summaries().await?;
         sessions
             .first()
             .map(|s| s.id.clone())
@@ -759,26 +760,30 @@ async fn stream_reply_with_tts(
 
     let setup_ms = t_setup.elapsed().as_millis();
 
-    // Ambient context — same as text chat (project focus, probed/recalled memories)
+    // Ambient context (probe-only) and query-driven recall are independent and
+    // both hit the Brain — run them CONCURRENTLY so the pre-stream budget is the
+    // slower of the two, not their sum. They inject under different system-prompt
+    // keys ("ambient_context" vs "memory_recall") so there's no write conflict.
     let t_ctx = std::time::Instant::now();
-    crate::brain_ops::inject_ambient_context(state, &agent, transcript).await;
-    let ctx_ms = t_ctx.elapsed().as_millis();
-
-    let t_recall = std::time::Instant::now();
-    if let Some(ref brain) = state.brain {
+    let ambient_fut = crate::brain_ops::inject_ambient_context(state, &agent);
+    let recall_hits = if let Some(ref brain) = state.brain {
         let recognition_ctx = state.build_recognition_context(Some(&sid));
         let recognition_pool = state.session_manager().pool_clone().await.ok();
-        let n = crate::brain_ops::inject_recall(
+        let recall_fut = crate::brain_ops::inject_recall(
             brain,
             &agent,
             transcript,
             recognition_ctx,
             recognition_pool,
-        )
-        .await;
-        tracing::info!(target: "permagentd::voice", "  recall: {}ms ({} hits)", t_recall.elapsed().as_millis(), n);
-    }
-    let recall_ms = t_recall.elapsed().as_millis();
+        );
+        let (_, n) = tokio::join!(ambient_fut, recall_fut);
+        n
+    } else {
+        ambient_fut.await;
+        0
+    };
+    let ctx_recall_ms = t_ctx.elapsed().as_millis();
+    tracing::info!(target: "permagentd::voice", "  ctx+recall: {}ms ({} recall hits)", ctx_recall_ms, recall_hits);
 
     let session_config = SessionConfig {
         id: sid.clone(),
@@ -792,8 +797,8 @@ async fn stream_reply_with_tts(
     let reply_setup_ms = t_reply.elapsed().as_millis();
     tracing::info!(
         target: "permagentd::voice",
-        "  pipeline: setup={}ms ctx={}ms recall={}ms reply_setup={}ms (total pre-stream={}ms)",
-        setup_ms, ctx_ms, recall_ms, reply_setup_ms,
+        "  pipeline: setup={}ms ctx+recall={}ms reply_setup={}ms (total pre-stream={}ms)",
+        setup_ms, ctx_recall_ms, reply_setup_ms,
         pipeline_start.elapsed().as_millis()
     );
 
