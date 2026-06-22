@@ -15,9 +15,10 @@
 //                          librarian_*error|failed → error, idle until first event.
 //                          /events replays its buffer on connect — replayed
 //                          history (timestamp before page load) is ignored.
-//   Aria/Felix/Nova 'sim' roster from /api/agents; activity is the local wander sim.
-//                          The shared clamp holds them to idle/available — LAW (§4).
-//                          Daemon AgentStateChanged follow-up (issue #288) lifts this.
+//   Reader     'sim'     roster entry with no live status endpoint yet; activity
+//                          is the local wander sim. The shared clamp holds it to
+//                          idle/available — LAW (§4). A real reader-event wire is a
+//                          follow-up (cf. issue #288 daemon AgentStateChanged).
 
 import { useEffect } from 'react';
 import { api, getApiBaseUrl } from '../../../lib/api';
@@ -87,8 +88,8 @@ export function AgentStateSources() {
           // Wire shape: { id, type: "librarian_describe_started", timestamp, payload }
           const type = wireEventType(event);
           // /events replays its buffer on connect — skip pre-mount history so the
-          // Librarian stays "idle until first event" AND the tending bank only ever
-          // counts work seen live (bible §6; tendingBank honesty note).
+          // Librarian stays "idle until first event" and only ever reflects work
+          // seen live.
           const ts = Date.parse(event.timestamp ?? '');
           const replayed = Number.isFinite(ts) && ts < mountedAt;
           const payload = event.payload ?? {};

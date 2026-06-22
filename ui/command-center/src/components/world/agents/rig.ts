@@ -501,7 +501,7 @@ function getSharedMats() {
   };
 }
 
-/** A glowing tablet the Librarian pulls/reshelves during a real describe (bible §5). */
+/** A glowing tablet the Librarian pulls/reshelves during a real describe. */
 export interface TabletMesh extends THREE.Mesh {
   material: THREE.MeshStandardMaterial;
 }

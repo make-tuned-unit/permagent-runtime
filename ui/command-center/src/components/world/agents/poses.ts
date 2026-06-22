@@ -31,8 +31,8 @@ export type PoseKey =
   | 'tending';
 
 /**
- * Tending color — THE_CAVE_vision_bible.md §4: "Gray-warm, unhurried, honest …
- * never amber." A warm low-saturation stone-gray, deliberately distinct from idle's
+ * Tending color — gray-warm, unhurried, honest, never amber. A warm
+ * low-saturation stone-gray, deliberately distinct from idle's
  * cool gray (#8A94A6) and NEVER the amber working color. This is the third agent
  * register; it lives here, not in shared/palette STATE (which is the HUD-color LAW
  * with exactly four semantic states). Tending is ambient, not a HUD claim.

@@ -96,13 +96,10 @@ function Lighting() {
       />
       {/* Cool fill light from opposite side — prevents pure black shadows */}
       <directionalLight position={[-10, DOME_HEIGHT, -6]} intensity={0.25} color={LIGHT.fill} />
-      {/* NOTE (THE CAVE re-mean, §2): the old oculus uplight pointLight was
-          removed here. The world's light now comes from the Mouth (the Mesh
-          portal far above) — MouthShaft's single cold key light replaces this
-          warm uplight, so the atmosphere lane's point-light census stays NET
-          NEUTRAL (was 1 oculus → now 1 Mouth key). The 32→12 scene-wide
-          reduction remains the cross-lane integration job; this lane does not
-          grow the count. */}
+      {/* NOTE: the old oculus uplight pointLight was removed here. The world's
+          light now comes from the Mesh portal far above — MouthShaft's single
+          cold key light replaces this warm uplight, so the atmosphere lane's
+          point-light census stays NET NEUTRAL (was 1 oculus → now 1 portal key). */}
     </>
   );
 }
@@ -391,14 +388,12 @@ export function Atmosphere() {
       <LightShaft reduceMotion={reduceMotion} />
       <DustMotes reduceMotion={reduceMotion} />
 
-      {/* THE CAVE detail pass (bible §9 W4) — staged against bible geography
-          until W1's vertical strata + Mouth aperture land (see each file's
-          header for the plug-in point). All bind to REAL signals or render
-          dormant; none add a shadow caster; the Mouth adds exactly one cold
-          point light (census delta in the PR). */}
-      {/* The Mouth's daylight shaft — THE light of the world (§2, §3). */}
+      {/* Atmosphere detail pass — all bind to REAL signals or render dormant;
+          none add a shadow caster; the Mesh portal adds exactly one cold point
+          light. */}
+      {/* The Mesh portal's daylight shaft — the light of the world. */}
       <MouthShaft />
-      {/* Water + growth — the user; presence bound to real memory count (§3). */}
+      {/* Water + growth — the user; presence bound to real memory count. */}
       <Water />
 
       {/* Depth atmosphere — exponential fog for natural falloff (bible §1:

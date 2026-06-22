@@ -1,8 +1,8 @@
 // The orchestrator's configured display name — resolved from the SAME source
-// ChatLauncher uses (getIdentity().first_name, e.g. "Henry"). The static roster
-// hardcodes a placeholder ('Aria'); resolving through this hook keeps the 3D
-// nameplate, hover tooltip, and Henry HUD from leaking the default persona key.
-// Identity is config, not a literal (bible §4). Module-cached so the five
+// ChatLauncher uses (getIdentity().first_name, e.g. "Henry"). The roster carries
+// a static default name; resolving through this hook keeps the 3D nameplate,
+// hover tooltip, and Henry HUD showing the live configured persona name rather
+// than the default. Identity is config, not a literal. Module-cached so the
 // inhabitants + HUD share a single fetch.
 import { useEffect, useState } from 'react';
 import { api } from '../../../lib/api';

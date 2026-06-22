@@ -20,17 +20,10 @@ const TOUR_DURATION_S = 60;
 const ESTABLISHING_POS = new THREE.Vector3(20, 14, 20);
 const ESTABLISHING_LOOK = new THREE.Vector3(0, 4, 0);
 
-// Zone thresholds per bible §3: Workbench x=+24 (E), Brain z=+24 (S),
-// Automate x=-24 (W), Lab z=-24 (N), Antechamber (-19, -19) NW diagonal.
-// Camera path stays inside the colonnade (r ≈ 8.5, eye height 2.6); the look
-// path leads down each threshold sightline.
-//
-// FOLLOW-UP (THE CAVE §9 W4, blocked on W1): when W1's vertical strata + the
-// throat (the descending Brain abyss, §2) land, extend this spline DOWNWARD —
-// descend through the throat to the deepest chamber (the spring, the oldest
-// rough-hewn work) and rise back up toward the Mouth, so the tour reads the §2
-// "depth is time" climb. The current spline is the crown-level loop only; the
-// downward leg is intentionally deferred until there is strata geometry to frame.
+// Zone thresholds: Workbench x=+24 (E), Brain z=+24 (S), Automate x=-24 (W),
+// Lab z=-24 (N), Antechamber (-19, -19) NW diagonal. Camera path stays inside
+// the colonnade (r ≈ 8.5, eye height 2.6); the look path leads down each
+// threshold sightline. The spline is the rotunda-level loop around the colonnade.
 const POSITION_CURVE = new THREE.CatmullRomCurve3(
   [
     ESTABLISHING_POS.clone(),

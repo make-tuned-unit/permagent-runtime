@@ -48,8 +48,6 @@ specs + Plan Mode for these, NOT terse goals. The slowness is the work.
 
 - **Orchestrator supervised-enable (#9)** — the keystone. You-present. Lights
   up the Decision Inbox. Activates autonomous goal-creation — never auto-run.
-- **Cave Phase 2 (Turn-on-boot) + Phase 3 (Mouth=Mesh, Brain-throat)** — design
-  decisions about the origin experience + the allegory. Spec them; you rule.
 - **Terminal-supervision epic (#399-402)** — esp. #402, the whitelist of safe
   auto-advance gates. Needs YOUR rulings on what's whitelist-safe. The
   supervision boundary is yours to draw.
@@ -59,8 +57,6 @@ specs + Plan Mode for these, NOT terse goals. The slowness is the work.
   state-lifecycle overhaul? Your architecture call.
 - **Voice interrupt / barge-in** — a real primitive; needs you to decide the
   interaction (space-to-stop) + how it composes with the speaking-state reset.
-- **Arrow-key puppeting ↔ cave-descent composition** — already flagged in the
-  bible §8a; the arm/release hand-off design is yours when the descent is spec'd.
 
 ---
 
@@ -73,7 +69,7 @@ Diagnosis/audit. Ran great today as one-shot dispatches. Semi-autonomous.
 - **Stuck speaking/thinking state-lifecycle audit** — find every exit path that
   fails to clear the state. Audit → report → fix.
 - **Any "find all stale X" / reconciliation pass** — the kind that found the
-  cave misread and the dogfooding map. Single dispatch, you read the output.
+  post-#418 World View reconciliation and the dogfooding map. Single dispatch, you read the output.
 
 ---
 

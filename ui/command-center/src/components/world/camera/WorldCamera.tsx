@@ -233,7 +233,7 @@ export function WorldCamera({ mode, selectedAgent, onModeChange, onMoveAgent }: 
       ref={controlsRef}
       args={[camera, gl.domElement]}
       // Wheel-zoom range (nav-bug #2): intentional — 8m keeps the camera outside the
-      // colonnade, 50m frames the whole crown + cave mouth. Confirmed reads as designed.
+      // colonnade, 50m frames the whole crown + Mesh portal. Confirmed reads as designed.
       minDistance={8}
       maxDistance={50}
       minPolarAngle={0.2}
