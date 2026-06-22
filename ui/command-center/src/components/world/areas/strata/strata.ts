@@ -339,10 +339,14 @@ export function floorYAt(x: number, z: number, currentY: number, strata: Stratum
   const u = caveParamAt(x, z, strata);
   if (u < 0) return ROTUNDA_Y; // not over the cave path → rotunda / ground level
   const caveY = cavePathHeight(u, strata);
-  // Rotunda floor is solid here (footprint overlap, and not the open mouth): the agent
-  // stays on the rotunda until it has actually descended toward the cave surface.
+  // The rotunda floor and the cave path overlap in plan. Disambiguate by whether the
+  // agent has committed to the cave — i.e. descended below the rotunda lip. While it is
+  // still up at rotunda level (currentY ≈ 0) over solid floor, keep it on the rotunda;
+  // it only drops in through the open mouth wedge. The mouth wedge is sized so the ramp
+  // is already below COMMIT_Y by the time it ends, so there is no pop back up.
+  const COMMIT_Y = -0.5;
   const rotundaSolid =
     x * x + z * z <= ROTUNDA_RADIUS * ROTUNDA_RADIUS && !inMouthWedge(x, z);
-  if (rotundaSolid && currentY > caveY + 1.0) return ROTUNDA_Y;
+  if (rotundaSolid && currentY > COMMIT_Y) return ROTUNDA_Y;
   return caveY;
 }
