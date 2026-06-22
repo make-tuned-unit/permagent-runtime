@@ -16,7 +16,6 @@ import { PerfSampler } from './shared/perf';
 import { useWorldVisibility } from './atmosphere/useWorldVisibility';
 import { installDevHarness } from './atmosphere/devHarness';
 import { TourMode } from './camera/TourMode';
-import { TurnFraming } from './camera/TurnFraming';
 
 // DEV-ONLY: window.__worldDev harness for ambience evidence (no-op in prod).
 installDevHarness();
@@ -167,8 +166,6 @@ function SceneContent({
         onMoveAgent={handleMoveAgent}
       />
       <TourMode cameraMode={cameraMode} />
-      {/* THE TURN — day-one wall framing + the 180° reveal (Shift+T). */}
-      <TurnFraming cameraMode={cameraMode} />
       <WorldPostProcessing />
       {import.meta.env.DEV && <AgentEvidenceHooks />}
     </>

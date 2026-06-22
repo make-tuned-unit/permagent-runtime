@@ -13,7 +13,6 @@ import { tickAmbience, getAmbienceLevel, setAmbienceFrozen } from './ambience';
 import { startWorldSignals } from './worldSignals';
 import { MouthShaft } from './MouthShaft';
 import { Water } from './Water';
-import { ShadowsOnTheWall } from './ShadowsOnTheWall';
 
 // Bible §1 light formula: one warm key (shadows), one cool fill (no shadows),
 // near-black ambient 0.08. These are the established §1 colors — they are
@@ -401,8 +400,6 @@ export function Atmosphere() {
       <MouthShaft />
       {/* Water + growth — the user; presence bound to real memory count (§3). */}
       <Water />
-      {/* Shadows on the wall — real entities, the day-one state (§2). */}
-      <ShadowsOnTheWall />
 
       {/* Depth atmosphere — exponential fog for natural falloff (bible §1:
           density 0.012 base; the Antechamber biases it +0.004 on approach,
