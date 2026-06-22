@@ -14,13 +14,14 @@ import { THROAT } from './strata';
 import { useStrata } from './strataState';
 import { caveFloorFor } from './strata';
 
-// DoubleSide shaft wall material so the bored throat reads from inside the abyss
-// and from the bridge looking down. Stone tier, matte. Module singleton.
+// BackSide shaft wall so the near side of the throat bore is culled for a third-person
+// camera walking the cave — you see across/down the well, not a wall in your face. The
+// far bore wall still reads from inside the cave (faces point away from the camera).
 const shaftMat = new THREE.MeshStandardMaterial({
   color: ENV.darkStone,
   roughness: 0.95,
   metalness: 0.03,
-  side: THREE.DoubleSide,
+  side: THREE.BackSide,
 });
 
 // Shared ledge geometry — shelf-rings descending the bored upper shaft (bible §5

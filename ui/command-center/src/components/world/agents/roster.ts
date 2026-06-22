@@ -24,7 +24,7 @@ export const MEZZ_Y = 10.15;
 export const ROSTER: AgentIdentity[] = [
   {
     id: 'henry',
-    name: 'Aria',
+    name: 'Henry',
     role: 'orchestrator',
     trimColor: AGENT_TRIM.henry,
     isHenry: true,

@@ -20,6 +20,9 @@ const TRANSITION_DURATION = 1.5;
 // Third-person offset: behind + above the agent
 const TP_OFFSET = new THREE.Vector3(0, 3, 6);
 const TP_LOOK_OFFSET = new THREE.Vector3(0, 1.5, 0);
+// In the cave the camera dives under the rotunda floor with the agent: lower + closer so
+// neither the rotunda floor nor the cavern walls sit between the camera and the agent.
+const TP_OFFSET_CAVE = new THREE.Vector3(0, 1.8, 3.4);
 
 // Scratch vectors — bible §8: zero per-frame allocations in useFrame.
 // Single camera instance, so module-level scratch is safe.
@@ -29,6 +32,7 @@ const _camRight = new THREE.Vector3();
 const _UP = new THREE.Vector3(0, 1, 0);
 const _desiredPos = new THREE.Vector3();
 const _desiredTarget = new THREE.Vector3();
+const _camOffset = new THREE.Vector3();
 
 function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
@@ -195,12 +199,16 @@ export function WorldCamera({ mode, selectedAgent, onModeChange, onMoveAgent }: 
 
     // Third-person follow: smoothly track the agent
     if (mode === 'third-person' && selectedAgent) {
+      // Cave-aware framing: as the agent descends below the rotunda, lerp the camera
+      // lower + closer so it follows under the floor and the walls don't block the view.
+      const depthT = Math.min(1, Math.max(0, -selectedAgent.position.y / 4));
+      _camOffset.lerpVectors(TP_OFFSET, TP_OFFSET_CAVE, depthT);
       _desiredPos
         .set(selectedAgent.position.x, selectedAgent.position.y, selectedAgent.position.z)
-        .add(TP_OFFSET);
+        .add(_camOffset);
       _desiredTarget.set(
         selectedAgent.position.x,
-        selectedAgent.position.y + TP_LOOK_OFFSET.y,
+        selectedAgent.position.y + TP_LOOK_OFFSET.y - 0.4 * depthT,
         selectedAgent.position.z
       );
 

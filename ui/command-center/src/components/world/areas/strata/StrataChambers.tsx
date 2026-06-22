@@ -19,14 +19,15 @@ import { useStrata } from './strataState';
 // chamfered mass per bible §1 silhouette law). Module singleton — one geometry.
 const rockChunk = new THREE.IcosahedronGeometry(1, 0);
 
-// Cavern-wall material: Stone tier (matte, bible §1) but DoubleSide so the open
-// cylinder shells read whether the camera is inside the cavern or outside it
-// (the descent fly-through crosses both). Module singleton — one program.
+// Cavern-wall material: Stone tier (matte, bible §1). BackSide so the wall nearest a
+// third-person camera is culled — you always see INTO the chamber at the walked agent
+// rather than having the near wall block the view (walkable-cave camera fix). From
+// inside the chamber the far wall still reads (its faces point away from the camera).
 const wallMat = new THREE.MeshStandardMaterial({
   color: ENV.darkStone,
   roughness: 0.95,
   metalness: 0.03,
-  side: THREE.DoubleSide,
+  side: THREE.BackSide,
 });
 
 /** Open cylinder shell = the cavern rock wall of one stratum (1 draw call). */
