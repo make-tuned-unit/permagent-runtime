@@ -70,6 +70,7 @@ impl AppConductorClient {
 
     async fn handle_navigate(
         &self,
+        session_id: &str,
         arguments: Option<JsonObject>,
     ) -> std::result::Result<CallToolResult, String> {
         let args: NavigateAppParams = arguments
@@ -89,15 +90,29 @@ impl AppConductorClient {
             )
         })?;
 
-        // Emit the navigation event
-        crate::events::emit(crate::events::app_navigate(
-            &entry.name,
-            &entry.tool_type,
-            &entry.panel_type,
-            args.section.as_deref(),
-            args.state.as_ref(),
-            &args.reason,
-        ));
+        // Speak-then-act seam: if a transport is intercepting navigations for
+        // this session (a voice turn), hand the intent off to it instead of
+        // emitting to the global bus — it will sequence the nav after the
+        // narration has finished playing. Otherwise (text chat) emit as normal,
+        // for instant navigation. `capture` is atomic with this decision.
+        let intent = crate::events::nav_intercept::NavIntent {
+            tab: entry.name.clone(),
+            tool_type: entry.tool_type.clone(),
+            panel_type: entry.panel_type.clone(),
+            section: args.section.clone(),
+            state: args.state.clone(),
+            reason: args.reason.clone(),
+        };
+        if !crate::events::nav_intercept::capture(session_id, intent) {
+            crate::events::emit(crate::events::app_navigate(
+                &entry.name,
+                &entry.tool_type,
+                &entry.panel_type,
+                args.section.as_deref(),
+                args.state.as_ref(),
+                &args.reason,
+            ));
+        }
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Navigating to {}. {}",
@@ -138,13 +153,13 @@ impl McpClientTrait for AppConductorClient {
 
     async fn call_tool(
         &self,
-        _ctx: &ToolCallContext,
+        ctx: &ToolCallContext,
         name: &str,
         arguments: Option<JsonObject>,
         _cancel_token: CancellationToken,
     ) -> std::result::Result<CallToolResult, Error> {
         let result = match name {
-            "navigate_app" => self.handle_navigate(arguments).await,
+            "navigate_app" => self.handle_navigate(&ctx.session_id, arguments).await,
             _ => Err(format!("Unknown tool: {}", name)),
         };
 

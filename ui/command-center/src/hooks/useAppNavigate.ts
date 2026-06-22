@@ -145,7 +145,12 @@ export function useAppNavigate() {
     (async () => {
       try {
         const { listen } = await import('@tauri-apps/api/event');
-        const stop = await listen<{ tool_type?: string; reason?: string }>(
+        const stop = await listen<{
+          tool_type?: string;
+          panel_type?: string;
+          state?: { project_id?: string };
+          reason?: string;
+        }>(
           'app_navigate',
           (ev) => navigateRef.current(ev.payload ?? {}),
         );
