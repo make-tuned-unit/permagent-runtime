@@ -1,31 +1,18 @@
-// Zones — five lazy-loaded rooms off the rotunda (WORLD_VIEW_BIBLE.md §3).
-// Each interior is its own chunk (React.lazy), loaded when the camera approaches.
-// Thresholds (portal frames + relocated Stargate) are always loaded so every zone
-// reads from the hall center. The old distant "imposter" silhouettes were removed —
-// they read as dark shapes floating outside the rotunda before a zone loaded.
+// Zones — the rotunda's threshold ring (WORLD_VIEW_BIBLE.md §3).
+//
+// The five satellite zone ROOMS (Build/Brain/Lab/Automate/Mesh interiors) were
+// blockout "ZoneShell" boxes — dark floor/wall/ceiling slabs hanging off the rotunda
+// that read as junk blocks floating outside it. They are no longer mounted; the
+// direction is to GROW THE ROTUNDA itself, not satellite rooms. What stays is the
+// Thresholds ring: the framed portal openings in the colonnade + their labels + the
+// relocated Mesh Stargate (Thresholds owns the Stargate, so the Mesh portal is kept).
 
-import { lazy } from 'react';
-import { ZONES } from './zones';
-import { ZoneMount } from './ZoneMount';
 import { Thresholds } from './Thresholds';
-
-const BuildZone = lazy(() => import('./build/BuildZone'));
-const BrainZone = lazy(() => import('./brain/BrainZone'));
-const LabZone = lazy(() => import('./lab/LabZone'));
-const AutomateZone = lazy(() => import('./automate/AutomateZone'));
-const AntechamberZone = lazy(() => import('./antechamber/AntechamberZone'));
-
-const byId = Object.fromEntries(ZONES.map((z) => [z.id, z]));
 
 export function Zones() {
   return (
     <group>
       <Thresholds />
-      <ZoneMount zone={byId.build} component={BuildZone} imposter={null} />
-      <ZoneMount zone={byId.brain} component={BrainZone} imposter={null} />
-      <ZoneMount zone={byId.lab} component={LabZone} imposter={null} />
-      <ZoneMount zone={byId.automate} component={AutomateZone} imposter={null} />
-      <ZoneMount zone={byId.antechamber} component={AntechamberZone} imposter={null} />
     </group>
   );
 }
