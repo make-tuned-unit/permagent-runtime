@@ -13,8 +13,9 @@ import {
 } from '../shared/anchors';
 import { STATIONS } from '../constants';
 import { ROSTER, MEZZ_RADIUS, MEZZ_Y, getIdentity, type AgentIdentity } from './roster';
-import { ensureMotion, getMotion, setEngaged, setPath, stopAgent } from './motion';
+import { ensureMotion, getMotion, setEngaged, setPath, stopAgent, type Waypoint } from './motion';
 import { ensurePlaceholderAnchors } from './placeholderAnchors';
+import { STAIR, stairPointAt } from '../areas/hall/MezzanineLibrary';
 
 const WANDER_MIN_MS = 15000;
 const WANDER_MAX_MS = 30000;
@@ -24,8 +25,32 @@ const HENRY_STROLL_MAX_MS = 120000;
 // PLACEHOLDER until W1's Antechamber lands (note for rebase): the NW-diagonal
 // threshold sits on the colonnade line at r≈15; the pause point stays on the
 // platform (r≈19). After W1 lands, extend the path into the room interior.
-const ANTECHAMBER_THRESHOLD = { x: -10.6, z: -10.6 };
-const ANTECHAMBER_PAUSE = { x: -13.4, z: -13.4 };
+// Kept INSIDE the rotunda edge (radius 15) so Henry's stroll stays on the surface.
+const ANTECHAMBER_THRESHOLD = { x: -9.2, z: -9.2 };
+const ANTECHAMBER_PAUSE = { x: -9.9, z: -9.9 };
+
+// A full round trip up the spiral stair to the mezzanine and back down — the climb
+// waypoints carry their Y (motion eases toward it), so the agent walks UP the steps.
+function stairRoundTrip(): Waypoint[] {
+  const N = 8;
+  const up: Waypoint[] = [];
+  const down: Waypoint[] = [];
+  for (let i = 0; i <= N; i++) up.push(stairPointAt(i / N));
+  for (let i = 0; i <= N; i++) down.push(stairPointAt(1 - i / N));
+  const onRing = (a: number, pauseMs: number): Waypoint => ({
+    x: Math.cos(a) * STAIR.radius,
+    y: STAIR.height,
+    z: Math.sin(a) * STAIR.radius,
+    pauseMs,
+  });
+  return [
+    ...up, // ground → mezzanine
+    onRing(STAIR.gapCenter + 0.5, 3000),
+    onRing(STAIR.gapCenter + 1.1, 3500),
+    stairPointAt(1), // back to the stair head
+    ...down, // mezzanine → ground
+  ];
+}
 
 const MEZZ_WAYPOINTS = Array.from({ length: 12 }, (_, i) => {
   const angle = (i / 12) * Math.PI * 2;
@@ -175,7 +200,14 @@ export function useAgentBehavior(states: AgentRuntimeState[]): void {
         }
         if (now >= at) {
           wanderAtRef.current.set(agent.id, now + rand(WANDER_MIN_MS, WANDER_MAX_MS));
-          setPath(agent.id, [pickWanderTarget(agent)]);
+          // Sometimes a ground worker chooses to climb the stairs to the mezzanine
+          // and back; otherwise it wanders the floor. (Henry presides; Librarian is
+          // ring-locked up top already.)
+          if (!agent.isHenry && !agent.mezzanineLocked && Math.random() < 0.3) {
+            setPath(agent.id, stairRoundTrip());
+          } else {
+            setPath(agent.id, [pickWanderTarget(agent)]);
+          }
         }
       }
     }, 1000);

@@ -39,6 +39,22 @@ const WALK_SPEED = 3; // u/s — existing system speed
 const ARRIVE_DIST = 0.2;
 const TURN_RATE = 8; // rad/s damping factor
 
+// Ground agents stay ON the rotunda floor (radius 15) — they can't walk off into the
+// void. Agents up on the stairs/mezzanine (y >= STAIR_FLOOR_Y) are exempt, as is the
+// ring-locked Librarian (it has its own projection).
+const EDGE_R = 14.2;
+const STAIR_FLOOR_Y = 5;
+
+/** Keep a free-roaming ground agent within the rotunda surface. Scalar, no allocation. */
+function clampToRotunda(m: MotionState): void {
+  if (m.ringLock !== null || m.y >= STAIR_FLOOR_Y) return;
+  const r = Math.sqrt(m.x * m.x + m.z * m.z);
+  if (r > EDGE_R) {
+    m.x = (m.x / r) * EDGE_R;
+    m.z = (m.z / r) * EDGE_R;
+  }
+}
+
 const store = new Map<string, MotionState>();
 
 export function ensureMotion(
@@ -116,6 +132,8 @@ export function nudgeAgent(id: string, dx: number, dz: number): void {
       m.z = (m.z / r) * m.ringLock;
     }
   }
+  // Can't be puppeted off the rotunda edge.
+  clampToRotunda(m);
 }
 
 export function stopAgent(id: string): void {
@@ -143,6 +161,9 @@ export function advanceMotion(dt: number): void {
   for (const m of store.values()) {
     // Heading damping always runs (also used for arrival facing).
     m.heading += shortestAngle(m.targetHeading - m.heading) * Math.min(1, TURN_RATE * dt);
+
+    // Keep ground agents on the rotunda (runs for nudged/idle/moving agents alike).
+    clampToRotunda(m);
 
     if (m.queue.length === 0) {
       m.walking = false;

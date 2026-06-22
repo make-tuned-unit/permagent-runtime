@@ -22,6 +22,22 @@ const STAIR_GAP_CENTER = Math.PI * 0.375; // between columns 1 and 2 (67.5 deg)
 const STAIR_GAP_HALF = 0.12;           // small opening, ~3.4 units of arc at r=14
 const SHELF_WALL_HEIGHT = 4;
 
+// Walkable spiral-stair descriptor — shared with agent behavior so an agent's climb
+// path matches the rendered steps exactly. The stair winds from the ground (t=0, at
+// gapCenter - arcSpan) up to the mezzanine floor (t=1, at gapCenter, y=height).
+export const STAIR = {
+  gapCenter: STAIR_GAP_CENTER,
+  arcSpan: Math.PI * 0.6,
+  radius: MEZZ_MID_R,
+  height: MEZZ_HEIGHT,
+} as const;
+
+/** World-space point on the stair centerline at climb fraction t∈[0,1]. */
+export function stairPointAt(t: number): { x: number; y: number; z: number } {
+  const angle = STAIR.gapCenter - STAIR.arcSpan * (1 - t);
+  return { x: Math.cos(angle) * STAIR.radius, y: t * STAIR.height, z: Math.sin(angle) * STAIR.radius };
+}
+
 function isInStairGap(angle: number): boolean {
   let diff = angle - STAIR_GAP_CENTER;
   while (diff > Math.PI) diff -= Math.PI * 2;
@@ -82,9 +98,9 @@ function Staircase() {
   const marble = useMarbleMat();
   const stepCount = 30;  // more steps for the greater height
   const endAngle = STAIR_GAP_CENTER;
-  const arcSpan = Math.PI * 0.6; // wider spiral arc
+  const arcSpan = STAIR.arcSpan; // wider spiral arc (shared with agent climb path)
   const startAngle = endAngle - arcSpan;
-  const stairR = MEZZ_MID_R;
+  const stairR = STAIR.radius;
   const stepWidth = MEZZ_OUTER_R - MEZZ_INNER_R - 0.4;
 
   return (
