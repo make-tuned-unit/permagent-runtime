@@ -248,20 +248,25 @@ export const WELL_RADIUS = THROAT.radiusTop; // 4
 export const RAMP_OUTER = 11; // chamber wall is 13→10; keep a margin
 /** Narrow entry-chute outer radius near the surface (fits the rotunda mouth hole). */
 const CHUTE_OUTER = 6;
-/** The descent begins on the rotunda-centre-facing (north) side of the throat — the
- *  mouth — so the agent steps off the rotunda straight onto the chute (Jesse's call). */
-export const MOUTH_BEARING = -Math.PI / 2; // toward origin / -z from the throat
+/** The cave mouth sits on the SOUTH (Brain) side of the throat, at the rotunda rim — a
+ *  framed entrance you walk to (the throat is the Brain's archive). Jesse's call. */
+export const MOUTH_BEARING = Math.PI / 2; // toward +z / the south rim (Brain side)
 /** Spiral direction around the well (CCW). */
 export const DESCENT_DIR = 1;
 /** Total angle the descent sweeps (< 2π keeps floorYAt single-valued). ~310°. */
 export const DESCENT_SWEEP = Math.PI * 1.72;
-/** The mouth wedge cut in the rotunda floor: bearing span + radius, around the throat.
- *  Used by BOTH the floor-follow (where the rotunda is "open") and the floor-hole mesh
- *  so they are consistent by construction. */
+/** The cave mouth: an ANNULAR sector cut in the rotunda floor at the south rim (NOT a
+ *  pie to the centre). r runs from the well rim out past the rotunda edge, so the shaft
+ *  top + the Brain station (which sits over the throat) stay on solid floor — you walk
+ *  across the rotunda over the covered throat to this rim mouth, then descend. The well
+ *  is seen from INSIDE the cave, never punched open at the rotunda. Shared by the
+ *  floor-follow (where the rotunda is "open") and the floor-hole mesh + portal, so they
+ *  are consistent by construction. */
 export const MOUTH_WEDGE = {
-  b0: MOUTH_BEARING - 0.45,
-  b1: MOUTH_BEARING + 1.05,
-  radius: 7,
+  b0: MOUTH_BEARING - 0.62,
+  b1: MOUTH_BEARING + 0.62,
+  rInner: WELL_RADIUS, // 4 — leaves the shaft top + Brain station covered
+  rOuter: 8, // reaches the rotunda rim (radius 15 from origin ≈ z 17 at the south)
 } as const;
 
 const ROTUNDA_Y = 0;
@@ -317,11 +322,12 @@ export function caveParamAt(x: number, z: number, strata: StratumDef[]): number 
   return u;
 }
 
-/** Is (x,z) inside the cave-mouth wedge (where the rotunda floor is cut open)? */
+/** Is (x,z) inside the cave-mouth annular sector (where the rotunda floor is cut open)? */
 export function inMouthWedge(x: number, z: number): boolean {
   const rx = x - THROAT.center[0];
   const rz = z - THROAT.center[2];
-  if (rx * rx + rz * rz > MOUTH_WEDGE.radius * MOUTH_WEDGE.radius) return false;
+  const r = Math.sqrt(rx * rx + rz * rz);
+  if (r < MOUTH_WEDGE.rInner - 0.5 || r > MOUTH_WEDGE.rOuter) return false;
   let d = Math.atan2(rz, rx) - MOUTH_WEDGE.b0;
   d -= Math.floor(d / TAU) * TAU; // angle past b0, in [0, 2π)
   return d <= MOUTH_WEDGE.b1 - MOUTH_WEDGE.b0;

@@ -29,25 +29,32 @@ function RotundaFloor() {
     []
   );
 
-  // Walkable cave (rebuild §5): the marble disc is cut open at the cave mouth — a
-  // wedge on the rotunda-centre side of the throat — so the agent can walk down into
-  // the cave. The hole is the SAME MOUTH_WEDGE the floor-follow treats as "open", so
-  // the opening you see is exactly where the ground drops away. Shape is built in the
-  // mesh's local XY plane (rotation-x=-π/2 lays it flat): world (x,z) → shape (x,-z).
+  // Walkable cave (rebuild §5): the marble disc is cut open ONLY at the cave mouth — an
+  // annular notch at the south rim (MOUTH_WEDGE) by the Brain threshold — so the agent
+  // walks across the rotunda (over the still-solid throat top) to the rim and descends.
+  // It is the SAME MOUTH_WEDGE the floor-follow treats as "open", so the opening you see
+  // is exactly where the ground drops away. Shape is in the mesh's local XY plane
+  // (rotation-x=-π/2 lays it flat): world (x,z) → shape (x,-z).
   const floorGeometry = useMemo(() => {
     const shape = new THREE.Shape();
     shape.absarc(0, 0, ROTUNDA_RADIUS, 0, Math.PI * 2, false);
     const [tx, , tz] = THROAT.center;
-    const hole = new THREE.Path();
-    hole.moveTo(tx, -tz); // throat centre, in shape space
     const STEPS = 28;
+    const hole = new THREE.Path();
+    // outer arc (b0 → b1) at rOuter, then inner arc (b1 → b0) at rInner = annular sector
     for (let i = 0; i <= STEPS; i++) {
       const b = MOUTH_WEDGE.b0 + (MOUTH_WEDGE.b1 - MOUTH_WEDGE.b0) * (i / STEPS);
-      const wx = tx + Math.cos(b) * MOUTH_WEDGE.radius;
-      const wz = tz + Math.sin(b) * MOUTH_WEDGE.radius;
+      const wx = tx + Math.cos(b) * MOUTH_WEDGE.rOuter;
+      const wz = tz + Math.sin(b) * MOUTH_WEDGE.rOuter;
+      if (i === 0) hole.moveTo(wx, -wz);
+      else hole.lineTo(wx, -wz);
+    }
+    for (let i = STEPS; i >= 0; i--) {
+      const b = MOUTH_WEDGE.b0 + (MOUTH_WEDGE.b1 - MOUTH_WEDGE.b0) * (i / STEPS);
+      const wx = tx + Math.cos(b) * MOUTH_WEDGE.rInner;
+      const wz = tz + Math.sin(b) * MOUTH_WEDGE.rInner;
       hole.lineTo(wx, -wz);
     }
-    hole.lineTo(tx, -tz);
     shape.holes.push(hole);
     return new THREE.ShapeGeometry(shape, 64);
   }, []);

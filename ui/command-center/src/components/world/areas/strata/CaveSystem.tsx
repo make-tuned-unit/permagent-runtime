@@ -19,6 +19,7 @@ import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { blockoutMat } from '../blockout';
 import { THROAT } from './strata';
+import { CaveMouthPortal } from './CaveMouthPortal';
 
 const CaveInterior = lazy(() => import('./CaveInterior'));
 const MouthChunk = lazy(() => import('./MouthChunk'));
@@ -161,6 +162,8 @@ export function CaveSystem() {
   return (
     <group>
       <ThroatCollar />
+      {/* Framed entrance at the south rim — the purposeful "way down" (always loaded). */}
+      <CaveMouthPortal />
       {loadDescent && (
         <Suspense fallback={null}>
           <CaveInterior />
