@@ -1,8 +1,7 @@
-// Henry's presence — THE_CAVE_vision_bible.md §4: "Henry never lifts a stone — he walks
-// the site, inspects, presides; light gathers slightly where he stands." Henry's character
-// publishes his live world position here every frame (from his own useFrame); W4's
-// atmosphere reads it to gather light at his feet. This is the W3 → W4 coordinate the brief
-// calls for: "publish a Henry-position read from your module if W4 needs it."
+// Henry's presence — Henry never lifts a stone; he walks the rotunda, inspects,
+// presides, and light gathers slightly where he stands. Henry's character
+// publishes his live world position here every frame (from his own useFrame); the
+// atmosphere reads it to gather light at his feet.
 //
 // A plain mutable record (no React, no allocation) so W4 can sample it in a useFrame
 // without a re-render. Henry's own AgentCharacterV2 light gather (the small pool at his

@@ -15,18 +15,19 @@ use std::sync::{LazyLock, Mutex};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-/// Self-knowledge descriptor for the World View surface — the live visualization
-/// fed by this event bus over `/events`. Co-located here; aggregated by
-/// `crate::agents::self_knowledge`. Static — always-on, editorial-only.
+/// Self-knowledge descriptor for the World View surface — the live 3D
+/// visualization fed by this event bus over `/events`. Co-located here;
+/// aggregated by `crate::agents::self_knowledge`. Static — always-on,
+/// editorial-only.
 pub const WORLD_VIEW_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
     crate::agents::self_knowledge::FeatureDescriptor {
         id: "world_view",
         display_name: "World View",
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
         what_it_does:
-            "A live visualization of your internal activity — memory recall, worker state, and events — streamed over /events",
+            "A live 3D rotunda ringed by a colonnade where your three agents — Henry (the orchestrator), the Librarian, and the Reader — are embodied and animate from your real memory recall, worker state, and events streamed over /events",
         why_it_matters:
-            "The user can watch what you are doing in real time, so your background activity is visible to them",
+            "The user can watch your background activity in real time, pick any agent from the roster to follow in third-person and open its live HUD (the Reader and Librarian each have one), and even drive the followed agent on foot with the arrow keys or WASD",
         state_source: crate::agents::self_knowledge::StateSource::Static,
         teaching: &[],
     };

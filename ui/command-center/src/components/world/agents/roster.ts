@@ -50,7 +50,7 @@ export const ROSTER: AgentIdentity[] = [
     // The Reader — local OCR/document-ingest pipeline (#336/#342). Backend worker
     // gains a ground-floor presence here; renders + click-to-zoom for free via the
     // ROSTER fan-out (WorldAgents + behavior.ensureMotion + the camera follow proxy).
-    // No crown (isHenry:false). State is sim-ambient for v1 like aria/felix/nova;
+    // No crown (isHenry:false). State is sim-ambient for v1;
     // a real reader-event live wire is a follow-up.
     id: 'reader',
     name: 'The Reader',

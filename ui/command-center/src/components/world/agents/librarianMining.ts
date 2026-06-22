@@ -1,6 +1,6 @@
-// Librarian mining/describe loop — THE_CAVE_vision_bible.md §5 (Brain/Archive):
-// "The Librarian rides the gantry: pull a dim tablet, it brightens violet in its hands
-// (a real describe event), reshelve it glowing." This module is the loop's state, driven
+// Librarian mining/describe loop — the Librarian rides the gantry: pull a dim
+// tablet, it brightens violet in its hands (a real describe event), reshelve it
+// glowing. This module is the loop's state, driven
 // ONLY by real LibrarianDescribe* events (noteDescribe is called from stateSources.tsx's
 // /events binding; replayed history is filtered there). No event ⇒ no tablet (the rig
 // shows the tablet only while mining).

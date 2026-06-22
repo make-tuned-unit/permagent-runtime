@@ -1,28 +1,23 @@
-// W4 atmosphere — WATER + GROWTH (THE CAVE bible §3).
+// Atmosphere — WATER + GROWTH.
 //
-// "Water + growing things — *the user.* The spring rises in the deepest chamber
-//  on the Brain's first memory. Ingestion is rainfall; recall is the river
-//  running. Trees grow where memory pools. Agents never cut living things, never
-//  dam water — they build around, route alongside, frame." (§3)
+// Water + growing things represent the user: the spring rises on the Brain's
+// first memory, ingestion is rainfall, recall is the river running. Trees grow
+// where memory pools. The agents build around water, never dam it.
 //
-// HONESTY (bible §8): water IS the user, so its PRESENCE is bound to a REAL
-// signal — the Brain's memory count (atmosphere/worldSignals → /api/brain/graph).
+// HONESTY: water IS the user, so its PRESENCE is bound to a REAL signal — the
+// Brain's memory count (atmosphere/worldSignals → /api/brain/graph).
 //   • memoryCount === 0  → the spring is DORMANT: dry stone, no flow, no pools.
 //     An honest render of a never-used Brain. We do NOT fake a trickle.
 //   • memoryCount  >  0  → the spring has risen (the first memory). Flow strength
-//     and pool extent scale with the count (slow/§4: a coarse, log-ish map).
+//     and pool extent scale with the count (a coarse, log-ish map).
 //   • flow level (recall-as-river + rainfall) modulates river brightness/ripple,
-//     event-driven from real /events. No recall_* event exists yet — see the gap
-//     filed in the PR; the river currently runs on describe/task activity.
+//     event-driven from real /events. No recall_* event exists yet — the river
+//     currently runs on describe/task activity.
 //
-// W1 DEPENDENCY (noted): the literal spring sits in the deepest chamber and the
-// river runs the floor channels — those strata are W1's vertical blockout, not
-// yet merged. STAGED against bible geography: until the strata land, the spring +
-// channel + crown pools render at hall-floor level (the throat of the cave drops
-// from here). When W1's strata land, the y-offsets plug into the chamber floors.
+// The spring + channel + crown pools render at rotunda-floor level.
 //
-// LAW: bible §8 — zero per-frame allocations; reduceMotion → static water (no
-// ripple, no flow animation); InstancedMesh for the repeated pool/grove props.
+// LAW: zero per-frame allocations; reduceMotion → static water (no ripple, no
+// flow animation); InstancedMesh for the repeated pool/grove props.
 
 import { useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
@@ -38,17 +33,17 @@ import { InstancedProp, type InstanceTransform } from '../shared/instancing';
 const WATER = {
   surface: '#1E5A6E',
   glow: ENV.neonCyan,
-  // Growth: cool moss/young-foliage — answered nature (§3 high stratum).
+  // Growth: cool moss/young-foliage — answered nature.
   foliage: '#3E6B57',
 } as const;
 
-// Staged geography (hall-floor level; W1 strata plug y-offsets later).
+// Geography at rotunda-floor level.
 const SPRING_POS: [number, number, number] = [0, 0.06, ROTUNDA_RADIUS - 3.5];
 // The river runs a floor channel from the spring toward the hall center.
 const CHANNEL_FROM = new THREE.Vector3(0, 0.05, ROTUNDA_RADIUS - 3.5);
 const CHANNEL_TO = new THREE.Vector3(0, 0.05, 2);
 
-/** Coarse, slow map from real memory count → water "fullness" in [0,1]. §4: slow. */
+/** Coarse, slow map from real memory count → water "fullness" in [0,1]. */
 function fullnessFromMemories(count: number): number {
   if (count <= 0) return 0;
   // log-ish: 1 memory already reads; saturates around ~200 memories (months).
@@ -56,7 +51,7 @@ function fullnessFromMemories(count: number): number {
 }
 
 /**
- * The spring: a small still pool where water breaks through the stone (§3). Its
+ * The spring: a small still pool where water breaks through the stone. Its
  * radius and glow scale with fullness; at fullness 0 it does not render at all.
  * Ripple animation modulated by the event flow level; static under reduceMotion.
  */
@@ -160,7 +155,7 @@ function River({ reduceMotion }: { reduceMotion: boolean }) {
 }
 
 /**
- * Crown pools + groves (§3 high stratum: "groves at still pools, a canopy"). A
+ * Crown pools + groves — groves at still pools, a canopy. A
  * few still pools ringing the hall, each with a small grove cone (young tree).
  * They appear progressively as the Brain matures (more memories → more groves),
  * answered nature framing the climb. Instanced (one draw call each). Static

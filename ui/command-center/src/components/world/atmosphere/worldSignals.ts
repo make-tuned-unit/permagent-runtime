@@ -1,11 +1,13 @@
-// W4 atmosphere — REAL Brain/event signals for the cave detail pass.
+// Atmosphere — REAL Brain/event signals for the atmosphere detail pass.
 //
-// THE CAVE bible §3 + §8 honesty law: water IS the user; every glow is a real
-// daemon event; no faked activity, no simulated peers. This module is the
-// honesty boundary for the atmosphere lane's content bindings — the spring, the
-// shadows-on-the-wall silhouettes, recall-as-river and rainfall-on-ingestion all
-// read from HERE and nowhere else, so the rule "render the geometry dormant when
-// there is no real signal" reaches the pixels regardless of caller.
+// Honesty law: water IS the user; every glow is a real daemon event; no faked
+// activity, no simulated peers. This module is the honesty boundary for the
+// atmosphere lane's content bindings — the spring, recall-as-river and
+// rainfall-on-ingestion all read from HERE and nowhere else, so the rule
+// "render the geometry dormant when there is no real signal" reaches the pixels
+// regardless of caller. (The day-one silhouette entities below currently have no
+// consumer — their renderer, ShadowsOnTheWall, was removed in #418; the data is
+// left in place as a follow-up cleanup, not load-bearing.)
 //
 // Inputs (all READ-ONLY, all already consumed by the command-center frontend —
 // this lane adds NO daemon code and NO new endpoints):
@@ -19,7 +21,7 @@
 //     activity; a dedicated `recall` event is the proposed daemon follow-up.
 //   • no entity_added event — the silhouette set refreshes on the graph poll.
 //
-// LAW (bible §8): zero per-frame allocations downstream. This module exposes a
+// LAW: zero per-frame allocations downstream. This module exposes a
 // plain-getter snapshot (getWorldSignals) for useFrame loops and a
 // useSyncExternalStore hook for React consumers. The store is updated only on
 // real network events / polls, never per frame.
@@ -28,7 +30,7 @@ import { useSyncExternalStore } from 'react';
 import { apiFetch, getApiBaseUrl } from '../../../lib/api';
 import { wireEventType } from '../../../lib/wireEvent';
 
-/** A real Brain entity, shadow-projected onto the cave wall (bible §2 "The Turn"). */
+/** A real Brain entity (formerly projected as a day-one shadow silhouette). */
 export interface SignalEntity {
   id: string;
   /** Spectral entity type (person, project, tool, …) — drives silhouette shape. */
@@ -55,7 +57,7 @@ export interface WorldSignals {
   loaded: boolean;
 }
 
-const SILHOUETTE_CAP = 12; // bible budget: shadows are cheap; a near-empty Brain shows few
+const SILHOUETTE_CAP = 12; // budget cap on the (currently unconsumed) silhouette entity set
 
 let signals: WorldSignals = {
   entityCount: 0,
@@ -91,7 +93,7 @@ export function useWorldSignals(): WorldSignals {
 // We decay on a coarse interval rather than per frame so this module owns no
 // useFrame loop. A memory_added bumps flow to 1; describe/task activity bumps it
 // to ~0.6; it eases back to 0 over a few seconds — recall-as-river running, then
-// the channel settling. Bible §1: agents never dam water; this only modulates
+// the channel settling. The agents never dam water; this only modulates
 // brightness/ripple, never gates presence (presence = memoryCount).
 const FLOW_DECAY_PER_TICK = 0.04;
 const FLOW_TICK_MS = 120;
@@ -100,13 +102,13 @@ function bumpFlow(to: number): void {
   if (to > signals.flow) publish({ flow: Math.min(1, to) });
 }
 
-// --- Brain graph poll (presence: spring + shadows) ---
+// --- Brain graph poll (presence: spring) ---
 interface BrainGraphResponse {
   entities?: { id: string; type: string; name: string }[];
   memories?: unknown[];
 }
 
-const GRAPH_POLL_MS = 60_000; // matches useBrainData's cadence — slow is sacred (§4)
+const GRAPH_POLL_MS = 60_000; // matches useBrainData's cadence — slow is sacred
 
 let started = false;
 let pollTimer: ReturnType<typeof setInterval> | undefined;
@@ -118,8 +120,8 @@ let closed = false;
 
 // Event-driven graph refresh: an entity_added/_updated means the graph changed.
 // Coalesce bursts (one annotation can surface several entities) into a single
-// poll ~400ms later, so shadows appear within ~½s instead of waiting up to 60s.
-// The slow GRAPH_POLL_MS timer stays as the reconciliation backstop (§4).
+// poll ~400ms later, so updates appear within ~½s instead of waiting up to 60s.
+// The slow GRAPH_POLL_MS timer stays as the reconciliation backstop.
 function scheduleGraphRefresh(): void {
   if (entityRefreshTimer) return;
   entityRefreshTimer = setTimeout(() => {
@@ -181,9 +183,9 @@ function connectEvents(): void {
       // recall signal (#324) — the river flows on actual retrieval, not a proxy.
       bumpFlow(1);
     } else if (type === 'entity_added' || type === 'entity_updated') {
-      // Shadows-on-the-wall (#325): a real entity surfaced on the graph. Refresh
-      // now (event-driven) instead of waiting up to 60s; the API stays the source
-      // of truth for entity shape/dedup/caps.
+      // A real entity surfaced on the graph (#325). Refresh now (event-driven)
+      // instead of waiting up to 60s; the API stays the source of truth for
+      // entity shape/dedup/caps.
       scheduleGraphRefresh();
     } else if (
       type.startsWith('librarian_describe') ||

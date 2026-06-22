@@ -25,9 +25,8 @@ export const stoneDark = new THREE.MeshStandardMaterial({
 });
 
 /**
- * Raw cave rock (Cave §3 living-cave stratum): rougher and flatter than the
- * composed dark stone — banked rubble, boulders, crude scaffold footings, the
- * primal stratum's unhewn mass. Same darkStone hex (no new palette entry);
+ * Raw rock: rougher and flatter than the composed dark stone — banked rubble,
+ * boulders, crude footings, unhewn mass. Same darkStone hex (no new palette entry);
  * the roughness change carries the "lived-in, tool-marks-left-honest" read.
  */
 export const stoneRough = new THREE.MeshStandardMaterial({
@@ -78,11 +77,11 @@ export const lightViolet = new THREE.MeshStandardMaterial({
 });
 
 /**
- * Slim amber WORK-light (Cave §4 construction kit). Warm but DIM — these are
- * the scaffold's work-lamps and the Librarian's lamp aesthetic, deliberately
- * below the §1 focal ceiling so a scaffold reads as one dark mass + one accent.
+ * Slim amber WORK-light. Warm but DIM — the Librarian's lamp aesthetic,
+ * deliberately below the focal ceiling so a fixture reads as one dark mass +
+ * one accent.
  *
- * SEMANTIC NOTE (bible §8 / Cave §4): this is a WORK-light, not HUD amber.
+ * SEMANTIC NOTE: this is a WORK-light, not HUD amber.
  * HUD amber (STATE.working) is "working-for-the-user" and belongs to AGENTS only
  * (visors, crown gems, station ambience). A lamp on a crane is just a lamp.
  */
@@ -95,7 +94,7 @@ export const lightAmberWork = new THREE.MeshStandardMaterial({
 });
 
 /**
- * Tending register (Cave §4 "the third agent state"): gray-warm, unhurried,
+ * Tending register (the third agent state): gray-warm, unhurried,
  * NEVER amber. Survey lines, banked-material markers, the tending sledge's
  * load-glow. A cool desaturated value lerped off idle gray so it reads as
  * "ambient site activity", distinct from both HUD amber and intelligence cyan.

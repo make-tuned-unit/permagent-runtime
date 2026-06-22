@@ -254,7 +254,7 @@ function MezzanineLibraryContents() {
           scene's 20 point lights for a barely-perceptible 0.2-intensity wash. They
           are now emissive glow fixtures (additive core + faint halo): the same warm
           dotted-ring read, at zero per-pixel light cost. The hall's real fill comes
-          from the §1 directional pair + the Mouth key. */}
+          from the directional pair + the Mesh portal key. */}
       {Array.from({ length: 8 }, (_, i) => {
         const angle = (i / 8) * Math.PI * 2;
         const x = Math.cos(angle) * MEZZ_MID_R;
