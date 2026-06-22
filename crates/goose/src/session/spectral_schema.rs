@@ -28,7 +28,11 @@ use tracing::{info, warn};
 /// v10 -> v11 -> v12, each step base-independent (idempotent additive
 /// `CREATE TABLE IF NOT EXISTS`), so a v10 DB runs v11 then v12 and a v11 DB
 /// runs only v12. `migrate_v11_to_v12` applies it.
-pub const SPECTRAL_SCHEMA_VERSION: i32 = 12;
+///
+/// v13 = file-intake inbox (inbox_files). New-tables-only, additive and
+/// base-independent; browser downloads land as a file on disk plus a metadata
+/// row here (epic #392 / #393). `migrate_v12_to_v13` applies it.
+pub const SPECTRAL_SCHEMA_VERSION: i32 = 13;
 
 /// Initialize the Spectral database schema from scratch.
 /// Creates all tables, indexes, FTS virtual tables, triggers, and views.
@@ -769,6 +773,10 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // CRM people table (schema v12). Idempotent; shared with migrate_v11_to_v12.
     apply_people_schema(pool).await?;
 
+    // File-intake inbox table (schema v13). Idempotent; shared with
+    // migrate_v12_to_v13.
+    apply_inbox_schema(pool).await?;
+
     info!(
         "Spectral schema v{} initialized successfully",
         SPECTRAL_SCHEMA_VERSION
@@ -927,15 +935,74 @@ pub async fn migrate_v11_to_v12(pool: &Pool<Sqlite>) -> Result<()> {
 
     apply_people_schema(pool).await?;
 
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (12)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v12 (CRM people)");
+
+    Ok(())
+}
+
+/// Migrate an existing database to the file-intake inbox schema (schema v13).
+///
+/// Additive and base-version independent (purely `CREATE TABLE IF NOT EXISTS` /
+/// `CREATE INDEX IF NOT EXISTS`), so it applies cleanly over any earlier base.
+/// Records v13 in `schema_version`.
+pub async fn migrate_v12_to_v13(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v12 -> v13 (file-intake inbox)");
+
+    apply_inbox_schema(pool).await?;
+
     sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (?)")
         .bind(SPECTRAL_SCHEMA_VERSION)
         .execute(pool)
         .await?;
     info!(
-        "Spectral schema migrated to v{} (CRM people)",
+        "Spectral schema migrated to v{} (file-intake inbox)",
         SPECTRAL_SCHEMA_VERSION
     );
 
+    Ok(())
+}
+
+/// Apply the file-intake inbox schema: the `inbox_files` table, one metadata row
+/// per file that lands in the Permagent inbox (`~/.permagent/inbox/`).
+///
+/// Idempotent — every statement uses IF NOT EXISTS — so it is safe on fresh
+/// installs (via `init_spectral_db`) and as a migration step alike. `disk_path`
+/// is stored relative to [`crate::config::paths::Paths::inbox_dir`]. `project_id`
+/// is nullable: FK propagation (epic #70) is deferred, so v1 inbox rows are
+/// unscoped and a later pass can attribute them to a project.
+pub async fn apply_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool.begin().await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS inbox_files (
+            id            TEXT PRIMARY KEY,
+            filename      TEXT NOT NULL,
+            original_url  TEXT,
+            content_type  TEXT,
+            size_bytes    INTEGER,
+            disk_path     TEXT NOT NULL,
+            status        TEXT NOT NULL DEFAULT 'received'
+                          CHECK (status IN ('received','ingested','routed','deleted')),
+            project_id    TEXT REFERENCES projects(id) ON DELETE SET NULL,
+            created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_inbox_files_created ON inbox_files(created_at DESC)",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_inbox_files_status ON inbox_files(status)")
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
     Ok(())
 }
 
@@ -1671,7 +1738,6 @@ mod people_schema_tests {
 
         assert!(people_table_exists(&pool).await);
         assert_eq!(current_version(&pool).await, SPECTRAL_SCHEMA_VERSION);
-        assert_eq!(SPECTRAL_SCHEMA_VERSION, 12);
     }
 
     /// migrate_v11_to_v12 is base-independent: it must add the people table and
@@ -1706,6 +1772,97 @@ mod people_schema_tests {
 
             // Idempotent: a second run is a no-op, not an error.
             migrate_v11_to_v12(&pool).await.unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+mod inbox_schema_tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn mem_pool() -> Pool<Sqlite> {
+        SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap()
+    }
+
+    async fn current_version(pool: &Pool<Sqlite>) -> i32 {
+        sqlx::query_scalar::<_, i32>("SELECT MAX(version) FROM schema_version")
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    async fn inbox_columns(pool: &Pool<Sqlite>) -> Vec<String> {
+        sqlx::query_scalar::<_, String>("SELECT name FROM pragma_table_info('inbox_files')")
+            .fetch_all(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn fresh_install_has_inbox_at_v13() {
+        let pool = mem_pool().await;
+        init_spectral_db(&pool).await.unwrap();
+
+        assert_eq!(current_version(&pool).await, SPECTRAL_SCHEMA_VERSION);
+        assert_eq!(SPECTRAL_SCHEMA_VERSION, 13);
+
+        let cols = inbox_columns(&pool).await;
+        for expected in [
+            "id",
+            "filename",
+            "original_url",
+            "content_type",
+            "size_bytes",
+            "disk_path",
+            "status",
+            "project_id",
+            "created_at",
+        ] {
+            assert!(
+                cols.iter().any(|c| c == expected),
+                "inbox_files missing column {expected}; got {cols:?}"
+            );
+        }
+    }
+
+    /// migrate_v12_to_v13 is base-independent: it must add inbox_files and stamp
+    /// v13 over any earlier recorded base.
+    #[tokio::test]
+    async fn migration_is_base_independent() {
+        for base in [10, 11, 12] {
+            let pool = mem_pool().await;
+            sqlx::query(
+                "CREATE TABLE schema_version (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO schema_version (version) VALUES (?)")
+                .bind(base)
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            assert!(inbox_columns(&pool).await.is_empty(), "base v{base}: pre");
+
+            migrate_v12_to_v13(&pool).await.unwrap();
+
+            assert!(
+                !inbox_columns(&pool).await.is_empty(),
+                "base v{base}: table"
+            );
+            assert_eq!(current_version(&pool).await, 13, "base v{base}: version");
+
+            // Idempotent: a second run is a no-op, not an error.
+            migrate_v12_to_v13(&pool).await.unwrap();
         }
     }
 }

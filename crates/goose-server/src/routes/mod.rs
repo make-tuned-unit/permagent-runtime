@@ -17,6 +17,7 @@ pub mod findings;
 pub mod gateway;
 pub mod henry_status;
 pub mod identity;
+pub mod inbox;
 pub mod integrations;
 pub mod librarian;
 #[cfg(feature = "local-inference")]
@@ -100,6 +101,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(reader::routes(state.clone()))
         .merge(brain::routes(state.clone()))
         .merge(people::routes(state.clone()))
+        .merge(inbox::routes(state.clone()))
         .merge(dashboard::routes(state.clone()))
         .merge(identity::routes(state.clone()))
         .merge(workers::routes(state.clone()))
