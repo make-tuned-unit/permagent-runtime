@@ -1,3 +1,13 @@
+> ⚠️ **OBSOLETE — HISTORICAL REFERENCE ONLY.** The cave/strata World View
+> described in this document was superseded by the rotunda/colonnade World View
+> in #418, which removed the cave and its satellite zone-rooms. This vision bible
+> is retained for historical context only and no longer describes the live world.
+> For the current source of truth, see
+> [docs/design/WORLD_VIEW_BIBLE.md](./WORLD_VIEW_BIBLE.md). The original body is
+> preserved unchanged below.
+
+---
+
 # THE CAVE — World View Vision Bible
 
 **Status:** LOCKED — output of the Jesse × Fable art-direction session, 2026-06-11.
