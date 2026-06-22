@@ -1,41 +1,33 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { COLORS } from './constants';
-import { api } from '../../lib/api';
-
-interface Agent {
-  id: string;
-  name: string;
-  role: string;
-  source: string;
-}
+import { ROSTER } from './agents';
+import { useOrchestratorName } from './shared/useOrchestratorName';
 
 interface AgentPickerProps {
   selectedAgentId: string | null;
   onSelectAgent: (id: string) => void;
 }
 
+// The dropdown lists exactly the world's real inhabitants (the ROSTER): Henry the
+// orchestrator, the Reader, and the Librarian. Sourcing from the ROSTER — rather than
+// the daemon's /api/agents — guarantees every entry maps to a 3D agent the camera can
+// fly to and a HUD that exists, so selecting always "brings you to that agent."
 export function AgentPicker({ selectedAgentId, onSelectAgent }: AgentPickerProps) {
-  const [agents, setAgents] = useState<Agent[]>([]);
   const [open, setOpen] = useState(false);
+  const orchestratorName = useOrchestratorName();
 
-  useEffect(() => {
-    api.getAgents()
-      .then(res => setAgents(res.agents))
-      .catch((err: unknown) => console.warn('[AgentPicker] Failed to fetch agents:', err));
-  }, []);
+  // Henry's live persona name overrides the roster fallback; others use their role.
+  const displayName = (id: string, fallback: string) =>
+    id === 'henry' ? orchestratorName ?? fallback : fallback;
+  const roleLabel = (role: string) => (role === 'orchestrator' ? 'orchestrator' : 'worker');
 
-  if (agents.length === 0) return null;
+  const selected = ROSTER.find((a) => a.id === selectedAgentId);
 
   return (
     <div style={containerStyle}>
-      <button
-        onClick={() => setOpen(!open)}
-        style={triggerStyle}
-      >
+      <button onClick={() => setOpen(!open)} style={triggerStyle}>
         <span style={{ fontSize: 11, color: COLORS.primaryMarble }}>
-          {selectedAgentId
-            ? agents.find(a => a.id === selectedAgentId)?.name ?? 'Select agent'
-            : 'Select agent'}
+          {selected ? displayName(selected.id, selected.name) : 'Select agent'}
         </span>
         <span style={{ fontSize: 9, color: '#6B7280', marginLeft: 6 }}>
           {open ? '▲' : '▼'}
@@ -44,7 +36,7 @@ export function AgentPicker({ selectedAgentId, onSelectAgent }: AgentPickerProps
 
       {open && (
         <div style={dropdownStyle}>
-          {agents.map(agent => (
+          {ROSTER.map((agent) => (
             <button
               key={agent.id}
               onClick={() => {
@@ -53,19 +45,21 @@ export function AgentPicker({ selectedAgentId, onSelectAgent }: AgentPickerProps
               }}
               style={{
                 ...itemStyle,
-                background: agent.id === selectedAgentId
-                  ? 'rgba(0,213,255,0.12)'
-                  : 'transparent',
+                background: agent.id === selectedAgentId ? 'rgba(0,213,255,0.12)' : 'transparent',
               }}
             >
-              <span style={{
-                fontWeight: agent.id === selectedAgentId ? 600 : 400,
-                color: agent.id === selectedAgentId ? COLORS.neonCyan : COLORS.primaryMarble,
-              }}>
-                {agent.name}
+              <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {/* Identity trim swatch — matches the agent's toga trim in-world. */}
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: agent.trimColor }} />
+                <span style={{
+                  fontWeight: agent.id === selectedAgentId ? 600 : 400,
+                  color: agent.id === selectedAgentId ? COLORS.neonCyan : COLORS.primaryMarble,
+                }}>
+                  {displayName(agent.id, agent.name)}
+                </span>
               </span>
               <span style={{ fontSize: 9, color: '#6B7280', marginLeft: 8 }}>
-                {agent.source === 'persona' ? 'primary' : 'extension'}
+                {roleLabel(agent.role)}
               </span>
             </button>
           ))}
@@ -100,7 +94,7 @@ const dropdownStyle: React.CSSProperties = {
   bottom: '100%',
   left: 0,
   marginBottom: 4,
-  minWidth: 180,
+  minWidth: 200,
   background: 'rgba(10, 14, 26, 0.92)',
   backdropFilter: 'blur(16px)',
   border: `1px solid ${COLORS.marbleVeining}25`,

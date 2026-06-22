@@ -1,5 +1,9 @@
-// Agent roster — identity config for the six inhabitants. WORLD_VIEW_BIBLE.md §2, §4.
-// Identity (trim color, crown) is fixed here; state NEVER repaints identity trim.
+// Agent roster — identity config for the three real inhabitants: Henry the
+// orchestrator, the Reader (local OCR/ingest), and the Librarian. WORLD_VIEW_BIBLE.md
+// §2, §4. Identity (trim color, crown) is fixed here; state NEVER repaints identity
+// trim. The decorative sim agents (Aria/Felix/Nova) were removed — only agents that
+// map to a real backend worker live here, so the AgentPicker, camera-follow, and HUDs
+// all key off the same set.
 
 import { AGENT_TRIM } from '../shared/palette';
 
@@ -30,36 +34,6 @@ export const ROSTER: AgentIdentity[] = [
     isHenry: true,
     mezzanineLocked: false,
     home: { x: 0, y: 0, z: 0 },
-    weathering: 0,
-  },
-  {
-    id: 'aria',
-    name: 'Aria',
-    role: 'agent',
-    trimColor: AGENT_TRIM.aria,
-    isHenry: false,
-    mezzanineLocked: false,
-    home: { x: 4, y: 0, z: 2 },
-    weathering: 0,
-  },
-  {
-    id: 'felix',
-    name: 'Felix',
-    role: 'agent',
-    trimColor: AGENT_TRIM.felix,
-    isHenry: false,
-    mezzanineLocked: false,
-    home: { x: -3, y: 0, z: -4 },
-    weathering: 0,
-  },
-  {
-    id: 'nova',
-    name: 'Nova',
-    role: 'agent',
-    trimColor: AGENT_TRIM.nova,
-    isHenry: false,
-    mezzanineLocked: false,
-    home: { x: -5, y: 0, z: 3 },
     weathering: 0,
   },
   {
