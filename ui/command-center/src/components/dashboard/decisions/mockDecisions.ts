@@ -16,6 +16,7 @@ import type {
   DecisionHistoryResponse,
   DecisionsClient,
   DecisionsResponse,
+  DispatchEvidenceData,
   EvidenceDigestData,
   HistoryItem,
 } from './types';
@@ -148,6 +149,22 @@ const PENDING: Decision[] = [
 ];
 
 // ── Evidence digests (served via the goal card in the real daemon) ─────────
+
+const DISPATCH_EVIDENCE: Record<string, DispatchEvidenceData> = {
+  'goal-queue-saving': {
+    worktree_path: '/Users/jesse/dev/.permagent-goal-worktrees/cli-f69980d2',
+    baseline_commit: 'a1190cd',
+    head_commit: '7d4f9ea',
+    commits: ['7d4f9ea Create thread: Canada renewable energy and emissions targets'],
+    diffstat:
+      ' src/data/sources.ts            |  12 +\n src/data/threads/the-switch.ts | 1140 +++++++++\n src/data/threads/index.ts      |   7 +',
+    files_changed: 3,
+    insertions: 1159,
+    deletions: 0,
+    push_target: 'origin/main',
+    worker_summary: 'Created the thread with 3 sources, committed and pushed to origin/main.',
+  },
+};
 
 const DIGESTS: Record<string, EvidenceDigestData> = {
   'goal-queue-saving': {
@@ -340,5 +357,13 @@ export const mockDecisionsClient: DecisionsClient = {
   async evidence(_projectId: string, goalId: string): Promise<EvidenceDigestData | null> {
     await sleep(LATENCY_MS);
     return DIGESTS[goalId] ?? null;
+  },
+
+  async dispatchEvidence(
+    _projectId: string,
+    goalId: string,
+  ): Promise<DispatchEvidenceData | null> {
+    await sleep(LATENCY_MS);
+    return DISPATCH_EVIDENCE[goalId] ?? null;
   },
 };

@@ -28,6 +28,7 @@ import type {
   DecisionHistoryResponse,
   DecisionsClient,
   DecisionsResponse,
+  DispatchEvidenceData,
   EvidenceDigestData,
   HistoryItem,
   InboxSummary,
@@ -117,6 +118,22 @@ export const realDecisionsClient: DecisionsClient = {
       return null;
     } catch {
       return null; // missing card / no verification yet — evidence simply absent
+    }
+  },
+
+  async dispatchEvidence(projectId: string, goalId: string): Promise<DispatchEvidenceData | null> {
+    try {
+      const card = await decisionsFetch<{ metadataJson?: Record<string, unknown> | null }>(
+        `/api/projects/${encodeURIComponent(projectId)}/cards/${encodeURIComponent(goalId)}`,
+      );
+      const ev = card.metadataJson?.dispatch_evidence as DispatchEvidenceData | undefined;
+      // Minimal shape check before handing to the renderer.
+      if (ev && Array.isArray(ev.commits) && typeof ev.diffstat === 'string') {
+        return ev;
+      }
+      return null;
+    } catch {
+      return null; // missing card / no dispatch evidence — simply absent
     }
   },
 };

@@ -15,22 +15,30 @@ import { useEffect, useState } from 'react';
 import { font, radius, ease } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { decisionsClient } from './client';
-import type { EvidenceDigestData } from './types';
+import type { DispatchEvidenceData, EvidenceDigestData } from './types';
 import { formatUsd } from './format';
 
 export function EvidenceDigest({ projectId, goalId }: { projectId: string; goalId: string }) {
   const { colors } = useTheme();
   const [state, setState] = useState<
-    { kind: 'loading' } | { kind: 'none' } | { kind: 'ready'; digest: EvidenceDigestData }
+    | { kind: 'loading' }
+    | { kind: 'none' }
+    | { kind: 'ready'; digest: EvidenceDigestData | null; dispatch: DispatchEvidenceData | null }
   >({ kind: 'loading' });
 
   useEffect(() => {
     let cancelled = false;
     setState({ kind: 'loading' });
-    decisionsClient
-      .evidence(projectId, goalId)
-      .then(digest => {
-        if (!cancelled) setState(digest ? { kind: 'ready', digest } : { kind: 'none' });
+    // Two independent producers, fetched together: the deterministic dispatch
+    // evidence (always present for a worktree+push goal) and the L2 verifier
+    // digest (present only once the local grader has run).
+    Promise.all([
+      decisionsClient.evidence(projectId, goalId),
+      decisionsClient.dispatchEvidence(projectId, goalId),
+    ])
+      .then(([digest, dispatch]) => {
+        if (cancelled) return;
+        setState(digest || dispatch ? { kind: 'ready', digest, dispatch } : { kind: 'none' });
       })
       .catch(() => { if (!cancelled) setState({ kind: 'none' }); });
     return () => { cancelled = true; };
@@ -50,7 +58,77 @@ export function EvidenceDigest({ projectId, goalId }: { projectId: string; goalI
       </div>
     );
   }
-  return <DigestView digest={state.digest} />;
+  return (
+    <>
+      {state.dispatch && <DispatchEvidenceView ev={state.dispatch} />}
+      {state.digest && <DigestView digest={state.digest} />}
+    </>
+  );
+}
+
+// ── Dispatch evidence (deterministic proof-of-work) ─────────────────────────
+
+function DispatchEvidenceView({ ev }: { ev: DispatchEvidenceData }) {
+  const { colors, reduceMotion } = useTheme();
+  const [showDetails, setShowDetails] = useState(false);
+
+  const pushed = !!ev.push_target;
+  const head = ev.head_commit ?? '(unknown)';
+  const headline =
+    ev.commits.length === 0
+      ? 'Worker exited cleanly but produced no commits.'
+      : `Commit ${head} ${pushed ? `pushed to ${ev.push_target}` : 'committed to worktree (not pushed)'}`;
+  const diffLine = `${ev.files_changed} file${ev.files_changed === 1 ? '' : 's'} changed, +${ev.insertions} / -${ev.deletions}`;
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={{
+        borderRadius: radius.sm, border: `1px solid ${colors.border}`,
+        padding: '10px 14px', fontFamily: font.body, fontSize: 12,
+        color: colors.textMuted, display: 'flex', flexDirection: 'column', gap: 6,
+      }}>
+        <SummaryRow ok={ev.commits.length > 0} text={headline} />
+        <div style={{ color: colors.text, fontWeight: 500 }}>{diffLine}</div>
+        <button
+          onClick={() => setShowDetails(o => !o)}
+          style={{
+            alignSelf: 'flex-start', background: 'none', border: 'none',
+            color: showDetails ? colors.cyan : colors.textDim,
+            fontSize: 11, fontFamily: font.body, cursor: 'pointer', padding: 0,
+            transition: reduceMotion ? 'none' : `color 150ms ${ease.out}`,
+          }}
+        >
+          {showDetails ? 'Hide proof of work ▾' : 'Show proof of work ▸'}
+        </button>
+      </div>
+
+      {showDetails && (
+        <pre style={{
+          margin: '8px 0 0', borderRadius: radius.sm,
+          background: colors.codeBg, padding: '12px 14px',
+          fontFamily: font.mono, fontSize: 11, lineHeight: 1.6,
+          color: colors.textMuted,
+          whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
+        }}>
+          <Section label="COMMITS" color={colors.codeText} />
+          {ev.commits.length ? ev.commits.join('\n') : '(none above baseline)'}
+          {'\n\n'}
+          <Section label="DIFF" color={colors.codeText} />
+          {ev.diffstat.trim() || diffLine}
+          {'\n\n'}
+          <Section label="WORKTREE" color={colors.codeText} />
+          {`${ev.worktree_path}\nbaseline: ${ev.baseline_commit}`}
+          {ev.worker_summary.trim() && (
+            <>
+              {'\n\n'}
+              <Section label="WORKER SUMMARY" color={colors.codeText} />
+              {ev.worker_summary.trim()}
+            </>
+          )}
+        </pre>
+      )}
+    </div>
+  );
 }
 
 function DigestView({ digest }: { digest: EvidenceDigestData }) {

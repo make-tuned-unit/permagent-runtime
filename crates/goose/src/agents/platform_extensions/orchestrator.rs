@@ -704,7 +704,38 @@ impl OrchestratorClient {
                 Err(e) => goal_engine::GoalOutcome::Failed(format!("Worker task panicked: {}", e)),
             };
             let result = match outcome {
-                goal_engine::GoalOutcome::Success => {
+                goal_engine::GoalOutcome::Success(evidence) => {
+                    // Layer 1: persist deterministic proof-of-work to the goal
+                    // card BEFORE the completion handler runs, so the
+                    // approve_review decision it writes can cite it and the
+                    // Evidence panel + Discuss-with-Henry can read it. Best-effort
+                    // — a metadata-write failure must not block completion.
+                    if let Some(ev) = evidence {
+                        match serde_json::to_value(&ev) {
+                            Ok(v) => {
+                                if let Err(e) = cards::set_goal_dispatch_evidence(
+                                    &tracker_pool,
+                                    &tracker_card_id,
+                                    v,
+                                )
+                                .await
+                                {
+                                    tracing::warn!(
+                                        target: "permagentd::brain",
+                                        "Failed to persist dispatch evidence for card {}: {}",
+                                        tracker_card_id,
+                                        e
+                                    );
+                                }
+                            }
+                            Err(e) => tracing::warn!(
+                                target: "permagentd::brain",
+                                "Failed to serialize dispatch evidence for card {}: {}",
+                                tracker_card_id,
+                                e
+                            ),
+                        }
+                    }
                     handle_goal_completion(
                         &tracker_pool,
                         &tracker_card_id,
@@ -2433,6 +2464,108 @@ pub static GOAL_REVIEW_HOOK: std::sync::OnceLock<GoalReviewHook> = std::sync::On
 /// needs_human_attention. Otherwise leaves in InProgress for retry.
 ///
 /// Gracefully no-ops if the card is no longer in InProgress (manual intervention).
+/// The canned approve_review detail used when no deterministic evidence is
+/// available (in-process subagent, pre-evidence goals).
+fn review_detail_base(card_id: &str) -> String {
+    format!(
+        "Worker for goal {} reported success; the goal moved to Review. \
+         Inspect the work and answer approve (Review → Complete) or \
+         reject (Review → InProgress for rework).",
+        card_id
+    )
+}
+
+/// Build the approve_review decision detail, citing deterministic proof-of-work
+/// when the tracker persisted `dispatch_evidence`.
+fn build_review_detail(card_id: &str, evidence: Option<&serde_json::Value>) -> String {
+    let base = review_detail_base(card_id);
+    match evidence.and_then(format_dispatch_evidence_brief) {
+        Some(proof) => format!("{}\n\n{}", base, proof),
+        None => base,
+    }
+}
+
+/// One-line proof-of-work for the Decision Inbox detail. `None` when the value
+/// isn't recognizable [`goal_engine::GoalEvidence`].
+fn format_dispatch_evidence_brief(evidence: &serde_json::Value) -> Option<String> {
+    let ev: goal_engine::GoalEvidence = serde_json::from_value(evidence.clone()).ok()?;
+    if ev.commits.is_empty() {
+        return Some(
+            "Proof of work: worker exited cleanly but produced no commits in the worktree."
+                .to_string(),
+        );
+    }
+    let head = ev.head_commit.as_deref().unwrap_or("(unknown)");
+    let where_ = match ev.push_target.as_deref() {
+        Some(target) => format!("pushed to {}", target),
+        None => "worktree only, not pushed".to_string(),
+    };
+    Some(format!(
+        "Proof of work: commit {} ({}) — {} file{} changed, +{} / -{}.",
+        head,
+        where_,
+        ev.files_changed,
+        if ev.files_changed == 1 { "" } else { "s" },
+        ev.insertions,
+        ev.deletions,
+    ))
+}
+
+/// Full deterministic proof-of-work block for the Discuss-with-Henry context —
+/// gives Henry the worktree path, exact commit SHA(s), push target, diffstat,
+/// and the worker's own summary, plus the rule that keeps him off the stale
+/// local `main`. `None` when the value isn't recognizable evidence.
+pub fn format_dispatch_evidence_full(evidence: &serde_json::Value) -> Option<String> {
+    let ev: goal_engine::GoalEvidence = serde_json::from_value(evidence.clone()).ok()?;
+    let mut b = String::from(
+        "Verification evidence for this goal (deterministic, captured from the worker's own \
+         git worktree at completion — this is ground truth; trust it over re-running git):\n",
+    );
+    b.push_str(&format!("- Worktree: {}\n", ev.worktree_path));
+    b.push_str(&format!(
+        "- Baseline (diff from here): {}\n",
+        ev.baseline_commit
+    ));
+    match ev.push_target.as_deref() {
+        Some(target) => b.push_str(&format!("- Pushed to: {}\n", target)),
+        None => b.push_str("- Push state: committed to the worktree, NOT pushed\n"),
+    }
+    if ev.commits.is_empty() {
+        b.push_str("- Commits: none above baseline (worker made no commits)\n");
+    } else {
+        b.push_str(&format!(
+            "- Commits ({}, newest first):\n",
+            ev.commits.len()
+        ));
+        for c in &ev.commits {
+            b.push_str(&format!("    {}\n", c));
+        }
+    }
+    b.push_str(&format!(
+        "- Diffstat: {} file{} changed, +{} / -{}\n",
+        ev.files_changed,
+        if ev.files_changed == 1 { "" } else { "s" },
+        ev.insertions,
+        ev.deletions,
+    ));
+    if !ev.diffstat.trim().is_empty() {
+        b.push_str(&format!("{}\n", ev.diffstat.trim()));
+    }
+    if !ev.worker_summary.trim().is_empty() {
+        b.push_str(&format!(
+            "- Worker's own summary of what it did:\n{}\n",
+            ev.worker_summary.trim()
+        ));
+    }
+    b.push_str(
+        "\nIMPORTANT for your review: the work lives in the worktree above and/or on the pushed \
+         remote ref — NOT on the local `main` of the project checkout, which is stale under this \
+         dispatch model. If you inspect git, use `git show <commit-sha>` or run inside the worktree \
+         path; never conclude the work is missing from `git log` on local main.",
+    );
+    Some(b)
+}
+
 pub async fn handle_goal_completion(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     card_id: &str,
@@ -2499,6 +2632,21 @@ pub async fn handle_goal_completion(
                 } else {
                     headline
                 };
+                // Layer 1: cite the deterministic evidence the tracker just
+                // persisted, so the decision itself carries proof-of-work
+                // (commit SHA, push target, diffstat) rather than a bare
+                // "reported success". The full structured evidence lives on the
+                // card metadata (`dispatch_evidence`) where the Evidence panel
+                // and Discuss-with-Henry read it; the decision payload carries
+                // only the schema's `completion_check` line (ApproveReviewPayload
+                // is deny_unknown_fields). Absent evidence (in-process subagent,
+                // pre-existing goals) falls back to the original wording / `{}`.
+                let evidence = card.metadata_json.get("dispatch_evidence");
+                let detail = build_review_detail(card_id, evidence);
+                let payload = match evidence.and_then(format_dispatch_evidence_brief) {
+                    Some(proof) => serde_json::json!({ "completion_check": proof }),
+                    None => serde_json::json!({}),
+                };
                 let _ = decisions::create_decision(
                     pool,
                     decisions::NewDecision {
@@ -2506,13 +2654,8 @@ pub async fn handle_goal_completion(
                         goal_id: Some(card_id.to_string()),
                         project_id: Some(project_id.to_string()),
                         headline: Some(headline),
-                        detail: Some(format!(
-                            "Worker for goal {} reported success; the goal moved to Review. \
-                             Inspect the work and answer approve (Review → Complete) or \
-                             reject (Review → InProgress for rework).",
-                            card_id
-                        )),
-                        payload: serde_json::json!({}),
+                        detail: Some(detail),
+                        payload,
                         ..Default::default()
                     },
                 )
@@ -2916,6 +3059,100 @@ mod tests {
             Some("review")
         );
         assert!(updated.metadata_json.get("completed_at").is_some());
+    }
+
+    /// Layer 1: when the tracker has persisted `dispatch_evidence`, the
+    /// approve_review decision the completion handler writes must carry it —
+    /// non-empty payload (commit SHA, worktree, push target, diffstat) and a
+    /// detail that cites concrete proof-of-work, not a bare "reported success".
+    #[tokio::test]
+    async fn completion_success_cites_dispatch_evidence() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+
+        // The tracker writes this before calling handle_goal_completion.
+        let evidence = goal_engine::GoalEvidence {
+            worktree_path: "/tmp/.permagent-goal-worktrees/cli-abc".to_string(),
+            baseline_commit: "a1190cd".to_string(),
+            head_commit: Some("7d4f9ea".to_string()),
+            commits: vec!["7d4f9ea Create the thread".to_string()],
+            diffstat: " 3 files changed, 1159 insertions(+)".to_string(),
+            files_changed: 3,
+            insertions: 1159,
+            deletions: 0,
+            push_target: Some("origin/main".to_string()),
+            worker_summary: "Created the thread and pushed.".to_string(),
+        };
+        cards::set_goal_dispatch_evidence(
+            &pool,
+            &card.id,
+            serde_json::to_value(&evidence).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
+            .await
+            .unwrap();
+
+        let decision = decisions::find_open_decision_for_goal(&pool, &card.id, "approve_review")
+            .await
+            .unwrap()
+            .expect("approve_review decision created");
+
+        // Decision detail cites the commit + push target (not bare success).
+        assert!(
+            decision.detail.contains("7d4f9ea") && decision.detail.contains("origin/main"),
+            "detail must cite proof of work, got: {}",
+            decision.detail
+        );
+        // Payload carries the schema's completion_check, non-empty (the full
+        // structured evidence lives on card metadata, read by the panel).
+        let check = decision
+            .payload
+            .get("completion_check")
+            .and_then(|v| v.as_str())
+            .expect("completion_check populated");
+        assert!(check.contains("7d4f9ea") && check.contains("origin/main"));
+
+        // The card metadata carries the full structured evidence the panel
+        // and discuss read.
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let card_evidence = updated
+            .metadata_json
+            .get("dispatch_evidence")
+            .expect("dispatch_evidence persisted on card");
+
+        // Layer 3: the discuss-with-Henry block (same formatter the route uses)
+        // surfaces ground truth + the keep-off-stale-main rule.
+        let block = format_dispatch_evidence_full(card_evidence).expect("formats");
+        assert!(block.contains("7d4f9ea"));
+        assert!(block.contains("origin/main"));
+        assert!(block.contains("/tmp/.permagent-goal-worktrees/cli-abc"));
+        assert!(
+            block.contains("stale") && block.contains("local `main`"),
+            "must warn Henry off the stale local main"
+        );
+    }
+
+    /// Without evidence (in-process subagent / legacy goals) the decision falls
+    /// back to the original wording and an empty payload — no regression.
+    #[tokio::test]
+    async fn completion_success_without_evidence_uses_base_detail() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
+            .await
+            .unwrap();
+
+        let decision = decisions::find_open_decision_for_goal(&pool, &card.id, "approve_review")
+            .await
+            .unwrap()
+            .expect("approve_review decision created");
+        assert!(decision.detail.contains("reported success"));
+        assert!(!decision.detail.contains("Proof of work"));
+        assert_eq!(decision.payload, serde_json::json!({}));
     }
 
     /// Lane L2 hook contract: when installed, GOAL_REVIEW_HOOK fires exactly

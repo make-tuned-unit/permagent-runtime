@@ -189,6 +189,30 @@ export interface EvidenceDigestData {
   finished_at: string;
 }
 
+// ── Dispatch evidence (deterministic proof-of-work, goal_engine::GoalEvidence) ─
+// Reached via the goal card: GET /api/projects/{pid}/cards/{gid} →
+// metadataJson.dispatch_evidence. Captured at completion for external-CLI goals
+// (commit SHAs, diffstat, push target, worker summary) — zero LLM, always
+// present for a worktree+push dispatch even when the L2 digest is absent.
+// Source of truth: crates/goose/src/agents/platform_extensions/goal_engine.rs.
+
+export interface DispatchEvidenceData {
+  worktree_path: string;
+  baseline_commit: string;
+  head_commit?: string | null;
+  /** "<short-sha> <subject>", newest first. */
+  commits: string[];
+  /** git diff --stat baseline..HEAD (truncated). */
+  diffstat: string;
+  files_changed: number;
+  insertions: number;
+  deletions: number;
+  /** Remote ref the work was pushed to, or null (worktree only). */
+  push_target?: string | null;
+  /** Tail of the worker's own stdout — its self-reported summary. */
+  worker_summary: string;
+}
+
 // ── Payload helpers (typed reads of the untrusted payload) ──────────────────
 
 /** Options for a choice decision (ChoicePayload.options, decisions.rs:77-84). */
@@ -246,4 +270,6 @@ export interface DecisionsClient {
   history(): Promise<DecisionHistoryResponse>;
   /** L2 digest for a goal-bound decision; null when none recorded yet. */
   evidence(projectId: string, goalId: string): Promise<EvidenceDigestData | null>;
+  /** Deterministic dispatch proof-of-work; null when none recorded yet. */
+  dispatchEvidence(projectId: string, goalId: string): Promise<DispatchEvidenceData | null>;
 }
