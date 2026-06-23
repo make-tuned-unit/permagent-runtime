@@ -7,6 +7,14 @@ import { useEventBus } from '../../lib/eventBus';
 import { useTheme } from '../../styles/useTheme';
 import { getXtermTheme } from './xtermTheme';
 
+// L2-observe (#400): when a raw-mode program (e.g. Claude Code) has taken over
+// input (PTY ECHO off) AND no output has flowed for this long, we treat it as
+// "waiting for the user" and emit a terminal_waiting_for_input activity event so
+// Henry can see a session is at a gate. Tuned above Claude Code's ~1s spinner
+// cadence so a thinking spinner does not read as a gate; this is THE knob to
+// tune against real CC TUI behaviour during dogfood.
+const WAITING_FOR_INPUT_QUIESCENCE_MS = 1500;
+
 // ── Tauri API loader (cached, no module-level mutation) ──
 
 interface TauriApi {
@@ -159,6 +167,36 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
       // characters to avoid rendering them twice.
       const pendingEchos: { char: string; time: number }[] = [];
 
+      // L2-observe (#400): quiescence detector for "waiting for input". While a
+      // raw-mode program holds input (echo off), each chunk of PTY output rearms
+      // a timer; if it elapses with no further output, we emit a single
+      // waiting-for-input signal. Output resuming rearms (so the next gate fires
+      // again); echo returning on cancels (input control handed back).
+      let waitingTimer: ReturnType<typeof setTimeout> | null = null;
+      let waitingFired = false;
+      const clearWaitingTimer = () => {
+        if (waitingTimer) {
+          clearTimeout(waitingTimer);
+          waitingTimer = null;
+        }
+      };
+      const armWaitingTimer = () => {
+        clearWaitingTimer();
+        if (echoEnabled) return; // only meaningful when a program holds input
+        waitingTimer = setTimeout(() => {
+          waitingTimer = null;
+          if (waitingFired || echoEnabled || !api) return;
+          waitingFired = true;
+          api.invoke('emit_activity', {
+            event_type: 'terminal_waiting_for_input',
+            source_surface: 'terminal',
+            payload: { session_id: sessionIdRef.current },
+            session_id: null,
+            project_id: null,
+          }).catch((err: unknown) => console.debug('[activity] terminal_waiting_for_input emission failed:', err));
+        }, WAITING_FOR_INPUT_QUIESCENCE_MS);
+      };
+
       // Set up PTY data/exit listeners
       let unlistenData: (() => void) | null = null;
       let unlistenExit: (() => void) | null = null;
@@ -192,6 +230,11 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
                   onCwdChangeRef.current?.(decoded);
                 } catch { /* ignore decode errors */ }
               }
+
+              // Output flowed: the program is active, not waiting. Reset the
+              // one-shot latch and rearm so the next quiet period can fire.
+              waitingFired = false;
+              armWaitingTimer();
             }
           })) ?? null;
 
@@ -200,6 +243,17 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
             const payload = e.payload as { session_id: string; code?: number };
             if (payload.session_id === sessionIdRef.current) {
               term.writeln('\r\n\x1b[33m[Process exited]\x1b[0m');
+              clearWaitingTimer();
+              // L2-observe (#400): forward the process-exit signal to the bus.
+              if (api) {
+                api.invoke('emit_activity', {
+                  event_type: 'terminal_process_exited',
+                  source_surface: 'terminal',
+                  payload: { session_id: sessionIdRef.current, exit_code: payload.code ?? null },
+                  session_id: null,
+                  project_id: null,
+                }).catch((err: unknown) => console.debug('[activity] terminal_process_exited emission failed:', err));
+              }
             }
           })) ?? null;
 
@@ -208,6 +262,16 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
             const payload = e.payload as { session_id: string; echo_enabled: boolean };
             if (payload.session_id === sessionIdRef.current) {
               echoEnabled = payload.echo_enabled;
+              if (echoEnabled) {
+                // Input control handed back (e.g. program exited to the shell
+                // prompt) — not waiting on a gate anymore.
+                clearWaitingTimer();
+                waitingFired = false;
+              } else {
+                // A program just took over input; begin watching for quiescence.
+                waitingFired = false;
+                armWaitingTimer();
+              }
             }
           })) ?? null;
       }
@@ -327,6 +391,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         unlistenData?.();
         unlistenExit?.();
         unlistenEcho?.();
+        clearWaitingTimer();
         if (resizeTimer) clearTimeout(resizeTimer);
         resizeObserver.disconnect();
         term.dispose();
