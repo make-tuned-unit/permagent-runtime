@@ -60,7 +60,7 @@ tokio = { version = "1.49", features = ["full"] }
 tokio-stream = "0.1"
 tokio-tungstenite = "0.28.0"
 tokio-util = "0.7"
-tower-http = "0.6.11"
+tower-http = "0.7.0"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = "0.3"
