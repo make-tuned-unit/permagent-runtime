@@ -751,6 +751,35 @@ pub async fn set_goal_verification(
     Ok(())
 }
 
+/// Narrow API for the orchestrator's completion tracker (allowlist): writes
+/// ONLY the `dispatch_evidence` metadata key on a goal card — the deterministic
+/// proof-of-work (commit SHAs, diffstat, push target, worker summary) captured
+/// when an external-CLI goal completes. Never moves cards, never touches
+/// protected keys. Mirrors [`set_goal_verification`] (the L2 verifier's seam).
+pub async fn set_goal_dispatch_evidence(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    evidence: serde_json::Value,
+) -> Result<(), String> {
+    let card = get_card(pool, card_id)
+        .await?
+        .ok_or_else(|| format!("Card '{}' not found", card_id))?;
+    if card.card_type != "goal" {
+        return Err(format!("Card '{}' is not a goal", card_id));
+    }
+    let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
+    meta.insert("dispatch_evidence".to_string(), evidence);
+    let meta_str =
+        serde_json::to_string(&serde_json::Value::Object(meta)).map_err(|e| e.to_string())?;
+    sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+        .bind(&meta_str)
+        .bind(card_id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Count cards in a project, optionally filtered by card_type.
 pub async fn count_cards(
     pool: &Pool<Sqlite>,

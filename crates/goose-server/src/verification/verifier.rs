@@ -36,6 +36,12 @@ pub struct VerifierConfig {
     /// evidence digest. When absent, cost_usd is null and raw tokens are shown.
     #[serde(default)]
     pub usd_per_1k_tokens: Option<f64>,
+    /// Goal types whose verified PASS may be auto-approved by henry-policy.
+    /// EMPTY BY DEFAULT — with no types designated, a PASS is advisory only and
+    /// every goal still requires manual approval. This is the explicit opt-in
+    /// gate for auto-approval; the future low-risk-type taxonomy populates it.
+    #[serde(default)]
+    pub auto_approve_goal_types: Vec<String>,
 }
 
 impl Default for VerifierConfig {
@@ -43,6 +49,7 @@ impl Default for VerifierConfig {
         Self {
             model: DEFAULT_VERIFIER_MODEL.to_string(),
             usd_per_1k_tokens: None,
+            auto_approve_goal_types: Vec::new(),
         }
     }
 }

@@ -102,6 +102,17 @@ pub async fn run_for_goal_with(
     goal_id: &str,
     ollama_base_url: &str,
 ) -> Result<VerificationRecord, String> {
+    run_for_goal_with_cfg(pool, goal_id, ollama_base_url, verifier::load_config()).await
+}
+
+/// As [`run_for_goal_with`] but with an injectable [`verifier::VerifierConfig`]
+/// (tests exercise the auto-approve allow-list without writing `verifier.json`).
+pub async fn run_for_goal_with_cfg(
+    pool: &Pool<Sqlite>,
+    goal_id: &str,
+    ollama_base_url: &str,
+    cfg: verifier::VerifierConfig,
+) -> Result<VerificationRecord, String> {
     let started_at = chrono::Utc::now().to_rfc3339();
 
     let card = permagent::cards::get_card(pool, goal_id)
@@ -116,13 +127,26 @@ pub async fn run_for_goal_with(
 
     let meta = card.metadata_json.as_object().cloned().unwrap_or_default();
 
-    // Working dir: exactly as dispatch resolves it — project.root_path.
+    // Verify dir: the goal's isolated WORKTREE when an external-CLI worker
+    // committed there (captured by Layer-1 dispatch evidence), else the project
+    // root. Diffing project.root_path is WRONG under the worktree-and-push
+    // model — the root is local `main`, which the worker never touches (it
+    // commits in the worktree and pushes to origin), so root yields a
+    // false-empty diff that FALSE-FAILS correct work. Preferring the worktree
+    // makes the verifier diff the SAME baseline..HEAD the Evidence panel shows.
     let project = permagent::projects::get_project(pool, &card.project_id).await?;
-    let working_dir: Option<PathBuf> = project
+    let root_dir: Option<PathBuf> = project
         .as_ref()
         .and_then(|p| p.root_path.as_ref())
         .map(PathBuf::from)
         .filter(|p| p.is_dir());
+    let worktree_dir: Option<PathBuf> = meta
+        .get("dispatch_evidence")
+        .and_then(|e| e.get("worktree_path"))
+        .and_then(|v| v.as_str())
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir());
+    let working_dir: Option<PathBuf> = worktree_dir.or(root_dir);
 
     // ── 1. Completion checks ──
     let declared_checks: Vec<CompletionCheck> = Vec::new();
@@ -180,7 +204,6 @@ pub async fn run_for_goal_with(
     .await;
 
     // ── 3. Verifier (local Ollama, deterministic aggregation in Rust) ──
-    let cfg = verifier::load_config();
     let acceptance_criteria: Vec<String> = meta
         .get("acceptance_criteria")
         .and_then(|v| v.as_array())
@@ -236,16 +259,48 @@ pub async fn run_for_goal_with(
         "Goal verification complete"
     );
 
-    // ── 6. Tier-1 auto-approval (L3 policy × this verdict) ──
-    // On a PASS verdict, Henry answers the goal's open approve_review
-    // decision as 'henry-policy' through L1's tier-gated answer path
-    // (Tier-2 is Forbidden there and nothing moves). Failure-tolerant:
-    // the verification record stands regardless.
+    // ── 6. Auto-approval — OPT-IN, DEFAULT-OFF (L3 policy × this verdict) ──
+    // A corrected verifier PASS is ADVISORY: it is recorded as evidence
+    // (status + rationale in the digest) and still requires manual approval,
+    // UNLESS the goal's type is explicitly allow-listed in verifier.json
+    // (`auto_approve_goal_types`). With no types designated — the default —
+    // nothing auto-approves, so fixing the diff directory cannot silently turn
+    // on blanket auto-approval. When enabled, Henry answers the goal's open
+    // approve_review decision as 'henry-policy' through L1's tier-gated answer
+    // path. Failure-tolerant: the verification record stands regardless.
     if record.status == VerdictStatus::Pass {
-        henry_approve_after_pass(pool, goal_id, &record).await;
+        if auto_approve_allowed(&cfg, &meta) {
+            henry_approve_after_pass(pool, goal_id, &record).await;
+        } else {
+            tracing::info!(
+                target: "permagentd::verification",
+                goal_id = %goal_id,
+                "Verifier PASS recorded as advisory evidence — auto-approve not \
+                 enabled for this goal type; manual approval required"
+            );
+        }
     }
 
     Ok(record)
+}
+
+/// The single auto-approval gate. A verified PASS may be auto-approved by
+/// henry-policy ONLY when the goal's `goal_type` (card metadata) appears in the
+/// verifier config's `auto_approve_goal_types` allow-list. An empty allow-list
+/// (the default) or an untyped goal ⇒ never. This is the seam the future
+/// low-risk-type taxonomy plugs into: it will set `goal_type` on the card and
+/// list the earned types here. Until then, every verdict is advisory.
+fn auto_approve_allowed(
+    cfg: &verifier::VerifierConfig,
+    meta: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    if cfg.auto_approve_goal_types.is_empty() {
+        return false;
+    }
+    match meta.get("goal_type").and_then(|v| v.as_str()) {
+        Some(goal_type) => cfg.auto_approve_goal_types.iter().any(|t| t == goal_type),
+        None => false,
+    }
 }
 
 /// Wire 4 (integration): verifier pass → henry-policy Tier-1 auto-approve.
@@ -392,6 +447,28 @@ fn aggregate_record(
         },
     });
     let status = verifier::clamp_with_check_results(aggregated, &check_results);
+
+    // Deterministic no-op clamp: now that the diff is taken against the correct
+    // worktree, a *successful* diff that found zero changed files is an
+    // unambiguous true no-op — the worker produced no work product, so it can
+    // never pass. Guards: skip when the git diff itself degraded (git failure /
+    // missing baseline) and when the model didn't run (verifier degraded →
+    // Uncertain stands, never downgraded to Fail) — only a clean, empty diff on
+    // a completed verifier run is a real fail.
+    let true_no_op =
+        git.degraded_note.is_none() && git.diff_summary.files_changed == 0 && vr.grades.is_some();
+    let status = if true_no_op {
+        VerdictStatus::Fail
+    } else {
+        status
+    };
+    let rationale = if true_no_op {
+        "No changes since baseline in the goal's worktree — the worker produced no \
+         work product, so this cannot be approved as complete."
+            .to_string()
+    } else {
+        rationale
+    };
 
     let finished_at = chrono::Utc::now().to_rfc3339();
 
@@ -1122,6 +1199,7 @@ mod tests {
             serde_json::json!({
                 "baseline_commit": baseline,
                 "declared_paths": ["src/**"],
+                "goal_type": "chore",
                 "completion_checks": [
                     {"type": "command_exit_zero", "cmd": "true", "timeout_secs": 30}
                 ],
@@ -1168,7 +1246,16 @@ mod tests {
         assert_eq!(d_risk.tier, 2);
 
         let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
-        let record = run_for_goal_with(&pool, &goal.id, &base_url).await.unwrap();
+        // Auto-approve is opt-in: this goal's type is allow-listed, so a PASS
+        // auto-approves. (The default empty allow-list is covered by
+        // `verifier_pass_is_advisory_by_default_no_auto_approve`.)
+        let cfg = verifier::VerifierConfig {
+            auto_approve_goal_types: vec!["chore".to_string()],
+            ..Default::default()
+        };
+        let record = run_for_goal_with_cfg(&pool, &goal.id, &base_url, cfg)
+            .await
+            .unwrap();
         assert_eq!(record.status, VerdictStatus::Pass);
 
         // Tier-1 approve_review answered by henry-policy, rationale recorded,
@@ -1219,6 +1306,164 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(d_risk_final.status, "open");
+    }
+
+    /// Redirect (default-off gate): with NO goal types designated — the
+    /// default — a verifier PASS is ADVISORY. The verdict is recorded as
+    /// evidence but the approve_review decision stays open and the goal stays in
+    /// Review; nothing auto-approves. Same setup as the auto-approve test, only
+    /// the empty allow-list differs.
+    #[tokio::test]
+    async fn verifier_pass_is_advisory_by_default_no_auto_approve() {
+        use permagent::decisions::{self, NewDecision};
+
+        let repo = tempfile::tempdir().unwrap();
+        let baseline = init_repo(repo.path());
+        std::fs::write(
+            repo.path().join("src/lib.rs"),
+            "pub fn a() {}\npub fn b() {}\n",
+        )
+        .unwrap();
+
+        let pool = test_pool().await;
+        let goal = make_review_goal_in_columns(
+            &pool,
+            repo.path().to_str().unwrap(),
+            serde_json::json!({
+                "baseline_commit": baseline,
+                "declared_paths": ["src/**"],
+                "goal_type": "chore",
+                "completion_checks": [
+                    {"type": "command_exit_zero", "cmd": "true", "timeout_secs": 30}
+                ],
+            }),
+        )
+        .await;
+        let d_review = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(goal.project_id.clone()),
+                headline: Some("Review the finished work".to_string()),
+                detail: Some("worker reported success".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
+        // Default config: empty auto_approve_goal_types — nothing auto-approves
+        // even though the verdict is PASS and the goal carries a goal_type.
+        let record = run_for_goal_with(&pool, &goal.id, &base_url).await.unwrap();
+        assert_eq!(record.status, VerdictStatus::Pass);
+
+        let d_after = decisions::get_decision(&pool, &d_review.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(d_after.status, "open", "advisory PASS must not auto-answer");
+        assert!(d_after.acted_by.is_none());
+        assert_eq!(
+            state_of(&pool, &goal.id).await,
+            "review",
+            "goal must stay in Review for manual approval"
+        );
+    }
+
+    /// Redirect (core fix): the verifier diffs the goal's WORKTREE, not the
+    /// project root. The root stays clean at baseline (as under the
+    /// worktree-and-push model); the real change is committed only in the
+    /// worktree. Diffing the root would yield a false-empty (true-no-op → Fail);
+    /// diffing the worktree sees the change → PASS with files_changed > 0.
+    #[tokio::test]
+    async fn verifier_diffs_worktree_not_project_root() {
+        let repo = tempfile::tempdir().unwrap();
+        let baseline = init_repo(repo.path());
+        // Root stays at baseline, clean — the worker never touched it.
+        let wt_parent = tempfile::tempdir().unwrap();
+        let wt = wt_parent.path().join("wt");
+        sh(
+            repo.path(),
+            &format!("git worktree add --detach {} {}", wt.display(), baseline),
+        );
+        // The worker's real, committed work lives in the worktree.
+        std::fs::write(wt.join("src/lib.rs"), "pub fn a() {}\npub fn b() {}\n").unwrap();
+        sh(&wt, "git add -A");
+        sh(
+            &wt,
+            "git -c user.email=t@t -c user.name=t commit -q -m work",
+        );
+
+        let pool = test_pool().await;
+        let goal = make_goal(
+            &pool,
+            repo.path().to_str().unwrap(),
+            serde_json::json!({
+                "baseline_commit": baseline,
+                "declared_paths": ["src/**"],
+                "dispatch_evidence": { "worktree_path": wt.to_str().unwrap() },
+            }),
+        )
+        .await;
+
+        let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
+        let record = run_for_goal_with(&pool, &goal.id, &base_url).await.unwrap();
+
+        assert_eq!(
+            record.status,
+            VerdictStatus::Pass,
+            "real worktree change must be seen (root would be false-empty → Fail)"
+        );
+        assert!(
+            record.evidence_digest.diff.files_changed >= 1,
+            "diff must reflect the worktree change, got {:?}",
+            record.diff_stat
+        );
+    }
+
+    /// Redirect: a genuine no-op — the worktree exists but has no commits since
+    /// baseline — is a REAL fail (deterministic clamp), even if the model would
+    /// grade PASS. Distinct from the old false-empty caused by the wrong dir.
+    #[tokio::test]
+    async fn verifier_true_no_op_in_worktree_fails() {
+        let repo = tempfile::tempdir().unwrap();
+        let baseline = init_repo(repo.path());
+        let wt_parent = tempfile::tempdir().unwrap();
+        let wt = wt_parent.path().join("wt");
+        sh(
+            repo.path(),
+            &format!("git worktree add --detach {} {}", wt.display(), baseline),
+        );
+        // No changes in the worktree — the worker produced nothing.
+
+        let pool = test_pool().await;
+        let goal = make_goal(
+            &pool,
+            repo.path().to_str().unwrap(),
+            serde_json::json!({
+                "baseline_commit": baseline,
+                "declared_paths": ["src/**"],
+                "dispatch_evidence": { "worktree_path": wt.to_str().unwrap() },
+            }),
+        )
+        .await;
+
+        let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
+        let record = run_for_goal_with(&pool, &goal.id, &base_url).await.unwrap();
+
+        assert_eq!(
+            record.status,
+            VerdictStatus::Fail,
+            "an empty worktree diff is a true no-op — must fail even on a model PASS"
+        );
+        assert!(
+            record.rationale.contains("no work product"),
+            "rationale must explain the no-op: {}",
+            record.rationale
+        );
     }
 
     /// Wire 4 negative: a FAIL verdict leaves the approve_review decision

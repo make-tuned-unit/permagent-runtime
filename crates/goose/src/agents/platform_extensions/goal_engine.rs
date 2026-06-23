@@ -48,13 +48,52 @@ pub const PROMPT_TOKEN: &str = "{prompt}";
 #[derive(Debug)]
 pub enum GoalOutcome {
     /// Worker finished cleanly; the work product is in the working dir.
-    Success,
+    /// Carries deterministic verification evidence (commit SHAs, diffstat,
+    /// push target, worker summary) when the engine can produce it — the
+    /// external-CLI worktree path always can; the in-process subagent yields
+    /// `None` (no worktree / push model).
+    Success(Option<GoalEvidence>),
     /// Retriable failure within budget — routes through the existing
     /// budget/retry logic in `handle_goal_completion`.
     Failed(String),
     /// The worker exceeded its time bound. Routes to an unconditional PARK
     /// (`handle_goal_timeout`) — never a silent retry.
     TimedOut { secs: u64 },
+}
+
+/// Deterministic proof-of-work captured at goal completion, persisted to the
+/// goal card and surfaced in the Decision Inbox Evidence panel + the
+/// Discuss-with-Henry context. Every field is derived from git in the worker's
+/// own worktree (or the worker's stdout) — zero LLM, zero guessing. This is the
+/// evidence a reviewer needs to trust a dispatched goal without manually
+/// running git against the (stale) local main.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct GoalEvidence {
+    /// Absolute path to the isolated worktree the worker committed in.
+    pub worktree_path: String,
+    /// Dispatch-time HEAD the work was branched off (the diff baseline).
+    pub baseline_commit: String,
+    /// Short SHA of the worktree HEAD after the worker exited, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_commit: Option<String>,
+    /// Commits the worker produced (`baseline..HEAD`), newest first, as
+    /// `"<short-sha> <subject>"`. Empty when the worker committed nothing.
+    #[serde(default)]
+    pub commits: Vec<String>,
+    /// `git diff --stat baseline..HEAD`, truncated. Human-readable diffstat.
+    #[serde(default)]
+    pub diffstat: String,
+    pub files_changed: u32,
+    pub insertions: u32,
+    pub deletions: u32,
+    /// Remote ref the work was pushed to (e.g. `"origin/main"`), or `None`
+    /// when the commits live only in the worktree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push_target: Option<String>,
+    /// Tail of the worker's own stdout — its final summary of what it did
+    /// (Layer 2a self-report). Empty if the worker printed nothing.
+    #[serde(default)]
+    pub worker_summary: String,
 }
 
 /// Per-goal data handed to an engine. Engine-specific capabilities (provider,
@@ -165,7 +204,7 @@ impl GoalEngine for InternalSubagentEngine {
             })
             .await
             {
-                Ok(_) => GoalOutcome::Success,
+                Ok(_) => GoalOutcome::Success(None),
                 Err(e) => GoalOutcome::Failed(e.to_string()),
             }
         });
@@ -227,8 +266,9 @@ impl GoalEngine for ExternalCliEngine {
         let bin = self.bin.clone();
         let timeout = task.timeout;
 
-        let join =
-            tokio::spawn(async move { run_external_cli(&bin, &args, &worktree, timeout).await });
+        let join = tokio::spawn(async move {
+            run_external_cli(&bin, &args, &worktree, &baseline, timeout).await
+        });
 
         Ok(DispatchedWork { run_id, join })
     }
@@ -277,12 +317,14 @@ async fn create_goal_worktree(
 }
 
 /// Spawn the external CLI in `working_dir`, bounded by `timeout`. Exit 0 →
-/// `Success`; nonzero → `Failed(stderr tail)`; timeout → `TimedOut` (the
-/// process is killed via `kill_on_drop`).
+/// `Success` (with deterministic git evidence collected from `working_dir`
+/// against `baseline`); nonzero → `Failed(stderr tail)`; timeout → `TimedOut`
+/// (the process is killed via `kill_on_drop`).
 async fn run_external_cli(
     bin: &str,
     args: &[String],
     working_dir: &Path,
+    baseline: &str,
     timeout: Duration,
 ) -> GoalOutcome {
     let mut cmd = Command::new(bin);
@@ -297,7 +339,9 @@ async fn run_external_cli(
     match tokio::time::timeout(timeout, cmd.output()).await {
         Ok(Ok(output)) => {
             if output.status.success() {
-                GoalOutcome::Success
+                let worker_summary = tail(&String::from_utf8_lossy(&output.stdout), 4000);
+                let evidence = collect_evidence(working_dir, baseline, worker_summary).await;
+                GoalOutcome::Success(Some(evidence))
             } else {
                 let code = output
                     .status
@@ -317,6 +361,92 @@ async fn run_external_cli(
             secs: timeout.as_secs(),
         },
     }
+}
+
+/// Collect deterministic verification evidence from the worker's worktree
+/// against `baseline`, after a clean exit. Every git call is failure-tolerant:
+/// a non-repo dir or a git error degrades the affected field (empty / `None`),
+/// never the outcome — a missing diffstat must not turn a success into a
+/// failure. Push detection asks whether any remote ref already contains HEAD
+/// (the worker's `git push origin HEAD:main` updates the shared repo's
+/// `refs/remotes/origin/main`, which the worktree sees).
+async fn collect_evidence(worktree: &Path, baseline: &str, worker_summary: String) -> GoalEvidence {
+    let range = format!("{}..HEAD", baseline);
+
+    let head_commit = git_line(worktree, &["rev-parse", "--short", "HEAD"]).await;
+    let commits = git_text(worktree, &["log", "--format=%h %s", &range])
+        .await
+        .lines()
+        .map(|l| l.to_string())
+        .filter(|l| !l.trim().is_empty())
+        .collect::<Vec<_>>();
+    let diffstat = tail(&git_text(worktree, &["diff", "--stat", &range]).await, 4000);
+    let shortstat = git_text(worktree, &["diff", "--shortstat", &range]).await;
+    let (files_changed, insertions, deletions) = parse_shortstat(&shortstat);
+    let push_target = git_text(worktree, &["branch", "-r", "--contains", "HEAD"])
+        .await
+        .lines()
+        .map(|l| l.trim().to_string())
+        .find(|l| !l.is_empty());
+
+    GoalEvidence {
+        worktree_path: worktree.to_string_lossy().to_string(),
+        baseline_commit: baseline.to_string(),
+        head_commit,
+        commits,
+        diffstat,
+        files_changed,
+        insertions,
+        deletions,
+        push_target,
+        worker_summary,
+    }
+}
+
+/// Run `git <args>` in `dir`, returning trimmed stdout (empty on any failure).
+async fn git_text(dir: &Path, args: &[&str]) -> String {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
+        .arg(dir)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    configure_subprocess(&mut cmd);
+    match cmd.output().await {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Like [`git_text`] but yields `None` for empty/failed output (single values).
+async fn git_line(dir: &Path, args: &[&str]) -> Option<String> {
+    let s = git_text(dir, args).await;
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
+/// Parse `git diff --shortstat` ("N files changed, X insertions(+), Y deletions(-)")
+/// into `(files, insertions, deletions)`. Any absent term is 0.
+fn parse_shortstat(s: &str) -> (u32, u32, u32) {
+    let num_before = |kw: &str| -> u32 {
+        s.split(',')
+            .find(|seg| seg.contains(kw))
+            .and_then(|seg| {
+                seg.split_whitespace()
+                    .next()
+                    .and_then(|n| n.parse::<u32>().ok())
+            })
+            .unwrap_or(0)
+    };
+    (
+        num_before("file"),
+        num_before("insertion"),
+        num_before("deletion"),
+    )
 }
 
 /// Roughly the last `max` bytes of `s`, aligned to char boundaries and prefixed
@@ -396,6 +526,7 @@ mod tests {
             "sleep",
             &["5".to_string()],
             Path::new("."),
+            "HEAD",
             Duration::from_secs(1),
         )
         .await;
@@ -412,6 +543,7 @@ mod tests {
             "sh",
             &["-c".to_string(), "exit 3".to_string()],
             Path::new("."),
+            "HEAD",
             Duration::from_secs(10),
         )
         .await;
@@ -423,12 +555,68 @@ mod tests {
 
     #[tokio::test]
     async fn external_cli_zero_exit_is_success() {
-        let outcome = run_external_cli("true", &[], Path::new("."), Duration::from_secs(10)).await;
+        let outcome =
+            run_external_cli("true", &[], Path::new("."), "HEAD", Duration::from_secs(10)).await;
         assert!(
-            matches!(outcome, GoalOutcome::Success),
+            matches!(outcome, GoalOutcome::Success(_)),
             "expected Success, got {:?}",
             outcome
         );
+    }
+
+    #[test]
+    fn parse_shortstat_extracts_counts() {
+        assert_eq!(
+            parse_shortstat(" 3 files changed, 1159 insertions(+), 4 deletions(-)"),
+            (3, 1159, 4)
+        );
+        assert_eq!(
+            parse_shortstat(" 1 file changed, 2 insertions(+)"),
+            (1, 2, 0)
+        );
+        assert_eq!(parse_shortstat(""), (0, 0, 0));
+    }
+
+    /// End-to-end evidence capture: a worker that commits in its worktree must
+    /// surface its commit SHA, diffstat counts, and a not-pushed marker.
+    #[tokio::test]
+    async fn collect_evidence_captures_commit_and_diffstat() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = tmp.path().join("proj");
+        std::fs::create_dir(&repo).unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@t.t"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "base"]);
+        let baseline = String::from_utf8(git(&["rev-parse", "HEAD"]).stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+        // Worker does its work.
+        std::fs::write(repo.join("a.txt"), "one\ntwo\n").unwrap();
+        std::fs::write(repo.join("b.txt"), "new\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "did the work"]);
+
+        let ev = collect_evidence(&repo, &baseline, "summary".to_string()).await;
+        assert_eq!(ev.baseline_commit, baseline);
+        assert_eq!(ev.commits.len(), 1, "one commit above baseline");
+        assert!(ev.commits[0].contains("did the work"));
+        assert!(ev.head_commit.is_some());
+        assert_eq!(ev.files_changed, 2);
+        assert_eq!(ev.insertions, 2);
+        assert!(ev.push_target.is_none(), "no remote → not pushed");
+        assert_eq!(ev.worker_summary, "summary");
     }
 
     /// Defect 2 (worktree isolation): with no git baseline the external engine

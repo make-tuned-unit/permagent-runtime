@@ -114,7 +114,10 @@ fn format_sse_event(seq: u64, json: &str) -> String {
 /// in character automatically. `detail` already carries attribution, evidence
 /// refs, and (for choices) option consequences (decision sink), so it is the
 /// richest single field to seed.
-fn format_decision_discussion_block(d: &permagent::decisions::Decision) -> String {
+fn format_decision_discussion_block(
+    d: &permagent::decisions::Decision,
+    evidence_block: Option<&str>,
+) -> String {
     let mut b = String::from(
         "The user opened this chat from their Decision Inbox to talk through a specific \
 decision with you. You already have its full context below — do not ask them to re-explain \
@@ -130,6 +133,15 @@ proposed and why, then ask what their question or concern is. Do not give a gene
     }
     if !d.detail.trim().is_empty() {
         b.push_str(&format!("- Details: {}\n", d.detail.trim()));
+    }
+    // Layer 3: structured proof-of-work captured at goal completion, so the
+    // review is grounded in ground truth (worktree path, commit SHA, push
+    // target, diffstat, worker summary) instead of improvised shell commands
+    // against a stale local checkout.
+    if let Some(block) = evidence_block {
+        b.push('\n');
+        b.push_str(block);
+        b.push('\n');
     }
     b
 }
@@ -616,10 +628,28 @@ pub async fn session_reply(
                     Ok(pool) => {
                         match permagent::decisions::get_decision(&pool, decision_id).await {
                             Ok(Some(decision)) => {
+                                // Load the goal's deterministic completion evidence
+                                // (if any) so Henry reviews ground truth, not a
+                                // stale local checkout.
+                                let evidence_block = match decision.goal_id.as_deref() {
+                                    Some(goal_id) => permagent::cards::get_card(&pool, goal_id)
+                                        .await
+                                        .ok()
+                                        .flatten()
+                                        .and_then(|c| {
+                                            c.metadata_json.get("dispatch_evidence").cloned()
+                                        })
+                                        .as_ref()
+                                        .and_then(permagent::agents::platform_extensions::orchestrator::format_dispatch_evidence_full),
+                                    None => None,
+                                };
                                 agent
                                     .extend_system_prompt(
                                         "discuss_decision".to_string(),
-                                        format_decision_discussion_block(&decision),
+                                        format_decision_discussion_block(
+                                            &decision,
+                                            evidence_block.as_deref(),
+                                        ),
                                     )
                                     .await;
                             }
