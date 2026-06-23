@@ -103,36 +103,41 @@ The four problems collapse into **one coherent model**, and most of it is alread
 
 Stop computing two diffs. The verifier should **consume `dispatch_evidence`** (worktree path + baseline + already-correct diffstat) instead of recomputing against `root_path`:
 - Point `analyze_diff` and `checks::run_checks` at `dispatch_evidence.worktree_path` when present; fall back to `root_path` for the in-process engine (where in-place is correct).
-- The Evidence panel and Discuss-with-Henry then read the **same** ground truth. (Decide: fold `dispatch_evidence` fields into the `verification` record, or have the verifier read `dispatch_evidence` as input and keep one output key. Recommend the latter — smaller change, #454's writer stays.)
+- The Evidence panel and Discuss-with-Henry then read the **same** ground truth. **RULED (1): ONE record** — the verifier appends its verdict to the `dispatch_evidence` structure; one key, one card. See §6 for the exact shape.
 
 **This single change fixes Problem 1 and the wrong-tree half of Problem 2 at once.**
 
 ### 3b. Declared completion criterion per goal + project defaults
 
-- Author `completion_checks` when a goal is created/decomposed (the orchestrator already owns goal-card creation). Minimal v1: a code goal gets `[{command_exit_zero: "<project build cmd>"}]`.
-- **Project-level default checks** so authors don't repeat themselves. This needs a home on the project (see 3d / Problem 3 — same schema change).
+**RULED (5): opt-in with per-goal-type defaults.** Goal-type drives the default check **and** auto-approve eligibility:
+- **Code goals** default to `command_exit_zero` (the project build cmd).
+- **Content goals** default to publish-sequence + `http_assert` live-check (§3d).
+- **Prose/other goals with no build** get **no forced check** — never false-fail them. The user can override or clear any default.
 - The disambiguator from §2: if `dispatch_evidence.commits` is empty, short-circuit to a **true "no work done"** verdict — never run the LLM over an empty diff and never emit "fail — no evidence" when work exists.
+- Defaults are authored at goal creation/decomposition (orchestrator owns it); project-level overrides live in the project `metadata_json` (§3d, ruling 3).
 
-### 3c. Gate Review on the verdict (informed, not silent)
+### 3c. Gate Review on the verdict — **SOFT (ruled)**
 
-Today the verdict only gates auto-approval. Options (needs a Jesse ruling):
-- **Hard gate:** a failed required check (e.g. build) sends the goal to **InProgress (rework)** or **Parked**, not Review — it never becomes human-approvable.
-- **Soft gate (recommended v1):** goal still reaches Review, but the decision is **marked blocked**: approve is disabled / warns loudly ("build is failing — approving ships broken work"). Pairs with the informed-reject below.
+**RULED (2): soft gate, loud warning.** The verdict is **advisory** — the goal still reaches Review and **approve stays enabled**, with a loud warning when a required check failed ("build is failing — approving ships broken work"). Never block approval on a Fail: the verifier false-failed correct work 4× this session, so hard-gating would block real work. **Revisit hard-gating only after #455 proves the verifier accurate.** Pairs with the informed-reject below. Auto-approve remains **default-OFF** (standing constraint) — a Pass does not auto-advance.
 
 ### 3d. Per-project publish sequence (Problem 3 — the only genuinely new build)
 
-Projects are all-typed-columns with **no `metadata_json`** (`spectral_schema.rs:573-593`; struct `projects.rs:8-24`). #189 added `root_path/site_url/repo_url`. A publish sequence has **no home today → schema change required (v13 → v14).**
+Projects are all-typed-columns with **no metadata bag** (`spectral_schema.rs:573-593`; struct `projects.rs:8-24`). #189 added `root_path/site_url/repo_url`. A publish sequence has **no home today → schema change required (v13 → v14).**
 
-Model: an ordered list of post-commit/post-push commands stored on the project, e.g.
+**RULED (3): add a general `metadata_json TEXT` column to `projects`** (mirrors `cards.metadata_json`), not a single-purpose column and not a separate table. The publish sequence is one key inside it; project-level check overrides (§3b) are another.
+
+Model: an ordered list of post-commit/post-push commands, e.g.
 ```json
-[
-  {"order":1,"command":"set -a; source .env.local; set +a; npx tsx scripts/reseed-threads.ts","cwd":".","timeout_secs":300},
-  {"order":2,"command":"vercel --prod","cwd":".","timeout_secs":600}
-]
+{
+  "publish_sequence": [
+    {"order":1,"command":"set -a; source .env.local; set +a; npx tsx scripts/reseed-threads.ts","timeout_secs":300},
+    {"order":2,"command":"vercel --prod","timeout_secs":600}
+  ]
+}
 ```
-The orchestrator runs these **after** the worker's commit+push, in the project repo (these touch prod infra, not the worktree), and records each step's exit/stdout into the evidence record. The **final criterion is "live"**: reuse the existing `http_assert` check (`checks.rs`) — `curl site_url` returns 200 and contains the slug. That is the real definition of done for a content goal, and it's a `completion_check` type that already exists.
+**RULED (4): commands run in the worker's worktree context; secrets from the project's `.env.local` loaded at execution time.** Config stores the **command** (referencing `.env.local` by path) — **never the secret value**. Each step's exit code + **redacted** tail is recorded into the one evidence record. **The redaction guard (ruling 4) is mandatory and must cover both worker_summary and publish-step stdout** — see §6 for the design and the non-triviality flag.
 
-**Storage decision (needs ruling):** add `publish_sequence_json TEXT DEFAULT '[]'` to `projects` (Option A, mirrors `cards.metadata_json`, minimal migration) vs. a dedicated `project_publish_steps` table (Option B, relational, more overhead). **Recommend Option A.**
+**RULED (6): the final "live" criterion is `http_assert` asserting specific expected content** — slug **and** connection count on the right surface — **not just HTTP 200** (200-alone was proven insufficient this session). This is a `completion_check` type that already exists (`checks.rs`).
 
 ### 3e. Informed reject when already-pushed (Problem 4)
 
@@ -151,26 +156,46 @@ The decision/Evidence panel should **read `dispatch_evidence.push_target`** and,
 1. **🥇 Unify the verifier onto `dispatch_evidence` (fixes Problem 1).** *Quick win, highest value.* Point `analyze_diff`/`run_checks` at `dispatch_evidence.worktree_path`; short-circuit true-no-work when `commits[]` empty. This is the most dangerous bug (false-fail trains distrust) and is **small** — a cwd source + an early-return, no schema, no push-logic entanglement. Do this immediately after #454.
    - *Unblocks:* a trustworthy Evidence panel; makes every downstream check meaningful.
 
-2. **🥈 Hard-/soft-gate Review on the verdict + informed-reject (Problem 4 + part of 2).** *Small.* Decide gate semantics (§3c) and add the already-pushed warning (§3e). No schema. Makes "complete" mean "verified."
+2. **🥈 Soft-gate Review + informed-reject (#458, Problem 4 + part of 2).** *Small.* Loud advisory warning on a Fail (approve stays enabled, ruling 2) + the already-pushed warning (§3e). No schema. Makes the review surface trustworthy.
 
-3. **🥉 Author `completion_checks` per goal (Problem 2).** *Medium.* Orchestrator seeds a build check on code-goal creation. Depends on #1 (checks must run in the worktree to be valid). Quick win for the common case (`npm run build`).
+3. **🥉 Author `completion_checks` per goal-type (#456, Problem 2).** *Medium.* Orchestrator seeds goal-type defaults at creation (code → build; content → publish+live; prose → none, ruling 5); user-overridable. Depends on #1 (checks must run in the worktree to be valid).
 
-4. **Per-project publish sequence + live-check (Problem 3).** *Largest — only true net-new.* Schema v14 (`publish_sequence_json` on `projects`), a publish-runner in the orchestrator post-push, `http_assert` live-check as the final criterion, project-config UI to author the sequence + default checks. Depends on #1 (evidence record) and #3 (check authoring). Do last; it's the only piece needing a migration and a new surface.
+4. **Per-project publish sequence + live-check (#457, Problem 3).** *Largest — only true net-new.* Schema v14 (general `metadata_json` on `projects`, ruling 3), a publish-runner in the orchestrator post-push running in the worktree with `.env.local` (ruling 4), `http_assert` content-specific live-check (ruling 6), project-config UI, and the publish-step half of the redaction guard. Depends on #1 (evidence record) and #3 (check authoring). Do last; only piece needing a migration + new surface.
 
 **Rationale for ordering:** #1 is the keystone — it is small, it is the most dangerous bug, and it is the precondition for #2/#3/#4 to operate on real data. #2 converts the now-correct signal into an enforced gate. #3 populates the criterion. #4 is the heavyweight that turns "pushed" into "live," and is the only one carrying schema + UI cost, so it goes last.
 
 ---
 
-## 5. Open decisions needing a Jesse ruling
+## 5. Decisions — RULED (Jesse, 2026-06-23)
 
-1. **Verifier ↔ evidence unification shape:** verifier *reads* `dispatch_evidence` and keeps writing one `verification` key (recommended), **or** fold both into one merged record? (Affects whether the Evidence panel's read path changes.)
-2. **Review gate semantics (§3c):** hard gate (failed build → InProgress/Parked, never approvable) vs. soft gate (reaches Review but approve is blocked/warned). Recommend soft for v1.
-3. **Publish-sequence storage (§3d):** `publish_sequence_json` column on `projects` (Option A, recommended) vs. dedicated `project_publish_steps` table (Option B). Either way it's **schema v13 → v14** — confirm we're opening a migration.
-4. **Where publish-sequence commands run:** in the project `root_path` (they touch prod DB/Vercel, not the worktree) — confirm. And **secrets**: the Reckonize sequence sources `.env.local`; do publish commands run with the repo's own env, and is that acceptable for autonomous dispatch, or does it require a human-approved gate per project?
-5. **Default completion checks:** should every code goal auto-inherit a project-default build check, or is it opt-in per goal? (Drives #3 vs #4 scope.)
-6. **Live-check authority:** is `http_assert site_url contains slug` sufficient as "done = live," or does static-vs-dynamic page regeneration (the home-listing-needs-`vercel --prod` case) need a per-page assertion list?
+1. **Unification shape — ONE record.** The verifier *consumes* `dispatch_evidence` and **appends its verdict to the same structure**. One metadata key, one card. (Supersedes the "keep two keys" recommendation in §3a — both surfaces and the verifier converge on a single record.)
+2. **Review gate — SOFT, loud warning.** The verifier verdict is **advisory**; never block approval on a Fail (the verifier false-failed correct work 4× this session). Approve stays enabled with a loud warning. **Revisit hard-gating only after #455 proves the verifier accurate.**
+3. **Publish-sequence storage — `metadata_json TEXT` column on `projects`** (schema **v14**), not a separate table and not a single-purpose `publish_sequence_json` column. (Broader than §3d's original Option A: a general project metadata bag, mirroring `cards.metadata_json`; the publish sequence is one key inside it.)
+4. **Publish commands run in the worker's worktree context; secrets from the project's `.env.local` loaded at execution time.** Config stores the **command** (which references `.env.local` by path), **never the secret value**. **CRITICAL — redaction guard:** the #454 evidence-capture layer must **exclude/redact `DATABASE_URL` / connection-string / token lines from persisted worker stdout** (`dispatch_evidence.worker_summary`) and from any publish-step output. The publish feature must not leak prod credentials into the goal card. *(See §3d for the redaction design + the non-triviality flag.)*
+5. **completion_checks — opt-in with per-goal-type defaults.** Code goals default to `command_exit_zero` (build); content goals default to publish-sequence + `http_assert` live-check; the user can override or clear. **No forced check on goals with no build** (don't false-fail prose goals). **Goal-type drives both the default check and auto-approve eligibility.**
+6. **Live-check — `http_assert` is sufficient, but assert specific expected content** (slug + connection count on the right surface), **not just HTTP 200** (200-alone was proven insufficient this session).
+
+**Standing constraint:** auto-approve stays **default-OFF throughout** (per the earlier redirect). The soft gate (ruling 2) means even a Pass verdict does not auto-advance unless auto-approve is explicitly enabled.
+
+### Build sequence (confirmed): land #454 → **#455** (keystone) → **#458** → **#456** → **#457**.
 
 ---
+
+## 6. Build plan — #455 (keystone), pending confirmation before code
+
+**Goal:** the verifier reasons over the tree where the work actually lives, and emits ONE evidence record (ruling 1). No schema, no push-logic change.
+
+1. **Source the worktree from `dispatch_evidence`.** In `run_for_goal_with` (`verification/mod.rs:119-125`), when the card has `metadata.dispatch_evidence.worktree_path` (external-CLI goals), use it as `working_dir` for both `analyze_diff` (`:175`) and `checks::run_checks` (`:133`). Fall back to `project.root_path` only when absent (in-process subagent — in-place is correct there).
+2. **Reuse the already-correct diff.** `dispatch_evidence` already carries `baseline`, `commits[]`, `files_changed/insertions/deletions`, `diffstat` computed in the worktree (`goal_engine.rs:183` `collect_evidence`). Prefer feeding that to the verifier prompt over re-shelling `git diff` against the wrong tree.
+3. **True-fail vs false-fail short-circuit.** If `dispatch_evidence.commits` is empty → emit a deterministic **"no work produced"** verdict; never run the LLM over an empty diff and never print "fail — no evidence" when commits exist.
+4. **ONE record (ruling 1).** The verifier appends its verdict fields onto the `dispatch_evidence` structure (one key) rather than writing a separate `verification` key. Migrate the Evidence panel read path (`client.ts:104-121`) and Discuss-with-Henry (`session_events.rs:628+`) to the unified key. *(Open sub-question for confirmation: keep the existing key name `verification` and fold `dispatch_evidence` into it, or keep `dispatch_evidence` and append a `verdict` sub-object? Recommend the latter — #454's writer/readers stay, the verifier just adds a `verdict` field.)*
+5. **Auto-approve stays OFF (standing constraint).** Leave `henry_approve_after_pass` (`verification/mod.rs:244-246`) gated behind the existing L3/auto-approve policy, which remains default-off; #455 does not enable it.
+
+**Redaction (ruling 4) — flagged as non-trivial; recommend landing the guard *with* #455 since #455 is the first PR to make the captured stdout authoritative.** The only persisted free-text vectors are `dispatch_evidence.worker_summary` (`tail(stdout,4000)`, `goal_engine.rs:339`/`collect_evidence`) and, later, publish-step stdout (#457). A shared `redact_secrets(&str)` applied at capture time covers both. **It cannot be proven complete** (heuristic), so the safe design is *capture-less-and-redact*: line-wise drop/`****` for `scheme://user:pass@host` connection strings (`postgres`/`postgresql`/`mysql`/`mongodb(+srv)`/`redis`), `*_URL=`/`*_KEY=`/`*_TOKEN=`/`*_SECRET=`/`PASSWORD=` env assignments, and known token shapes (`sk-…`, JWT `eyJ…`, AWS `AKIA…`). For #457 publish steps, prefer persisting **exit code + redacted tail + the live-check result only**, not raw tool stdout. **Decision needed:** land redaction in #455 (recommended — worker_summary already leaks today) or defer the publish-step portion to #457.
+
+---
+
+## Appendix — key file:line anchors
 
 ## Appendix — key file:line anchors
 
