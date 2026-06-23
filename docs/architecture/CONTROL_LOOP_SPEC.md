@@ -193,11 +193,15 @@ events. Steady-state Henry-LLM cost for memory = **0**.
 
 **Deterministic plumbing (plain code, no LLM, cheap) — the spine:**
 
-- **S0 — #424 reconciliation + #423 trim.** Decide visible-how (Fork 1); settle the #424 spawn-mode
-  (does `ExternalCliEngine` already use the `claude_code.rs` stream-json provider, or raw `claude -p`?);
-  trim #423 to exit-only. *Needs Fork-1 ruling (done) + coordination with #424.*
-- **S1 — Launch a stream-json CC session in a visible tab** *(Piece 1; depends S0).* Extend the
-  `project_launch`/#424 path to run `claude … stream-json` and surface it. **LLM: 1 call at launch.**
+- **S0 — #424 reconciliation + #423 trim — DONE.** Findings in the "S0 Reconciliation Findings"
+  section above: #424 is Case (b)-degenerate → S1 is a sibling engine; bridge registry required;
+  #423 trimmed to exit-only.
+- **S1 — Launch a stream-json CC session in a visible PTY tab** *(Piece 1; depends S0).* A new
+  **sibling** `GoalEngine` (`SupervisedCliEngine`) — NOT an extension of #424. Reuses #424
+  scaffolding + `claude_code.rs` protocol structs; runs `claude --output-format stream-json
+  --input-format stream-json --verbose --permission-prompt-tool stdio` (no `--dangerously-skip-permissions`)
+  in a Build-tab PTY, stdin writable for relay, stdout streamed/tee'd. Supports **both** dispatched-goal
+  and free-standing watched entry points. **LLM: 1 call at launch.**
 - **S2 — Gate parser + session registry** *(Pieces 2+3; pure Rust, no LLM; depends S1).* Tee
   `pty_data` → NDJSON parser → `control_request` → gate event on the bus; thin
   `{session→project,goal,request_id}` registry. **Cost: 0 steady-state.**
@@ -209,32 +213,36 @@ events. Steady-state Henry-LLM cost for memory = **0**.
 
 **Gated-last (the supervision boundary):**
 
-- **S5 — L3 RELAY** *(Piece 5; gated on Forks 2+3 / #401/#402; depends S4).* New `execute_effect`
-  arm: on answering a `session_gate`, write the `control_response` NDJSON to `target_session_id`.
-  Add the `write_to_pty` ownership guard. **Ship last, behind the policy rulings.**
+- **S5 — L3 RELAY** *(Piece 5; gated on Forks 2+3 / #401/#402; depends S4).* The relay channel
+  carries **two** NDJSON message types into the session's stdin: **`control_response`** (gate answers,
+  gated by policy) and **user-input** (steering — "tell Henry to update the session"; also powers the
+  S7 Tier-1 escape hatch). New `execute_effect` arm writes to `target_session_id`. Add the
+  `write_to_pty` ownership guard. **Ship last, behind the policy rulings.**
 
 **Parallel, separately gated:**
 
 - **S6 — Project-state memory consumer + librarian_work_queue** *(depends S1/S3/S5 milestone
   events; HARD-GATED on project_id reaching Brain memories + recall).* **Cost: 0 LLM.**
 
-**Deferred (open mechanism fork):**
+**Two-tier (Tier 1 in v1; Tier 2 deferred):**
 
-- **S7 — "Take Control" handoff** *(deferred; depends S1; does NOT gate S1).* A per-tab button that
-  hands a session from Henry-monitored stream-json to a Jesse-driven interactive session.
-  **Mechanism UNDECIDED:** (ii) suspend stream-json + hand the worktree to a fresh interactive
-  `claude` resuming via conversation continuity, vs (iii) inject user-input NDJSON through the relay
-  channel.
+- **S7 — "Take Control" handoff** *(depends S1).*
+  - **Tier 1 (v1, ~free):** a UI input box letting Jesse type a message relayed through the **same
+    NDJSON channel** as gate answers; pauses Henry's auto-gate-advancing on that session while Jesse
+    drives. Rides on S5's relay — no new transport.
+  - **Tier 2 (DEFERRED — open fork):** true raw interactive CC — **(ii)** fresh interactive `claude`
+    resuming the worktree via conversation continuity vs **(iii)** NDJSON-injection-only. Do not
+    resolve now. S1 does **not** depend on Tier 2.
 
 ---
 
 ## Open forks for Jesse
 
-**Fork 1 — Visible *how*? — RULED.** Default = **stream-json Henry-mode** (watchable, cheap,
-deterministic). The tab shows the NDJSON stream (every tool call and thought scrolls by); stdin is
-NDJSON, so the tab is not hand-typeable — input arrives via the relay. A pretty NDJSON renderer is a
-later polish, not v1. The hand-typeable interactive experience is the deferred **S7 "Take Control"**
-handoff (mechanism fork ii-vs-iii still open).
+**Fork 1 — Transport — RULED: PTY in the Build-tab terminal.** Each Henry request → a new Build-tab
+tab → CC/Codex runs there as a stream-json session, visibly; relay via `write_to_pty`. Not a piped
+subprocess, not a custom renderer. The tab shows the NDJSON stream; hand-typing is the S7 Tier-1
+escape hatch (rides the relay channel). Session kind = **both** (dispatched-goal or free-standing
+watched). Steering = **tell-Henry primary** (user-input NDJSON folds into S5's relay).
 
 **Fork 2 — Auto-clear policy (#401/#402) — OPEN.** The CC-tool → `action_class` → tier mapping.
 Which `can_use_tool` gates may Henry auto-relay (Tier 0/1) vs must escalate to Jesse (Tier 2)?
@@ -255,12 +263,22 @@ relay channel.
 
 - **DETECTION:** stream-json structured gates. **Not** TUI parsing; **not** #423's quiescence
   heuristic.
-- **FORK 1 (visible-how):** DEFAULT = stream-json Henry-mode (watchable, cheap). PLUS a planned
-  **"Take Control" handoff (S7, DEFERRED)** — per-tab button handing the session to a Jesse-driven
-  interactive session; mechanism (ii suspend+worktree-handoff vs iii user-input-NDJSON) **open**.
-  S7 does **not** gate S1.
-- **#423:** trim to `TerminalProcessExited` only (drop the `TerminalWaitingForInput` quiescence
-  poll; it's superseded by stream-json gate detection).
+- **FORK 1 — TRANSPORT (RESOLVED):** **PTY in the Build-tab terminal.** Each Henry request → a new
+  Build-tab tab → Henry invokes CC/Codex there as a stream-json session → runs visibly; Henry
+  oversees and approves gates; relay via `write_to_pty`. **Not** a piped subprocess, **not** a custom
+  renderer. Reuse the existing `terminal.rs` / Build-tab infra. (This resolves the PTY-vs-piped
+  sub-fork that S0 surfaced.)
+- **SESSION KIND (RESOLVED — BOTH):** A supervised session is **either** a dispatched-goal (Jesse
+  says "set up a goal" → uses #424's worktree + goal-review scaffolding via `GoalEngine`) **or** a
+  free-standing watched session (Jesse says "just run CC" → no goal/review). **S1 must support both
+  entry points.** The session machinery (launch + parse + relay) must be **independent** of whether
+  it is wrapped as a goal — the supervised session is *not* always a `GoalEngine` dispatch.
+- **STEERING (RESOLVED):** PRIMARY = "tell Henry to update the running session" — Henry relays a
+  **user-input NDJSON** message into the **same stdin** he answers gates on. **This folds into S5's
+  relay** (same channel; new message type: user-input vs `control_response`). ESCAPE HATCH = "basic
+  Take Control" in v1 (see S7 Tier 1).
+- **#423:** trimmed to `TerminalProcessExited` only (DONE). The loop uses its **own** completion
+  (stream-json `type:"result"` + subprocess exit), **not** #423's `pty_exit` — don't couple them.
 - **BLOCKERS:** S6 (project-state memory) is hard-gated on (a) `project_id` reaching Brain memories +
   recall — **closed #70 did NOT deliver this to the Brain tables** — AND (b) a new
   `librarian_work_queue` (the enqueue path doesn't exist; the CRM precedent is itself unbuilt).
@@ -275,6 +293,64 @@ PR #424 (#59) runs `claude` **headless in a detached git worktree** via a
 `project_launch` → PTY → `claude` path. These are **different mechanisms and different registries
 today.** The collapse: make Jesse's visible tab **the same stream-json CC session #424 launches,
 surfaced in a terminal** — visibility becomes a presentation flag on one launch mechanism, one
-registry, one gate parser, one relay. **To settle in S0:** confirm against the #424 branch whether
-`ExternalCliEngine` spawns via the `claude_code.rs` stream-json provider (gate machinery already
-shared) or a raw `claude -p` (converge it onto the provider protocol).
+registry, one gate parser, one relay. **Settled in S0 (see below): the collapse does NOT hold —
+#424's engine is gate-bypassed and headless, so S1 is a sibling engine, not an extension.**
+
+---
+
+## S0 Reconciliation Findings (#426 — #424 now merged, `badb7f3c5`)
+
+**#424 is Case (b)-degenerate.** `ExternalCliEngine` (`crates/goose/src/agents/platform_extensions/goal_engine.rs`)
+launches the shipped claude worker (`config/agent_identity.rs:299`) as:
+
+```
+claude -p "{prompt}" --dangerously-skip-permissions --output-format stream-json
+```
+
+via `run_external_cli` (`goal_engine.rs:282`): `Command::new(bin)` with `stdin(Stdio::null())`,
+`stdout(Stdio::piped())`, and `cmd.output().await` — i.e. **buffered to completion, then the stdout
+is discarded** (only the exit code becomes `GoalOutcome::{Success,Failed,TimedOut}`). It does **not**
+use the `claude_code.rs` provider (that's a separate `Provider` impl used only when claude is a
+*model backend*).
+
+This **actively defeats the loop**, three ways:
+1. `--dangerously-skip-permissions` → CC auto-approves everything → **no `control_request` ever
+   fires** → nothing to detect.
+2. `stdin: null` → **no channel to relay** a `control_response`. `DispatchedWork { run_id,
+   join: JoinHandle<GoalOutcome> }` retains **no writable handle** to the live process.
+3. `cmd.output()` buffers + discards → **no streaming parse**, no visibility.
+
+**Conclusion: S1 is a SIBLING engine, not an extension.** #424 contributes the *goal/worktree/review*
+half (reusable scaffolding); it contributes **nothing** to the gate-detection / visible / interactive
+half and must not be flag-extended into it.
+
+**Session-identity (Pieces 1+3 do NOT fully collapse):** #424's `run_id = "cli-<uuid>"` (recorded as
+the card's `worker_session_id`) identifies the goal/worktree but is **not a relay address** — there is
+no writable handle, stdin is null. **S2's registry must bridge** `{loop_session_id → (run_id/goal_id
+if any, project_id, LIVE writable stdin/PTY handle, pending request_id)}`. The relay handle is
+**net-new**, held by S1's new engine.
+
+### S1 scope (sharpened, startable)
+
+S1 = a new sibling `GoalEngine` impl (e.g. `SupervisedCliEngine`) that:
+- **Reuses #424 scaffolding:** the `GoalEngine` trait, `GoalTask`, `create_goal_worktree`,
+  `DispatchedWork`/`GoalOutcome`, and the dispatch wiring (`run_id → worker_session_id`).
+- **Reuses `claude_code.rs` protocol structs** (`IncomingControlRequest` / `ControlResponse` /
+  `PermissionResponse`) for parse/serialize.
+- **Replaces the invocation:** `claude --output-format stream-json --input-format stream-json
+  --verbose --permission-prompt-tool stdio` (**drop** `--dangerously-skip-permissions`), in a **PTY**
+  (Build-tab terminal), stdin piped/writable for relay, stdout streamed through a read loop that tees
+  to the bus (feeds S2's parser) and is visible in the tab.
+- **Must NOT reuse** `run_external_cli`'s `cmd.output()` buffering or the
+  `--dangerously-skip-permissions` roster args.
+- **Supports both entry points:** dispatched-goal *and* free-standing watched session.
+
+### Take Control (S7) — two tiers (v1 + deferred)
+
+- **Tier 1 (v1, ~free):** a manual-input affordance — a UI box letting Jesse type a message relayed
+  through the **same NDJSON channel** as gate answers (the primary steering path). Pauses Henry's
+  auto-gate-advancing on that session while Jesse is driving. Rides entirely on S5's relay channel;
+  no new transport.
+- **Tier 2 (DEFERRED — open fork):** true raw interactive CC — **(ii)** spawn a fresh interactive
+  `claude` resuming the worktree via conversation continuity vs **(iii)** NDJSON-injection-only.
+  Cost/seam differ; **do not resolve now.** S1 does **not** depend on Tier 2.
