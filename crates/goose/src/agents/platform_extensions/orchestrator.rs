@@ -784,6 +784,12 @@ impl OrchestratorClient {
             "attempt_count".to_string(),
             serde_json::json!(attempt_count + 1),
         );
+        // Tag the dispatch with the current daemon lifecycle so restart-recovery
+        // won't reclaim this goal while its in-process tracker is still alive.
+        patch.insert(
+            "dispatched_lifecycle".to_string(),
+            serde_json::json!(daemon_lifecycle_id()),
+        );
         if let Some(ref baseline) = baseline_commit {
             patch.insert("baseline_commit".to_string(), serde_json::json!(baseline));
         }
@@ -2625,6 +2631,19 @@ pub async fn handle_goal_timeout(
     Ok(())
 }
 
+/// Process-global identifier for the current daemon lifecycle, minted once on
+/// first access. Stamped on a goal card at dispatch (`dispatched_lifecycle`) so
+/// restart-recovery can distinguish a goal dispatched in THIS running process —
+/// where a live in-process completion tracker already owns it — from one
+/// orphaned by a *prior* daemon lifecycle that genuinely needs reclaiming.
+///
+/// A fresh daemon process mints a new id, so a card carrying a previous
+/// lifecycle's id (or none) is correctly treated as an orphan and reclaimed.
+pub fn daemon_lifecycle_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| uuid::Uuid::new_v4().to_string())
+}
+
 /// Resume in-progress goals after daemon restart.
 ///
 /// Scans for goal cards in the `in_progress` state and either:
@@ -2687,6 +2706,26 @@ async fn resume_single_goal(
         .ok_or_else(|| format!("Card {} not found during resume", card_id))?;
 
     let meta = card.metadata_json.as_object();
+
+    // Was this goal dispatched in the CURRENT daemon lifecycle? If so, a live
+    // in-process completion tracker already owns it — it is not an orphan from a
+    // prior lifecycle. Skip it. (`is_session_busy` cannot see external-CLI
+    // worker processes, so it would otherwise misjudge a live goal as dead and
+    // clobber it back to Ready.) Genuine crash recovery is preserved: a goal
+    // from a previous process carries a different (or no) lifecycle id and falls
+    // through to the reclaim logic below.
+    let dispatched_lifecycle = meta
+        .and_then(|m| m.get("dispatched_lifecycle"))
+        .and_then(|v| v.as_str());
+    if dispatched_lifecycle == Some(daemon_lifecycle_id()) {
+        tracing::debug!(
+            target: "permagentd::brain",
+            "Goal '{}' was dispatched in the current daemon lifecycle — live tracker owns it, not reclaiming",
+            card.title
+        );
+        return Ok(());
+    }
+
     let session_id = meta
         .and_then(|m| m.get("worker_session_id"))
         .and_then(|v| v.as_str());
@@ -3220,6 +3259,89 @@ mod tests {
         assert_eq!(
             updated.metadata_json.get("goal_state").unwrap().as_str(),
             Some("ready")
+        );
+    }
+
+    /// Merge `dispatched_lifecycle` into a card's metadata (mirrors what the
+    /// dispatch path stamps), preserving every other field.
+    async fn stamp_lifecycle(pool: &sqlx::Pool<sqlx::Sqlite>, card: &cards::Card, lifecycle: &str) {
+        let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
+        meta.insert(
+            "dispatched_lifecycle".to_string(),
+            serde_json::json!(lifecycle),
+        );
+        cards::update_card(
+            pool,
+            &card.id,
+            cards::UpdateCard {
+                metadata_json: Some(serde_json::Value::Object(meta)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Defect 1 regression: a goal dispatched in the CURRENT daemon lifecycle
+    /// must NOT be reclaimed by restart-recovery. A live in-process tracker owns
+    /// it; `is_session_busy` cannot see its external-CLI worker process, so
+    /// without the lifecycle guard the resume scan would clobber it to Ready and
+    /// the later completion would be skipped (the dispatch→inbox limbo bug).
+    #[tokio::test]
+    async fn resume_skips_goal_dispatched_this_lifecycle() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_lifecycle(&pool, &card, daemon_lifecycle_id()).await;
+
+        // No manager = `is_session_busy` would say "dead" — but the lifecycle
+        // guard must short-circuit before that check.
+        resume_single_goal(&pool, &None, &card.id, &card.project_id)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("in_progress"),
+            "a goal dispatched this lifecycle must stay in_progress"
+        );
+        assert_eq!(
+            updated.metadata_json.get("attempt_count").unwrap().as_u64(),
+            Some(1),
+            "the attempt counter must not be bumped for a live goal"
+        );
+    }
+
+    /// Crash-recovery preserved: a goal carrying a *different* lifecycle id (it
+    /// was dispatched by a prior, now-dead daemon process) is a genuine orphan
+    /// and IS reclaimed to Ready.
+    #[tokio::test]
+    async fn resume_reclaims_goal_from_prior_lifecycle() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_lifecycle(&pool, &card, "some-prior-daemon-lifecycle-id").await;
+
+        resume_single_goal(&pool, &None, &card.id, &card.project_id)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("ready"),
+            "an orphan from a prior lifecycle must be reclaimed to Ready"
+        );
+        assert_eq!(
+            updated.metadata_json.get("attempt_count").unwrap().as_u64(),
+            Some(2),
         );
     }
 
