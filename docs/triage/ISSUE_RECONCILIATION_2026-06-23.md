@@ -74,7 +74,7 @@
 | 185 | Silver theme light variant | **LIKELY DONE** | `styles/tokens.ts:169-184` SILVER_COLORS + ThemeId 'silver' + switcher | **close** |
 | 187 | migrate ontology.toml entities to Brain storage | STILL VALID | `ontology.toml` still 356 `[[entity]]`; no entities table — **Spectral-pin-gated** | keep |
 | 191 | Epic: Social media scheduling (permagent-social) | STILL VALID | no `permagent-social` crate in workspace | keep |
-| 193 | neon accent drift #00D5FF vs #00D9FF | STILL VALID | `tokens.ts`/`Terminal.tsx` use #00D5FF; `world/palette.ts`/`constants.ts` use #00D9FF | keep (needs decision) |
+| 193 | neon accent drift #00D5FF vs #00D9FF | STILL VALID (**decided**) | `tokens.ts`/`Terminal.tsx` use #00D5FF; `world/palette.ts`/`constants.ts` use #00D9FF. **RESOLVED (Jesse 2026-06-23):** global accent = `#00D5FF`; Henry needs a DISTINCT trim because `#00D9FF` *collides* with it — see #87. Normalize non-Henry surfaces to #00D5FF; keep Henry's trim deliberately separate. Cross-link #87. | keep (build the fix) |
 | 198 | Epic: Voice layer | PARTIALLY DONE | shipped #354/#404/#407/#410/#434/#417; open: #398/#452/#244 L2-3 | keep |
 | 210 | execution receipts / heartbeat for goals | STILL VALID | dispatch_evidence on unmerged `feat/goal-completion-evidence`; no receipts on main | keep |
 | 211 | store capability snapshot at dispatch | STILL VALID | no capability_snapshot field in card metadata | keep |
@@ -179,7 +179,7 @@ These are implemented but **the code is not on `main`**. They auto-resolve when 
 
 | # | Status | Open PR / branch |
 |---|---|---|
-| 386 | zone click→camera nav complete | PR #415 **and** #416 (duplicate PRs, `world-zone-nav` / `world-zone-nav-2`) — **pick one, close the other** |
+| 386 | zone click→camera nav complete | PR #415 **and** #416 point to the **identical commit** `c33b8dfa0` — true duplicates. **Recommend: keep #415 (original), close #416** (the `-2` re-push). |
 | 400 | L2 process-exit observe signal complete | PR #423 (`feat/l2-terminal-signals`); titled "#400-partial" |
 | 455 | worktree-correct verifier fix complete | PR #454 (`feat/goal-completion-evidence`) |
 | 458 | dispatch-evidence capture + panel (partial) | PR #454 (same) — informed-reject still unbuilt |
@@ -283,3 +283,40 @@ A reconciliation that only closes stale issues but misses live bugs is half-usef
 # 455 -> merge PR #454   (LIVE BUG on main until then)
 # 458 -> merge PR #454 (partial)
 ```
+
+---
+
+## 11. Closure-readiness flags (Jesse follow-up, 2026-06-23)
+
+### Code-done vs visually-verified (before closing #353 / #383 / #391)
+
+| # | Type | Verified by | Before closing |
+|---|---|---|---|
+| **#383** nameplate name | **Render-correctness** (not pure logic) | `tsc + vite build` only (PR #382). Logic is sound: `useOrchestratorName()` reads `getIdentity().first_name`, only the `isHenry` roster entry is overridden. | One visual eyeball: World View 3D nameplate + hover tooltip show the **configured** name (Henry), and `HenryHUD` no longer falls back to 'ARIA'. No automated render test exists. |
+| **#391** arrow-key control | **Behavioral / interaction** (not pure logic) | `tsc + vite build` only. `nudgeAgent()` applies delta + drops autonomous path + honors Librarian ring-lock. | One hands-on check: **zoom into an avatar**, press arrow/WASD — the avatar moves and faces travel direction while keys held. The bug was a no-op wiring, only observable third-person; not CI-catchable. |
+| **#353** self-knowledge epic | **Code-done** (shipped descriptors + tour) | PRs #361/#364, on main; `self_knowledge/mod.rs` exists. | See rule note below — closing the epic is safe *for the code*, but the cross-cutting enforcement guard is unbuilt. |
+
+**Recommendation:** #383 and #391 are frontend-only and low-risk, but neither is pure logic with test coverage — give each a 30-second GUI check before closing. #353 is code-complete.
+
+### Does closing #353 lose the "ship the descriptor in the same PR" standing rule?
+
+**No — the rule survives, but its enforcement is only partial.**
+- **Persistent home:** documented at `docs/architecture/SELF_KNOWLEDGE_BRAIN.md:153` — *"Updates to Permagent features must include corresponding updates to the self-knowledge corpus. This is a process discipline, not a technical guarantee. Recommendation: a CI check that fails when feature code changes without corresponding self-knowledge updates."* Closing the epic does not delete this.
+- **Partial compile-enforcement (real today):** platform **tools** extend `PlatformExtensionDef`, which is compile-enforced (a missing descriptor field is an `E0063` build error). That guard is genuine and stays.
+- **Gap (the part that's only process discipline):** **worker** and **surface** descriptors live in hand-maintained static slices — `WORKER_DESCRIPTORS` / `SURFACE_DESCRIPTORS` (`self_knowledge/mod.rs:131,137`). A new worker/surface *can* ship without a descriptor and still compile.
+- **The recommended CI check is NOT built:** `.github/workflows/ci.yml` has zero self-knowledge references.
+
+**So:** safe to close #353 (the build is done). But the *enforcement* of the standing rule is itself unfiled work — recommend a **new issue: "CI guard: fail when capability code changes without a self-knowledge descriptor update"** so the rule doesn't decay once the epic is closed. (Not filed here — report-only.)
+
+### §7 live-bug triage table (for prioritization)
+
+| # | Bug | Severity | Fix path known? |
+|---|---|---|---|
+| **#455** | Verifier diffs `project.root_path`, not the worker's worktree → orchestrator verification false-pass/fail | **Critical** — breaks #424 dogfooding end-to-end | **Yes — fix already written in open PR #454.** Just merge (after review). |
+| **#452** | Voice multi-part instruction fragmented by STT endpointing; clauses dropped | **High** — cripples voice goal-dispatch | Partial — hypothesis is STT endpoint window; needs Phase-0 spike on sherpa endpointing + buffer-before-dispatch. No code yet. |
+| **#398** | No voice barge-in / interrupt mid-response | **High** — blocks natural voice UX; compounds #267 | Known approach — add cancellable TTS path + space/click→halt→return-to-listening. No code yet. |
+| **#159** | Cross-provider conversation history: tool_use IDs fail validation across providers | **Medium** — fresh-session-per-provider workaround exists | Known approach — strip/transform provider-specific tool_use IDs on cross-provider replay. Not started. |
+| **#224** | Agent misattributes provider 401 (dead API key) as "Gmail auth" failure | **Medium** — wrong diagnosis to user; not data-loss | Known approach — distinguish provider-auth 401 from target-page auth in error attribution. Not started. |
+| **#122** | Startup cleanup (prune/consolidate) silently fails on SQLite write-lock contention | **Low/Medium** — manual CLI cleanup workaround; #121 ingest filter mitigates | Known approach — defer cleanup until after Brain init / share connection. Not started. |
+
+**Parked per Jesse (resolve later with repro/recall, not chased now):** #166, #167, #259, #266, #295.
