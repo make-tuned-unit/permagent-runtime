@@ -15,8 +15,44 @@ export type VoiceState =
   | 'ready'         // Socket open + server ready, waiting for push-to-talk
   | 'recording'     // Push-to-talk held, capturing audio
   | 'processing'    // Audio sent, waiting for STT + reply + TTS
-  | 'playing'       // Playing TTS response
+  | 'playing'       // Playing TTS response ("Speaking...")
   | 'error';        // Recoverable error (auto-recovers to ready/idle)
+
+/**
+ * Watchdog ceiling: max time a mic-locking state may sit with NO daemon
+ * activity and NO local playback before we treat it as wedged and force a
+ * recovery. Generously above the worst observed legitimate pre-stream latency
+ * (~53s) so a slow-but-live reply is never cut off, while a genuine hang
+ * (daemon emits no reply_end/error, socket stays open) self-heals.
+ */
+export const VOICE_WATCHDOG_MS = 90_000;
+
+/**
+ * Pure predicate: is a busy voice state wedged and in need of a forced clear?
+ *
+ * Wedged = in a mic-locking state (`processing`/`playing`), with NO audio
+ * actively playing or queued (so it isn't making local progress), and no
+ * daemon activity for longer than the threshold. Extracted so the watchdog
+ * decision is unit-testable without a live audio session.
+ */
+export function isVoiceWedged(opts: {
+  state: VoiceState;
+  isPlaying: boolean;
+  queuedChunks: number;
+  msSinceActivity: number;
+  thresholdMs?: number;
+}): boolean {
+  const {
+    state,
+    isPlaying,
+    queuedChunks,
+    msSinceActivity,
+    thresholdMs = VOICE_WATCHDOG_MS,
+  } = opts;
+  if (state !== 'processing' && state !== 'playing') return false;
+  if (isPlaying || queuedChunks > 0) return false;
+  return msSinceActivity > thresholdMs;
+}
 
 export interface VoiceEvent {
   type: 'transcript' | 'reply_text' | 'reply_audio' | 'error' | 'state_change';
@@ -66,6 +102,9 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const readyResolveRef = useRef<(() => void) | null>(null);
   const readyRejectRef = useRef<((err: Error) => void) | null>(null);
   const stateRef = useRef<VoiceState>('idle');
+  // Last time the daemon showed life (any inbound message) or we entered a
+  // busy state — drives the stuck-state watchdog below.
+  const lastActivityRef = useRef(0);
   // Frame counter for diagnostics
   const frameCountRef = useRef(0);
   // Speak-then-act: a navigation forwarded by the backend AFTER the turn's
@@ -153,6 +192,8 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
   // --- WebSocket message handler ---
   const handleWsMessage = useCallback((event: MessageEvent) => {
+    // Any inbound message proves the daemon is alive — reset the watchdog.
+    lastActivityRef.current = Date.now();
     if (typeof event.data === 'string') {
       try {
         const msg = JSON.parse(event.data);
@@ -294,6 +335,74 @@ export function useVoice(options: UseVoiceOptions = {}) {
     });
   }, [sessionId, setStateAndEmit, handleWsMessage]);
 
+  // Force-clear a wedged voice state. Tears down playback resources, then —
+  // if voice is still active — reconnects a FRESH socket (which aborts a hung
+  // daemon handler, since the close sets its cancellation flag) so the next
+  // push-to-talk reaches a live handler. If inactive, drops to idle. This is
+  // the guaranteed "Speaking..." reset the watchdog and session-switch use.
+  const forceRecover = useCallback((reason: string) => {
+    console.warn(`[useVoice] forceRecover: ${reason}`);
+    // Tear down playback so a half-played buffer can't hold the busy state.
+    playingRef.current = false;
+    audioQueueRef.current = [];
+    pendingAudioRef.current = false;
+    pendingNavRef.current = null;
+    playbackCtxRef.current?.close().catch(() => {});
+    playbackCtxRef.current = null;
+    lastActivityRef.current = Date.now();
+
+    if (activeRef.current) {
+      if (!connectingRef.current) {
+        connectingRef.current = true;
+        connectSocket()
+          .catch(() => {})
+          .finally(() => { connectingRef.current = false; });
+      }
+    } else {
+      if (wsRef.current) {
+        wsRef.current.onclose = null;
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      setStateAndEmit('idle');
+    }
+  }, [connectSocket, setStateAndEmit]);
+
+  // Stuck-state watchdog: a daemon that stops emitting terminal events (a hung
+  // LLM/TTS stream sends no reply_end/error yet leaves the socket open) would
+  // otherwise pin the UI in 'playing'/'processing' forever — locking the mic.
+  // Poll for a wedged state and force a recovery so it can never trap the user.
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (
+        isVoiceWedged({
+          state: stateRef.current,
+          isPlaying: playingRef.current,
+          queuedChunks: audioQueueRef.current.length,
+          msSinceActivity: Date.now() - lastActivityRef.current,
+        })
+      ) {
+        forceRecover('watchdog: busy state wedged with no daemon activity');
+      }
+    }, 5000);
+    return () => clearInterval(id);
+  }, [forceRecover]);
+
+  // Defensive cross-session reset: VoiceButton is never remounted on a new
+  // conversation (only chatSessionId changes), so a wedged 'playing'/'processing'
+  // would otherwise be inherited by the next session. Force-clear it on session
+  // change so a new session is never born with a locked mic — a backstop even if
+  // an unforeseen path leaves the state stuck.
+  const prevSessionRef = useRef(sessionId);
+  useEffect(() => {
+    if (prevSessionRef.current === sessionId) return;
+    prevSessionRef.current = sessionId;
+    const s = stateRef.current;
+    if (s === 'processing' || s === 'playing' || s === 'error') {
+      forceRecover('session changed — clearing inherited busy voice state');
+    }
+  }, [sessionId, forceRecover]);
+
   // --- Public API ---
 
   const ensureReady = useCallback(async (): Promise<void> => {
@@ -431,6 +540,8 @@ export function useVoice(options: UseVoiceOptions = {}) {
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN && stateRef.current === 'recording') {
       ws.send(JSON.stringify({ type: 'stop' }));
+      // Start the watchdog clock fresh as we enter the busy phase.
+      lastActivityRef.current = Date.now();
       setStateAndEmit('processing');
     }
   }, [sampleRate, setStateAndEmit]);
