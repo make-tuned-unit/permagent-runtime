@@ -1,8 +1,163 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, WebviewBuilder, WebviewUrl};
+
+// ── File-intake inbox (epic #392 / #393) ────────────────────────────────────
+//
+// Downloads in the in-app browser webview are redirected onto disk under
+// `~/.permagent/inbox/` and recorded as a metadata row in permagent.db via the
+// daemon's `POST /api/inbox`. The webview fires `on_download` in this (desktop)
+// process; persistence lives in the daemon, so we POST over the same
+// token-authenticated localhost seam `activity.rs` uses. macOS does not report
+// the final saved path on the `Finished` event, so we remember the destination
+// we set on `Requested` and use that.
+
+/// A download whose destination we redirected on `Requested`, awaiting `Finished`.
+struct PendingInboxDownload {
+    /// Source URL the file was downloaded from.
+    url: String,
+    /// Absolute on-disk path inside the inbox directory.
+    abs_path: PathBuf,
+    /// On-disk basename, also the `disk_path` relative to the inbox dir.
+    filename: String,
+}
+
+fn inbox_dir() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    PathBuf::from(home).join(".permagent/inbox")
+}
+
+fn read_daemon_token() -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let path = PathBuf::from(home).join(".permagent/secrets/daemon_token.json");
+    let content = std::fs::read_to_string(path).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
+    parsed.get("token")?.as_str().map(|s| s.to_string())
+}
+
+/// Strip any path components and unsafe characters from a suggested filename.
+fn sanitize_filename(name: &str) -> String {
+    let base = name.trim().rsplit(['/', '\\']).next().unwrap_or("").trim();
+    let cleaned: String = base
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '/' | '\\' | '\0') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let cleaned = cleaned.trim_matches('.').trim();
+    if cleaned.is_empty() {
+        "download".to_string()
+    } else {
+        cleaned.to_string()
+    }
+}
+
+/// Split `name` into (stem, extension) on the last dot. Extension is empty when
+/// there is no dot or it is a leading dot (dotfile).
+fn split_ext(name: &str) -> (&str, &str) {
+    match name.rfind('.') {
+        Some(i) if i > 0 && i < name.len() - 1 => (&name[..i], &name[i + 1..]),
+        _ => (name, ""),
+    }
+}
+
+/// Return a filename that does not collide with an existing file in `dir`.
+/// Appends `-1`, `-2`, … before the extension; falls back to a uuid prefix.
+fn dedupe_filename(dir: &Path, name: &str) -> String {
+    if !dir.join(name).exists() {
+        return name.to_string();
+    }
+    let (stem, ext) = split_ext(name);
+    for n in 1..1000 {
+        let candidate = if ext.is_empty() {
+            format!("{stem}-{n}")
+        } else {
+            format!("{stem}-{n}.{ext}")
+        };
+        if !dir.join(&candidate).exists() {
+            return candidate;
+        }
+    }
+    format!("{}-{name}", uuid::Uuid::new_v4())
+}
+
+/// Ensure the inbox dir exists and compute a sanitized, collision-free target
+/// from the browser's suggested destination. Returns (absolute path, filename).
+fn prepare_inbox_destination(suggested: &Path) -> Result<(PathBuf, String), String> {
+    let dir = inbox_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create inbox dir: {e}"))?;
+    let raw = suggested
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("download");
+    let unique = dedupe_filename(&dir, &sanitize_filename(raw));
+    Ok((dir.join(&unique), unique))
+}
+
+/// Best-effort content-type from the filename extension. `None` when unknown —
+/// the column is nullable and a later pass can sniff bytes if needed.
+fn guess_content_type(name: &str) -> Option<&'static str> {
+    let (_, ext) = split_ext(name);
+    let ct = match ext.to_ascii_lowercase().as_str() {
+        "pdf" => "application/pdf",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "txt" => "text/plain",
+        "csv" => "text/csv",
+        "json" => "application/json",
+        "html" | "htm" => "text/html",
+        "zip" => "application/zip",
+        "doc" => "application/msword",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls" => "application/vnd.ms-excel",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        _ => return None,
+    };
+    Some(ct)
+}
+
+/// POST the inbox metadata row to the daemon. Mirrors `activity.rs`'s
+/// token-authenticated localhost call.
+async fn record_inbox_file(pending: PendingInboxDownload) -> Result<(), String> {
+    let token = read_daemon_token().ok_or("failed to read daemon token")?;
+    let size_bytes = std::fs::metadata(&pending.abs_path)
+        .ok()
+        .map(|m| m.len() as i64);
+    let body = serde_json::json!({
+        "filename": pending.filename,
+        "original_url": pending.url,
+        "content_type": guess_content_type(&pending.filename),
+        "size_bytes": size_bytes,
+        "disk_path": pending.filename,
+    });
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post("http://127.0.0.1:3001/api/inbox")
+        .bearer_auth(&token)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("daemon request failed: {e}"))?;
+
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        let status = resp.status().as_u16();
+        let text = resp.text().await.unwrap_or_default();
+        Err(format!("daemon returned {status}: {text}"))
+    }
+}
 
 struct BrowserWebview {
     _label: String,
@@ -52,8 +207,52 @@ pub async fn create_browser_webview(
     let nav_app = app.clone();
     let title_id = label.clone();
     let title_app = app.clone();
+    // Pending downloads keyed by source URL, carried Requested -> Finished.
+    let pending: Arc<Mutex<HashMap<String, PendingInboxDownload>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     let builder = WebviewBuilder::new(&label, webview_url)
         .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15")
+        .on_download(move |_webview, event| {
+            match event {
+                tauri::webview::DownloadEvent::Requested { url, destination } => {
+                    match prepare_inbox_destination(destination) {
+                        Ok((abs_path, filename)) => {
+                            let key = url.to_string();
+                            *destination = abs_path.clone();
+                            if let Ok(mut map) = pending.lock() {
+                                map.insert(
+                                    key.clone(),
+                                    PendingInboxDownload {
+                                        url: key,
+                                        abs_path,
+                                        filename,
+                                    },
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("[permagent-app] inbox: prepare destination failed: {e}");
+                        }
+                    }
+                    // Allow the download regardless; redirection is best-effort.
+                    true
+                }
+                tauri::webview::DownloadEvent::Finished { url, path: _, success } => {
+                    let entry = pending.lock().ok().and_then(|mut m| m.remove(&url.to_string()));
+                    if success {
+                        if let Some(entry) = entry {
+                            tauri::async_runtime::spawn(async move {
+                                if let Err(e) = record_inbox_file(entry).await {
+                                    eprintln!("[permagent-app] inbox: record failed: {e}");
+                                }
+                            });
+                        }
+                    }
+                    true
+                }
+                _ => true,
+            }
+        })
         .on_navigation(move |nav_url: &url::Url| {
             let _ = nav_app.emit(
                 "browser_navigated",
@@ -81,16 +280,12 @@ pub async fn create_browser_webview(
         .add_child(builder, position, size)
         .map_err(|e| format!("Failed to create webview: {e}"))?;
 
-    app.state::<BrowserSessions>()
-        .0
-        .lock()
-        .unwrap()
-        .insert(
-            label.clone(),
-            BrowserWebview {
-                _label: label.clone(),
-            },
-        );
+    app.state::<BrowserSessions>().0.lock().unwrap().insert(
+        label.clone(),
+        BrowserWebview {
+            _label: label.clone(),
+        },
+    );
 
     Ok(label)
 }
@@ -167,9 +362,7 @@ pub async fn zoom_browser(
         .get_webview(&webview_id)
         .ok_or_else(|| "Webview not found".to_string())?;
     let js = format!("document.body.style.zoom = '{:.0}%'", zoom_level * 100.0);
-    webview
-        .eval(&js)
-        .map_err(|e| format!("Zoom failed: {e}"))?;
+    webview.eval(&js).map_err(|e| format!("Zoom failed: {e}"))?;
     Ok(())
 }
 
@@ -191,10 +384,7 @@ fn default_status() -> String {
 }
 
 #[tauri::command]
-pub async fn get_page_content(
-    app: AppHandle,
-    webview_id: String,
-) -> Result<PageContent, String> {
+pub async fn get_page_content(app: AppHandle, webview_id: String) -> Result<PageContent, String> {
     let webview = app
         .get_webview(&webview_id)
         .ok_or_else(|| "Webview not found".to_string())?;
@@ -222,8 +412,7 @@ pub async fn get_page_content(
 
     // eval_with_callback JSON-serializes the JS return value, so the callback
     // receives a double-encoded string. Unwrap one layer.
-    let json_str: String =
-        serde_json::from_str(&raw).unwrap_or_else(|_| raw.clone());
+    let json_str: String = serde_json::from_str(&raw).unwrap_or_else(|_| raw.clone());
     let mut page: PageContent =
         serde_json::from_str(&json_str).map_err(|e| format!("Parse failed: {e}"))?;
 

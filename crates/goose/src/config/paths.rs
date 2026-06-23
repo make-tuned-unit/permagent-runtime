@@ -54,6 +54,14 @@ impl Paths {
         Self::base_dir().join("brain")
     }
 
+    /// Permagent-owned intake directory. Browser downloads (and, later, other
+    /// intake flows) land here as files on disk; a metadata row per file lives
+    /// in permagent.db (see [`crate::inbox`]). `disk_path` columns are stored
+    /// relative to this directory.
+    pub fn inbox_dir() -> PathBuf {
+        Self::base_dir().join("inbox")
+    }
+
     /// Ontology file used by the Spectral Brain.
     pub fn brain_ontology() -> PathBuf {
         Self::brain_dir().join("ontology.toml")

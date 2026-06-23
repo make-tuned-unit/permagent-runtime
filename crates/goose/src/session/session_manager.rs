@@ -696,6 +696,11 @@ impl SessionStorage {
                     if version < 12 {
                         spectral_schema::migrate_v11_to_v12(&self.pool).await?;
                     }
+                    // File-intake inbox (schema v13). Additive new-tables-only;
+                    // base-independent. Runs sequentially after v12.
+                    if version < 13 {
+                        spectral_schema::migrate_v12_to_v13(&self.pool).await?;
+                    }
                 } else {
                     info!("Initializing Spectral schema at {:?}", self.db_path);
                     spectral_schema::init_spectral_db(&self.pool).await?;
