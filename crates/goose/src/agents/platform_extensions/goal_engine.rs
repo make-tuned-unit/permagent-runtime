@@ -430,4 +430,71 @@ mod tests {
             outcome
         );
     }
+
+    /// Defect 2 (worktree isolation): with no git baseline the external engine
+    /// must fail fast with a clear reason — never silently fall back to running
+    /// the CLI in the user's project root.
+    #[tokio::test]
+    async fn external_cli_without_baseline_errors_clearly() {
+        let engine = ExternalCliEngine {
+            bin: "claude".to_string(),
+            args: vec![PROMPT_TOKEN.to_string()],
+            persona_override: None,
+        };
+        let task = GoalTask {
+            card_title: "t".to_string(),
+            instructions: "do it".to_string(),
+            working_dir: std::env::temp_dir(),
+            baseline_commit: None,
+            timeout: Duration::from_secs(10),
+        };
+        match engine.spawn(task).await {
+            Err(err) => assert!(
+                err.contains("git"),
+                "error must name the missing git baseline, got: {}",
+                err
+            ),
+            Ok(_) => panic!("dispatch without a baseline must fail, not run in the project root"),
+        }
+    }
+
+    /// Defect 2: the engine runs the CLI in an isolated worktree off the
+    /// baseline, not in the project root. Asserts `create_goal_worktree` checks
+    /// out the baseline into `.permagent-goal-worktrees/<run_id>` distinct from
+    /// the repo, and that the worktree is what gets used as `working_dir`.
+    #[tokio::test]
+    async fn create_goal_worktree_uses_isolated_path_off_baseline() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = tmp.path().join("proj");
+        std::fs::create_dir(&repo).unwrap();
+
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@t.t"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(repo.join("README.md"), "hi").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "base"]);
+        let head = String::from_utf8(git(&["rev-parse", "HEAD"]).stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+
+        let run_id = "cli-test-run";
+        let worktree = create_goal_worktree(&repo, &head, run_id).await.unwrap();
+
+        assert_ne!(worktree, repo, "worktree must not be the project root");
+        assert!(worktree.ends_with(format!(".permagent-goal-worktrees/{}", run_id)));
+        assert!(
+            worktree.join("README.md").exists(),
+            "worktree must be checked out at the baseline commit"
+        );
+    }
 }
