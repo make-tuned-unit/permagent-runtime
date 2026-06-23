@@ -74,6 +74,9 @@ pub struct SystemPromptBuilder<'a, M> {
     /// async at the call site (the scheduler is not reachable in `build()`).
     /// `None` → the Scheduler worker renders without a live status.
     scheduled_job_count: Option<usize>,
+    /// Workers the orchestrator can dispatch goals to, with live status. Fetched
+    /// async at the call site (the probe may block). Empty → section omitted.
+    dispatchable_workers: Vec<crate::agents::self_knowledge::DispatchableWorker>,
 }
 
 impl<'a> SystemPromptBuilder<'a, PromptManager> {
@@ -133,6 +136,15 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
     /// Provide the live scheduled-job count for the self-knowledge brief.
     pub fn with_scheduled_job_count(mut self, count: Option<usize>) -> Self {
         self.scheduled_job_count = count;
+        self
+    }
+
+    /// Provide the dispatchable-worker list for the self-knowledge brief.
+    pub fn with_dispatchable_workers(
+        mut self,
+        workers: Vec<crate::agents::self_knowledge::DispatchableWorker>,
+    ) -> Self {
+        self.dispatchable_workers = workers;
         self
     }
 
@@ -209,6 +221,7 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
         let permagent_self_block = crate::agents::self_knowledge::SelfKnowledgeBuilder {
             agent_display_name: display_name.clone(),
             scheduled_job_count: self.scheduled_job_count,
+            dispatchable_workers: self.dispatchable_workers.clone(),
         }
         .build();
 
@@ -342,6 +355,7 @@ impl PromptManager {
             code_execution_mode: false,
             goose_mode: None,
             scheduled_job_count: None,
+            dispatchable_workers: Vec::new(),
         }
     }
 

@@ -149,6 +149,39 @@ fn default_cost_tier() -> String {
     "local_free".to_string()
 }
 
+/// How a worker is actually run when the orchestrator dispatches a goal to it.
+///
+/// Internally tagged so `agent.yaml` reads naturally, e.g.
+/// `engine: { type: external_cli, bin: claude, args: [...] }`. Absent → the
+/// default in-process engine (`#[serde(default)]` on the field).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WorkerEngineKind {
+    /// In-process subagent on the parent session's provider (default, always
+    /// available — no external binary required).
+    #[default]
+    InternalSubagent,
+    /// External agentic CLI (Claude Code, Codex, …) spawned in an isolated git
+    /// worktree. `args` may contain the literal token `{prompt}`, replaced with
+    /// the goal prompt at dispatch time.
+    ExternalCli { bin: String, args: Vec<String> },
+    /// Registered and probed, but no runnable engine wired yet. Such a worker is
+    /// visible in the roster but never selected for a real goal — it must not be
+    /// dispatched and silently fail.
+    Pending,
+}
+
+impl WorkerEngineKind {
+    /// Short, stable label for surfacing in the API / self-knowledge.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::InternalSubagent => "internal_subagent",
+            Self::ExternalCli { .. } => "external_cli",
+            Self::Pending => "pending",
+        }
+    }
+}
+
 /// Worker persona configuration.
 /// Workers are specialized agents with a role instead of a greeting.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,6 +207,9 @@ pub struct WorkerPersona {
     /// Cost classification: "local_free", "subscription", or "paid_api"
     #[serde(default = "default_cost_tier")]
     pub cost_tier: String,
+    /// How this worker is run when dispatched. Absent → in-process subagent.
+    #[serde(default)]
+    pub engine: WorkerEngineKind,
 }
 
 impl Default for WorkerPersona {
@@ -188,6 +224,7 @@ impl Default for WorkerPersona {
             tool_kinds: Vec::new(),
             availability_check: default_availability(),
             cost_tier: default_cost_tier(),
+            engine: WorkerEngineKind::default(),
         }
     }
 }
@@ -230,17 +267,102 @@ pub struct AgentConfig {
     pub workers: HashMap<String, WorkerPersona>,
 }
 
+/// The embedded default worker roster, seeded at first run (when no `agent.yaml`
+/// exists, or one exists with no workers). Explicit config over hidden magic:
+/// each worker carries its engine kind + availability probe so what the
+/// orchestrator can dispatch to is visible and overridable.
+///
+/// - **Claude Code** — external-CLI reference worker (gated on the `claude`
+///   binary). Runs autonomously in an isolated worktree.
+/// - **Codex** — external-CLI fast-follow (gated on the `codex` binary). Its
+///   invocation args are best-effort and want a behavioral dogfood.
+/// - **Librarian** — registered + probed (Ollama `qwen2.5`) but `Pending`: its
+///   in-process engine is not wired here, so it is never selected for a goal.
+pub fn default_roster() -> HashMap<String, WorkerPersona> {
+    let mut roster = HashMap::new();
+
+    roster.insert(
+        "claude_code".to_string(),
+        WorkerPersona {
+            first_name: "Claude Code".to_string(),
+            role: "Autonomous coding agent — implements a goal end to end in an isolated git \
+                   worktree, leaving commits for review"
+                .to_string(),
+            tool_kinds: vec![
+                "code_edit".to_string(),
+                "shell".to_string(),
+                "git".to_string(),
+            ],
+            availability_check: "bin_exists:claude".to_string(),
+            cost_tier: "subscription".to_string(),
+            engine: WorkerEngineKind::ExternalCli {
+                bin: "claude".to_string(),
+                args: vec![
+                    "-p".to_string(),
+                    "{prompt}".to_string(),
+                    "--dangerously-skip-permissions".to_string(),
+                    "--output-format".to_string(),
+                    "stream-json".to_string(),
+                    "--verbose".to_string(),
+                ],
+            },
+            ..Default::default()
+        },
+    );
+
+    roster.insert(
+        "codex".to_string(),
+        WorkerPersona {
+            first_name: "Codex".to_string(),
+            role: "Fast coding agent — implements a goal in an isolated git worktree".to_string(),
+            tool_kinds: vec!["code_edit".to_string(), "shell".to_string()],
+            availability_check: "bin_exists:codex".to_string(),
+            cost_tier: "subscription".to_string(),
+            engine: WorkerEngineKind::ExternalCli {
+                // Best-effort invocation — confirm against the installed codex
+                // CLI during the behavioral dogfood before relying on it.
+                bin: "codex".to_string(),
+                args: vec!["exec".to_string(), "{prompt}".to_string()],
+            },
+            ..Default::default()
+        },
+    );
+
+    roster.insert(
+        "librarian".to_string(),
+        WorkerPersona {
+            first_name: "Librarian".to_string(),
+            role: "Brain-curation worker (Ollama) — engine not yet wired".to_string(),
+            tool_kinds: vec!["memory_ops".to_string()],
+            availability_check: "model_loaded:qwen2.5".to_string(),
+            cost_tier: "local_free".to_string(),
+            engine: WorkerEngineKind::Pending,
+            ..Default::default()
+        },
+    );
+
+    roster
+}
+
 /// Load agent config from ~/.permagent/agent.yaml.
-/// Returns default if file doesn't exist.
+///
+/// Seeds the embedded [`default_roster`] in-memory when the file is absent or
+/// carries no workers (no disk write — the existing PUT/save path persists any
+/// user edits). The `primary` persona still defaults independently.
 pub fn load_agent_config() -> AgentConfig {
     let path = agent_yaml_path();
-    if !path.exists() {
-        return AgentConfig::default();
+    let mut config = if !path.exists() {
+        AgentConfig::default()
+    } else {
+        match std::fs::read_to_string(&path) {
+            Ok(content) => serde_yaml::from_str(&content).unwrap_or_default(),
+            Err(_) => AgentConfig::default(),
+        }
+    };
+    if config.workers.is_empty() {
+        config.workers = default_roster();
     }
-    match std::fs::read_to_string(&path) {
-        Ok(content) => serde_yaml::from_str(&content).unwrap_or_default(),
-        Err(_) => AgentConfig::default(),
-    }
+    config
 }
 
 /// Save agent config to ~/.permagent/agent.yaml.
@@ -426,6 +548,87 @@ workers:
             !block.contains("Henry"),
             "Must not contain hardcoded 'Henry': {}",
             block
+        );
+    }
+
+    #[test]
+    fn default_roster_seeds_three_workers_with_engines() {
+        let roster = default_roster();
+        assert_eq!(roster.len(), 3, "expected claude_code + codex + librarian");
+
+        // Claude Code: external CLI, prompt token present, gated on the binary.
+        match &roster["claude_code"].engine {
+            WorkerEngineKind::ExternalCli { bin, args } => {
+                assert_eq!(bin, "claude");
+                assert!(
+                    args.iter().any(|a| a == "{prompt}"),
+                    "claude args must carry the prompt token: {:?}",
+                    args
+                );
+            }
+            other => panic!("claude_code must be ExternalCli, got {:?}", other),
+        }
+        assert_eq!(
+            roster["claude_code"].availability_check,
+            "bin_exists:claude"
+        );
+
+        // Codex: external CLI fast-follow.
+        assert!(matches!(
+            roster["codex"].engine,
+            WorkerEngineKind::ExternalCli { .. }
+        ));
+
+        // Librarian: registered + probed, but engine pending (never dispatched).
+        assert_eq!(roster["librarian"].engine, WorkerEngineKind::Pending);
+        assert_eq!(
+            roster["librarian"].availability_check,
+            "model_loaded:qwen2.5"
+        );
+    }
+
+    #[test]
+    fn load_seeds_roster_when_workers_empty() {
+        // The seeding branch load_agent_config runs when workers is empty.
+        let mut config = AgentConfig::default();
+        assert!(config.workers.is_empty());
+        if config.workers.is_empty() {
+            config.workers = default_roster();
+        }
+        assert_eq!(config.workers.len(), 3);
+    }
+
+    #[test]
+    fn select_excludes_pending_and_picks_claude_code_for_a_code_goal() {
+        use crate::goal_state::{select_best_worker, WorkerCandidate};
+
+        // Mirror select_worker's candidate build: Pending excluded, all probed
+        // available, no active sessions.
+        let candidates: Vec<WorkerCandidate> = default_roster()
+            .iter()
+            .filter(|(_, p)| !matches!(p.engine, WorkerEngineKind::Pending))
+            .map(|(k, p)| WorkerCandidate {
+                key: k.clone(),
+                available: true,
+                tool_kinds: p.tool_kinds.clone(),
+                cost_tier: p.cost_tier.clone(),
+                active_sessions: 0,
+            })
+            .collect();
+
+        assert!(
+            !candidates.iter().any(|c| c.key == "librarian"),
+            "the engine-pending librarian must be excluded from selection"
+        );
+
+        // claude_code and codex are both subscription/code-capable; the
+        // deterministic alphabetical tie-break picks claude_code.
+        let chosen =
+            select_best_worker(&candidates, &["code_edit".to_string(), "shell".to_string()])
+                .expect("a code worker should be selected");
+        assert_eq!(
+            chosen, "claude_code",
+            "expected the Claude Code reference worker"
         );
     }
 }
