@@ -259,6 +259,21 @@ impl Agent {
             None => None,
         };
 
+        // Dispatchable-worker list for the self-knowledge brief, gated on the
+        // orchestrator being active. The availability probe may block
+        // (`model_loaded:` does HTTP), so it runs off the async runtime.
+        let dispatchable_workers = if crate::agents::self_knowledge::orchestrator_dispatch_active()
+        {
+            tokio::task::spawn_blocking(|| {
+                let config = crate::config::agent_identity::load_agent_config();
+                crate::agents::self_knowledge::dispatchable_workers_from_config(&config)
+            })
+            .await
+            .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
         let prompt_manager = self.prompt_manager.lock().await;
         let mut system_prompt = prompt_manager
             .builder()
@@ -269,6 +284,7 @@ impl Agent {
             .with_hints(working_dir)
             .with_goose_mode(goose_mode)
             .with_scheduled_job_count(scheduled_job_count)
+            .with_dispatchable_workers(dispatchable_workers)
             .build();
 
         // Handle toolshim if enabled

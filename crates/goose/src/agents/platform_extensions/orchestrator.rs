@@ -1,3 +1,4 @@
+use super::goal_engine;
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
 use crate::agents::tool_execution::ToolCallContext;
@@ -496,6 +497,11 @@ impl OrchestratorClient {
         let candidates: Vec<goal_state::WorkerCandidate> = config
             .workers
             .iter()
+            // Workers with no runnable engine yet are visible in the roster but
+            // never selected — never route a real goal to an unbuilt engine.
+            .filter(|(_, persona)| {
+                !matches!(persona.engine, agent_identity::WorkerEngineKind::Pending)
+            })
             .map(|(key, persona)| {
                 let available = match self.probe_cache.get(key) {
                     Some(cached) => cached.available,
@@ -622,30 +628,16 @@ impl OrchestratorClient {
             card.title, card.description, project.name, root_path
         );
 
-        // Build recipe
-        let recipe = crate::recipe::Recipe::builder()
-            .version("1.0.0")
-            .title(format!("Goal: {}", card.title))
-            .description("Orchestrator-dispatched goal")
-            .prompt(&instructions)
-            .build()
-            .map_err(|e| format!("Failed to build recipe: {}", e))?;
-
-        // Get provider and extensions from parent session
-        let provider = self.get_provider().await?;
-        let extensions = self.parent_extensions();
-
-        // Get the session for working dir
+        // Working dir + baseline commit at dispatch time (recorded beside
+        // dispatched_at so a commit-producing worker's changes can be diffed
+        // against a known-good ref). Best-effort — baseline is absent when the
+        // working dir is not a git repo.
         let working_dir = project
             .root_path
             .as_ref()
             .map(PathBuf::from)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
-        // Baseline commit of the working dir at dispatch time (Lane L2
-        // contract): recorded beside dispatched_at so verification can diff
-        // the worker's changes against a known-good ref. Best-effort — absent
-        // when the working dir is not a git repo.
         let baseline_commit = tokio::process::Command::new("git")
             .arg("-C")
             .arg(&working_dir)
@@ -657,80 +649,85 @@ impl OrchestratorClient {
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .filter(|s| !s.is_empty());
 
-        // Create subagent session
-        let subagent_session = self
-            .context
-            .session_manager
-            .create_session(
-                working_dir.clone(),
-                format!("Goal: {}", card.title),
-                SessionType::SubAgent,
-                GooseMode::Auto,
-            )
-            .await
-            .map_err(|e| format!("Failed to create subagent session: {}", e))?;
+        // Resolve the engine for this worker and dispatch. The engine owns *how*
+        // the goal runs; the card lifecycle around it stays here.
+        let task = goal_engine::GoalTask {
+            card_title: card.title.clone(),
+            instructions,
+            working_dir,
+            baseline_commit: baseline_commit.clone(),
+            timeout: std::time::Duration::from_secs(goal_engine::DEFAULT_EXTERNAL_CLI_TIMEOUT_SECS),
+        };
 
-        let session_id = subagent_session.id.clone();
-
-        // Build task config
-        let model_config = provider.get_model_config();
-        let task_provider =
-            providers::create(provider.get_name(), model_config, extensions.clone())
-                .await
-                .map_err(|e| format!("Failed to create provider for goal dispatch: {}", e))?;
-
-        let task_config = crate::agents::subagent_task_config::TaskConfig::new(
-            task_provider,
-            &session_id,
-            &working_dir,
-            extensions,
-        );
-
-        let agent_config = crate::agents::AgentRunnerConfig::new(
-            self.context.session_manager.clone(),
-            crate::config::permission::PermissionManager::instance(),
-            None,
-            GooseMode::Auto,
-            true,
-            crate::agents::GoosePlatform::GooseCli,
-        );
-
-        // Spawn the subagent task in background and track completion
-        let cancel_token = CancellationToken::new();
-        let handle = tokio::spawn({
-            let session_id = session_id.clone();
-            async move {
-                crate::agents::subagent_handler::run_subagent_task(
-                    crate::agents::subagent_handler::SubagentRunParams {
-                        config: agent_config,
-                        recipe,
-                        task_config,
-                        return_last_only: true,
-                        session_id,
-                        cancellation_token: Some(cancel_token),
-                        on_message: None,
-                        notification_tx: None,
+        let engine: Box<dyn goal_engine::GoalEngine> =
+            match config.workers.get(&worker_key).map(|w| &w.engine) {
+                Some(agent_identity::WorkerEngineKind::ExternalCli { bin, args }) => {
+                    Box::new(goal_engine::ExternalCliEngine {
+                        bin: bin.clone(),
+                        args: args.clone(),
                         persona_override,
-                    },
-                )
-                .await
-            }
-        });
+                    })
+                }
+                Some(agent_identity::WorkerEngineKind::Pending) => {
+                    return Err(format!(
+                        "Worker '{}' has no runnable engine yet (engine pending) — not dispatched",
+                        worker_key
+                    ));
+                }
+                // InternalSubagent (default), or worker entry absent.
+                _ => {
+                    let provider = self.get_provider().await?;
+                    let extensions = self.parent_extensions();
+                    Box::new(goal_engine::InternalSubagentEngine {
+                        session_manager: self.context.session_manager.clone(),
+                        provider,
+                        extensions,
+                        persona_override,
+                    })
+                }
+            };
 
-        // Spawn completion tracker — watches the JoinHandle and transitions the card
+        let goal_engine::DispatchedWork {
+            run_id: session_id,
+            join,
+        } = engine.spawn(task).await?;
+
+        // Spawn completion tracker — awaits the engine's outcome and transitions
+        // the card. Success / retriable failure route to handle_goal_completion;
+        // a timeout parks the goal (unblock decision) via handle_goal_timeout.
         let tracker_card_id = card_id.to_string();
         let tracker_project_id = card.project_id.clone();
         let tracker_pool = pool.clone();
         tokio::spawn(async move {
-            let result = match handle.await {
-                Ok(Ok(_output)) => Ok(()),
-                Ok(Err(e)) => Err(e.to_string()),
-                Err(e) => Err(format!("Worker task panicked: {}", e)),
+            let outcome = match join.await {
+                Ok(o) => o,
+                Err(e) => goal_engine::GoalOutcome::Failed(format!("Worker task panicked: {}", e)),
             };
-            if let Err(e) =
-                handle_goal_completion(&tracker_pool, &tracker_card_id, &tracker_project_id, result)
+            let result = match outcome {
+                goal_engine::GoalOutcome::Success => {
+                    handle_goal_completion(
+                        &tracker_pool,
+                        &tracker_card_id,
+                        &tracker_project_id,
+                        Ok(()),
+                    )
                     .await
-            {
+                }
+                goal_engine::GoalOutcome::Failed(error) => {
+                    handle_goal_completion(
+                        &tracker_pool,
+                        &tracker_card_id,
+                        &tracker_project_id,
+                        Err(error),
+                    )
+                    .await
+                }
+                goal_engine::GoalOutcome::TimedOut { secs } => {
+                    handle_goal_timeout(&tracker_pool, &tracker_card_id, &tracker_project_id, secs)
+                        .await
+                }
+            };
+            if let Err(e) = result {
                 tracing::error!(
                     target: "permagentd::brain",
                     "Failed to handle goal completion for card {}: {}",
@@ -2568,6 +2565,63 @@ pub async fn handle_goal_completion(
         }
     }
 
+    Ok(())
+}
+
+/// Park a goal whose worker exceeded its time bound.
+///
+/// Unlike the retriable-failure branch of [`handle_goal_completion`], a timeout
+/// ALWAYS parks (an `unblock` decision) regardless of remaining budget — a
+/// timeout is a signal to ask the user for direction, never a silent retry.
+/// Reuses the wall-clock exhaustion park machinery so the decision lands in the
+/// inbox identically to a budget park.
+pub async fn handle_goal_timeout(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    project_id: &str,
+    secs: u64,
+) -> Result<(), String> {
+    let card = cards::get_card(pool, card_id)
+        .await?
+        .ok_or_else(|| format!("Card '{}' not found during timeout handling", card_id))?;
+
+    // Only act while the goal is still InProgress (mirrors handle_goal_completion:
+    // a manual intervention since dispatch is respected).
+    let current_col = cards::get_column(pool, &card.column_id).await?;
+    if current_col
+        .as_ref()
+        .and_then(|c| c.state_binding.as_deref())
+        != Some("in_progress")
+    {
+        tracing::info!(
+            target: "permagentd::brain",
+            "Goal '{}' timeout handler: card no longer in_progress — skipping",
+            card.title
+        );
+        return Ok(());
+    }
+
+    let exhaustion = goal_transition::BudgetExhaustion::Wallclock {
+        spent_secs: secs,
+        cap_secs: secs,
+    };
+    let decision_id = goal_transition::exhaust_and_park(
+        pool,
+        card_id,
+        &card.title,
+        project_id,
+        exhaustion,
+        Some("worker exceeded its time bound"),
+    )
+    .await?;
+
+    tracing::warn!(
+        target: "permagentd::brain",
+        "Goal '{}' worker timed out after {}s — parked with unblock decision {}",
+        card.title,
+        secs,
+        decision_id
+    );
     Ok(())
 }
 

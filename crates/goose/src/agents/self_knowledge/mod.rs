@@ -164,6 +164,71 @@ pub struct SelfKnowledgeBuilder {
     /// Live scheduled-job count (Queryable). `None` when the scheduler is not
     /// wired (e.g. tests) → rendered editorially.
     pub scheduled_job_count: Option<usize>,
+    /// Workers the orchestrator can dispatch goals to, with live status.
+    /// Pre-computed by the (async) caller so this builder stays pure and
+    /// snapshot-stable. Empty → the section is omitted (e.g. tests, or when
+    /// orchestration is not active).
+    pub dispatchable_workers: Vec<DispatchableWorker>,
+}
+
+/// A worker the orchestrator can dispatch a goal to, plus its live status,
+/// for the `<permagent_self>` brief. Populated dynamically — see
+/// [`dispatchable_workers_from_config`].
+#[derive(Debug, Clone)]
+pub struct DispatchableWorker {
+    pub display_name: String,
+    /// Human-readable status: "available", "unavailable: <reason>", or
+    /// "engine pending".
+    pub status: String,
+}
+
+/// Build the dispatchable-worker list from the live registry + availability
+/// probe. `Pending`-engine workers are reported as "engine pending" without
+/// probing; runnable workers report their live probe result. Deterministically
+/// sorted by display name. The probe may block (`model_loaded:` does HTTP) —
+/// call from a blocking context (e.g. `spawn_blocking`).
+pub fn dispatchable_workers_from_config(
+    config: &crate::config::agent_identity::AgentConfig,
+) -> Vec<DispatchableWorker> {
+    use crate::config::agent_identity::WorkerEngineKind;
+    let mut workers: Vec<DispatchableWorker> = config
+        .workers
+        .values()
+        .map(|w| {
+            let status = match &w.engine {
+                WorkerEngineKind::Pending => "engine pending".to_string(),
+                _ => {
+                    let (ok, reason) =
+                        crate::config::worker_probe::probe_worker(&w.availability_check);
+                    if ok {
+                        "available".to_string()
+                    } else {
+                        format!(
+                            "unavailable: {}",
+                            reason.unwrap_or_else(|| "not available".to_string())
+                        )
+                    }
+                }
+            };
+            DispatchableWorker {
+                display_name: w.display_name(),
+                status,
+            }
+        })
+        .collect();
+    workers.sort_by(|a, b| a.display_name.cmp(&b.display_name));
+    workers
+}
+
+/// Whether the orchestrator's goal-dispatch capability is active, using the
+/// same predicate the tools list uses for the orchestrator entry. The
+/// dispatchable-worker brief line is gated on this so Henry only claims to
+/// dispatch when the orchestrator tool is active.
+pub fn orchestrator_dispatch_active() -> bool {
+    PLATFORM_EXTENSIONS
+        .get("orchestrator")
+        .map(|d| crate::config::extensions::is_extension_enabled(d.name) || d.default_enabled)
+        .unwrap_or(false)
 }
 
 impl SelfKnowledgeBuilder {
@@ -207,6 +272,16 @@ impl SelfKnowledgeBuilder {
                 desc.display_name, state, desc.what_it_does, desc.why_it_matters
             )
             .ok();
+        }
+
+        // ── Workers you can dispatch goals to (dynamic; orchestrator) ──
+        // Populated only when orchestration is active; empty → omitted, keeping
+        // the brief snapshot-stable.
+        if !self.dispatchable_workers.is_empty() {
+            writeln!(out, "\n## Workers you can dispatch goals to").ok();
+            for w in &self.dispatchable_workers {
+                writeln!(out, "- **{}** — {}", w.display_name, w.status).ok();
+            }
         }
 
         // ── Workers ──
@@ -467,6 +542,7 @@ mod tests {
         let brief = SelfKnowledgeBuilder {
             agent_display_name: "Aria".to_string(),
             scheduled_job_count: Some(3),
+            dispatchable_workers: Vec::new(),
         }
         .build();
 
@@ -495,6 +571,7 @@ mod tests {
         let brief = SelfKnowledgeBuilder {
             agent_display_name: "Aria".to_string(),
             scheduled_job_count: None,
+            dispatchable_workers: Vec::new(),
         }
         .build();
         // It appears once (under workers). Exactly one bold occurrence.
@@ -511,6 +588,7 @@ mod tests {
         let brief = SelfKnowledgeBuilder {
             agent_display_name: "Aria".to_string(),
             scheduled_job_count: None,
+            dispatchable_workers: Vec::new(),
         }
         .build();
         // Rendered once, under Tools (it is a platform extension, not hidden).
@@ -528,5 +606,58 @@ mod tests {
             brief.contains("supervised approval"),
             "orchestrator brief must mention supervised approval"
         );
+    }
+
+    #[test]
+    fn dispatchable_workers_render_when_present_and_omit_when_empty() {
+        // Empty → no section (snapshot-stable default).
+        let empty = SelfKnowledgeBuilder {
+            agent_display_name: "Aria".to_string(),
+            scheduled_job_count: None,
+            dispatchable_workers: Vec::new(),
+        }
+        .build();
+        assert!(!empty.contains("Workers you can dispatch goals to"));
+
+        // Present → a section listing each worker + its status.
+        let brief = SelfKnowledgeBuilder {
+            agent_display_name: "Aria".to_string(),
+            scheduled_job_count: None,
+            dispatchable_workers: vec![
+                DispatchableWorker {
+                    display_name: "Claude Code".to_string(),
+                    status: "available".to_string(),
+                },
+                DispatchableWorker {
+                    display_name: "Librarian".to_string(),
+                    status: "engine pending".to_string(),
+                },
+            ],
+        }
+        .build();
+        assert!(brief.contains("## Workers you can dispatch goals to"));
+        assert!(brief.contains("**Claude Code** — available"));
+        assert!(brief.contains("**Librarian** — engine pending"));
+    }
+
+    #[test]
+    fn dispatchable_workers_from_config_reports_engine_pending_without_probing() {
+        use crate::config::agent_identity::{default_roster, AgentConfig, PrimaryPersona};
+        let config = AgentConfig {
+            primary: PrimaryPersona::default(),
+            workers: default_roster(),
+        };
+        let workers = dispatchable_workers_from_config(&config);
+        // The Pending librarian is reported as engine-pending (no probe).
+        let lib = workers
+            .iter()
+            .find(|w| w.display_name == "Librarian")
+            .expect("librarian present");
+        assert_eq!(lib.status, "engine pending");
+        // Sorted deterministically by display name.
+        let names: Vec<&str> = workers.iter().map(|w| w.display_name.as_str()).collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted);
     }
 }

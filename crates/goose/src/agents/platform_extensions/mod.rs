@@ -7,6 +7,7 @@ pub mod chatrecall;
 pub mod code_execution;
 pub mod developer;
 pub mod ext_manager;
+pub mod goal_engine;
 pub mod librarian;
 pub mod librarian_state;
 pub mod orchestrator;
