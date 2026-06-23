@@ -20,7 +20,7 @@ name = "generate_manpages"
 path = "src/bin/generate_manpages.rs"
 
 [dependencies]
-clap_mangen = "0.2.31"
+clap_mangen = "0.3.0"
 dialoguer = { version = "0.11", features = ["fuzzy-select"] }
 dirs = "5.0"
 libc = "0.2"
