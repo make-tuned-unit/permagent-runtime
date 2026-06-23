@@ -459,9 +459,6 @@ fn render_event_summary(event: &ActivityEvent) -> String {
                 .unwrap_or("?");
             format!("Automation '{}' failed", name)
         }
-        ActivityEventType::TerminalWaitingForInput => {
-            "A terminal session appears to be waiting for input".to_string()
-        }
         ActivityEventType::TerminalProcessExited => {
             match event.payload.get("exit_code").and_then(|v| v.as_i64()) {
                 Some(code) => format!("A terminal process exited (code {})", code),
