@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { useTheme } from '../../styles/useTheme';
 
 export type MobiusState = 'idle' | 'thinking' | 'speaking' | 'calibrating' | 'sleeping';
@@ -32,7 +32,10 @@ function idleFrameSrc(n: number): string {
   return `/mobius-idle/frame_${String(n).padStart(2, '0')}.webp`;
 }
 
-export function Mobius({
+// memo: props are all primitives, so a parent re-render with unchanged props
+// never re-renders Mobius — its rAF frame state (and the animation) is preserved
+// instead of being reset to frame 0. This is the guard against logo flicker.
+export const Mobius = memo(function Mobius({
   size = 280,
   state = 'idle',
   logoMode: _logoMode = false,
@@ -135,4 +138,4 @@ export function Mobius({
       />
     </div>
   );
-}
+});

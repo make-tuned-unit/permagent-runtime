@@ -10,7 +10,7 @@ import { CARD_REGISTRY } from './cards/registry';
 import { AddCardPicker } from './AddCardPicker';
 import { DashboardOverflowMenu } from './DashboardOverflowMenu';
 import { ResetConfirmModal } from './ResetConfirmModal';
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useMemo } from 'react';
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 
@@ -55,6 +55,9 @@ export function Dashboard() {
   // One shared live-goal subscription for every "in flight" surface (count,
   // list, header, status) so they always agree. Sessions are a separate stat.
   const { goals: activeGoals, activeCount } = useLiveGoals();
+  // Stable props identity for the memoized InFlightCard — only changes when the
+  // (deduped) goal list actually changes, so a benign refetch never re-renders it.
+  const inFlightProps = useMemo(() => ({ goals: activeGoals }), [activeGoals]);
   const { layout, persistLayout } = useLayout();
   const [isEditMode, setIsEditMode] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>('idle');
@@ -187,7 +190,7 @@ export function Dashboard() {
   const cardDataMap: Record<string, any> = {
     hero: { agent: data.agent, activeCount },
     stats: { stats: data.stats },
-    in_flight: { goals: activeGoals },
+    in_flight: inFlightProps,
     decisions: { activeCount },
     recent: { items: data.recent },
   };

@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { font, radius } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { Mobius } from '../../mobius/Mobius';
@@ -14,7 +15,7 @@ interface Props {
   goals: ActiveGoal[];
 }
 
-export function InFlightCard({ goals }: Props) {
+export const InFlightCard = memo(function InFlightCard({ goals }: Props) {
   const { colors } = useTheme();
   return (
     <div style={{
@@ -46,9 +47,9 @@ export function InFlightCard({ goals }: Props) {
       )}
     </div>
   );
-}
+});
 
-function GoalCard({ goal }: { goal: ActiveGoal }) {
+const GoalCard = memo(function GoalCard({ goal }: { goal: ActiveGoal }) {
   const { colors } = useTheme();
   const mobiusState = goal.state === 'review' ? 'idle' : 'thinking';
   return (
@@ -73,4 +74,9 @@ function GoalCard({ goal }: { goal: ActiveGoal }) {
       </div>
     </div>
   );
-}
+}, (a, b) =>
+  a.goal.id === b.goal.id
+  && a.goal.state === b.goal.state
+  && a.goal.title === b.goal.title
+  && a.goal.assigned_to === b.goal.assigned_to,
+);
