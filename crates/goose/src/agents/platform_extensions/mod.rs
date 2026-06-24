@@ -123,12 +123,12 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: browser::EXTENSION_NAME,
                 display_name: "Browser",
-                description: "Read content from the page currently open in the Permagent browser",
+                description: "Open a new tab at a URL in the Permagent browser, and read the content of the page currently open",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
                 why_it_matters:
-                    "Use it to read what the user is actually looking at instead of guessing or asking them to paste.",
+                    "Open a website or new tab for the user the moment they ask, and read what they're looking at instead of guessing or asking them to paste.",
                 teaching: &[],
                 client_factory: |ctx| Box::new(browser::BrowserClient::new(ctx).unwrap()),
             },

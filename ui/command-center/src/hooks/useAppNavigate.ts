@@ -18,6 +18,7 @@ export function useAppNavigate() {
   const workspaces = useCommandCenter(s => s.workspaces);
   const setPendingProjectNavigation = useCommandCenter(s => s.setPendingProjectNavigation);
   const setPendingTerminalLaunch = useCommandCenter(s => s.setPendingTerminalLaunch);
+  const openInBrowser = useCommandCenter(s => s.openInBrowser);
 
   // Keep refs so the WebSocket callback always sees latest state
   const workspacesRef = useRef(workspaces);
@@ -30,6 +31,8 @@ export function useAppNavigate() {
   setPendingProjectNavigationRef.current = setPendingProjectNavigation;
   const setPendingTerminalLaunchRef = useRef(setPendingTerminalLaunch);
   setPendingTerminalLaunchRef.current = setPendingTerminalLaunch;
+  const openInBrowserRef = useRef(openInBrowser);
+  openInBrowserRef.current = openInBrowser;
 
   // Shared navigation logic — used by both the daemon WS bus and the
   // cross-window Tauri event (the chat window's "Open Brain" button).
@@ -90,6 +93,18 @@ export function useAppNavigate() {
   const launchRef = useRef(launch);
   launchRef.current = launch;
 
+  // Agent open_browser_tab → open a new browser tab at a URL. Mirrors the human
+  // chat-link path: openInBrowser sets pendingBrowserUrl and focuses the Build
+  // workspace (which hosts the Browser), which opens a fresh tab at the URL.
+  const openBrowser = (payload: { url?: string; reason?: string }) => {
+    const { url, reason } = payload ?? {};
+    if (!url) return;
+    openInBrowserRef.current(url);
+    if (reason) showNavigationCue(reason);
+  };
+  const openBrowserRef = useRef(openBrowser);
+  openBrowserRef.current = openBrowser;
+
   useEffect(() => {
     let ws: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -106,6 +121,10 @@ export function useAppNavigate() {
           const eventType = wireEventType(event);
           if (eventType === 'project_launch') {
             launchRef.current(event.payload ?? {});
+            return;
+          }
+          if (eventType === 'browser_navigate') {
+            openBrowserRef.current(event.payload ?? {});
             return;
           }
           if (eventType !== 'app_navigate') return;

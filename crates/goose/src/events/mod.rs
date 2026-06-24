@@ -249,6 +249,8 @@ pub enum PermagentEventType {
     LibrarianDescribeCompleted,
     // Browser content extraction
     BrowserContentRequested,
+    // Browser navigation (chat agent → frontend: open a tab at a URL)
+    BrowserNavigate,
     // App navigation (chat agent → frontend)
     AppNavigate,
     // Project terminal launch (chat agent → frontend Build tab)
@@ -535,6 +537,20 @@ pub fn librarian_describe_completed(
             "description": description,
             "duration_ms": duration_ms,
             "quality": quality,
+        }),
+    )
+}
+
+/// Emitted when the chat agent asks the frontend to open a new browser tab at a
+/// URL. Mirrors [`project_launch`]: the agent does not drive the webview
+/// directly — the command-center catches this and calls the existing
+/// `openInBrowser` path (sets `pendingBrowserUrl` → Browser opens a fresh tab).
+pub fn browser_navigate(url: &str, reason: &str) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::BrowserNavigate,
+        serde_json::json!({
+            "url": url,
+            "reason": reason,
         }),
     )
 }
