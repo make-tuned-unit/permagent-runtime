@@ -225,7 +225,8 @@ BEGIN_DECLARED_PATHS
 src/routes/health.rs
 END_DECLARED_PATHS
 BEGIN_DIFF_STAT
-1 file changed: src/routes/health.rs (+24 -0)
+1 file(s) changed since <baseline>: +24 -0
+src/routes/health.rs (+24 -0)
 END_DIFF_STAT
 BEGIN_CHECK_RESULTS
 [0] http_assert GET /health expects 200 -> pass (status 200)
@@ -251,7 +252,10 @@ src/parser.rs
 tests/parser_tests.rs
 END_DECLARED_PATHS
 BEGIN_DIFF_STAT
-3 files changed: src/parser.rs (+2 -2), tests/parser_tests.rs (+1 -1), src/unrelated.rs (+40 -3)
+3 file(s) changed since <baseline>: +43 -6
+src/parser.rs (+2 -2)
+tests/parser_tests.rs (+1 -1)
+src/unrelated.rs (+40 -3)
 END_DIFF_STAT
 BEGIN_CHECK_RESULTS
 [0] command_exit_zero `cargo test parser` -> fail (exit 101)

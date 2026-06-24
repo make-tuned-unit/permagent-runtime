@@ -642,13 +642,27 @@ pub async fn analyze_diff(
         deletions,
         per_file,
     };
+    // Annotate each file with its own +ins/-del so the verifier model can see
+    // which files actually changed (and by how much), not just a bare list of
+    // names under an aggregate total. Files without a numstat entry (untracked,
+    // binary "-") are listed without counts. This matches the per-file shape the
+    // system-prompt examples advertise (verifier.rs EXAMPLES).
+    let file_lines: Vec<String> = changed
+        .iter()
+        .map(
+            |f| match diff_summary.per_file.iter().find(|p| &p.path == f) {
+                Some(p) => format!("{} (+{} -{})", f, p.insertions, p.deletions),
+                None => f.clone(),
+            },
+        )
+        .collect();
     let diff_stat = format!(
         "{} file(s) changed since {}: +{} -{}\n{}",
         changed.len(),
         baseline,
         insertions,
         deletions,
-        changed.join("\n")
+        file_lines.join("\n")
     );
 
     // Path discipline.
@@ -1421,6 +1435,56 @@ mod tests {
             record.evidence_digest.diff.files_changed >= 1,
             "diff must reflect the worktree change, got {:?}",
             record.diff_stat
+        );
+    }
+
+    /// Finding 4: the diff_stat handed to the verifier model must annotate EACH
+    /// changed file with its own +ins/-del — not list bare names under one
+    /// aggregate total. The live dogfood showed qwen2.5:7b false-claiming
+    /// "README.md changed but not TESTFILE.md" from a bare list; per-file counts
+    /// give it the signal to see both. Asserts both files carry counts.
+    #[tokio::test]
+    async fn diff_stat_annotates_each_changed_file_with_per_file_counts() {
+        let repo = tempfile::tempdir().unwrap();
+        let baseline = init_repo(repo.path());
+        let wt_parent = tempfile::tempdir().unwrap();
+        let wt = wt_parent.path().join("wt");
+        sh(
+            repo.path(),
+            &format!("git worktree add --detach {} {}", wt.display(), baseline),
+        );
+        // Two distinct files change: README.md gains a line, TESTFILE.md is new.
+        std::fs::write(wt.join("README.md"), "readme\nmore\n").unwrap();
+        std::fs::write(wt.join("TESTFILE.md"), "hello\n").unwrap();
+        sh(&wt, "git add -A");
+        sh(
+            &wt,
+            "git -c user.email=t@t -c user.name=t commit -q -m work",
+        );
+
+        let pool = test_pool().await;
+        let goal = make_goal(
+            &pool,
+            repo.path().to_str().unwrap(),
+            serde_json::json!({
+                "baseline_commit": baseline,
+                "declared_paths": ["**"],
+                "dispatch_evidence": { "worktree_path": wt.to_str().unwrap() },
+            }),
+        )
+        .await;
+
+        let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
+        let record = run_for_goal_with(&pool, &goal.id, &base_url).await.unwrap();
+
+        let ds = &record.diff_stat;
+        assert!(
+            ds.contains("README.md (+"),
+            "diff_stat must annotate README.md with per-file counts: {ds}"
+        );
+        assert!(
+            ds.contains("TESTFILE.md (+"),
+            "diff_stat must annotate TESTFILE.md with per-file counts: {ds}"
         );
     }
 
