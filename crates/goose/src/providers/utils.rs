@@ -227,6 +227,25 @@ pub fn is_valid_function_name(name: &str) -> bool {
     re.is_match(name)
 }
 
+/// Sanitize a tool-use/tool-call id so it satisfies the `^[a-zA-Z0-9_-]+$`
+/// charset that strict providers (e.g. Anthropic) enforce on `tool_use.id`.
+///
+/// Tool-use ids generated against one provider can contain characters another
+/// provider rejects (Anthropic 400s on e.g. `:` or other punctuation). This is
+/// a pure, deterministic transform: out-of-charset bytes map to `_`, so the
+/// same input always yields the same output. Applying it to both the
+/// `tool_use.id` and the matching `tool_result.tool_use_id` keeps the pair
+/// referencing the same sanitized id. Empty input yields a stable placeholder
+/// so the id is never empty (the regex requires at least one char).
+pub fn sanitize_tool_use_id(id: &str) -> String {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"[^a-zA-Z0-9_-]").unwrap());
+    if id.is_empty() {
+        return "_".to_string();
+    }
+    re.replace_all(id, "_").to_string()
+}
+
 /// Extract the model name from a JSON object. Common with most providers to have this top level attribute.
 pub fn get_model(data: &Value) -> String {
     if let Some(model) = data.get("model") {
@@ -650,6 +669,27 @@ mod tests {
         assert!(is_valid_function_name("hello_world"));
         assert!(!is_valid_function_name("hello world"));
         assert!(!is_valid_function_name("hello@world"));
+    }
+
+    #[test]
+    fn test_sanitize_tool_use_id() {
+        // Already-valid ids pass through unchanged.
+        assert_eq!(sanitize_tool_use_id("toolu_01ABC-xyz"), "toolu_01ABC-xyz");
+        assert_eq!(sanitize_tool_use_id("call_abc123"), "call_abc123");
+        // Cross-provider chars Anthropic rejects (e.g. ':' from Kimi/OpenAI-style ids).
+        assert_eq!(sanitize_tool_use_id("chatcmpl:tool:0"), "chatcmpl_tool_0");
+        assert_eq!(sanitize_tool_use_id("fc/123.456"), "fc_123_456");
+        assert_eq!(sanitize_tool_use_id("id with space"), "id_with_space");
+        // Deterministic: same input -> same output, so a tool_use id and its
+        // matching tool_result tool_use_id stay paired after sanitizing.
+        let raw = "kimi:call#7";
+        assert_eq!(sanitize_tool_use_id(raw), sanitize_tool_use_id(raw));
+        assert_eq!(sanitize_tool_use_id(raw), "kimi_call_7");
+        // Result is always valid against the Anthropic charset regex.
+        assert!(is_valid_function_name(&sanitize_tool_use_id("a:b/c d")));
+        // Empty input yields a non-empty placeholder (regex requires >=1 char).
+        assert_eq!(sanitize_tool_use_id(""), "_");
+        assert!(is_valid_function_name(&sanitize_tool_use_id("")));
     }
 
     #[test]
