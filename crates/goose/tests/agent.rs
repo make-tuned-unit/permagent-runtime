@@ -496,6 +496,112 @@ mod tests {
     }
 
     #[cfg(test)]
+    mod auth_error_attribution_tests {
+        use super::*;
+        use async_trait::async_trait;
+        use permagent::agents::SessionConfig;
+        use permagent::config::GooseMode;
+        use permagent::conversation::message::{Message, MessageContent};
+        use permagent::model::ModelConfig;
+        use permagent::providers::base::{MessageStream, Provider};
+        use permagent::providers::errors::ProviderError;
+        use permagent::session::session_manager::SessionType;
+        use rmcp::model::Tool;
+        use std::path::PathBuf;
+
+        /// Provider whose LLM call fails with a 401/auth error — simulates a
+        /// dead/invalid API key on the model provider's side (issue #224).
+        struct MockAuthErrorProvider {}
+
+        #[async_trait]
+        impl Provider for MockAuthErrorProvider {
+            async fn stream(
+                &self,
+                _model_config: &ModelConfig,
+                _session_id: &str,
+                _system_prompt: &str,
+                _messages: &[Message],
+                _tools: &[Tool],
+            ) -> Result<MessageStream, ProviderError> {
+                Err(ProviderError::Authentication(
+                    "Authentication failed. Please ensure your API keys are valid. Status: 401 Unauthorized".to_string(),
+                ))
+            }
+
+            fn get_model_config(&self) -> ModelConfig {
+                ModelConfig::new("mock-model").unwrap()
+            }
+
+            fn get_name(&self) -> &str {
+                "mock-anthropic"
+            }
+        }
+
+        /// A provider 401 must be attributed to the LLM provider's own credentials,
+        /// never to a website/page/tool the agent was reading (issue #224: a dead
+        /// Anthropic key was misreported by the agent as a "Gmail auth" failure).
+        #[tokio::test]
+        async fn test_provider_401_attributed_to_llm_provider_not_page() -> Result<()> {
+            let agent = Agent::new();
+            let provider = Arc::new(MockAuthErrorProvider {});
+            let user_message = Message::user().with_text("Read my open browser tab");
+
+            let session = agent
+                .config
+                .session_manager
+                .create_session(
+                    PathBuf::default(),
+                    "auth-attribution-test".to_string(),
+                    SessionType::Hidden,
+                    GooseMode::default(),
+                )
+                .await?;
+
+            agent.update_provider(provider, &session.id).await?;
+
+            let session_config = SessionConfig {
+                id: session.id,
+                schedule_id: None,
+                max_turns: Some(1),
+                retry_config: None,
+            };
+
+            let reply_stream = agent.reply(user_message, session_config, None).await?;
+            tokio::pin!(reply_stream);
+
+            let mut surfaced = String::new();
+            while let Some(response_result) = reply_stream.next().await {
+                if let Ok(AgentEvent::Message(response)) = response_result {
+                    for content in &response.content {
+                        if let MessageContent::Text(text) = content {
+                            surfaced.push_str(&text.text);
+                            surfaced.push('\n');
+                        }
+                    }
+                }
+            }
+
+            // Attributes to the LLM provider (named) and its credentials.
+            assert!(
+                surfaced.contains("Authentication failed for your LLM provider (mock-anthropic)"),
+                "expected provider-attributed auth message, got: {surfaced}"
+            );
+            // Explicitly disclaims the page/website/tool as the cause.
+            assert!(
+                surfaced.contains("not with any website, page, or service"),
+                "expected page-not-the-cause disclaimer, got: {surfaced}"
+            );
+            // Must NOT fall through to the vague, retry-inviting catch-all wording.
+            assert!(
+                !surfaced
+                    .contains("Please retry if you think this is a transient or recoverable error"),
+                "auth 401 must not be rendered as a generic transient error: {surfaced}"
+            );
+            Ok(())
+        }
+    }
+
+    #[cfg(test)]
     mod tool_pair_summarization_tests {
         use super::*;
         use async_trait::async_trait;

@@ -1783,6 +1783,31 @@ impl Agent {
                             state_guard.mark_error();
                             break;
                         }
+                        Err(ref provider_err @ ProviderError::Authentication(_)) => {
+                            #[cfg(feature = "telemetry")]
+                            crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
+                            error!("Error: {}", provider_err);
+                            // Attribute a 401/auth failure to its ACTUAL source — the LLM
+                            // provider's own credentials — so it is never misread (by the
+                            // user or by a downstream model) as an auth problem with a
+                            // website, document, or tool the agent was using.
+                            let provider_label = match self.provider().await {
+                                Ok(provider) => format!("LLM provider ({})", provider.get_name()),
+                                Err(_) => "LLM provider".to_string(),
+                            };
+                            yield AgentEvent::Message(
+                                Message::assistant().with_text(
+                                    format!(
+                                        "Authentication failed for your {provider_label}: the API key was rejected (HTTP 401). \
+                                         This is a credential problem with the model provider configured in Permagent — \
+                                         not with any website, page, or service the agent was reading. \
+                                         Check that the provider's API key is set, valid, and has the required permissions, then resend your message.\n\nDetails: {provider_err}"
+                                    )
+                                )
+                            );
+                            state_guard.mark_error();
+                            break;
+                        }
                         Err(ref provider_err) => {
                             #[cfg(feature = "telemetry")]
                             crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
