@@ -373,6 +373,28 @@ impl OrchestratorClient {
             }
         });
 
+        // Spawn the periodic orphan reaper (#474, Gap B): rescues in_progress
+        // goals whose worker is gone — a failure recorded but never retried, or an
+        // orphan from a prior lifecycle — promptly, instead of waiting for budget
+        // exhaustion. Unlike the one-shot resume it never re-attaches trackers, so
+        // it is safe to run on a timer.
+        let reaper_sm = client.context.session_manager.clone();
+        tokio::spawn(async move {
+            let mut ticker =
+                tokio::time::interval(std::time::Duration::from_secs(REAPER_INTERVAL_SECS));
+            ticker.tick().await; // consume the immediate first tick
+            loop {
+                ticker.tick().await;
+                if let Err(e) = reap_orphaned_in_progress_goals(&reaper_sm).await {
+                    tracing::warn!(
+                        target: "permagentd::brain",
+                        "Reaper sweep failed: {}",
+                        e
+                    );
+                }
+            }
+        });
+
         Ok(client)
     }
 
@@ -2838,6 +2860,171 @@ pub async fn resume_in_progress_goals(
     Ok(())
 }
 
+/// How often the orphan reaper sweeps in_progress goals (#474, Gap B).
+const REAPER_INTERVAL_SECS: u64 = 600;
+
+/// Periodically reclaim `in_progress` goals whose worker is no longer running,
+/// so finished/dead work leaves the active set promptly rather than lingering
+/// until budget/wallclock exhaustion (#474).
+///
+/// Distinct from [`resume_in_progress_goals`] (one-shot at startup, which
+/// *re-attaches* a tracker to a still-alive worker): the reaper only reclaims
+/// dead goals and never re-attaches, so it is safe to run on a timer.
+pub async fn reap_orphaned_in_progress_goals(
+    session_manager: &crate::session::SessionManager,
+) -> Result<(), String> {
+    let pool = session_manager
+        .pool_clone()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let rows = sqlx::query_as::<_, (String, String)>(
+        "SELECT c.id, c.project_id FROM cards c
+         JOIN board_columns bc ON c.column_id = bc.id
+         WHERE c.card_type = 'goal'
+           AND bc.state_binding = 'in_progress'
+           AND c.archived_at IS NULL",
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let manager = AgentManager::instance().await.ok();
+
+    for (card_id, project_id) in rows {
+        if let Err(e) = reap_single_goal(&pool, &manager, &card_id, &project_id).await {
+            tracing::warn!(
+                target: "permagentd::brain",
+                "Reaper: failed on goal {}: {}",
+                card_id,
+                e
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Reap one `in_progress` goal if its worker is provably gone.
+///
+/// Reap triggers (per ruling): the goal recorded a failure (`last_error` set —
+/// the tracker fired `record_goal_failure` and nothing retried it), OR it was
+/// dispatched in a prior daemon lifecycle (no live tracker). A this-lifecycle
+/// goal with no recorded error is still owned by a live tracker and is left
+/// alone; if it has no error but its (internal) session is not busy it is also
+/// safe to reclaim.
+///
+/// Action mirrors [`resume_single_goal`]'s dead branch: committed work →
+/// Review (via [`try_complete_dead_worker_from_worktree`]), otherwise requeue
+/// within the attempt cap, else park with an unblock decision.
+async fn reap_single_goal(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    manager: &Option<Arc<AgentManager>>,
+    card_id: &str,
+    project_id: &str,
+) -> Result<(), String> {
+    let card = cards::get_card(pool, card_id)
+        .await?
+        .ok_or_else(|| format!("Card {} not found during reap", card_id))?;
+    let meta = card.metadata_json.as_object();
+
+    let has_error = meta
+        .and_then(|m| m.get("last_error"))
+        .and_then(|v| v.as_str())
+        .is_some();
+    let this_lifecycle = meta
+        .and_then(|m| m.get("dispatched_lifecycle"))
+        .and_then(|v| v.as_str())
+        == Some(daemon_lifecycle_id());
+
+    // A this-lifecycle goal with no recorded failure is still owned by a live
+    // in-process tracker — never reap it.
+    if this_lifecycle && !has_error {
+        return Ok(());
+    }
+
+    // For a no-error goal that fell through (prior lifecycle), an alive session
+    // means a worker is genuinely still running — leave it. A recorded failure
+    // overrides: the tracker already exited, so liveness is irrelevant.
+    if !has_error {
+        let session_id = meta
+            .and_then(|m| m.get("worker_session_id"))
+            .and_then(|v| v.as_str());
+        let alive = match (session_id, manager) {
+            (Some(sid), Some(mgr)) => mgr.is_session_busy(sid).await,
+            _ => false,
+        };
+        if alive {
+            return Ok(());
+        }
+    }
+
+    // Committed work in the worktree → route to Review (same as restart recovery).
+    let session_id = meta
+        .and_then(|m| m.get("worker_session_id"))
+        .and_then(|v| v.as_str());
+    if try_complete_dead_worker_from_worktree(pool, &card, project_id, session_id).await {
+        tracing::info!(
+            target: "permagentd::brain",
+            "Reaper: goal '{}' had committed work — routed to Review",
+            card.title
+        );
+        return Ok(());
+    }
+
+    // Otherwise requeue within the attempt cap, else park (mirrors the dead
+    // branch of resume_single_goal).
+    let attempt_count = meta
+        .and_then(|m| m.get("attempt_count"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let new_attempt = attempt_count + 1;
+    let budget = goal_transition::goal_budget(&card.metadata_json);
+    let reason = "Worker no longer running (reaped: failed without retry, or orphaned)";
+    let other_exhaustion = goal_transition::check_budget(pool, &card.metadata_json).await?;
+
+    if new_attempt >= budget.attempt_cap || other_exhaustion.is_some() {
+        let exhaustion =
+            other_exhaustion.unwrap_or(crate::goal_transition::BudgetExhaustion::AttemptCap {
+                spent: new_attempt,
+                cap: budget.attempt_cap,
+            });
+        let decision_id = goal_transition::exhaust_and_park(
+            pool,
+            card_id,
+            &card.title,
+            project_id,
+            exhaustion,
+            Some(reason),
+        )
+        .await?;
+        tracing::warn!(
+            target: "permagentd::brain",
+            "Reaper: goal '{}' exhausted ({}) — parked with unblock decision {}",
+            card.title,
+            exhaustion.describe(),
+            decision_id
+        );
+    } else {
+        goal_transition::requeue_goal(pool, card_id, decisions::ACTOR_SYSTEM, new_attempt, reason)
+            .await
+            .map_err(String::from)?;
+        tracing::info!(
+            target: "permagentd::brain",
+            "Reaper: goal '{}' worker gone — requeued to Ready (attempt {}/{})",
+            card.title,
+            new_attempt,
+            budget.attempt_cap
+        );
+    }
+
+    Ok(())
+}
+
 async fn resume_single_goal(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     manager: &Option<Arc<AgentManager>>,
@@ -3741,6 +3928,65 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    /// Gap B (#474): a this-lifecycle goal whose worker failed within budget is
+    /// left in_progress with a recorded error and no retry actor. The reaper must
+    /// reclaim it — requeue to Ready within the attempt cap.
+    #[tokio::test]
+    async fn reaper_requeues_failed_in_progress_goal() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_lifecycle(&pool, &card, daemon_lifecycle_id()).await;
+        // The real failure path latches last_error through the guard (a plain
+        // metadata write is refused — last_error is protected).
+        goal_transition::record_goal_failure(&pool, &card.id, "worker exited 1")
+            .await
+            .unwrap();
+
+        reap_single_goal(&pool, &None, &card.id, &card.project_id)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("ready"),
+            "a failed-and-stuck in_progress goal must be requeued by the reaper"
+        );
+        assert_eq!(
+            updated.metadata_json.get("attempt_count").unwrap().as_u64(),
+            Some(2),
+            "requeue consumes an attempt"
+        );
+    }
+
+    /// The reaper must NOT touch a this-lifecycle goal with no recorded failure —
+    /// a live in-process tracker still owns it (mirrors the resume lifecycle guard).
+    #[tokio::test]
+    async fn reaper_skips_live_this_lifecycle_goal() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_lifecycle(&pool, &card, daemon_lifecycle_id()).await;
+
+        reap_single_goal(&pool, &None, &card.id, &card.project_id)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("in_progress"),
+            "a live this-lifecycle goal with no failure must be left alone"
+        );
     }
 
     /// Defect 1 regression: a goal dispatched in the CURRENT daemon lifecycle
