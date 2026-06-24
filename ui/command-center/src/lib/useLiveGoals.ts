@@ -33,6 +33,21 @@ interface ActiveGoalsResponse {
   goals: ActiveGoal[];
 }
 
+/**
+ * True when two goal lists are field-for-field equal. Lets us keep the previous
+ * array (and its element identities) when a refetch returns identical data, so
+ * the "in flight" cards don't re-render — and the animated Mobius logos don't
+ * flicker — on every poll tick or goal event that didn't actually change them.
+ */
+function sameGoals(a: ActiveGoal[], b: ActiveGoal[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((g, i) => {
+    const o = b[i];
+    return g.id === o.id && g.state === o.state && g.title === o.title
+      && g.assigned_to === o.assigned_to && g.updated_at === o.updated_at;
+  });
+}
+
 export function useLiveGoals() {
   const [goals, setGoals] = useState<ActiveGoal[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -45,7 +60,8 @@ export function useLiveGoals() {
       });
       if (!res.ok) return;
       const data: ActiveGoalsResponse = await res.json();
-      setGoals(data.goals ?? []);
+      const next = data.goals ?? [];
+      setGoals(prev => (sameGoals(prev, next) ? prev : next));
     } catch {
       /* ignore — stale data stays, matching useDashboard */
     } finally {
