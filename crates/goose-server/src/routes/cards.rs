@@ -443,8 +443,36 @@ async fn reorder_cards_handler(
 
 // ── Route registration ────────────────────────────────────────────────────
 
+/// Unified "in flight" payload: the active-goal list and its count come from a
+/// single query, so the dashboard's count, list, header, and status can never
+/// disagree (the bug this endpoint fixes).
+#[derive(Serialize)]
+struct ActiveGoalsResponse {
+    count: usize,
+    goals: Vec<cards::ActiveGoal>,
+}
+
+async fn list_active_goals_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<ActiveGoalsResponse>, StatusCode> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let goals = cards::list_active_goals(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(ActiveGoalsResponse {
+        count: goals.len(),
+        goals,
+    }))
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
+        // Active goals — single source of truth for every "in flight" surface
+        .route("/api/goals/active", get(list_active_goals_handler))
         // Columns
         .route(
             "/api/projects/{project_id}/columns",

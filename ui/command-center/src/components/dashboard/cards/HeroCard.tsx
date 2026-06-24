@@ -5,9 +5,12 @@ import type { DashboardAgent } from '../useDashboard';
 
 interface Props {
   agent: DashboardAgent;
+  /** Live count of active goals (Ready/InProgress/Review) — the unit of work
+   *  the user means by "thing Henry is working on", not raw sessions. */
+  activeCount: number;
 }
 
-export function HeroCard({ agent }: Props) {
+export function HeroCard({ agent, activeCount }: Props) {
   const { gradient, showHeroMobius, colors } = useTheme();
   const mobiusState = (agent.state === 'thinking' ? 'thinking' : 'idle') as MobiusState;
 
@@ -33,15 +36,15 @@ export function HeroCard({ agent }: Props) {
           letterSpacing: '-0.02em', lineHeight: 1.2, marginBottom: 10,
           color: colors.text,
         }}>
-          {agent.active_count > 0 ? (
-            <>{agent.name} is working on<br /><span style={{ color: colors.cyan }}>{agent.active_count} {agent.active_count === 1 ? 'thing' : 'things'}</span> for you</>
+          {activeCount > 0 ? (
+            <>{agent.name} is working on<br /><span style={{ color: colors.cyan }}>{activeCount} {activeCount === 1 ? 'thing' : 'things'}</span> for you</>
           ) : (
             <>{agent.name} is<br />ready</>
           )}
         </div>
         <div style={{ fontSize: 14, color: colors.textMuted, lineHeight: 1.5, maxWidth: 360 }}>
-          {agent.active_count > 0
-            ? `Working across ${agent.active_count} session${agent.active_count > 1 ? 's' : ''}`
+          {activeCount > 0
+            ? `${activeCount} active goal${activeCount > 1 ? 's' : ''} in flight`
             : 'Ready when you are.'}
         </div>
       </div>

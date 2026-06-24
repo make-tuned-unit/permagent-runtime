@@ -41,6 +41,19 @@ impl GoalState {
             Self::Complete => "complete",
         }
     }
+
+    /// True for states where Henry is actively moving the goal: Ready,
+    /// InProgress, Review. Triage (queued, not started) and Complete (done)
+    /// are NOT active. The single source of truth for the "in flight" set
+    /// shared by every dashboard surface and the `/api/goals/active` query.
+    pub fn is_active(&self) -> bool {
+        matches!(self, Self::Ready | Self::InProgress | Self::Review)
+    }
+
+    /// The `state_binding` strings counted as active/"in flight", kept in
+    /// lockstep with [`is_active`](Self::is_active) so SQL filters and Rust
+    /// agree on one definition.
+    pub const ACTIVE_BINDINGS: &'static [&'static str] = &["ready", "in_progress", "review"];
 }
 
 impl fmt::Display for GoalState {

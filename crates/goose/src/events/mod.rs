@@ -253,6 +253,8 @@ pub enum PermagentEventType {
     AppNavigate,
     // Project terminal launch (chat agent → frontend Build tab)
     ProjectLaunch,
+    // Goal lifecycle (create / transition / park / requeue / failure / delete)
+    GoalStateChanged,
 }
 
 // ── Convenience constructors ────────────────────────────────────────────────
@@ -379,6 +381,27 @@ pub fn decision_created(decision_id: &str, kind: &str, tier: i64) -> PermagentEv
             "decision_id": decision_id,
             "kind": kind,
             "tier": tier,
+        }),
+    )
+}
+
+/// Emitted whenever a goal card's lifecycle changes: creation, a checked
+/// transition, park, requeue, a failure-latch, or deletion. Consumers refetch
+/// the active-goal set, so the payload is informational. `from` is `None` on
+/// creation; `to` is `"deleted"` on removal.
+pub fn goal_state_changed(
+    goal_id: &str,
+    project_id: Option<&str>,
+    from: Option<&str>,
+    to: &str,
+) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::GoalStateChanged,
+        serde_json::json!({
+            "goal_id": goal_id,
+            "project_id": project_id,
+            "from": from,
+            "to": to,
         }),
     )
 }

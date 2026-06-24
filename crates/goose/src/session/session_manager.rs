@@ -701,6 +701,12 @@ impl SessionStorage {
                     if version < 13 {
                         spectral_schema::migrate_v12_to_v13(&self.pool).await?;
                     }
+                    // Duplicate-column cleanup (schema v14, #453). Data fixup,
+                    // base-independent and idempotent; deletes only empty manual
+                    // columns in projects that also have lifecycle columns.
+                    if version < 14 {
+                        spectral_schema::migrate_v13_to_v14(&self.pool).await?;
+                    }
                 } else {
                     info!("Initializing Spectral schema at {:?}", self.db_path);
                     spectral_schema::init_spectral_db(&self.pool).await?;

@@ -4,6 +4,7 @@ import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import { useDashboard } from './useDashboard';
+import { useLiveGoals } from '../../lib/useLiveGoals';
 import { useLayout, DEFAULT_LAYOUT, type DashboardLayoutData, type DashboardCardLayout } from './useLayout';
 import { CARD_REGISTRY } from './cards/registry';
 import { AddCardPicker } from './AddCardPicker';
@@ -51,6 +52,9 @@ const GAP = 16;
 export function Dashboard() {
   const { gradient, colors } = useTheme();
   const { data, loading } = useDashboard();
+  // One shared live-goal subscription for every "in flight" surface (count,
+  // list, header, status) so they always agree. Sessions are a separate stat.
+  const { goals: activeGoals, activeCount } = useLiveGoals();
   const { layout, persistLayout } = useLayout();
   const [isEditMode, setIsEditMode] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>('idle');
@@ -181,9 +185,10 @@ export function Dashboard() {
   }
 
   const cardDataMap: Record<string, any> = {
-    hero: { agent: data.agent },
+    hero: { agent: data.agent, activeCount },
     stats: { stats: data.stats },
-    in_flight: { tasks: data.in_flight },
+    in_flight: { goals: activeGoals },
+    decisions: { activeCount },
     recent: { items: data.recent },
   };
 
