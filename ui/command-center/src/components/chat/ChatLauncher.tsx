@@ -48,9 +48,9 @@ export function ChatLauncher() {
       const existing = await WebviewWindow.getByLabel('chat');
       if (existing) {
         await existing.show();
-        // Re-assert always-on-top so the native browser child webview (bound to
-        // the main window's z-order) can never paint over / clip the chat.
-        await existing.setAlwaysOnTop(true);
+        // The chat window is parented to the main window (see chatWindow.ts),
+        // so it always sits above the main window's native browser child-webview
+        // without floating above other apps — no always-on-top re-assert needed.
         await existing.setFocus();
         setChatWindowOpen(true);
         return;
