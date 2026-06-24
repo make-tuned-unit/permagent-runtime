@@ -221,6 +221,66 @@ pub async fn cleanup_duplicate_manual_columns(pool: &Pool<Sqlite>) -> Result<u64
     Ok(res.rows_affected())
 }
 
+/// Consolidate the legacy manual "Doing"/"Done" columns into the canonical goal
+/// lifecycle (#453 follow-up). For every project that has lifecycle (state)
+/// columns: move "Doing" cards → In Progress and "Done" cards → Complete, then
+/// delete the now-empty manual columns. "Backlog" is intentionally KEPT — it is
+/// a legitimate created-but-not-ready state, distinct from Triage.
+///
+/// Card-data-safe: a manual column is only deleted after its cards have moved,
+/// so a column whose target lifecycle state is somehow absent keeps its cards
+/// and survives (mirrors the v14 cleanup invariant). Idempotent and
+/// base-independent. Returns the number of columns removed.
+pub async fn consolidate_doing_done_into_lifecycle(pool: &Pool<Sqlite>) -> Result<u64, String> {
+    // (legacy manual column name, target lifecycle state_binding)
+    const MOVES: &[(&str, &str)] = &[("Doing", "in_progress"), ("Done", "complete")];
+
+    for (manual_name, target_state) in MOVES {
+        // Move each manual column's cards into the matching lifecycle column,
+        // scoped per-project. Only acts where the target state column exists.
+        sqlx::query(
+            "UPDATE cards
+                SET column_id = (
+                    SELECT s.id FROM board_columns s
+                     WHERE s.project_id = cards.project_id AND s.state_binding = ?
+                )
+              WHERE column_id IN (
+                    SELECT m.id FROM board_columns m
+                     WHERE m.column_kind = 'manual' AND m.name = ?
+                       AND EXISTS (
+                           SELECT 1 FROM board_columns s2
+                            WHERE s2.project_id = m.project_id AND s2.state_binding = ?
+                       )
+                )",
+        )
+        .bind(target_state)
+        .bind(manual_name)
+        .bind(target_state)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+
+    // Delete the now-empty Doing/Done manual columns — only in projects that have
+    // lifecycle columns, and only when no cards remain (data-safety invariant).
+    // Backlog is excluded.
+    let res = sqlx::query(
+        "DELETE FROM board_columns
+          WHERE column_kind = 'manual'
+            AND name IN ('Doing', 'Done')
+            AND project_id IN (
+                SELECT DISTINCT project_id FROM board_columns WHERE column_kind = 'state'
+            )
+            AND id NOT IN (
+                SELECT column_id FROM cards WHERE column_id IS NOT NULL
+            )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(res.rows_affected())
+}
+
 /// Find the goal lifecycle column for a given state_binding in a project.
 pub async fn get_goal_column(
     pool: &Pool<Sqlite>,
@@ -1355,6 +1415,89 @@ mod tests {
         );
         // Doing + Done were empty → removed; Backlog + 5 state remain.
         assert_eq!(cols.len(), 6);
+    }
+
+    #[tokio::test]
+    async fn consolidate_moves_doing_done_cards_and_keeps_backlog() {
+        // #453: non-empty Doing/Done columns (which the v14 empty-only cleanup
+        // intentionally left alone) get their cards moved into the lifecycle and
+        // are then removed. Backlog survives.
+        let pool = test_pool().await;
+        let mk = |col: &'static str, title: &'static str| {
+            let pool = &pool;
+            async move {
+                create_card(
+                    pool,
+                    CreateCard {
+                        project_id: PERSONAL_PROJECT_ID.to_string(),
+                        title: title.to_string(),
+                        description: None,
+                        card_type: None,
+                        column_id: Some(col.to_string()),
+                        created_by: None,
+                        metadata_json: None,
+                    },
+                )
+                .await
+                .unwrap()
+            }
+        };
+        let backlog_card = mk("col-personal-backlog", "kept-backlog").await;
+        let doing_card = mk("col-personal-doing", "moved-doing").await;
+        let done_card = mk("col-personal-done", "moved-done").await;
+
+        // Cards keep Doing/Done alive through the seed-time empty-only cleanup.
+        seed_goal_columns(&pool, PERSONAL_PROJECT_ID).await.unwrap();
+
+        let removed = consolidate_doing_done_into_lifecycle(&pool).await.unwrap();
+        assert_eq!(removed, 2, "Doing + Done consolidated and removed");
+
+        let cols = list_columns(&pool, PERSONAL_PROJECT_ID).await.unwrap();
+        assert!(
+            cols.iter().any(|c| c.id == "col-personal-backlog"),
+            "Backlog must be kept"
+        );
+        assert!(
+            !cols.iter().any(|c| c.name == "Doing" || c.name == "Done"),
+            "Doing/Done must be gone"
+        );
+
+        // Cards landed in the canonical lifecycle columns; Backlog card untouched.
+        let in_prog = get_goal_column(&pool, PERSONAL_PROJECT_ID, "in_progress")
+            .await
+            .unwrap()
+            .unwrap();
+        let complete = get_goal_column(&pool, PERSONAL_PROJECT_ID, "complete")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            get_card(&pool, &doing_card.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .column_id,
+            in_prog.id,
+            "Doing card → In Progress"
+        );
+        assert_eq!(
+            get_card(&pool, &done_card.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .column_id,
+            complete.id,
+            "Done card → Complete"
+        );
+        assert_eq!(
+            get_card(&pool, &backlog_card.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .column_id,
+            "col-personal-backlog",
+            "Backlog card untouched"
+        );
     }
 
     #[tokio::test]

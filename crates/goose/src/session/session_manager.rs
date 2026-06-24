@@ -707,6 +707,14 @@ impl SessionStorage {
                     if version < 14 {
                         spectral_schema::migrate_v13_to_v14(&self.pool).await?;
                     }
+                    // Consolidate legacy Doing/Done columns into the goal
+                    // lifecycle (schema v15, #453): move Doing→In Progress,
+                    // Done→Complete, delete the emptied columns. Backlog kept.
+                    // Base-independent + idempotent; card-data-safe (moves before
+                    // delete).
+                    if version < 15 {
+                        spectral_schema::migrate_v14_to_v15(&self.pool).await?;
+                    }
                 } else {
                     info!("Initializing Spectral schema at {:?}", self.db_path);
                     spectral_schema::init_spectral_db(&self.pool).await?;
