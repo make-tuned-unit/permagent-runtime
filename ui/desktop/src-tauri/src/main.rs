@@ -27,8 +27,7 @@ fn enable_media_capture(window: &tauri::WebviewWindow) {
                 use objc2::runtime::AnyObject;
                 use objc2_foundation::{NSNumber, NSString};
 
-                let wk_webview: *mut AnyObject =
-                    webview.inner() as *mut _ as *mut AnyObject;
+                let wk_webview: *mut AnyObject = webview.inner() as *mut _ as *mut AnyObject;
                 if wk_webview.is_null() {
                     return;
                 }
@@ -82,6 +81,76 @@ fn enable_media_capture_cmd(window: tauri::WebviewWindow) {
     let _ = window;
 }
 
+/// Re-order the chat window directly above the main window WITHOUT stealing
+/// focus or coupling the two (the way `parent`/NSWindow.addChildWindow would).
+///
+/// The in-app browser is a native child webview of the MAIN window, so it rides
+/// the main window's z-order and paints over any overlapping part of the chat
+/// window the moment the main window comes forward — clipping the chat at the
+/// browser's edge (#461/#406). We fix that by calling
+/// `[chatWindow orderWindow:NSWindowAbove relativeTo:mainWindow.windowNumber]`
+/// whenever the main window gains focus. Unlike `addChildWindow`, this is a
+/// one-shot relative ordering: the chat window stays an INDEPENDENT top-level
+/// window — it can enter fullscreen and tile into split-screen, and dragging
+/// the main window does not move it. It also never floats above OTHER apps
+/// (that was the global-`alwaysOnTop` overshoot of #461) — it is ordered only
+/// relative to our own main window.
+///
+/// Guarded so it never fights macOS Spaces: if the chat window is fullscreen
+/// (its own Space) or not visible, we skip the reorder entirely.
+#[cfg(target_os = "macos")]
+fn reorder_chat_above_main(chat: &tauri::WebviewWindow, main: &tauri::WebviewWindow) {
+    // Skip when the chat window is on its own Space (fullscreen) or hidden —
+    // reordering across Spaces is meaningless and risks flicker/focus fights.
+    if chat.is_fullscreen().unwrap_or(false) || !chat.is_visible().unwrap_or(true) {
+        return;
+    }
+
+    let chat_ns = match chat.ns_window() {
+        Ok(p) if !p.is_null() => p,
+        _ => return,
+    };
+    let main_ns = match main.ns_window() {
+        Ok(p) if !p.is_null() => p,
+        _ => return,
+    };
+
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = objc2::exception::catch(std::panic::AssertUnwindSafe(|| unsafe {
+            use objc2::msg_send;
+            use objc2::runtime::AnyObject;
+
+            let chat_obj = chat_ns as *mut AnyObject;
+            let main_obj = main_ns as *mut AnyObject;
+
+            // NSInteger windowNumber of the main window.
+            let main_num: isize = msg_send![main_obj, windowNumber];
+            // NSWindowAbove == 1 (NSWindowOrderingMode). Orders chat just above
+            // main without making it key/main, so focus is NOT stolen.
+            const NS_WINDOW_ABOVE: isize = 1;
+            let _: () = msg_send![chat_obj, orderWindow: NS_WINDOW_ABOVE, relativeTo: main_num];
+        }));
+    }));
+}
+
+/// Tauri command: re-assert the chat window's stacking just above the main
+/// window. Invoked from the main window's focus listener (ChatLauncher) while
+/// the chat window is open. No-ops cleanly when either window is absent.
+#[tauri::command]
+fn raise_chat_above_main(app: tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        if let (Some(chat), Some(main)) = (
+            app.get_webview_window("chat"),
+            app.get_webview_window("main"),
+        ) {
+            reorder_chat_above_main(&chat, &main);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
+}
+
 fn main() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -109,6 +178,7 @@ fn main() {
             daemon::get_daemon_token,
             activity::emit_activity,
             enable_media_capture_cmd,
+            raise_chat_above_main,
         ])
         .setup(|app| {
             daemon::start_daemon(app.handle())?;

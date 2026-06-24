@@ -70,16 +70,15 @@ export async function createChatWindow(appTheme: string): Promise<WebviewWindowT
     // edge. `focus` alone only front-orders once and is lost on that next
     // click.
     //
-    // We parent the chat window to the main window instead of using global
-    // `alwaysOnTop`. On macOS `parent` maps to NSWindow.addChildWindow, which
-    // keeps the chat window above its parent in the z-order — so the main
-    // window's browser child-webview can never clip it — WITHOUT floating it
-    // above other apps. The parent+child group still yields the z-order to
-    // other applications (terminal, external browser), so clicking those
-    // brings them forward over the chat window, as a normal window should.
-    // (Global `alwaysOnTop` overshot this: it kept the chat window above ALL
-    // apps system-wide — see #461.)
-    parent: 'main',
+    // The chat window is an INDEPENDENT top-level window — NOT a child of main
+    // (`parent`/addChildWindow would couple it to main: it would move with the
+    // main window and could no longer fullscreen or tile into split-screen,
+    // see #477) and NOT global `alwaysOnTop` (that floated it above ALL apps,
+    // see #461). Instead, the main window re-asserts the chat window's stacking
+    // just above itself via the native `raise_chat_above_main` command on every
+    // main-window focus (see ChatLauncher + main.rs). That keeps the chat above
+    // the main window's browser child-webview WITHOUT coupling movement or
+    // floating above other apps.
     theme: appTheme === 'silver' ? 'light' : 'dark',
     ...placement,
   });
