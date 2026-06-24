@@ -381,7 +381,11 @@ async fn run_external_cli(
 /// failure. Push detection asks whether any remote ref already contains HEAD
 /// (the worker's `git push origin HEAD:main` updates the shared repo's
 /// `refs/remotes/origin/main`, which the worktree sees).
-async fn collect_evidence(worktree: &Path, baseline: &str, worker_summary: String) -> GoalEvidence {
+pub(crate) async fn collect_evidence(
+    worktree: &Path,
+    baseline: &str,
+    worker_summary: String,
+) -> GoalEvidence {
     let range = format!("{}..HEAD", baseline);
 
     let head_commit = git_line(worktree, &["rev-parse", "--short", "HEAD"]).await;
