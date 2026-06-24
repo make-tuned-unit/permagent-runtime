@@ -68,9 +68,18 @@ export async function createChatWindow(appTheme: string): Promise<WebviewWindowT
     // the main window (and its browser webview) comes forward and paints over
     // any overlapping part of the chat window, clipping it at the browser's
     // edge. `focus` alone only front-orders once and is lost on that next
-    // click. `alwaysOnTop` decouples the chat window from the main window's
-    // z-order entirely, so the browser can never clip it.
-    alwaysOnTop: true,
+    // click.
+    //
+    // We parent the chat window to the main window instead of using global
+    // `alwaysOnTop`. On macOS `parent` maps to NSWindow.addChildWindow, which
+    // keeps the chat window above its parent in the z-order — so the main
+    // window's browser child-webview can never clip it — WITHOUT floating it
+    // above other apps. The parent+child group still yields the z-order to
+    // other applications (terminal, external browser), so clicking those
+    // brings them forward over the chat window, as a normal window should.
+    // (Global `alwaysOnTop` overshot this: it kept the chat window above ALL
+    // apps system-wide — see #461.)
+    parent: 'main',
     theme: appTheme === 'silver' ? 'light' : 'dark',
     ...placement,
   });
