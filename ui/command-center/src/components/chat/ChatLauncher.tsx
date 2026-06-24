@@ -40,6 +40,26 @@ export function ChatLauncher() {
     return () => clearInterval(interval);
   }, [chatWindowOpen]);
 
+  // While the chat window is open, re-assert its stacking just above the main
+  // window whenever the main window gains focus. The chat window is independent
+  // (not a child of main — so it can fullscreen/tile and doesn't move with main),
+  // so the native `raise_chat_above_main` command re-orders it above main without
+  // stealing focus, keeping it above main's browser child-webview (#461/#477).
+  useEffect(() => {
+    if (!isTauri || !chatWindowOpen) return;
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        const { invoke } = await import('@tauri-apps/api/core');
+        unlisten = await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+          if (focused) invoke('raise_chat_above_main').catch(() => {});
+        });
+      } catch { /* non-Tauri or unavailable — graceful */ }
+    })();
+    return () => { unlisten?.(); };
+  }, [chatWindowOpen]);
+
   const openChatWindow = useCallback(async () => {
     if (!isTauri) return;
     try {
@@ -48,9 +68,9 @@ export function ChatLauncher() {
       const existing = await WebviewWindow.getByLabel('chat');
       if (existing) {
         await existing.show();
-        // The chat window is parented to the main window (see chatWindow.ts),
-        // so it always sits above the main window's native browser child-webview
-        // without floating above other apps — no always-on-top re-assert needed.
+        // The chat window is independent; the main-window focus listener
+        // re-asserts its stacking above main (see the onFocusChanged effect and
+        // main.rs). Opening it is an explicit user action, so focus it now.
         await existing.setFocus();
         setChatWindowOpen(true);
         return;
