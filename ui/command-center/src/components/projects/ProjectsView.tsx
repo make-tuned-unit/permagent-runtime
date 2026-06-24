@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { apiFetch } from '../../lib/api';
+import { useGoalEvents } from '../../lib/useGoalEvents';
 import { useCommandCenter } from '../../lib/store';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -365,6 +366,9 @@ project, onBack }: {
   }, [project.id]);
 
   useEffect(() => { loadBoard(); }, [loadBoard]);
+  // Live board: refetch when any goal is created or transitions (shared
+  // subscription) so Henry's changes appear without a full app reload.
+  useGoalEvents(loadBoard);
   useEffect(() => { if (addingCardCol && inputRef.current) inputRef.current.focus(); }, [addingCardCol]);
 
   // Pointer drag: track move + handle drop on pointerup

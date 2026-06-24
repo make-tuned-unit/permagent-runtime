@@ -363,6 +363,17 @@ pub async fn advance_goal_checked(
     .map_err(GuardError::Db)?;
 
     tx.commit().await.map_err(db_err)?;
+
+    // Live goal-state push (#454-follow): every transition emits so the
+    // dashboard surfaces and Kanban board react within a frame instead of
+    // waiting on a poll or a full reload.
+    crate::events::emit(crate::events::goal_state_changed(
+        card_id,
+        Some(&goal.project_id),
+        Some(current_state.binding()),
+        new_state.binding(),
+    ));
+
     Ok(new_state)
 }
 
@@ -420,6 +431,14 @@ pub async fn park_goal(
         .map_err(GuardError::Db)?;
 
     tx.commit().await.map_err(db_err)?;
+
+    crate::events::emit(crate::events::goal_state_changed(
+        card_id,
+        Some(&goal.project_id),
+        None,
+        "triage",
+    ));
+
     Ok(())
 }
 
@@ -484,6 +503,14 @@ pub async fn requeue_goal(
         .map_err(GuardError::Db)?;
 
     tx.commit().await.map_err(db_err)?;
+
+    crate::events::emit(crate::events::goal_state_changed(
+        card_id,
+        Some(&goal.project_id),
+        Some("in_progress"),
+        "ready",
+    ));
+
     Ok(())
 }
 
@@ -514,6 +541,16 @@ pub async fn record_goal_failure(
         .await
         .map_err(db_err)?;
     tx.commit().await.map_err(db_err)?;
+
+    // State is unchanged (in_progress, retriable), but the latched error is
+    // new — emit so any error badge on the live surfaces updates.
+    crate::events::emit(crate::events::goal_state_changed(
+        card_id,
+        Some(&goal.project_id),
+        Some("in_progress"),
+        "in_progress",
+    ));
+
     Ok(())
 }
 
@@ -567,7 +604,14 @@ pub async fn delete_goal_checked(
         .await
         .map_err(db_err)?;
     tx.commit().await.map_err(db_err)?;
-    Ok(result.rows_affected() > 0)
+
+    let deleted = result.rows_affected() > 0;
+    if deleted {
+        crate::events::emit(crate::events::goal_state_changed(
+            card_id, None, None, "deleted",
+        ));
+    }
+    Ok(deleted)
 }
 
 // ── Budgets (S4) ────────────────────────────────────────────────────────────

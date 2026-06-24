@@ -190,7 +190,35 @@ pub async fn seed_goal_columns(pool: &Pool<Sqlite>, project_id: &str) -> Result<
         .map_err(|e| e.to_string())?;
     }
 
+    // #453: a project is seeded with generic Backlog/Doing/Done columns at
+    // creation; the goal lifecycle columns just added supersede them. Drop the
+    // now-redundant empty manual columns so the board shows one canonical set.
+    cleanup_duplicate_manual_columns(pool).await?;
+
     Ok(())
+}
+
+/// Remove redundant generic columns (#453). When a project carries the goal
+/// lifecycle columns (`column_kind = 'state'`), the originally-seeded
+/// Backlog/Doing/Done manual columns are duplicates (Doing≈In Progress,
+/// Done≈Complete). Deletes ONLY empty manual columns — a manual column that
+/// still holds cards is left untouched, so this can never lose card data.
+/// Idempotent and safe to run on every boot / first goal seed.
+pub async fn cleanup_duplicate_manual_columns(pool: &Pool<Sqlite>) -> Result<u64, String> {
+    let res = sqlx::query(
+        "DELETE FROM board_columns
+         WHERE column_kind = 'manual'
+           AND project_id IN (
+               SELECT DISTINCT project_id FROM board_columns WHERE column_kind = 'state'
+           )
+           AND id NOT IN (
+               SELECT column_id FROM cards WHERE column_id IS NOT NULL
+           )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(res.rows_affected())
 }
 
 /// Find the goal lifecycle column for a given state_binding in a project.
@@ -515,9 +543,83 @@ pub async fn create_card(pool: &Pool<Sqlite>, input: CreateCard) -> Result<Card,
     .await
     .map_err(|e| e.to_string())?;
 
-    get_card(pool, &id)
+    let card = get_card(pool, &id)
         .await?
-        .ok_or_else(|| "Failed to read created card".to_string())
+        .ok_or_else(|| "Failed to read created card".to_string())?;
+
+    // Live push so a newly-created goal appears on the board / dashboard
+    // without a reload. Non-goal cards don't drive the goal surfaces.
+    if card_type == "goal" {
+        let to_binding: Option<String> =
+            sqlx::query_scalar("SELECT state_binding FROM board_columns WHERE id = ?")
+                .bind(&column_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| e.to_string())?
+                .flatten();
+        crate::events::emit(crate::events::goal_state_changed(
+            &id,
+            Some(&input.project_id),
+            None,
+            to_binding.as_deref().unwrap_or("triage"),
+        ));
+    }
+
+    Ok(card)
+}
+
+/// A goal in an active lifecycle state, for the dashboard's unified "in flight"
+/// surfaces. Count and list both derive from [`list_active_goals`] so they can
+/// never disagree.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ActiveGoal {
+    pub id: String,
+    pub title: String,
+    pub project_id: String,
+    /// state_binding of the goal's column: ready | in_progress | review.
+    pub state: String,
+    pub assigned_to: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// All goals Henry is actively working — the single source of truth for the
+/// "in flight" count, list, "N active" header, and "working on N things"
+/// status. Active = [`GoalState::ACTIVE_BINDINGS`] (Ready/InProgress/Review);
+/// Triage (queued) and Complete (done) are excluded, as are parked goals
+/// (`needs_human_attention`) and archived cards. Newest first.
+pub async fn list_active_goals(pool: &Pool<Sqlite>) -> Result<Vec<ActiveGoal>, String> {
+    use crate::goal_state::GoalState;
+    let placeholders = vec!["?"; GoalState::ACTIVE_BINDINGS.len()].join(", ");
+    let sql = format!(
+        "SELECT c.id, c.title, c.project_id, bc.state_binding, c.assigned_to, \
+                c.created_at, c.updated_at \
+         FROM cards c JOIN board_columns bc ON c.column_id = bc.id \
+         WHERE c.card_type = 'goal' AND c.archived_at IS NULL \
+           AND bc.state_binding IN ({}) \
+           AND COALESCE(json_extract(c.metadata_json, '$.needs_human_attention'), 0) = 0 \
+         ORDER BY c.updated_at DESC",
+        placeholders
+    );
+    let mut q = sqlx::query(&sql);
+    for b in GoalState::ACTIVE_BINDINGS {
+        q = q.bind(*b);
+    }
+    let rows = q.fetch_all(pool).await.map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|r| ActiveGoal {
+            id: r.get("id"),
+            title: r.get("title"),
+            project_id: r.get("project_id"),
+            state: r
+                .get::<Option<String>, _>("state_binding")
+                .unwrap_or_default(),
+            assigned_to: r.get("assigned_to"),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        })
+        .collect())
 }
 
 #[derive(Debug, Default)]
@@ -1203,6 +1305,112 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn seed_goal_columns_removes_empty_duplicate_manual_columns() {
+        // #453: personal project starts with Backlog/Doing/Done (manual). After
+        // goal columns are seeded, the empty manual duplicates are dropped.
+        let pool = test_pool().await;
+        assert_eq!(
+            list_columns(&pool, PERSONAL_PROJECT_ID)
+                .await
+                .unwrap()
+                .len(),
+            3
+        );
+
+        seed_goal_columns(&pool, PERSONAL_PROJECT_ID).await.unwrap();
+
+        let cols = list_columns(&pool, PERSONAL_PROJECT_ID).await.unwrap();
+        assert!(
+            cols.iter().all(|c| c.column_kind == "state"),
+            "empty manual columns must be gone, leaving only the 5 state columns"
+        );
+        assert_eq!(cols.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn cleanup_keeps_manual_columns_that_hold_cards() {
+        // A manual column with a card is NEVER deleted — no card data loss.
+        let pool = test_pool().await;
+        create_card(
+            &pool,
+            CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: "Generic task".to_string(),
+                description: None,
+                card_type: None, // standard → lands in Backlog (manual)
+                column_id: Some("col-personal-backlog".to_string()),
+                created_by: None,
+                metadata_json: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        seed_goal_columns(&pool, PERSONAL_PROJECT_ID).await.unwrap();
+
+        let cols = list_columns(&pool, PERSONAL_PROJECT_ID).await.unwrap();
+        assert!(
+            cols.iter().any(|c| c.id == "col-personal-backlog"),
+            "Backlog holds a card and must survive cleanup"
+        );
+        // Doing + Done were empty → removed; Backlog + 5 state remain.
+        assert_eq!(cols.len(), 6);
+    }
+
+    #[tokio::test]
+    async fn list_active_goals_only_counts_active_states() {
+        let pool = test_pool().await;
+        seed_goal_columns(&pool, PERSONAL_PROJECT_ID).await.unwrap();
+
+        let mk = |state: &'static str, parked: bool| {
+            let pool = &pool;
+            async move {
+                let col = get_goal_column(pool, PERSONAL_PROJECT_ID, state)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let mut meta = serde_json::Map::new();
+                meta.insert("goal_state".to_string(), serde_json::json!(state));
+                if parked {
+                    meta.insert("needs_human_attention".to_string(), serde_json::json!(true));
+                }
+                create_card(
+                    pool,
+                    CreateCard {
+                        project_id: PERSONAL_PROJECT_ID.to_string(),
+                        title: format!("goal-{}{}", state, if parked { "-parked" } else { "" }),
+                        description: None,
+                        card_type: Some("goal".to_string()),
+                        column_id: Some(col.id),
+                        created_by: None,
+                        metadata_json: Some(serde_json::Value::Object(meta)),
+                    },
+                )
+                .await
+                .unwrap()
+            }
+        };
+
+        mk("triage", false).await; // queued — excluded
+        mk("ready", false).await; // active
+        mk("in_progress", false).await; // active
+        mk("review", false).await; // active
+        mk("in_progress", true).await; // parked — excluded
+
+        let active = list_active_goals(&pool).await.unwrap();
+        let states: Vec<&str> = active.iter().map(|g| g.state.as_str()).collect();
+        assert_eq!(
+            active.len(),
+            3,
+            "ready + in_progress + review only; got {states:?}"
+        );
+        assert!(states.contains(&"ready"));
+        assert!(states.contains(&"in_progress"));
+        assert!(states.contains(&"review"));
+        assert!(!states.contains(&"triage"));
+    }
+
+    #[tokio::test]
     async fn create_goal_card_seeds_columns_and_places_in_triage() {
         let pool = test_pool().await;
 
@@ -1385,7 +1593,8 @@ mod tests {
     #[tokio::test]
     async fn reorder_refuses_goal_column_change_whole_batch() {
         let pool = test_pool().await;
-        let goal = make_goal(&pool).await;
+        // Create the standard card first so its manual column holds a card and
+        // survives the #453 duplicate-column cleanup that make_goal triggers.
         let standard = create_card(
             &pool,
             CreateCard {
@@ -1400,15 +1609,19 @@ mod tests {
         )
         .await
         .unwrap();
+        let std_col = standard.column_id.clone();
+        let goal = make_goal(&pool).await;
         let ready = get_goal_column(&pool, PERSONAL_PROJECT_ID, "ready")
             .await
             .unwrap()
             .unwrap();
 
+        // Batch pairs a legal same-column reposition of the standard card with
+        // an illegal goal column change — the whole batch must be refused.
         let err = reorder_cards(
             &pool,
             &[
-                (standard.id.clone(), "col-personal-doing".to_string(), 0),
+                (standard.id.clone(), std_col.clone(), 3),
                 (goal.id.clone(), ready.id.clone(), 1),
             ],
         )
@@ -1417,7 +1630,11 @@ mod tests {
 
         // Nothing in the batch was applied.
         let std_after = get_card(&pool, &standard.id).await.unwrap().unwrap();
-        assert_eq!(std_after.column_id, "col-personal-backlog");
+        assert_eq!(std_after.column_id, std_col);
+        assert_eq!(
+            std_after.position, 0,
+            "reposition rolled back with the batch"
+        );
 
         // Goal repositioning within its own column is fine.
         reorder_cards(&pool, &[(goal.id.clone(), goal.column_id.clone(), 7)])

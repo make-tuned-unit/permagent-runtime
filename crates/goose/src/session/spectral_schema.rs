@@ -32,7 +32,13 @@ use tracing::{info, warn};
 /// v13 = file-intake inbox (inbox_files). New-tables-only, additive and
 /// base-independent; browser downloads land as a file on disk plus a metadata
 /// row here (epic #392 / #393). `migrate_v12_to_v13` applies it.
-pub const SPECTRAL_SCHEMA_VERSION: i32 = 13;
+///
+/// v14 = duplicate-column cleanup (#453). A data fixup, not new schema: existing
+/// goal boards carry both the generic Backlog/Doing/Done columns (seeded at
+/// project creation) and the goal lifecycle columns, showing 8 columns with
+/// duplicates. `migrate_v13_to_v14` deletes the redundant EMPTY manual columns
+/// (never one holding cards). Idempotent and base-independent.
+pub const SPECTRAL_SCHEMA_VERSION: i32 = 14;
 
 /// Initialize the Spectral database schema from scratch.
 /// Creates all tables, indexes, FTS virtual tables, triggers, and views.
@@ -953,14 +959,32 @@ pub async fn migrate_v12_to_v13(pool: &Pool<Sqlite>) -> Result<()> {
 
     apply_inbox_schema(pool).await?;
 
-    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (?)")
-        .bind(SPECTRAL_SCHEMA_VERSION)
+    // Hardcoded (v13), matching the migrate_v10_to_v11 / v11_to_v12 precedent,
+    // so it stays correct now that SPECTRAL_SCHEMA_VERSION has advanced past 13.
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (13)")
         .execute(pool)
         .await?;
-    info!(
-        "Spectral schema migrated to v{} (file-intake inbox)",
-        SPECTRAL_SCHEMA_VERSION
-    );
+    info!("Spectral schema migrated to v13 (file-intake inbox)");
+
+    Ok(())
+}
+
+/// Migrate an existing database by removing duplicate board columns (schema
+/// v14, #453). A data cleanup — no DDL — so it is base-version independent and
+/// idempotent: it deletes only EMPTY generic manual columns in projects that
+/// also carry the goal lifecycle (`state`) columns. Records v14.
+pub async fn migrate_v13_to_v14(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v13 -> v14 (duplicate-column cleanup, #453)");
+
+    let removed = crate::cards::cleanup_duplicate_manual_columns(pool)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    // Hardcoded (v14) per the migration precedent in this file.
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (14)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v14 ({removed} duplicate columns removed)");
 
     Ok(())
 }
@@ -1809,7 +1833,7 @@ mod inbox_schema_tests {
         init_spectral_db(&pool).await.unwrap();
 
         assert_eq!(current_version(&pool).await, SPECTRAL_SCHEMA_VERSION);
-        assert_eq!(SPECTRAL_SCHEMA_VERSION, 13);
+        assert_eq!(SPECTRAL_SCHEMA_VERSION, 14);
 
         let cols = inbox_columns(&pool).await;
         for expected in [
@@ -1864,5 +1888,46 @@ mod inbox_schema_tests {
             // Idempotent: a second run is a no-op, not an error.
             migrate_v12_to_v13(&pool).await.unwrap();
         }
+    }
+
+    /// migrate_v13_to_v14 (#453) removes empty duplicate manual columns from
+    /// goal boards, stamps v14, and is idempotent.
+    #[tokio::test]
+    async fn migrate_v13_to_v14_dedupes_columns_and_stamps() {
+        let pool = mem_pool().await;
+        init_spectral_db(&pool).await.unwrap();
+
+        // Give the personal project both the manual seed columns (from init) and
+        // the goal lifecycle columns, then force the recorded version back to 13.
+        crate::cards::seed_goal_columns(&pool, crate::projects::PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        // Re-add a stray empty manual column to prove the migration removes it.
+        sqlx::query(
+            "INSERT INTO board_columns (id, project_id, name, position, column_kind)
+             VALUES ('stray-manual', ?, 'Doing', 1, 'manual')",
+        )
+        .bind(crate::projects::PERSONAL_PROJECT_ID)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (13)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        migrate_v13_to_v14(&pool).await.unwrap();
+
+        assert_eq!(current_version(&pool).await, 14);
+        let stray: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM board_columns WHERE id = 'stray-manual'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stray, 0, "empty duplicate manual column must be removed");
+
+        // Idempotent: a second run is a no-op, not an error.
+        migrate_v13_to_v14(&pool).await.unwrap();
+        assert_eq!(current_version(&pool).await, 14);
     }
 }

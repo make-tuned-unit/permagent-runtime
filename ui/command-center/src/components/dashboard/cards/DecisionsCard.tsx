@@ -13,7 +13,14 @@ import { DecisionInbox } from '../decisions/DecisionInbox';
 import { formatAge } from '../decisions/format';
 import { usePersona } from '../../settings/useSettings';
 
-export function DecisionsCard() {
+interface Props {
+  /** Active-goal count from the shared useLiveGoals source, so this stat agrees
+   *  with the In-Flight card and Hero status. Falls back to the decisions
+   *  payload's own count when not supplied (e.g. standalone use). */
+  activeCount?: number;
+}
+
+export function DecisionsCard({ activeCount }: Props = {}) {
   const { colors, reduceMotion } = useTheme();
   const inbox = useDecisions();
   const { data } = inbox;
@@ -24,7 +31,7 @@ export function DecisionsCard() {
 
   const count = data?.total_pending ?? 0;
   const handled = data?.handled_count ?? 0;
-  const goals = data?.goals_in_flight ?? 0;
+  const goals = activeCount ?? data?.goals_in_flight ?? 0;
   const oldest = data?.oldest_pending_at ?? null;
 
   const empty = data !== null && count === 0;
