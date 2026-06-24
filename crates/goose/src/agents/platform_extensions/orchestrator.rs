@@ -2925,6 +2925,17 @@ async fn resume_single_goal(
             session_id.unwrap_or("?")
         );
     } else {
+        // Before treating a dead-worker goal as abandoned: the worker may have
+        // finished and committed its work in the detached worktree, but the
+        // daemon restarted before the in-process completion tracker could fire
+        // (success → Review). Requeuing such a goal to Ready discards completed
+        // work and leaves it counted as active forever. So check the worktree
+        // first — if it holds commits since baseline, capture the evidence and
+        // route to Review (where a live completion would have landed).
+        if try_complete_dead_worker_from_worktree(pool, &card, project_id, session_id).await {
+            return Ok(());
+        }
+
         // Case 1: session is dead — requeue, or park on budget exhaustion.
         let new_attempt = attempt_count + 1;
         let budget = goal_transition::goal_budget(&card.metadata_json);
@@ -2979,6 +2990,86 @@ async fn resume_single_goal(
     }
 
     Ok(())
+}
+
+/// Recover a dead-worker goal whose worktree already holds committed work.
+///
+/// When a worker commits in its detached worktree but the daemon restarts before
+/// the completion tracker fires, the goal is stranded mid-completion. Rather than
+/// requeue it to Ready (which discards the work and keeps it counted as active),
+/// reconstruct the same `dispatch_evidence` a clean completion would have left
+/// and advance it to Review via `handle_goal_completion`.
+///
+/// Returns `true` when the goal was routed to Review; `false` (caller then
+/// requeues/parks as before) when there is no worker session, no baseline, no
+/// resolvable worktree, or no commits since baseline.
+async fn try_complete_dead_worker_from_worktree(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    project_id: &str,
+    session_id: Option<&str>,
+) -> bool {
+    let Some(session_id) = session_id else {
+        return false;
+    };
+    let Some(baseline) = card
+        .metadata_json
+        .as_object()
+        .and_then(|m| m.get("baseline_commit"))
+        .and_then(|v| v.as_str())
+    else {
+        return false;
+    };
+    let root_path = match crate::projects::get_project(pool, project_id).await {
+        Ok(Some(p)) => p.root_path,
+        _ => None,
+    };
+    let Some(root_path) = root_path else {
+        return false;
+    };
+    // Worktrees live at `<repo_parent>/.permagent-goal-worktrees/<session_id>`,
+    // mirroring create_goal_worktree.
+    let Some(parent) = PathBuf::from(&root_path).parent().map(|p| p.to_path_buf()) else {
+        return false;
+    };
+    let worktree = parent.join(".permagent-goal-worktrees").join(session_id);
+    if !worktree.is_dir() {
+        return false;
+    }
+    let evidence = goal_engine::collect_evidence(&worktree, baseline, String::new()).await;
+    if evidence.commits.is_empty() {
+        return false;
+    }
+    let Ok(evidence_json) = serde_json::to_value(&evidence) else {
+        return false;
+    };
+    if let Err(e) = cards::set_goal_dispatch_evidence(pool, &card.id, evidence_json).await {
+        tracing::warn!(
+            target: "permagentd::brain",
+            "resume: failed to persist recovered evidence for '{}': {}",
+            card.title, e
+        );
+        return false;
+    }
+    match handle_goal_completion(pool, &card.id, project_id, Ok(())).await {
+        Ok(()) => {
+            tracing::info!(
+                target: "permagentd::brain",
+                "Goal '{}' recovered after restart: worker had committed work ({} commit(s)) — routed to Review with evidence, not requeued to Ready",
+                card.title,
+                evidence.commits.len()
+            );
+            true
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "permagentd::brain",
+                "resume: failed to route recovered goal '{}' to Review: {}",
+                card.title, e
+            );
+            false
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3496,6 +3587,139 @@ mod tests {
         assert_eq!(
             updated.metadata_json.get("goal_state").unwrap().as_str(),
             Some("ready")
+        );
+    }
+
+    /// Gap A regression: a dead-worker goal whose detached worktree already holds
+    /// committed work must be routed to Review with evidence — NOT requeued to
+    /// Ready. This is the orphan case (worker committed, daemon restarted before
+    /// the completion tracker fired) that left finished goals counted as active.
+    #[tokio::test]
+    async fn resume_routes_committed_work_to_review_not_ready() {
+        use std::path::Path;
+        use std::process::Command;
+        fn git(dir: &Path, args: &[&str]) {
+            let ok = Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "git {:?} failed", args);
+        }
+
+        let pool = test_pool().await;
+
+        // A real repo with a baseline commit, used as the project root.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("README.md"), "base\n").unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "baseline"]);
+        let baseline = String::from_utf8(
+            Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+
+        // The worker's committed work lives in the detached worktree at the path
+        // recovery derives: <repo_parent>/.permagent-goal-worktrees/<session_id>.
+        let session_id = "cli-test-recover";
+        let wt = tmp
+            .path()
+            .join(".permagent-goal-worktrees")
+            .join(session_id);
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                wt.to_str().unwrap(),
+                &baseline,
+            ],
+        );
+        std::fs::write(wt.join("FEATURE.md"), "done\n").unwrap();
+        git(&wt, &["add", "-A"]);
+        git(&wt, &["commit", "-q", "-m", "worker work"]);
+
+        // Project rooted at the repo + an in_progress goal carrying baseline and
+        // worker_session_id (what dispatch stamps).
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "Recover".to_string(),
+                root_path: Some(repo.to_str().unwrap().to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        cards::seed_goal_columns(&pool, &project.id).await.unwrap();
+        let col = cards::get_goal_column(&pool, &project.id, "in_progress")
+            .await
+            .unwrap()
+            .unwrap();
+        let mut meta = serde_json::Map::new();
+        meta.insert("goal_state".into(), serde_json::json!("in_progress"));
+        meta.insert("attempt_count".into(), serde_json::json!(1));
+        meta.insert("baseline_commit".into(), serde_json::json!(baseline));
+        meta.insert("worker_session_id".into(), serde_json::json!(session_id));
+        let card = cards::create_card(
+            &pool,
+            cards::CreateCard {
+                project_id: project.id.clone(),
+                title: "Recoverable goal".to_string(),
+                description: Some("t".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(col.id.clone()),
+                created_by: None,
+                metadata_json: Some(serde_json::Value::Object(meta)),
+            },
+        )
+        .await
+        .unwrap();
+
+        // Dead session (no manager) — but committed work exists → route to Review.
+        resume_single_goal(&pool, &None, &card.id, &project.id)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let updated_col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            updated_col.state_binding.as_deref(),
+            Some("review"),
+            "committed work must route to Review, not Ready"
+        );
+        let ev = updated
+            .metadata_json
+            .get("dispatch_evidence")
+            .expect("recovered evidence must be persisted");
+        assert!(
+            ev.get("commits")
+                .and_then(|c| c.as_array())
+                .map(|a| !a.is_empty())
+                .unwrap_or(false),
+            "evidence must capture the worker's commits: {ev}"
         );
     }
 
