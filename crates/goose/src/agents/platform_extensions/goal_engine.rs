@@ -20,6 +20,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use once_cell::sync::Lazy;
+use regex::Regex;
 use tokio::process::Command;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -310,7 +312,10 @@ async fn create_goal_worktree(
     if !output.status.success() {
         return Err(format!(
             "`git worktree add` failed: {}",
-            tail(&String::from_utf8_lossy(&output.stderr), 2000)
+            tail(
+                &redact_secrets(&String::from_utf8_lossy(&output.stderr)),
+                2000
+            )
         ));
     }
     Ok(dest)
@@ -339,7 +344,10 @@ async fn run_external_cli(
     match tokio::time::timeout(timeout, cmd.output()).await {
         Ok(Ok(output)) => {
             if output.status.success() {
-                let worker_summary = tail(&String::from_utf8_lossy(&output.stdout), 4000);
+                let worker_summary = tail(
+                    &redact_secrets(&String::from_utf8_lossy(&output.stdout)),
+                    4000,
+                );
                 let evidence = collect_evidence(working_dir, baseline, worker_summary).await;
                 GoalOutcome::Success(Some(evidence))
             } else {
@@ -352,7 +360,10 @@ async fn run_external_cli(
                     "`{}` exited with status {}: {}",
                     bin,
                     code,
-                    tail(&String::from_utf8_lossy(&output.stderr), 2000)
+                    tail(
+                        &redact_secrets(&String::from_utf8_lossy(&output.stderr)),
+                        2000
+                    )
                 ))
             }
         }
@@ -468,9 +479,106 @@ fn tail(s: &str, max: usize) -> String {
     format!("…{}", tail)
 }
 
+/// Heuristic secret redaction for worker output that gets PERSISTED on the goal
+/// card (#455). Worker stdout/stderr is stored verbatim in
+/// `dispatch_evidence.worker_summary` and in failure reasons; a publish/seed step
+/// that sources `.env.local` (e.g. a DB reseed) can echo a connection string or
+/// token into that stream and leak prod credentials into the card. This masks the
+/// obvious secret SHAPES — it is best-effort, NOT a proof of absence: an
+/// unrecognized bare secret can still slip through, so capture-less is preferable
+/// where feasible (the larger publish-step capture is handled that way in #457).
+/// Applied uniformly at all three capture points (worker_summary + the two stderr
+/// tails). Always redact BEFORE [`tail`] so truncation can't leave a secret
+/// fragment that no longer matches a pattern.
+fn redact_secrets(s: &str) -> String {
+    static RULES: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
+        vec![
+            // KEY=VALUE assignments whose key names a secret (case-insensitive).
+            // Keeps the key, masks the value. `*_URL=` is deliberately included —
+            // over-redacting a plain URL beats leaking a credentialed one.
+            (
+                Regex::new(
+                    r"(?i)\b([A-Za-z_][A-Za-z0-9_]*(?:_URL|_KEY|_TOKEN|_SECRET|PASSWORD))\s*=\s*\S+",
+                )
+                .unwrap(),
+                "${1}=[REDACTED]",
+            ),
+            // Credentialed connection strings (scheme://...): whole URL masked.
+            // `mongodb+srv` before `mongodb` so the longer scheme wins.
+            (
+                Regex::new(r"(?i)\b(?:postgresql|postgres|mysql|mongodb\+srv|mongodb|redis)://\S+")
+                    .unwrap(),
+                "[REDACTED-CONNECTION-STRING]",
+            ),
+            // Provider API tokens, JWTs, AWS access-key ids.
+            (
+                Regex::new(r"\bsk-[A-Za-z0-9_-]{16,}").unwrap(),
+                "[REDACTED-TOKEN]",
+            ),
+            (
+                Regex::new(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+").unwrap(),
+                "[REDACTED-JWT]",
+            ),
+            (
+                Regex::new(r"\bAKIA[0-9A-Z]{16}\b").unwrap(),
+                "[REDACTED-AWS-KEY]",
+            ),
+        ]
+    });
+    let mut out = s.to_string();
+    for (re, repl) in RULES.iter() {
+        out = re.replace_all(&out, *repl).into_owned();
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #455: persisted worker output must not leak prod credentials. A stdout/
+    /// stderr tail carrying a `postgres://` connection string and a `*_KEY=`
+    /// assignment (the shapes a `.env.local`-sourcing seed step emits) comes back
+    /// masked, while non-secret context is preserved.
+    #[test]
+    fn redact_secrets_masks_connection_strings_and_keys() {
+        let raw = "Reseeding threads...\n\
+                   DATABASE_URL=postgres://admin:hunter2@db.prod.example.com:5432/app\n\
+                   Connecting to mongodb+srv://u:p@cluster.mongodb.net/threads\n\
+                   export SUPABASE_KEY=sk-LIVEabcdef0123456789XYZ\n\
+                   token eyJhbGciOi.eyJzdWIiOi.s3cr3tSig\n\
+                   Seeded 412 threads. Done.";
+        let out = redact_secrets(raw);
+
+        // Secret material is gone.
+        assert!(!out.contains("hunter2"), "db password leaked: {out}");
+        assert!(!out.contains("postgres://"), "postgres URL leaked: {out}");
+        assert!(
+            !out.contains("mongodb+srv://"),
+            "mongo connection string leaked: {out}"
+        );
+        assert!(
+            !out.contains("sk-LIVEabcdef0123456789XYZ"),
+            "api token leaked: {out}"
+        );
+        assert!(
+            !out.contains("eyJhbGciOi.eyJzdWIiOi.s3cr3tSig"),
+            "jwt leaked: {out}"
+        );
+        // Masks present + non-secret context preserved.
+        assert!(
+            out.contains("[REDACTED"),
+            "expected redaction markers: {out}"
+        );
+        assert!(
+            out.contains("SUPABASE_KEY=[REDACTED]"),
+            "key not masked: {out}"
+        );
+        assert!(
+            out.contains("Reseeding threads") && out.contains("Seeded 412 threads. Done."),
+            "non-secret context not preserved: {out}"
+        );
+    }
 
     #[test]
     fn prompt_token_substitution_replaces_only_the_token() {
