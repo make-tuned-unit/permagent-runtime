@@ -1067,8 +1067,10 @@ impl SessionStorage {
                    s.accumulated_total_tokens, s.accumulated_input_tokens, s.accumulated_output_tokens,
                    s.schedule_id, s.recipe_json, s.user_recipe_values_json,
                    s.provider_name, s.model_config_json, s.goose_mode, s.thread_id,
-                   (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) as message_count
+                   COALESCE(mc.c, 0) as message_count
             FROM sessions s
+            LEFT JOIN (SELECT session_id, COUNT(*) AS c FROM messages GROUP BY session_id) mc
+                   ON mc.session_id = s.id
             {}
             ORDER BY s.updated_at DESC
             "#,
@@ -1132,8 +1134,10 @@ impl SessionStorage {
             r#"
             SELECT s.id, s.name, s.description, s.user_set_name, s.session_type,
                    s.created_at, s.updated_at,
-                   (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) as message_count
+                   COALESCE(mc.c, 0) as message_count
             FROM sessions s
+            LEFT JOIN (SELECT session_id, COUNT(*) AS c FROM messages GROUP BY session_id) mc
+                   ON mc.session_id = s.id
             {}
             ORDER BY s.updated_at DESC
             "#,
@@ -1758,6 +1762,70 @@ mod tests {
         assert_eq!(s.session_type, SessionType::User);
         // message_count is computed by the lean query's subselect, not dropped.
         assert_eq!(s.message_count, 1);
+    }
+
+    /// Locks in that the GROUP BY/COALESCE rewrite of the message_count column
+    /// (replacing the per-row correlated subquery) yields IDENTICAL counts —
+    /// including sessions with zero messages, where the LEFT JOIN produces NULL
+    /// that COALESCE must map back to 0. Covers both list query paths.
+    #[tokio::test]
+    async fn test_message_count_matches_across_list_paths() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        // Session with 0 messages.
+        let empty = sm
+            .create_session(
+                PathBuf::from("/tmp/test"),
+                "empty".to_string(),
+                SessionType::User,
+                GooseMode::default(),
+            )
+            .await
+            .unwrap();
+
+        // Session with 3 messages.
+        let busy = sm
+            .create_session(
+                PathBuf::from("/tmp/test"),
+                "busy".to_string(),
+                SessionType::User,
+                GooseMode::default(),
+            )
+            .await
+            .unwrap();
+        for _ in 0..3 {
+            sm.add_message(
+                &busy.id,
+                &Message {
+                    id: None,
+                    role: Role::User,
+                    created: chrono::Utc::now().timestamp_millis(),
+                    content: vec![MessageContent::text("hi")],
+                    metadata: Default::default(),
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        // Fat path (list_sessions_by_types via list_sessions).
+        let sessions = sm.list_sessions().await.unwrap();
+        let by_id: std::collections::HashMap<_, _> = sessions
+            .iter()
+            .map(|s| (s.id.clone(), s.message_count))
+            .collect();
+        assert_eq!(by_id.get(&empty.id), Some(&0));
+        assert_eq!(by_id.get(&busy.id), Some(&3));
+
+        // Lean path (list_session_summaries).
+        let summaries = sm.list_session_summaries().await.unwrap();
+        let lean_by_id: std::collections::HashMap<_, _> = summaries
+            .iter()
+            .map(|s| (s.id.clone(), s.message_count))
+            .collect();
+        assert_eq!(lean_by_id.get(&empty.id), Some(&0));
+        assert_eq!(lean_by_id.get(&busy.id), Some(&3));
     }
 
     #[tokio::test]
