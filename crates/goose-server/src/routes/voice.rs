@@ -753,7 +753,12 @@ async fn stream_reply_with_tts(
              steps you take to do something. Say what happened or what the user should do in plain \
              spoken terms — e.g. 'I turned on web search' rather than 'I clicked the Search and \
              tools toggle in Settings'. If a literal name, path, or value is essential, give just \
-             that one item, not the surrounding navigation."
+             that one item, not the surrounding navigation. \
+             When you take the user somewhere, confirm it ONCE in a single short line — \
+             e.g. 'Opening Settings' or 'Here's your Brain' — then stop. Never narrate the \
+             navigation as it happens or reassure them about it: no 'taking you there now', \
+             no 'navigating you over', no 'you should be there now'. The view switches on its \
+             own; you don't announce progress or confirm arrival."
                 .to_string(),
         )
         .await;
