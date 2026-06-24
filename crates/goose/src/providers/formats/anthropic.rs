@@ -3,7 +3,7 @@ use crate::mcp_utils::extract_text_from_resource;
 use crate::model::ModelConfig;
 use crate::providers::base::Usage;
 use crate::providers::errors::ProviderError;
-use crate::providers::utils::{convert_image, ImageFormat};
+use crate::providers::utils::{convert_image, sanitize_tool_use_id, ImageFormat};
 use anyhow::{anyhow, Result};
 use rmcp::model::{object, CallToolRequestParams, ErrorCode, ErrorData, JsonObject, Role, Tool};
 use rmcp::object as json_object;
@@ -147,7 +147,7 @@ pub fn format_messages(messages: &[Message]) -> Vec<Value> {
                         Ok(tool_call) => {
                             content.push(json!({
                                 TYPE_FIELD: TOOL_USE_TYPE,
-                                ID_FIELD: tool_request.id,
+                                ID_FIELD: sanitize_tool_use_id(&tool_request.id),
                                 NAME_FIELD: tool_call.name,
                                 INPUT_FIELD: tool_call.arguments
                             }));
@@ -180,14 +180,14 @@ pub fn format_messages(messages: &[Message]) -> Vec<Value> {
 
                         content.push(json!({
                             TYPE_FIELD: TOOL_RESULT_TYPE,
-                            TOOL_USE_ID_FIELD: tool_response.id,
+                            TOOL_USE_ID_FIELD: sanitize_tool_use_id(&tool_response.id),
                             CONTENT_FIELD: text
                         }));
                     }
                     Err(tool_error) => {
                         content.push(json!({
                             TYPE_FIELD: TOOL_RESULT_TYPE,
-                            TOOL_USE_ID_FIELD: tool_response.id,
+                            TOOL_USE_ID_FIELD: sanitize_tool_use_id(&tool_response.id),
                             CONTENT_FIELD: format!("Error: {}", tool_error),
                             IS_ERROR_FIELD: true
                         }));
@@ -224,7 +224,7 @@ pub fn format_messages(messages: &[Message]) -> Vec<Value> {
                     if let Ok(tool_call) = &tool_request.tool_call {
                         content.push(json!({
                             TYPE_FIELD: TOOL_USE_TYPE,
-                            ID_FIELD: tool_request.id,
+                            ID_FIELD: sanitize_tool_use_id(&tool_request.id),
                             NAME_FIELD: tool_call.name,
                             INPUT_FIELD: tool_call.arguments
                         }));
