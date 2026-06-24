@@ -397,10 +397,19 @@ pub fn scan_large_user_files(counter: &mut u32) -> Vec<ScanFinding> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::fs;
     use tempfile::TempDir;
 
+    // These tests mutate the process-global `HOME` env var (the scanners
+    // resolve their roots via `home_dir()` reading `$HOME`). Rust runs tests
+    // in parallel by default, so without serialization a sibling test can
+    // clobber `HOME` mid-scan — making `scan_dev_caches` walk the wrong root
+    // and find nothing (issue #462: intermittent "should find cargo target/"
+    // failure on CI). `#[serial]` forces them to run one at a time.
+
     #[test]
+    #[serial]
     fn test_dev_cache_finds_target_with_cargo_toml() {
         let tmp = TempDir::new().unwrap();
         let project = tmp.path().join("myproject");
@@ -421,6 +430,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_dev_cache_ignores_target_without_cargo_toml() {
         let tmp = TempDir::new().unwrap();
         let project = tmp.path().join("notaproject");
@@ -440,6 +450,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_stale_downloads_respects_mtime() {
         let tmp = TempDir::new().unwrap();
         let downloads = tmp.path().join("Downloads");
@@ -457,6 +468,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_large_user_files() {
         let tmp = TempDir::new().unwrap();
         let desktop = tmp.path().join("Desktop");
@@ -480,6 +492,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_scan_empty_dir() {
         let tmp = TempDir::new().unwrap();
         std::env::set_var("HOME", tmp.path());
