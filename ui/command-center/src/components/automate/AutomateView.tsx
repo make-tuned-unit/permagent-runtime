@@ -177,9 +177,11 @@ export function AutomateView() {
   }, [fetchJobs]);
   useEffect(() => {
     if (jobs.length > 0) fetchAllSessions(jobs.map(j => j.id));
+    // 15s matches the Dashboard/Decisions cadence; the per-job session fetch is
+    // now a cheap filtered SQL lookup, so this no longer drives DB contention.
     const interval = setInterval(() => {
       if (jobs.length > 0) fetchAllSessions(jobs.map(j => j.id));
-    }, 10000);
+    }, 15000);
     return () => clearInterval(interval);
   }, [jobs.length]); // eslint-disable-line react-hooks/exhaustive-deps
 

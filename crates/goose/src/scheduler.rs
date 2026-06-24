@@ -677,20 +677,16 @@ impl Scheduler {
         sched_id: &str,
         limit: usize,
     ) -> Result<Vec<(String, Session)>, SchedulerError> {
-        let all_sessions = self
+        // Filter + cap pushed into SQL (newest first), so we never materialise
+        // the full session table just to keep `limit` rows for one schedule.
+        let schedule_sessions = self
             .session_manager
-            .list_sessions()
+            .list_sessions_by_schedule_id(sched_id, limit)
             .await
-            .map_err(|e| SchedulerError::StorageError(io::Error::other(e)))?;
-
-        let mut schedule_sessions: Vec<(String, Session)> = all_sessions
+            .map_err(|e| SchedulerError::StorageError(io::Error::other(e)))?
             .into_iter()
-            .filter(|s| s.schedule_id.as_deref() == Some(sched_id))
             .map(|s| (s.id.clone(), s))
             .collect();
-
-        schedule_sessions.sort_by(|a, b| b.1.created_at.cmp(&a.1.created_at));
-        schedule_sessions.truncate(limit);
 
         Ok(schedule_sessions)
     }
