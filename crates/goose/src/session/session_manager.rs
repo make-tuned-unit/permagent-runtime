@@ -321,6 +321,18 @@ impl SessionManager {
         self.storage.list_sessions_by_types(None).await
     }
 
+    /// Sessions belonging to one schedule, newest first, capped at `limit`.
+    /// Filtered and limited in SQL — see the storage impl for why this exists.
+    pub async fn list_sessions_by_schedule_id(
+        &self,
+        schedule_id: &str,
+        limit: usize,
+    ) -> Result<Vec<Session>> {
+        self.storage
+            .list_sessions_by_schedule_id(schedule_id, limit)
+            .await
+    }
+
     /// Lean session list (User + Scheduled) for LIST views — see
     /// [`SessionSummary`]. Use this for the HTTP `/api/sessions` list path;
     /// the heavy [`Session`] fields are served only on single-session GET.
@@ -1118,6 +1130,44 @@ impl SessionStorage {
             .await
     }
 
+    /// Sessions for a single schedule, newest first, capped at `limit`.
+    ///
+    /// The filter + cap are pushed into SQL so this never materialises the full
+    /// session table. The Automate tab polls `/schedule/{id}/sessions` once per
+    /// job every ~10s; the previous path ran the fat `list_sessions()` (an
+    /// uncorrelated `GROUP BY` over the entire messages table) and filtered in
+    /// memory, so N jobs meant N full scans per tick — the source of the 1.4–3.2s
+    /// `exec_ms` spikes when the page cache went cold. Here `WHERE schedule_id`
+    /// touches only the matching rows and the per-row `message_count` is a
+    /// correlated count that rides `idx_messages_session`, computed only for the
+    /// ≤`limit` rows returned.
+    async fn list_sessions_by_schedule_id(
+        &self,
+        schedule_id: &str,
+        limit: usize,
+    ) -> Result<Vec<Session>> {
+        let query = r#"
+            SELECT s.id, s.working_dir, s.name, s.description, s.user_set_name, s.session_type, s.created_at, s.updated_at, s.extension_data,
+                   s.total_tokens, s.input_tokens, s.output_tokens,
+                   s.accumulated_total_tokens, s.accumulated_input_tokens, s.accumulated_output_tokens,
+                   s.schedule_id, s.recipe_json, s.user_recipe_values_json,
+                   s.provider_name, s.model_config_json, s.goose_mode, s.thread_id,
+                   (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count
+            FROM sessions s
+            WHERE s.schedule_id = ?
+            ORDER BY s.created_at DESC
+            LIMIT ?
+        "#;
+
+        let pool = self.pool().await?;
+        sqlx::query_as::<_, Session>(query)
+            .bind(schedule_id)
+            .bind(limit as i64)
+            .fetch_all(pool)
+            .await
+            .map_err(Into::into)
+    }
+
     /// Lean LIST query: selects only the cheap scalar columns the session-list
     /// UI uses, skipping the heavy JSON blobs that the full [`Session`] query
     /// drags along (extension_data / recipe_json / user_recipe_values_json /
@@ -1722,6 +1772,97 @@ mod tests {
             .unwrap();
         assert_eq!(acp_sessions.len(), 1);
         assert_eq!(acp_sessions[0].name, "ACP session");
+    }
+
+    #[tokio::test]
+    async fn test_list_sessions_by_schedule_id_filters_caps_and_orders() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        // Two sessions on schedule "sched-a" (one with a message), one on
+        // "sched-b", one unscheduled — only sched-a's two should come back.
+        let mut sched_a_ids = Vec::new();
+        for i in 0..2 {
+            let s = sm
+                .create_session(
+                    PathBuf::from("/tmp/test"),
+                    format!("A run {i}"),
+                    SessionType::Scheduled,
+                    GooseMode::default(),
+                )
+                .await
+                .unwrap();
+            sm.update(&s.id)
+                .schedule_id(Some("sched-a".to_string()))
+                .apply()
+                .await
+                .unwrap();
+            sched_a_ids.push(s.id);
+        }
+
+        // Give the first sched-a session one message to prove the correlated
+        // message_count is computed per matched row.
+        sm.add_message(
+            &sched_a_ids[0],
+            &Message {
+                id: None,
+                role: Role::User,
+                created: chrono::Utc::now().timestamp_millis(),
+                content: vec![MessageContent::text("hi")],
+                metadata: Default::default(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let b = sm
+            .create_session(
+                PathBuf::from("/tmp/test"),
+                "B run".to_string(),
+                SessionType::Scheduled,
+                GooseMode::default(),
+            )
+            .await
+            .unwrap();
+        sm.update(&b.id)
+            .schedule_id(Some("sched-b".to_string()))
+            .apply()
+            .await
+            .unwrap();
+
+        sm.create_session(
+            PathBuf::from("/tmp/test"),
+            "Unscheduled".to_string(),
+            SessionType::User,
+            GooseMode::default(),
+        )
+        .await
+        .unwrap();
+
+        // Only sched-a rows, newest first.
+        let rows = sm
+            .list_sessions_by_schedule_id("sched-a", 10)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows
+            .iter()
+            .all(|s| s.schedule_id.as_deref() == Some("sched-a")));
+        assert!(rows[0].created_at >= rows[1].created_at);
+        let counts: std::collections::HashMap<_, _> = rows
+            .iter()
+            .map(|s| (s.id.clone(), s.message_count))
+            .collect();
+        assert_eq!(counts[&sched_a_ids[0]], 1);
+        assert_eq!(counts[&sched_a_ids[1]], 0);
+
+        // LIMIT is pushed into SQL.
+        let capped = sm.list_sessions_by_schedule_id("sched-a", 1).await.unwrap();
+        assert_eq!(capped.len(), 1);
+
+        // Unknown schedule → empty.
+        let none = sm.list_sessions_by_schedule_id("nope", 10).await.unwrap();
+        assert!(none.is_empty());
     }
 
     #[tokio::test]
