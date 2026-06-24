@@ -7,6 +7,30 @@
 use anyhow::Result;
 use tracing::{debug, info, warn};
 
+/// How long a cleanup connection will wait to acquire SQLite's write lock
+/// before giving up with SQLITE_BUSY.
+const CLEANUP_BUSY_TIMEOUT_MS: u64 = 30_000;
+
+/// Open a connection to the Brain's `memory.db` configured for write-lock
+/// contention at daemon startup.
+///
+/// The DB is already in WAL mode (Spectral's `SqliteStore` sets it), but WAL
+/// still serializes writers: a second connection issuing `DELETE`/`UPDATE`
+/// while the Brain's own connection holds the write lock (auto-migration,
+/// health-check recall, annotation backfill, all racing at startup) gets an
+/// immediate `SQLITE_BUSY` and the cleanup silently fails (#122).
+///
+/// Setting `busy_timeout` makes SQLite retry-with-backoff internally for up to
+/// [`CLEANUP_BUSY_TIMEOUT_MS`], so the cleanup waits out the startup write
+/// window instead of bailing on first contention. This is the minimal robust
+/// fix: Spectral exposes no shared-connection accessor, and there is no
+/// init-complete signal to await.
+fn open_cleanup_conn(db_path: &std::path::Path) -> Result<rusqlite::Connection> {
+    let conn = rusqlite::Connection::open(db_path)?;
+    conn.busy_timeout(std::time::Duration::from_millis(CLEANUP_BUSY_TIMEOUT_MS))?;
+    Ok(conn)
+}
+
 // SQL WHERE clause matching noise memories (used by prune + FK child cleanup).
 const NOISE_FILTER: &str = "\
     content LIKE '%about:blank%' \
@@ -30,7 +54,7 @@ const NOISE_FILTER: &str = "\
 /// Returns the number of memories deleted.
 pub fn prune_noise_memories() -> Result<usize> {
     let db_path = crate::config::paths::Paths::brain_dir().join("memory.db");
-    let conn = rusqlite::Connection::open(&db_path)?;
+    let conn = open_cleanup_conn(&db_path)?;
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
 
     // First, count how many will be pruned (for logging)
@@ -109,7 +133,7 @@ pub fn prune_noise_memories() -> Result<usize> {
 /// Returns the number of clusters consolidated.
 pub fn consolidate_clusters_blocking() -> Result<usize> {
     let db_path = crate::config::paths::Paths::brain_dir().join("memory.db");
-    let conn = rusqlite::Connection::open(&db_path)?;
+    let conn = open_cleanup_conn(&db_path)?;
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
 
     // Find domain clusters from browser_navigated activity events.
@@ -298,7 +322,7 @@ pub fn cleanup_orphaned_fk_children() -> Result<FkOrphanCleanupStats> {
         return Ok(FkOrphanCleanupStats::default());
     }
 
-    let conn = rusqlite::Connection::open(&db_path)?;
+    let conn = open_cleanup_conn(&db_path)?;
     ensure_migrations_table(&conn)?;
 
     if is_migration_applied(&conn, MIGRATION_FK_ORPHAN_CLEANUP)? {
@@ -421,7 +445,7 @@ pub fn cleanup_buggy_domain_clusters() -> Result<(usize, usize)> {
         return Ok((0, 0));
     }
 
-    let conn = rusqlite::Connection::open(&db_path)?;
+    let conn = open_cleanup_conn(&db_path)?;
 
     ensure_migrations_table(&conn)?;
 
@@ -558,7 +582,7 @@ pub fn migrate_consolidated_into_to_spectral_blocking(
         });
     }
 
-    let conn = rusqlite::Connection::open(&db_path)?;
+    let conn = open_cleanup_conn(&db_path)?;
     ensure_migrations_table(&conn)?;
 
     if is_migration_applied(&conn, MIGRATION_CONSOLIDATE_INTO)? {
@@ -886,4 +910,83 @@ pub fn run_consolidate_into_migration_sql(
         orphans_skipped: orphans,
         column_dropped,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #122 regression: a cleanup connection must wait out the write lock held
+    /// by another connection (the Brain at startup) instead of failing
+    /// instantly with SQLITE_BUSY. `open_cleanup_conn` sets `busy_timeout`,
+    /// so a write that begins while a competing write lock is held briefly
+    /// must still succeed once that lock releases.
+    #[test]
+    fn busy_timeout_lets_writer_wait_out_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("memory.db");
+
+        // Initialize the DB in WAL mode (mirrors Spectral's store) and a table.
+        let setup = rusqlite::Connection::open(&db_path).unwrap();
+        setup
+            .execute_batch("PRAGMA journal_mode = WAL; CREATE TABLE t (id INTEGER);")
+            .unwrap();
+        drop(setup);
+
+        // Connection A holds an EXCLUSIVE write lock for a short window.
+        let holder = rusqlite::Connection::open(&db_path).unwrap();
+        holder.execute_batch("BEGIN IMMEDIATE;").unwrap();
+
+        // Release the lock after ~300ms from a background thread.
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            holder.execute_batch("COMMIT;").unwrap();
+        });
+
+        // Connection B (via the cleanup opener) must wait, not fail instantly.
+        let conn = open_cleanup_conn(&db_path).unwrap();
+        let start = std::time::Instant::now();
+        let res = conn.execute("INSERT INTO t (id) VALUES (1)", []);
+        let waited = start.elapsed();
+
+        handle.join().unwrap();
+
+        assert!(
+            res.is_ok(),
+            "write should succeed after the competing lock releases, got: {res:?}"
+        );
+        // It must have actually waited for the lock (proves busy_timeout engaged),
+        // and far less than the full 30s timeout (proves it didn't just spin).
+        assert!(
+            waited >= std::time::Duration::from_millis(150),
+            "expected the writer to block on the lock, waited only {waited:?}"
+        );
+    }
+
+    /// Control: a plain connection with no busy_timeout fails immediately under
+    /// the same contention — demonstrating the bug `open_cleanup_conn` fixes.
+    #[test]
+    fn plain_conn_fails_fast_under_contention() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("memory.db");
+
+        let setup = rusqlite::Connection::open(&db_path).unwrap();
+        setup
+            .execute_batch("PRAGMA journal_mode = WAL; CREATE TABLE t (id INTEGER);")
+            .unwrap();
+        drop(setup);
+
+        let holder = rusqlite::Connection::open(&db_path).unwrap();
+        holder.execute_batch("BEGIN IMMEDIATE;").unwrap();
+
+        // No busy_timeout: write while the lock is held must error immediately.
+        let plain = rusqlite::Connection::open(&db_path).unwrap();
+        let res = plain.execute("INSERT INTO t (id) VALUES (1)", []);
+        assert!(
+            res.is_err(),
+            "expected SQLITE_BUSY without busy_timeout, but write succeeded"
+        );
+
+        holder.execute_batch("COMMIT;").unwrap();
+    }
 }
