@@ -989,6 +989,22 @@ pub async fn migrate_v13_to_v14(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
+pub async fn migrate_v14_to_v15(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v14 -> v15 (consolidate Doing/Done into lifecycle, #453)");
+
+    let removed = crate::cards::consolidate_doing_done_into_lifecycle(pool)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    // Hardcoded (v15) per the migration precedent in this file.
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (15)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v15 ({removed} consolidated columns removed)");
+
+    Ok(())
+}
+
 /// Apply the file-intake inbox schema: the `inbox_files` table, one metadata row
 /// per file that lands in the Permagent inbox (`~/.permagent/inbox/`).
 ///
