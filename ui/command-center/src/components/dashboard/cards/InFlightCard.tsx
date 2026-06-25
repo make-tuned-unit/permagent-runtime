@@ -3,6 +3,7 @@ import { font, radius } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { Mobius } from '../../mobius/Mobius';
 import { SectionTitle } from '../atoms';
+import { useCommandCenter } from '../../../lib/store';
 import type { ActiveGoal } from '../../../lib/useLiveGoals';
 
 const STATE_LABEL: Record<string, string> = {
@@ -51,14 +52,19 @@ export const InFlightCard = memo(function InFlightCard({ goals }: Props) {
 
 const GoalCard = memo(function GoalCard({ goal }: { goal: ActiveGoal }) {
   const { colors } = useTheme();
+  const openGoalDetail = useCommandCenter(s => s.openGoalDetail);
   const mobiusState = goal.state === 'review' ? 'idle' : 'thinking';
   return (
-    <div style={{
-      padding: 18, borderRadius: radius.md,
-      background: colors.surface,
-      border: `1px solid ${colors.border}`,
-      boxShadow: [colors.cardShadow, colors.cardHighlight].filter(Boolean).join(', '),
-    }}>
+    <div
+      onClick={() => openGoalDetail(goal.project_id, goal.id)}
+      title="View goal detail"
+      style={{
+        padding: 18, borderRadius: radius.md, cursor: 'pointer',
+        background: colors.surface,
+        border: `1px solid ${colors.border}`,
+        boxShadow: [colors.cardShadow, colors.cardHighlight].filter(Boolean).join(', '),
+      }}
+    >
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
         <Mobius size={36} state={mobiusState} logoMode />
         <div style={{ flex: 1, minWidth: 0 }}>

@@ -81,6 +81,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
   const { data: persona } = usePersona();
   const agentName = persona?.display_name ?? 'Aria';
   const discussDecision = useCommandCenter(s => s.discussDecision);
+  const openGoalDetail = useCommandCenter(s => s.openGoalDetail);
   const [pending, setPending] = useState<PendingAnswer | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [conflict, setConflict] = useState(false);
@@ -89,6 +90,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
   const [inputOpen, setInputOpen] = useState(false);
   const [inputText, setInputText] = useState('');
   const [evidenceOpen, setEvidenceOpen] = useState(false);
+  const [cancelErr, setCancelErr] = useState<string | null>(null);
   const conflictTimer = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => () => clearTimeout(conflictTimer.current), []);
@@ -148,11 +150,26 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
         </span>
       </div>
 
-      {/* Goal binding, where known (joined title — plain data) */}
+      {/* Goal binding, where known (joined title — plain data). Click opens the
+          shared goal-detail modal (#503) when the decision is goal-bound. */}
       {d.goal_title && (
-        <div style={{ fontSize: 11, color: colors.textDim, marginTop: 4 }}>
-          Goal: {d.goal_title}
-        </div>
+        d.goal_id && d.project_id ? (
+          <button
+            onClick={() => openGoalDetail(d.project_id!, d.goal_id!)}
+            title="View goal detail"
+            style={{
+              display: 'block', background: 'none', border: 'none', padding: 0,
+              marginTop: 4, textAlign: 'left', cursor: 'pointer',
+              fontSize: 11, color: colors.cyan, fontFamily: font.body,
+            }}
+          >
+            Goal: {d.goal_title}
+          </button>
+        ) : (
+          <div style={{ fontSize: 11, color: colors.textDim, marginTop: 4 }}>
+            Goal: {d.goal_title}
+          </div>
+        )
       )}
 
       {/* Detail: technical why/attribution, verbatim (S2) */}
@@ -299,8 +316,11 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
               onClick={async () => {
                 if (submitting) return;
                 setSubmitting(true);
+                setCancelErr(null);
                 try {
                   await onCancelGoal();
+                } catch (e) {
+                  setCancelErr(e instanceof Error ? e.message : 'Cancel failed');
                 } finally {
                   setSubmitting(false);
                 }
@@ -330,6 +350,17 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
               Evidence {evidenceOpen ? '▾' : '▸'}
             </button>
           )}
+        </div>
+      )}
+
+      {/* Cancel failure surfaced inline — never silently swallowed (#503) */}
+      {cancelErr && (
+        <div style={{
+          marginTop: 8, fontSize: 12, color: colors.danger,
+          borderRadius: radius.md, border: `1px solid ${colors.danger}`,
+          background: colors.danger + '14', padding: '6px 10px',
+        }}>
+          {cancelErr}
         </div>
       )}
 

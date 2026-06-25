@@ -225,6 +225,16 @@ interface CommandCenterStore {
    */
   discussSeedDecisionId: string | null;
   discussDecision: (decisionId: string, headline: string) => Promise<void>;
+
+  /**
+   * Goal-detail modal (#503): the single detail view every goal surface — Kanban
+   * card, Decision Inbox row, dashboard "in flight" item — opens. Set transiently
+   * to a {projectId, cardId} target; a host mounted at the app root renders the
+   * modal whenever it is non-null. Mirrors the discussDecision deep-link seam.
+   */
+  goalDetail: { projectId: string; cardId: string } | null;
+  openGoalDetail: (projectId: string, cardId: string) => void;
+  closeGoalDetail: () => void;
   switchToSession: (sessionId: string) => Promise<void>;
   deleteSession: (sessionId: string) => Promise<void>;
   renameSession: (sessionId: string, name: string) => Promise<void>;
@@ -482,6 +492,10 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   _streamingMessageId: null,
   _pendingContext: null,
   discussSeedDecisionId: null,
+
+  goalDetail: null,
+  openGoalDetail: (projectId, cardId) => set({ goalDetail: { projectId, cardId } }),
+  closeGoalDetail: () => set({ goalDetail: null }),
 
   addChatMessage: (msg) => set(s => ({ chatMessages: [...s.chatMessages, msg] })),
 

@@ -7,6 +7,7 @@ import { WorkspaceRenderer } from './components/workspaces/WorkspaceRenderer';
 import { WizardShell } from './components/wizard/WizardShell';
 import { Splash } from './components/splash/Splash';
 import { ChatLauncher } from './components/chat/ChatLauncher';
+import { GoalDetailModalHost } from './components/goals/GoalDetailModal';
 import { DropZone } from './components/chat/DropZone';
 import { VersionSkewBanner } from './components/version/VersionSkewBanner';
 import { api, fileToBase64 } from './lib/api';
@@ -211,6 +212,7 @@ function App() {
         </main>
         <ChatLauncher />
       </div>
+      <GoalDetailModalHost />
     </div>
   );
 }
