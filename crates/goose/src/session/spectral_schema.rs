@@ -1026,6 +1026,31 @@ pub async fn migrate_v15_to_v16(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
+/// Reconcile EVERY board to the canonical goal lifecycle (schema v17, #502).
+///
+/// v14/v15/v16 only fixed boards that already had lifecycle (`state`) columns —
+/// seeded on a board's first goal card. Boards that never held a goal card kept
+/// only the default manual Backlog/Doing/Done and were skipped by every prior
+/// migration. This seeds the canonical lifecycle columns on all boards then runs
+/// the standard Doing→In Progress / Done→Complete consolidation everywhere. A
+/// data fixup — no DDL — base-version independent, idempotent, card-data-safe
+/// (moves precede deletes). Records v17.
+pub async fn migrate_v16_to_v17(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v16 -> v17 (canonical columns on ALL boards, #502)");
+
+    let removed = crate::cards::reconcile_all_boards_to_canonical(pool)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    // Hardcoded (v17) per the migration precedent in this file.
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (17)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v17 ({removed} legacy columns removed across all boards)");
+
+    Ok(())
+}
+
 /// Apply the file-intake inbox schema: the `inbox_files` table, one metadata row
 /// per file that lands in the Permagent inbox (`~/.permagent/inbox/`).
 ///
@@ -2010,5 +2035,137 @@ mod inbox_schema_tests {
         .await
         .unwrap();
         assert_eq!(cancelled_again, 1, "no duplicate cancelled column");
+    }
+
+    /// migrate_v16_to_v17 (#502): a board that NEVER held a goal card has only
+    /// the legacy manual Backlog/Doing/Done columns and was skipped by every
+    /// prior fixup. After v17 it must carry the full canonical lifecycle, with
+    /// Doing→In Progress and Done→Complete cards preserved/moved and the emptied
+    /// legacy columns dropped. Backlog (and its card) is kept.
+    #[tokio::test]
+    async fn migrate_v16_to_v17_applies_canonical_to_legacy_board() {
+        let pool = mem_pool().await;
+        init_spectral_db(&pool).await.unwrap();
+
+        // A legacy board: only manual Backlog/Doing/Done, no lifecycle columns.
+        let project = "legacy-board-502";
+        sqlx::query(
+            "INSERT INTO projects (id, user_id, slug, name, status)
+             VALUES (?, 'default', 'legacy', 'Legacy', 'active')",
+        )
+        .bind(project)
+        .execute(&pool)
+        .await
+        .unwrap();
+        for (name, pos) in [("Backlog", 0), ("Doing", 1), ("Done", 2)] {
+            sqlx::query(
+                "INSERT INTO board_columns (id, project_id, name, position, column_kind)
+                 VALUES (?, ?, ?, ?, 'manual')",
+            )
+            .bind(format!("{project}-col-{name}"))
+            .bind(project)
+            .bind(name)
+            .bind(pos)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        // One card in each legacy column.
+        for (name, card) in [
+            ("Backlog", "card-backlog"),
+            ("Doing", "card-doing"),
+            ("Done", "card-done"),
+        ] {
+            // 'standard' cards: the migration moves cards by column regardless of
+            // type, and standard cards sidestep the goal-lifecycle approval
+            // trigger that guards entry into `complete` (not under test here).
+            sqlx::query(
+                "INSERT INTO cards (id, project_id, card_type, title, column_id, position)
+                 VALUES (?, ?, 'standard', ?, ?, 0)",
+            )
+            .bind(card)
+            .bind(project)
+            .bind(name)
+            .bind(format!("{project}-col-{name}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (16)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        migrate_v16_to_v17(&pool).await.unwrap();
+        assert_eq!(current_version(&pool).await, 17);
+
+        // Full canonical lifecycle now present on the legacy board.
+        let states: Vec<String> = sqlx::query_scalar(
+            "SELECT state_binding FROM board_columns
+             WHERE project_id = ? AND column_kind = 'state' AND state_binding IS NOT NULL
+             ORDER BY position",
+        )
+        .bind(project)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            states,
+            vec![
+                "triage",
+                "ready",
+                "in_progress",
+                "review",
+                "complete",
+                "cancelled"
+            ],
+            "canonical lifecycle seeded on the never-goal'd board"
+        );
+
+        // Doing/Done legacy columns dropped; Backlog kept.
+        let manual: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM board_columns WHERE project_id = ? AND column_kind = 'manual'",
+        )
+        .bind(project)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(manual, vec!["Backlog"], "Doing/Done dropped, Backlog kept");
+
+        // Cards moved: Doing→In Progress, Done→Complete; Backlog card untouched.
+        let col_of = |card: &'static str| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, String>(
+                    "SELECT state_binding FROM board_columns
+                     WHERE id = (SELECT column_id FROM cards WHERE id = ?)",
+                )
+                .bind(card)
+                .fetch_optional(&pool)
+                .await
+                .unwrap()
+            }
+        };
+        assert_eq!(col_of("card-doing").await.as_deref(), Some("in_progress"));
+        assert_eq!(col_of("card-done").await.as_deref(), Some("complete"));
+        // Backlog card still in the (manual) Backlog column — no state_binding.
+        let backlog_col: String = sqlx::query_scalar(
+            "SELECT name FROM board_columns WHERE id = (SELECT column_id FROM cards WHERE id = 'card-backlog')",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(backlog_col, "Backlog", "Backlog card preserved in place");
+
+        // Idempotent: a second run changes nothing and does not error.
+        migrate_v16_to_v17(&pool).await.unwrap();
+        let state_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM board_columns WHERE project_id = ? AND column_kind = 'state'",
+        )
+        .bind(project)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(state_count, 6, "no duplicate lifecycle columns on re-run");
     }
 }
