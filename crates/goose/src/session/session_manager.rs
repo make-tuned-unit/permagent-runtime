@@ -733,6 +733,16 @@ impl SessionStorage {
                     if version < 16 {
                         spectral_schema::migrate_v15_to_v16(&self.pool).await?;
                     }
+                    // Apply the canonical goal lifecycle to ALL boards (schema
+                    // v17, #502): prior fixups only reached boards that already
+                    // had lifecycle columns (seeded on first goal card), so
+                    // never-goal'd boards still showed legacy Backlog/Doing/Done.
+                    // Seeds the lifecycle columns everywhere then consolidates
+                    // Doing→In Progress / Done→Complete. Base-independent +
+                    // idempotent; card-data-safe.
+                    if version < 17 {
+                        spectral_schema::migrate_v16_to_v17(&self.pool).await?;
+                    }
                 } else {
                     info!("Initializing Spectral schema at {:?}", self.db_path);
                     spectral_schema::init_spectral_db(&self.pool).await?;

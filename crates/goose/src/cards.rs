@@ -323,6 +323,68 @@ pub async fn consolidate_doing_done_into_lifecycle(pool: &Pool<Sqlite>) -> Resul
     Ok(res.rows_affected())
 }
 
+/// Reconcile EVERY board to the canonical goal lifecycle (#502).
+///
+/// The v14/v15/v16 column fixups were all gated on a board already having
+/// lifecycle (`column_kind = 'state'`) columns — and those are only seeded on a
+/// board's first goal card (`seed_goal_columns`). Boards that never held a goal
+/// card kept only the default manual Backlog/Doing/Done columns and were
+/// invisible to every prior migration, so they still show the legacy set. This
+/// applies the canonical lifecycle to ALL boards by, for every project:
+/// (1) seeding any missing `GOAL_COLUMNS` (Triage..Cancelled), then
+/// (2) running the existing Doing→In Progress / Done→Complete consolidation,
+/// which now reaches every board (each has lifecycle columns after step 1):
+/// cards move first, then the emptied Doing/Done manual columns drop.
+/// "Backlog" is intentionally kept (a legitimate created-but-not-ready state).
+///
+/// Idempotent, base-version independent, and card-data-safe (it reuses the
+/// move-then-delete consolidation). Returns the number of legacy columns removed.
+pub async fn reconcile_all_boards_to_canonical(pool: &Pool<Sqlite>) -> Result<u64, String> {
+    // Every project that has any columns at all (i.e. a real board).
+    let project_ids: Vec<String> =
+        sqlx::query_scalar("SELECT DISTINCT project_id FROM board_columns")
+            .fetch_all(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+
+    for project_id in &project_ids {
+        // Existing state_bindings on this board.
+        let present: Vec<String> = sqlx::query_scalar(
+            "SELECT state_binding FROM board_columns
+             WHERE project_id = ? AND column_kind = 'state' AND state_binding IS NOT NULL",
+        )
+        .bind(project_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        // Insert any canonical lifecycle column this board is missing.
+        for (state_binding, name, position) in GOAL_COLUMNS {
+            if present.iter().any(|p| p == state_binding) {
+                continue;
+            }
+            let id = Uuid::now_v7().to_string();
+            sqlx::query(
+                "INSERT INTO board_columns (id, project_id, name, position, column_kind, state_binding)
+                 VALUES (?, ?, ?, ?, 'state', ?)",
+            )
+            .bind(&id)
+            .bind(project_id)
+            .bind(name)
+            .bind(position)
+            .bind(state_binding)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+    }
+
+    // Now that every board carries the lifecycle columns, the standard
+    // consolidation reaches them all: move Doing→In Progress, Done→Complete,
+    // then drop the emptied legacy columns. Card-data-safe and idempotent.
+    consolidate_doing_done_into_lifecycle(pool).await
+}
+
 /// Find the goal lifecycle column for a given state_binding in a project.
 pub async fn get_goal_column(
     pool: &Pool<Sqlite>,
