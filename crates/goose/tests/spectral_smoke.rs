@@ -14,6 +14,8 @@
 //! paths. That's Phase 4 of the integration plan. See
 //! docs/architecture/SPECTRAL_INTEGRATION.md for the full migration plan.
 
+use spectral::core::entity_id::entity_id;
+use spectral::ingest::FieldSource;
 use spectral::{Brain, DeviceId, RememberOpts, Visibility};
 use tempfile::tempdir;
 
@@ -84,6 +86,78 @@ fn spectral_round_trips_chat_memory_with_provenance() {
         !recall_after_reopen.memory_hits.is_empty(),
         "memory should persist across brain reopen"
     );
+}
+
+/// Cross-repo round-trip for the typed entity_fields store (CRM Slice 1):
+/// write a manual + an enriched field, read both back with provenance, prove
+/// an enriched write does NOT clobber a manual field, and prove fields persist
+/// across a Brain reopen (the empty-modal bug is gone — reads return real data).
+#[test]
+fn entity_fields_round_trip_with_provenance() {
+    let temp = tempdir().expect("tempdir");
+    let brain_path = temp.path().join("brain");
+    let ontology_path = temp.path().join("ontology.toml");
+    std::fs::write(&ontology_path, ontology_toml()).expect("write ontology");
+
+    let brain = Brain::builder()
+        .data_dir(&brain_path)
+        .ontology_path(&ontology_path)
+        .device_id(DeviceId::from_descriptor("permagent-entity-fields-test"))
+        .build()
+        .expect("brain open");
+
+    let eid = entity_id("person", "jane-doe");
+
+    // Manual write + enriched write to two different fields.
+    assert!(brain
+        .set_entity_field(&eid, "email", "jane@example.com", FieldSource::Manual, None)
+        .expect("manual write"));
+    assert!(brain
+        .set_entity_field(
+            &eid,
+            "job_title",
+            "Eng Lead",
+            FieldSource::Enriched,
+            Some("https://linkedin.com/in/jane"),
+        )
+        .expect("enriched write"));
+
+    // Read back both with provenance.
+    let fields = brain.get_entity_fields(&eid).expect("read fields");
+    assert_eq!(fields.len(), 2, "expected two fields");
+    let email = fields.iter().find(|f| f.field_name == "email").unwrap();
+    assert_eq!(email.value, "jane@example.com");
+    assert_eq!(email.source, FieldSource::Manual);
+    let job = fields.iter().find(|f| f.field_name == "job_title").unwrap();
+    assert_eq!(job.source, FieldSource::Enriched);
+    assert_eq!(
+        job.source_url.as_deref(),
+        Some("https://linkedin.com/in/jane")
+    );
+
+    // Enriched write must NOT clobber the manual email field.
+    let applied = brain
+        .set_entity_field(&eid, "email", "spam@bad.com", FieldSource::Enriched, None)
+        .expect("suppressed write returns Ok");
+    assert!(
+        !applied,
+        "enriched write over a manual field must be suppressed"
+    );
+
+    // Reopen the Brain — fields persist and the manual value is intact.
+    drop(brain);
+    let brain = Brain::builder()
+        .data_dir(&brain_path)
+        .ontology_path(&ontology_path)
+        .device_id(DeviceId::from_descriptor("permagent-entity-fields-test"))
+        .build()
+        .expect("reopen brain");
+
+    let fields = brain.get_entity_fields(&eid).expect("read after reopen");
+    assert_eq!(fields.len(), 2, "fields must persist across reopen");
+    let email = fields.iter().find(|f| f.field_name == "email").unwrap();
+    assert_eq!(email.value, "jane@example.com", "manual value preserved");
+    assert_eq!(email.source, FieldSource::Manual);
 }
 
 #[test]

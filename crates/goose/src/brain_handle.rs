@@ -229,6 +229,72 @@ impl SafeBrain {
             .map_err(Into::into)
     }
 
+    /// Write a typed field on a graph entity, with provenance. The
+    /// manual-not-clobbered rule is enforced in Spectral's store: an
+    /// `Enriched` write never overwrites a field whose stored source is
+    /// `Manual`. Returns `false` when the write was suppressed by that rule,
+    /// `true` when applied.
+    pub async fn set_entity_field(
+        &self,
+        entity_id: spectral::core::entity_id::EntityId,
+        field_name: &str,
+        value: &str,
+        source: spectral::ingest::FieldSource,
+        source_url: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        let brain = self.inner.clone();
+        let field_name = field_name.to_string();
+        let value = value.to_string();
+        let source_url = source_url.map(|s| s.to_string());
+        tokio::task::spawn_blocking(move || {
+            brain.set_entity_field(
+                &entity_id,
+                &field_name,
+                &value,
+                source,
+                source_url.as_deref(),
+            )
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: set_entity_field: {e}"))?
+        .map_err(Into::into)
+    }
+
+    /// Read all typed fields for a graph entity (provenance included).
+    pub async fn get_entity_fields(
+        &self,
+        entity_id: spectral::core::entity_id::EntityId,
+    ) -> anyhow::Result<Vec<spectral::ingest::EntityField>> {
+        let brain = self.inner.clone();
+        tokio::task::spawn_blocking(move || brain.get_entity_fields(&entity_id))
+            .await
+            .map_err(|e| anyhow::anyhow!("brain task panicked: get_entity_fields: {e}"))?
+            .map_err(Into::into)
+    }
+
+    /// Batch-load typed fields for many entities in a single blocking hop
+    /// (avoids one task dispatch per entity on the Brain-graph read path).
+    /// Returns a map keyed by the entity's 64-hex id; entities with no fields
+    /// are omitted.
+    pub async fn entity_fields_for(
+        &self,
+        entity_ids: Vec<spectral::core::entity_id::EntityId>,
+    ) -> anyhow::Result<std::collections::HashMap<String, Vec<spectral::ingest::EntityField>>> {
+        let brain = self.inner.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut out = std::collections::HashMap::new();
+            for id in entity_ids {
+                let fields = brain.get_entity_fields(&id)?;
+                if !fields.is_empty() {
+                    out.insert(id.to_string(), fields);
+                }
+            }
+            Ok::<_, anyhow::Error>(out)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: entity_fields_for: {e}"))?
+    }
+
     pub async fn consolidate_into(
         &self,
         source_keys: &[String],
