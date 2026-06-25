@@ -205,6 +205,10 @@ export function useVoice(options: UseVoiceOptions = {}) {
             readyRejectRef.current = null;
             break;
           case 'transcript':
+            // A transcript proves STT is working this session — clear any stale
+            // transient error (e.g. a prior "No speech detected") so it doesn't
+            // stick in the UI while the conversation is in fact succeeding.
+            setError(null);
             setLastTranscript(msg.text ?? '');
             emit({ type: 'transcript', text: msg.text ?? '' });
             break;
@@ -242,6 +246,10 @@ export function useVoice(options: UseVoiceOptions = {}) {
             setStateAndEmit('error');
             setTimeout(() => {
               if (wsRef.current?.readyState === WebSocket.OPEN) {
+                // Recovering on a live socket: also clear the error string so a
+                // transient server error (no-speech, too-short) doesn't linger
+                // as a sticky red label over the recovered "Hold to talk" state.
+                setError(null);
                 setStateAndEmit('ready');
               }
             }, 2000);
