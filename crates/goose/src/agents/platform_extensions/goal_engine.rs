@@ -384,6 +384,227 @@ async fn create_goal_worktree(
     Ok(dest)
 }
 
+/// Directory (under the repo's parent) holding every goal worktree, keyed by
+/// run id. Single source of truth for both creation and reaping (#504).
+pub(crate) const GOAL_WORKTREES_DIR: &str = ".permagent-goal-worktrees";
+
+/// `<repo_parent>/.permagent-goal-worktrees`, mirroring [`create_goal_worktree`].
+fn goal_worktrees_dir(repo: &Path) -> PathBuf {
+    repo.parent().unwrap_or(repo).join(GOAL_WORKTREES_DIR)
+}
+
+/// Outcome of a worktree reap attempt (#504). Returned for logging/observability
+/// and asserted in tests; never an error — reaping is best-effort by contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReapOutcome {
+    /// `git worktree remove` succeeded (git-tracked worktree).
+    RemovedTracked,
+    /// `git worktree remove` failed; the dir was deleted via `rm -rf` +
+    /// `git worktree prune` (an orphaned dir git had lost the ref to).
+    RemovedOrphaned,
+    /// Nothing on disk to remove.
+    Absent,
+    /// Kept on purpose: unpushed commits present (or push state unprovable) and
+    /// removal was not force-allowed. Protects unreviewed work — see #504.
+    SkippedUnpushed,
+    /// Removal was attempted but the dir still exists afterwards.
+    Failed,
+}
+
+/// Run `git <args>` in `dir`; `Some(trimmed stdout)` on a clean exit (possibly
+/// empty), `None` if git failed to launch or exited non-zero. Unlike
+/// [`git_text`], this distinguishes "succeeded with empty output" from "failed",
+/// which the push-safety guard depends on.
+async fn git_checked(dir: &Path, args: &[&str]) -> Option<String> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
+        .arg(dir)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    configure_subprocess(&mut cmd);
+    match cmd.output().await {
+        Ok(o) if o.status.success() => Some(String::from_utf8_lossy(&o.stdout).trim().to_string()),
+        _ => None,
+    }
+}
+
+/// Does this worktree hold commits not present on any remote (unpushed work)?
+///
+/// - `Some(true)`  — HEAD has commits reachable from no remote-tracking ref.
+/// - `Some(false)` — HEAD is fully contained on a remote (or has no commits
+///   beyond what remotes already have).
+/// - `None`        — git state is unreadable (e.g. an orphaned dir whose
+///   worktree admin ref is gone). The caller decides: the on-transition reaper
+///   protects (can't prove safety); the sweep treats it as safe because an
+///   unreadable admin ref means those commits are already unreachable in the
+///   repo regardless.
+async fn has_unpushed_work(worktree: &Path) -> Option<bool> {
+    // Readability probe: if HEAD won't resolve, the worktree's admin ref is gone.
+    git_checked(worktree, &["rev-parse", "--verify", "HEAD"]).await?;
+    // Commits reachable from HEAD but from no remote-tracking ref.
+    let unpushed = git_checked(worktree, &["rev-list", "HEAD", "--not", "--remotes"]).await?;
+    Some(!unpushed.is_empty())
+}
+
+/// Two-phase removal handling both #504 leak forms. Phase 1 lets git deregister
+/// and delete a tracked worktree (`--force` so a dirty working tree of build
+/// artifacts doesn't block it). On any failure, phase 2 deletes the dir directly
+/// and prunes the stale admin entry — the orphaned-dir case git no longer tracks.
+/// A phase-1 failure must never leave the dir behind.
+async fn remove_worktree_dir(repo: &Path, dest: &Path) -> ReapOutcome {
+    let dest_str = dest.to_string_lossy().to_string();
+    if git_checked(repo, &["worktree", "remove", "--force", &dest_str])
+        .await
+        .is_some()
+        && !dest.exists()
+    {
+        tracing::info!(
+            target: "permagentd::brain",
+            "reaper: removed tracked worktree {}",
+            dest.display()
+        );
+        return ReapOutcome::RemovedTracked;
+    }
+
+    // Orphaned dir (git remove failed / dir survived): rm -rf, then prune the
+    // stale `.git/worktrees/<name>` admin entry git may still list.
+    let _ = tokio::fs::remove_dir_all(dest).await;
+    if dest.exists() {
+        tracing::warn!(
+            target: "permagentd::brain",
+            "reaper: failed to remove worktree dir {}",
+            dest.display()
+        );
+        return ReapOutcome::Failed;
+    }
+    let _ = git_checked(repo, &["worktree", "prune"]).await;
+    tracing::info!(
+        target: "permagentd::brain",
+        "reaper: removed orphaned worktree dir {} (git ref lost) + pruned",
+        dest.display()
+    );
+    ReapOutcome::RemovedOrphaned
+}
+
+/// Reap a single goal worktree once its goal is terminal (#504).
+///
+/// `allow_unpushed` is `true` ONLY for Cancelled/abandoned goals — the user has
+/// explicitly discarded the work. For Complete goals it stays `false`: unpushed
+/// commits are never destroyed (a lingering dir beats deleting unreviewed work),
+/// and an unprovable push state is treated as unsafe and kept.
+pub async fn reap_goal_worktree(repo: &Path, run_id: &str, allow_unpushed: bool) -> ReapOutcome {
+    let dest = goal_worktrees_dir(repo).join(run_id);
+    if !dest.exists() {
+        return ReapOutcome::Absent;
+    }
+
+    if !allow_unpushed {
+        match has_unpushed_work(&dest).await {
+            Some(true) => {
+                tracing::info!(
+                    target: "permagentd::brain",
+                    "reaper: keeping worktree {} — goal complete but has unpushed commits (not on origin)",
+                    dest.display()
+                );
+                return ReapOutcome::SkippedUnpushed;
+            }
+            None => {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    "reaper: keeping worktree {} — cannot evaluate push state, protecting potential unreviewed work",
+                    dest.display()
+                );
+                return ReapOutcome::SkippedUnpushed;
+            }
+            Some(false) => {}
+        }
+    }
+
+    remove_worktree_dir(repo, &dest).await
+}
+
+/// Resolve a terminal goal's worktree from its project root + run id and reap it
+/// (#504). Worktrees live at `<root_parent>/.permagent-goal-worktrees/<run_id>`,
+/// mirroring [`create_goal_worktree`]. Fully self-contained and best-effort:
+/// every failure is logged, nothing is returned — the caller (a goal-state
+/// transition) must never depend on the reap.
+pub async fn reap_terminal_goal_worktree(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    project_id: &str,
+    run_id: &str,
+    allow_unpushed: bool,
+) {
+    let root = match crate::projects::get_project(pool, project_id).await {
+        Ok(Some(p)) => p.root_path,
+        _ => None,
+    };
+    let Some(root) = root else {
+        return;
+    };
+    let outcome = reap_goal_worktree(&PathBuf::from(&root), run_id, allow_unpushed).await;
+    tracing::info!(
+        target: "permagentd::brain",
+        "reaper: goal worktree {} terminal reap → {:?} (allow_unpushed={})",
+        run_id, outcome, allow_unpushed
+    );
+}
+
+/// Boot-time sweep reclaiming orphaned goal worktrees left by crashed or prior
+/// daemon lifecycles (#504). Each `cli-*` dir under `repo`'s worktrees dir that
+/// is NOT in `active_run_ids` is reaped under the push-safety guard: a readable
+/// worktree with unpushed commits is kept; an unreadable one (its git admin ref
+/// already gone, so its commits are unreachable regardless) is safe to delete.
+/// Returns the number of dirs reclaimed.
+pub async fn sweep_orphaned_worktrees(repo: &Path, active_run_ids: &[String]) -> usize {
+    let dir = goal_worktrees_dir(repo);
+    let mut entries = match tokio::fs::read_dir(&dir).await {
+        Ok(e) => e,
+        Err(_) => return 0, // no worktrees dir — nothing to sweep
+    };
+
+    let mut reclaimed = 0usize;
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) if n.starts_with("cli-") => n.to_string(),
+            _ => continue,
+        };
+        if active_run_ids.iter().any(|id| id == &name) {
+            continue; // belongs to a live (non-terminal) goal — never reap
+        }
+        // Safety guard (same as on-transition): keep readable worktrees that
+        // hold unpushed commits. `None` (unreadable) is a truly-orphaned dir —
+        // its commits are already unreachable, so removal is safe.
+        if matches!(has_unpushed_work(&path).await, Some(true)) {
+            tracing::info!(
+                target: "permagentd::brain",
+                "sweep: keeping orphaned-candidate {} — has unpushed commits",
+                path.display()
+            );
+            continue;
+        }
+        match remove_worktree_dir(repo, &path).await {
+            ReapOutcome::RemovedTracked | ReapOutcome::RemovedOrphaned => reclaimed += 1,
+            _ => {}
+        }
+    }
+
+    if reclaimed > 0 {
+        tracing::info!(
+            target: "permagentd::brain",
+            "sweep: reclaimed {} orphaned goal worktree(s) under {}",
+            reclaimed,
+            dir.display()
+        );
+    }
+    reclaimed
+}
+
 /// Build the external-CLI command. The worker runs in its own process group
 /// (`process_group(0)`, unix) so a cancel or timeout can SIGKILL the whole tree
 /// — the CLI plus any tool subprocesses it spawns — not just the group leader.
@@ -926,5 +1147,150 @@ mod tests {
             worktree.join("README.md").exists(),
             "worktree must be checked out at the baseline commit"
         );
+    }
+
+    // ── #504 worktree reaper ────────────────────────────────────────────────
+
+    fn git(dir: &Path, args: &[&str]) -> std::process::Output {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap()
+    }
+
+    /// Init a repo at `<tmp>/proj` with an `origin` bare remote and one baseline
+    /// commit pushed to `origin/main`, so a worktree checked out at the baseline
+    /// counts as "pushed". Returns the baseline short-resolvable SHA.
+    fn init_repo_with_remote(tmp: &Path) -> (PathBuf, String) {
+        let origin = tmp.join("origin.git");
+        std::process::Command::new("git")
+            .args(["init", "-q", "--bare"])
+            .arg(&origin)
+            .output()
+            .unwrap();
+        let repo = tmp.join("proj");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["config", "user.email", "t@t.t"]);
+        git(&repo, &["config", "user.name", "t"]);
+        git(&repo, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(repo.join("README.md"), "hi").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "base"]);
+        git(&repo, &["branch", "-M", "main"]);
+        git(
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        git(&repo, &["push", "-q", "-u", "origin", "main"]);
+        git(&repo, &["fetch", "-q", "origin"]);
+        let head = String::from_utf8(git(&repo, &["rev-parse", "HEAD"]).stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+        (repo, head)
+    }
+
+    /// Add an unpushed commit inside a worktree (it shares the repo's user
+    /// config, so no per-worktree git config is needed).
+    fn commit_in_worktree(wt: &Path, file: &str) {
+        std::fs::write(wt.join(file), "work").unwrap();
+        git(wt, &["add", "."]);
+        git(wt, &["commit", "-q", "-m", "work"]);
+    }
+
+    /// Tracked-remove: a Complete goal whose worktree is fully on origin is
+    /// reaped via `git worktree remove`.
+    #[tokio::test]
+    async fn reap_removes_pushed_tracked_worktree() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, baseline) = init_repo_with_remote(tmp.path());
+        let wt = create_goal_worktree(&repo, &baseline, "cli-pushed")
+            .await
+            .unwrap();
+        assert!(wt.is_dir());
+
+        let outcome = reap_goal_worktree(&repo, "cli-pushed", false).await;
+        assert_eq!(outcome, ReapOutcome::RemovedTracked);
+        assert!(!wt.exists(), "tracked pushed worktree must be removed");
+    }
+
+    /// Safety guard: a Complete goal with UNPUSHED commits is NOT reaped — the
+    /// unreviewed work survives.
+    #[tokio::test]
+    async fn reap_keeps_unpushed_complete_worktree() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, baseline) = init_repo_with_remote(tmp.path());
+        let wt = create_goal_worktree(&repo, &baseline, "cli-unpushed")
+            .await
+            .unwrap();
+        commit_in_worktree(&wt, "new.txt");
+
+        let outcome = reap_goal_worktree(&repo, "cli-unpushed", false).await;
+        assert_eq!(outcome, ReapOutcome::SkippedUnpushed);
+        assert!(
+            wt.exists(),
+            "a Complete worktree with unpushed commits must be protected"
+        );
+    }
+
+    /// Cancelled bypasses the push guard: the same unpushed worktree IS reaped
+    /// (the user explicitly discarded the work).
+    #[tokio::test]
+    async fn reap_cancelled_removes_unpushed_worktree() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, baseline) = init_repo_with_remote(tmp.path());
+        let wt = create_goal_worktree(&repo, &baseline, "cli-cancel")
+            .await
+            .unwrap();
+        commit_in_worktree(&wt, "new.txt");
+
+        let outcome = reap_goal_worktree(&repo, "cli-cancel", true).await;
+        assert_eq!(outcome, ReapOutcome::RemovedTracked);
+        assert!(!wt.exists(), "cancelled goal worktree must be reaped");
+    }
+
+    /// Orphaned-dir fallback: a `cli-*` dir git no longer tracks (no worktree
+    /// ref) is reclaimed by the sweep via `rm -rf` after `git worktree remove`
+    /// fails — the second #504 leak form.
+    #[tokio::test]
+    async fn sweep_reclaims_orphaned_dir_via_rm_rf() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, _baseline) = init_repo_with_remote(tmp.path());
+        let orphan = tmp.path().join(GOAL_WORKTREES_DIR).join("cli-orphan");
+        std::fs::create_dir_all(orphan.join("target")).unwrap();
+        std::fs::write(orphan.join("target").join("artifact.o"), "junk").unwrap();
+
+        let reclaimed = sweep_orphaned_worktrees(&repo, &[]).await;
+        assert_eq!(reclaimed, 1);
+        assert!(!orphan.exists(), "orphaned dir must be rm -rf'd");
+    }
+
+    /// Sweep safety: skips worktrees of active goals AND keeps unpushed ones,
+    /// while still reaping a pushed leak from a finished goal.
+    #[tokio::test]
+    async fn sweep_skips_active_keeps_unpushed_reaps_pushed() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, baseline) = init_repo_with_remote(tmp.path());
+        let wt_active = create_goal_worktree(&repo, &baseline, "cli-active")
+            .await
+            .unwrap();
+        let wt_unpushed = create_goal_worktree(&repo, &baseline, "cli-unpushed")
+            .await
+            .unwrap();
+        commit_in_worktree(&wt_unpushed, "new.txt");
+        let wt_done = create_goal_worktree(&repo, &baseline, "cli-done")
+            .await
+            .unwrap();
+
+        let active = vec!["cli-active".to_string()];
+        let reclaimed = sweep_orphaned_worktrees(&repo, &active).await;
+
+        assert_eq!(reclaimed, 1, "only the finished pushed worktree is reaped");
+        assert!(wt_active.exists(), "active goal worktree must be skipped");
+        assert!(wt_unpushed.exists(), "unpushed worktree must be protected");
+        assert!(!wt_done.exists(), "finished pushed worktree must be reaped");
     }
 }
