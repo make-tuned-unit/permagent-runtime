@@ -3348,6 +3348,7 @@ mod tests {
             deletions: 0,
             push_target: Some("origin/main".to_string()),
             worker_summary: "Created the thread and pushed.".to_string(),
+            diff_errored: false,
         };
         cards::set_goal_dispatch_evidence(
             &pool,
