@@ -26,7 +26,7 @@ use rmcp::model::{
 };
 use schemars::{schema_for, JsonSchema};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
@@ -374,6 +374,17 @@ impl OrchestratorClient {
                 tracing::warn!(
                     target: "permagentd::brain",
                     "Failed to resume in-progress goals on startup: {}",
+                    e
+                );
+            }
+            // #504: once resume has re-registered live goals, reclaim goal
+            // worktrees orphaned by crashed or prior daemon lifecycles. Runs
+            // only at boot (orphans accrue across restarts, not steadily) and
+            // skips any worktree still attached to a non-terminal goal.
+            if let Err(e) = sweep_orphaned_goal_worktrees(&resume_sm).await {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    "Orphaned goal-worktree sweep failed on startup: {}",
                     e
                 );
             }
@@ -2934,6 +2945,69 @@ pub async fn resume_in_progress_goals(
                 e
             );
         }
+    }
+
+    Ok(())
+}
+
+/// Boot-time sweep that reclaims goal worktrees orphaned by crashed or prior
+/// daemon lifecycles (#504). The on-transition reaper handles steady-state
+/// cleanup; this catches dirs whose reaping never fired because the process that
+/// would have done it is gone (the four orphaned dirs in the issue).
+///
+/// Safety: every worktree still attached to a *non-terminal* goal (its current
+/// or any prior attempt's run id) is excluded, and the per-dir push guard in
+/// [`goal_engine::sweep_orphaned_worktrees`] keeps anything with unpushed
+/// commits. Worktree dirs are deduped so projects sharing a parent are swept
+/// once.
+pub async fn sweep_orphaned_goal_worktrees(
+    session_manager: &crate::session::SessionManager,
+) -> Result<(), String> {
+    let pool = session_manager
+        .pool_clone()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Run ids of every NON-terminal goal — never reap these. Includes the full
+    // per-attempt history (worker_session_ids), since each attempt minted its
+    // own worktree.
+    let rows = sqlx::query_as::<_, (String,)>(
+        "SELECT c.metadata_json FROM cards c
+         JOIN board_columns bc ON c.column_id = bc.id
+         WHERE c.card_type = 'goal'
+           AND bc.state_binding NOT IN ('complete', 'cancelled')
+           AND c.archived_at IS NULL",
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut active: Vec<String> = Vec::new();
+    for (meta_str,) in rows {
+        let Ok(meta) = serde_json::from_str::<serde_json::Value>(&meta_str) else {
+            continue;
+        };
+        if let Some(id) = meta.get("worker_session_id").and_then(|v| v.as_str()) {
+            active.push(id.to_string());
+        }
+        if let Some(ids) = meta.get("worker_session_ids").and_then(|v| v.as_array()) {
+            active.extend(ids.iter().filter_map(|v| v.as_str().map(str::to_string)));
+        }
+    }
+
+    // Sweep each distinct worktrees dir once (projects can share a parent).
+    let projects = crate::projects::list_projects(&pool, None).await?;
+    let mut swept: HashSet<PathBuf> = HashSet::new();
+    for p in projects {
+        let Some(root) = p.root_path else { continue };
+        let repo = PathBuf::from(&root);
+        let Some(parent) = repo.parent().map(|p| p.to_path_buf()) else {
+            continue;
+        };
+        if !swept.insert(parent) {
+            continue; // already swept this worktrees dir via a sibling project
+        }
+        goal_engine::sweep_orphaned_worktrees(&repo, &active).await;
     }
 
     Ok(())

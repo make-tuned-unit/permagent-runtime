@@ -310,6 +310,18 @@ pub async fn advance_goal_checked(
 
     check_proof(tier, proof.as_ref(), card_id, action)?;
 
+    // #504: capture the dispatched worker's run id (== goal worktree dir name)
+    // before `meta` is consumed, so a terminal transition can reap the worktree
+    // post-commit. Only meaningful for terminal states; `None` otherwise.
+    let terminal_run_id = if matches!(new_state, GoalState::Complete | GoalState::Cancelled) {
+        goal.metadata
+            .get("worker_session_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    } else {
+        None
+    };
+
     // Build new metadata.
     let mut meta = goal.metadata;
     apply_patch(&mut meta, &effects.metadata_patch);
@@ -374,6 +386,27 @@ pub async fn advance_goal_checked(
         Some(current_state.binding()),
         new_state.binding(),
     ));
+
+    // #504: a goal that just reached a terminal state no longer needs its
+    // dispatch worktree — reap it. Cancelled allows reaping unpushed work (the
+    // user discarded it); Complete keeps unpushed/unprovable worktrees so
+    // unreviewed commits are never destroyed. Best-effort on a detached task:
+    // the reap must never block or fail the transition (a lingering dir is the
+    // acceptable status quo; a broken transition is not).
+    if let Some(run_id) = terminal_run_id {
+        let pool = pool.clone();
+        let project_id = goal.project_id.clone();
+        let allow_unpushed = matches!(new_state, GoalState::Cancelled);
+        tokio::spawn(async move {
+            crate::agents::platform_extensions::goal_engine::reap_terminal_goal_worktree(
+                &pool,
+                &project_id,
+                &run_id,
+                allow_unpushed,
+            )
+            .await;
+        });
+    }
 
     Ok(new_state)
 }
