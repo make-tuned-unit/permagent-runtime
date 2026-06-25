@@ -140,12 +140,44 @@ pub async fn run_for_goal_with_cfg(
         .and_then(|p| p.root_path.as_ref())
         .map(PathBuf::from)
         .filter(|p| p.is_dir());
-    let worktree_dir: Option<PathBuf> = meta
+    let worktree_recorded: Option<String> = meta
         .get("dispatch_evidence")
         .and_then(|e| e.get("worktree_path"))
         .and_then(|v| v.as_str())
+        .map(String::from);
+    let worktree_dir: Option<PathBuf> = worktree_recorded
+        .as_deref()
         .map(PathBuf::from)
         .filter(|p| p.is_dir());
+    // Fix B2 (#505): the worker's committed HEAD, durably recorded by Layer-1
+    // dispatch evidence at completion. When the worktree was reaped (#511 reaps
+    // FULLY-PUSHED Complete worktrees, see goal_engine::reap_goal_worktree), this
+    // SHA still resolves from the project root's SHARED git object store, so
+    // verification diffs the durable `baseline..head` commit range and never
+    // depends on the transient worktree. Unpushed goals keep their worktree
+    // (reaper returns SkippedUnpushed), so the worktree branch below still works.
+    let head_commit: Option<String> = meta
+        .get("dispatch_evidence")
+        .and_then(|e| e.get("head_commit"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    // Fix A (#505): a worktree that was RECORDED at dispatch but has since
+    // vanished (reaped) must be LOUD, not a silent fall-through to the clean
+    // project root. With a durable head_commit the root diff is correct; without
+    // one it would false-zero — either way the operator needs to see it.
+    if worktree_dir.is_none() {
+        if let Some(p) = worktree_recorded.as_deref() {
+            tracing::warn!(
+                target: "permagentd::verification",
+                goal_id = %goal_id,
+                worktree = %p,
+                has_durable_head = head_commit.is_some(),
+                "dispatch worktree is gone (reaped) — falling back to project root; \
+                 verification diffs the durable baseline..head range when a head \
+                 commit was recorded, else the diff is unprovable (recorded ERRORED)"
+            );
+        }
+    }
     let working_dir: Option<PathBuf> = worktree_dir.or(root_dir);
 
     // ── 1. Completion checks ──
@@ -199,6 +231,7 @@ pub async fn run_for_goal_with_cfg(
     let git_analysis = analyze_diff(
         working_dir.as_deref(),
         baseline_commit.as_deref(),
+        head_commit.as_deref(),
         &declared_paths,
     )
     .await;
@@ -571,6 +604,7 @@ async fn git_output(working_dir: &Path, args: &[&str]) -> Result<String, String>
 pub async fn analyze_diff(
     working_dir: Option<&Path>,
     baseline_commit: Option<&str>,
+    head_commit: Option<&str>,
     declared_paths: &[String],
 ) -> GitAnalysis {
     let Some(wd) = working_dir else {
@@ -580,18 +614,65 @@ pub async fn analyze_diff(
         return uncertain_analysis("no baseline_commit recorded at dispatch");
     };
 
-    // Committed + uncommitted tracked changes since baseline.
-    let names = match git_output(wd, &["diff", "--name-only", baseline]).await {
-        Ok(o) => o,
-        Err(e) => return uncertain_analysis(&format!("git diff failed: {}", e)),
-    };
-    let numstat = match git_output(wd, &["diff", "--numstat", baseline]).await {
-        Ok(o) => o,
-        Err(e) => return uncertain_analysis(&format!("git numstat failed: {}", e)),
-    };
-    let porcelain = match git_output(wd, &["status", "--porcelain"]).await {
-        Ok(o) => o,
-        Err(e) => return uncertain_analysis(&format!("git status failed: {}", e)),
+    // Fix A (#505): every git command here is failure-LOUD. A non-zero/failed
+    // git invocation is an ERRORED diff (Uncertain), surfaced via tracing::error!
+    // — NEVER a false zero-diff that the no-op clamp would turn into a wrongful
+    // Fail of correct, pushed work.
+    async fn run_or_error(wd: &Path, args: &[&str]) -> Result<String, GitAnalysis> {
+        git_output(wd, args).await.map_err(|e| {
+            tracing::error!(
+                target: "permagentd::verification",
+                dir = %wd.display(),
+                args = ?args,
+                "git command failed during diff analysis — recording ERRORED \
+                 (Uncertain) evidence, NOT a false zero-diff: {}",
+                e
+            );
+            uncertain_analysis(&format!(
+                "git {} failed: {}",
+                args.first().unwrap_or(&""),
+                e
+            ))
+        })
+    }
+
+    // Fix B2 (#505): when the worker's committed HEAD is durably recorded, diff
+    // the explicit commit range `baseline..head`. This reads committed objects
+    // ONLY — resolvable from the shared object store whether we are in the live
+    // worktree or the project root after a reap — so it never depends on the
+    // transient worktree's working tree. (No porcelain: a reaped goal's
+    // working_dir is the project root, whose dirty files are NOT the goal's
+    // work; the committed range is the complete, correct picture.) The legacy
+    // working-tree + porcelain path is kept only for evidence without a recorded
+    // head (in-process subagent / pre-B2 records).
+    let (names, numstat, porcelain) = match head_commit {
+        Some(head) => {
+            let names = match run_or_error(wd, &["diff", "--name-only", baseline, head]).await {
+                Ok(o) => o,
+                Err(a) => return a,
+            };
+            let numstat = match run_or_error(wd, &["diff", "--numstat", baseline, head]).await {
+                Ok(o) => o,
+                Err(a) => return a,
+            };
+            (names, numstat, String::new())
+        }
+        None => {
+            // Committed + uncommitted tracked changes since baseline (live worktree).
+            let names = match run_or_error(wd, &["diff", "--name-only", baseline]).await {
+                Ok(o) => o,
+                Err(a) => return a,
+            };
+            let numstat = match run_or_error(wd, &["diff", "--numstat", baseline]).await {
+                Ok(o) => o,
+                Err(a) => return a,
+            };
+            let porcelain = match run_or_error(wd, &["status", "--porcelain"]).await {
+                Ok(o) => o,
+                Err(a) => return a,
+            };
+            (names, numstat, porcelain)
+        }
     };
 
     let mut changed: Vec<String> = Vec::new();
@@ -1530,6 +1611,166 @@ mod tests {
         );
     }
 
+    /// Fix B2 (#505): a PUSHED goal whose worktree was REAPED (#511 removes
+    /// fully-pushed Complete worktrees) still verifies correctly. The worker's
+    /// committed HEAD is durably recorded; the commit object persists in the
+    /// project root's shared object store, so the verifier diffs the durable
+    /// `baseline..head` range from the root — NOT the vanished worktree — and
+    /// sees the real change instead of a false-empty (which used to → Fail).
+    #[tokio::test]
+    async fn verifier_uses_durable_range_when_worktree_reaped() {
+        let repo = tempfile::tempdir().unwrap();
+        let baseline = init_repo(repo.path());
+        let wt_parent = tempfile::tempdir().unwrap();
+        let wt = wt_parent.path().join("wt");
+        sh(
+            repo.path(),
+            &format!("git worktree add --detach {} {}", wt.display(), baseline),
+        );
+        // The worker commits its work in the worktree (shared object store).
+        std::fs::write(wt.join("src/lib.rs"), "pub fn a() {}\npub fn b() {}\n").unwrap();
+        sh(&wt, "git add -A");
+        sh(
+            &wt,
+            "git -c user.email=t@t -c user.name=t commit -q -m work",
+        );
+        let head = sh(&wt, "git rev-parse --short HEAD");
+        // #511 reaps the (pushed) worktree — the dir is now GONE.
+        sh(
+            repo.path(),
+            &format!("git worktree remove --force {}", wt.display()),
+        );
+        assert!(!wt.is_dir(), "worktree must be reaped for this test");
+
+        let pool = test_pool().await;
+        let goal = make_goal(
+            &pool,
+            repo.path().to_str().unwrap(),
+            serde_json::json!({
+                "baseline_commit": baseline,
+                "declared_paths": ["src/**"],
+                "dispatch_evidence": {
+                    "worktree_path": wt.to_str().unwrap(),
+                    "head_commit": head,
+                },
+            }),
+        )
+        .await;
+
+        let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
+        let record = run_for_goal_with(&pool, &goal.id, &base_url).await.unwrap();
+
+        assert_eq!(
+            record.status,
+            VerdictStatus::Pass,
+            "reaped-but-pushed work must verify from the durable range, not false-fail"
+        );
+        assert!(
+            record.evidence_digest.diff.files_changed >= 1,
+            "durable range must reflect the committed change, got {:?}",
+            record.diff_stat
+        );
+    }
+
+    /// Fix B2 (#505): an UNPUSHED goal keeps its worktree (the reaper returns
+    /// SkippedUnpushed), and verification still reads the durable
+    /// `baseline..head` range from that preserved worktree — proving B2 does not
+    /// regress worktree-only goals.
+    #[tokio::test]
+    async fn verifier_uses_durable_range_in_preserved_worktree() {
+        let repo = tempfile::tempdir().unwrap();
+        let baseline = init_repo(repo.path());
+        let wt_parent = tempfile::tempdir().unwrap();
+        let wt = wt_parent.path().join("wt");
+        sh(
+            repo.path(),
+            &format!("git worktree add --detach {} {}", wt.display(), baseline),
+        );
+        std::fs::write(wt.join("src/lib.rs"), "pub fn a() {}\npub fn b() {}\n").unwrap();
+        sh(&wt, "git add -A");
+        sh(
+            &wt,
+            "git -c user.email=t@t -c user.name=t commit -q -m work",
+        );
+        let head = sh(&wt, "git rev-parse --short HEAD");
+        // Worktree is PRESERVED (unpushed goal).
+        assert!(wt.is_dir());
+
+        let pool = test_pool().await;
+        let goal = make_goal(
+            &pool,
+            repo.path().to_str().unwrap(),
+            serde_json::json!({
+                "baseline_commit": baseline,
+                "declared_paths": ["src/**"],
+                "dispatch_evidence": {
+                    "worktree_path": wt.to_str().unwrap(),
+                    "head_commit": head,
+                },
+            }),
+        )
+        .await;
+
+        let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
+        let record = run_for_goal_with(&pool, &goal.id, &base_url).await.unwrap();
+
+        assert_eq!(record.status, VerdictStatus::Pass);
+        assert!(record.evidence_digest.diff.files_changed >= 1);
+    }
+
+    /// Fix A (#505): when the diff git command itself FAILS (here: an unreachable
+    /// baseline), the verdict is ERRORED (Uncertain) with a degraded reason —
+    /// NEVER a false zero-diff that the no-op clamp would turn into a wrongful
+    /// Fail of correct work.
+    #[tokio::test]
+    async fn verifier_git_failure_is_uncertain_not_false_fail() {
+        let repo = tempfile::tempdir().unwrap();
+        let baseline = init_repo(repo.path());
+        let wt_parent = tempfile::tempdir().unwrap();
+        let wt = wt_parent.path().join("wt");
+        sh(
+            repo.path(),
+            &format!("git worktree add --detach {} {}", wt.display(), baseline),
+        );
+        std::fs::write(wt.join("src/lib.rs"), "pub fn a() {}\npub fn b() {}\n").unwrap();
+        sh(&wt, "git add -A");
+        sh(
+            &wt,
+            "git -c user.email=t@t -c user.name=t commit -q -m work",
+        );
+        let head = sh(&wt, "git rev-parse --short HEAD");
+
+        let pool = test_pool().await;
+        // Baseline is a bogus SHA → `git diff <bogus> <head>` ERRORS.
+        let goal = make_goal(
+            &pool,
+            repo.path().to_str().unwrap(),
+            serde_json::json!({
+                "baseline_commit": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+                "declared_paths": ["src/**"],
+                "dispatch_evidence": {
+                    "worktree_path": wt.to_str().unwrap(),
+                    "head_commit": head,
+                },
+            }),
+        )
+        .await;
+
+        let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
+        let record = run_for_goal_with(&pool, &goal.id, &base_url).await.unwrap();
+
+        assert_ne!(
+            record.status,
+            VerdictStatus::Fail,
+            "a git failure must never produce a (false) Fail"
+        );
+        assert_eq!(record.status, VerdictStatus::Uncertain);
+        assert!(
+            record.degraded_reason.is_some(),
+            "the git failure must be surfaced as a degraded reason"
+        );
+    }
+
     /// Wire 4 negative: a FAIL verdict leaves the approve_review decision
     /// open and the goal in Review — auto-approval only fires on pass.
     #[tokio::test]
@@ -1700,8 +1941,13 @@ mod tests {
         let baseline = init_repo(repo.path());
         std::fs::write(repo.path().join("brand_new.txt"), "new\n").unwrap();
 
-        let analysis =
-            analyze_diff(Some(repo.path()), Some(&baseline), &["src/**".to_string()]).await;
+        let analysis = analyze_diff(
+            Some(repo.path()),
+            Some(&baseline),
+            None,
+            &["src/**".to_string()],
+        )
+        .await;
         assert_eq!(
             analysis.out_of_path_files,
             vec!["brand_new.txt".to_string()]
@@ -1713,7 +1959,7 @@ mod tests {
     async fn no_declared_paths_is_uncertain() {
         let repo = tempfile::tempdir().unwrap();
         let baseline = init_repo(repo.path());
-        let analysis = analyze_diff(Some(repo.path()), Some(&baseline), &[]).await;
+        let analysis = analyze_diff(Some(repo.path()), Some(&baseline), None, &[]).await;
         assert_eq!(analysis.path_discipline, Grade::Uncertain);
         assert!(analysis
             .degraded_note
@@ -1725,7 +1971,8 @@ mod tests {
     #[tokio::test]
     async fn non_git_working_dir_is_uncertain() {
         let dir = tempfile::tempdir().unwrap();
-        let analysis = analyze_diff(Some(dir.path()), Some("abc123"), &["**".to_string()]).await;
+        let analysis =
+            analyze_diff(Some(dir.path()), Some("abc123"), None, &["**".to_string()]).await;
         assert_eq!(analysis.path_discipline, Grade::Uncertain);
     }
 

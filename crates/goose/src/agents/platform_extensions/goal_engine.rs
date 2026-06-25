@@ -96,6 +96,12 @@ pub struct GoalEvidence {
     /// (Layer 2a self-report). Empty if the worker printed nothing.
     #[serde(default)]
     pub worker_summary: String,
+    /// Fix A (#505): `true` when the diff/diffstat git command itself FAILED
+    /// (non-zero exit / could not run) while collecting evidence — e.g. the
+    /// baseline was unreachable. Distinguishes a git ERROR from a genuine empty
+    /// diff so `files_changed == 0` is never silently trusted as "no work".
+    #[serde(default)]
+    pub diff_errored: bool,
 }
 
 /// Per-goal data handed to an engine. Engine-specific capabilities (provider,
@@ -727,9 +733,16 @@ pub(crate) async fn collect_evidence(
         .map(|l| l.to_string())
         .filter(|l| !l.trim().is_empty())
         .collect::<Vec<_>>();
-    let diffstat = tail(&git_text(worktree, &["diff", "--stat", &range]).await, 4000);
-    let shortstat = git_text(worktree, &["diff", "--shortstat", &range]).await;
-    let (files_changed, insertions, deletions) = parse_shortstat(&shortstat);
+    // Fix A (#505): the diff/diffstat are the LOAD-BEARING evidence fields. Use
+    // the checked `git_try` so a git FAILURE (e.g. unreachable baseline) is loud
+    // and recorded as `diff_errored`, never silently degraded to an empty diff
+    // that reads as "0 files changed → no work".
+    let diffstat_raw = git_try(worktree, &["diff", "--stat", &range]).await;
+    let shortstat_raw = git_try(worktree, &["diff", "--shortstat", &range]).await;
+    let diff_errored = diffstat_raw.is_none() || shortstat_raw.is_none();
+    let diffstat = tail(&diffstat_raw.unwrap_or_default(), 4000);
+    let (files_changed, insertions, deletions) =
+        parse_shortstat(&shortstat_raw.unwrap_or_default());
     let push_target = git_text(worktree, &["branch", "-r", "--contains", "HEAD"])
         .await
         .lines()
@@ -747,23 +760,53 @@ pub(crate) async fn collect_evidence(
         deletions,
         push_target,
         worker_summary,
+        diff_errored,
     }
 }
 
-/// Run `git <args>` in `dir`, returning trimmed stdout (empty on any failure).
-async fn git_text(dir: &Path, args: &[&str]) -> String {
+/// Run `git <args>` in `dir`. `Some(trimmed stdout)` on success; `None` on ANY
+/// failure (could-not-run or non-zero exit), logged LOUDLY (Fix A, #505) so a
+/// silent baseline-unreachable failure cannot masquerade as "no work".
+async fn git_try(dir: &Path, args: &[&str]) -> Option<String> {
     let mut cmd = Command::new("git");
     cmd.arg("-C")
         .arg(dir)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     configure_subprocess(&mut cmd);
     match cmd.output().await {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
-        _ => String::new(),
+        Ok(o) if o.status.success() => Some(String::from_utf8_lossy(&o.stdout).trim().to_string()),
+        Ok(o) => {
+            tracing::warn!(
+                target: "permagentd::brain",
+                dir = %dir.display(),
+                args = ?args,
+                "evidence git command exited {:?}: {}",
+                o.status.code(),
+                String::from_utf8_lossy(&o.stderr).trim()
+            );
+            None
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "permagentd::brain",
+                dir = %dir.display(),
+                args = ?args,
+                "evidence git command could not run: {}",
+                e
+            );
+            None
+        }
     }
+}
+
+/// Run `git <args>` in `dir`, returning trimmed stdout (empty on any failure).
+/// Non-load-bearing convenience over [`git_try`] for fields where an empty
+/// value is an acceptable degradation (head sha, commit list, push target).
+async fn git_text(dir: &Path, args: &[&str]) -> String {
+    git_try(dir, args).await.unwrap_or_default()
 }
 
 /// Like [`git_text`] but yields `None` for empty/failed output (single values).
@@ -1080,6 +1123,26 @@ mod tests {
         assert_eq!(ev.insertions, 2);
         assert!(ev.push_target.is_none(), "no remote → not pushed");
         assert_eq!(ev.worker_summary, "summary");
+        assert!(!ev.diff_errored, "a successful diff is not errored");
+    }
+
+    /// Fix A (#505): when the diff git command itself FAILS (here: the dir is not
+    /// a git repo, so `git diff baseline..HEAD` errors), the evidence is marked
+    /// `diff_errored` — distinguishing a git ERROR from a genuine empty diff, so
+    /// `files_changed == 0` is never silently trusted as "no work".
+    #[tokio::test]
+    async fn collect_evidence_flags_git_failure_as_errored() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // A plain directory — not a git repo. Every `git -C` call here fails.
+        let ev = collect_evidence(tmp.path(), "deadbeef", "summary".to_string()).await;
+        assert!(
+            ev.diff_errored,
+            "a failed diff git command must surface as ERRORED, not a clean zero-diff"
+        );
+        assert_eq!(
+            ev.files_changed, 0,
+            "no count is recoverable from a failure"
+        );
     }
 
     /// Defect 2 (worktree isolation): with no git baseline the external engine
