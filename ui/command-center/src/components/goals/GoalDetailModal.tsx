@@ -54,6 +54,27 @@ function fmtTime(iso: string): string {
   return Number.isFinite(t) ? new Date(t).toLocaleString() : iso;
 }
 
+/**
+ * Map a cancel failure to a clear, actionable message. The cancel endpoint
+ * returns 409 Conflict for two distinct cases — the policy classes the action
+ * as decision-required (Tier 2), or the goal is already in a terminal state —
+ * and both carry an explanatory server message, which we surface verbatim when
+ * present. We only replace the bare `Unknown error` / `HTTP <n>` fallbacks.
+ */
+function cancelErrorMessage(e: unknown): string {
+  const status = (e as { status?: number } | null)?.status;
+  const raw = e instanceof Error ? e.message : '';
+  const hasServerText = raw && !/^Unknown error$|^HTTP \d+$/.test(raw);
+  if (hasServerText) return raw;
+  if (status === 409) {
+    return 'Cancel was rejected — this goal needs approval or is already in a terminal state.';
+  }
+  if (status === undefined || (status >= 500 && status < 600)) {
+    return "Couldn't reach the server to cancel. Please try again.";
+  }
+  return raw || 'Cancel failed.';
+}
+
 export function GoalDetailModal({
   projectId,
   cardId,
@@ -121,7 +142,7 @@ export function GoalDetailModal({
       setCancelledState(res.state || 'cancelled');
       setConfirming(false);
     } catch (e) {
-      setCancelError(e instanceof Error ? e.message : 'Cancel failed');
+      setCancelError(cancelErrorMessage(e));
     } finally {
       setCancelling(false);
     }

@@ -189,7 +189,14 @@ export async function apiFetch<T>(endpoint: string, options?: RequestInit): Prom
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ message: 'Unknown error' }));
-    throw new Error(error.message || error.error || `HTTP ${response.status}`);
+    // Attach the HTTP status so callers can map specific failures (e.g. a 409
+    // Conflict on goal cancel) to clear messages. Non-breaking: existing callers
+    // read only `.message`.
+    const err = new Error(
+      error.message || error.error || `HTTP ${response.status}`,
+    ) as Error & { status?: number };
+    err.status = response.status;
+    throw err;
   }
 
   return response.json() as Promise<T>;

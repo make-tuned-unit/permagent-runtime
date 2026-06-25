@@ -1051,6 +1051,78 @@ pub async fn migrate_v16_to_v17(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
+/// Reconcile the `risk_policy` seed onto existing DBs (schema v18, #514).
+///
+/// The decision-inbox seed (`apply_decision_inbox_schema`) uses INSERT OR IGNORE
+/// and only runs when a DB first crosses v9→v10. Rows added to that seed list
+/// AFTER a user's table was created therefore never land on existing installs —
+/// the table already exists, so the seed step is skipped on later boots. The
+/// `goal_cancel` row was added in #500, AFTER the v10 table creation (the seed
+/// originally shipped 16 rows at v10; `goal_cancel` is the only one added since),
+/// so every pre-#500 DB is missing it. An unknown `action_class` fails closed to
+/// Tier 2 in the decision engine, so Cancel always 409s on those installs (#514).
+/// This is the same class of seed-vs-migration gap as #502/#507.
+///
+/// Fix: force-set `goal_cancel` to Tier 0 via UPSERT (covers both the absent and
+/// the wrong-value case — the bug is the missing/elevated tier), and defensively
+/// INSERT-OR-IGNORE the full original seed so a partially-seeded table self-heals
+/// without clobbering any deliberate user/Henry tier customization on the other
+/// rows. Base-version independent and idempotent. Records v18. SPECTRAL_SCHEMA_VERSION
+/// stays 14 — fresh installs get the corrected seed from `apply_decision_inbox_schema`
+/// directly; this migration targets only existing DBs.
+pub async fn migrate_v17_to_v18(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v17 -> v18 (reconcile risk_policy seed, #514)");
+
+    let mut tx = pool.begin().await?;
+
+    // Defensive: restore any seed row that is absent (never clobbers an existing
+    // row, so user/Henry tier customizations survive). All 17 rows were present
+    // at v10 except goal_cancel, which this also inserts if missing.
+    sqlx::query(
+        "INSERT OR IGNORE INTO risk_policy (action_class, tier, rationale) VALUES
+            ('goal_ready', 0, 'Triage->Ready promotion is reversible'),
+            ('goal_dispatch', 0, 'Dispatching a ready goal to a worker is reversible'),
+            ('goal_review', 0, 'Worker reporting completion is informational'),
+            ('goal_complete_confined', 0, 'Completion check passed, diff confined to declared paths, reversible class'),
+            ('goal_approve_standard', 1, 'Review->Complete requires a recorded decision (Henry or Jesse)'),
+            ('goal_retry_within_budget', 1, 'Reject/retry requires a recorded decision with rationale'),
+            ('goal_cancel', 0, 'User-initiated cancellation of a goal is immediate; the worker is killed'),
+            ('merge_to_main', 2, 'Irreversible publication'),
+            ('push_main', 2, 'Irreversible publication'),
+            ('schema_migration', 2, 'Data-shape change'),
+            ('user_data_deletion', 2, 'Destructive, includes goal-card deletion'),
+            ('network_external', 2, 'Side effects outside the machine'),
+            ('spend', 2, 'Costs money'),
+            ('secrets_access', 2, 'Credential exposure'),
+            ('permission_change', 2, 'Expands capability surface'),
+            ('orchestrator_edit', 2, 'Self-modification of the control loop'),
+            ('policy_edit', 2, 'Changes to this table are themselves Tier 2')",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    // Force goal_cancel to Tier 0: this is the #514 bug — it must be reversible/
+    // immediate. UPSERT (not OR IGNORE) so a DB where it exists at a wrong tier is
+    // corrected too, not just one where it is absent.
+    sqlx::query(
+        "INSERT INTO risk_policy (action_class, tier, rationale)
+         VALUES ('goal_cancel', 0, 'User-initiated cancellation of a goal is immediate; the worker is killed')
+         ON CONFLICT(action_class) DO UPDATE SET tier = excluded.tier",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+
+    // Hardcoded (v18) per the migration precedent in this file.
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (18)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v18 (risk_policy goal_cancel reconciled to Tier 0)");
+
+    Ok(())
+}
+
 /// Apply the file-intake inbox schema: the `inbox_files` table, one metadata row
 /// per file that lands in the Permagent inbox (`~/.permagent/inbox/`).
 ///
@@ -2167,5 +2239,109 @@ mod inbox_schema_tests {
         .await
         .unwrap();
         assert_eq!(state_count, 6, "no duplicate lifecycle columns on re-run");
+    }
+
+    /// migrate_v17_to_v18 (#514): a v10-era DB seeded `risk_policy` before the
+    /// `goal_cancel` row was added (#500), so it is missing — an unknown
+    /// action_class fails closed to Tier 2 and Cancel always 409s. After v18 the
+    /// row must exist at Tier 0, a row that diverged to a wrong tier must be
+    /// corrected to 0, other rows' customizations must be preserved, and a re-run
+    /// must change nothing.
+    #[tokio::test]
+    async fn migrate_v17_to_v18_reconciles_goal_cancel_risk_policy() {
+        let pool = mem_pool().await;
+        init_spectral_db(&pool).await.unwrap();
+
+        // Simulate a v10-era risk_policy: the pre-#500 seed had NO goal_cancel row.
+        // Clear the fresh-install seed and re-create the legacy subset, including a
+        // user-customized tier on one unrelated row to prove it is preserved.
+        sqlx::query("DELETE FROM risk_policy")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO risk_policy (action_class, tier, rationale) VALUES
+                ('goal_ready', 0, 'legacy'),
+                ('goal_dispatch', 0, 'legacy'),
+                ('goal_review', 0, 'legacy'),
+                ('goal_complete_confined', 0, 'legacy'),
+                ('goal_approve_standard', 1, 'legacy'),
+                ('goal_retry_within_budget', 1, 'legacy'),
+                ('merge_to_main', 2, 'legacy'),
+                ('push_main', 1, 'user-customized down from 2')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (17)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Precondition: goal_cancel genuinely absent (would fail closed to Tier 2).
+        let before: Option<i64> =
+            sqlx::query_scalar("SELECT tier FROM risk_policy WHERE action_class = 'goal_cancel'")
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+        assert_eq!(before, None, "goal_cancel absent on a v10-era DB");
+
+        migrate_v17_to_v18(&pool).await.unwrap();
+        assert_eq!(current_version(&pool).await, 18);
+
+        // goal_cancel now present at Tier 0 — Cancel resolves as reversible, no 409.
+        let cancel_tier: i64 =
+            sqlx::query_scalar("SELECT tier FROM risk_policy WHERE action_class = 'goal_cancel'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(cancel_tier, 0, "goal_cancel reconciled to Tier 0");
+
+        // Defensive restore filled in seed rows absent on this legacy DB.
+        let secrets_tier: i64 = sqlx::query_scalar(
+            "SELECT tier FROM risk_policy WHERE action_class = 'secrets_access'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(secrets_tier, 2, "absent seed row restored");
+
+        // User customization on an existing row is preserved (never clobbered).
+        let push_tier: i64 =
+            sqlx::query_scalar("SELECT tier FROM risk_policy WHERE action_class = 'push_main'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            push_tier, 1,
+            "user-customized tier preserved, not reset to seed"
+        );
+
+        // A goal_cancel that exists at a WRONG tier is force-corrected to 0.
+        sqlx::query("UPDATE risk_policy SET tier = 2 WHERE action_class = 'goal_cancel'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        migrate_v17_to_v18(&pool).await.unwrap();
+        let recancel_tier: i64 =
+            sqlx::query_scalar("SELECT tier FROM risk_policy WHERE action_class = 'goal_cancel'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            recancel_tier, 0,
+            "wrong goal_cancel tier force-corrected to 0"
+        );
+
+        // Idempotent: a second clean run changes nothing and does not error.
+        migrate_v17_to_v18(&pool).await.unwrap();
+        let cancel_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM risk_policy WHERE action_class = 'goal_cancel'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(cancel_count, 1, "no duplicate goal_cancel row on re-run");
+        assert_eq!(push_tier, 1, "customization still preserved after re-run");
     }
 }

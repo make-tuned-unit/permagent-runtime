@@ -743,6 +743,15 @@ impl SessionStorage {
                     if version < 17 {
                         spectral_schema::migrate_v16_to_v17(&self.pool).await?;
                     }
+                    // Reconcile the risk_policy seed (schema v18, #514): the
+                    // goal_cancel row was added to the INSERT-OR-IGNORE seed AFTER
+                    // the v10 table creation, so pre-#500 DBs never got it — an
+                    // unknown action_class fails closed to Tier 2 and Cancel always
+                    // 409s. Force-sets goal_cancel=0 + restores any absent seed row.
+                    // Base-independent + idempotent; same gap class as #502/#507.
+                    if version < 18 {
+                        spectral_schema::migrate_v17_to_v18(&self.pool).await?;
+                    }
                 } else {
                     info!("Initializing Spectral schema at {:?}", self.db_path);
                     spectral_schema::init_spectral_db(&self.pool).await?;
