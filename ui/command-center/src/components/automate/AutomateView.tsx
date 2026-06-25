@@ -110,6 +110,7 @@ export function AutomateView() {
   const [extensions, setExtensions] = useState<ExtensionInfo[]>([]);
   const [showModal, setShowModal] = useState(false);
   const [completionToast, setCompletionToast] = useState<string | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
   const [actionStates, setActionStates] = useState<Record<string, 'loading' | 'success'>>({});
   const [detail, setDetail] = useState<DetailTarget | null>(null);
   const [search, setSearch] = useState('');
@@ -231,7 +232,23 @@ export function AutomateView() {
   // labels) is handled locally inside Btn via its own useState.
 
   const handleRunNow = async (id: string) => {
-    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/run_now`, { method: 'POST' }); fetchJobs(); } catch {}
+    setRunError(null);
+    // The POST is held open for the whole run; currently_running flips server-side
+    // immediately, so poll early (rather than waiting up to 5s) to resolve the
+    // optimistic "Starting..." into the poll-derived "Running Now" state promptly.
+    const earlyPoll = setTimeout(() => { fetchJobs(); }, 1000);
+    try {
+      await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/run_now`, { method: 'POST' });
+    } catch (err) {
+      clearTimeout(earlyPoll);
+      const name = jobNameMap.get(id) || id;
+      const msg = err instanceof Error ? err.message : String(err);
+      setRunError(`Couldn't run "${name}": ${msg}`);
+      setTimeout(() => setRunError(null), 8000);
+      throw err; // surface to the Btn so it reverts the optimistic "Starting..." state
+    } finally {
+      fetchJobs();
+    }
   };
   const handlePause = async (id: string) => {
     setActionState(`${id}:pause`, 'loading');
@@ -311,6 +328,18 @@ export function AutomateView() {
           }}>
             <span style={{ fontSize: 13, color: '#5BD17F' }}>&#10003; "{completionToast}" completed.</span>
             <button onClick={() => setCompletionToast(null)} style={{ background: 'none', border: 'none', color: colors.textDim, cursor: 'pointer', fontSize: 16 }}>&times;</button>
+          </div>
+        )}
+
+        {/* Run-now failure banner (surfaced, not swallowed) */}
+        {runError && (
+          <div style={{
+            marginBottom: 16, padding: '10px 16px', borderRadius: radius.md,
+            background: 'rgba(255,100,100,0.1)', border: '1px solid rgba(255,100,100,0.25)',
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          }}>
+            <span style={{ fontSize: 13, color: '#ff6b6b' }}>{runError}</span>
+            <button onClick={() => setRunError(null)} style={{ background: 'none', border: 'none', color: colors.textDim, cursor: 'pointer', fontSize: 16 }}>&times;</button>
           </div>
         )}
 
@@ -610,7 +639,7 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
           <Btn label="Stop" onClick={() => onKill(job.id)} danger />
         ) : (
           <>
-            <Btn label="Run Now" onClick={() => onRunNow(job.id)} primary />
+            <Btn label="Run Now" onClick={() => onRunNow(job.id)} primary loadingLabel="Starting..." successLabel="Started" />
             {job.paused
               ? <Btn label="Resume" onClick={() => onUnpause(job.id)} actionState={actionStates[`${job.id}:unpause`]} successLabel="Resumed" loadingLabel="Resuming..." onDone={() => onActionDone(`${job.id}:unpause`)} />
               : <Btn label="Pause" onClick={() => onPause(job.id)} actionState={actionStates[`${job.id}:pause`]} successLabel="Paused" loadingLabel="Pausing..." onDone={() => onActionDone(`${job.id}:pause`)} />}
@@ -708,7 +737,7 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
           <Btn label="Stop" onClick={() => onKill(job.id)} danger />
         ) : (
           <>
-            <Btn label="Run Now" onClick={() => onRunNow(job.id)} primary />
+            <Btn label="Run Now" onClick={() => onRunNow(job.id)} primary loadingLabel="Starting..." successLabel="Started" />
             {job.paused
               ? <Btn label="Resume" onClick={() => onUnpause(job.id)} actionState={actionStates[`${job.id}:unpause`]} successLabel="Resumed" loadingLabel="Resuming..." onDone={() => onActionDone(`${job.id}:unpause`)} />
               : <Btn label="Pause" onClick={() => onPause(job.id)} actionState={actionStates[`${job.id}:pause`]} successLabel="Paused" loadingLabel="Pausing..." onDone={() => onActionDone(`${job.id}:pause`)} />}
