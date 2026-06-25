@@ -5,11 +5,21 @@ import { useTheme } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import { useDashboard } from '../dashboard/useDashboard';
 import { useCommandCenter } from '../../lib/store';
+import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
 import { TerminalManager } from '../terminal/TerminalManager';
 import type { TerminalManagerHandle } from '../terminal/TerminalManager';
 import { Browser } from '../browser';
 import { ProjectChip } from './ProjectChip';
 import type { Project } from './useProjects';
+
+// Ensure a project site_url has a scheme so the in-app browser navigates
+// instead of treating it as a search query (e.g. www.reckonize.org → https://…).
+function ensureScheme(url: string): string {
+  const trimmed = url.trim();
+  if (!trimmed) return '';
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+}
 
 export function BuildView() {
   const { gradient, colors } = useTheme();
@@ -54,9 +64,12 @@ export function BuildView() {
     terminalRef.current?.createProjectTab(project.rootPath, label, agent);
   }, []);
 
+  const openInBrowser = useBrowserNavigate();
   const handleVisitSite = useCallback((url: string) => {
-    window.open(url, '_blank');
-  }, []);
+    const normalized = ensureScheme(url);
+    if (!normalized) return;
+    openInBrowser(normalized);
+  }, [openInBrowser]);
 
   return (
     <div style={{
