@@ -40,6 +40,9 @@ interface Props {
   /** Cancel this decision's goal (#490) — kills the worker and marks it
    *  terminal; the list refreshes after. Absent for non-goal decisions. */
   onCancelGoal?: () => Promise<void>;
+  /** Open the goal-detail modal (#503) for this decision's goal. Absent for
+   *  non-goal decisions. */
+  onViewGoal?: () => void;
 }
 
 interface PendingAnswer {
@@ -76,7 +79,7 @@ function effectTextFor(kind: string, answer: 'approve' | 'reject', agentName: st
     : 'Confirm reject — this is recorded for the audit trail; nothing else changes.';
 }
 
-export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCancelGoal }: Props) {
+export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCancelGoal, onViewGoal }: Props) {
   const { colors, reduceMotion } = useTheme();
   const { data: persona } = usePersona();
   const agentName = persona?.display_name ?? 'Aria';
@@ -291,6 +294,12 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
           <Btn onClick={() => discussDecision(d.id, d.headline)}>
             Discuss with {agentName}
           </Btn>
+
+          {/* Open the goal-detail modal (#503) — same modal as the Kanban board
+              and the Home in-flight list. View/edit/cancel from one place. */}
+          {onViewGoal && (
+            <Btn onClick={onViewGoal}>View goal</Btn>
+          )}
 
           {/* Cancel the underlying goal (#490). User-initiated and immediate:
               kills the worker and supersedes this decision. */}

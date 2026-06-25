@@ -4,6 +4,7 @@ import { useTheme } from '../../styles/useTheme';
 import { apiFetch } from '../../lib/api';
 import { useGoalEvents } from '../../lib/useGoalEvents';
 import { useCommandCenter } from '../../lib/store';
+import { GoalDetailModal } from './GoalDetailModal';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -343,6 +344,13 @@ project, onBack }: {
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null);
   const [ghostLabel, setGhostLabel] = useState('');
   const colRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  // Pointer-down origin + moved flag — lets us tell a click (open detail) from
+  // a drag (move card) on a single pointer interaction.
+  const downAtRef = useRef<{ x: number; y: number } | null>(null);
+  const movedRef = useRef(false);
+  // Goal-detail modal (#503), reachable from a card click here, the Home
+  // in-flight list, and the Decision Inbox — all open this same modal.
+  const [openGoal, setOpenGoal] = useState<string | null>(null);
 
   const getColumnAtPoint = useCallback((x: number, y: number): string | null => {
     for (const [colId, el] of colRefs.current.entries()) {
@@ -379,15 +387,25 @@ project, onBack }: {
   useEffect(() => {
     if (!draggingCard) return;
     const onMove = (e: PointerEvent) => {
+      const origin = downAtRef.current;
+      if (origin && (Math.abs(e.clientX - origin.x) > 5 || Math.abs(e.clientY - origin.y) > 5)) {
+        movedRef.current = true;
+      }
       setGhostPos({ x: e.clientX, y: e.clientY });
       setDragOverCol(getColumnAtPoint(e.clientX, e.clientY));
     };
     const onUp = async (e: PointerEvent) => {
       const targetCol = getColumnAtPoint(e.clientX, e.clientY);
       const cardId = draggingCard;
+      const wasClick = !movedRef.current;
       setDraggingCard(null);
       setGhostPos(null);
       setDragOverCol(null);
+      // No movement → treat as a click and open the detail modal.
+      if (wasClick && cardId) {
+        setOpenGoal(cardId);
+        return;
+      }
       if (targetCol && cardId) {
         const card = cards.find(c => c.id === cardId);
         if (card && card.columnId !== targetCol) {
@@ -411,6 +429,8 @@ project, onBack }: {
 
   const handleCardPointerDown = (e: React.PointerEvent, cardId: string, title: string) => {
     e.preventDefault();
+    downAtRef.current = { x: e.clientX, y: e.clientY };
+    movedRef.current = false;
     setDraggingCard(cardId);
     setGhostPos({ x: e.clientX, y: e.clientY });
     setGhostLabel(title);
@@ -612,6 +632,17 @@ project, onBack }: {
         }}>
           {ghostLabel}
         </div>
+      )}
+
+      {/* Goal-detail modal (#503) — opened by a card click; live surfaces
+          refresh via the goal_state_changed emit, and onChanged refetches here. */}
+      {openGoal && (
+        <GoalDetailModal
+          projectId={project.id}
+          goalId={openGoal}
+          onClose={() => setOpenGoal(null)}
+          onChanged={loadBoard}
+        />
       )}
     </div>
   );

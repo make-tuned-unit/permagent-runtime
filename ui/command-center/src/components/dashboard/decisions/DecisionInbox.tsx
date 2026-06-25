@@ -18,6 +18,7 @@ import { DecisionItem } from './DecisionItem';
 import { decisionsClient } from './client';
 import { formatAge } from './format';
 import { usePersona } from '../../settings/useSettings';
+import { GoalDetailModal } from '../../projects/GoalDetailModal';
 
 interface Props {
   inbox: ReturnType<typeof useDecisions>;
@@ -32,6 +33,8 @@ export function DecisionInbox({ inbox, onClose }: Props) {
   const [view, setView] = useState<'list' | 'history'>('list');
   const [history, setHistory] = useState<HistoryItem[] | null>(null);
   const [tier1Open, setTier1Open] = useState(false);
+  // Goal-detail modal (#503) — opened from a decision's "View goal".
+  const [openGoal, setOpenGoal] = useState<{ projectId: string; goalId: string } | null>(null);
 
   const openHistory = useCallback(async () => {
     setView('history');
@@ -154,6 +157,11 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                         }
                       : undefined
                   }
+                  onViewGoal={
+                    d.goal_id && d.project_id
+                      ? () => setOpenGoal({ projectId: d.project_id!, goalId: d.goal_id! })
+                      : undefined
+                  }
                 />
               ))}
 
@@ -260,6 +268,19 @@ export function DecisionInbox({ inbox, onClose }: Props) {
           </div>
         )}
       </div>
+
+      {/* Goal-detail modal (#503), opened from "View goal". Stop the scrim's
+          click-to-close from firing while the modal is open. */}
+      {openGoal && (
+        <div onClick={e => e.stopPropagation()}>
+          <GoalDetailModal
+            projectId={openGoal.projectId}
+            goalId={openGoal.goalId}
+            onClose={() => setOpenGoal(null)}
+            onChanged={inbox.refresh}
+          />
+        </div>
+      )}
     </div>
   );
 }

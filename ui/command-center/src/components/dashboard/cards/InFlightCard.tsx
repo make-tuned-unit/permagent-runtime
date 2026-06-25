@@ -1,9 +1,10 @@
-import { memo } from 'react';
+import { memo, useState } from 'react';
 import { font, radius } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { Mobius } from '../../mobius/Mobius';
 import { SectionTitle } from '../atoms';
 import type { ActiveGoal } from '../../../lib/useLiveGoals';
+import { GoalDetailModal } from '../../projects/GoalDetailModal';
 
 const STATE_LABEL: Record<string, string> = {
   ready: 'Ready',
@@ -17,6 +18,9 @@ interface Props {
 
 export const InFlightCard = memo(function InFlightCard({ goals }: Props) {
   const { colors } = useTheme();
+  // Goal-detail modal (#503): clicking an in-flight goal opens the same modal
+  // the Kanban board and Decision Inbox use — view, edit, and cancel from here.
+  const [openGoal, setOpenGoal] = useState<{ projectId: string; goalId: string } | null>(null);
   return (
     <div style={{
       height: '100%', boxSizing: 'border-box',
@@ -41,24 +45,42 @@ export const InFlightCard = memo(function InFlightCard({ goals }: Props) {
       ) : (
         <div style={{ flex: 1, overflow: 'auto' }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 14 }}>
-            {goals.map(goal => <GoalCard key={goal.id} goal={goal} />)}
+            {goals.map(goal => (
+              <GoalCard
+                key={goal.id}
+                goal={goal}
+                onOpen={() => setOpenGoal({ projectId: goal.project_id, goalId: goal.id })}
+              />
+            ))}
           </div>
         </div>
+      )}
+
+      {openGoal && (
+        <GoalDetailModal
+          projectId={openGoal.projectId}
+          goalId={openGoal.goalId}
+          onClose={() => setOpenGoal(null)}
+        />
       )}
     </div>
   );
 });
 
-const GoalCard = memo(function GoalCard({ goal }: { goal: ActiveGoal }) {
+const GoalCard = memo(function GoalCard({ goal, onOpen }: { goal: ActiveGoal; onOpen: () => void }) {
   const { colors } = useTheme();
   const mobiusState = goal.state === 'review' ? 'idle' : 'thinking';
   return (
-    <div style={{
-      padding: 18, borderRadius: radius.md,
-      background: colors.surface,
-      border: `1px solid ${colors.border}`,
-      boxShadow: [colors.cardShadow, colors.cardHighlight].filter(Boolean).join(', '),
-    }}>
+    <div
+      onClick={onOpen}
+      title="Open goal detail"
+      style={{
+        padding: 18, borderRadius: radius.md, cursor: 'pointer',
+        background: colors.surface,
+        border: `1px solid ${colors.border}`,
+        boxShadow: [colors.cardShadow, colors.cardHighlight].filter(Boolean).join(', '),
+      }}
+    >
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
         <Mobius size={36} state={mobiusState} logoMode />
         <div style={{ flex: 1, minWidth: 0 }}>
