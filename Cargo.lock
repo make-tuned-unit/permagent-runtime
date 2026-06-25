@@ -9869,7 +9869,7 @@ dependencies = [
 [[package]]
 name = "spectral"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=2c1f6bf#2c1f6bf5ab0a16efd23d3593e1adc9d979b58ceb"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=7300ad8698b8cc24ad0adff27eb8a82988718d73#7300ad8698b8cc24ad0adff27eb8a82988718d73"
 dependencies = [
  "anyhow",
  "reqwest 0.12.28",
@@ -9886,7 +9886,7 @@ dependencies = [
 [[package]]
 name = "spectral-cascade"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=2c1f6bf#2c1f6bf5ab0a16efd23d3593e1adc9d979b58ceb"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=7300ad8698b8cc24ad0adff27eb8a82988718d73#7300ad8698b8cc24ad0adff27eb8a82988718d73"
 dependencies = [
  "chrono",
  "serde",
@@ -9897,7 +9897,7 @@ dependencies = [
 [[package]]
 name = "spectral-core"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=2c1f6bf#2c1f6bf5ab0a16efd23d3593e1adc9d979b58ceb"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=7300ad8698b8cc24ad0adff27eb8a82988718d73#7300ad8698b8cc24ad0adff27eb8a82988718d73"
 dependencies = [
  "blake3",
  "ed25519-dalek",
@@ -9909,7 +9909,7 @@ dependencies = [
 [[package]]
 name = "spectral-graph"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=2c1f6bf#2c1f6bf5ab0a16efd23d3593e1adc9d979b58ceb"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=7300ad8698b8cc24ad0adff27eb8a82988718d73#7300ad8698b8cc24ad0adff27eb8a82988718d73"
 dependencies = [
  "blake3",
  "chrono",
@@ -9933,7 +9933,7 @@ dependencies = [
 [[package]]
 name = "spectral-ingest"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=2c1f6bf#2c1f6bf5ab0a16efd23d3593e1adc9d979b58ceb"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=7300ad8698b8cc24ad0adff27eb8a82988718d73#7300ad8698b8cc24ad0adff27eb8a82988718d73"
 dependencies = [
  "anyhow",
  "blake3",
@@ -9952,7 +9952,7 @@ dependencies = [
 [[package]]
 name = "spectral-spectrogram"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=2c1f6bf#2c1f6bf5ab0a16efd23d3593e1adc9d979b58ceb"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=7300ad8698b8cc24ad0adff27eb8a82988718d73#7300ad8698b8cc24ad0adff27eb8a82988718d73"
 dependencies = [
  "chrono",
  "regex",
@@ -9967,7 +9967,7 @@ dependencies = [
 [[package]]
 name = "spectral-tact"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=2c1f6bf#2c1f6bf5ab0a16efd23d3593e1adc9d979b58ceb"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=7300ad8698b8cc24ad0adff27eb8a82988718d73#7300ad8698b8cc24ad0adff27eb8a82988718d73"
 dependencies = [
  "anyhow",
  "regex",

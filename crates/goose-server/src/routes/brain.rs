@@ -7,6 +7,7 @@ use axum::{
 use chrono::{DateTime, Utc};
 use permagent::session::session_manager::SessionType;
 use serde::{Deserialize, Serialize};
+use spectral::core::entity_id::EntityId;
 use std::sync::Arc;
 
 #[derive(Debug, Deserialize)]
@@ -238,6 +239,19 @@ struct GraphEntity {
     entity_type: String,
     name: String,
     note: String,
+    /// Typed fields with provenance (from Spectral's entity_fields store).
+    fields: Vec<GraphEntityField>,
+}
+
+#[derive(Debug, Serialize)]
+struct GraphEntityField {
+    field_name: String,
+    value: String,
+    /// Provenance: "manual" | "enriched".
+    source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_url: Option<String>,
+    updated_at: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -292,21 +306,59 @@ async fn brain_graph(
         .await
     {
         Ok(result) => {
-            let mut ents: Vec<GraphEntity> = Vec::new();
+            // Dedup entities (cap 80), keeping the display data plus the raw
+            // EntityId for a single batched field lookup.
             let mut seen = std::collections::HashSet::new();
+            let mut picked: Vec<(String, String, String, Option<String>, EntityId)> = Vec::new();
             for ent in &result.graph.neighborhood.entities {
                 let id_hex = format!("e:{}", hex::encode(ent.id.as_bytes()));
                 if seen.insert(id_hex.clone()) {
-                    ents.push(GraphEntity {
-                        id: id_hex,
-                        entity_type: ent.entity_type.clone(),
-                        name: ent.canonical.clone(),
-                        note: String::new(),
-                    });
+                    picked.push((
+                        id_hex,
+                        ent.entity_type.clone(),
+                        ent.canonical.clone(),
+                        ent.description.clone(),
+                        ent.id,
+                    ));
+                    if picked.len() >= 80 {
+                        break;
+                    }
                 }
             }
-            ents.truncate(80);
-            ents
+
+            // Batch-load typed fields once; key is the entity's bare 64-hex id.
+            let mut fields_map = brain
+                .entity_fields_for(picked.iter().map(|p| p.4).collect())
+                .await
+                .unwrap_or_default();
+
+            picked
+                .into_iter()
+                .map(|(id_hex, entity_type, name, description, eid)| {
+                    let fields = fields_map
+                        .remove(&eid.to_string())
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|f| GraphEntityField {
+                            field_name: f.field_name,
+                            value: f.value,
+                            source: f.source.as_str().to_string(),
+                            source_url: f.source_url,
+                            updated_at: f.updated_at,
+                        })
+                        .collect();
+                    GraphEntity {
+                        id: id_hex,
+                        entity_type,
+                        name,
+                        // De-hardcoded: surface the entity's real freeform
+                        // description (was always "") so the modal stops
+                        // rendering empty.
+                        note: description.unwrap_or_default(),
+                        fields,
+                    }
+                })
+                .collect()
         }
         Err(_) => Vec::new(),
     };
