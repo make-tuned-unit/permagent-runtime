@@ -781,6 +781,15 @@ impl OrchestratorClient {
                     handle_goal_timeout(&tracker_pool, &tracker_card_id, &tracker_project_id, secs)
                         .await
                 }
+                goal_engine::GoalOutcome::Blocked { reason } => {
+                    handle_goal_blocked(
+                        &tracker_pool,
+                        &tracker_card_id,
+                        &tracker_project_id,
+                        &reason,
+                    )
+                    .await
+                }
             };
             if let Err(e) = result {
                 tracing::error!(
@@ -2882,6 +2891,94 @@ pub async fn handle_goal_timeout(
         card.title,
         secs,
         decision_id
+    );
+    Ok(())
+}
+
+/// Park a goal whose worker committed credential-shaped content (#508).
+///
+/// The deterministic credential guard (see `goal_engine::scan_committed_changes`)
+/// found a secret in the worker's committed changes. This is terminal and
+/// non-retriable: a plain retry would just re-leak. Like a timeout, it parks the
+/// goal (Triage + `needs_human_attention`) and raises an `unblock` decision so
+/// the leak surfaces in the inbox with the offending file + pattern — never a
+/// silent move to Review.
+pub async fn handle_goal_blocked(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    project_id: &str,
+    reason: &str,
+) -> Result<(), String> {
+    let card = cards::get_card(pool, card_id).await?.ok_or_else(|| {
+        format!(
+            "Card '{}' not found during credential-block handling",
+            card_id
+        )
+    })?;
+
+    // Respect a manual intervention since dispatch (mirrors the other handlers).
+    let current_col = cards::get_column(pool, &card.column_id).await?;
+    if current_col
+        .as_ref()
+        .and_then(|c| c.state_binding.as_deref())
+        != Some("in_progress")
+    {
+        tracing::info!(
+            target: "permagentd::brain",
+            "Goal '{}' credential-block handler: card no longer in_progress — skipping",
+            card.title
+        );
+        return Ok(());
+    }
+
+    // Raise a deduplicated unblock decision so the leak lands in the inbox.
+    if decisions::find_open_decision_for_goal(pool, card_id, "unblock")
+        .await?
+        .is_none()
+    {
+        let headline = format!(
+            "\"{}\" was blocked from committing a credential and needs your attention",
+            card.title
+        );
+        let headline = if headline.chars().count() > decisions::MAX_HEADLINE_CHARS {
+            let cut: String = headline
+                .chars()
+                .take(decisions::MAX_HEADLINE_CHARS - 1)
+                .collect();
+            format!("{}…", cut)
+        } else {
+            headline
+        };
+        let payload = serde_json::to_value(decisions::UnblockPayload {
+            reason: decisions::UnblockReason::Stuck,
+            spent: None,
+            cap: None,
+        })
+        .map_err(|e| e.to_string())?;
+        let _ = decisions::create_decision(
+            pool,
+            decisions::NewDecision {
+                kind: "unblock".to_string(),
+                goal_id: Some(card_id.to_string()),
+                project_id: Some(project_id.to_string()),
+                headline: Some(headline),
+                detail: Some(reason.to_string()),
+                payload,
+                ..Default::default()
+            },
+        )
+        .await;
+    }
+
+    goal_transition::park_goal(pool, card_id, decisions::ACTOR_SYSTEM, reason)
+        .await
+        .map_err(String::from)?;
+
+    tracing::warn!(
+        target: "permagentd::brain",
+        "Goal '{}' worker blocked by credential guard — parked. {}",
+        card.title,
+        reason
     );
     Ok(())
 }

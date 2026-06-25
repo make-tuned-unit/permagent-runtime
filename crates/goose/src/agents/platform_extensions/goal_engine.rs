@@ -61,6 +61,11 @@ pub enum GoalOutcome {
     /// The worker exceeded its time bound. Routes to an unconditional PARK
     /// (`handle_goal_timeout`) — never a silent retry.
     TimedOut { secs: u64 },
+    /// The worker's committed changes contain credential-shaped content (#508).
+    /// A terminal, non-retriable block: parks the goal for human attention with
+    /// the offending file + pattern, so a re-dispatch can't just re-leak. Carries
+    /// the human-readable block reason.
+    Blocked { reason: String },
 }
 
 /// Deterministic proof-of-work captured at goal completion, persisted to the
@@ -646,6 +651,13 @@ async fn await_external_child(
     match tokio::time::timeout(timeout, child.wait_with_output()).await {
         Ok(Ok(output)) => {
             if output.status.success() {
+                // #508: deterministic credential guard. Scan the worker's
+                // committed changes BEFORE declaring success; a credential-shaped
+                // file blocks the goal (terminal, non-retriable) instead of
+                // advancing it to Review. Fail-closed: an unverifiable file blocks.
+                if let Some(reason) = scan_committed_changes(&working_dir, &baseline).await {
+                    return GoalOutcome::Blocked { reason };
+                }
                 let worker_summary = tail(
                     &redact_secrets(&String::from_utf8_lossy(&output.stdout)),
                     4000,
@@ -710,6 +722,83 @@ async fn run_external_cli(
         }
         Err(e) => GoalOutcome::Failed(format!("Failed to run `{}`: {}", bin, e)),
     }
+}
+
+/// Per-file content read cap for the credential scan. Secrets live near the top
+/// of a file; reading the whole of a large generated artifact is wasteful.
+const SECRET_SCAN_READ_CAP: usize = 256 * 1024;
+
+/// #508 — deterministic credential guard over the worker's *committed* changes
+/// (`baseline..HEAD`), run after a clean exit and before the goal is allowed to
+/// advance. Returns a human-readable block reason on the first credential-shaped
+/// file/content, or `None` when the changeset is clean.
+///
+/// **Fail-closed:** a changed (added/modified/renamed) file that exists but
+/// cannot be read is treated as a match — the guard must never *allow* on
+/// uncertainty. Deletions are excluded (`--diff-filter=ACMR`) so a legitimately
+/// removed file can't trip the fail-closed path. Binary / oversized files are
+/// still caught by the filename rule; their content scan is skipped.
+pub(crate) async fn scan_committed_changes(worktree: &Path, baseline: &str) -> Option<String> {
+    let range = format!("{}..HEAD", baseline);
+    let names = git_text(
+        worktree,
+        &["diff", "--name-only", "--diff-filter=ACMR", &range],
+    )
+    .await;
+
+    for path in names.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        // Filename rule first — catches even binary / unreadable files.
+        if let Some(finding) = crate::steward::secret_scan::scan_path(path) {
+            return Some(block_message(path, &finding));
+        }
+        // Content rule. The worktree is checked out at HEAD, so the committed
+        // file is on disk.
+        let full = worktree.join(path);
+        match read_capped_text(&full) {
+            Ok(Some(content)) => {
+                if let Some(finding) = crate::steward::secret_scan::scan_content(&content) {
+                    return Some(block_message(path, &finding));
+                }
+            }
+            // Binary / oversized — filename rule already ran; nothing to add.
+            Ok(None) => {}
+            // Fail-closed: a tracked, non-deleted file we cannot verify blocks.
+            Err(e) => {
+                return Some(format!(
+                    "Commit blocked by the credential guard: could not read `{path}` to verify it \
+                     contains no secrets ({e}). The guard fails closed — fix the file or remove it \
+                     from the commit."
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// Render the human-readable block message for a credential finding.
+fn block_message(path: &str, finding: &crate::steward::secret_scan::SecretFinding) -> String {
+    format!(
+        "Commit blocked by the credential guard ({}): `{}` {}. Credentials must never be \
+         committed — move the secret to a secrets manager / environment variable and add the file \
+         to `.gitignore`, then re-run the goal.",
+        finding.rule, path, finding.detail
+    )
+}
+
+/// Read a file as UTF-8 text, capped at [`SECRET_SCAN_READ_CAP`]. Returns
+/// `Ok(None)` for binary content (a NUL byte in the read window) or a file that
+/// does not exist as a regular readable file; `Err` only on a real I/O error of
+/// an existing path (the fail-closed signal).
+fn read_capped_text(path: &Path) -> std::io::Result<Option<String>> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path)?;
+    let mut buf = vec![0u8; SECRET_SCAN_READ_CAP];
+    let n = f.read(&mut buf)?;
+    buf.truncate(n);
+    if buf.contains(&0) {
+        return Ok(None); // binary
+    }
+    Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
 }
 
 /// Collect deterministic verification evidence from the worker's worktree
@@ -1143,6 +1232,60 @@ mod tests {
             ev.files_changed, 0,
             "no count is recoverable from a failure"
         );
+    }
+
+    /// #508: the credential guard scans the worker's committed changes. A clean
+    /// changeset passes; a committed `.env` (or secret content) is blocked with a
+    /// reason naming the file. A removed file must not trip the fail-closed path.
+    #[tokio::test]
+    async fn scan_committed_changes_blocks_secrets_and_passes_clean() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = tmp.path().join("proj");
+        std::fs::create_dir(&repo).unwrap();
+        let g = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        g(&["init", "-q"]);
+        g(&["config", "user.email", "t@t.t"]);
+        g(&["config", "user.name", "t"]);
+        std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "base"]);
+        let baseline = String::from_utf8(g(&["rev-parse", "HEAD"]).stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+
+        // Clean change → no block.
+        std::fs::write(repo.join("a.txt"), "one\ntwo\n").unwrap();
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "clean work"]);
+        assert!(scan_committed_changes(&repo, &baseline).await.is_none());
+
+        // Commit a dotenv file → blocked, message names the file.
+        std::fs::write(repo.join(".env"), "API_KEY=Sup3rS3cretValue123\n").unwrap();
+        g(&["add", "-f", ".env"]); // -f: repos often gitignore .env
+        g(&["commit", "-q", "-m", "oops secret"]);
+        let reason = scan_committed_changes(&repo, &baseline)
+            .await
+            .expect("committed .env must be blocked");
+        assert!(reason.contains(".env"), "reason names the file: {reason}");
+        assert!(reason.contains("credential guard"), "reason: {reason}");
+
+        // Removing a tracked file must NOT trip the fail-closed read path.
+        g(&["rm", "-q", ".env"]);
+        g(&["commit", "-q", "-m", "remove secret"]);
+        // The deletion commit alone (new baseline) is clean.
+        let after_del = String::from_utf8(g(&["rev-parse", "HEAD~1"]).stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+        assert!(scan_committed_changes(&repo, &after_del).await.is_none());
     }
 
     /// Defect 2 (worktree isolation): with no git baseline the external engine

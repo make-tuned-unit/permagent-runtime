@@ -17,6 +17,8 @@
 //! Destructive proposals that clear the guard are surfaced to a human via
 //! [`surface_destructive_proposal`] — the single abstracted routing seam.
 
+pub mod secret_scan;
+
 use crate::cards::{self, CreateCard};
 use crate::security::patterns::RiskLevel;
 use sqlx::{Pool, Sqlite};
