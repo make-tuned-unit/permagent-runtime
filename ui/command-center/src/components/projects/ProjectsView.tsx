@@ -343,6 +343,11 @@ project, onBack }: {
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null);
   const [ghostLabel, setGhostLabel] = useState('');
   const colRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  // Distinguish a click (open detail) from a drag (move column): a press that
+  // never travels past the threshold is a click. #503.
+  const pressStart = useRef<{ x: number; y: number } | null>(null);
+  const dragMoved = useRef(false);
+  const openGoalDetail = useCommandCenter(s => s.openGoalDetail);
 
   const getColumnAtPoint = useCallback((x: number, y: number): string | null => {
     for (const [colId, el] of colRefs.current.entries()) {
@@ -379,15 +384,28 @@ project, onBack }: {
   useEffect(() => {
     if (!draggingCard) return;
     const onMove = (e: PointerEvent) => {
+      const start = pressStart.current;
+      if (start && Math.hypot(e.clientX - start.x, e.clientY - start.y) > 4) {
+        dragMoved.current = true;
+      }
       setGhostPos({ x: e.clientX, y: e.clientY });
       setDragOverCol(getColumnAtPoint(e.clientX, e.clientY));
     };
     const onUp = async (e: PointerEvent) => {
       const targetCol = getColumnAtPoint(e.clientX, e.clientY);
       const cardId = draggingCard;
+      const moved = dragMoved.current;
       setDraggingCard(null);
       setGhostPos(null);
       setDragOverCol(null);
+      pressStart.current = null;
+      dragMoved.current = false;
+      // No travel = a click → open the goal-detail modal instead of moving.
+      if (!moved && cardId) {
+        const card = cards.find(c => c.id === cardId);
+        if (card?.cardType === 'goal') openGoalDetail(project.id, cardId);
+        return;
+      }
       if (targetCol && cardId) {
         const card = cards.find(c => c.id === cardId);
         if (card && card.columnId !== targetCol) {
@@ -407,10 +425,12 @@ project, onBack }: {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
     };
-  }, [draggingCard, cards, project.id, loadBoard, getColumnAtPoint]);
+  }, [draggingCard, cards, project.id, loadBoard, getColumnAtPoint, openGoalDetail]);
 
   const handleCardPointerDown = (e: React.PointerEvent, cardId: string, title: string) => {
     e.preventDefault();
+    pressStart.current = { x: e.clientX, y: e.clientY };
+    dragMoved.current = false;
     setDraggingCard(cardId);
     setGhostPos({ x: e.clientX, y: e.clientY });
     setGhostLabel(title);
@@ -659,11 +679,13 @@ card, onPointerDown, isDragging, onDelete, onCancel }: {
         </span>
       )}
       {showMenu && (
-        <div style={{
-          position: 'absolute', top: '100%', right: 0, marginTop: 2, zIndex: 10,
-          background: '#0F1729', border: `1px solid ${colors.border}`, borderRadius: 6,
-          boxShadow: '0 4px 16px rgba(0,0,0,0.4)', padding: 2, minWidth: 100,
-        }}>
+        <div
+          onPointerDown={e => e.stopPropagation()}
+          style={{
+            position: 'absolute', top: '100%', right: 0, marginTop: 2, zIndex: 10,
+            background: '#0F1729', border: `1px solid ${colors.border}`, borderRadius: 6,
+            boxShadow: '0 4px 16px rgba(0,0,0,0.4)', padding: 2, minWidth: 100,
+          }}>
           {onCancel && (
             <button
               onClick={(e) => { e.stopPropagation(); setShowMenu(false); onCancel(); }}
