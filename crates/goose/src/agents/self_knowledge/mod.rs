@@ -45,6 +45,8 @@ pub enum FeatureCategory {
     Worker,
     /// A user-facing surface / view.
     Surface,
+    /// A deterministic guardrail the agent is *subject to* (not one it calls).
+    Guard,
 }
 
 /// Whether a feature's runtime state can be cheaply queried for the brief.
@@ -132,6 +134,11 @@ pub static WORKER_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::scheduler::SELF_KNOWLEDGE_FEATURE,
     crate::agents::platform_extensions::librarian::SELF_KNOWLEDGE_FEATURE,
 ];
+
+/// Deterministic guardrails the agent operates under. Co-located with the
+/// safety-core module that enforces each one.
+pub static GUARD_DESCRIPTORS: &[FeatureDescriptor] =
+    &[crate::steward::secret_scan::SELF_KNOWLEDGE_FEATURE];
 
 /// User-facing surfaces. Each entry is a `const` co-located with its module.
 pub static SURFACE_DESCRIPTORS: &[FeatureDescriptor] = &[
@@ -319,6 +326,23 @@ impl SelfKnowledgeBuilder {
             .ok();
         }
 
+        // ── Guardrails ──
+        // Deterministic constraints the agent is subject to. Surfacing them is a
+        // correctness requirement: a guard the agent can't describe is a bug.
+        writeln!(
+            out,
+            "\n## Guardrails you operate under (deterministic — not your judgment)"
+        )
+        .ok();
+        for d in GUARD_DESCRIPTORS {
+            writeln!(
+                out,
+                "- **{}** — {}. {}",
+                d.display_name, d.what_it_does, d.why_it_matters
+            )
+            .ok();
+        }
+
         out
     }
 
@@ -359,6 +383,9 @@ pub fn find_descriptor(id: &str) -> Option<FeatureDescriptor> {
         return Some(*d);
     }
     if let Some(d) = SURFACE_DESCRIPTORS.iter().find(|d| d.id == id) {
+        return Some(*d);
+    }
+    if let Some(d) = GUARD_DESCRIPTORS.iter().find(|d| d.id == id) {
         return Some(*d);
     }
     PLATFORM_EXTENSIONS
@@ -476,6 +503,35 @@ mod tests {
             KNOWN_SURFACE_IDS.len(),
             "SURFACE_DESCRIPTORS has an entry not in KNOWN_SURFACE_IDS"
         );
+    }
+
+    /// Every known guardrail must have exactly one descriptor, be in the Guard
+    /// category, and render into the brief — Henry must be able to describe a
+    /// constraint he is subject to.
+    #[test]
+    fn guardrails_have_descriptors_and_render() {
+        const KNOWN_GUARD_IDS: &[&str] = &["credential_commit_guard"];
+        for id in KNOWN_GUARD_IDS {
+            let n = GUARD_DESCRIPTORS.iter().filter(|d| d.id == *id).count();
+            assert_eq!(n, 1, "guard id {id:?} must have exactly one descriptor");
+        }
+        assert_eq!(
+            GUARD_DESCRIPTORS.len(),
+            KNOWN_GUARD_IDS.len(),
+            "GUARD_DESCRIPTORS has an entry not in KNOWN_GUARD_IDS"
+        );
+        for d in GUARD_DESCRIPTORS {
+            assert_eq!(d.category, FeatureCategory::Guard);
+        }
+
+        let brief = SelfKnowledgeBuilder {
+            agent_display_name: "Aria".to_string(),
+            scheduled_job_count: None,
+            dispatchable_workers: Vec::new(),
+        }
+        .build();
+        assert!(brief.contains("## Guardrails you operate under"));
+        assert!(brief.contains("**Credential commit guard**"));
     }
 
     #[test]
