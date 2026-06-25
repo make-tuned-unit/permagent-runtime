@@ -149,13 +149,16 @@ pub async fn seed_default_columns(pool: &Pool<Sqlite>, project_id: &str) -> Resu
     Ok(())
 }
 
-/// The five lifecycle columns seeded for projects using goal cards.
+/// The lifecycle columns seeded for projects using goal cards. Cancelled
+/// (#490) is a terminal column at the end — goals the user abandoned land here
+/// and leave the active set permanently.
 pub const GOAL_COLUMNS: &[(&str, &str, i32)] = &[
     ("triage", "Triage", 100),
     ("ready", "Ready", 101),
     ("in_progress", "In Progress", 102),
     ("review", "Review", 103),
     ("complete", "Complete", 104),
+    ("cancelled", "Cancelled", 105),
 ];
 
 /// Seed goal lifecycle columns (Triage/Ready/InProgress/Review/Complete) for a project.
@@ -196,6 +199,45 @@ pub async fn seed_goal_columns(pool: &Pool<Sqlite>, project_id: &str) -> Result<
     cleanup_duplicate_manual_columns(pool).await?;
 
     Ok(())
+}
+
+/// Backfill the `cancelled` lifecycle column (#490) for existing boards.
+///
+/// `seed_goal_columns` is short-circuited once a project has any `state`
+/// columns, so projects seeded before the Cancelled column existed never get
+/// it from seeding alone — and `advance_goal_checked(Cancel)` needs the target
+/// column to exist. This idempotent, base-independent backfill inserts a
+/// Cancelled column into every project that has the lifecycle columns but lacks
+/// `cancelled`. Safe to run on every boot. Returns the number of columns added.
+pub async fn backfill_cancelled_column(pool: &Pool<Sqlite>) -> Result<u64, String> {
+    // Projects that carry the goal lifecycle (state columns) but have no
+    // cancelled column yet.
+    let project_ids: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT project_id FROM board_columns
+         WHERE column_kind = 'state'
+           AND project_id NOT IN (
+               SELECT project_id FROM board_columns WHERE state_binding = 'cancelled'
+           )",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut added = 0u64;
+    for project_id in &project_ids {
+        let id = Uuid::now_v7().to_string();
+        sqlx::query(
+            "INSERT INTO board_columns (id, project_id, name, position, column_kind, state_binding)
+             VALUES (?, ?, 'Cancelled', 105, 'state', 'cancelled')",
+        )
+        .bind(&id)
+        .bind(project_id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        added += 1;
+    }
+    Ok(added)
 }
 
 /// Remove redundant generic columns (#453). When a project carries the goal
@@ -1327,13 +1369,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn seed_goal_columns_creates_five_state_columns() {
+    async fn seed_goal_columns_creates_six_state_columns() {
         let pool = test_pool().await;
         seed_goal_columns(&pool, PERSONAL_PROJECT_ID).await.unwrap();
 
         let cols = list_columns(&pool, PERSONAL_PROJECT_ID).await.unwrap();
         let state_cols: Vec<_> = cols.iter().filter(|c| c.column_kind == "state").collect();
-        assert_eq!(state_cols.len(), 5);
+        assert_eq!(state_cols.len(), 6);
 
         let bindings: Vec<_> = state_cols
             .iter()
@@ -1344,6 +1386,7 @@ mod tests {
         assert!(bindings.contains(&"in_progress"));
         assert!(bindings.contains(&"review"));
         assert!(bindings.contains(&"complete"));
+        assert!(bindings.contains(&"cancelled"));
 
         // Verify positions are 100+
         for col in &state_cols {
@@ -1362,7 +1405,41 @@ mod tests {
 
         let cols = list_columns(&pool, PERSONAL_PROJECT_ID).await.unwrap();
         let state_cols: Vec<_> = cols.iter().filter(|c| c.column_kind == "state").collect();
-        assert_eq!(state_cols.len(), 5, "Idempotent: should still be 5, not 10");
+        assert_eq!(state_cols.len(), 6, "Idempotent: should still be 6, not 12");
+    }
+
+    #[tokio::test]
+    async fn backfill_cancelled_column_is_idempotent_and_base_independent() {
+        let pool = test_pool().await;
+        // Simulate a pre-#490 board: lifecycle columns WITHOUT the cancelled one.
+        for (binding, name, position) in
+            &[("triage", "Triage", 100), ("complete", "Complete", 104)][..]
+        {
+            sqlx::query(
+                "INSERT INTO board_columns (id, project_id, name, position, column_kind, state_binding)
+                 VALUES (?, ?, ?, ?, 'state', ?)",
+            )
+            .bind(Uuid::now_v7().to_string())
+            .bind(PERSONAL_PROJECT_ID)
+            .bind(name)
+            .bind(position)
+            .bind(binding)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let added = backfill_cancelled_column(&pool).await.unwrap();
+        assert_eq!(added, 1, "one cancelled column added");
+
+        // Second run is a no-op (idempotent).
+        let again = backfill_cancelled_column(&pool).await.unwrap();
+        assert_eq!(again, 0, "no duplicate cancelled column");
+
+        let col = get_goal_column(&pool, PERSONAL_PROJECT_ID, "cancelled")
+            .await
+            .unwrap();
+        assert!(col.is_some(), "cancelled column exists after backfill");
     }
 
     #[tokio::test]
@@ -1383,9 +1460,9 @@ mod tests {
         let cols = list_columns(&pool, PERSONAL_PROJECT_ID).await.unwrap();
         assert!(
             cols.iter().all(|c| c.column_kind == "state"),
-            "empty manual columns must be gone, leaving only the 5 state columns"
+            "empty manual columns must be gone, leaving only the 6 state columns"
         );
-        assert_eq!(cols.len(), 5);
+        assert_eq!(cols.len(), 6);
     }
 
     #[tokio::test]
@@ -1414,8 +1491,8 @@ mod tests {
             cols.iter().any(|c| c.id == "col-personal-backlog"),
             "Backlog holds a card and must survive cleanup"
         );
-        // Doing + Done were empty → removed; Backlog + 5 state remain.
-        assert_eq!(cols.len(), 6);
+        // Doing + Done were empty → removed; Backlog + 6 state remain.
+        assert_eq!(cols.len(), 7);
     }
 
     #[tokio::test]
@@ -1584,7 +1661,7 @@ mod tests {
         // State columns should now exist
         let cols = list_columns(&pool, PERSONAL_PROJECT_ID).await.unwrap();
         let state_cols: Vec<_> = cols.iter().filter(|c| c.column_kind == "state").collect();
-        assert_eq!(state_cols.len(), 5);
+        assert_eq!(state_cols.len(), 6);
 
         // Card should be in the Triage column
         let triage = cols

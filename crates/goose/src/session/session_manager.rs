@@ -727,6 +727,12 @@ impl SessionStorage {
                     if version < 15 {
                         spectral_schema::migrate_v14_to_v15(&self.pool).await?;
                     }
+                    // Backfill the Cancelled goal-lifecycle column (schema v16,
+                    // #490) so cancellation has a target column on pre-existing
+                    // boards. Base-independent + idempotent (insert-where-absent).
+                    if version < 16 {
+                        spectral_schema::migrate_v15_to_v16(&self.pool).await?;
+                    }
                 } else {
                     info!("Initializing Spectral schema at {:?}", self.db_path);
                     spectral_schema::init_spectral_db(&self.pool).await?;

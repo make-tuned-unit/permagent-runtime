@@ -37,6 +37,9 @@ interface Props {
   onAnswer: (id: string, body: AnswerBody) => Promise<AnswerResult>;
   /** Called after the "someone already answered this" state has been shown. */
   onConflictSettled: () => void;
+  /** Cancel this decision's goal (#490) — kills the worker and marks it
+   *  terminal; the list refreshes after. Absent for non-goal decisions. */
+  onCancelGoal?: () => Promise<void>;
 }
 
 interface PendingAnswer {
@@ -73,7 +76,7 @@ function effectTextFor(kind: string, answer: 'approve' | 'reject', agentName: st
     : 'Confirm reject — this is recorded for the audit trail; nothing else changes.';
 }
 
-export function DecisionItem({ decision: d, onAnswer, onConflictSettled }: Props) {
+export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCancelGoal }: Props) {
   const { colors, reduceMotion } = useTheme();
   const { data: persona } = usePersona();
   const agentName = persona?.display_name ?? 'Aria';
@@ -288,6 +291,31 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled }: Props
           <Btn onClick={() => discussDecision(d.id, d.headline)}>
             Discuss with {agentName}
           </Btn>
+
+          {/* Cancel the underlying goal (#490). User-initiated and immediate:
+              kills the worker and supersedes this decision. */}
+          {onCancelGoal && (
+            <button
+              onClick={async () => {
+                if (submitting) return;
+                setSubmitting(true);
+                try {
+                  await onCancelGoal();
+                } finally {
+                  setSubmitting(false);
+                }
+              }}
+              disabled={submitting}
+              style={{
+                background: 'none', border: 'none', color: '#F59E0B',
+                fontSize: 11, fontFamily: font.body,
+                cursor: submitting ? 'default' : 'pointer', padding: 4,
+                opacity: submitting ? 0.5 : 1,
+              }}
+            >
+              Cancel goal
+            </button>
+          )}
 
           {hasEvidence && (
             <button

@@ -11,6 +11,7 @@
 //!   POST   /api/projects/:project_id/cards                 — Create card
 //!   PATCH  /api/projects/:project_id/cards/:card_id        — Update card
 //!   DELETE /api/projects/:project_id/cards/:card_id        — Hard delete card
+//!   POST   /api/projects/:project_id/cards/:card_id/cancel — Cancel a goal (kills worker, terminal)
 //!   POST   /api/projects/:project_id/cards/reorder         — Batch reorder cards
 
 use crate::state::AppState;
@@ -421,6 +422,50 @@ async fn delete_card_handler(
     }
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CancelResponse {
+    cancelled: bool,
+    state: String,
+}
+
+/// Cancel a goal (#490): kill its worker if running and move it to the terminal
+/// Cancelled state. User-initiated and immediate — no approval gate (unlike
+/// delete). Shared by both the Decision Inbox and the Kanban card menu.
+async fn cancel_card_handler(
+    State(state): State<Arc<AppState>>,
+    Path((_project_id, card_id)): Path<(String, String)>,
+) -> Result<Json<CancelResponse>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let card = cards::get_card(&pool, &card_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Card not found".to_string()))?;
+    if card.card_type != "goal" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Only goal cards can be cancelled".to_string(),
+        ));
+    }
+
+    // A cancel from a terminal state (already Complete/Cancelled) surfaces as a
+    // guard rejection → 409 Conflict.
+    let new_state =
+        permagent::agents::platform_extensions::orchestrator::cancel_goal(&pool, &card_id)
+            .await
+            .map_err(|e| (StatusCode::CONFLICT, e))?;
+
+    Ok(Json(CancelResponse {
+        cancelled: true,
+        state: new_state.binding().to_string(),
+    }))
+}
+
 async fn reorder_cards_handler(
     State(state): State<Arc<AppState>>,
     Path(_project_id): Path<String>,
@@ -496,6 +541,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
             get(get_card_handler)
                 .patch(update_card_handler)
                 .delete(delete_card_handler),
+        )
+        .route(
+            "/api/projects/{project_id}/cards/{card_id}/cancel",
+            post(cancel_card_handler),
         )
         .with_state(state)
 }

@@ -375,6 +375,24 @@ pub async fn find_open_decision_for_goal(
     Ok(row.as_ref().map(row_to_decision))
 }
 
+/// Mark every open decision for a goal as `superseded` (#490). Used when a goal
+/// is cancelled: any pending approve_review / unblock item is moot, so it leaves
+/// the inbox rather than lingering against a terminal goal. Returns the number
+/// of decisions superseded.
+pub async fn supersede_open_decisions_for_goal(
+    pool: &Pool<Sqlite>,
+    goal_id: &str,
+) -> Result<u64, String> {
+    let res = sqlx::query(
+        "UPDATE decisions SET status = 'superseded' WHERE goal_id = ? AND status = 'open'",
+    )
+    .bind(goal_id)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(res.rows_affected())
+}
+
 // ── Inbox queries (Lane L4 contract) ────────────────────────────────────────
 
 /// Summary envelope returned beside the open-decision list.

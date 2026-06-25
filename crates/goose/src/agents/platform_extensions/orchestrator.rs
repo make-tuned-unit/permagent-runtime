@@ -26,8 +26,9 @@ use rmcp::model::{
 };
 use schemars::{schema_for, JsonSchema};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
 // Attempt caps are now per-goal budgets (S4): see
@@ -331,6 +332,11 @@ impl OrchestratorClient {
                  - InProgress: a worker is actively working on it\n\
                  - Review: worker finished, waiting for YOUR approval or rejection\n\
                  - Complete: you approved the work\n\
+                 - Cancelled: the user abandoned the goal. The user can cancel from the \
+                 Decision Inbox or the Kanban card menu at ANY non-terminal state; if a \
+                 worker is running it is stopped first. Cancelled is terminal — the goal \
+                 leaves the active set for good and is never retried or resumed. You cannot \
+                 cancel a goal yourself via goal_advance; cancellation is the user's call.\n\
                  The user is in the loop at Review (approve/reject) and when \
                  needs_human_attention fires.\n\n\
                  LIMITS — be honest about these:\n\
@@ -690,7 +696,11 @@ impl OrchestratorClient {
         let goal_engine::DispatchedWork {
             run_id: session_id,
             join,
+            kill,
         } = engine.spawn(task).await?;
+
+        // Register the worker kill handle so the cancel path (#490) can stop it.
+        register_goal_worker(card_id, kill);
 
         // Spawn completion tracker — awaits the engine's outcome and transitions
         // the card. Success / retriable failure route to handle_goal_completion;
@@ -703,6 +713,9 @@ impl OrchestratorClient {
                 Ok(o) => o,
                 Err(e) => goal_engine::GoalOutcome::Failed(format!("Worker task panicked: {}", e)),
             };
+            // The worker has exited — drop its kill handle from the registry.
+            // (A cancel may already have taken it; remove is then a no-op.)
+            take_goal_worker(&tracker_card_id);
             let result = match outcome {
                 goal_engine::GoalOutcome::Success(evidence) => {
                     // Layer 1: persist deterministic proof-of-work to the goal
@@ -1482,6 +1495,15 @@ impl OrchestratorClient {
                     action, card.title, decision.id, decision.id
                 ))
             }
+            // Cancel is user-initiated only and never reaches here (parse_action
+            // rejects "cancel"). Guarded explicitly so a bare transition can
+            // never bypass the worker-kill in the dedicated cancel path (#490).
+            GoalAction::Cancel => Err(
+                "Goals are cancelled by the user from the Decision Inbox or the Kanban board \
+                 (POST /api/projects/{project_id}/cards/{card_id}/cancel), which also stops the \
+                 running worker — not via goal_advance."
+                    .to_string(),
+            ),
         }
     }
 
@@ -2564,6 +2586,85 @@ pub fn format_dispatch_evidence_full(evidence: &serde_json::Value) -> Option<Str
          path; never conclude the work is missing from `git log` on local main.",
     );
     Some(b)
+}
+
+// ── Worker kill registry + cancellation (#490) ──────────────────────────────
+
+/// Process-global map of in-flight goal → its worker kill handle. Populated at
+/// dispatch (`register_goal_worker`), consumed by the cancel path and cleared
+/// by the completion tracker when a goal finishes naturally. Process-global (not
+/// per-`OrchestratorClient`) because dispatch happens inside the agent session
+/// while cancel arrives over HTTP from the Decision Inbox or the Kanban board —
+/// the same registry must serve both.
+static GOAL_WORKERS: once_cell::sync::Lazy<Mutex<HashMap<String, goal_engine::GoalKill>>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// Record the kill handle for a freshly-dispatched goal's worker.
+pub fn register_goal_worker(card_id: &str, kill: goal_engine::GoalKill) {
+    if let Ok(mut map) = GOAL_WORKERS.lock() {
+        map.insert(card_id.to_string(), kill);
+    }
+}
+
+/// Remove and return a goal's worker kill handle, if one is registered.
+pub fn take_goal_worker(card_id: &str) -> Option<goal_engine::GoalKill> {
+    GOAL_WORKERS
+        .lock()
+        .ok()
+        .and_then(|mut map| map.remove(card_id))
+}
+
+/// Cancel a goal (#490): kill its worker if one is running, supersede any open
+/// decisions for it, and move it to the terminal `Cancelled` state.
+///
+/// Order matters. The transition runs FIRST: it validates the goal is in a
+/// cancellable (non-terminal) state and moves the card out of `in_progress`. If
+/// it fails (already terminal, not a goal), we return without touching the
+/// worker. Once the card is terminal, the worker is killed; whatever its
+/// completion tracker fires next no-ops, because every completion handler guards
+/// on the card still being `in_progress`. Resume/reaper likewise scan only
+/// `in_progress`, so a Cancelled goal is never resurrected.
+pub async fn cancel_goal(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+) -> Result<GoalState, String> {
+    // 1. Terminal transition through the guard (tier-0 'cancel', no proof).
+    let new_state = goal_transition::advance_goal_checked(
+        pool,
+        card_id,
+        GoalAction::Cancel,
+        decisions::ACTOR_JESSE,
+        None,
+        TransitionEffects::default(),
+    )
+    .await
+    .map_err(String::from)?;
+
+    // 2. Kill the worker (if in-flight). Best-effort — a goal cancelled from
+    //    Triage/Ready (never dispatched) or after the worker already finished
+    //    has no registered handle.
+    if let Some(kill) = take_goal_worker(card_id) {
+        kill.kill();
+    }
+
+    // 3. Supersede any open decisions for this goal so a cancelled goal leaves
+    //    no stale approve/unblock items lingering in the inbox.
+    if let Err(e) = decisions::supersede_open_decisions_for_goal(pool, card_id).await {
+        tracing::warn!(
+            target: "permagentd::brain",
+            "Cancelled goal {} but failed to supersede its open decisions: {}",
+            card_id,
+            e
+        );
+    }
+
+    tracing::info!(
+        target: "permagentd::brain",
+        "Goal {} cancelled — worker stopped, moved to {}",
+        card_id,
+        new_state
+    );
+    Ok(new_state)
 }
 
 pub async fn handle_goal_completion(

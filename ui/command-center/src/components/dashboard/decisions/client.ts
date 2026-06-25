@@ -136,6 +136,15 @@ export const realDecisionsClient: DecisionsClient = {
       return null; // missing card / no dispatch evidence — simply absent
     }
   },
+
+  async cancelGoal(projectId: string, goalId: string): Promise<void> {
+    // #490: kills the worker if running and moves the goal to Cancelled. The
+    // backend supersedes this (and any other) open decision for the goal.
+    await decisionsFetch(
+      `/api/projects/${encodeURIComponent(projectId)}/cards/${encodeURIComponent(goalId)}/cancel`,
+      { method: 'POST' },
+    );
+  },
 };
 
 import { mockDecisionsClient } from './mockDecisions';

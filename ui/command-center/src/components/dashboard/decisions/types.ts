@@ -272,4 +272,6 @@ export interface DecisionsClient {
   evidence(projectId: string, goalId: string): Promise<EvidenceDigestData | null>;
   /** Deterministic dispatch proof-of-work; null when none recorded yet. */
   dispatchEvidence(projectId: string, goalId: string): Promise<DispatchEvidenceData | null>;
+  /** Cancel the decision's goal (#490): kills the worker and marks it terminal. */
+  cancelGoal(projectId: string, goalId: string): Promise<void>;
 }
