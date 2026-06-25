@@ -9,8 +9,9 @@
  * (matching useDecisions). Call this ONCE in the dashboard parent and pass the
  * result down to the cards — do not call it per card.
  *
- * "Active" excludes Triage (queued, not started), Complete (done), parked, and
- * archived goals — enforced server-side by GoalState::ACTIVE_BINDINGS.
+ * "Active" excludes Triage (queued, not started), Review (waiting on the user —
+ * surfaced in the Decision Inbox), Complete (done), parked, and archived goals
+ * — enforced server-side by GoalState::ACTIVE_BINDINGS.
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -21,7 +22,7 @@ export interface ActiveGoal {
   id: string;
   title: string;
   project_id: string;
-  /** ready | in_progress | review */
+  /** ready | in_progress */
   state: string;
   assigned_to: string | null;
   created_at: string;

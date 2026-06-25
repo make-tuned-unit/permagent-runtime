@@ -636,7 +636,7 @@ pub struct ActiveGoal {
     pub id: String,
     pub title: String,
     pub project_id: String,
-    /// state_binding of the goal's column: ready | in_progress | review.
+    /// state_binding of the goal's column: ready | in_progress.
     pub state: String,
     pub assigned_to: Option<String>,
     pub created_at: String,
@@ -645,8 +645,9 @@ pub struct ActiveGoal {
 
 /// All goals Henry is actively working — the single source of truth for the
 /// "in flight" count, list, "N active" header, and "working on N things"
-/// status. Active = [`GoalState::ACTIVE_BINDINGS`] (Ready/InProgress/Review);
-/// Triage (queued) and Complete (done) are excluded, as are parked goals
+/// status. Active = [`GoalState::ACTIVE_BINDINGS`] (Ready/InProgress); Review
+/// (waiting on the user — surfaced in the Decision Inbox), Triage (queued) and
+/// Complete (done) are excluded, as are parked goals
 /// (`needs_human_attention`) and archived cards. Newest first.
 pub async fn list_active_goals(pool: &Pool<Sqlite>) -> Result<Vec<ActiveGoal>, String> {
     use crate::goal_state::GoalState;
@@ -1537,19 +1538,18 @@ mod tests {
         mk("triage", false).await; // queued — excluded
         mk("ready", false).await; // active
         mk("in_progress", false).await; // active
-        mk("review", false).await; // active
+        mk("review", false).await; // waiting on user — excluded (Decision Inbox)
         mk("in_progress", true).await; // parked — excluded
 
         let active = list_active_goals(&pool).await.unwrap();
         let states: Vec<&str> = active.iter().map(|g| g.state.as_str()).collect();
-        assert_eq!(
-            active.len(),
-            3,
-            "ready + in_progress + review only; got {states:?}"
-        );
+        assert_eq!(active.len(), 2, "ready + in_progress only; got {states:?}");
         assert!(states.contains(&"ready"));
         assert!(states.contains(&"in_progress"));
-        assert!(states.contains(&"review"));
+        assert!(
+            !states.contains(&"review"),
+            "Review is not in-flight — it lives in the Decision Inbox"
+        );
         assert!(!states.contains(&"triage"));
     }
 
