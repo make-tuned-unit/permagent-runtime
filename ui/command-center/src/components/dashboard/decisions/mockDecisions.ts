@@ -366,4 +366,8 @@ export const mockDecisionsClient: DecisionsClient = {
     await sleep(LATENCY_MS);
     return DISPATCH_EVIDENCE[goalId] ?? null;
   },
+
+  async cancelGoal(_projectId: string, _goalId: string): Promise<void> {
+    await sleep(LATENCY_MS);
+  },
 };

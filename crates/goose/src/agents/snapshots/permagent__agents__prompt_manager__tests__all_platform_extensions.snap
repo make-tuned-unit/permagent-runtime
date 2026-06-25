@@ -178,6 +178,7 @@ Triage → Ready → InProgress → Review → Complete
 - InProgress: a worker is actively working on it
 - Review: worker finished, waiting for YOUR approval or rejection
 - Complete: you approved the work
+- Cancelled: the user abandoned the goal. The user can cancel from the Decision Inbox or the Kanban card menu at ANY non-terminal state; if a worker is running it is stopped first. Cancelled is terminal — the goal leaves the active set for good and is never retried or resumed. You cannot cancel a goal yourself via goal_advance; cancellation is the user's call.
 The user is in the loop at Review (approve/reject) and when needs_human_attention fires.
 
 LIMITS — be honest about these:

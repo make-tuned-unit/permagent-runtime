@@ -26,8 +26,12 @@ interface BoardColumn {
   name: string;
   position: number;
   columnKind: string;
+  stateBinding?: string | null;
   wipLimit: number | null;
 }
+
+/** Goal lifecycle states a goal can still be cancelled from (#490). */
+const CANCELLABLE_STATES = ['triage', 'ready', 'in_progress', 'review'];
 
 interface Card {
   id: string;
@@ -436,6 +440,17 @@ project, onBack }: {
     }
   };
 
+  // Cancel a goal (#490): kills the worker if running and moves it to the
+  // terminal Cancelled column. Immediate — no approval gate.
+  const handleCancelCard = async (cardId: string) => {
+    try {
+      await apiFetch(`/api/projects/${project.id}/cards/${cardId}/cancel`, { method: 'POST' });
+      loadBoard();
+    } catch {
+      // silently fail
+    }
+  };
+
   // (Card drag handled by pointer events above — no HTML5 DnD)
 
   if (loading) {
@@ -511,6 +526,12 @@ project, onBack }: {
                     onPointerDown={(e) => handleCardPointerDown(e, card.id, card.title)}
                     isDragging={draggingCard === card.id}
                     onDelete={() => handleDeleteCard(card.id)}
+                    onCancel={
+                      card.cardType === 'goal' &&
+                      CANCELLABLE_STATES.includes(col.stateBinding ?? '')
+                        ? () => handleCancelCard(card.id)
+                        : undefined
+                    }
                   />
                 ))}
               </div>
@@ -597,11 +618,12 @@ project, onBack }: {
 }
 
 function CardItem({
-card, onPointerDown, isDragging, onDelete }: {
+card, onPointerDown, isDragging, onDelete, onCancel }: {
   card: Card;
   onPointerDown: (e: React.PointerEvent) => void;
   isDragging: boolean;
   onDelete: () => void;
+  onCancel?: () => void;
 }) {
   const { colors } = useTheme();
   const [showMenu, setShowMenu] = useState(false);
@@ -642,6 +664,21 @@ card, onPointerDown, isDragging, onDelete }: {
           background: '#0F1729', border: `1px solid ${colors.border}`, borderRadius: 6,
           boxShadow: '0 4px 16px rgba(0,0,0,0.4)', padding: 2, minWidth: 100,
         }}>
+          {onCancel && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setShowMenu(false); onCancel(); }}
+              style={{
+                width: '100%', padding: '5px 8px', borderRadius: 4,
+                background: 'transparent', border: 'none',
+                color: '#F59E0B', fontSize: 11, fontFamily: font.body,
+                cursor: 'pointer', textAlign: 'left',
+              }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(245,158,11,0.1)'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+            >
+              Cancel goal
+            </button>
+          )}
           <button
             onClick={(e) => { e.stopPropagation(); onDelete(); }}
             style={{

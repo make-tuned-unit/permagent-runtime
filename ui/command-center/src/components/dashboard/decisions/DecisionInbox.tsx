@@ -15,6 +15,7 @@ import type { useDecisions } from './useDecisions';
 import type { HistoryItem } from './types';
 import { resolutionText } from './types';
 import { DecisionItem } from './DecisionItem';
+import { decisionsClient } from './client';
 import { formatAge } from './format';
 import { usePersona } from '../../settings/useSettings';
 
@@ -145,6 +146,14 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                   decision={d}
                   onAnswer={inbox.answer}
                   onConflictSettled={inbox.refresh}
+                  onCancelGoal={
+                    d.goal_id && d.project_id
+                      ? async () => {
+                          await decisionsClient.cancelGoal(d.project_id!, d.goal_id!);
+                          inbox.refresh();
+                        }
+                      : undefined
+                  }
                 />
               ))}
 

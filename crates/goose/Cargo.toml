@@ -211,6 +211,9 @@ keyring = { version = "3.6.2", features = ["apple-native"] }
 # typed crate); same exception-catch bridge pattern as the WKWebView mic bridge.
 objc2 = { version = "0.6", features = ["exception"] }
 objc2-foundation = { version = "0.3", features = ["NSString", "NSData", "NSArray", "NSDictionary"] }
+# Process-group kill for the goal-cancel worker stop path (#490). libc is also
+# declared under the linux target below; both unix targets need it.
+libc = "0.2.186"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3.6.2", features = ["sync-secret-service"] }

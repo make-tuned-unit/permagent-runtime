@@ -81,6 +81,7 @@ pub fn action_class_for(action: GoalAction) -> &'static str {
         GoalAction::Review => "goal_review",
         GoalAction::Approve => "goal_approve_standard",
         GoalAction::Reject => "goal_retry_within_budget",
+        GoalAction::Cancel => "goal_cancel",
     }
 }
 

@@ -1,14 +1,17 @@
 //! Goal lifecycle state machine — pure validation logic.
 //!
-//! The five goal states: Triage → Ready → InProgress → Review → Complete
-//! with a bounce-back path from Review → InProgress.
+//! The goal states: Triage → Ready → InProgress → Review → Complete
+//! with a bounce-back path from Review → InProgress, plus a Cancelled
+//! terminal state reachable from any non-terminal state (the user abandons
+//! the goal — see [`GoalAction::Cancel`]).
 //!
 //! This module is deliberately free of async, DB, or IO — it's a pure
 //! state machine that can be unit tested without infrastructure.
 
 use std::fmt;
 
-/// The five lifecycle states a goal card can be in.
+/// The lifecycle states a goal card can be in. Complete and Cancelled are
+/// terminal — no action advances out of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GoalState {
     Triage,
@@ -16,6 +19,10 @@ pub enum GoalState {
     InProgress,
     Review,
     Complete,
+    /// User abandoned the goal (#490). Terminal: not active, not retried, never
+    /// resurrected by resume/reaper. A running worker is killed before the card
+    /// lands here.
+    Cancelled,
 }
 
 impl GoalState {
@@ -27,6 +34,7 @@ impl GoalState {
             "in_progress" => Some(Self::InProgress),
             "review" => Some(Self::Review),
             "complete" => Some(Self::Complete),
+            "cancelled" => Some(Self::Cancelled),
             _ => None,
         }
     }
@@ -39,6 +47,7 @@ impl GoalState {
             Self::InProgress => "in_progress",
             Self::Review => "review",
             Self::Complete => "complete",
+            Self::Cancelled => "cancelled",
         }
     }
 
@@ -64,6 +73,7 @@ impl fmt::Display for GoalState {
             Self::InProgress => write!(f, "In Progress"),
             Self::Review => write!(f, "Review"),
             Self::Complete => write!(f, "Complete"),
+            Self::Cancelled => write!(f, "Cancelled"),
         }
     }
 }
@@ -81,10 +91,20 @@ pub enum GoalAction {
     Approve,
     /// Review → InProgress: user rejects, bounce-back for rework
     Reject,
+    /// {Triage,Ready,InProgress,Review} → Cancelled: user abandons the goal.
+    /// Deliberately NOT parseable from the MCP tool string (see
+    /// [`parse_action`](Self::parse_action)): cancelling must go through the
+    /// dedicated cancel path that also kills a running worker, never the bare
+    /// `goal_advance` transition (which would orphan the worker subprocess).
+    Cancel,
 }
 
 impl GoalAction {
     /// Parse an action string from the MCP tool parameter.
+    ///
+    /// `cancel` is intentionally absent: it is a user-initiated action wired to
+    /// a dedicated endpoint that kills the worker first, not a transition the
+    /// orchestrator can drive via `goal_advance`.
     pub fn parse_action(s: &str) -> Option<Self> {
         match s {
             "ready" => Some(Self::Ready),
@@ -105,6 +125,7 @@ impl fmt::Display for GoalAction {
             Self::Review => write!(f, "review"),
             Self::Approve => write!(f, "approve"),
             Self::Reject => write!(f, "reject"),
+            Self::Cancel => write!(f, "cancel"),
         }
     }
 }
@@ -140,13 +161,20 @@ pub fn validate_transition(
         (GoalState::InProgress, GoalAction::Review) => Ok(GoalState::Review),
         (GoalState::Review, GoalAction::Approve) => Ok(GoalState::Complete),
         (GoalState::Review, GoalAction::Reject) => Ok(GoalState::InProgress),
+        // Cancel is legal from any non-terminal state (#490). Terminal states
+        // (Complete, Cancelled) fall through to the rejection arm below.
+        (
+            GoalState::Triage | GoalState::Ready | GoalState::InProgress | GoalState::Review,
+            GoalAction::Cancel,
+        ) => Ok(GoalState::Cancelled),
         _ => {
             let valid_actions = match current {
-                GoalState::Triage => "'ready'",
-                GoalState::Ready => "'dispatch'",
-                GoalState::InProgress => "'review'",
-                GoalState::Review => "'approve' or 'reject'",
+                GoalState::Triage => "'ready' or 'cancel'",
+                GoalState::Ready => "'dispatch' or 'cancel'",
+                GoalState::InProgress => "'review' or 'cancel'",
+                GoalState::Review => "'approve', 'reject', or 'cancel'",
                 GoalState::Complete => "none (terminal state)",
+                GoalState::Cancelled => "none (terminal state)",
             };
             Err(TransitionError {
                 from: current,
@@ -571,6 +599,7 @@ mod tests {
             GoalAction::Review,
             GoalAction::Approve,
             GoalAction::Reject,
+            GoalAction::Cancel,
         ] {
             let err = validate_transition(GoalState::Complete, action).unwrap_err();
             assert!(
@@ -582,6 +611,59 @@ mod tests {
         }
     }
 
+    // ── Cancellation (#490) ───────────────────────────────────────────
+
+    #[test]
+    fn cancel_from_every_non_terminal_state() {
+        for from in [
+            GoalState::Triage,
+            GoalState::Ready,
+            GoalState::InProgress,
+            GoalState::Review,
+        ] {
+            assert_eq!(
+                validate_transition(from, GoalAction::Cancel),
+                Ok(GoalState::Cancelled),
+                "cancel must be legal from {}",
+                from
+            );
+        }
+    }
+
+    #[test]
+    fn cancelled_is_terminal_and_rejects_all() {
+        for action in [
+            GoalAction::Ready,
+            GoalAction::Dispatch,
+            GoalAction::Review,
+            GoalAction::Approve,
+            GoalAction::Reject,
+            GoalAction::Cancel,
+        ] {
+            let err = validate_transition(GoalState::Cancelled, action).unwrap_err();
+            assert!(
+                err.reason.contains("terminal state"),
+                "Cancelled + {} should say terminal: {}",
+                action,
+                err.reason
+            );
+        }
+    }
+
+    #[test]
+    fn complete_cannot_be_cancelled() {
+        // Finished work is terminal — you cannot cancel a completed goal.
+        let err = validate_transition(GoalState::Complete, GoalAction::Cancel).unwrap_err();
+        assert!(err.reason.contains("terminal state"), "{}", err.reason);
+    }
+
+    #[test]
+    fn cancel_is_not_parseable_from_mcp_string() {
+        // Cancel must NOT be drivable via goal_advance's action string — it goes
+        // through the dedicated worker-killing cancel path only.
+        assert_eq!(GoalAction::parse_action("cancel"), None);
+    }
+
     #[test]
     fn triage_rejects_reject() {
         let err = validate_transition(GoalState::Triage, GoalAction::Reject).unwrap_err();
@@ -591,7 +673,7 @@ mod tests {
     #[test]
     fn review_rejects_dispatch() {
         let err = validate_transition(GoalState::Review, GoalAction::Dispatch).unwrap_err();
-        assert!(err.reason.contains("'approve' or 'reject'"));
+        assert!(err.reason.contains("'approve'") && err.reason.contains("'reject'"));
     }
 
     // ── Display and parsing ───────────────────────────────────────────
@@ -604,6 +686,7 @@ mod tests {
             GoalState::InProgress,
             GoalState::Review,
             GoalState::Complete,
+            GoalState::Cancelled,
         ] {
             assert_eq!(GoalState::from_binding(state.binding()), Some(state));
         }

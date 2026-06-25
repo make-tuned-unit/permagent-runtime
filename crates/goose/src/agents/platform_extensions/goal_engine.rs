@@ -113,12 +113,59 @@ pub struct GoalTask {
 }
 
 /// What an engine returns once the goal is spawned: a stable run identifier
-/// (recorded in card metadata as the worker session id) plus the join handle
-/// the tracker awaits.
+/// (recorded in card metadata as the worker session id), the join handle the
+/// tracker awaits, and a [`GoalKill`] handle the cancel path uses to stop the
+/// worker on demand (#490).
 pub struct DispatchedWork {
     pub run_id: String,
     pub join: JoinHandle<GoalOutcome>,
+    pub kill: GoalKill,
 }
+
+/// Handle to stop a dispatched goal's worker (#490). The orchestrator holds one
+/// per in-flight goal in a process-global registry keyed by card id; the cancel
+/// path takes it and calls [`kill`](GoalKill::kill) before marking the goal
+/// Cancelled.
+pub enum GoalKill {
+    /// External CLI: the worker runs in its own process group (pgid == the
+    /// leader pid). SIGKILLing the whole group reaps the CLI *and* any tool
+    /// subprocesses it spawned — killing just the leader would orphan them.
+    ProcessGroup(u32),
+    /// In-process subagent: cooperative cancellation token.
+    Cancel(CancellationToken),
+    /// No handle available (the child never reported a pid). Cancel still marks
+    /// the goal terminal; a still-running worker no-ops at completion (its card
+    /// has already left in_progress) and dies on the dispatch timeout.
+    None,
+}
+
+impl GoalKill {
+    /// Best-effort stop: SIGKILL the process group (external) or fire the
+    /// cancellation token (in-process). Safe to call once per dispatch.
+    pub fn kill(&self) {
+        match self {
+            GoalKill::ProcessGroup(pid) => kill_process_group(*pid),
+            GoalKill::Cancel(token) => token.cancel(),
+            GoalKill::None => {}
+        }
+    }
+}
+
+/// SIGKILL an entire process group by pgid (== the group leader's pid). The
+/// negative argument targets the group. Unix only; a no-op elsewhere
+/// (`kill_on_drop` still reaps the direct child).
+#[cfg(unix)]
+pub(crate) fn kill_process_group(pid: u32) {
+    // SIGKILL, not SIGTERM: the worker is being abandoned, not asked to wind
+    // down. Unsafe FFI; the worst case of a stale/reused pid is a no-op because
+    // a fresh group with that leader pid is astronomically unlikely mid-cancel.
+    unsafe {
+        libc::kill(-(pid as i32), libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn kill_process_group(_pid: u32) {}
 
 #[async_trait]
 pub trait GoalEngine: Send + Sync {
@@ -191,6 +238,8 @@ impl GoalEngine for InternalSubagentEngine {
 
         let persona_override = self.persona_override.clone();
         let cancel_token = CancellationToken::new();
+        // The cancel path (#490) fires this token to stop an in-flight subagent.
+        let kill = GoalKill::Cancel(cancel_token.clone());
         let run_session_id = session_id.clone();
         let join = tokio::spawn(async move {
             match run_subagent_task(SubagentRunParams {
@@ -214,6 +263,7 @@ impl GoalEngine for InternalSubagentEngine {
         Ok(DispatchedWork {
             run_id: session_id,
             join,
+            kill,
         })
     }
 }
@@ -268,11 +318,24 @@ impl GoalEngine for ExternalCliEngine {
         let bin = self.bin.clone();
         let timeout = task.timeout;
 
+        // Spawn the worker NOW (in its own process group) so we can capture its
+        // pid for a cancel/timeout group-kill before handing the wait off to the
+        // tracker task. A spawn failure here means the goal never started.
+        let mut cmd = build_cli_command(&bin, &args, &worktree);
+        let child = cmd
+            .spawn()
+            .map_err(|e| format!("Failed to run `{}`: {}", bin, e))?;
+        let kill = match child.id() {
+            Some(pid) => GoalKill::ProcessGroup(pid),
+            None => GoalKill::None,
+        };
+        let pid = child.id();
+
         let join = tokio::spawn(async move {
-            run_external_cli(&bin, &args, &worktree, &baseline, timeout).await
+            await_external_child(child, pid, bin, worktree, baseline, timeout).await
         });
 
-        Ok(DispatchedWork { run_id, join })
+        Ok(DispatchedWork { run_id, join, kill })
     }
 }
 
@@ -321,17 +384,12 @@ async fn create_goal_worktree(
     Ok(dest)
 }
 
-/// Spawn the external CLI in `working_dir`, bounded by `timeout`. Exit 0 →
-/// `Success` (with deterministic git evidence collected from `working_dir`
-/// against `baseline`); nonzero → `Failed(stderr tail)`; timeout → `TimedOut`
-/// (the process is killed via `kill_on_drop`).
-async fn run_external_cli(
-    bin: &str,
-    args: &[String],
-    working_dir: &Path,
-    baseline: &str,
-    timeout: Duration,
-) -> GoalOutcome {
+/// Build the external-CLI command. The worker runs in its own process group
+/// (`process_group(0)`, unix) so a cancel or timeout can SIGKILL the whole tree
+/// — the CLI plus any tool subprocesses it spawns — not just the group leader.
+/// `kill_on_drop` is the backstop that reaps the leader if the wait future is
+/// dropped.
+fn build_cli_command(bin: &str, args: &[String], working_dir: &Path) -> Command {
     let mut cmd = Command::new(bin);
     cmd.args(args)
         .current_dir(working_dir)
@@ -339,16 +397,33 @@ async fn run_external_cli(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    #[cfg(unix)]
+    cmd.process_group(0);
     configure_subprocess(&mut cmd);
+    cmd
+}
 
-    match tokio::time::timeout(timeout, cmd.output()).await {
+/// Await a spawned external-CLI `child`, bounded by `timeout`. Exit 0 →
+/// `Success` (with deterministic git evidence collected from `working_dir`
+/// against `baseline`); nonzero → `Failed(stderr tail)`; timeout → `TimedOut`
+/// (the whole process group is SIGKILLed via `pid`, with `kill_on_drop` reaping
+/// the leader as the dropped wait future falls out of scope).
+async fn await_external_child(
+    child: tokio::process::Child,
+    pid: Option<u32>,
+    bin: String,
+    working_dir: PathBuf,
+    baseline: String,
+    timeout: Duration,
+) -> GoalOutcome {
+    match tokio::time::timeout(timeout, child.wait_with_output()).await {
         Ok(Ok(output)) => {
             if output.status.success() {
                 let worker_summary = tail(
                     &redact_secrets(&String::from_utf8_lossy(&output.stdout)),
                     4000,
                 );
-                let evidence = collect_evidence(working_dir, baseline, worker_summary).await;
+                let evidence = collect_evidence(&working_dir, &baseline, worker_summary).await;
                 GoalOutcome::Success(Some(evidence))
             } else {
                 let code = output
@@ -368,9 +443,45 @@ async fn run_external_cli(
             }
         }
         Ok(Err(e)) => GoalOutcome::Failed(format!("Failed to run `{}`: {}", bin, e)),
-        Err(_) => GoalOutcome::TimedOut {
-            secs: timeout.as_secs(),
-        },
+        Err(_) => {
+            // Group-kill so tool subprocesses die too (dropping the wait future
+            // only reaps the leader via kill_on_drop).
+            if let Some(p) = pid {
+                kill_process_group(p);
+            }
+            GoalOutcome::TimedOut {
+                secs: timeout.as_secs(),
+            }
+        }
+    }
+}
+
+/// Spawn the external CLI in `working_dir`, bounded by `timeout`, and await it.
+/// Convenience wrapper over [`build_cli_command`] + [`await_external_child`]
+/// for callers that don't need the kill handle (tests).
+#[cfg(test)]
+async fn run_external_cli(
+    bin: &str,
+    args: &[String],
+    working_dir: &Path,
+    baseline: &str,
+    timeout: Duration,
+) -> GoalOutcome {
+    let mut cmd = build_cli_command(bin, args, working_dir);
+    match cmd.spawn() {
+        Ok(child) => {
+            let pid = child.id();
+            await_external_child(
+                child,
+                pid,
+                bin.to_string(),
+                working_dir.to_path_buf(),
+                baseline.to_string(),
+                timeout,
+            )
+            .await
+        }
+        Err(e) => GoalOutcome::Failed(format!("Failed to run `{}`: {}", bin, e)),
     }
 }
 
@@ -647,6 +758,25 @@ mod tests {
             "expected TimedOut, got {:?}",
             outcome
         );
+    }
+
+    /// #490: a cancel must actually stop the worker. Spawn a long sleep in its
+    /// own process group, group-kill it by pid, and confirm it is reaped fast
+    /// (not left running for its full duration).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_process_group_reaps_the_worker() {
+        let mut cmd = build_cli_command("sleep", &["30".to_string()], Path::new("."));
+        let mut child = cmd.spawn().expect("spawn sleep");
+        let pid = child.id().expect("child has a pid");
+
+        kill_process_group(pid);
+
+        let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
+            .await
+            .expect("killed worker must exit well before its 30s sleep")
+            .expect("wait succeeds");
+        assert!(!status.success(), "SIGKILLed process is not a clean exit");
     }
 
     #[tokio::test]

@@ -1005,6 +1005,27 @@ pub async fn migrate_v14_to_v15(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
+/// Backfill the Cancelled goal-lifecycle column (schema v16, #490). Boards
+/// seeded before the Cancelled column existed lack the target column that
+/// `advance_goal_checked(Cancel)` writes into; this adds it. A data fixup — no
+/// DDL — so it is base-version independent and idempotent (only inserts where
+/// the lifecycle columns exist but `cancelled` is absent). Records v16.
+pub async fn migrate_v15_to_v16(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v15 -> v16 (backfill Cancelled column, #490)");
+
+    let added = crate::cards::backfill_cancelled_column(pool)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    // Hardcoded (v16) per the migration precedent in this file.
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (16)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v16 ({added} Cancelled columns added)");
+
+    Ok(())
+}
+
 /// Apply the file-intake inbox schema: the `inbox_files` table, one metadata row
 /// per file that lands in the Permagent inbox (`~/.permagent/inbox/`).
 ///
@@ -1168,6 +1189,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
             ('goal_complete_confined', 0, 'Completion check passed, diff confined to declared paths, reversible class'),
             ('goal_approve_standard', 1, 'Review->Complete requires a recorded decision (Henry or Jesse)'),
             ('goal_retry_within_budget', 1, 'Reject/retry requires a recorded decision with rationale'),
+            ('goal_cancel', 0, 'User-initiated cancellation of a goal is immediate; the worker is killed'),
             ('merge_to_main', 2, 'Irreversible publication'),
             ('push_main', 2, 'Irreversible publication'),
             ('schema_migration', 2, 'Data-shape change'),
@@ -1945,5 +1967,48 @@ mod inbox_schema_tests {
         // Idempotent: a second run is a no-op, not an error.
         migrate_v13_to_v14(&pool).await.unwrap();
         assert_eq!(current_version(&pool).await, 14);
+    }
+
+    /// migrate_v15_to_v16 (#490) backfills the Cancelled lifecycle column on a
+    /// pre-existing goal board, stamps v16, and is idempotent.
+    #[tokio::test]
+    async fn migrate_v15_to_v16_backfills_cancelled_and_stamps() {
+        let pool = mem_pool().await;
+        init_spectral_db(&pool).await.unwrap();
+
+        // Seed the lifecycle columns, then delete the cancelled one to simulate a
+        // board seeded before #490, and rewind the recorded version to 15.
+        crate::cards::seed_goal_columns(&pool, crate::projects::PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM board_columns WHERE state_binding = 'cancelled'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (15)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        migrate_v15_to_v16(&pool).await.unwrap();
+
+        assert_eq!(current_version(&pool).await, 16);
+        let cancelled: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM board_columns WHERE state_binding = 'cancelled'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(cancelled, 1, "cancelled column backfilled exactly once");
+
+        // Idempotent: a second run adds nothing and does not error.
+        migrate_v15_to_v16(&pool).await.unwrap();
+        let cancelled_again: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM board_columns WHERE state_binding = 'cancelled'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(cancelled_again, 1, "no duplicate cancelled column");
     }
 }
