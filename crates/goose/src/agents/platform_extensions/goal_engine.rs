@@ -83,6 +83,16 @@ pub struct GoalEvidence {
     /// Short SHA of the worktree HEAD after the worker exited, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head_commit: Option<String>,
+    /// Fix (#523): the worker's TRUE base — the parent of its FIRST commit,
+    /// captured by an in-worktree git hook (re-captured on rebase). This is the
+    /// commit the worker actually forked onto AFTER any pull/fast-forward, so
+    /// `work_base_commit..head_commit` is exactly the worker's own work — correct
+    /// for N commits and robust to fast-forward/rebase after dispatch. The
+    /// dispatch `baseline_commit` is a stale project-root snapshot and must NOT
+    /// be used to anchor verification. `None` when the hook did not fire (the
+    /// verifier then records Uncertain rather than diffing a possibly-stale base).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_base_commit: Option<String>,
     /// Commits the worker produced (`baseline..HEAD`), newest first, as
     /// `"<short-sha> <subject>"`. Empty when the worker committed nothing.
     #[serde(default)]
@@ -314,6 +324,14 @@ impl GoalEngine for ExternalCliEngine {
         let run_id = format!("cli-{}", uuid::Uuid::new_v4());
         let worktree = create_goal_worktree(&task.working_dir, &baseline, &run_id).await?;
 
+        // Fix (#523): install the work-base capture hooks BEFORE the worker runs,
+        // so the parent of its first commit (its true fork point) is recorded the
+        // moment it commits — the only point at which the base is knowable (after
+        // the worker pushes, `origin/main == HEAD`, so it cannot be recovered at
+        // completion). Best-effort: a failure here leaves `work_base` unrecorded,
+        // and the verifier records Uncertain rather than guessing a stale base.
+        let work_base_hooks = install_work_base_hooks(&worktree).await;
+
         let prompt = self.build_prompt(&task.instructions);
         let args: Vec<String> = self
             .args
@@ -333,6 +351,14 @@ impl GoalEngine for ExternalCliEngine {
         // pid for a cancel/timeout group-kill before handing the wait off to the
         // tracker task. A spawn failure here means the goal never started.
         let mut cmd = build_cli_command(&bin, &args, &worktree);
+        // Point the worker's git at our per-worktree hooks via ephemeral env
+        // (`GIT_CONFIG_*`) — inherited only by this worker's git subprocesses, so
+        // the user's repo config is never touched (#523).
+        if let Some(hooks_dir) = work_base_hooks.as_ref() {
+            cmd.env("GIT_CONFIG_COUNT", "1")
+                .env("GIT_CONFIG_KEY_0", "core.hooksPath")
+                .env("GIT_CONFIG_VALUE_0", hooks_dir);
+        }
         let child = cmd
             .spawn()
             .map_err(|e| format!("Failed to run `{}`: {}", bin, e))?;
@@ -393,6 +419,110 @@ async fn create_goal_worktree(
         ));
     }
     Ok(dest)
+}
+
+/// Fix (#523): install per-worktree git hooks that record the worker's TRUE base
+/// commit — the parent of its FIRST commit, re-captured if the worker rebases
+/// (e.g. to integrate a concurrent push before re-pushing). This is the only
+/// anchor that is correct for N commits AND robust to a fast-forward/rebase after
+/// dispatch; it cannot be computed at completion, because the worker's
+/// `git push origin HEAD:main` makes `origin/main == HEAD` before we look.
+///
+/// The hooks live inside the worktree's private git dir, so `git worktree remove`
+/// (#511) reaps them automatically, and are reached via an ephemeral
+/// `core.hooksPath` env on the worker process only — the user's repo config is
+/// never modified. `post-commit` runs even under `--no-verify`. Returns
+/// `(hooks_dir, work_base_file)`, or `None` if the hooks could not be installed
+/// (the verifier then records Uncertain rather than diffing a possibly-stale
+/// base — we never silently fall back to a weaker anchor).
+async fn install_work_base_hooks(worktree: &Path) -> Option<PathBuf> {
+    let git_dir = git_text(worktree, &["rev-parse", "--absolute-git-dir"]).await;
+    if git_dir.is_empty() {
+        tracing::error!(
+            target: "permagentd::brain",
+            worktree = %worktree.display(),
+            "could not resolve git dir to install work-base hooks (#523) — \
+             verification will be Uncertain for this goal"
+        );
+        return None;
+    }
+    let hooks_dir = work_base_hooks_dir(&git_dir);
+    let work_base_file = hooks_dir.join("work_base");
+    if let Err(e) = tokio::fs::create_dir_all(&hooks_dir).await {
+        tracing::error!(
+            target: "permagentd::brain",
+            dir = %hooks_dir.display(),
+            "failed to create work-base hooks dir (#523): {} — verification will be Uncertain",
+            e
+        );
+        return None;
+    }
+
+    // Path is fully controlled by us; single-quote it (escaping any literal quote)
+    // so a worktree path with spaces is safe inside the POSIX hook scripts.
+    let wbf = work_base_file.to_string_lossy().replace('\'', "'\\''");
+    // First commit's parent = the worker's true fork point. Write-once.
+    let post_commit = format!(
+        "#!/bin/sh\n\
+         # Permagent (#523): record the worker's true base (parent of its FIRST commit).\n\
+         f='{wbf}'\n\
+         [ -f \"$f\" ] && exit 0\n\
+         p=\"$(git rev-parse HEAD^ 2>/dev/null)\" && printf '%s\\n' \"$p\" > \"$f\"\n\
+         exit 0\n"
+    );
+    // On rebase (worker integrated a concurrent push), the commits are reparented;
+    // re-capture the parent of the earliest rewritten commit = the NEW base.
+    let post_rewrite = format!(
+        "#!/bin/sh\n\
+         # Permagent (#523): re-capture the base after a rebase (concurrent-push integration).\n\
+         [ \"$1\" = rebase ] || exit 0\n\
+         f='{wbf}'\n\
+         first=\"$(head -n1 | awk '{{print $2}}')\"\n\
+         [ -n \"$first\" ] || exit 0\n\
+         p=\"$(git rev-parse \"${{first}}^\" 2>/dev/null)\" && printf '%s\\n' \"$p\" > \"$f\"\n\
+         exit 0\n"
+    );
+
+    for (name, body) in [("post-commit", post_commit), ("post-rewrite", post_rewrite)] {
+        let path = hooks_dir.join(name);
+        if let Err(e) = tokio::fs::write(&path, body).await {
+            tracing::error!(
+                target: "permagentd::brain",
+                hook = %path.display(),
+                "failed to write work-base hook (#523): {} — verification will be Uncertain",
+                e
+            );
+            return None;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+    Some(hooks_dir)
+}
+
+/// The hooks directory the work-base capture lives in, inside a worktree's
+/// private git dir (#523). Single source of truth for install and read-back.
+fn work_base_hooks_dir(git_dir: &str) -> PathBuf {
+    PathBuf::from(git_dir).join("permagent-base-hooks")
+}
+
+/// Read the worker's true base SHA recorded by the work-base hooks (#523), if
+/// present. Resolves the worktree's private git dir, so it works from the live
+/// dispatch path and the restart-recovery path alike. `None` when the hook did
+/// not fire (the verifier then records Uncertain rather than guessing a base).
+async fn read_work_base(worktree: &Path) -> Option<String> {
+    let git_dir = git_text(worktree, &["rev-parse", "--absolute-git-dir"]).await;
+    if git_dir.is_empty() {
+        return None;
+    }
+    let f = work_base_hooks_dir(&git_dir).join("work_base");
+    match tokio::fs::read_to_string(&f).await {
+        Ok(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
+        _ => None,
+    }
 }
 
 /// Directory (under the repo's parent) holding every goal worktree, keyed by
@@ -816,6 +946,12 @@ pub(crate) async fn collect_evidence(
     let range = format!("{}..HEAD", baseline);
 
     let head_commit = git_line(worktree, &["rev-parse", "--short", "HEAD"]).await;
+    // Fix (#523): the worker's true base, recorded by the in-worktree git hook at
+    // its first commit (re-captured on rebase). It lives in the worktree's private
+    // git dir, so we read it while the worktree still exists (before the #511
+    // reaper) and persist the durable SHA on the card. Self-resolved from the
+    // git dir so every caller (dispatch + restart recovery) gets it for free.
+    let work_base_commit = read_work_base(worktree).await;
     let commits = git_text(worktree, &["log", "--format=%h %s", &range])
         .await
         .lines()
@@ -842,6 +978,7 @@ pub(crate) async fn collect_evidence(
         worktree_path: worktree.to_string_lossy().to_string(),
         baseline_commit: baseline.to_string(),
         head_commit,
+        work_base_commit,
         commits,
         diffstat,
         files_changed,
@@ -1231,6 +1368,93 @@ mod tests {
         assert_eq!(
             ev.files_changed, 0,
             "no count is recoverable from a failure"
+        );
+    }
+
+    /// Fix (#523), the mechanism test: the in-worktree hooks capture the worker's
+    /// TRUE base — the parent of its FIRST commit — and re-capture it when the
+    /// worker rebases (the concurrent-push case). Proves correctness across
+    /// fast-forward-before-commit AND rebase-after-commit, the exact cases a
+    /// dispatch-time or `head^` anchor gets wrong.
+    #[tokio::test]
+    async fn work_base_hook_captures_true_base_across_ff_and_rebase() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = tmp.path().join("proj");
+        std::fs::create_dir(&repo).unwrap();
+
+        // Plain git (no hook): the foreign commits exist BEFORE the worktree's
+        // hooks are installed — in reality they arrive via fetch/fast-forward, not
+        // a local `git commit`, so `post-commit` never fires for them.
+        let plain = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        let rev = |r: &str| {
+            String::from_utf8(plain(&["rev-parse", r]).stdout)
+                .unwrap()
+                .trim()
+                .to_string()
+        };
+
+        plain(&["init", "-q", "-b", "work"]);
+        plain(&["config", "user.email", "t@t.t"]);
+        plain(&["config", "user.name", "t"]);
+        std::fs::write(repo.join("a.txt"), "base\n").unwrap();
+        plain(&["add", "-A"]);
+        plain(&["commit", "-q", "-m", "B0"]);
+        // A foreign commit the worker fast-forwards onto before doing any work.
+        std::fs::write(repo.join("other.txt"), "other goal\n").unwrap();
+        plain(&["add", "-A"]);
+        plain(&["commit", "-q", "-m", "O1-foreign"]);
+        let o1 = rev("HEAD");
+
+        // Now the worktree exists and the hooks are installed; the worker's git is
+        // routed at them exactly as the dispatch env does.
+        let hooks_dir = install_work_base_hooks(&repo).await.expect("hooks install");
+        let work_base_file = hooks_dir.join("work_base");
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .env("GIT_CONFIG_COUNT", "1")
+                .env("GIT_CONFIG_KEY_0", "core.hooksPath")
+                .env("GIT_CONFIG_VALUE_0", &hooks_dir)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+
+        // The worker's FIRST commit — post-commit records its parent (= O1).
+        std::fs::write(repo.join("work.txt"), "the work\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "W1"]);
+        let captured = std::fs::read_to_string(&work_base_file).unwrap();
+        assert_eq!(
+            captured.trim(),
+            o1,
+            "base must be the parent of the worker's first commit (post-FF), not the dispatch baseline"
+        );
+
+        // A concurrent push lands as a foreign O2 on top of O1 (again via plain
+        // git — it is not the worker's commit), and the worker rebases its work
+        // onto it before re-pushing. post-rewrite must re-capture O2.
+        plain(&["branch", "side", &o1]);
+        plain(&["checkout", "-q", "side"]);
+        std::fs::write(repo.join("other2.txt"), "second other goal\n").unwrap();
+        plain(&["add", "-A"]);
+        plain(&["commit", "-q", "-m", "O2-foreign"]);
+        let o2 = rev("HEAD");
+        plain(&["checkout", "-q", "work"]);
+        git(&["rebase", "-q", "side"]);
+        let captured2 = std::fs::read_to_string(&work_base_file).unwrap();
+        assert_eq!(
+            captured2.trim(),
+            o2,
+            "after a rebase (concurrent-push integration) the base must re-capture to the new parent O2"
         );
     }
 

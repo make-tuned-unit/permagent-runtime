@@ -2,8 +2,8 @@
 //!
 //! After a goal worker finishes and L1's `handle_goal_completion` moves the
 //! card to Review, `run_for_goal` executes the goal's declared completion
-//! checks, analyzes the diff against the dispatch-time baseline commit, grades
-//! the work with a local Ollama model, and writes the result to
+//! checks, analyzes the diff over the worker's own commits (`work_base..head`,
+//! #523), grades the work with a local Ollama model, and writes the result to
 //! `metadata_json.verification` via L1's narrow allowlist API
 //! `cards::set_goal_verification` (the sanctioned L2 write path).
 //!
@@ -11,9 +11,10 @@
 //! - This module writes ONLY the `verification` key in metadata_json.
 //! - It NEVER calls `move_card` and never touches `goal_state`,
 //!   `attempt_count`, or `review_notes`.
-//! - `baseline_commit` is consumed from goal metadata (L1 writes it at
-//!   dispatch); absent baseline / git failure / no declared_paths ⇒
-//!   path_discipline = uncertain, never a silent pass.
+//! - The diff anchor is the worker's `work_base_commit` (the parent of its first
+//!   commit, captured emit-side by an in-worktree hook, #523), NOT the stale
+//!   dispatch `baseline_commit`. A head-recorded goal missing its work_base / git
+//!   failure / no declared_paths ⇒ uncertain, never a silent pass or false fail.
 //! - Zero cloud tokens at runtime: the only network call is to the hardcoded
 //!   loopback Ollama base URL.
 
@@ -149,22 +150,33 @@ pub async fn run_for_goal_with_cfg(
         .as_deref()
         .map(PathBuf::from)
         .filter(|p| p.is_dir());
-    // Fix B2 (#505): the worker's committed HEAD, durably recorded by Layer-1
-    // dispatch evidence at completion. When the worktree was reaped (#511 reaps
-    // FULLY-PUSHED Complete worktrees, see goal_engine::reap_goal_worktree), this
-    // SHA still resolves from the project root's SHARED git object store, so
-    // verification diffs the durable `baseline..head` commit range and never
+    // The worker's committed HEAD, durably recorded by Layer-1 dispatch evidence
+    // at completion. Paired with `work_base_commit` (below), the durable
+    // `work_base..head` range resolves from the project root's SHARED git object
+    // store even after the worktree is reaped (#511 reaps fully-pushed Complete
+    // worktrees, see goal_engine::reap_goal_worktree), so verification never
     // depends on the transient worktree. Unpushed goals keep their worktree
-    // (reaper returns SkippedUnpushed), so the worktree branch below still works.
+    // (reaper returns SkippedUnpushed), so the worktree branch still works too.
     let head_commit: Option<String> = meta
         .get("dispatch_evidence")
         .and_then(|e| e.get("head_commit"))
         .and_then(|v| v.as_str())
         .map(String::from);
+    // Fix (#523): the worker's TRUE base — the parent of its FIRST commit,
+    // captured emit-side by an in-worktree git hook (re-captured on rebase). This
+    // is the only anchor correct for N commits AND robust to fast-forward/rebase
+    // after dispatch. The dispatch `baseline_commit` is a stale project-root
+    // snapshot and is NEVER used to anchor a head-recorded (external-CLI) goal.
+    let work_base_commit: Option<String> = meta
+        .get("dispatch_evidence")
+        .and_then(|e| e.get("work_base_commit"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
     // Fix A (#505): a worktree that was RECORDED at dispatch but has since
     // vanished (reaped) must be LOUD, not a silent fall-through to the clean
-    // project root. With a durable head_commit the root diff is correct; without
-    // one it would false-zero — either way the operator needs to see it.
+    // project root. With a durable work_base..head the root diff is correct;
+    // without it the diff is unprovable (recorded Uncertain) — either way the
+    // operator needs to see it.
     if worktree_dir.is_none() {
         if let Some(p) = worktree_recorded.as_deref() {
             tracing::warn!(
@@ -173,8 +185,8 @@ pub async fn run_for_goal_with_cfg(
                 worktree = %p,
                 has_durable_head = head_commit.is_some(),
                 "dispatch worktree is gone (reaped) — falling back to project root; \
-                 verification diffs the durable baseline..head range when a head \
-                 commit was recorded, else the diff is unprovable (recorded ERRORED)"
+                 verification diffs the durable work_base..head range when both were \
+                 recorded, else the diff is unprovable (recorded Uncertain)"
             );
         }
     }
@@ -232,6 +244,7 @@ pub async fn run_for_goal_with_cfg(
         working_dir.as_deref(),
         baseline_commit.as_deref(),
         head_commit.as_deref(),
+        work_base_commit.as_deref(),
         &declared_paths,
     )
     .await;
@@ -598,13 +611,21 @@ async fn git_output(working_dir: &Path, args: &[&str]) -> Result<String, String>
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// Analyze changes since `baseline_commit` and grade declared-path discipline.
-/// Out-of-path = union of `git diff --name-only <baseline>` and
-/// `git status --porcelain` paths not matching any declared glob.
+/// Analyze the worker's changes and grade declared-path discipline.
+///
+/// For a head-recorded (external-CLI) goal the diff is anchored to the worker's
+/// TRUE base (`work_base`), the parent of its first commit captured emit-side by
+/// an in-worktree git hook (#523). `work_base..head` is exactly the worker's own
+/// work — correct for N commits and robust to fast-forward/rebase after dispatch.
+/// If a head is recorded but `work_base` is absent (the hook did not fire), the
+/// analysis is Uncertain — we never silently fall back to the stale dispatch
+/// baseline. The legacy working-tree path (diff vs `baseline_commit`) is used
+/// ONLY for evidence with no recorded head (in-process subagent).
 pub async fn analyze_diff(
     working_dir: Option<&Path>,
     baseline_commit: Option<&str>,
     head_commit: Option<&str>,
+    work_base: Option<&str>,
     declared_paths: &[String],
 ) -> GitAnalysis {
     let Some(wd) = working_dir else {
@@ -636,29 +657,62 @@ pub async fn analyze_diff(
         })
     }
 
-    // Fix B2 (#505): when the worker's committed HEAD is durably recorded, diff
-    // the explicit commit range `baseline..head`. This reads committed objects
-    // ONLY — resolvable from the shared object store whether we are in the live
-    // worktree or the project root after a reap — so it never depends on the
-    // transient worktree's working tree. (No porcelain: a reaped goal's
-    // working_dir is the project root, whose dirty files are NOT the goal's
-    // work; the committed range is the complete, correct picture.) The legacy
-    // working-tree + porcelain path is kept only for evidence without a recorded
-    // head (in-process subagent / pre-B2 records).
-    let (names, numstat, porcelain) = match head_commit {
+    // Fix (#523): anchor the diff to the worker's TRUE base (`work_base`), NOT the
+    // dispatch-time baseline. Between dispatch and commit the worker routinely
+    // fast-forwards/pulls (and may rebase) `main` past the dispatch baseline, so
+    // `dispatch_baseline..head` over-counts the intervening commits' files (false
+    // path-discipline Fail) or — when the local root never advanced — reads EMPTY
+    // (the #505 false zero-diff Fail). `work_base` is the parent of the worker's
+    // first commit, captured emit-side by the in-worktree hook and re-captured on
+    // rebase; `work_base..head` is exactly the worker's own commits (1 or N) and
+    // is read from the DURABLE shared object store (survives the #511 reaper).
+    //
+    // A head WITHOUT a work_base means the capture hook did not fire. We do NOT
+    // silently fall back to the stale dispatch baseline (the silent-wrongness that
+    // is this whole bug class) — we record Uncertain and surface it loudly.
+    let (names, numstat, porcelain, effective_baseline) = match head_commit {
         Some(head) => {
-            let names = match run_or_error(wd, &["diff", "--name-only", baseline, head]).await {
+            let Some(base) = work_base else {
+                tracing::error!(
+                    target: "permagentd::verification",
+                    dispatch_baseline = %baseline,
+                    head_commit = %head,
+                    "work_base_commit absent for a head-recorded goal — the base-capture \
+                     hook did not fire; recording Uncertain rather than diffing against a \
+                     possibly-stale baseline"
+                );
+                return uncertain_analysis(
+                    "work-base capture hook did not fire — the worker's true base is \
+                     unprovable; refusing to diff against the stale dispatch baseline",
+                );
+            };
+            let names = match run_or_error(wd, &["diff", "--name-only", base, head]).await {
                 Ok(o) => o,
                 Err(a) => return a,
             };
-            let numstat = match run_or_error(wd, &["diff", "--numstat", baseline, head]).await {
+            let numstat = match run_or_error(wd, &["diff", "--numstat", base, head]).await {
                 Ok(o) => o,
                 Err(a) => return a,
             };
-            (names, numstat, String::new())
+            // Fix A for real (#523): log the resolved refs on the SUCCESS path, not
+            // only on git failure (the prior fix logged nothing here, leaving the
+            // diff undebuggable). Surfacing dispatch_baseline vs work_base makes a
+            // stale anchor obvious at a glance, and names the mechanism (hook).
+            tracing::info!(
+                target: "permagentd::verification",
+                dispatch_baseline = %baseline,
+                work_base = %base,
+                head_commit = %head,
+                range = %format!("{base}..{head}"),
+                mechanism = "hook",
+                "verifier diff anchored to work_base..head (durable range)"
+            );
+            (names, numstat, String::new(), base.to_string())
         }
         None => {
-            // Committed + uncommitted tracked changes since baseline (live worktree).
+            // Committed + uncommitted tracked changes since the dispatch baseline
+            // (live worktree). No durable head ⇒ the dispatch baseline is the only
+            // anchor available.
             let names = match run_or_error(wd, &["diff", "--name-only", baseline]).await {
                 Ok(o) => o,
                 Err(a) => return a,
@@ -671,7 +725,13 @@ pub async fn analyze_diff(
                 Ok(o) => o,
                 Err(a) => return a,
             };
-            (names, numstat, porcelain)
+            tracing::info!(
+                target: "permagentd::verification",
+                dispatch_baseline = %baseline,
+                "verifier diff anchored to dispatch baseline (no durable head recorded \
+                 — legacy working-tree diff)"
+            );
+            (names, numstat, porcelain, baseline.to_string())
         }
     };
 
@@ -723,6 +783,18 @@ pub async fn analyze_diff(
         deletions,
         per_file,
     };
+    // Fix A for real (#523): a genuinely empty range is LOUD too, so the
+    // false-empty (a git failure — already ERRORED above) vs true-empty (the
+    // worker committed nothing in range) distinction is visible in the logs and
+    // not silently inferred from a bare Fail.
+    if diff_summary.files_changed == 0 {
+        tracing::warn!(
+            target: "permagentd::verification",
+            baseline = %effective_baseline,
+            "verifier diff is genuinely EMPTY over the resolved range — the worker \
+             committed no changes here (a real zero-diff, NOT a git failure)"
+        );
+    }
     // Annotate each file with its own +ins/-del so the verifier model can see
     // which files actually changed (and by how much), not just a bare list of
     // names under an aggregate total. Files without a numstat entry (untracked,
@@ -740,7 +812,7 @@ pub async fn analyze_diff(
     let diff_stat = format!(
         "{} file(s) changed since {}: +{} -{}\n{}",
         changed.len(),
-        baseline,
+        effective_baseline,
         insertions,
         deletions,
         file_lines.join("\n")
@@ -1652,6 +1724,8 @@ mod tests {
                 "dispatch_evidence": {
                     "worktree_path": wt.to_str().unwrap(),
                     "head_commit": head,
+                    // Single commit off baseline ⇒ the worker's true base IS baseline.
+                    "work_base_commit": baseline,
                 },
             }),
         )
@@ -1706,6 +1780,7 @@ mod tests {
                 "dispatch_evidence": {
                     "worktree_path": wt.to_str().unwrap(),
                     "head_commit": head,
+                    "work_base_commit": baseline,
                 },
             }),
         )
@@ -1716,6 +1791,212 @@ mod tests {
 
         assert_eq!(record.status, VerdictStatus::Pass);
         assert!(record.evidence_digest.diff.files_changed >= 1);
+    }
+
+    /// Fix (#523), the ACCEPTANCE scenario: a worker that FAST-FORWARDS main past
+    /// N intervening commits (other goals pushed in the interim) before committing
+    /// its own work. The diff must anchor to the worker's TRUE base (`work_base`,
+    /// the parent of its first commit), NOT the stale dispatch baseline — so it
+    /// sees ONLY the worker's file, never the intervening commits' files, and
+    /// PASSES. Anchoring to the dispatch baseline would either over-count (false
+    /// path-discipline Fail) or, when the local root never advanced, read empty
+    /// (false zero-diff Fail — the #505 symptom that #520 did not fix).
+    #[tokio::test]
+    async fn verifier_anchors_to_worker_parent_after_fast_forward() {
+        let repo = tempfile::tempdir().unwrap();
+        let dispatch_baseline = init_repo(repo.path());
+
+        // Two intervening "other goal" commits land on main AFTER dispatch — the
+        // worker fast-forwards past them before doing its own work.
+        std::fs::write(repo.path().join("OTHER_A.md"), "other goal a\n").unwrap();
+        sh(repo.path(), "git add -A");
+        sh(
+            repo.path(),
+            "git -c user.email=t@t -c user.name=t commit -q -m other-a",
+        );
+        std::fs::write(repo.path().join("OTHER_B.md"), "other goal b\n").unwrap();
+        sh(repo.path(), "git add -A");
+        sh(
+            repo.path(),
+            "git -c user.email=t@t -c user.name=t commit -q -m other-b",
+        );
+
+        // The worker's TRUE base = the tip it forked onto after fast-forwarding =
+        // the parent of its first commit. This is what the emit-side hook records.
+        let work_base = sh(repo.path(), "git rev-parse HEAD");
+
+        // The worker commits ONLY its own declared file on top.
+        std::fs::write(repo.path().join("WORKER.md"), "the worker's work\n").unwrap();
+        sh(repo.path(), "git add -A");
+        sh(
+            repo.path(),
+            "git -c user.email=t@t -c user.name=t commit -q -m worker-work",
+        );
+        let head = sh(repo.path(), "git rev-parse --short HEAD");
+
+        let pool = test_pool().await;
+        let goal = make_goal(
+            &pool,
+            repo.path().to_str().unwrap(),
+            serde_json::json!({
+                // STALE dispatch baseline — recorded before the fast-forward.
+                "baseline_commit": dispatch_baseline,
+                "declared_paths": ["WORKER.md"],
+                "dispatch_evidence": {
+                    // Worktree reaped (#511) — verification runs from the root.
+                    "worktree_path": "/nonexistent/reaped/wt",
+                    "head_commit": head,
+                    "work_base_commit": work_base,
+                },
+            }),
+        )
+        .await;
+
+        let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
+        let record = run_for_goal_with(&pool, &goal.id, &base_url).await.unwrap();
+
+        assert_eq!(
+            record.status,
+            VerdictStatus::Pass,
+            "fast-forward-then-commit must verify from work_base..head, not the \
+             stale dispatch baseline; diff_stat={:?}",
+            record.diff_stat
+        );
+        assert_eq!(
+            record.evidence_digest.diff.files_changed, 1,
+            "only the worker's own commit must be in range, not the intervening \
+             fast-forwarded commits; diff_stat={:?}",
+            record.diff_stat
+        );
+        assert!(
+            record.diff_stat.contains("WORKER.md"),
+            "diff must show the worker's file: {:?}",
+            record.diff_stat
+        );
+        assert!(
+            !record.diff_stat.contains("OTHER_A.md") && !record.diff_stat.contains("OTHER_B.md"),
+            "diff must NOT include the fast-forwarded intervening commits' files: {:?}",
+            record.diff_stat
+        );
+    }
+
+    /// Fix (#523), option 3: a head-recorded (external-CLI) goal whose work-base
+    /// hook did NOT fire is recorded Uncertain — we never silently fall back to
+    /// the stale dispatch baseline (the silent-wrongness that is this whole bug
+    /// class). Honest-Uncertain beats silently-maybe-wrong.
+    #[tokio::test]
+    async fn verifier_missing_work_base_is_uncertain_never_fail() {
+        let repo = tempfile::tempdir().unwrap();
+        let baseline = init_repo(repo.path());
+        // A foreign commit advances the root past the dispatch baseline, so a diff
+        // against that baseline would NOT be empty — proving the Uncertain verdict
+        // comes from the missing base, not from an incidental zero-diff.
+        std::fs::write(repo.path().join("OTHER.md"), "other\n").unwrap();
+        sh(repo.path(), "git add -A");
+        sh(
+            repo.path(),
+            "git -c user.email=t@t -c user.name=t commit -q -m other",
+        );
+        std::fs::write(repo.path().join("WORKER.md"), "work\n").unwrap();
+        sh(repo.path(), "git add -A");
+        sh(
+            repo.path(),
+            "git -c user.email=t@t -c user.name=t commit -q -m work",
+        );
+        let head = sh(repo.path(), "git rev-parse --short HEAD");
+
+        let pool = test_pool().await;
+        let goal = make_goal(
+            &pool,
+            repo.path().to_str().unwrap(),
+            serde_json::json!({
+                "baseline_commit": baseline,
+                "declared_paths": ["WORKER.md"],
+                "dispatch_evidence": {
+                    "worktree_path": "/nonexistent/reaped/wt",
+                    "head_commit": head,
+                    // NO work_base_commit — the capture hook did not fire.
+                },
+            }),
+        )
+        .await;
+
+        let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
+        let record = run_for_goal_with(&pool, &goal.id, &base_url).await.unwrap();
+
+        assert_eq!(
+            record.status,
+            VerdictStatus::Uncertain,
+            "a missing work_base must be Uncertain, never a silent diff against the \
+             stale dispatch baseline"
+        );
+        assert!(record.degraded_reason.is_some());
+    }
+
+    /// Fix (#523), acceptance (2): a goal that lands TWO commits has BOTH files in
+    /// the diff — `work_base..head` spans the whole chain. This is the case the
+    /// rejected `head^..head` shortcut would undercount to only the last commit.
+    #[tokio::test]
+    async fn verifier_two_commit_goal_shows_both_files() {
+        let repo = tempfile::tempdir().unwrap();
+        let dispatch_baseline = init_repo(repo.path());
+        // The foreign commit the worker fast-forwards onto = its true base.
+        std::fs::write(repo.path().join("OTHER.md"), "other\n").unwrap();
+        sh(repo.path(), "git add -A");
+        sh(
+            repo.path(),
+            "git -c user.email=t@t -c user.name=t commit -q -m other",
+        );
+        let work_base = sh(repo.path(), "git rev-parse HEAD");
+        // The worker makes TWO commits.
+        std::fs::write(repo.path().join("FIRST.md"), "first\n").unwrap();
+        sh(repo.path(), "git add -A");
+        sh(
+            repo.path(),
+            "git -c user.email=t@t -c user.name=t commit -q -m first",
+        );
+        std::fs::write(repo.path().join("SECOND.md"), "second\n").unwrap();
+        sh(repo.path(), "git add -A");
+        sh(
+            repo.path(),
+            "git -c user.email=t@t -c user.name=t commit -q -m second",
+        );
+        let head = sh(repo.path(), "git rev-parse --short HEAD");
+
+        let pool = test_pool().await;
+        let goal = make_goal(
+            &pool,
+            repo.path().to_str().unwrap(),
+            serde_json::json!({
+                "baseline_commit": dispatch_baseline,
+                "declared_paths": ["*.md"],
+                "dispatch_evidence": {
+                    "worktree_path": "/nonexistent/reaped/wt",
+                    "head_commit": head,
+                    "work_base_commit": work_base,
+                },
+            }),
+        )
+        .await;
+
+        let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
+        let record = run_for_goal_with(&pool, &goal.id, &base_url).await.unwrap();
+
+        assert_eq!(
+            record.evidence_digest.diff.files_changed, 2,
+            "both worker commits must be in range; diff_stat={:?}",
+            record.diff_stat
+        );
+        assert!(
+            record.diff_stat.contains("FIRST.md") && record.diff_stat.contains("SECOND.md"),
+            "both worker files must appear: {:?}",
+            record.diff_stat
+        );
+        assert!(
+            !record.diff_stat.contains("OTHER.md"),
+            "the foreign base commit's file must NOT appear: {:?}",
+            record.diff_stat
+        );
     }
 
     /// Fix A (#505): when the diff git command itself FAILS (here: an unreachable
@@ -1738,19 +2019,23 @@ mod tests {
             &wt,
             "git -c user.email=t@t -c user.name=t commit -q -m work",
         );
-        let head = sh(&wt, "git rev-parse --short HEAD");
+        let _head = sh(&wt, "git rev-parse --short HEAD");
 
         let pool = test_pool().await;
-        // Baseline is a bogus SHA → `git diff <bogus> <head>` ERRORS.
+        // Fix (#523): with a real work_base and a bogus HEAD, `git diff <base>
+        // <bogus>` ERRORS — the failure path we assert must surface as ERRORED
+        // (Uncertain), never a false Fail. (work_base present, so this exercises
+        // the git-failure path, not the missing-hook path.)
         let goal = make_goal(
             &pool,
             repo.path().to_str().unwrap(),
             serde_json::json!({
-                "baseline_commit": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+                "baseline_commit": baseline,
                 "declared_paths": ["src/**"],
                 "dispatch_evidence": {
                     "worktree_path": wt.to_str().unwrap(),
-                    "head_commit": head,
+                    "head_commit": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+                    "work_base_commit": baseline,
                 },
             }),
         )
@@ -1945,6 +2230,7 @@ mod tests {
             Some(repo.path()),
             Some(&baseline),
             None,
+            None,
             &["src/**".to_string()],
         )
         .await;
@@ -1959,7 +2245,7 @@ mod tests {
     async fn no_declared_paths_is_uncertain() {
         let repo = tempfile::tempdir().unwrap();
         let baseline = init_repo(repo.path());
-        let analysis = analyze_diff(Some(repo.path()), Some(&baseline), None, &[]).await;
+        let analysis = analyze_diff(Some(repo.path()), Some(&baseline), None, None, &[]).await;
         assert_eq!(analysis.path_discipline, Grade::Uncertain);
         assert!(analysis
             .degraded_note
@@ -1971,8 +2257,14 @@ mod tests {
     #[tokio::test]
     async fn non_git_working_dir_is_uncertain() {
         let dir = tempfile::tempdir().unwrap();
-        let analysis =
-            analyze_diff(Some(dir.path()), Some("abc123"), None, &["**".to_string()]).await;
+        let analysis = analyze_diff(
+            Some(dir.path()),
+            Some("abc123"),
+            None,
+            None,
+            &["**".to_string()],
+        )
+        .await;
         assert_eq!(analysis.path_discipline, Grade::Uncertain);
     }
 

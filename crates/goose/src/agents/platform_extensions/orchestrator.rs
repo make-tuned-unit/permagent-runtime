@@ -3438,6 +3438,7 @@ mod tests {
             worktree_path: "/tmp/.permagent-goal-worktrees/cli-abc".to_string(),
             baseline_commit: "a1190cd".to_string(),
             head_commit: Some("7d4f9ea".to_string()),
+            work_base_commit: Some("a1190cd".to_string()),
             commits: vec!["7d4f9ea Create the thread".to_string()],
             diffstat: " 3 files changed, 1159 insertions(+)".to_string(),
             files_changed: 3,
