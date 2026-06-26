@@ -752,6 +752,14 @@ impl SessionStorage {
                     if version < 18 {
                         spectral_schema::migrate_v17_to_v18(&self.pool).await?;
                     }
+                    // Drop the dead `memories` + `knowledge_graph` tables (schema
+                    // v19): a dormant copy of the Spectral Phase-1 schema that the
+                    // live Brain (separate brain/memory.db) never read or wrote.
+                    // Idempotent (DROP ... IF EXISTS) and base-independent; fresh
+                    // installs never create them, so this only affects existing DBs.
+                    if version < 19 {
+                        spectral_schema::migrate_v18_to_v19(&self.pool).await?;
+                    }
                 } else {
                     info!("Initializing Spectral schema at {:?}", self.db_path);
                     spectral_schema::init_spectral_db(&self.pool).await?;
