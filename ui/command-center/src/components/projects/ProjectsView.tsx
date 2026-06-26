@@ -4,52 +4,9 @@ import { useTheme } from '../../styles/useTheme';
 import { apiFetch } from '../../lib/api';
 import { useGoalEvents } from '../../lib/useGoalEvents';
 import { useCommandCenter } from '../../lib/store';
+import { ProjectWorkspace } from './ProjectWorkspace';
+import { PERSONAL_ID, CANCELLABLE_STATES, type Project, type BoardColumn, type Card } from './types';
 
-// ── Types ──────────────────────────────────────────────────────────────────
-
-interface Project {
-  id: string;
-  slug: string;
-  name: string;
-  description: string;
-  status: string;
-  rootPath: string | null;
-  siteUrl: string | null;
-  repoUrl: string | null;
-  tags: string[];
-  lastOpenedAt: string;
-}
-
-interface BoardColumn {
-  id: string;
-  projectId: string;
-  name: string;
-  position: number;
-  columnKind: string;
-  stateBinding?: string | null;
-  wipLimit: number | null;
-}
-
-/** Goal lifecycle states a goal can still be cancelled from (#490). */
-const CANCELLABLE_STATES = ['triage', 'ready', 'in_progress', 'review'];
-
-interface Card {
-  id: string;
-  projectId: string;
-  cardType: string;
-  title: string;
-  description: string;
-  columnId: string;
-  position: number;
-  createdBy: string;
-  assignedTo: string | null;
-  metadataJson: Record<string, unknown>;
-  createdAt: string;
-  updatedAt: string;
-  archivedAt: string | null;
-}
-
-const PERSONAL_ID = '00000000-0000-0000-0000-000000000001';
 const LS_KEY = 'permagent-projects-last-opened';
 
 // ── Main component ─────────────────────────────────────────────────────────
@@ -156,7 +113,14 @@ export function ProjectsView() {
       setActiveProjectId(null);
       return null;
     }
-    return <ProjectDetailView project={project} onBack={backToAll} />;
+    return (
+      <ProjectWorkspace
+        project={project}
+        projects={projects}
+        onSwitchProject={openProject}
+        onBack={backToAll}
+      />
+    );
   }
 
   return <AllProjectsView projects={projects} onOpenProject={openProject} onStatusChange={handleStatusChange} />;
@@ -321,13 +285,13 @@ project, onOpen, onDragStart }: {
   );
 }
 
-// ── Project Detail View (cards inside a project) ───────────────────────────
+// ── Project Kanban (cards inside a project) ────────────────────────────────
+//
+// The board lens of the Projects tab. The shared workspace chrome
+// (back · project switcher · view toggle) lives in ProjectWorkspace, so this
+// renders only the columns — no header of its own.
 
-function ProjectDetailView({
-project, onBack }: {
-  project: Project;
-  onBack: () => void;
-}) {
+export function ProjectKanban({ project }: { project: Project }) {
   const { colors } = useTheme();
   const { gradient } = useTheme();
   const [columns, setColumns] = useState<BoardColumn[]>([]);
@@ -482,33 +446,7 @@ project, onBack }: {
   }
 
   return (
-    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: gradient.workspace, color: colors.text, fontFamily: font.body }}>
-      {/* Header */}
-      <div style={{ padding: '12px 24px', borderBottom: `1px solid ${colors.border}`, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 12 }}>
-        <button onClick={onBack} style={{
-          background: 'none', border: 'none', color: colors.textMuted, cursor: 'pointer',
-          padding: '4px 8px', borderRadius: 6, fontSize: 12, fontFamily: font.body,
-          display: 'flex', alignItems: 'center', gap: 4,
-        }}
-          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = colors.text; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = colors.textMuted; }}
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
-            <path d="M19 12H5M12 19l-7-7 7-7" />
-          </svg>
-          All Projects
-        </button>
-        <div style={{ width: 1, height: 16, background: colors.border }} />
-        <div>
-          <div style={{ fontFamily: font.display, fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em' }}>
-            {project.name}
-          </div>
-          <div style={{ fontSize: 10, color: colors.textMuted, marginTop: 1 }}>
-            {project.slug} · {cards.length} card{cards.length !== 1 ? 's' : ''}
-          </div>
-        </div>
-      </div>
-
+    <div style={{ width: '100%', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', background: gradient.workspace, color: colors.text, fontFamily: font.body }}>
       {/* Kanban columns */}
       <div style={{ flex: 1, display: 'flex', gap: 1, padding: '16px 16px', overflow: 'auto' }}>
         {columns.map(col => {

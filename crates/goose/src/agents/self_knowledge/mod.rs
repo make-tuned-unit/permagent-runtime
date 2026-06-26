@@ -147,6 +147,7 @@ pub static SURFACE_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::brain_handle::BRAIN_FEATURE,
     crate::config::agent_identity::PERSONA_PICKER_FEATURE,
     crate::agents::platform_extensions::project_manager::BUILD_TAB_FEATURE,
+    crate::agents::platform_extensions::project_manager::PROJECT_WORKSPACE_FEATURE,
     crate::inbox::INBOX_FEATURE,
 ];
 

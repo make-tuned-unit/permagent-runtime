@@ -174,6 +174,29 @@ pub const BUILD_TAB_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         teaching: &[],
     };
 
+/// Self-knowledge descriptor for the Projects tab itself (#471). Each project
+/// opens into a workspace with two lenses: an Overview dashboard (summary, key
+/// facts, links, live task status) and the Kanban board. Static — always-on
+/// surface, co-located with the project tools that back it.
+pub const PROJECT_WORKSPACE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "projects",
+        display_name: "Projects workspace",
+        category: crate::agents::self_knowledge::FeatureCategory::Surface,
+        what_it_does:
+            "The Projects tab where each project opens into a workspace with two lenses, toggled \
+             in shared chrome: an Overview dashboard (project summary, key facts, website/repo \
+             links, and live task status) and the Kanban board of goal and to-do cards. A project \
+             switcher drives both lenses from the same selected project",
+        why_it_matters:
+            "It is the user's at-a-glance home for a project — what it is, its links, and the live \
+             state of its work. Reach for the project tools (list_projects, board_summary) to read \
+             or change what this surface shows; the Overview is the summary view, the Kanban the \
+             working board",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        teaching: &[],
+    };
+
 pub struct ProjectManagerClient {
     info: InitializeResult,
     context: PlatformExtensionContext,
