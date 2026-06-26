@@ -662,6 +662,10 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // migrate_v12_to_v13.
     apply_inbox_schema(pool).await?;
 
+    // Project association join tables (schema v20): project_people +
+    // project_memories. Idempotent; shared with migrate_v19_to_v20.
+    apply_project_association_schema(pool).await?;
+
     info!(
         "Spectral schema v{} initialized successfully",
         SPECTRAL_SCHEMA_VERSION
@@ -1106,6 +1110,86 @@ pub async fn apply_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
         .await?;
 
     tx.commit().await?;
+    Ok(())
+}
+
+/// Apply the project association schema (v20): two additive join tables that
+/// scope global entities to a project.
+///
+/// * `project_people` — many-to-many between `projects` and the live `people`
+///   table (a person can belong to many projects and vice versa). Both columns
+///   are real FKs into permagent.db with `ON DELETE CASCADE`, so deleting a
+///   project or a person reaps the link. `role` is the role *within this
+///   project* (nullable), distinct from the person's global CRM `role`.
+///
+/// * `project_memories` — scopes Brain memories to a project. `memory_id` is the
+///   **Spectral `memory.db` id** (the stable `blake3(key)[..8]` id that recall
+///   hits and the browse route expose), stored as plain TEXT with **no FK**:
+///   Spectral's Brain is a separate database outside SQLite FK reach. It is
+///   deliberately NOT joined to the permagent.db `memories` table — that table
+///   is dead weight (written only by the CLI; the live `remember_with` path and
+///   every read route go to `memory.db` via `read_only_brain_conn`). Reads
+///   resolve `memory_id`s against the live Brain and INNER-JOIN, so an id whose
+///   memory was deleted in Spectral simply does not render (orphan prune is a
+///   deferred follow-up).
+///
+/// Idempotent — every statement uses IF NOT EXISTS — so it is safe on fresh
+/// installs (via `init_spectral_db`) and as a migration step (`migrate_v19_to_v20`)
+/// alike.
+pub async fn apply_project_association_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool.begin().await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS project_people (
+            project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            entity_uuid  TEXT NOT NULL REFERENCES people(entity_uuid) ON DELETE CASCADE,
+            role         TEXT,
+            added_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            PRIMARY KEY (project_id, entity_uuid)
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_project_people_entity ON project_people(entity_uuid)",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS project_memories (
+            project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            memory_id    TEXT NOT NULL,
+            added_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            PRIMARY KEY (project_id, memory_id)
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_project_memories_mem ON project_memories(memory_id)",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Migrate an existing database to the project association schema (v20).
+///
+/// Purely additive (CREATE TABLE / INDEX IF NOT EXISTS), base-version
+/// independent and idempotent. Records v20 in `schema_version` (hardcoded per the
+/// migration precedent in this file, so it stays correct as SPECTRAL_SCHEMA_VERSION
+/// advances). SPECTRAL_SCHEMA_VERSION stays 14 — fresh installs get these tables
+/// from `apply_project_association_schema` directly via `init_spectral_db`.
+pub async fn migrate_v19_to_v20(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v19 -> v20 (project association join tables)");
+    apply_project_association_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (20)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v20 (project_people + project_memories)");
     Ok(())
 }
 

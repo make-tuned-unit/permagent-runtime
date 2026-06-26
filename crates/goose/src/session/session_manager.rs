@@ -760,6 +760,11 @@ impl SessionStorage {
                     if version < 19 {
                         spectral_schema::migrate_v18_to_v19(&self.pool).await?;
                     }
+                    // v20: project association join tables (project_people +
+                    // project_memories). Purely additive, base-independent.
+                    if version < 20 {
+                        spectral_schema::migrate_v19_to_v20(&self.pool).await?;
+                    }
                 } else {
                     info!("Initializing Spectral schema at {:?}", self.db_path);
                     spectral_schema::init_spectral_db(&self.pool).await?;

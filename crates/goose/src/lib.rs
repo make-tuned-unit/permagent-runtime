@@ -42,6 +42,7 @@ pub mod people;
 pub mod permission;
 #[cfg(feature = "telemetry")]
 pub mod posthog;
+pub mod project_association;
 pub mod projects;
 pub mod prompt_template;
 pub mod providers;
