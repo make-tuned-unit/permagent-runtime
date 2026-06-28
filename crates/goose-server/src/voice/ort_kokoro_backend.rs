@@ -194,6 +194,12 @@ fn technical_lexicon() -> PronunciationLexicon {
         ("claude code", "klˈɔːd kˈəʊd"),
         ("claude", "klˈɔːd"),
         ("dropdown", "drˈɒpdaʊn"),
+        // Coined product names — misaki/G2P spells these letter-by-letter or
+        // mis-stresses them. Pronounce as words (#516).
+        ("permagent", "pˈɜːməʤɛnt"),       // Per-ma-jent
+        ("permagentd", "pˈɜːməʤɛnt dˈiː"), // the daemon: "Permagent-D"
+        ("spectral", "spˈɛktrəl"),         // SPEK-truhl
+        ("kinrows", "kˈɪnrəʊz"),           // KIN-rohz
         // Acronyms, spelled out letter-by-letter.
         ("api", "ˌeɪpˌiːˈaɪ"),
         ("url", "jˌuːˌɑːrˈɛl"),
@@ -721,6 +727,48 @@ mod tests {
         assert_eq!(
             plan_segments("just ordinary words here", &lex),
             vec![Segment::Text("just ordinary words here".into())],
+        );
+    }
+
+    #[test]
+    fn permagent_resolves_as_a_word_not_spelled_out() {
+        // #516: "Permagent" was spoken letter-by-letter. It must now resolve to
+        // a single phoneme override (a real word), case-insensitively.
+        let lex = technical_lexicon();
+        let expected = lex.get("permagent").expect("permagent must resolve");
+        assert!(!expected.is_empty());
+        assert_eq!(lex.get("Permagent"), Some(expected), "case-insensitive");
+        assert_eq!(lex.get("PERMAGENT"), Some(expected), "case-insensitive");
+
+        // In a sentence: the term becomes one Override segment, surrounded by
+        // ordinary G2P Text.
+        let segs = plan_segments("welcome to Permagent today", &lex);
+        assert_eq!(
+            segs,
+            vec![
+                Segment::Text("welcome to".into()),
+                Segment::Override(expected.to_string()),
+                Segment::Text("today".into()),
+            ],
+        );
+
+        // The other coined names resolve too.
+        for name in ["permagentd", "spectral", "kinrows"] {
+            assert!(lex.get(name).is_some(), "'{name}' must resolve");
+        }
+    }
+
+    #[test]
+    fn lexicon_matches_whole_words_only_not_substrings() {
+        // Word-boundary guarantee: a longer word that merely CONTAINS a lexicon
+        // key as a substring must not be mangled — only whole tokens match.
+        let lex = technical_lexicon();
+        // "spectrally" contains "spectral"; "permagently" contains "permagent".
+        let segs = plan_segments("spectrally permagently", &lex);
+        assert_eq!(
+            segs,
+            vec![Segment::Text("spectrally permagently".into())],
+            "substrings inside longer words must stay as plain G2P text"
         );
     }
 
