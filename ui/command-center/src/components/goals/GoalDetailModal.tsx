@@ -26,6 +26,7 @@ import { useCommandCenter } from '../../lib/store';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { DetailModal } from '../common/DetailModal';
+import { EvidenceDigest } from '../dashboard/decisions/EvidenceDigest';
 
 interface CardResponse {
   id: string;
@@ -123,7 +124,6 @@ export function GoalDetailModal({
   const meta = card?.metadataJson ?? {};
   const workerSessionId = typeof meta.worker_session_id === 'string' ? meta.worker_session_id : null;
   const attemptCount = typeof meta.attempt_count === 'number' ? meta.attempt_count : null;
-  const dispatch = (meta.dispatch_evidence ?? null) as Record<string, unknown> | null;
 
   const badge = cancelledState
     ? { label: 'Cancelled', color: colors.danger, bg: colors.danger + '24' }
@@ -198,7 +198,22 @@ export function GoalDetailModal({
             ['Updated', fmtTime(card.updatedAt)],
           ]} />
 
-          {dispatch && <ProofOfWork colors={colors} dispatch={dispatch} />}
+          {/*
+            #524: the layered Evidence panel — the same component the Decision
+            Inbox uses, keyed on this goal's card. It self-fetches the deterministic
+            dispatch evidence plus the L2 verifier digest, rendering "No verification
+            evidence…" when none has been recorded yet. Supersedes the lighter,
+            dispatch-only proof-of-work block this modal used to show.
+          */}
+          <div>
+            <div style={{
+              fontSize: 11, color: colors.textDim, fontFamily: font.mono,
+              textTransform: 'uppercase', letterSpacing: '0.04em',
+            }}>
+              Evidence
+            </div>
+            <EvidenceDigest projectId={projectId} goalId={cardId} />
+          </div>
 
           {cancelledState && (
             <div style={{
@@ -242,33 +257,6 @@ function MetaGrid({ colors, rows }: {
           </span>
         </div>
       ))}
-    </div>
-  );
-}
-
-/** Compact deterministic proof-of-work from card metadata's dispatch_evidence. */
-function ProofOfWork({ colors, dispatch }: {
-  colors: ReturnType<typeof useTheme>['colors'];
-  dispatch: Record<string, unknown>;
-}) {
-  const commits = Array.isArray(dispatch.commits) ? dispatch.commits : [];
-  const diffstat = typeof dispatch.diffstat === 'string' ? dispatch.diffstat : null;
-  const pushTarget = typeof dispatch.push_target === 'string' ? dispatch.push_target : null;
-  const head = typeof dispatch.head_commit === 'string' ? dispatch.head_commit.slice(0, 10) : null;
-  if (!commits.length && !diffstat && !pushTarget && !head) return null;
-  return (
-    <div style={{
-      borderRadius: radius.md, border: `1px solid ${colors.border}`,
-      background: colors.surface, padding: '10px 12px',
-    }}>
-      <div style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-        Proof of work
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: colors.textMuted }}>
-        {!!commits.length && <span>{commits.length} commit{commits.length === 1 ? '' : 's'}{head ? ` · head ${head}` : ''}</span>}
-        {diffstat && <span style={{ fontFamily: font.mono, fontSize: 11 }}>{diffstat}</span>}
-        {pushTarget && <span>pushed to {pushTarget}</span>}
-      </div>
     </div>
   );
 }
