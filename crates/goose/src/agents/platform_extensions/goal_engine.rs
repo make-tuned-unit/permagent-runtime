@@ -80,7 +80,15 @@ pub struct GoalEvidence {
     pub worktree_path: String,
     /// Dispatch-time HEAD the work was branched off (the diff baseline).
     pub baseline_commit: String,
-    /// Short SHA of the worktree HEAD after the worker exited, if any.
+    /// Fix (#531): the worker's TRUE head — the worktree HEAD at its LAST commit,
+    /// recorded emit-side by the in-worktree hook (last-wins, re-captured on
+    /// rebase), falling back to a completion-time `git rev-parse HEAD` only when
+    /// the hook did not fire. The hook value is robust to the worker integrating a
+    /// concurrent push, which can otherwise leave the detached worktree HEAD ref
+    /// reading as an ANCESTOR of the true tip — diffing `work_base..stale-head`
+    /// then inverts the range and false-fails correct multi-commit work. Paired
+    /// with `work_base_commit`, `work_base_commit..head_commit` is exactly the
+    /// worker's own commits (1 or N).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head_commit: Option<String>,
     /// Fix (#523): the worker's TRUE base — the parent of its FIRST commit,
@@ -461,25 +469,41 @@ async fn install_work_base_hooks(worktree: &Path) -> Option<PathBuf> {
     // Path is fully controlled by us; single-quote it (escaping any literal quote)
     // so a worktree path with spaces is safe inside the POSIX hook scripts.
     let wbf = work_base_file.to_string_lossy().replace('\'', "'\\''");
-    // First commit's parent = the worker's true fork point. Write-once.
+    let work_head_file = hooks_dir.join("work_head");
+    let whf = work_head_file.to_string_lossy().replace('\'', "'\\''");
+    // At commit time, record BOTH the worker's true base (parent of its FIRST
+    // commit, write-once — #523) AND its true head (current HEAD, last-wins —
+    // #531). The head is captured here, not at completion, because the worker's
+    // concurrent-push integration can leave the detached worktree HEAD reading as
+    // an ANCESTOR of the true tip — a completion-time `git rev-parse HEAD` then
+    // inverts the verifier's diff range and false-fails correct work.
     let post_commit = format!(
         "#!/bin/sh\n\
-         # Permagent (#523): record the worker's true base (parent of its FIRST commit).\n\
+         # Permagent (#523/#531): record the worker's true base (parent of FIRST commit,\n\
+         # write-once) and true head (current HEAD, last-wins) at commit time.\n\
+         h=\"$(git rev-parse HEAD 2>/dev/null)\" && printf '%s\\n' \"$h\" > '{whf}'\n\
          f='{wbf}'\n\
          [ -f \"$f\" ] && exit 0\n\
          p=\"$(git rev-parse HEAD^ 2>/dev/null)\" && printf '%s\\n' \"$p\" > \"$f\"\n\
          exit 0\n"
     );
     // On rebase (worker integrated a concurrent push), the commits are reparented;
-    // re-capture the parent of the earliest rewritten commit = the NEW base.
+    // re-capture the parent of the earliest rewritten commit = the NEW base, and
+    // the rebased tip = the NEW head.
     let post_rewrite = format!(
         "#!/bin/sh\n\
-         # Permagent (#523): re-capture the base after a rebase (concurrent-push integration).\n\
+         # Permagent (#523/#531): after a rebase (concurrent-push integration) re-capture\n\
+         # BOTH the base (parent of the earliest rewritten commit) and the head (the\n\
+         # rebased tip = newest rewritten commit) from the rewrite MAP on stdin. The map\n\
+         # ('old new' per commit, oldest first) is authoritative; reading `git rev-parse\n\
+         # HEAD` here races the rebase's ref update and intermittently reads empty (#531).\n\
          [ \"$1\" = rebase ] || exit 0\n\
-         f='{wbf}'\n\
-         first=\"$(head -n1 | awk '{{print $2}}')\"\n\
-         [ -n \"$first\" ] || exit 0\n\
-         p=\"$(git rev-parse \"${{first}}^\" 2>/dev/null)\" && printf '%s\\n' \"$p\" > \"$f\"\n\
+         map=\"$(cat)\"\n\
+         [ -n \"$map\" ] || exit 0\n\
+         first=\"$(printf '%s\\n' \"$map\" | head -n1 | awk '{{print $2}}')\"\n\
+         last=\"$(printf '%s\\n' \"$map\" | tail -n1 | awk '{{print $2}}')\"\n\
+         [ -n \"$first\" ] && p=\"$(git rev-parse \"${{first}}^\" 2>/dev/null)\" && printf '%s\\n' \"$p\" > '{wbf}'\n\
+         [ -n \"$last\" ] && printf '%s\\n' \"$last\" > '{whf}'\n\
          exit 0\n"
     );
 
@@ -519,6 +543,24 @@ async fn read_work_base(worktree: &Path) -> Option<String> {
         return None;
     }
     let f = work_base_hooks_dir(&git_dir).join("work_base");
+    match tokio::fs::read_to_string(&f).await {
+        Ok(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
+        _ => None,
+    }
+}
+
+/// Read the worker's true head SHA recorded by the work-base hooks (#531) — the
+/// worktree HEAD at the worker's LAST commit (last-wins, re-captured on rebase).
+/// Mirrors [`read_work_base`]. `None` when the hook did not fire. This is the
+/// durable head the verifier anchors `work_base..head` to; the completion-time
+/// `git rev-parse HEAD` is unreliable once the worker integrates a concurrent
+/// push (the detached worktree HEAD can read as an ANCESTOR of the true tip).
+async fn read_work_head(worktree: &Path) -> Option<String> {
+    let git_dir = git_text(worktree, &["rev-parse", "--absolute-git-dir"]).await;
+    if git_dir.is_empty() {
+        return None;
+    }
+    let f = work_base_hooks_dir(&git_dir).join("work_head");
     match tokio::fs::read_to_string(&f).await {
         Ok(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
         _ => None,
@@ -945,7 +987,20 @@ pub(crate) async fn collect_evidence(
 ) -> GoalEvidence {
     let range = format!("{}..HEAD", baseline);
 
-    let head_commit = git_line(worktree, &["rev-parse", "--short", "HEAD"]).await;
+    // Fix (#531): prefer the DURABLE head recorded by the in-worktree hook at the
+    // worker's last commit (last-wins, re-captured on rebase) over a
+    // completion-time `git rev-parse HEAD`. After the worker integrates a
+    // concurrent push, the detached worktree HEAD can read as an ANCESTOR of the
+    // true tip — a multi-commit goal then false-fails on the inverted range
+    // work_base..stale-head. The hook captures the tip in the worktree's own
+    // commit context, the same way work_base is captured, so work_base..head is
+    // exactly the worker's commits for N commits. Fall back to `rev-parse HEAD`
+    // only when the hook did not fire (work_base is then also absent and the
+    // verifier records Uncertain regardless).
+    let head_commit = match read_work_head(worktree).await {
+        Some(h) => Some(h),
+        None => git_line(worktree, &["rev-parse", "--short", "HEAD"]).await,
+    };
     // Fix (#523): the worker's true base, recorded by the in-worktree git hook at
     // its first commit (re-captured on rebase). It lives in the worktree's private
     // git dir, so we read it while the worktree still exists (before the #511
@@ -1455,6 +1510,96 @@ mod tests {
             captured2.trim(),
             o2,
             "after a rebase (concurrent-push integration) the base must re-capture to the new parent O2"
+        );
+    }
+
+    /// Fix (#531), the head-side mechanism test: the in-worktree hook records the
+    /// worker's TRUE head — the tip at its LAST commit (last-wins), re-captured on
+    /// rebase. This is the head analogue of the #523 base fix. The bug it guards:
+    /// a completion-time `git rev-parse HEAD` in the detached worktree can read as
+    /// an ANCESTOR of the true tip after a concurrent-push integration, inverting
+    /// the verifier's `work_base..head` range and false-failing N-commit work.
+    #[tokio::test]
+    async fn work_head_hook_captures_tip_across_multi_commit_and_rebase() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = tmp.path().join("proj");
+        std::fs::create_dir(&repo).unwrap();
+
+        let plain = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        let rev = |r: &str| {
+            String::from_utf8(plain(&["rev-parse", r]).stdout)
+                .unwrap()
+                .trim()
+                .to_string()
+        };
+
+        plain(&["init", "-q", "-b", "work"]);
+        plain(&["config", "user.email", "t@t.t"]);
+        plain(&["config", "user.name", "t"]);
+        std::fs::write(repo.join("a.txt"), "base\n").unwrap();
+        plain(&["add", "-A"]);
+        plain(&["commit", "-q", "-m", "B0"]);
+        let b0 = rev("HEAD");
+
+        let hooks_dir = install_work_base_hooks(&repo).await.expect("hooks install");
+        let work_head_file = hooks_dir.join("work_head");
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .env("GIT_CONFIG_COUNT", "1")
+                .env("GIT_CONFIG_KEY_0", "core.hooksPath")
+                .env("GIT_CONFIG_VALUE_0", &hooks_dir)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+
+        // First worker commit W1 — head records W1.
+        std::fs::write(repo.join("w1.txt"), "one\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "W1"]);
+        let w1 = rev("HEAD");
+        assert_eq!(
+            std::fs::read_to_string(&work_head_file).unwrap().trim(),
+            w1,
+            "head must record the first commit"
+        );
+
+        // Second worker commit W2 — head LAST-WINS to the tip (the exact #531 bug:
+        // a stale read would leave the head at the ancestor W1, not the tip W2).
+        std::fs::write(repo.join("w2.txt"), "two\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "W2"]);
+        let w2 = rev("HEAD");
+        assert_ne!(w1, w2, "W2 is a distinct, newer commit than W1");
+        assert_eq!(
+            std::fs::read_to_string(&work_head_file).unwrap().trim(),
+            w2,
+            "head must re-capture (last-wins) to the worker's TIP, not stay at the ancestor W1"
+        );
+
+        // A concurrent push lands a foreign O on the side; the worker rebases its
+        // two commits onto it. post-rewrite must re-capture head to the rebased tip.
+        plain(&["branch", "side", &b0]);
+        plain(&["checkout", "-q", "side"]);
+        std::fs::write(repo.join("other.txt"), "concurrent\n").unwrap();
+        plain(&["add", "-A"]);
+        plain(&["commit", "-q", "-m", "O-foreign"]);
+        plain(&["checkout", "-q", "work"]);
+        git(&["rebase", "-q", "side"]);
+        let rebased_tip = rev("HEAD");
+        assert_eq!(
+            std::fs::read_to_string(&work_head_file).unwrap().trim(),
+            rebased_tip,
+            "after a rebase the head must re-capture to the new rebased tip"
         );
     }
 
