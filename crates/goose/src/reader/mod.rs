@@ -130,7 +130,7 @@ fn min_confidence() -> f64 {
 pub fn content_key(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    format!("reader:file:{:x}", hasher.finalize())
+    format!("reader:file:{}", hex::encode(hasher.finalize()))
 }
 
 /// Weigh OCR volume AND confidence to classify an image as visual vs textual.

@@ -95,6 +95,7 @@ clap = { workspace = true }
 indoc = { workspace = true }
 nanoid = "0.4"
 sha2 = { workspace = true }
+hex = "0.4.3"
 # Reader (#296) Phase 2: PDF text-layer extraction (same lopdf approach as the
 # computercontroller pdf_tool; reused here to route output to the Brain).
 lopdf = "0.36.0"

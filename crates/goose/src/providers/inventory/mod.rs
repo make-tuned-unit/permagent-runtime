@@ -119,7 +119,7 @@ impl InventoryIdentityInput {
         Ok(InventoryIdentity {
             provider_id,
             provider_family,
-            inventory_key: format!("{digest:x}"),
+            inventory_key: hex::encode(digest),
         })
     }
 }

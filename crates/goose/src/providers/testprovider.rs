@@ -111,7 +111,7 @@ impl TestProvider {
         let serialized = serde_json::to_string(&stable_messages).unwrap_or_default();
         let mut hasher = Sha256::new();
         hasher.update(serialized.as_bytes());
-        format!("{:x}", hasher.finalize())
+        hex::encode(hasher.finalize())
     }
 
     fn load_records(file_path: &str) -> Result<HashMap<String, TestRecord>> {
