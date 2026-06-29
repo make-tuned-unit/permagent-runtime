@@ -147,6 +147,7 @@ pub static SURFACE_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::brain_handle::BRAIN_FEATURE,
     crate::config::agent_identity::PERSONA_PICKER_FEATURE,
     crate::agents::platform_extensions::project_manager::BUILD_TAB_FEATURE,
+    crate::agents::platform_extensions::project_manager::PROJECT_WORKSPACE_FEATURE,
     crate::inbox::INBOX_FEATURE,
 ];
 
@@ -474,8 +475,15 @@ mod tests {
     /// added without a co-located descriptor wired into [`WORKER_DESCRIPTORS`].
     const KNOWN_WORKER_IDS: &[&str] = &["scheduler", "librarian"];
     /// Every known surface id must have exactly one descriptor.
-    const KNOWN_SURFACE_IDS: &[&str] =
-        &["reader", "world_view", "brain", "persona", "build", "inbox"];
+    const KNOWN_SURFACE_IDS: &[&str] = &[
+        "reader",
+        "world_view",
+        "brain",
+        "persona",
+        "build",
+        "projects",
+        "inbox",
+    ];
     /// The Phase-2-v1 lesson set — each must resolve to a descriptor with steps.
     const V1_LESSON_IDS: &[&str] = &["reader", "brain", "scheduler", "persona"];
 
