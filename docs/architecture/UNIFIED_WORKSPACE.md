@@ -101,8 +101,62 @@ Rationale:
 This makes the boundary crisp: **SQLite owns *who* (identity + a fast denormalized card); the graph owns *what we know*
 (typed, sourced, arbitrated attributes).** Writes flow into the graph; the projection follows.
 
+### 2.1 Why Option C is one source of truth, not two stores that drift
+
+The objection to any two-table design is the bug class behind half this codebase's incidents: *two stores that can
+disagree, and no rule for which is right.* Option C does not have two sources of truth. It has **one source (the graph)
+and one cache (the projection columns).** The distinction is structural, not nominal, and it answers the three questions
+that gate this ruling:
+
+**(1) Where does manual-vs-Enricher arbitration live? — The graph only. The projection never arbitrates.**
+
+There is exactly one arbiter: `FieldSource` manual-takes-precedence, inside the graph (already built, #499). The write
+path for *every* writer — human edit (2b) and Enricher (4) — is a single choke point:
+
+```
+write(entity_uuid, field, value, source)            // source = Manual (2b) | Enriched (4)
+  ├─ graph_id = bridge(entity_uuid)                  // §3 persisted key
+  ├─ set_entity_field(graph_id, field, value, source)  // graph applies manual-wins HERE, the only place
+  ├─ authoritative = entity_fields_for(graph_id)[field] // read back the POST-arbitration value
+  └─ if field ∈ {role, company, email, ...}: project authoritative → people column
+```
+
+The projection write takes the value the graph *already decided*. It never sees a conflict, because conflict resolution
+happened upstream and it only ever copies the winner. A human edit and an Enricher write that target the same field both
+go through `set_entity_field`; the graph picks the winner by `FieldSource`; the projection mirrors whatever won. **The
+SQLite column has no write-time conflict logic because it is never a writer's target — only the graph is.**
+
+**(2) The staleness window — closed by a single write choke point.**
+
+Refresh is *synchronous and in-band*: the projection is written in the same handler, immediately after the graph write,
+as step 4 above. There is no async lag for any write that goes through the choke point. The window is non-zero only for a
+writer that bypasses it — which is why the design rule is **all entity_fields writes go through the one
+`write()` seam, including the Enricher.** The Enricher (slice 4) calls the same function as the 2b edit handler; it does
+not write the graph raw. Given that discipline, a list read (projection) and a modal read-through (E, live graph) cannot
+disagree on a *committed* write, because the projection commits with it. The only values that differ between projection
+and graph are ones mid-flight in a single request — not a persisted state either surface can observe.
+
+**(3) Drift failure mode — self-healing by overwrite, never reconciliation.**
+
+Because the projection holds **zero authoritative state** — every column value is a pure function of the graph's current
+post-arbitration fields — drift can only ever be a *stale cache*, never a *competing truth*. Healing is therefore an
+unconditional re-derivation, not a merge:
+
+```
+reproject(entity_uuid):                  // idempotent, pure overwrite-from-truth
+  graph_id   = bridge(entity_uuid)
+  fields     = entity_fields_for(graph_id)
+  people.columns ← project(fields)       // overwrite; the graph is right by definition
+```
+
+`reproject` runs (a) on-demand, (b) as a boot reconciliation sweep over all people, (c) on any detected mismatch. It can
+never make a wrong decision because there is no decision — it copies truth downward. This is the same discipline as B:
+one immutable/authoritative key, derived views below it. The "two stores that drift" class requires two *sources of
+truth*; Option C structurally has one, so the class cannot arise. If the projection is ever wrong, the answer is always
+"re-project," never "figure out which store to believe."
+
 > **DECISION POINT A** (§7) — confirm Option C, or pick A/B. Everything downstream (write path, Enricher, the modal's
-> data source) keys off this.
+> data source) keys off this. §2.1 answers the arbitration / staleness / drift questions this ruling depends on.
 
 ---
 
@@ -205,9 +259,12 @@ From slice 2a forward. Each slice is independently shippable and gated only by t
 | **5** | **Company as entity** + Marketing surface as a third consumer of the shared model | C = yes | Org identity rows |
 | **6** | Full agent-managed workspace: agent reads/writes `UnifiedEntity` across all three surfaces; cross-surface goal origination | 2b–5 | — |
 
-**Critical path:** A → B → 2b → 4. The bridge (B) is the single linchpin: it unblocks both human editing (2b) and the
-Enricher (4). Slice 3 (the resolver) is **parallelizable** — it is read-only and depends only on the Company ruling (C),
-not on the write path. Marketing (5) and the unified agent (6) are downstream of everything.
+**Critical path:** A → B → 2b → *(manually verify the write path)* → 4. The bridge (B) is the single linchpin: it
+unblocks both human editing (2b) and the Enricher (4). **2b precedes 4 deliberately** (D) — manual editing is
+lower-risk and proves the write path + B's bridge + the `FieldSource` arbitration *with a human in the loop* before the
+Enricher writes autonomously. Get the write path proven by hand, then let the Enricher use the same `write()` seam (§2.1).
+Slice 3 (the resolver) is **parallelizable** — it is read-only and depends only on the Company ruling (C), not on the
+write path. Marketing (5) and the unified agent (6) are downstream of everything.
 
 ### Self-knowledge note
 
@@ -220,13 +277,18 @@ as the feature. This doc flags the obligation; the slices own the implementation
 
 ## 7. Decision points (need Jesse's ruling)
 
-| # | Decision | Recommendation | Gates |
+| # | Decision | Ruling | Gates |
 |---|---|---|---|
-| **A** | Authoritative store for a person's typed attributes | **Option C** — graph authoritative for attributes; people table = identity anchor + denormalized projection | slice 2b, slice 4 (everything) |
-| **B** | The canonical_id ↔ EntityId bridge | **Persist `graph_entity_id` on the people row**, set at creation, immutable across rename (not derive-on-read) | the entire write path |
-| **C** | Is Company a first-class entity in the shared read model? | **Defer to slice 5** — keep `company` a projected string until Marketing needs company-level relationships | slice 3 shape, slice 5 |
-| **D** | Slice ordering — is the A→B→2b→4 critical path with slice 3 parallel the right sequence? | **Yes** as tabled; confirm or reprioritize (e.g. Enricher before human editing) | the whole roadmap |
-| **E** | Projection direction in Option C — should `GET /api/people` read the SQLite projection (fast, eventually-consistent on graph writes) or always read-through to the graph (consistent, slower at list scale)? | **Projection for lists, read-through for the modal** | slice 2b/3 perf |
+| **A** | Authoritative store for a person's typed attributes | **PENDING Jesse's read** — recommended **Option C** (graph authoritative; people table = identity anchor + projection). §2.1 answers the arbitration / staleness / drift questions this ruling depends on. | slice 2b, slice 4 (everything) |
+| **B** | The canonical_id ↔ EntityId bridge | ✅ **RULED 2026-06-29** — persist `graph_entity_id` on the people row, set at creation, **immutable across rename** (not derive-on-read). Derive-on-read is correct today but severs silently on the first rename — the "correct-by-current-conditions, breaks on state change" class. Build B as the foundation. | the entire write path |
+| **C** | Is Company a first-class entity in the shared read model? | ✅ **RULED 2026-06-29** — **defer to slice 5.** Keep `company` a projected string until Marketing needs company-level relationships; no entity machinery before a relationship to model. | slice 3 shape, slice 5 |
+| **D** | Slice ordering | **PENDING A** — A→B→**2b→4** confirmed direction: human editing (2b) proves the write path + bridge + arbitration **with a human in the loop** *before* the Enricher writes autonomously (4). Gate inserted: `A→B→2b→(manually verify the write path)→4`. Confirm once A is ruled. | the whole roadmap |
+| **E** | Projection direction in Option C | ✅ **RULED 2026-06-29** — **projection for list reads, read-through for the modal.** Lists hit the fast SQLite projection; the modal reads through to the live graph for fresh/rich provenance. | slice 2b/3 perf |
+
+**Build status:** B/C/E ruled, but **nothing builds from this doc yet.** B is the buildable foundation and is held for a
+future session — it is a Rust change (`graph_entity_id` column + persist-on-create path + migration), it should not start
+while slice 2a (#537) is unmerged/undogfooded (2a is the read layer B's write path extends), and **A must be ruled first**
+so B is built knowing the authoritative-store model. Scoped, not started.
 
 ---
 
