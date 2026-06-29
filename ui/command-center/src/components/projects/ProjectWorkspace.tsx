@@ -68,7 +68,7 @@ function ProjectSwitcher({ project, projects, onSwitch }: {
   projects: Project[];
   onSwitch: (id: string) => void;
 }) {
-  const { colors } = useTheme();
+  const { colors, gradient } = useTheme();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -105,7 +105,7 @@ function ProjectSwitcher({ project, projects, onSwitch }: {
         <div style={{
           position: 'absolute', top: '100%', left: 0, marginTop: 6, zIndex: 50,
           minWidth: 200, maxHeight: 320, overflow: 'auto',
-          background: '#0F1729', border: `1px solid ${colors.border}`, borderRadius: 8,
+          background: gradient.dropdown, border: `1px solid ${colors.border}`, borderRadius: 8,
           boxShadow: '0 8px 24px rgba(0,0,0,0.4)', padding: 4,
         }}>
           {sorted.map(p => (

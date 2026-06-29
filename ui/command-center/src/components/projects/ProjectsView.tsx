@@ -583,7 +583,7 @@ card, onPointerDown, isDragging, onDelete, onCancel }: {
   onDelete: () => void;
   onCancel?: () => void;
 }) {
-  const { colors } = useTheme();
+  const { colors, gradient } = useTheme();
   const [showMenu, setShowMenu] = useState(false);
 
   return (
@@ -621,7 +621,7 @@ card, onPointerDown, isDragging, onDelete, onCancel }: {
           onPointerDown={e => e.stopPropagation()}
           style={{
             position: 'absolute', top: '100%', right: 0, marginTop: 2, zIndex: 10,
-            background: '#0F1729', border: `1px solid ${colors.border}`, borderRadius: 6,
+            background: gradient.dropdown, border: `1px solid ${colors.border}`, borderRadius: 6,
             boxShadow: '0 4px 16px rgba(0,0,0,0.4)', padding: 2, minWidth: 100,
           }}>
           {onCancel && (
