@@ -363,8 +363,14 @@ export function Browser() {
   // signal so it fires once.
   useEffect(() => {
     if (!pendingBrowserUrl || !api) return;
-    handleOpenUrl(pendingBrowserUrl);
-    clearPendingBrowserUrl();
+    let cancelled = false;
+    (async () => {
+      await handleOpenUrl(pendingBrowserUrl);
+      if (!cancelled) clearPendingBrowserUrl();
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [pendingBrowserUrl, api, handleOpenUrl, clearPendingBrowserUrl]);
 
   const handleNavigate = useCallback(
