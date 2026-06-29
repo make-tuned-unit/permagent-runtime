@@ -611,6 +611,34 @@ async fn git_output(working_dir: &Path, args: &[&str]) -> Result<String, String>
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// `git merge-base --is-ancestor <ancestor> <descendant>`: `Ok(true)` when
+/// `ancestor` is an ancestor of (or equal to) `descendant`, `Ok(false)` when it
+/// is not, `Err` only on a real git error (e.g. an unknown object). Exit 0 = is
+/// ancestor, exit 1 = is not; any other exit is an error. Used to detect an
+/// inverted diff range before diffing (#531).
+async fn git_is_ancestor(
+    working_dir: &Path,
+    ancestor: &str,
+    descendant: &str,
+) -> Result<bool, String> {
+    let output = tokio::process::Command::new("git")
+        .args(["merge-base", "--is-ancestor", ancestor, descendant])
+        .current_dir(working_dir)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .map_err(|e| format!("failed to run git: {}", e))?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        other => Err(format!(
+            "git merge-base --is-ancestor exited {:?}: {}",
+            other,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )),
+    }
+}
+
 /// Analyze the worker's changes and grade declared-path discipline.
 ///
 /// For a head-recorded (external-CLI) goal the diff is anchored to the worker's
@@ -686,6 +714,47 @@ pub async fn analyze_diff(
                      unprovable; refusing to diff against the stale dispatch baseline",
                 );
             };
+            // Defensive (#531): never diff an INVERTED range. `work_base..head` is
+            // valid only when base is an ancestor of head (base = parent of the
+            // worker's first commit; head = its tip). If instead head is an
+            // ancestor of base, the recorded head is wrong (e.g. a stale
+            // completion-time read that landed on an ancestor of the true tip) and
+            // `git diff base head` computes a REVERSE diff — silently turning the
+            // worker's additions into deletions and false-failing correct work.
+            // Record Uncertain LOUDLY rather than emit a confident wrong grade.
+            // (head == base is the genuine empty range, handled by the no-op clamp.)
+            if base != head {
+                match git_is_ancestor(wd, head, base).await {
+                    Ok(true) => {
+                        tracing::error!(
+                            target: "permagentd::verification",
+                            work_base = %base,
+                            head_commit = %head,
+                            "INVERTED diff range: head is an ancestor of work_base — \
+                             the recorded head commit is wrong; recording Uncertain \
+                             instead of diffing a reverse range (#531)"
+                        );
+                        return uncertain_analysis(&format!(
+                            "inverted diff range: head {head} is an ancestor of base \
+                             {base} — the recorded head commit is wrong; refusing to \
+                             compute a reverse diff that would false-fail correct work"
+                        ));
+                    }
+                    Ok(false) => {}
+                    Err(e) => {
+                        tracing::error!(
+                            target: "permagentd::verification",
+                            work_base = %base,
+                            head_commit = %head,
+                            "could not verify diff-range ancestry: {e} — recording \
+                             Uncertain rather than risk a reverse diff (#531)"
+                        );
+                        return uncertain_analysis(&format!(
+                            "could not verify diff-range ancestry ({base}..{head}): {e}"
+                        ));
+                    }
+                }
+            }
             let names = match run_or_error(wd, &["diff", "--name-only", base, head]).await {
                 Ok(o) => o,
                 Err(a) => return a,
@@ -2376,6 +2445,101 @@ mod tests {
             record.degraded_reason
         );
         assert!(record.grades_present(), "model grades should be present");
+    }
+
+    /// Defensive (#531): an inverted `work_base..head` range — where the recorded
+    /// head is an ANCESTOR of the base (the exact multi-commit false-fail: base
+    /// captured at VERIFY_E, head mis-captured as an older ancestor) — must record
+    /// Uncertain, NOT compute a confident reverse diff. The reverse diff would show
+    /// the worker's additions as deletions and false-fail correct work.
+    #[tokio::test]
+    async fn analyze_diff_rejects_inverted_range_as_uncertain() {
+        let repo = tempfile::tempdir().unwrap();
+        let dir = repo.path();
+        sh(dir, "git init -q -b main");
+        std::fs::write(dir.join("a.txt"), "c\n").unwrap();
+        sh(dir, "git add -A");
+        sh(dir, "git -c user.email=t@t -c user.name=t commit -q -m c");
+        let ancestor = sh(dir, "git rev-parse HEAD"); // older commit (the mis-captured head)
+        std::fs::write(dir.join("a.txt"), "c\nd\n").unwrap();
+        sh(dir, "git add -A");
+        sh(dir, "git -c user.email=t@t -c user.name=t commit -q -m d");
+        std::fs::write(dir.join("a.txt"), "c\nd\ne\n").unwrap();
+        sh(dir, "git add -A");
+        sh(dir, "git -c user.email=t@t -c user.name=t commit -q -m e");
+        let base = sh(dir, "git rev-parse HEAD"); // the correct work_base (VERIFY_E shape)
+
+        // head=ancestor is an ancestor of base → inverted range.
+        let analysis = analyze_diff(
+            Some(dir),
+            Some(&base), // dispatch baseline (unused on the head path)
+            Some(&ancestor),
+            Some(&base),
+            &["**".to_string()],
+        )
+        .await;
+
+        assert_eq!(
+            analysis.path_discipline,
+            Grade::Uncertain,
+            "an inverted range must never produce a confident grade"
+        );
+        assert_eq!(
+            analysis.diff_summary.files_changed, 0,
+            "no reverse diff should be computed"
+        );
+        assert!(
+            analysis
+                .degraded_note
+                .as_deref()
+                .unwrap()
+                .contains("inverted diff range"),
+            "the Uncertain reason must name the inverted range, got: {:?}",
+            analysis.degraded_note
+        );
+    }
+
+    /// The positive control for the #531 guard: a NORMAL range (base is the parent
+    /// of head) diffs cleanly and surfaces the worker's added file — the guard only
+    /// trips on inversion, never on a valid forward range.
+    #[tokio::test]
+    async fn analyze_diff_accepts_normal_forward_range() {
+        let repo = tempfile::tempdir().unwrap();
+        let dir = repo.path();
+        sh(dir, "git init -q -b main");
+        std::fs::write(dir.join("a.txt"), "base\n").unwrap();
+        sh(dir, "git add -A");
+        sh(
+            dir,
+            "git -c user.email=t@t -c user.name=t commit -q -m base",
+        );
+        let base = sh(dir, "git rev-parse HEAD");
+        std::fs::write(dir.join("b.txt"), "work\n").unwrap();
+        sh(dir, "git add -A");
+        sh(
+            dir,
+            "git -c user.email=t@t -c user.name=t commit -q -m work",
+        );
+        let head = sh(dir, "git rev-parse HEAD");
+
+        let analysis = analyze_diff(
+            Some(dir),
+            Some(&base),
+            Some(&head),
+            Some(&base),
+            &["**".to_string()],
+        )
+        .await;
+
+        assert_eq!(
+            analysis.diff_summary.files_changed, 1,
+            "the forward range must surface the worker's one added file"
+        );
+        assert!(
+            analysis.degraded_note.is_none(),
+            "a valid forward range is not degraded, got: {:?}",
+            analysis.degraded_note
+        );
     }
 }
 
