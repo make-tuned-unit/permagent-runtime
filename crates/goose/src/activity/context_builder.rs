@@ -459,6 +459,12 @@ fn render_event_summary(event: &ActivityEvent) -> String {
                 .unwrap_or("?");
             format!("Automation '{}' failed", name)
         }
+        ActivityEventType::TerminalProcessExited => {
+            match event.payload.get("exit_code").and_then(|v| v.as_i64()) {
+                Some(code) => format!("A terminal process exited (code {})", code),
+                None => "A terminal process exited".to_string(),
+            }
+        }
         _ => format!("{:?}", event.event_type),
     }
 }

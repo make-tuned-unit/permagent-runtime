@@ -200,6 +200,16 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
             const payload = e.payload as { session_id: string; code?: number };
             if (payload.session_id === sessionIdRef.current) {
               term.writeln('\r\n\x1b[33m[Process exited]\x1b[0m');
+              // L2-observe (#400): forward the process-exit signal to the bus.
+              if (api) {
+                api.invoke('emit_activity', {
+                  event_type: 'terminal_process_exited',
+                  source_surface: 'terminal',
+                  payload: { session_id: sessionIdRef.current, exit_code: payload.code ?? null },
+                  session_id: null,
+                  project_id: null,
+                }).catch((err: unknown) => console.debug('[activity] terminal_process_exited emission failed:', err));
+              }
             }
           })) ?? null;
 

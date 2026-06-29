@@ -432,6 +432,7 @@ fn event_type_str(t: &ActivityEventType) -> &'static str {
         ActivityEventType::AgentContextProbed => "agent_context_probed",
         ActivityEventType::TerminalSessionStarted => "terminal_session_started",
         ActivityEventType::TerminalSessionEnded => "terminal_session_ended",
+        ActivityEventType::TerminalProcessExited => "terminal_process_exited",
         ActivityEventType::AutomationJobStarted => "automation_job_started",
         ActivityEventType::AutomationJobCompleted => "automation_job_completed",
         ActivityEventType::AutomationJobFailed => "automation_job_failed",

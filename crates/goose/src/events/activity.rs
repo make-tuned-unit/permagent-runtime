@@ -18,7 +18,7 @@
 //!   ChatTurnStarted, BrowserSessionStarted, BrowserSessionEnded,
 //!   FileOpened, ProjectOpened, TerminalCommandStarted,
 //!   TerminalSessionStarted, TerminalSessionEnded, AgentContextProbed,
-//!   AutomationJobStarted
+//!   AutomationJobStarted, TerminalProcessExited
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -41,6 +41,10 @@ pub enum ActivityEventType {
     TerminalCommandCompleted,
     TerminalSessionStarted,
     TerminalSessionEnded,
+    /// The PTY's foreground process (the shell) exited. Distinct from
+    /// `TerminalSessionEnded` (webview unmount) and `TerminalCommandCompleted`
+    /// (a command returned to the prompt). L2-observe only (#400).
+    TerminalProcessExited,
     ProjectSelected,
     ProjectOpened,
     FileOpened,
@@ -148,6 +152,7 @@ fn default_tier(event_type: &ActivityEventType) -> EventTier {
         | ActivityEventType::TerminalCommandStarted
         | ActivityEventType::TerminalSessionStarted
         | ActivityEventType::TerminalSessionEnded
+        | ActivityEventType::TerminalProcessExited
         | ActivityEventType::AgentContextProbed
         | ActivityEventType::AutomationJobStarted => EventTier::Ephemeral,
     }
@@ -224,6 +229,17 @@ pub fn chat_turn_completed(
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
         }),
+    )
+    .with_session(session_id)
+}
+
+/// The PTY's foreground process exited (L2-observe, #400). `exit_code` is
+/// `None` when the platform did not surface a status.
+pub fn terminal_process_exited(session_id: &str, exit_code: Option<i32>) -> ActivityEvent {
+    ActivityEvent::new(
+        ActivityEventType::TerminalProcessExited,
+        SourceSurface::Terminal,
+        serde_json::json!({ "exit_code": exit_code }),
     )
     .with_session(session_id)
 }
@@ -315,5 +331,23 @@ mod tests {
         assert!(recent
             .iter()
             .any(|e| e.session_id.as_deref() == Some("buf-test")));
+    }
+
+    #[test]
+    fn terminal_process_exited_is_ephemeral_and_reaches_the_bus() {
+        // L2-observe (#400): the process-exit signal must be Ephemeral (never
+        // persisted) and must reach a bus consumer via the ring buffer.
+        let exited = terminal_process_exited("sess-exit", Some(0));
+        assert_eq!(exited.tier, EventTier::Ephemeral);
+        assert_eq!(
+            exited.payload.get("exit_code").and_then(|v| v.as_i64()),
+            Some(0)
+        );
+
+        emit_activity(exited);
+        let recent = recent_activity(20);
+        assert!(recent
+            .iter()
+            .any(|e| e.event_type == ActivityEventType::TerminalProcessExited));
     }
 }
