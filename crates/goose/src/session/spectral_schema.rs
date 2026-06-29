@@ -38,6 +38,16 @@ use tracing::{info, warn};
 /// project creation) and the goal lifecycle columns, showing 8 columns with
 /// duplicates. `migrate_v13_to_v14` deletes the redundant EMPTY manual columns
 /// (never one holding cards). Idempotent and base-independent.
+///
+/// NOTE on the version drift: this constant intentionally stays at 14 even though
+/// the migration chain now runs to v19 (`migrate_v14_to_v15` … `migrate_v18_to_v19`).
+/// It is the stamp `init_spectral_db` applies to a *fresh* DB — those later steps
+/// are all idempotent, base-independent data fixups / drops that `init` already
+/// reflects directly, so they re-run harmlessly on the next boot to advance an
+/// existing DB. The const is therefore the fresh-init base stamp, NOT "latest";
+/// migration gating in `SessionStorage::pool` uses hardcoded `version < N`
+/// literals, not this value. Bumping it would skip the idempotent v15–v19 steps
+/// on fresh installs — `verify_schema_version` only *warns* on the mismatch.
 pub const SPECTRAL_SCHEMA_VERSION: i32 = 14;
 
 /// Initialize the Spectral database schema from scratch.
@@ -196,134 +206,15 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
         .execute(&mut *tx)
         .await?;
 
-    // ── MEMORIES ──
-    sqlx::query(
-        "CREATE TABLE memories (
-            id              TEXT PRIMARY KEY,
-            user_id         TEXT NOT NULL REFERENCES users(id),
-            key             TEXT NOT NULL,
-            content         TEXT NOT NULL,
-            category        TEXT NOT NULL DEFAULT 'core',
-            wing            TEXT,
-            hall            TEXT,
-            room            TEXT,
-            embedding       BLOB,
-            valid_from      TEXT,
-            valid_until     TEXT,
-            superseded_by   TEXT,
-            confidence      REAL DEFAULT 1.0,
-            signal_score    REAL DEFAULT 0.5,
-            source_session  TEXT REFERENCES sessions(id),
-            created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-            updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-        )",
-    )
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query("CREATE INDEX idx_memories_user ON memories(user_id)")
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("CREATE INDEX idx_memories_wing ON memories(wing)")
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("CREATE INDEX idx_memories_hall ON memories(hall)")
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query(
-        "CREATE INDEX idx_memories_current ON memories(valid_until) WHERE valid_until IS NULL",
-    )
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query("CREATE INDEX idx_memories_signal ON memories(signal_score DESC)")
-        .execute(&mut *tx)
-        .await?;
-
-    // ── MEMORIES FTS ──
-    // FTS virtual tables and triggers must be created outside the transaction
-    // on some SQLite builds, so we commit first and create them after.
-    // Actually sqlx + SQLite handles this fine within the same connection,
-    // but FTS triggers reference the base table so we create them in order.
-
-    sqlx::query(
-        "CREATE VIRTUAL TABLE memories_fts USING fts5(
-            key, content, content=memories, content_rowid=rowid
-        )",
-    )
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query(
-        "CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
-            INSERT INTO memories_fts(rowid, key, content)
-            VALUES (new.rowid, new.key, new.content);
-        END",
-    )
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query(
-        "CREATE TRIGGER memories_ad AFTER DELETE ON memories BEGIN
-            INSERT INTO memories_fts(memories_fts, rowid, key, content)
-            VALUES ('delete', old.rowid, old.key, old.content);
-        END",
-    )
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query(
-        "CREATE TRIGGER memories_au AFTER UPDATE ON memories BEGIN
-            INSERT INTO memories_fts(memories_fts, rowid, key, content)
-            VALUES ('delete', old.rowid, old.key, old.content);
-            INSERT INTO memories_fts(rowid, key, content)
-            VALUES (new.rowid, new.key, new.content);
-        END",
-    )
-    .execute(&mut *tx)
-    .await?;
-
-    // ── KNOWLEDGE GRAPH ──
-    sqlx::query(
-        "CREATE TABLE knowledge_graph (
-            id                TEXT PRIMARY KEY,
-            subject           TEXT NOT NULL,
-            predicate         TEXT NOT NULL,
-            object            TEXT NOT NULL,
-            valid_from        TEXT NOT NULL,
-            valid_until       TEXT,
-            source_memory_id  TEXT REFERENCES memories(id),
-            confidence        REAL DEFAULT 1.0,
-            created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-        )",
-    )
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query("CREATE INDEX idx_kg_subject ON knowledge_graph(subject)")
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("CREATE INDEX idx_kg_predicate ON knowledge_graph(predicate)")
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("CREATE INDEX idx_kg_object ON knowledge_graph(object)")
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("CREATE INDEX idx_kg_subject_predicate ON knowledge_graph(subject, predicate)")
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query(
-        "CREATE INDEX idx_kg_current ON knowledge_graph(valid_until) WHERE valid_until IS NULL",
-    )
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query(
-        "CREATE VIRTUAL TABLE knowledge_graph_fts USING fts5(
-            subject, predicate, object, content=knowledge_graph
-        )",
-    )
-    .execute(&mut *tx)
-    .await?;
+    // ── MEMORIES / KNOWLEDGE GRAPH (removed) ──
+    // permagent.db once carried a dormant copy of the Spectral Phase-1 `memories`
+    // and `knowledge_graph` tables (plus their FTS, triggers, and current_* views).
+    // The live Brain lives in a separate file, `~/.permagent/brain/memory.db`
+    // (via `read_only_brain_conn()` / `SafeBrain`), so these were never read or
+    // written by the daemon/agent/GUI — only the now-removed `permagent memory`
+    // CLI subcommand touched them, as a dead-end loop. They are dropped from
+    // existing DBs by `migrate_v18_to_v19` and are no longer created here, leaving
+    // one unambiguous `memories` table in the system (Spectral's).
 
     // ── TASKS ──
     sqlx::query(
@@ -721,20 +612,8 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     .await?;
 
     // ── VIEWS ──
-    sqlx::query(
-        "CREATE VIEW current_memories AS
-        SELECT * FROM memories WHERE valid_until IS NULL ORDER BY created_at DESC",
-    )
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query(
-        "CREATE VIEW current_knowledge AS
-        SELECT * FROM knowledge_graph WHERE valid_until IS NULL ORDER BY valid_from DESC",
-    )
-    .execute(&mut *tx)
-    .await?;
-
+    // (current_memories / current_knowledge removed with the dead memories +
+    // knowledge_graph tables — see the MEMORIES / KNOWLEDGE GRAPH note above.)
     sqlx::query(
         "CREATE VIEW recent_tasks AS
         SELECT * FROM tasks WHERE status = 'completed' ORDER BY completed_at DESC LIMIT 100",
@@ -1119,6 +998,72 @@ pub async fn migrate_v17_to_v18(pool: &Pool<Sqlite>) -> Result<()> {
         .execute(pool)
         .await?;
     info!("Spectral schema migrated to v18 (risk_policy goal_cancel reconciled to Tier 0)");
+
+    Ok(())
+}
+
+/// Migrate v18 -> v19: drop the dead `memories` and `knowledge_graph` tables.
+///
+/// permagent.db carried a dormant copy of the Spectral Phase-1 schema. The live
+/// Brain (knowledge graph + distilled memories) lives in a SEPARATE file,
+/// `~/.permagent/brain/memory.db`, reached via `read_only_brain_conn()` /
+/// `SafeBrain` — never these tables. Both `memories` and `knowledge_graph` here
+/// held 0 rows and had no readers; the only code touching `memories` was the
+/// `permagent memory` CLI subcommand, a dead-end loop removed alongside this
+/// migration. `knowledge_graph.source_memory_id REFERENCES memories(id)` made the
+/// two a single co-dead unit, so they are dropped together to leave one
+/// unambiguous `memories` table in the system (Spectral's), period.
+///
+/// Idempotent (`DROP ... IF EXISTS`) and base-version independent. Dependent
+/// objects are dropped before their base tables, and `knowledge_graph` (the FK
+/// referencer) before `memories`. Records v19. SPECTRAL_SCHEMA_VERSION stays 14 —
+/// fresh installs never create these tables (removed from `init_spectral_db`), so
+/// the `DROP`s are no-ops there; this migration targets only existing DBs.
+pub async fn migrate_v18_to_v19(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v18 -> v19 (drop dead memories + knowledge_graph tables)");
+
+    let mut tx = pool.begin().await?;
+
+    // Views and triggers first (they reference the base tables).
+    sqlx::query("DROP VIEW IF EXISTS current_memories")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DROP VIEW IF EXISTS current_knowledge")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DROP TRIGGER IF EXISTS memories_ai")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DROP TRIGGER IF EXISTS memories_ad")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DROP TRIGGER IF EXISTS memories_au")
+        .execute(&mut *tx)
+        .await?;
+
+    // FTS virtual tables (drops their shadow tables automatically).
+    sqlx::query("DROP TABLE IF EXISTS memories_fts")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DROP TABLE IF EXISTS knowledge_graph_fts")
+        .execute(&mut *tx)
+        .await?;
+
+    // knowledge_graph references memories(id), so drop the referencer first.
+    sqlx::query("DROP TABLE IF EXISTS knowledge_graph")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DROP TABLE IF EXISTS memories")
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+
+    // Hardcoded (v19) per the migration precedent in this file.
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (19)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v19 (dead memories + knowledge_graph tables dropped)");
 
     Ok(())
 }
@@ -2343,5 +2288,108 @@ mod inbox_schema_tests {
         .unwrap();
         assert_eq!(cancel_count, 1, "no duplicate goal_cancel row on re-run");
         assert_eq!(push_tier, 1, "customization still preserved after re-run");
+    }
+
+    /// Count schema objects (table/view/trigger) by exact name.
+    async fn object_exists(pool: &Pool<Sqlite>, name: &str) -> bool {
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = ?1")
+            .bind(name)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        n > 0
+    }
+
+    /// Re-create the dormant pre-v19 `memories` + `knowledge_graph` subset that
+    /// `init_spectral_db` used to build (now removed). Lets the test simulate an
+    /// existing DB so it can prove `migrate_v18_to_v19` drops the whole unit.
+    async fn create_legacy_memories_subset(pool: &Pool<Sqlite>) {
+        for stmt in [
+            "CREATE TABLE memories (id TEXT PRIMARY KEY, key TEXT NOT NULL, content TEXT NOT NULL)",
+            "CREATE VIRTUAL TABLE memories_fts USING fts5(key, content, content=memories, content_rowid=rowid)",
+            "CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN \
+                INSERT INTO memories_fts(rowid, key, content) VALUES (new.rowid, new.key, new.content); END",
+            "CREATE TRIGGER memories_ad AFTER DELETE ON memories BEGIN \
+                INSERT INTO memories_fts(memories_fts, rowid, key, content) VALUES ('delete', old.rowid, old.key, old.content); END",
+            "CREATE TRIGGER memories_au AFTER UPDATE ON memories BEGIN \
+                INSERT INTO memories_fts(memories_fts, rowid, key, content) VALUES ('delete', old.rowid, old.key, old.content); \
+                INSERT INTO memories_fts(rowid, key, content) VALUES (new.rowid, new.key, new.content); END",
+            "CREATE TABLE knowledge_graph (id TEXT PRIMARY KEY, subject TEXT NOT NULL, predicate TEXT NOT NULL, \
+                object TEXT NOT NULL, valid_until TEXT, source_memory_id TEXT REFERENCES memories(id))",
+            "CREATE VIRTUAL TABLE knowledge_graph_fts USING fts5(subject, predicate, object, content=knowledge_graph)",
+            "CREATE VIEW current_memories AS SELECT * FROM memories",
+            "CREATE VIEW current_knowledge AS SELECT * FROM knowledge_graph WHERE valid_until IS NULL",
+        ] {
+            sqlx::query(stmt).execute(pool).await.unwrap();
+        }
+    }
+
+    /// migrate_v18_to_v19: the dead `memories` + `knowledge_graph` subset (tables,
+    /// FTS, triggers, views) must be gone after the migration, the version stamped
+    /// to 19, a re-run must be a clean no-op, and the migration must not error on a
+    /// fresh DB that never had the tables (idempotent `DROP ... IF EXISTS`).
+    #[tokio::test]
+    async fn migrate_v18_to_v19_drops_dead_memories_and_knowledge_graph() {
+        let pool = mem_pool().await;
+        init_spectral_db(&pool).await.unwrap();
+
+        // Fresh init no longer creates these — prove that, then simulate a pre-v19
+        // DB by re-creating the dormant subset.
+        assert!(
+            !object_exists(&pool, "memories").await,
+            "init_spectral_db must no longer create the dead memories table"
+        );
+        create_legacy_memories_subset(&pool).await;
+        sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (18)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let dead_objects = [
+            "memories",
+            "memories_fts",
+            "memories_ai",
+            "memories_ad",
+            "memories_au",
+            "knowledge_graph",
+            "knowledge_graph_fts",
+            "current_memories",
+            "current_knowledge",
+        ];
+        for obj in dead_objects {
+            assert!(
+                object_exists(&pool, obj).await,
+                "precondition: {obj} present before migration"
+            );
+        }
+
+        migrate_v18_to_v19(&pool).await.unwrap();
+        assert_eq!(current_version(&pool).await, 19);
+
+        for obj in dead_objects {
+            assert!(
+                !object_exists(&pool, obj).await,
+                "{obj} must be dropped after v19"
+            );
+        }
+
+        // Idempotent: a second run over the now-clean DB changes nothing, no error.
+        migrate_v18_to_v19(&pool).await.unwrap();
+        for obj in dead_objects {
+            assert!(
+                !object_exists(&pool, obj).await,
+                "{obj} still gone on re-run"
+            );
+        }
+
+        // Safe on a fresh DB that never had the tables (the fresh-install path).
+        let fresh = mem_pool().await;
+        init_spectral_db(&fresh).await.unwrap();
+        sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (18)")
+            .execute(&fresh)
+            .await
+            .unwrap();
+        migrate_v18_to_v19(&fresh).await.unwrap();
+        assert_eq!(current_version(&fresh).await, 19);
     }
 }
