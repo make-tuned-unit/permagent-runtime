@@ -1,6 +1,7 @@
 # Unified Agent-Managed Workspace — Architecture Design
 
-**Status:** DESIGN — awaiting Jesse's rulings on the decision points (§7).
+**Status:** DECIDED — all five decision points (A–E) ruled 2026-06-29 (§7). Sequenced backlog, not in-flight;
+the first build (B) is gated behind slice 2a (#537) being merged + dogfooded.
 **Scope:** #255 (unifying epic) · #256 (CRM as Brain-backed People view) · #257 (cross-surface context layer).
 **Constraint:** This document designs *forward* from slice 2a's read-only reality. It rules on
 authority, the ID bridge, and the phased path; it does **not** rebuild #530 / #499 / slice 2a.
@@ -61,115 +62,87 @@ points at the wrong (or no) graph node. This is the linchpin decision (§7-B).
 
 ---
 
-## 2. The core problem (#256): who owns a person?
+## 2. The core problem (#256): who owns a person? — RULED
 
-Authority is split, and the split is *load-bearing* — it gates editing (slice 2b) and the Enricher (slice 4):
+> **DECISION A — RULED 2026-06-29: graph-authoritative, SQLite people table = PURE IDENTITY + LINKS only.**
+> Attributes (`role, company, email, phone, notes, last_contact_at`) live **only** in the graph as `entity_fields`,
+> read from there. **No denormalized attribute columns in SQLite — no projection, no cache by default.**
 
-- **people table** is editable-in-principle, fast to list/filter, but **provenance-blind**. If the Enricher writes here,
-  it overwrites a user's manual edit with no record of which won or why.
-- **entity_fields** is provenance-native (`FieldSource`, `source_url`, manual-wins), the natural Enricher target, but
-  is read-only end-to-end today and has no fast list/filter surface (every read is a graph traversal).
+This is a step *beyond* a denormalized-projection design, and deliberately so. The split-authority option (graph owns
+attributes, SQLite holds a fast projection of them) was on the table and rejected for one reason: **a projection is two
+stores that can drift** — the exact bug class behind the dead-memories-table, #515, and half this session's incidents.
+The fix is not *sync-two-stores-carefully*; it is *don't-have-two-stores*. One copy of each attribute, in the graph,
+arbitrated by `FieldSource`.
 
-Three candidate rulings:
+### 2.1 The ruled model
 
-| | A — people table is truth | B — graph is truth | **C — split authority by provenance (RECOMMENDED)** |
-|---|---|---|---|
-| Source of truth | SQLite columns | entity_fields | **Identity in SQLite, attributes in graph** |
-| Enricher writes to | — (can't, no provenance) | entity_fields | entity_fields (`Enriched`) |
-| User edits write to | columns | entity_fields (`Manual`) | entity_fields (`Manual`) **and** project the canonical few back to columns |
-| Provenance | lost | preserved | preserved |
-| Fast list/filter | native | needs a projection/cache | **native** (columns are the projection) |
-| Conflict rule | none | `FieldSource` manual-wins (built) | `FieldSource` manual-wins (built) |
-| Bridge required | no | yes | yes |
-
-### Recommended ruling — Option C: *the graph is authoritative for typed attributes; the people table is the identity anchor + denormalized read projection.*
-
-Rationale:
-
-1. **The conflict-resolution machinery already exists** in the right place. `FieldSource::Manual | Enriched` with
-   manual-takes-precedence is exactly the user-vs-Enricher arbitration slice 4 needs. Option A would force us to rebuild
-   that on plain columns. Option C *uses what #499 already shipped.*
-2. **Identity ≠ attributes.** `entity_uuid` (stable handle), `canonical_id` (display slug), and `display_name` are
-   *identity* — they must live in SQLite because they are the join key for #530's FKs (`project_people.entity_uuid`
-   REFERENCES `people`). You cannot move the join key into the graph without breaking the association layer. So SQLite
-   *keeps* identity by necessity.
-3. **`role / company / email / phone` become a projection.** They are typed attributes → they belong in entity_fields as
-   the authoritative copy. The people-table columns become a **materialized read projection** of the graph's *manual*
-   fields, refreshed on write, so `GET /api/people` stays a single fast indexed SQLite query (no graph traversal per
-   row in a list of hundreds). The list reads the projection; the modal reads the full provenance-rich graph record.
-
-This makes the boundary crisp: **SQLite owns *who* (identity + a fast denormalized card); the graph owns *what we know*
-(typed, sourced, arbitrated attributes).** Writes flow into the graph; the projection follows.
-
-### 2.1 Why Option C is one source of truth, not two stores that drift
-
-The objection to any two-table design is the bug class behind half this codebase's incidents: *two stores that can
-disagree, and no rule for which is right.* Option C does not have two sources of truth. It has **one source (the graph)
-and one cache (the projection columns).** The distinction is structural, not nominal, and it answers the three questions
-that gate this ruling:
-
-**(1) Where does manual-vs-Enricher arbitration live? — The graph only. The projection never arbitrates.**
-
-There is exactly one arbiter: `FieldSource` manual-takes-precedence, inside the graph (already built, #499). The write
-path for *every* writer — human edit (2b) and Enricher (4) — is a single choke point:
+**The people table holds identity and links only:**
 
 ```
-write(entity_uuid, field, value, source)            // source = Manual (2b) | Enriched (4)
-  ├─ graph_id = bridge(entity_uuid)                  // §3 persisted key
-  ├─ set_entity_field(graph_id, field, value, source)  // graph applies manual-wins HERE, the only place
-  ├─ authoritative = entity_fields_for(graph_id)[field] // read back the POST-arbitration value
-  └─ if field ∈ {role, company, email, ...}: project authoritative → people column
+people {
+  entity_uuid       -- opaque, immutable PK (the stable handle; #530 FKs key on this)
+  canonical_id      -- mutable display slug, UNIQUE
+  display_name      -- identity, not an enrichable attribute
+  graph_entity_id   -- NEW (Decision B): immutable bridge key to the graph node
+  -- NO role / company / email / phone / notes / last_contact_at columns
+}
 ```
 
-The projection write takes the value the graph *already decided*. It never sees a conflict, because conflict resolution
-happened upstream and it only ever copies the winner. A human edit and an Enricher write that target the same field both
-go through `set_entity_field`; the graph picks the winner by `FieldSource`; the projection mirrors whatever won. **The
-SQLite column has no write-time conflict logic because it is never a writer's target — only the graph is.**
+Everything #530 needs (the `project_people.entity_uuid` FK) stays in SQLite because the *join key* is identity, not an
+attribute. Everything enrichable moves to the graph. The boundary is now absolute: **SQLite owns *who* (identity + the
+project/association links); the graph owns *everything we know about them*.**
 
-**(2) The staleness window — closed by a single write choke point.**
+### 2.2 Why this is structurally one source of truth
 
-Refresh is *synchronous and in-band*: the projection is written in the same handler, immediately after the graph write,
-as step 4 above. There is no async lag for any write that goes through the choke point. The window is non-zero only for a
-writer that bypasses it — which is why the design rule is **all entity_fields writes go through the one
-`write()` seam, including the Enricher.** The Enricher (slice 4) calls the same function as the 2b edit handler; it does
-not write the graph raw. Given that discipline, a list read (projection) and a modal read-through (E, live graph) cannot
-disagree on a *committed* write, because the projection commits with it. The only values that differ between projection
-and graph are ones mid-flight in a single request — not a persisted state either surface can observe.
+The three questions that gate any attribute-authority design — arbitration, staleness, drift — collapse to trivial under
+this ruling, because there is **no second copy of an attribute anywhere:**
 
-**(3) Drift failure mode — self-healing by overwrite, never reconciliation.**
-
-Because the projection holds **zero authoritative state** — every column value is a pure function of the graph's current
-post-arbitration fields — drift can only ever be a *stale cache*, never a *competing truth*. Healing is therefore an
-unconditional re-derivation, not a merge:
+**(1) Manual-vs-Enricher arbitration — trivially correct, one field, in the graph.**
+There is one `role` field, in `entity_fields`, with one `FieldSource`. A human edit (2b) writes `FieldSource::Manual`;
+the Enricher (4) writes `FieldSource::Enriched`; manual beats enriched (#499, already built). There is no second `role`
+column to reconcile against — arbitration is the whole mechanism, not a step before a copy.
 
 ```
-reproject(entity_uuid):                  // idempotent, pure overwrite-from-truth
-  graph_id   = bridge(entity_uuid)
-  fields     = entity_fields_for(graph_id)
-  people.columns ← project(fields)       // overwrite; the graph is right by definition
+write(entity_uuid, field, value, source)              // source = Manual (2b) | Enriched (4)
+  ├─ graph_id = people.graph_entity_id                 // Decision B, persisted (not derived)
+  └─ set_entity_field(graph_id, field, value, source)  // graph applies manual-wins; DONE. no projection step.
 ```
 
-`reproject` runs (a) on-demand, (b) as a boot reconciliation sweep over all people, (c) on any detected mismatch. It can
-never make a wrong decision because there is no decision — it copies truth downward. This is the same discipline as B:
-one immutable/authoritative key, derived views below it. The "two stores that drift" class requires two *sources of
-truth*; Option C structurally has one, so the class cannot arise. If the projection is ever wrong, the answer is always
-"re-project," never "figure out which store to believe."
+**(2) Staleness window — none, because there is nothing to refresh.**
+Every read of an attribute reads the graph. There is no SQLite copy that could lag a graph write. "No stale reads ever"
+is satisfied by construction, not by careful sync.
 
-> **DECISION POINT A** (§7) — confirm Option C, or pick A/B. Everything downstream (write path, Enricher, the modal's
-> data source) keys off this. §2.1 answers the arbitration / staleness / drift questions this ruling depends on.
+**(3) Drift — cannot occur, no reconciliation primitive needed.**
+Drift requires two copies of a value. There is one. There is no `reproject`, no boot reconciliation sweep, no "which
+store do we believe" — those mechanisms exist only to manage a projection, and there is no projection. The failure class
+is designed out, not mitigated.
+
+### 2.3 Migration implication for slice 2a (note, do not act)
+
+Slice 2a's person modal and People panel **currently read attributes from the people-table list response** (`GET
+/api/people` returns the `role/company/email/...` columns). Under Decision A those columns go away. Sequencing
+consequence (see §6):
+
+1. **Slice 2a lands first, as-is** — it ships against today's people-table columns. Decision A does not block it.
+2. **B/2b then move the attribute source to the graph** — the read path for attributes switches from people-table
+   columns to `entity_fields`, and the columns are dropped in the same migration that adds `graph_entity_id`.
+
+So 2a is *not* rebuilt; its attribute-source is *relocated* in the B/2b work, after 2a is merged and dogfooded.
 
 ---
 
-## 3. The bridge (canonical_id ↔ EntityId)
+## 3. The bridge (canonical_id ↔ EntityId) — RULED
 
-Option C requires a durable `entity_uuid → EntityId` mapping. The graph EntityId must survive a `canonical_id` rename,
-so it **cannot** be re-derived from `canonical_id` at read time.
+> **DECISION B — RULED 2026-06-29: persist `graph_entity_id` immutably on the people row, set once at creation.**
+> Not derive-on-read. This is the **first build** (the column + persist-on-create + migration) and it is now
+> **load-bearing for Decision A** — the identity-only people row keys to the graph (where all attributes live) *through
+> this column*. Without it, an identity-only row has no durable way to reach its attributes.
 
-### Recommended: persist the graph key on the people row, set once at creation.
+The graph EntityId must survive a `canonical_id` rename, so it **cannot** be re-derived from `canonical_id` at read time.
 
-Add a `graph_entity_id TEXT` column to the people table (a future migration, **not built here**), populated at person
-creation from `canonicalize_entity_id(...)` *at that moment*, and **never rewritten on rename**. Reads/writes against the
-graph use `graph_entity_id`; the user-facing slug (`canonical_id`) is free to change without losing the graph anchor.
+Add a `graph_entity_id TEXT` column to the people table, populated at person creation from `canonicalize_entity_id(...)`
+*at that moment*, and **never rewritten on rename**. Reads/writes against the graph use `graph_entity_id`; the user-facing
+slug (`canonical_id`) is free to change without losing the graph anchor.
 
 - **Bootstrap:** because the formats coincide today (§1.3), existing rows backfill by deriving once from their current
   `canonical_id`. Zero risk *for rows that have never been renamed* — and rename history doesn't exist pre-bridge, so
@@ -181,7 +154,10 @@ graph use `graph_entity_id`; the user-facing slug (`canonical_id`) is free to ch
   immutable. If we ever need to re-key the graph node itself, that is a deliberate graph operation, not a side effect of
   a display rename.
 
-> **DECISION POINT B** (§7) — persist `graph_entity_id` (recommended) vs derive-on-read. Gates the whole write path.
+- **Bootstrap:** because the formats coincide today (§1.3), existing rows backfill by deriving once from their current
+  `canonical_id`. Rename history doesn't exist pre-bridge, so the backfill is exact.
+- **Rename semantics become explicit:** `rename_canonical_id` changes the display slug *only*; `graph_entity_id` is
+  immutable. Re-keying the graph node itself becomes a deliberate graph operation, never a side effect of a display rename.
 
 ---
 
@@ -198,15 +174,15 @@ UnifiedEntity {
   id:          entity_uuid (or project id)         // stable handle
   graph_id:    EntityId                            // bridge key, present once §3 lands
   display_name
-  identity:    { canonical_id, ... }               // from people/projects table
-  attributes:  [ { field_name, value, source, source_url, updated_at } ]  // entity_fields, provenance intact
+  identity:    { canonical_id, ... }               // from people/projects table (identity only — Decision A)
+  attributes:  [ { field_name, value, source, source_url, updated_at } ]  // entity_fields ONLY (Decision A), provenance intact
   relationships: [ { kind, target: UnifiedEntityRef, source } ]           // graph edges + association tables
   memories:    [ MemoryRef ]                        // brain recall + project_memories
 }
 ```
 
 A single **resolver** assembles it from the four backing sources (identity table, entity_fields, graph edges +
-`project_people`/`project_memories`, brain recall). Surfaces request projections:
+`project_people`/`project_memories`, brain recall). Surfaces request slices of it:
 
 - **CRM People view** → `kind=Person`, identity + attributes (no project scoping).
 - **Project Overview People panel** → `kind=Person` filtered by `project_people`, + the project-scoped `role`.
@@ -214,24 +190,22 @@ A single **resolver** assembles it from the four backing sources (identity table
 
 The agent (#255) reads/writes through the *same* resolver — no surface-specific agent plumbing.
 
-### 4.2 Company becomes a first-class entity (decision)
+### 4.2 Company stays a string until slice 5 — RULED
 
-Today `company` is a free-text column on `people`. #257's "entity surfaces consistently across all three" implies
-**Company is an entity**, not a string — `EntityPrefix::Org` already exists. Promoting Company unlocks
-company↔people↔project relationships (the spine of CRM + Marketing) but is a real slice (an org identity row + a
-`person.company` → Org reference). It is **not** required for slice 2b/4; it is the §6 slice-5 prerequisite for
-Marketing.
+> **DECISION C — RULED 2026-06-29: `company` stays a string attribute (an `entity_field`) until slice 5.**
+> No entity machinery before there is a relationship to model.
 
-> **DECISION POINT C** (§7) — is Company a first-class entity in v1 of the shared model, or does it stay a string until
-> Marketing needs it? Recommendation: **defer to slice 5** — keep `company` a projected string attribute until a surface
-> needs company-level relationships, to avoid a migration with no consumer.
+Under Decision A, `company` is now a graph `entity_field` (a typed string), not a SQLite column. Promoting it to a
+first-class `EntityPrefix::Org` entity unlocks company↔people↔project relationships (the spine of CRM + Marketing) but is
+a real slice (an Org identity row + a `person.company` → Org reference). It is **not** required for 2b/4 and is the §6
+slice-5 prerequisite for Marketing — deferred until then.
 
 ### 4.3 Where the resolver lives
 
-A new read-only module (`crate::unified` or extend `project_association.rs`) composing `people.rs` +
-`SafeBrain::entity_fields_for` + `read_only_brain_conn`. **No new store.** It is a *view*, mirroring the
-`read_only_brain_conn` pattern: cross-store reads compose at the resolver, never via a new persisted denormalization
-(beyond the §2 projection, which is a write-time cache, not a third source of truth).
+A new read-only module (`crate::unified` or extend `project_association.rs`) composing `people.rs` (identity) +
+`SafeBrain::entity_fields_for` (attributes) + `read_only_brain_conn` (memories). **No new store, no denormalization.** It
+is a pure *view*, mirroring the `read_only_brain_conn` pattern: cross-store reads compose at the resolver at read time.
+Under Decision A there is no write-time cache anywhere in the model — the resolver reads each fact from its single home.
 
 ---
 
@@ -252,19 +226,25 @@ From slice 2a forward. Each slice is independently shippable and gated only by t
 
 | Slice | Deliverable | Depends on | Store touch |
 |---|---|---|---|
-| **2a** *(in-flight)* | Read-only People panel + person modal + associate/disassociate in Project Overview | — | reads only |
-| **2b** | **Edit** person fields (the deferred editing slice) | **A + B** | write path → graph; projection refresh |
-| **3** | `UnifiedEntity` resolver + single read endpoint; CRM People view + Project panel both consume it | C (Company ruling) | new read module, no store |
-| **4** | **Enricher** — background worker writes `FieldSource::Enriched` into entity_fields | A + B (bridge live) | graph writes via wired `set_entity_field` |
-| **5** | **Company as entity** + Marketing surface as a third consumer of the shared model | C = yes | Org identity rows |
+| **2a** *(in-flight, #537)* | Read-only People panel + person modal + associate/disassociate in Project Overview | — | reads only (today's people-table columns) |
+| **B** | `graph_entity_id` column + persist-on-create + migration **+ drop the people-table attribute columns**, relocating attribute reads to `entity_fields` | A + B ruled · **2a merged + dogfooded** | schema migration |
+| **2b** | **Edit** person fields → `set_entity_field(..., Manual)` (the deferred editing slice) | B | graph write only (no projection) |
+| **3** | `UnifiedEntity` resolver + single read endpoint; CRM People view + Project panel both consume it | C | new read module, no store |
+| **4** | **Enricher** — background worker writes `FieldSource::Enriched` through the same `write()` seam | B + 2b verified | graph writes via wired `set_entity_field` |
+| **5** | **Company as entity** (`EntityPrefix::Org`) + Marketing surface as a third consumer of the shared model | C → promote | Org identity rows |
 | **6** | Full agent-managed workspace: agent reads/writes `UnifiedEntity` across all three surfaces; cross-surface goal origination | 2b–5 | — |
 
-**Critical path:** A → B → 2b → *(manually verify the write path)* → 4. The bridge (B) is the single linchpin: it
-unblocks both human editing (2b) and the Enricher (4). **2b precedes 4 deliberately** (D) — manual editing is
-lower-risk and proves the write path + B's bridge + the `FieldSource` arbitration *with a human in the loop* before the
-Enricher writes autonomously. Get the write path proven by hand, then let the Enricher use the same `write()` seam (§2.1).
-Slice 3 (the resolver) is **parallelizable** — it is read-only and depends only on the Company ruling (C), not on the
-write path. Marketing (5) and the unified agent (6) are downstream of everything.
+**Critical path:** 2a (merged+dogfooded) → B → 2b → *(manually verify the write path by hand)* → 4. The bridge (B) is the
+single linchpin: it carries the identity-only people row to its graph attributes (Decision A) **and** unblocks both human
+editing (2b) and the Enricher (4). **2b precedes 4 deliberately** (D) — manual editing is lower-risk and proves the graph
+write path + the `FieldSource` arbitration *with a human in the loop* before the Enricher writes autonomously through the
+same seam. Prove the mechanism by hand, then automate. Slice 3 (the resolver) is **parallelizable** — read-only, depends
+only on C, not on the write path. Marketing (5) and the unified agent (6) are downstream of everything.
+
+**The 2a → B attribute-source migration (Decision A consequence):** 2a ships reading attributes from the people-table
+list response *as it exists today*. B's migration drops those columns and relocates the attribute read to `entity_fields`.
+2a is therefore **not rebuilt** — its attribute-source is *relocated* in B/2b, which is why B is gated on 2a being merged
+and dogfooded first (touching 2a's read path before it has landed would collide).
 
 ### Self-knowledge note
 
@@ -275,20 +255,23 @@ as the feature. This doc flags the obligation; the slices own the implementation
 
 ---
 
-## 7. Decision points (need Jesse's ruling)
+## 7. Decision points — ALL RULED 2026-06-29
 
 | # | Decision | Ruling | Gates |
 |---|---|---|---|
-| **A** | Authoritative store for a person's typed attributes | **PENDING Jesse's read** — recommended **Option C** (graph authoritative; people table = identity anchor + projection). §2.1 answers the arbitration / staleness / drift questions this ruling depends on. | slice 2b, slice 4 (everything) |
-| **B** | The canonical_id ↔ EntityId bridge | ✅ **RULED 2026-06-29** — persist `graph_entity_id` on the people row, set at creation, **immutable across rename** (not derive-on-read). Derive-on-read is correct today but severs silently on the first rename — the "correct-by-current-conditions, breaks on state change" class. Build B as the foundation. | the entire write path |
-| **C** | Is Company a first-class entity in the shared read model? | ✅ **RULED 2026-06-29** — **defer to slice 5.** Keep `company` a projected string until Marketing needs company-level relationships; no entity machinery before a relationship to model. | slice 3 shape, slice 5 |
-| **D** | Slice ordering | **PENDING A** — A→B→**2b→4** confirmed direction: human editing (2b) proves the write path + bridge + arbitration **with a human in the loop** *before* the Enricher writes autonomously (4). Gate inserted: `A→B→2b→(manually verify the write path)→4`. Confirm once A is ruled. | the whole roadmap |
-| **E** | Projection direction in Option C | ✅ **RULED 2026-06-29** — **projection for list reads, read-through for the modal.** Lists hit the fast SQLite projection; the modal reads through to the live graph for fresh/rich provenance. | slice 2b/3 perf |
+| **A** | Authoritative store for a person's attributes | ✅ **graph-authoritative; SQLite people table = PURE IDENTITY + LINKS only** (`entity_uuid, canonical_id, display_name, graph_entity_id`, + #530 project FK links). **No attribute columns in SQLite, no projection, no cache.** Attributes (`role/company/email/phone/notes`) live only in `entity_fields`, read from the graph. A projection is "two stores that can drift" (dead-memories-table, #515); the fix is don't-have-two-stores. Manual-wins is then trivially correct — one field, `FieldSource::Manual` beats `Enriched`, nothing to reconcile. (§2) | slice 2b, slice 4 (everything) |
+| **B** | The canonical_id ↔ EntityId bridge | ✅ persist `graph_entity_id` on the people row, at creation, **immutable across rename** (not derive-on-read — correct today, severs silently on first rename). **First build.** Now load-bearing for A: the identity-only row reaches its graph attributes through this column. (§3) | the entire write path |
+| **C** | Company a first-class entity now? | ✅ **defer to slice 5.** `company` stays a string `entity_field` until Marketing needs company-level relationships; no entity machinery before a relationship to model. (§4.2) | slice 5 |
+| **D** | Slice ordering | ✅ **2a → B → 2b → *(verify by hand)* → 4**, slice 3 (resolver) parallel. 2b (manual editing) before 4 (Enricher): prove the graph write path + arbitration with a human in the loop before the Enricher writes autonomously through it. (§6) | the whole roadmap |
+| **E** | Read path for attributes | ✅ **resolved by A — no SQLite projection exists, so both the panel list AND the modal read attributes from the graph** (satisfies "no stale reads ever"). **Mechanism is empirical: MEASURE graph attribute-read latency for a realistic N-person panel first.** If per-render read-through is panel-acceptable, read-through is the default — simplest, drift-proof, no cache. **Only if measured-slow**, add a read cache as an explicit optimization layer (never the authoritative store). Measure before building any cache. | slice 2b/3 perf |
 
-**Build status:** B/C/E ruled, but **nothing builds from this doc yet.** B is the buildable foundation and is held for a
-future session — it is a Rust change (`graph_entity_id` column + persist-on-create path + migration), it should not start
-while slice 2a (#537) is unmerged/undogfooded (2a is the read layer B's write path extends), and **A must be ruled first**
-so B is built knowing the authoritative-store model. Scoped, not started.
+**Build status:** all five ruled — this is now decided, buildable architecture — but **nothing builds from this doc yet:**
+1. Gated behind **slice 2a (#537) being dogfooded + merged.** Decision A relocates where 2a's modal sources attributes
+   (people-table columns → graph), so 2a lands first as-is, then B/2b move the source.
+2. **B is the first build** (the `graph_entity_id` column + persist-on-create + the migration that drops the attribute
+   columns) — a Rust/schema change that waits for a clean rebuild slot.
+
+Sequenced backlog (`B → 2b → 4`, slice 3 parallel), **not in-flight.**
 
 ---
 
@@ -297,6 +280,6 @@ so B is built knowing the authoritative-store model. Scoped, not started.
 - Does **not** touch `ProjectOverview.tsx` / people components (slice 2a owns them).
 - Does **not** add the `graph_entity_id` column, wire `set_entity_field`, or build the resolver — those are slices,
   authored after the rulings.
-- Does **not** re-key the Brain by project (§5) or move identity into the graph (§2.2) — both would break #530's FKs.
-- Does **not** introduce a third store. The only new persisted artifact proposed is one *column* (the bridge) and a
-  *write-time projection* of already-authoritative graph data.
+- Does **not** re-key the Brain by project (§5) or move identity into the graph (§2.1) — both would break #530's FKs.
+- Does **not** introduce a third store, a projection, or a cache. The only new persisted artifact proposed is one
+  *column* (`graph_entity_id`, the bridge). Decision A removes the attribute columns rather than adding any.
