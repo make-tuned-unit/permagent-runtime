@@ -2121,10 +2121,12 @@ mod tests {
                 .await
                 .unwrap();
 
+        // NB: `memories` and `knowledge_graph` are intentionally absent — they were
+        // a dormant dead copy of the Spectral schema (the live Brain lives in a
+        // separate brain/memory.db) and are no longer created by init_spectral_db
+        // (dropped by migrate_v18_to_v19).
         let expected = vec![
             "integrations",
-            "knowledge_graph",
-            "memories",
             "messages",
             "provider_inventory_entries",
             "provider_inventory_models",
