@@ -5,6 +5,8 @@ import { apiFetch } from '../../lib/api';
 import { useGoalEvents } from '../../lib/useGoalEvents';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
 import { useCommandCenter } from '../../lib/store';
+import { Panel } from './Panel';
+import { PeoplePanel } from './PeoplePanel';
 import type { Project, BoardColumn, Card } from './types';
 
 // ── Project Overview ────────────────────────────────────────────────────────
@@ -59,7 +61,7 @@ export function ProjectOverview({ project }: { project: Project }) {
 
         {/* RIGHT — people + action */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
-          {/* People panel slots here (association layer). */}
+          <PeoplePanel project={project} />
           <LinksPanel project={project} />
           <TasksPanel
             columns={columns}
@@ -69,29 +71,6 @@ export function ProjectOverview({ project }: { project: Project }) {
         </div>
       </div>
     </div>
-  );
-}
-
-// ── Panel shell ─────────────────────────────────────────────────────────────
-
-function Panel({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
-  const { colors } = useTheme();
-  return (
-    <section style={{
-      background: 'rgba(255,255,255,0.02)', border: `1px solid ${colors.border}`,
-      borderRadius: 10, padding: '14px 16px',
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
-        <span style={{
-          fontSize: 11, fontWeight: 600, color: colors.textMuted,
-          textTransform: 'uppercase', letterSpacing: '0.06em', flex: 1,
-        }}>
-          {title}
-        </span>
-        {action}
-      </div>
-      {children}
-    </section>
   );
 }
 

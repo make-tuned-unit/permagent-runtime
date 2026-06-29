@@ -8,6 +8,7 @@ import { WizardShell } from './components/wizard/WizardShell';
 import { Splash } from './components/splash/Splash';
 import { ChatLauncher } from './components/chat/ChatLauncher';
 import { GoalDetailModalHost } from './components/goals/GoalDetailModal';
+import { PersonDetailModalHost } from './components/projects/PersonDetailModal';
 import { DropZone } from './components/chat/DropZone';
 import { VersionSkewBanner } from './components/version/VersionSkewBanner';
 import { api, fileToBase64 } from './lib/api';
@@ -213,6 +214,7 @@ function App() {
         <ChatLauncher />
       </div>
       <GoalDetailModalHost />
+      <PersonDetailModalHost />
     </div>
   );
 }

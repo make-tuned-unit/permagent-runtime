@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { api, apiFetch, extractText, fileToBase64, readerIngest } from './api';
 import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload } from './api';
 import { startEventPruning } from './eventBus';
+import type { ProjectPerson } from '../components/projects/types';
 
 // --- Types ---
 
@@ -235,6 +236,22 @@ interface CommandCenterStore {
   goalDetail: { projectId: string; cardId: string } | null;
   openGoalDetail: (projectId: string, cardId: string) => void;
   closeGoalDetail: () => void;
+  /**
+   * Person-detail modal (CRM epic slice 2): the read-only person view opened
+   * from a project's People panel. Carries the full {@link ProjectPerson} from
+   * the list response so the modal needs no extra fetch. Host mounted at the app
+   * root; mirrors the goalDetail seam above.
+   */
+  personDetail: { projectId: string; person: ProjectPerson } | null;
+  openPersonDetail: (projectId: string, person: ProjectPerson) => void;
+  closePersonDetail: () => void;
+  /**
+   * Monotonic revision the People panel re-fetches on. Bumped after a mutation
+   * (associate / disassociate) so the store-hosted person modal can refresh the
+   * decoupled panel — there is no people event stream yet.
+   */
+  peopleRev: number;
+  bumpPeople: () => void;
   switchToSession: (sessionId: string) => Promise<void>;
   deleteSession: (sessionId: string) => Promise<void>;
   renameSession: (sessionId: string, name: string) => Promise<void>;
@@ -496,6 +513,11 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   goalDetail: null,
   openGoalDetail: (projectId, cardId) => set({ goalDetail: { projectId, cardId } }),
   closeGoalDetail: () => set({ goalDetail: null }),
+  personDetail: null,
+  openPersonDetail: (projectId, person) => set({ personDetail: { projectId, person } }),
+  closePersonDetail: () => set({ personDetail: null }),
+  peopleRev: 0,
+  bumpPeople: () => set(s => ({ peopleRev: s.peopleRev + 1 })),
 
   addChatMessage: (msg) => set(s => ({ chatMessages: [...s.chatMessages, msg] })),
 
