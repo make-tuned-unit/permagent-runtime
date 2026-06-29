@@ -10,6 +10,12 @@
 //!   GET    /api/projects/:id/tags      — List tags
 //!   POST   /api/projects/:id/tags      — Add a tag
 //!   DELETE /api/projects/:id/tags/:tag — Remove a tag
+//!   GET    /api/projects/:id/people             — People associated with the project
+//!   POST   /api/projects/:id/people             — Associate a person ({entityUuid, role?})
+//!   DELETE /api/projects/:id/people/:entity_uuid — Disassociate a person
+//!   GET    /api/projects/:id/memories            — Memories associated (resolved from live Brain)
+//!   POST   /api/projects/:id/memories/:memory_id — Associate a Brain memory
+//!   DELETE /api/projects/:id/memories/:memory_id — Disassociate a memory
 
 use crate::state::AppState;
 use axum::{
@@ -18,6 +24,7 @@ use axum::{
     routing::{delete, get, patch, post},
     Json, Router,
 };
+use permagent::project_association::{self, ProjectPerson};
 use permagent::projects::{self, PERSONAL_PROJECT_ID};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -302,6 +309,226 @@ async fn remove_tag_handler(
     }
 }
 
+// ── Project association: people ──────────────────────────────────────────────
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssociatePersonRequest {
+    /// Opaque `people.entity_uuid` to associate.
+    entity_uuid: String,
+    /// Optional role within this project (distinct from the person's CRM role).
+    #[serde(default)]
+    role: Option<String>,
+}
+
+/// GET /api/projects/{id}/people — people associated with a project.
+async fn list_project_people_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<ProjectPerson>>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let project = projects::get_project_by_id_or_slug(&pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+    let people = project_association::list_project_people(&pool, &project.id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(people))
+}
+
+/// POST /api/projects/{id}/people — associate a person with a project.
+async fn associate_person_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<AssociatePersonRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let project = projects::get_project_by_id_or_slug(&pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+    // FK violation (unknown entity_uuid) surfaces as a 400, not a 500.
+    project_association::associate_person(
+        &pool,
+        &project.id,
+        &req.entity_uuid,
+        req.role.as_deref(),
+    )
+    .await
+    .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(StatusCode::CREATED)
+}
+
+/// DELETE /api/projects/{id}/people/{entity_uuid} — disassociate a person.
+async fn disassociate_person_handler(
+    State(state): State<Arc<AppState>>,
+    Path((id, entity_uuid)): Path<(String, String)>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let removed = project_association::disassociate_person(&pool, &id, &entity_uuid)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    if removed {
+        Ok(StatusCode::OK)
+    } else {
+        Err((StatusCode::NOT_FOUND, "Association not found".to_string()))
+    }
+}
+
+// ── Project association: memories ────────────────────────────────────────────
+
+/// A project-scoped memory: live Brain content resolved from `memory.db`, plus
+/// the association timestamp. `id` is the Spectral memory id.
+#[derive(Serialize)]
+pub struct ProjectMemory {
+    id: String,
+    key: String,
+    content: String,
+    description: Option<String>,
+    signal_score: f64,
+    created_at: String,
+    associated_at: String,
+}
+
+/// GET /api/projects/{id}/memories — memories associated with a project.
+///
+/// Reads the join rows from permagent.db, then resolves each Spectral id against
+/// the LIVE Brain (`read_only_brain_conn`) — never the dead permagent.db
+/// `memories` table. Orphan ids (memory deleted in Spectral) are silently dropped
+/// (effective INNER JOIN). Order follows association recency.
+async fn list_project_memories_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<ProjectMemory>>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let project = projects::get_project_by_id_or_slug(&pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+
+    let assocs = project_association::list_project_memory_associations(&pool, &project.id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    if assocs.is_empty() {
+        return Ok(Json(Vec::new()));
+    }
+
+    let resolved = tokio::task::spawn_blocking(move || -> Result<Vec<ProjectMemory>, String> {
+        let conn = crate::brain_ops::read_only_brain_conn().map_err(|e| e.to_string())?;
+        let ids: Vec<String> = assocs.iter().map(|a| a.memory_id.clone()).collect();
+        let placeholders = std::iter::repeat_n("?", ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT id, key, content, description, signal_score, created_at \
+             FROM memories WHERE id IN ({})",
+            placeholders
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let params = rusqlite::params_from_iter(ids.iter());
+        let mut rows = stmt.query(params).map_err(|e| e.to_string())?;
+
+        // Index resolved rows by id, then emit in association order so the
+        // newest association renders first (and orphans drop out).
+        let mut by_id: std::collections::HashMap<
+            String,
+            (String, String, Option<String>, f64, String),
+        > = std::collections::HashMap::new();
+        while let Some(r) = rows.next().map_err(|e| e.to_string())? {
+            let mid: String = r.get(0).map_err(|e| e.to_string())?;
+            by_id.insert(
+                mid,
+                (
+                    r.get(1).map_err(|e| e.to_string())?,
+                    r.get(2).map_err(|e| e.to_string())?,
+                    r.get(3).map_err(|e| e.to_string())?,
+                    r.get(4).map_err(|e| e.to_string())?,
+                    r.get(5).map_err(|e| e.to_string())?,
+                ),
+            );
+        }
+
+        Ok(assocs
+            .into_iter()
+            .filter_map(|a| {
+                by_id
+                    .get(&a.memory_id)
+                    .map(|(key, content, desc, sig, created)| ProjectMemory {
+                        id: a.memory_id.clone(),
+                        key: key.clone(),
+                        content: content.clone(),
+                        description: desc.clone(),
+                        signal_score: *sig,
+                        created_at: created.clone(),
+                        associated_at: a.added_at.clone(),
+                    })
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    Ok(Json(resolved))
+}
+
+/// POST /api/projects/{id}/memories/{memory_id} — associate a memory.
+async fn associate_memory_handler(
+    State(state): State<Arc<AppState>>,
+    Path((id, memory_id)): Path<(String, String)>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let project = projects::get_project_by_id_or_slug(&pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+    project_association::associate_memory(&pool, &project.id, &memory_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(StatusCode::CREATED)
+}
+
+/// DELETE /api/projects/{id}/memories/{memory_id} — disassociate a memory.
+async fn disassociate_memory_handler(
+    State(state): State<Arc<AppState>>,
+    Path((id, memory_id)): Path<(String, String)>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let removed = project_association::disassociate_memory(&pool, &id, &memory_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    if removed {
+        Ok(StatusCode::OK)
+    } else {
+        Err((StatusCode::NOT_FOUND, "Association not found".to_string()))
+    }
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/projects", get(list_projects_handler))
@@ -313,5 +540,22 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/api/projects/{id}/tags", get(list_tags_handler))
         .route("/api/projects/{id}/tags", post(add_tag_handler))
         .route("/api/projects/{id}/tags/{tag}", delete(remove_tag_handler))
+        .route(
+            "/api/projects/{id}/people",
+            get(list_project_people_handler),
+        )
+        .route("/api/projects/{id}/people", post(associate_person_handler))
+        .route(
+            "/api/projects/{id}/people/{entity_uuid}",
+            delete(disassociate_person_handler),
+        )
+        .route(
+            "/api/projects/{id}/memories",
+            get(list_project_memories_handler),
+        )
+        .route(
+            "/api/projects/{id}/memories/{memory_id}",
+            post(associate_memory_handler).delete(disassociate_memory_handler),
+        )
         .with_state(state)
 }
