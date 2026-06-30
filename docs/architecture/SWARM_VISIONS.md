@@ -1,7 +1,9 @@
 # Swarm Visions — Two Expanded-Ambition Designs
 
-**Status:** DESIGN ONLY — awaiting Jesse's rulings. Zero code, zero runtime files. Captures two
-ambitions as architecture so they can be ruled before anything builds (the #538 pattern).
+**Status:** RATIFIED 2026-06-30 — all decision points ruled (V1-0 + V1 + V2 + the shared proposal-surface
+question). Still DESIGN ONLY: nothing builds from this doc. Vision 1 is gated behind B + 2b + slice 4;
+Vision 2 is a new epic that needs the cross-device sizing spike first. Zero code, zero runtime files.
+Captures two ambitions as architecture so they were ruled before anything builds (the #538 pattern).
 **Scope:** Vision 1 — the Enricher as a *visible world-character* (extends slice 4 of
 [`UNIFIED_WORKSPACE.md`](./UNIFIED_WORKSPACE.md), #255/#256/#257). Vision 2 — the Git Steward
 expanded into a CI-running, fix-dispatching, multi-repo, cross-device actor (a **new epic**, distinct
@@ -13,6 +15,63 @@ git's model can give honestly, this doc flags a **research spike** rather than h
 ---
 
 # Vision 1 — The Enricher as a Character in the World
+
+## 1.0 V1-0 — The gating question: is the Enricher redundant with the Librarian? — RULED
+
+> **DECISION V1-0 — RULED 2026-06-30: (a) the Librarian ABSORBS enrichment** as a second Brain-maintenance
+> task — **conditioned on task-level distinctness** (its own capability descriptor line, its own egress
+> declaration, and its own `librarian_enrich_*` event namespace under the shared identity). There is **no
+> 4th agent.** The other V1 decisions collapse into Librarian-*task* decisions, most of them moot.
+
+This decision gates the rest of Vision 1 and was evaluated before it. The two options:
+
+- **(a) Librarian absorbs enrichment** — the single Brain-maintenance worker *describes* (summarizes what is
+  already in the Brain) **and** *enriches* (acquires structured typed fields for people from external
+  sources), with the #538 bounds applying to the enrichment task. **Leaner** — no 4th identity / persona /
+  descriptor / roster / world slot.
+- **(b) A distinct Enricher agent** — a 4th `WorkerPersona` + roster presence, preserving a separate
+  character.
+
+**Recommendation, with reasoning — (a):**
+
+1. **A separate identity adds no safety; the bounds do.** Both workers write through `SafeBrain`. The #538
+   enrichment bounds (review-gated, manual-wins via `FieldSource`, structured-fields-only) are enforced at
+   the **write seam**, so they attach to the *enrichment task* regardless of which worker runs it. Splitting
+   the identity buys nothing on the safety axis — `set_entity_field`'s manual-wins arbitration is per-field
+   in the graph, blind to worker identity.
+2. **Near-zero migration cost — decide now, before either is built.** The Librarian's `engine` is
+   `Pending` (Phase 0: `default_roster()` — engine *not yet wired*). Absorbing enrichment adds a task to an
+   **unbuilt** worker; it is not a refactor of a live one. This is the cheapest possible moment to fold them.
+3. **One Brain-maintenance worker is more coherent.** `entity_fields` *are* graph/Brain data; enrichment
+   *is* Brain curation of a typed shape. "Describe" and "enrich" are both "make the Brain better." Two
+   near-identical Brain-writing workers is exactly the duplication that drifts (the dead-store failure class
+   this codebase keeps fighting), and it forces the user to ask "what's the difference between these two?"
+4. **Less infrastructure, per CLAUDE.md.** No 4th roster/persona/descriptor/world slot. Minimal infra,
+   explicit over magic.
+5. **The character vision survives, richer.** The **Librarian is the character.** A Brain-keeper who both
+   *organizes* (describe) and *gathers* (enrich) is a fuller single presence than two thin overlapping ones —
+   and you (V1-B/C) already get to design that one character's feel.
+
+**The condition that preserves what (b) was protecting** — the one genuine difference between the two tasks
+is **egress**: describe is a `$0` local summarizer that never leaves the machine; enrich *acquires external
+facts* (web/email), which is a real trust/provenance boundary (the deferred web-search egress concern). So
+absorption is ruled **only with task-level distinctness kept intact:**
+
+- **Distinct capability line** in the Librarian's `WORKER_DESCRIPTOR` — describe and enrich are listed as
+  two named capabilities, with enrich carrying an explicit **external-egress flag** and provenance note.
+- **Distinct event namespace** — `librarian_enrich_started / _field_proposed / _completed / _error`, parallel
+  to `librarian_describe_*`, so the character's visible "working" state is honest about *which* task is
+  running (never blurs a local summarize with an external acquire).
+- **The #538 write bounds** apply to the enrich task unchanged.
+
+This captures (a)'s leanness and architectural coherence while keeping (b)'s only real win — an honest,
+separately-described, egress-flagged external-acquisition capability — under one identity.
+
+**Consequence for the rest of Vision 1:** §1.2's "four declarations" collapse to **two additions to an
+existing worker** — an `enrich` task + its `librarian_enrich_*` events + a descriptor *line* (not a new
+descriptor). V1-A (peer vs subagent) is moot (the Librarian is already a peer worker). V1-B/C
+(placement/persona) are moot for *creating* a character — they fold into your existing right to design the
+Librarian's feel (§1.4). V1-E (presence honesty) still applies, to the enrich task's visible state.
 
 ## 1.1 Established reality (audited, do not redesign)
 
@@ -34,6 +93,12 @@ activity. The Enricher becomes a character by filling those same four slots. The
 state, or wire machinery to invent — only four declarations to add, all gated behind slice 4.
 
 ## 1.2 The design: presentation layer over the bounded worker
+
+> **Contingency (V1-0 = a):** under the ratified ruling the "fourth agent" framing below is **superseded** —
+> the four declarations become **two additions to the existing Librarian** (an `enrich` task +
+> `librarian_enrich_*` events + a descriptor *line* with an egress flag). The mechanism described here is
+> identical; only the *count* changes (extend one worker, don't mint a new one). This section is kept for the
+> mechanism; read "the character" as "the Librarian's enrich task."
 
 The #538 bounds are **load-bearing and unchanged**. The character is strictly a *presentation* of the
 bounded worker — it changes nothing about what the worker is allowed to do:
@@ -74,20 +139,24 @@ structural, not aesthetic:
 This means the character's visible "action" is honest: when you see the Enricher working, it is
 producing **proposals**, and those proposals appear on the review surface — not silent graph writes.
 
-## 1.4 Decision points — Vision 1
+## 1.4 Decision points — Vision 1 (RULED 2026-06-30)
 
-| # | Decision | Recommendation | Why it's yours to rule |
+All contingent on **V1-0 = (a)** (§1.0). Because enrichment is absorbed into the Librarian, most of these
+collapse from "new-agent" decisions to "Librarian-task" decisions or become moot.
+
+| # | Decision | Ruling | Note |
 |---|---|---|---|
-| **V1-A** | Is the Enricher a peer worker or a Henry subagent? | **Peer worker** (Librarian pattern): own `WorkerPersona`, own `roster.ts` presence, scheduler-driven. Proposals gated through Henry's existing review surface. | Sets the entire structural template (which slots get filled) and the org metaphor of the world. |
-| **V1-B** | World View placement / zone. | The world has no people/CRM zone yet. Options: ground floor near the Reader (both are "records/intake" workers), or a new "records" alcove. **Recommend ground floor near Reader** for v1; a dedicated zone is a world-bible expansion. | A world-bible aesthetic call — not derivable from code. |
-| **V1-C** | Persona identity — name, traits, voice. | Working name **"The Enricher"** (parallels "The Librarian"/"The Reader"); traits e.g. `["meticulous", "deferential", "evidence-bound"]`; voice deferred to the W4 voice phase. **Recommend confirm a name, defer voice.** | Persona/naming is yours; it shapes how the character reads to a user. |
-| **V1-D** | Proposal surface: decision-inbox vs Kanban cards. | #538 says "decision-inbox seam." But the Steward routes to **`cards::create_card` (v1)** today because the decision-inbox stays dormant behind `orchestrator.enabled` (see Vision 2 §2.1). **Recommend the Enricher follow whatever the Steward uses at build time** — one surface for all agent proposals, not two. | Couples to the orchestrator-enable timeline; a product-coherence call. |
-| **V1-E** | Presence-before-worker? Ship an inert character early as a teaser, or only when the worker is real? | **Ship presence + worker together.** A character visibly "working" with no real enrichment behind it violates the honesty law (cf. the empty-cave correction). The roster entry lands in the same slice-4 change. | A direct application of the project's honesty law — confirm you agree. |
+| **V1-0** | Distinct Enricher agent, or Librarian absorbs enrichment? | ✅ **(a) Librarian absorbs**, conditioned on task-level distinctness (descriptor line + egress flag + `librarian_enrich_*` events). No 4th agent. (§1.0) | Gates all of V1; shrinks the rest. |
+| **V1-A** | Peer worker or Henry subagent? | ✅ **Peer worker** — *moot under V1-0*: the Librarian is already a peer worker (engine `Pending`). Enrichment proposals still route through Henry's review surface. | Absorbed into the existing Librarian. |
+| **V1-B** | World View placement / zone. | ⏸️ **DEFERRED to Jesse** — and largely moot: the Librarian already lives on the mezzanine (`mezzanineLocked`). Not blocking (V1 is gated behind B + 2b + slice 4). | Yours to rule when you design the feel. |
+| **V1-C** | Persona identity — name, traits, voice. | ⏸️ **DEFERRED to Jesse** — moot for *creating* a character: the Librarian already has its persona. Enrichment is a new *task* of that persona, not a new identity. | Yours; folds into the Librarian's feel. |
+| **V1-D** | Proposal surface (shared with V2-G — ruled once below). | ✅ **Target the Decision Inbox; build against the card seam until the orchestrator is enabled; migrate card→inbox when it goes live** (§3 / §2.1). | Same ruling as the Steward output-fix is following now. |
+| **V1-E** | Presence honesty — faked vs real activity. | ✅ **Enforce.** Visible presence reflects **actual** worker activity, never faked — the enrich task drives the Librarian's visible state only when it is really working (the same real-state-not-theater principle throughout; cf. the empty-cave correction). | Applies to the enrich task's visible state. |
 
 **Gating (not a decision, a fact):** all of Vision 1 is gated behind slice 4, which is gated behind
 **B + 2b verified** (`UNIFIED_WORKSPACE.md` §6–7). Nothing here builds until the bridge connects people
-to the graph and manual editing has proven the write path by hand. This doc adds **no new gate** — it
-describes the character layer that rides *on top of* slice 4 when slice 4 is built.
+to the graph and manual editing has proven the write path by hand. This doc adds **no new gate** — under
+V1-0 it describes the **enrich task** the Librarian gains *on top of* slice 4 when slice 4 is built.
 
 ---
 
@@ -211,17 +280,17 @@ sync) is **named and deferred**, not pretended-solved.
 > in progress." Decision V2-D rules the model; the spike sizes the (I) build. Scope (II) is a separate,
 > larger spike that should not block (I).
 
-## 2.6 Decision points — Vision 2
+## 2.6 Decision points — Vision 2 (RULED 2026-06-30)
 
-| # | Decision | Recommendation | Why it's yours to rule |
-|---|---|---|---|
-| **V2-A** | Steward's role: actor that writes/merges, or detector/proposer only? | **Detector/proposer only.** It runs CI + detects + proposes; Henry orchestrates fixes via the existing `ExternalCliEngine`; the existing `advance_goal_checked` review gate stands before every merge. Extend the code-gated model, don't abandon it. | Defines the entire safety posture of a large new autonomous capability. |
-| **V2-B** | The auto-vs-gated line for **fix-dispatch.** | CI-run + detection = **autonomous** (effect-free). Fix-*merge* = **always human**. The open question is fix-*dispatch*: always Tier-2 (Jesse approves each), or a Tier-1 Henry-policy auto-dispatch for a narrow trivial class (e.g. dep-bump CI fixes, formatting)? **Recommend Tier-2-for-all in v1**, add a Tier-1 allowlist later once trust is established. | This is *the* autonomy/trust boundary — exactly the call the human-in-the-loop architecture reserves for you. |
-| **V2-C** | Repo registry source. | **`~/.permagent/repos.yaml`, seeded by a root-folder scan that *proposes* additions** for your confirmation. Explicit config over hidden auto-scan. | Defines the unit of "all repos" and how new ones enter management. |
-| **V2-D** | Cross-device sync model. | **Git-remote-as-authority; no authoritative device; each Steward acts only on its own local checkout; cross-device awareness is read-only; un-fast-forwardable divergence is a human `risk_gate`.** Scope to git-state reconciliation (I). | The crux of the hard problem — and the ruling that makes it buildable instead of a distributed-consensus project. |
-| **V2-E** | Scope of "in sync": committed git state, or byte-for-byte working tree? | **Committed/pushed git state only (scope I).** Working-tree mirroring (scope II) is **out of v1** — its own research spike, or rule it out entirely. | Decides whether this is a buildable epic or a multi-quarter distributed-systems research project. |
-| **V2-F** | Is this one epic or several? | **Several slices, sequenced:** (1) CI-runner + detection (autonomous, low-risk), (2) multi-repo registry, (3) fix-dispatch wiring (the V2-B gate), (4) cross-device reconciliation (after the V2-D spike). CI-runner ships value first and standalone. | Sequencing/sizing a large epic; the cross-device piece must not block the rest. |
-| **V2-G** | Proposal surface (shared with Vision 1, V1-D). | The Steward routes to `cards::create_card` (v1) today because the decision-inbox is dormant behind `orchestrator.enabled`. The expanded Steward's richer proposals (CI-fix goals, reconcile ops) **want the decision-inbox** (typed payload, tiering, proof gate). **Recommend: this epic is gated on enabling the orchestrator + performing the documented `cards → decisions` swap.** | Couples the epic to the orchestrator-enable timeline you control. |
+| # | Decision | Ruling |
+|---|---|---|
+| **V2-A** | Steward's role: actor that writes/merges, or detector/proposer only? | ✅ **Detector/proposer only — RULED INVIOLABLE.** The Steward writes no code and merges nothing. It detects (CI failures, repo issues, sync divergence) and **proposes** (dispatches a fix goal via Henry, surfaces a card). Every actual change goes through Henry's gated dispatch + Jesse's review. This is the hard cap that makes "an agent that runs CI and resolves errors" safe. |
+| **V2-B** | The auto-vs-gated line for **fix-dispatch.** | ✅ **Same gates as any Henry goal** — a Steward-proposed fix is goal → worker (isolated worktree) → Review → Jesse approves. **No special auto-approve, no shortcut.** (CI-run + detection remain autonomous because they are effect-free; the *fix* is gated like all goal work.) |
+| **V2-C** | Repo registry source. | ✅ Reasonable as designed (`~/.permagent/repos.yaml`, seeded by a root-folder scan that *proposes* additions for confirmation) — **settle exact shape when V2 is scoped for build.** |
+| **V2-D** | Cross-device sync model (scope I). | ✅ **RULED as designed: git-remote-as-authority; no authoritative device; each Steward acts only on its own local checkout; cross-device awareness is read-only; un-fast-forwardable divergence = human `risk_gate`.** Git's remote IS the consensus — this sidesteps distributed state. **Proceed to the sizing spike before building.** |
+| **V2-E** | Scope of "in sync": committed git state, or byte-for-byte working tree? | ✅ **Scope I (committed/pushed git state) only.** **Scope II (real-time working-tree sync) is RULED OUT for now** — no primitive, hard distributed-systems problem, no clear payoff over commit-and-push. Its own spike *if ever needed*; not built. Scope I delivers "repos in sync across devices" for committed state — the real want. |
+| **V2-F** | Is this one epic or several? | ✅ Reasonable as designed (sliced: CI-runner + detection → multi-repo registry → fix-dispatch wiring → cross-device reconciliation after the spike) — **settle sequence when V2 is scoped for build.** |
+| **V2-G** | Proposal surface (shared with V1-D — ruled once below). | ✅ **Target the Decision Inbox; build against the card seam until the orchestrator is enabled; migrate card→inbox when it goes live** (§3). Same approach the Steward output-fix follows now. |
 
 ---
 
@@ -231,9 +300,11 @@ sync) is **named and deferred**, not pretended-solved.
   workers*: Vision 1 dresses the slice-4 Enricher as a character; Vision 2 dresses CI/repo hygiene as a
   proposing worker. Neither asks for a new safety primitive — both reuse the persona/roster/worker-
   descriptor stack (Vision 1) and the steward-safety/decision-inbox/goal-dispatch stack (Vision 2).
-- **Shared proposal-surface question.** V1-D and V2-G are the same question — *which human-review surface
-  do agent proposals land on?* — and should be ruled once. Today it is the Kanban card; the richer answer
-  is the decision-inbox once the orchestrator is enabled.
+- **Shared proposal-surface question — RULED ONCE (V1-D = V2-G).** Both visions **target the Decision
+  Inbox** (#314), but **build against the card seam** (`cards::create_card`) until the orchestrator is
+  enabled — the inbox stays dormant behind `orchestrator.enabled`. **Migrate card→inbox when the
+  orchestrator goes live** (the same path the Steward output-fix is on now). The designs are **not blocked**
+  on the inbox; the migration couples to Jesse's orchestrator-enable timeline — noted, not blocking.
 - **The honesty law applies to both.** A character that visibly "works" must be doing real, bounded work
   (V1-E); a Steward that reports "in sync" must mean a precise, mechanical thing (V2-E), not a vibe.
 - **Self-knowledge obligation (standing rule).** Every user-facing capability in either vision ships its
@@ -254,12 +325,19 @@ sync) is **named and deferred**, not pretended-solved.
 
 ---
 
-## 5. Decision summary (for ruling)
+## 5. Decision summary (RULED 2026-06-30)
 
-**Vision 1 — Enricher character:** V1-A peer-worker · V1-B world placement · V1-C persona identity ·
-V1-D proposal surface · V1-E presence-with-worker. *All gated behind slice 4 (B + 2b) regardless.*
+**Vision 1 — Enricher:** **V1-0 = (a) the Librarian absorbs enrichment** (no 4th agent; conditioned on
+descriptor line + egress flag + `librarian_enrich_*` events) · V1-A peer-worker (moot, absorbed) · V1-B/C
+placement & persona DEFERRED to Jesse (largely moot — the Librarian already has its character) · V1-D
+proposal surface → Decision Inbox via card seam (shared ruling) · V1-E presence honesty ENFORCED. *All gated
+behind slice 4 (B + 2b) regardless.*
 
-**Vision 2 — Expanded Steward:** V2-A detector/proposer-only · V2-B fix-dispatch tier line · V2-C repo
-registry · **V2-D cross-device model (the crux)** · V2-E sync scope (spike-gated) · V2-F slice sequence ·
-V2-G proposal surface. *Cross-device scope (I) needs a sizing spike; scope (II) needs its own larger
-spike or a ruling-out.*
+**Vision 2 — Expanded Steward:** V2-A **detector/proposer-only — INVIOLABLE** · V2-B fix-dispatch = **same
+gates as any Henry goal** (no shortcut) · V2-C repo registry reasonable (settle at build) · **V2-D
+cross-device scope I RULED as designed — proceed to sizing spike** · V2-E scope II **RULED OUT** (own spike
+if ever) · V2-F slice sequence reasonable (settle at build) · V2-G proposal surface → Decision Inbox via card
+seam (shared ruling). *This is a new epic; the cross-device sizing spike precedes any build.*
+
+**Shared:** proposal surface ruled once (§3) — target the Decision Inbox, build against the card seam,
+migrate when the orchestrator is enabled.
