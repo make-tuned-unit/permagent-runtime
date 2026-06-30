@@ -69,7 +69,8 @@ uuid = { workspace = true }
 clap_complete = "4.6.5"
 comfy-table = "7.2.2"
 sha2 = { workspace = true }
-sigstore-verify = { version = "0.6", default-features = false }
+hex = "0.4.3"
+sigstore-verify = { version = "0.6", default-features = false, features = ["tuf"] }
 axum.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]

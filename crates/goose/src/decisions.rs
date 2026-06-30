@@ -784,7 +784,7 @@ pub fn compute_audit_row_hash(
     hasher.update(evidence_digest.as_bytes());
     hasher.update(b"|");
     hasher.update(created_at.as_bytes());
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 fn now_timestamp() -> String {

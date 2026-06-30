@@ -56,7 +56,7 @@ impl TokenCache {
         hasher.update(host.as_bytes());
         hasher.update(client_id.as_bytes());
         hasher.update(scopes.join(",").as_bytes());
-        let hash = format!("{:x}", hasher.finalize());
+        let hash = hex::encode(hasher.finalize());
 
         fs::create_dir_all(get_base_path()).unwrap();
         let cache_path = get_base_path().join(format!("{}.json", hash));

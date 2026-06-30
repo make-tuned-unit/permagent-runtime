@@ -37,7 +37,7 @@ impl McpAppCache {
     fn cache_key(extension_name: &str, resource_uri: &str) -> String {
         let input = format!("{}::{}", extension_name, resource_uri);
         let hash = Sha256::digest(input.as_bytes());
-        format!("{}_{:x}", extension_name, hash)
+        format!("{}_{}", extension_name, hex::encode(hash))
     }
 
     pub fn list_apps(&self) -> Result<Vec<GooseApp>, std::io::Error> {
