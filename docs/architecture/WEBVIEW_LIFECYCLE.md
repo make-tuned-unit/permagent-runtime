@@ -1,6 +1,7 @@
 # Build-Tab Webview & Render Lifecycle — Root-Cause Diagnosis + Fix Design
 
-**Status:** Design-only (no code). Companion to `PHASE_2_5_TAURI_REFACTOR.md`.
+**Status:** Design-only (no code). **Rulings applied 2026-06-30 (D1–D5 resolved
+— see §6).** Companion to `PHASE_2_5_TAURI_REFACTOR.md`.
 **Scope:** Six Build-tab render/lifecycle bugs — #517, #548, #550, #551, #553
 (browser-webview flavor) and #555 (terminal-pane flavor).
 **Author note:** This doc diagnoses the *class*. The six bugs are acceptance
@@ -183,31 +184,34 @@ mechanisms below, plus sub-fix **T** on the terminal.
 
 ### How Option B + T satisfies each property
 
-- **Bounded — z-order (#553):** Render the collapsed chat widget as its own
-  **native overlay** (a tiny always-on-top child surface or the existing chat
-  *window* seam) ordered above the browser child via the same
-  `orderWindow:NSWindowAbove` mechanism already proven in `main.rs:131`.
-  Alternative (cheaper): **constrain the browser bounds** so its rectangle never
-  intersects the widget's corner — `update_browser_bounds` already controls the
-  rect; subtract the widget's reserved corner. Decision point D2.
-- **Bounded — events (#550):** Configure the browser `WebviewBuilder` with an
-  explicit drag-drop handler (`.with_drag_and_drop` / wry drag events) scoped to
-  the pane, so file drops over the browser are interpreted by *us*, not the OS
-  default full-rect swallow. Re-scope the React `DropZone` to the pane it
-  belongs to (not the whole workspace). Separately decide whether to **wire a
-  drop-to-CC-terminal path** (net-new; does not exist today) — Decision D4.
+- **Bounded — z-order (#553) [ruled D2: bounds-subtract]:** **Constrain the
+  browser bounds** so its rectangle never intersects the collapsed widget's
+  corner — `update_browser_bounds` already controls the rect; subtract the
+  widget's reserved corner (pure rect math, no new native surface). A native
+  overlay (ordered via the `orderWindow:NSWindowAbove` seam proven at
+  `main.rs:131`) is the fallback **only if** the UI requires the widget to float
+  *over* live browser content — avoided by default to not add a third
+  under-managed native surface.
+- **Bounded — events (#550) [ruled D4: split]:** Configure the browser
+  `WebviewBuilder` with an explicit drag-drop handler (`.with_drag_and_drop` /
+  wry drag events) scoped to the pane, so file drops over the browser are
+  interpreted by *us*, not the OS default full-rect swallow. Re-scope the React
+  `DropZone` to the pane it belongs to (not the whole workspace). The
+  **drop-to-CC-terminal path** (net-new; does not exist today) is split to
+  **#557** and is *not* part of this refactor.
 - **Owned lifecycle (#548, #551):** The surface manager registers a
   **window-reload / before-unload hook** that destroys (`close_browser`, which
   already exists at `browser.rs:343`) every child surface before the main
   webview reloads, and a deterministic re-create on the new tree. No surface may
   outlive the React placeholder that owns it. This also removes the
   desync that lets #551 present a half-rendered pane.
-- **Throttle-immune (#517, #551 render):** Stop the main webview from being
-  occlusion-throttled while the native child is forward. Two levers, use both:
-  (a) hold an **App-Nap / activity assertion**
-  (`NSProcessInfo beginActivityWithOptions:`) so the process isn't background-
-  throttled; (b) on `focus`/occlusion-regain, **force a repaint** of the main
-  webview's panes.
+- **Throttle-immune (#517, #551 render) [ruled D3: sequenced]:** Stop the main
+  webview presenting stale/blank frames when occlusion-throttled while the
+  native child is forward. **First (S1, pure TS):** on `focus`/occlusion-regain,
+  **force a repaint** of the main webview's panes. **Conditional follow-up
+  only if measured insufficient:** hold a native **App-Nap / activity
+  assertion** (`NSProcessInfo beginActivityWithOptions:`) so the process isn't
+  background-throttled at all. Do not add the native lever pre-emptively.
 - **Sub-fix T (#555, #517 terminal):** Add a focus/`visibilitychange` listener
   in the terminal path that calls `term.refresh(0, rows-1)` (and re-runs the
   guarded `fit()`) on regain, so a dropped frame self-heals immediately instead
@@ -220,8 +224,8 @@ mechanisms below, plus sub-fix **T** on the terminal.
 
 | Bug | Resolved by | Acceptance check |
 |-----|-------------|------------------|
-| **#553** widget covered | Native overlay for widget **or** bounds-subtract its corner (D2) | Collapsed chat widget visible above the browser on the Build tab; never covered while browsing. |
-| **#550** drop over-scope | Scoped browser drag-drop + re-scoped `DropZone` (+ optional drop-to-terminal D4) | Dragging a file over the terminal pane targets the terminal; the browser's drop overlay never spans the whole tab. |
+| **#553** widget covered | Bounds-subtract the widget's corner from the browser rect (ruled D2; overlay only if float-over-content needed) | Collapsed chat widget visible above the browser on the Build tab; never covered while browsing. |
+| **#550** drop over-scope | Scoped browser drag-drop + re-scoped `DropZone` (drop-to-terminal feature split to #557, ruled D4) | Dragging a file over the terminal pane targets the terminal; the browser's drop overlay never spans the whole tab. |
 | **#548** reload orphan | Reload hook destroys child surfaces before `location.reload()`; deterministic re-create | Right-click→Reload with a page loaded returns to a clean shell; no orphaned browser surface; no force-quit. |
 | **#551** CC pane blank | Owned lifecycle (no desync) + throttle-immune main webview | Build tab always renders the running CC/terminal pane; never display-only loss while processes live. |
 | **#517** blank on focus | App-Nap assertion + force-repaint on regain (browser-half) + sub-fix T (terminal-half) | Fullscreen → switch away → back: terminal + sidebar stay painted; no blank-then-reload. |
@@ -234,47 +238,61 @@ mechanisms below, plus sub-fix **T** on the terminal.
 Each slice is independently shippable and independently testable; ordered by
 leverage (highest-impact / unblock-the-core-workflow first).
 
-1. **S1 — Throttle-immune render (R-occlusion + T).** App-Nap activity
-   assertion + force-repaint on focus regain + `term.refresh()` listener.
-   Smallest change, resolves the two highest-pain items (#517, #551 render,
-   #555) and the core-workflow CRITICAL. *No surface-model change.*
+1. **S1 — Throttle-immune render (R-occlusion + T), pure TS.** Force-repaint on
+   focus regain + `term.refresh()` on focus/`visibilitychange`. Smallest change,
+   no native risk, resolves the highest-pain items (#517, #551 render, #555) and
+   the core-workflow CRITICAL. *No surface-model change.* The native App-Nap
+   assertion is a **conditional follow-up only if S1 is measured insufficient**
+   (ruling D3) — not part of S1.
 2. **S2 — Owned lifecycle / reload teardown.** Surface-manager teardown hook on
    reload + unmount; kills #548 and the #551 desync. Reuses existing
    `close_browser`.
 3. **S3 — Scoped events.** Browser drag-drop handler + `DropZone` re-scope;
-   kills #550’s over-capture. (Drop-to-terminal wiring gated on D4.)
-4. **S4 — Z-order chrome.** Widget native overlay or bounds-subtract; kills
-   #553. Reuses the `reorder_chat_above_main` seam.
+   kills #550’s over-capture. The drop-to-CC-terminal *feature* is **#557**
+   (split per D4), depends on S3, not in this refactor.
+4. **S4 — Z-order chrome → bounds-subtract (ruling D2).** Subtract the widget's
+   corner from the browser bounds; kills #553. Native overlay is the fallback
+   only if the UI requires float-over-content.
 
 S1 is the recommended first cut: it is the lowest-risk change and directly
 restores supervision of running CC sessions (the #551 CRITICAL).
 
 ---
 
-## 6. Decision points for Jesse's ruling
+## 6. Rulings (resolved 2026-06-30)
 
-- **D1 — Browser surface model.** Confirm **Option B** (keep native child,
-  add managed lifecycle/compositing owner). A and C are rejected above; confirm
-  or redirect. *This is the load-bearing ruling — everything else assumes B.*
-- **D2 — #553 z-fix.** (a) widget as its own native overlay (robust, reuses the
-  proven `orderWindow` seam) vs (b) constrain browser bounds to spare the
-  widget's corner (cheaper, pure rect math, no new native surface).
-  Recommendation: **(b)** for v1, escalate to (a) only if the widget needs to
-  sit *over* live browser content.
-- **D3 — Occlusion mitigation appetite.** Frontend force-repaint + `term.refresh`
-  alone (pure TS, no native risk), or also add the native **App-Nap activity
-  assertion** (`NSProcessInfo`, small unsafe objc shim like the existing
-  reorder). Recommendation: **both** — TS self-heal is necessary; the assertion
-  prevents the throttle in the first place.
-- **D4 — Drop-to-CC-terminal.** #550 has a second ask: there is **no** path to
-  drop a file onto a running CC session today. Scope it into S3 (net-new: a
-  terminal-pane drop target that injects the file path into the PTY) or split it
-  to a follow-up issue. Recommendation: **split** — #550’s *bug* is the
-  over-capture (S3); drop-to-terminal is a *feature*.
-- **D5 — Phase 2.5 framing.** Confirm this render/compositing track and the
-  existing activity-emission track in `PHASE_2_5_TAURI_REFACTOR.md` are two
-  tracks under one phase, and that this track is the higher priority (it owns
-  the #551 CRITICAL).
+All five decision points ruled. The design below is **locked** on these; nothing
+builds until the S1 dispatch is decided separately.
+
+- **D1 — Browser surface model → CONFIRMED Option B.** Keep the native child
+  webview (iframe can't load arbitrary real sites — X-Frame-Options/CSP — so
+  native stays); the fix is *owning its lifecycle properly* via a managed
+  surface owner generalizing the `reorder_chat_above_main` seam. A and C
+  rejected. **Everything builds on B.**
+- **D2 — #553 z-fix → BOUNDS-SUBTRACT (default), deferring to the UI
+  requirement.** Rationale: the root problem is *too many under-managed native
+  surfaces* — do not add a **third** native layer (an overlay) to fix a
+  native-layer problem when avoidable. The collapsed widget is a corner launcher
+  (`ChatLauncher.tsx:97`, `position:fixed; bottom:20; right:20`), so the webview
+  can **cede that corner** → bounds-subtract (pure rect math in
+  `update_browser_bounds`, no new surface). Escalate to a native overlay **only
+  if** the UI requires the widget to float visually *over* live browser content.
+  *Open confirm:* corner-cede is acceptable for the launcher → proceeding
+  bounds-subtract unless Jesse says it must overlay content.
+- **D3 — Occlusion → BOTH, but SEQUENCED.** Pure-TS self-heal **first** (it *is*
+  S1: force-repaint on focus regain + `term.refresh()` — resolves the #551
+  CRITICAL, smallest change, no native risk). The native **App-Nap activity
+  assertion** (`NSProcessInfo`) is a **conditional follow-up**, added only **if
+  the TS self-heal is measured insufficient**. Do not reach for native
+  power-management until the cheap fix is proven inadequate.
+- **D4 — #550 → SPLIT (done).** The *bug* (browser drop-zone over-captures the
+  tab — bounds/event-scope, same root) is fixed in Phase 2.5 **S3**. The
+  *feature* (no drop-to-CC-terminal path exists today — net-new) is filed
+  separately as **#557**, depends on S3, **not** bundled into the refactor.
+- **D5 — Phase 2.5 framing → CONFIRMED two tracks, one phase.** This
+  render/lifecycle track (`WEBVIEW_LIFECYCLE.md`) and the activity-emission track
+  (`PHASE_2_5_TAURI_REFACTOR.md`) are different concerns, cross-referenced. This
+  track is the higher priority — it owns the #551 CRITICAL.
 
 ---
 
