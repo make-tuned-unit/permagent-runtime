@@ -287,6 +287,144 @@ pub async fn surface_destructive_proposal(
     }
 }
 
+/// A non-destructive repo-hygiene summary the Steward surfaces for awareness.
+///
+/// Unlike [`DestructiveProposal`], this proposes nothing — it informs. The
+/// read/report items (stale merged branches, orphaned worktrees, repo-health
+/// flags) land on the board as a single summary card; the destructive cleanup
+/// for each stale branch still goes through [`surface_destructive_proposal`] as
+/// its own approval card.
+#[derive(Debug, Clone)]
+pub struct RepoHealthReport {
+    /// Absolute path of the repo the report covers.
+    pub repo_path: String,
+    /// One-line human summary (e.g. "12 stale merged branches, 6 orphaned worktrees").
+    pub summary: String,
+    /// Stale branches already merged to main — safe to delete. Each also gets
+    /// its own approval card via `propose_git_op`; listed here for the
+    /// at-a-glance view.
+    pub stale_merged_branches: Vec<String>,
+    /// Worktrees whose branch is merged but the worktree was never reaped.
+    /// Reported with a suggested `git worktree remove` command — never removed.
+    pub orphaned_worktrees: Vec<String>,
+    /// Free-form repo-health flags (branch counts, ahead/behind, uncommitted…).
+    pub health_flags: Vec<String>,
+    /// Project board to surface the card on. Defaults to Personal if None.
+    pub project_id: Option<String>,
+}
+
+/// Surface a non-destructive repo-health report as a single board card.
+///
+/// One card per run — a skimmable markdown summary of the read/report items.
+/// Carries structured `metadata_json` (`steward_report: true`) so the board and
+/// any later consumer can render it. Read/report only: nothing is proposed or
+/// changed. Returns the created card's id.
+pub async fn surface_repo_health_report(
+    pool: &Pool<Sqlite>,
+    report: RepoHealthReport,
+) -> Result<String, String> {
+    let project_id = report
+        .project_id
+        .clone()
+        .unwrap_or_else(|| crate::projects::PERSONAL_PROJECT_ID.to_string());
+
+    let title = format!("Steward: repo-health report — {}", report.summary);
+
+    let mut description = String::new();
+    description.push_str(
+        "The Git Steward swept the repository and surfaced these read/report items. \
+         This card is informational — nothing here was changed.\n\n",
+    );
+    description.push_str(&format!("**Repo:** {}\n\n", report.repo_path));
+    if !report.stale_merged_branches.is_empty() {
+        description.push_str(&format!(
+            "**Stale merged branches ({})** — safe to delete; each has its own approval card:\n",
+            report.stale_merged_branches.len()
+        ));
+        for b in &report.stale_merged_branches {
+            description.push_str(&format!("- `{}`\n", b));
+        }
+        description.push('\n');
+    }
+    if !report.orphaned_worktrees.is_empty() {
+        description.push_str(&format!(
+            "**Orphaned worktrees ({})** — merged branch, worktree not reaped. \
+             Remove with `git worktree remove <path>`:\n",
+            report.orphaned_worktrees.len()
+        ));
+        for w in &report.orphaned_worktrees {
+            description.push_str(&format!("- {}\n", w));
+        }
+        description.push('\n');
+    }
+    if !report.health_flags.is_empty() {
+        description.push_str("**Repo health:**\n");
+        for f in &report.health_flags {
+            description.push_str(&format!("- {}\n", f));
+        }
+        description.push('\n');
+    }
+
+    let metadata_json = serde_json::json!({
+        "steward_report": true,
+        "repo_path": report.repo_path,
+        "summary": report.summary,
+        "stale_merged_branches": report.stale_merged_branches,
+        "orphaned_worktrees": report.orphaned_worktrees,
+        "health_flags": report.health_flags,
+        "needs_human_attention": false,
+    });
+
+    let card = cards::create_card(
+        pool,
+        CreateCard {
+            project_id,
+            title,
+            description: Some(description),
+            card_type: Some("standard".to_string()),
+            column_id: None,
+            created_by: Some("henry".to_string()),
+            metadata_json: Some(metadata_json),
+        },
+    )
+    .await?;
+
+    tracing::info!(
+        target: "steward",
+        card_id = %card.id,
+        repo = %report.repo_path,
+        "repo-health report surfaced to board"
+    );
+
+    Ok(card.id)
+}
+
+/// The Git Steward as a scheduled repo-hygiene worker Henry must be able to
+/// describe. Surfaced in the `<permagent_self>` brief under "Workers".
+pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "git_steward",
+        display_name: "Git Steward",
+        category: crate::agents::self_knowledge::FeatureCategory::Worker,
+        what_it_does:
+            "A scheduled, local-model worker that sweeps the repository for hygiene — it \
+             drafts commit messages, PR descriptions and changelogs, and detects stale \
+             merged branches and orphaned worktrees (a merged branch whose worktree was \
+             never reaped). It surfaces a single repo-health report card on the board and \
+             writes a recallable Brain memory of what it found; destructive cleanup (branch \
+             deletion) is routed to you as a separate approval card, never run autonomously",
+        why_it_matters:
+            "It turns invisible repo grind into something you can both see and recall: ask \
+             what the Steward found and the answer is a clean fact in the Brain, while the \
+             board shows the actionable items. Read/report only — it proposes, you act",
+        // Worker category ⇒ Queryable by the registry invariant. It carries no
+        // bespoke live-state arm in `worker_live_state` (its scheduled run is
+        // already reflected in the Scheduler's job count), so it renders
+        // editorially with no "now:" claim — honest, not over-claimed.
+        state_source: crate::agents::self_knowledge::StateSource::Queryable,
+        teaching: &[],
+    };
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -509,5 +647,54 @@ mod tests {
             .unwrap();
         assert_eq!(outcome, ProposalOutcome::NotDestructive);
         assert_eq!(card_count(&pool).await, 0);
+    }
+
+    // ── Repo-health report (surface_repo_health_report) ──
+
+    #[tokio::test]
+    async fn repo_health_report_creates_single_standard_card() {
+        let pool = test_pool().await;
+        let before = card_count(&pool).await;
+
+        let report = RepoHealthReport {
+            repo_path: "/tmp/repo".to_string(),
+            summary: "3 stale merged branches, 2 orphaned worktrees".to_string(),
+            stale_merged_branches: vec!["feature/old".into(), "fix/done".into(), "chore/x".into()],
+            orphaned_worktrees: vec![
+                "/tmp/wt/old (feature/old, merged)".into(),
+                "/tmp/wt/done (fix/done, merged)".into(),
+            ],
+            health_flags: vec![
+                "897 local branches".into(),
+                "HEAD 0 ahead / 0 behind origin/main".into(),
+            ],
+            project_id: None,
+        };
+
+        let card_id = surface_repo_health_report(&pool, report).await.unwrap();
+
+        assert_eq!(
+            card_count(&pool).await,
+            before + 1,
+            "exactly one report card per run"
+        );
+
+        let card = crate::cards::get_card(&pool, &card_id)
+            .await
+            .unwrap()
+            .expect("card exists");
+        assert_eq!(card.created_by, "henry");
+        assert_eq!(card.card_type, "standard");
+
+        let meta = &card.metadata_json;
+        assert_eq!(meta["steward_report"], true);
+        assert_eq!(meta["needs_human_attention"], false);
+        assert_eq!(meta["orphaned_worktrees"].as_array().unwrap().len(), 2);
+        assert_eq!(meta["stale_merged_branches"].as_array().unwrap().len(), 3);
+
+        // The body must carry the actionable worktree hint.
+        assert!(card.description.contains("Orphaned worktrees"));
+        assert!(card.description.contains("git worktree remove"));
+        assert!(card.description.contains("feature/old"));
     }
 }

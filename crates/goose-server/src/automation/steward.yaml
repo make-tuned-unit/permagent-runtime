@@ -1,6 +1,6 @@
-version: "1.0.0"
+version: "1.1.0"
 title: "Git Steward"
-description: "Scheduled repo hygiene — drafts commit messages, PR descriptions, changelogs, stale-branch and repo-health reports, and investigates CI failures. Read/propose only; destructive operations are routed to you for approval. Runs entirely on the local model, $0."
+description: "Scheduled repo hygiene — drafts commit messages, PR descriptions, changelogs, stale-branch, orphaned-worktree and repo-health reports, and investigates CI failures. Surfaces its findings as a single board card plus a recallable Brain memory. Read/propose only; destructive operations are routed to you for approval. Runs entirely on the local model, $0."
 
 parameters:
   - key: repo_path
@@ -77,11 +77,24 @@ prompt: |
        just report that it was skipped as protected.
      - Do NOT delete anything yourself. The tool only creates an approval card.
 
-  7. REPO-HEALTH SUMMARY
-     - Uncommitted/untracked file count, number of local branches, number of stale
-       candidates, whether HEAD is ahead/behind upstream.
+  7. ORPHANED-WORKTREE DETECTION
+     - List worktrees: `git -C {{ repo_path }} worktree list --porcelain`
+       (each record has a `worktree <path>` line and a `branch refs/heads/<name>` line;
+       a detached worktree has `detached` instead of a branch).
+     - The main checkout (the first record, at {{ repo_path }}) is NOT orphaned — skip it.
+     - For every OTHER worktree, take its branch and check whether it is merged to main:
+       `git -C {{ repo_path }} branch --merged main` (is the branch in that list?).
+     - An ORPHANED worktree is one whose branch is MERGED to main but the worktree was
+       never removed. Report each as: "<path> (<branch>, merged)".
+     - Do NOT remove worktrees yourself — this is REPORT-ONLY. For each orphaned worktree,
+       include the suggested command `git -C {{ repo_path }} worktree remove <path>` for the
+       user to run. (Worktree removal is never autonomous and has no propose tool.)
 
-  8. CI-FAILURE INVESTIGATION (best-effort, only if `gh` is available)
+  8. REPO-HEALTH SUMMARY
+     - Uncommitted/untracked file count, number of local branches, number of stale
+       candidates, number of orphaned worktrees, whether HEAD is ahead/behind upstream.
+
+  9. CI-FAILURE INVESTIGATION (best-effort, only if `gh` is available)
      - `gh run list --repo <origin> --limit 5 --json conclusion,displayTitle,headBranch,url`
        (derive origin from `git -C {{ repo_path }} remote get-url origin`).
      - For the most recent failed run, fetch a short log excerpt and give a one-paragraph
@@ -89,7 +102,20 @@ prompt: |
 
   Synthesize a single report with these sections:
   **Branch & status** · **Commit message draft** · **PR description** · **Changelog**
-  · **Stale branches** · **Approval cards created** · **Repo health** · **CI investigation**
+  · **Stale branches** · **Approval cards created** · **Orphaned worktrees** · **Repo health**
+  · **CI investigation**
 
   Keep it tight and skimmable. For any approval cards created, state the branch and that
   it awaits the user's review on the board.
+
+  FINALLY — surface the read/report items so they reach the board and the Brain. Call the
+  `surface_steward_report` tool EXACTLY ONCE with:
+    repo_path: "{{ repo_path }}"
+    summary: a one-line count, e.g. "12 stale merged branches, 6 orphaned worktrees"
+    stale_merged_branches: the list of stale branch names that are merged to main
+    orphaned_worktrees: ["<path> (<branch>, merged)", ...]
+    health_flags: ["<N> local branches", "HEAD <ahead> ahead / <behind> behind origin/main",
+                   "<N> uncommitted files", "<N> stale candidates", ...]
+  This creates ONE repo-health report card on the board AND writes a recallable Brain memory,
+  so the user can later ask what the Steward found. Pass empty lists for anything you found
+  nothing for; still call the tool once so the run is recorded. Do NOT call it more than once.

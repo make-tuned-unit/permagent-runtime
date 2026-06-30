@@ -182,6 +182,19 @@ async fn persist_jobs(
     Ok(())
 }
 
+/// Normalize a cron expression to 6-field (seconds-prefixed) form.
+///
+/// Returns `Some(normalized)` if the input was legacy 5-field, `None` if it is
+/// already 6-field (or any other field count — left untouched for
+/// `create_cron_task` to surface the error). Idempotent: a 6-field cron yields
+/// `None`, so re-running over an already-normalized store is a no-op.
+fn normalize_cron_to_6field(cron: &str) -> Option<String> {
+    match cron.split_whitespace().count() {
+        5 => Some(format!("0 {}", cron.trim())),
+        _ => None,
+    }
+}
+
 pub struct Scheduler {
     tokio_scheduler: TokioJobScheduler,
     jobs: Arc<Mutex<JobsMap>>,
@@ -525,7 +538,12 @@ impl Scheduler {
             }
         };
 
-        for job_to_load in list {
+        // One-time, idempotent: rewrite any legacy 5-field cron to 6-field so the
+        // scheduler stops converting (and warning) on every load. Persisted once
+        // below; subsequent loads see 6-field and this is a no-op.
+        let mut crons_normalized = false;
+
+        for mut job_to_load in list {
             if !Path::new(&job_to_load.source).exists() {
                 tracing::warn!(
                     "Recipe file {} not found, skipping job '{}'",
@@ -533,6 +551,17 @@ impl Scheduler {
                     job_to_load.id
                 );
                 continue;
+            }
+
+            if let Some(normalized) = normalize_cron_to_6field(&job_to_load.cron) {
+                tracing::info!(
+                    "Normalizing legacy 5-field cron for job '{}' to 6-field once: '{}' -> '{}'",
+                    job_to_load.id,
+                    job_to_load.cron,
+                    normalized
+                );
+                job_to_load.cron = normalized;
+                crons_normalized = true;
             }
 
             let cron_task = match self.create_cron_task(job_to_load.clone()) {
@@ -561,6 +590,13 @@ impl Scheduler {
 
             let mut jobs_guard = self.jobs.lock().await;
             jobs_guard.insert(job_to_load.id.clone(), (job_uuid, job_to_load));
+        }
+
+        // Persist the normalized crons exactly once, so the next load is a no-op.
+        if crons_normalized {
+            if let Err(e) = persist_jobs(&self.storage_path, &self.jobs).await {
+                tracing::warn!("Failed to persist normalized crons: {}", e);
+            }
         }
     }
 
@@ -1455,6 +1491,24 @@ mod tests {
         let recipe_path = dir.join(format!("{}.yaml", name));
         fs::write(&recipe_path, "prompt: test\n").unwrap();
         recipe_path
+    }
+
+    #[test]
+    fn normalize_cron_converts_5field_and_is_idempotent() {
+        // Legacy 5-field → 6-field (seconds prefixed).
+        assert_eq!(
+            normalize_cron_to_6field("0 6 * * 1-5").as_deref(),
+            Some("0 0 6 * * 1-5")
+        );
+        assert_eq!(
+            normalize_cron_to_6field("0 19 * * 0").as_deref(),
+            Some("0 0 19 * * 0")
+        );
+        // Already 6-field → no change (idempotent).
+        assert_eq!(normalize_cron_to_6field("0 0 6 * * 1-5"), None);
+        // Other field counts left untouched (create_cron_task surfaces the error).
+        assert_eq!(normalize_cron_to_6field("* * * *"), None);
+        assert_eq!(normalize_cron_to_6field(""), None);
     }
 
     #[tokio::test]
