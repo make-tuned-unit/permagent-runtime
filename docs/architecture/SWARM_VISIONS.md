@@ -1,13 +1,15 @@
 # Swarm Visions — Two Expanded-Ambition Designs
 
 **Status:** RATIFIED 2026-06-30 — all decision points ruled (V1-0 + V1 + V2 + the shared proposal-surface
-question). Still DESIGN ONLY: nothing builds from this doc. Vision 1 is gated behind B + 2b + slice 4;
+question). **Updated 2026-06-30: the Steward is PROMOTED to a full character-agent** — Vision 2 gains a
+character layer (§2.0) mirroring Vision 1's roster pattern, a build sequence (§2.6), and new decision
+points (V2-H/I/J). Still DESIGN ONLY: nothing builds from this doc. Vision 1 is gated behind B + 2b + slice 4;
 Vision 2 is a new epic that needs the cross-device sizing spike first. Zero code, zero runtime files.
 Captures two ambitions as architecture so they were ruled before anything builds (the #538 pattern).
 **Scope:** Vision 1 — the Enricher as a *visible world-character* (extends slice 4 of
 [`UNIFIED_WORKSPACE.md`](./UNIFIED_WORKSPACE.md), #255/#256/#257). Vision 2 — the Git Steward
-expanded into a CI-running, fix-dispatching, multi-repo, cross-device actor (a **new epic**, distinct
-from the #318 output-fix already in flight).
+**promoted to a peer character-agent that owns repo health**: a CI-running, fix-dispatching, multi-repo,
+cross-device *detector/proposer* (a **new epic**, distinct from the #318/#552 output-fix already in flight).
 **Method:** Both designs were audited against `origin/main` (`7dbe8adbc`) in Phase 0; §"Established
 reality" sections below are facts confirmed in code, not assumptions. Where the ambition exceeds what
 git's model can give honestly, this doc flags a **research spike** rather than hand-waving a design.
@@ -177,9 +179,93 @@ V1-0 it describes the **enrich task** the Librarian gains *on top of* slice 4 wh
 
 # Vision 2 — The Git Steward, Expanded
 
-> A Steward that **runs CI, resolves errors, dispatches fixes via Henry, and keeps all repos clean,
-> organized, and in sync with root folders across devices.** This is a **new epic**, far beyond today's
-> read/propose hygiene reporter — and distinct from the #318 output-fix already being built.
+> A Steward that **owns repo health** — a peer character-agent that **runs CI, detects errors,
+> dispatches fixes via Henry, and keeps all repos clean, organized, and in sync with root folders across
+> devices.** This is a **new epic**, far beyond today's read/propose hygiene reporter — and distinct from
+> the #318/#552 output-fix already being built. The user's framing: *"constantly managing my repos,
+> keeping everything clean and CI green"* — boring, ongoing work that should be **delegated to a teammate**,
+> not done by hand. So the Steward is **promoted from a scheduled recipe to a full character-agent** (§2.0),
+> the same way the Librarian is a peer-agent — while the detector/proposer bounds (§2.2, V2-A) stay
+> **inviolable**: "owns repo health" means *constantly watching + proposing*, never *autonomously merging or
+> rewriting*. The user approves anything that changes a repo.
+
+## 2.0 The Steward becomes a character — PROMOTE, don't absorb (RULED 2026-06-30)
+
+> **DECISION V2-CHAR — RULED 2026-06-30: the Steward is PROMOTED to its own peer character-agent**, filling
+> the same four roster slots that make the Librarian a character. It is **not** absorbed into an existing
+> agent (the asymmetry vs the Enricher, below) and it is **not** a Henry subagent — it is a **peer** that
+> dispatches fix-goals *via* Henry's gated pipeline. The expanded *capability* (§2.1–2.6) is unchanged and
+> still **detector/proposer-only**; this section adds only the *character/presentation* layer over it.
+
+### Promote vs absorb — the asymmetry with the Enricher (the reasoning to record)
+
+Vision 1 ruled the **Enricher COLLAPSES into the Librarian** (V1-0 = a): a second Brain-writing worker is
+near-identical to the one that already exists, so a separate identity buys nothing and invites the
+dead-store drift this codebase keeps fighting. The Steward is the **opposite ruling for the opposite
+reason.** The test that distinguishes them:
+
+> **Does an existing agent already do work of this *kind*?**
+> - **Enricher → yes.** The Librarian already curates the Brain; "enrich" is more Brain curation. Same kind
+>   of work, same write seam (`SafeBrain`). → **ABSORB** (one coherent Brain-keeper, two tasks).
+> - **Steward → no.** Repo/CI/git health is a **genuinely distinct role** with **no existing agent to absorb
+>   it.** The Librarian curates the Brain; the Reader ingests documents; Henry orchestrates
+>   conversation/goals. *None of them owns repo health.* Cramming "watch CI, keep repos clean" into one of
+>   them would be the dead-store failure **in reverse** — a distinct role blurred into a mismatched
+>   identity. → **PROMOTE** (its own character).
+
+So the same principle (one identity per coherent kind of work; no near-duplicate workers) yields **absorb**
+for the Enricher and **promote** for the Steward. The Steward earns its own character because nothing in the
+roster already does its job.
+
+### The four character slots (the Librarian pattern, applied to the Steward)
+
+A worker becomes a visible character by filling the **same four declarations** the Librarian fills — there
+is **no new rendering/state/wire machinery to invent** (audited in §1.1's "key finding"; the same fan-out
+serves render, AgentPicker, camera-follow, and HUDs). Each is gated on the same flag as the character layer:
+
+1. **`roster.ts` `AgentIdentity`** — a 4th entry
+   (`ui/command-center/src/components/world/agents/roster.ts`):
+   `{ id: 'steward', name: 'The Steward', role: 'agent', trimColor: AGENT_TRIM.steward, isHenry: false,
+   mezzanineLocked: false, home: {…}, weathering }`. Today the roster has exactly three (Henry, The
+   Librarian, The Reader); the Steward is the fourth. Needs a trim color + a world-zone home (**V2-H**).
+2. **`WorkerPersona`** in `default_roster()`
+   (`crates/goose/src/config/agent_identity.rs`) — `first_name`, `role`, `traits`, `tone`, `tool_kinds`,
+   `availability_check`, `engine`. Today's roster: Claude Code / Codex (both `ExternalCli`) and the Librarian
+   (`Pending`). The Steward's `engine` is the open question (**V2-I**): it is a **read-only detector** that
+   *proposes* and dispatches fixes *via Henry*, so it does not run `claude`/`codex` itself — its "engine" is
+   the scheduler-driven sweep recipe, i.e. `Pending`/a local-detector kind, **not** `ExternalCli`.
+3. **`WORKER_DESCRIPTOR`** — **extend the in-flight `git_steward` descriptor #552 is already adding.**
+   *Audited reality:* on `origin/main` the Steward exists in self-knowledge only as a **guard**
+   (`steward::secret_scan::SELF_KNOWLEDGE_FEATURE` in `GUARD_DESCRIPTORS`) plus the safety core; the
+   `git_steward` **worker** descriptor is being added by #552 (branch `steward-output-318`,
+   `KNOWN_WORKER_IDS = [..., "git_steward"]`). The character layer **promotes that descriptor into
+   `WORKER_DESCRIPTORS`** and expands its copy to describe the watcher/proposer role (`StateSource::Queryable`,
+   honest copy: *"watches CI and repo health; proposes fixes for your review; writes no code and merges
+   nothing on its own"*). The standing self-knowledge rule applies — it ships **in the same change**.
+4. **`steward_*` event namespace** — mirror `librarian_describe_*`
+   (`crates/goose/src/events/mod.rs`): `steward_sweep_started / _ci_red / _proposal_created / _completed /
+   _error`, driving the character's visible `working ↔ idle` state on the `/events` WS exactly as the
+   Librarian's `*_describe_*` events do. **Honest presence (V1-E principle):** the Steward shows "working"
+   only when it is *really* sweeping/detecting — never theater.
+
+### World View presence & relationship to Henry
+
+- **Presence:** a peer inhabitant of the World View alongside Henry, the Librarian, and the Reader —
+  rendered by the same `ROSTER` fan-out, no crown (`isHenry: false`), its own trim and zone (V2-H). A
+  repo-keeper / CI-guardian character: think a vigilant custodian of the repos, visibly *watching*.
+- **Henry relationship — PEER, not subagent.** The Steward **detects and proposes**; **Henry orchestrates**.
+  When the Steward finds red CI or a repo-health issue, it emits a **proposal** (card/inbox seam, §2.4/§3);
+  **Henry** owns the dispatch (`ExternalCliEngine`) and the review loop (`advance_goal_checked`). The Steward
+  **never** calls the fix-dispatcher or the transition guard itself. This is exactly the decomposition §2.4
+  already specifies — the character layer changes the Steward's *identity/visibility*, not its authority.
+
+### What the character layer is NOT
+
+It is **pure presentation/identity over the bounded capability.** It grants the Steward **zero new
+authority**: no code-writing, no merging, no autonomous repo mutation. Promotion makes the Steward
+*visible and nameable as the teammate who owns repo health*; the detector/proposer bounds (§2.2, V2-A) are
+untouched. A "character that owns repo health" = a character that **constantly watches and proposes**, with
+the user gating every change.
 
 ## 2.1 Established reality (audited, do not redesign)
 
@@ -295,7 +381,33 @@ sync) is **named and deferred**, not pretended-solved.
 > in progress." Decision V2-D rules the model; the spike sizes the (I) build. Scope (II) is a separate,
 > larger spike that should not block (I).
 
-## 2.6 Decision points — Vision 2 (RULED 2026-06-30)
+## 2.6 Build sequence — from today's recipe to the full character-agent
+
+Today's state (the floor this builds up from): **#552 ships the bounded recipe** (`steward.yaml`
+read/propose, `$0` local) + the safety core (`steward/mod.rs`) + the `secret_scan` guard + the in-flight
+`git_steward` **worker descriptor** (`steward-output-318`, OPEN, do-not-merge). From there, each slice is
+**additive and independently shippable**, ordered cheapest-and-safest first:
+
+| Slice | What it adds | Touches | Risk / routing | Gate |
+|---|---|---|---|---|
+| **(a) Character layer** | The four roster slots (§2.0) — makes the Steward a **visible peer agent**. Pure presentation, **zero new authority**. | `roster.ts` (+1 `AgentIdentity`), `agent_identity.rs` (+1 `WorkerPersona`), promote `git_steward` into `WORKER_DESCRIPTORS`, `events/mod.rs` (+`steward_*`). | None — no repo mutation, no egress. | **Needs Jesse:** V2-H (placement/trim/zone), V2-I (persona + engine kind). Cheap; can land first. |
+| **(b) CI-watch + detect** | Run the project's CI; detect CI-red, dirty tree, stale branch, orphaned worktree, diverged remote. Emits `steward_*` events + **proposals only**. | New detector wired to the scheduler tick; reuses §2.2 routing. | **Autonomous** — effect-free observation; bound by *resource/cost* (disk/concurrency cap), not by approval. | Reasonable as designed; **settle at build**. Depends on (a) for visible presence. |
+| **(c) Fix-propose via Henry** | The dispatch seam: a detected failure → **proposal** → **Henry** dispatches a fix-goal (`ExternalCliEngine`, isolated worktree) → Review → **user approves merge**. | No new safety code — reuses card/inbox seam (§2.4/§3), `advance_goal_checked`. Steward **never** dispatches/merges itself. | **Tier-gated** (V2-B) — same gates as any Henry goal. **No shortcut.** | INVIOLABLE boundary (V2-A). Depends on (b). |
+| **(d) Multi-repo registry** | `~/.permagent/repos.yaml` (root-folder scan *proposes* additions) + `steward_repos` per-repo state (CI status, clean/dirty, ahead/behind, last sweep). Per-repo sweep under the disk/concurrency cap. | New registry + table; extends the (b) detector to loop repos. | Read-only registry; scan **proposes**, user confirms (explicit-config rule). | V2-C reasonable; **settle exact shape at build**. Depends on (b). |
+| **(e) Cross-device Scope-I** | Git-remote-as-authority reconciliation (§2.5): observe local divergence, **propose** local pull/push/stash through `surface_destructive_proposal`; un-fast-forwardable = human `risk_gate`. | Per-device local actions only; reuses the destructive-proposal seam. | Every cross-device *effect* is a local op proposed to the local human. | **BLOCKED on the cross-device sizing spike (§2.5 / V2-D).** Scope-II (working-tree sync) RULED OUT (V2-E). Depends on (d). |
+
+**Critical-path notes:**
+- **(a) is the cheap unlock** — it is the only slice with *no* new capability and *no* gate-design work; it
+  just makes the existing/imminent Steward a visible, named teammate. It can land right after #552 merges
+  (it promotes #552's `git_steward` descriptor), pending only the V2-H/I rulings.
+- **(b)→(c)→(d)** are the capability build, each additive and each landing behind a gate that **already
+  exists** (§2.2). The "large autonomous actor" is, by construction, a **loud detector** (b) wired to
+  **already-bounded actuators** (c).
+- **(e) does not start until the sizing spike** (§2.5) sizes Scope-I; it must not block (a)–(d).
+- **Self-knowledge ships per slice** (standing rule): every slice that adds user-facing capability extends
+  the Steward's `WORKER_DESCRIPTOR` copy in the *same* change.
+
+## 2.7 Decision points — Vision 2 (RULED 2026-06-30)
 
 | # | Decision | Ruling |
 |---|---|---|
@@ -306,6 +418,10 @@ sync) is **named and deferred**, not pretended-solved.
 | **V2-E** | Scope of "in sync": committed git state, or byte-for-byte working tree? | ✅ **Scope I (committed/pushed git state) only.** **Scope II (real-time working-tree sync) is RULED OUT for now** — no primitive, hard distributed-systems problem, no clear payoff over commit-and-push. Its own spike *if ever needed*; not built. Scope I delivers "repos in sync across devices" for committed state — the real want. |
 | **V2-F** | Is this one epic or several? | ✅ Reasonable as designed (sliced: CI-runner + detection → multi-repo registry → fix-dispatch wiring → cross-device reconciliation after the spike) — **settle sequence when V2 is scoped for build.** |
 | **V2-G** | Proposal surface (shared with V1-D — ruled once below). | ✅ **Target the Decision Inbox; build against the card seam until the orchestrator is enabled; migrate card→inbox when it goes live** (§3). Same approach the Steward output-fix follows now. |
+| **V2-CHAR** | Promote the Steward to its own character-agent, or absorb it into an existing one? | ✅ **PROMOTE — RULED 2026-06-30.** Repo/CI/git health is a genuinely distinct role with no existing agent to absorb it (the asymmetry vs the Enricher, §2.0). Fill the four roster slots; peer agent, not a Henry subagent. The capability bounds (V2-A) are untouched. |
+| **V2-H** | ⏸️ **NEEDS JESSE** — Steward's World View placement: trim color + home zone. | Like V1-B for the Librarian — a feel/placement call. The Reader took ground floor, the Librarian the mezzanine. Not blocking the *capability* build; blocks slice (a)'s final form. |
+| **V2-I** | ⏸️ **NEEDS JESSE** — persona identity (name/traits/tone) **and engine kind.** | The character's voice is yours to design (a repo-keeper/CI-guardian). **Engine:** because the Steward is a read-only detector that proposes + dispatches *via Henry*, it does **not** run `claude`/`codex` itself — recommend `engine: Pending`/a local-detector kind, **not** `ExternalCli`. Confirm. |
+| **V2-J** | Sequence of the character build vs the capability build. | ✅ Reasonable as designed (§2.6): **(a) character layer first** (cheap, no new authority, lands after #552), then **(b) detect → (c) fix-propose → (d) multi-repo → (e) cross-device after the spike**. **Settle final ordering at build**; (e) blocked on the sizing spike. |
 
 ---
 
@@ -314,7 +430,12 @@ sync) is **named and deferred**, not pretended-solved.
 - **Shared substrate.** Both visions are *presentation/orchestration layers over already-bounded
   workers*: Vision 1 dresses the slice-4 Enricher as a character; Vision 2 dresses CI/repo hygiene as a
   proposing worker. Neither asks for a new safety primitive — both reuse the persona/roster/worker-
-  descriptor stack (Vision 1) and the steward-safety/decision-inbox/goal-dispatch stack (Vision 2).
+  descriptor stack and the steward-safety/decision-inbox/goal-dispatch stack.
+- **Same four-slot character pattern, opposite identity rulings.** Vision 1 **absorbs** the Enricher into
+  the Librarian (same *kind* of work as an existing agent); Vision 2 **promotes** the Steward to its own
+  character (a *distinct* role no existing agent owns) — see the asymmetry in §2.0. Both fill (or extend)
+  the identical four slots: `roster.ts` `AgentIdentity` + `WorkerPersona` + `WORKER_DESCRIPTOR` + a
+  `*_event` namespace. The pattern is shared; whether to mint a new identity is the per-case ruling.
 - **Shared proposal-surface question — RULED ONCE (V1-D = V2-G).** Both visions **target the Decision
   Inbox** (#314), but **build against the card seam** (`cards::create_card`) until the orchestrator is
   enabled — the inbox stays dormant behind `orchestrator.enabled`. **Migrate card→inbox when the
@@ -332,7 +453,9 @@ sync) is **named and deferred**, not pretended-solved.
   character is presentation only.
 - Do **not** add any new gate to Vision 1 — it rides on slice 4, itself gated behind B + 2b.
 - Do **not** give the expanded Steward the ability to write code or merge. It detects and proposes; Henry
-  orchestrates; the existing review gate approves.
+  orchestrates; the existing review gate approves. **Promoting it to a character grants it ZERO new
+  authority** — the character layer (§2.0) is identity/visibility only; the detector/proposer bounds (V2-A)
+  are inviolable.
 - Do **not** design real-time working-tree cross-device sync (scope II). It is named and deferred to its
   own spike, or ruled out.
 - Do **not** build anything. This is a design for Jesse to rule on; the slices are authored after the
@@ -349,11 +472,16 @@ proposal surface → Decision Inbox via card seam (shared ruling) · V1-E presen
 **slice-4 build requirement: the enrich task's egress flag ships as a CONTROL (disableable + source-boundable),
 not just a label.** *All gated behind slice 4 (B + 2b) regardless.*
 
-**Vision 2 — Expanded Steward:** V2-A **detector/proposer-only — INVIOLABLE** · V2-B fix-dispatch = **same
-gates as any Henry goal** (no shortcut) · V2-C repo registry reasonable (settle at build) · **V2-D
-cross-device scope I RULED as designed — proceed to sizing spike** · V2-E scope II **RULED OUT** (own spike
-if ever) · V2-F slice sequence reasonable (settle at build) · V2-G proposal surface → Decision Inbox via card
-seam (shared ruling). *This is a new epic; the cross-device sizing spike precedes any build.*
+**Vision 2 — Expanded Steward (PROMOTED to a character-agent):** **V2-CHAR PROMOTE** — the Steward becomes
+its own peer character-agent (four roster slots, §2.0), *not* absorbed (asymmetry vs the Enricher) and *not*
+a Henry subagent. V2-A **detector/proposer-only — INVIOLABLE** (the character grants zero new authority) ·
+V2-B fix-dispatch = **same gates as any Henry goal** (no shortcut) · V2-C repo registry reasonable (settle at
+build) · **V2-D cross-device scope I RULED as designed — proceed to sizing spike** · V2-E scope II **RULED
+OUT** (own spike if ever) · V2-F/V2-J slice sequence reasonable — **(a) character layer first**, then detect →
+fix-propose → multi-repo → cross-device-after-spike (§2.6) · V2-G proposal surface → Decision Inbox via card
+seam (shared ruling). **NEEDS JESSE:** **V2-H** (World View placement/trim/zone) + **V2-I** (persona +
+engine kind — recommend `Pending`/local-detector, *not* `ExternalCli`). *This is a new epic; the cross-device
+sizing spike precedes the (e) build.*
 
 **Shared:** proposal surface ruled once (§3) — target the Decision Inbox, build against the card seam,
 migrate when the orchestrator is enabled.
