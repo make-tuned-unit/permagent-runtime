@@ -40,16 +40,28 @@ People and memories associate to projects. `project_people.role` is **project-sc
 person's global `people.role`. `project_memories.memory_id` is a Spectral memory id with no FK — reads INNER-JOIN
 against `memory.db` and silently drop orphans.
 
-### 1.3 The bridge — ABSENT but structurally pre-aligned
+### 1.3 The bridge — ABSENT, and the ID schemes do NOT coincide (CORRECTED 2026-06-30)
 
-No code maps `people.entity_uuid` or `people.canonical_id` → graph `EntityId`. **However:**
+No code maps `people.entity_uuid` or `people.canonical_id` → graph `EntityId`.
 
-- `canonicalize_entity_id(Person, "Jesse Sharratt")` → `"person:jesse-sharratt"` (`canonical.rs:80`)
-- Spectral `entity_id("person", "jesse-sharratt")` → `EntityId` with the **identical** normalization and `prefix:slug` form.
-
-So the two ID strings already coincide *today*. The trap: `canonical_id` is **mutable** (rename), `EntityId` is the
-graph's **stable** key. Deriving the bridge on-read from `canonical_id` works until the first rename, then silently
-points at the wrong (or no) graph node. This is the linchpin decision (§7-B).
+> **CORRECTION (2026-06-30, build audit of #255/B):** an earlier draft of this section claimed the people-table slug
+> and the graph `EntityId` "already coincide as strings today." **That is false on two counts** — verified against the
+> pinned Spectral rev `7300ad8`:
+>
+> 1. **`EntityId` is a blake3 *hash*, not a `prefix:slug` string.** `spectral-core/entity_id.rs` computes
+>    `EntityId = blake3("spectral-entity-v1:" + entity_type + ":" + canonical)`; `EntityId.to_string()` is **64 hex
+>    chars**. The graph route presents it as `"e:" + hex`; the bare 64-hex is the key `entity_fields_for` /
+>    `EntityId::from_str` use. You cannot store the slug and read attributes with it — you must store the hash.
+> 2. **The canonical *input* differs — dashes vs spaces.** The graph hashes the *ontology* canonical, which is
+>    space-separated lowercase (`ontology.toml`: `canonical = "jesse sharratt"`). `canonicalize_entity_id` produces a
+>    *dash-slug* (`"person:jesse-sharratt"`). `entity_id("person", "jesse sharratt") ≠ entity_id("person",
+>    "jesse-sharratt")` — different bytes, different hash.
+>
+> So **deriving `graph_entity_id` from `canonical_id` mis-joins to no node** (it compiles, runs, links nobody — the
+> worst failure mode). The corrected bridge (see §3) persists the graph's *real* `EntityId`, read from the graph/
+> ontology, and computes new ids via `identity::canonical::graph_entity_id_hex` (which uses the space-separated
+> `graph_canonical`, never the dash-slug). The trap below still holds and is *why* the key must be persisted, not
+> derived: `canonical_id` is **mutable** (rename); the graph `EntityId` is the **stable** key.
 
 ### 1.4 Surfaces
 
@@ -140,22 +152,28 @@ So 2a is *not* rebuilt; its attribute-source is *relocated* in the B/2b work, af
 
 The graph EntityId must survive a `canonical_id` rename, so it **cannot** be re-derived from `canonical_id` at read time.
 
-Add a `graph_entity_id TEXT` column to the people table, populated at person creation from `canonicalize_entity_id(...)`
-*at that moment*, and **never rewritten on rename**. Reads/writes against the graph use `graph_entity_id`; the user-facing
-slug (`canonical_id`) is free to change without losing the graph anchor.
+Add a `graph_entity_id TEXT` column to the people table — the bare 64-hex blake3 `EntityId` — and **never rewrite it on
+rename**. Reads/writes against the graph use `graph_entity_id`; the user-facing slug (`canonical_id`) is free to change
+without losing the graph anchor.
 
-- **Bootstrap:** because the formats coincide today (§1.3), existing rows backfill by deriving once from their current
-  `canonical_id`. Zero risk *for rows that have never been renamed* — and rename history doesn't exist pre-bridge, so
-  the backfill is exact.
+> **CORRECTION (2026-06-30):** the original mechanism below ("populate from `canonicalize_entity_id(...)`", "backfill by
+> deriving from `canonical_id`") was re-ruled during the build — it is the §1.3 mis-join bug. The dash-slug hashes to a
+> *different* `EntityId` than the graph node. The corrected, as-built mechanism:
+>
+> - **Persist the graph's REAL `EntityId`, never synthesize it from the slug.** For new CRM-created people,
+>   `upsert_person` computes the hash via `identity::canonical::graph_entity_id_hex("person", display_name)`, which
+>   hashes the *graph canonical* (`graph_canonical` = lowercased, whitespace-collapsed name — e.g. `"jesse sharratt"`),
+>   matching what Spectral mints. Set once at creation, immutable across rename.
+> - **Populate / backfill by ENUMERATING graph person entities, not by deriving from `canonical_id`.** A startup sync
+>   (`people_bridge::sync_people_from_ontology`, mirroring `brain_sync`) reads each person entity's *real* `EntityId`
+>   from the ontology (`ontology.entity_id_for(e)` — the authoritative source the graph is seeded from), mints an
+>   identity-only `people` row for graph persons absent from the table (e.g. "mel schembri"), and backfills
+>   `graph_entity_id` on pre-bridge rows where it is NULL — never clobbering an existing key. Idempotent.
+> - **`canonicalize_entity_id` stays the people-table `canonical_id` slug tool** — a separate scheme, NOT the bridge.
+
 - **Why not derive-on-read (the zero-migration option):** it is correct only until the first rename and silently wrong
   after. It also couples two codebases' slug-normalization implementations forever — any divergence is a silent
-  mis-join. Persisting decouples them.
-- **Rename semantics become explicit:** `rename_canonical_id` changes the display slug *only*; `graph_entity_id` is
-  immutable. If we ever need to re-key the graph node itself, that is a deliberate graph operation, not a side effect of
-  a display rename.
-
-- **Bootstrap:** because the formats coincide today (§1.3), existing rows backfill by deriving once from their current
-  `canonical_id`. Rename history doesn't exist pre-bridge, so the backfill is exact.
+  mis-join. Persisting the real graph key decouples them.
 - **Rename semantics become explicit:** `rename_canonical_id` changes the display slug *only*; `graph_entity_id` is
   immutable. Re-keying the graph node itself becomes a deliberate graph operation, never a side effect of a display rename.
 

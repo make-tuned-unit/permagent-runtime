@@ -43,6 +43,12 @@ pub struct Person {
     pub phone: Option<String>,
     pub notes: Option<String>,
     pub last_contact_at: Option<String>,
+    /// Immutable bridge key to the Spectral graph node (bare 64-hex blake3
+    /// `EntityId`). Set once at creation, never rewritten on rename — the durable
+    /// anchor that carries this identity row to its graph attributes (#255/B).
+    /// `None` for rows minted before the bridge that the startup sync hasn't
+    /// reached yet.
+    pub graph_entity_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -69,6 +75,48 @@ pub struct PeopleFilter {
     pub query: Option<String>,
 }
 
+/// Canonical `entity_fields` names for person attributes. Under Decision A
+/// (#255) the graph is authoritative for these; the read overlay sources them
+/// from `entity_fields` and the slice-2b write path writes the same names. Kept
+/// here (plain strings — no Spectral dependency) so both sides share one list.
+pub const PERSON_FIELD_NAMES: [&str; 6] = [
+    "role",
+    "company",
+    "email",
+    "phone",
+    "notes",
+    "last_contact_at",
+];
+
+impl Person {
+    /// Null every graph-sourced attribute. The read overlay calls this before
+    /// applying graph `entity_fields`, so the response reflects the graph only —
+    /// never a stale people-table column (Decision A). The columns remain in the
+    /// DB as a safety net until the Step-3 drop, but are not the response source.
+    pub fn clear_attributes(&mut self) {
+        self.role = None;
+        self.company = None;
+        self.email = None;
+        self.phone = None;
+        self.notes = None;
+        self.last_contact_at = None;
+    }
+
+    /// Set one attribute by its `entity_fields` field name (graph overlay). Names
+    /// outside [`PERSON_FIELD_NAMES`] are ignored.
+    pub fn set_attribute(&mut self, field_name: &str, value: String) {
+        match field_name {
+            "role" => self.role = Some(value),
+            "company" => self.company = Some(value),
+            "email" => self.email = Some(value),
+            "phone" => self.phone = Some(value),
+            "notes" => self.notes = Some(value),
+            "last_contact_at" => self.last_contact_at = Some(value),
+            _ => {}
+        }
+    }
+}
+
 fn row_to_person(r: &sqlx::sqlite::SqliteRow) -> Person {
     Person {
         entity_uuid: r.get("entity_uuid"),
@@ -80,13 +128,14 @@ fn row_to_person(r: &sqlx::sqlite::SqliteRow) -> Person {
         phone: r.get("phone"),
         notes: r.get("notes"),
         last_contact_at: r.get("last_contact_at"),
+        graph_entity_id: r.get("graph_entity_id"),
         created_at: r.get("created_at"),
         updated_at: r.get("updated_at"),
     }
 }
 
 const SELECT_COLS: &str = "entity_uuid, canonical_id, display_name, role, company, \
-     email, phone, notes, last_contact_at, created_at, updated_at";
+     email, phone, notes, last_contact_at, graph_entity_id, created_at, updated_at";
 
 // ── Write primitives (substrate for v1.5; no HTTP surface in v1) ────────────
 
@@ -145,11 +194,16 @@ pub async fn upsert_person(
         }
         None => {
             let uuid = Uuid::now_v7().to_string();
+            // Persist the graph bridge key immutably at creation (#255/B). Derived
+            // from the graph's canonical form (lowercased name), NOT canonical_id —
+            // see identity::canonical::graph_entity_id_hex.
+            let graph_entity_id =
+                crate::identity::canonical::graph_entity_id_hex("person", display_name);
             sqlx::query(
                 "INSERT INTO people
                      (entity_uuid, canonical_id, display_name, role, company,
-                      email, phone, notes, last_contact_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                      email, phone, notes, last_contact_at, graph_entity_id)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&uuid)
             .bind(canonical_id)
@@ -160,6 +214,7 @@ pub async fn upsert_person(
             .bind(&attrs.phone)
             .bind(&attrs.notes)
             .bind(&attrs.last_contact_at)
+            .bind(&graph_entity_id)
             .execute(&mut *tx)
             .await
             .map_err(|e| e.to_string())?;
@@ -320,6 +375,68 @@ mod tests {
         assert_ne!(p.entity_uuid, p.canonical_id);
         assert_eq!(p.canonical_id, "person:jane-doe");
         assert_eq!(p.company.as_deref(), Some("Acme"));
+    }
+
+    #[test]
+    fn clear_and_set_attribute_map_field_names() {
+        let mut p = Person {
+            entity_uuid: "u".into(),
+            canonical_id: "person:x".into(),
+            display_name: "X".into(),
+            role: Some("old".into()),
+            company: Some("old".into()),
+            email: Some("old".into()),
+            phone: Some("old".into()),
+            notes: Some("old".into()),
+            last_contact_at: Some("old".into()),
+            graph_entity_id: Some("hex".into()),
+            created_at: "t".into(),
+            updated_at: "t".into(),
+        };
+        // clear_attributes nulls every graph-sourced attribute (identity kept).
+        p.clear_attributes();
+        assert_eq!(p.role, None);
+        assert_eq!(p.last_contact_at, None);
+        assert_eq!(p.display_name, "X");
+        assert_eq!(p.graph_entity_id.as_deref(), Some("hex"));
+
+        // set_attribute maps each canonical field name; unknown names are ignored.
+        for name in PERSON_FIELD_NAMES {
+            p.set_attribute(name, format!("v-{name}"));
+        }
+        p.set_attribute("not_a_field", "ignored".into());
+        assert_eq!(p.role.as_deref(), Some("v-role"));
+        assert_eq!(p.company.as_deref(), Some("v-company"));
+        assert_eq!(p.email.as_deref(), Some("v-email"));
+        assert_eq!(p.phone.as_deref(), Some("v-phone"));
+        assert_eq!(p.notes.as_deref(), Some("v-notes"));
+        assert_eq!(p.last_contact_at.as_deref(), Some("v-last_contact_at"));
+    }
+
+    #[tokio::test]
+    async fn sets_graph_entity_id_at_creation() {
+        let pool = fresh_pool().await;
+        let p = upsert_person(
+            &pool,
+            "person:jane-doe",
+            "Jane Doe",
+            &PersonAttrs::default(),
+        )
+        .await
+        .unwrap();
+
+        // Bridge key derived from the graph canonical ("jane doe"), NOT the
+        // dash-slug canonical_id — bare 64-hex, immutable across later renames.
+        let expect = crate::identity::canonical::graph_entity_id_hex("person", "Jane Doe");
+        assert_eq!(p.graph_entity_id.as_deref(), Some(expect.as_str()));
+        assert_eq!(expect.len(), 64);
+
+        let after = rename_canonical_id(&pool, &p.entity_uuid, "person:jane-smith", "Jane Smith")
+            .await
+            .unwrap()
+            .unwrap();
+        // Rename leaves the graph anchor untouched (immutable).
+        assert_eq!(after.graph_entity_id, p.graph_entity_id);
     }
 
     #[tokio::test]
