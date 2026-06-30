@@ -67,6 +67,21 @@ absorption is ruled **only with task-level distinctness kept intact:**
 This captures (a)'s leanness and architectural coherence while keeping (b)'s only real win — an honest,
 separately-described, egress-flagged external-acquisition capability — under one identity.
 
+**Slice-4 build requirement — the egress flag is a CONTROL, not a LABEL (RULED 2026-06-30).** The
+Librarian's enrich task reaches **external** sources (web/email); on a local-first product that is a real
+capability expansion, not a cosmetic note. When slice 4 is built (gated behind B + 2b), the enrich task
+must ship with an **egress control**, meaning both:
+
+1. **Visible when it egresses** — the `librarian_enrich_*` event namespace surfaces external acquisition as
+   it happens (the descriptor line + events already give this).
+2. **Gateable / disableable / boundable** — the user can **turn external enrichment off entirely**, and/or
+   **bound which sources** it may reach. "Egress-flagged" must never collapse to "we labeled it." The
+   describe task (local, `$0`, never leaves the machine) is unaffected; only the enrich task is gated.
+
+This is the project's standing principle applied to the one dangerous capability in V1: a dangerous
+capability is **visible AND bounded**, not merely annotated. The control ships *in the slice-4 change* with
+the enrich task — not as a follow-up.
+
 **Consequence for the rest of Vision 1:** §1.2's "four declarations" collapse to **two additions to an
 existing worker** — an `enrich` task + its `librarian_enrich_*` events + a descriptor *line* (not a new
 descriptor). V1-A (peer vs subagent) is moot (the Librarian is already a peer worker). V1-B/C
@@ -330,8 +345,9 @@ sync) is **named and deferred**, not pretended-solved.
 **Vision 1 — Enricher:** **V1-0 = (a) the Librarian absorbs enrichment** (no 4th agent; conditioned on
 descriptor line + egress flag + `librarian_enrich_*` events) · V1-A peer-worker (moot, absorbed) · V1-B/C
 placement & persona DEFERRED to Jesse (largely moot — the Librarian already has its character) · V1-D
-proposal surface → Decision Inbox via card seam (shared ruling) · V1-E presence honesty ENFORCED. *All gated
-behind slice 4 (B + 2b) regardless.*
+proposal surface → Decision Inbox via card seam (shared ruling) · V1-E presence honesty ENFORCED ·
+**slice-4 build requirement: the enrich task's egress flag ships as a CONTROL (disableable + source-boundable),
+not just a label.** *All gated behind slice 4 (B + 2b) regardless.*
 
 **Vision 2 — Expanded Steward:** V2-A **detector/proposer-only — INVIOLABLE** · V2-B fix-dispatch = **same
 gates as any Henry goal** (no shortcut) · V2-C repo registry reasonable (settle at build) · **V2-D
