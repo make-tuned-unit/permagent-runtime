@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useCommandCenter } from './lib/store';
 import { useTheme } from './styles/useTheme';
 import { Sidebar } from './components/sidebar/Sidebar';
@@ -16,6 +16,7 @@ import { createChatWindow } from './lib/chatWindow';
 import type { LayoutNode } from './lib/store';
 import { useAppNavigate } from './hooks/useAppNavigate';
 import { useVersionSkew } from './hooks/useVersionSkew';
+import { onRepaintRegain, forceCompositorRepaint } from './lib/repaintOnRegain';
 
 function MainContent() {
   const activePanel = useCommandCenter(s => s.activePanel);
@@ -95,6 +96,18 @@ function App() {
 
   // Subscribe to AppNavigate events from the agent
   useAppNavigate();
+
+  // Throttle-immune render self-heal (Phase 2.5 S1). On focus/visibility
+  // regain, force the shell to repaint so React surfaces that froze under
+  // macOS occlusion throttling (sidebar blanks in fullscreen #517) recover
+  // immediately instead of waiting for an interaction. Terminals self-heal
+  // their own xterm renderer via the same regain hook.
+  const shellRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    return onRepaintRegain(() => {
+      if (shellRef.current) forceCompositorRepaint(shellRef.current);
+    });
+  }, []);
 
   // App↔daemon version-skew detection — only once we're in the running app.
   const versionSkew = useVersionSkew(phase === 'app');
@@ -199,7 +212,7 @@ function App() {
   }
 
   return (
-    <div className={`flex flex-col h-screen density-${density}`} style={{ background: gradient.shell }}>
+    <div ref={shellRef} className={`flex flex-col h-screen density-${density}`} style={{ background: gradient.shell }}>
       {/* Title-bar strip — overlay mode makes native bar transparent; this fills
           the area behind the traffic lights with the sidebar color across full width */}
       <div data-tauri-drag-region style={{ height: 28, flexShrink: 0, background: gradient.sidebar }} />

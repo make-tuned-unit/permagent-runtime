@@ -6,6 +6,7 @@ import '@xterm/xterm/css/xterm.css';
 import { useEventBus } from '../../lib/eventBus';
 import { useTheme } from '../../styles/useTheme';
 import { getXtermTheme } from './xtermTheme';
+import { onRepaintRegain } from '../../lib/repaintOnRegain';
 
 // ── Tauri API loader (cached, no module-level mutation) ──
 
@@ -159,6 +160,29 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
       // characters to avoid rendering them twice.
       const pendingEchos: { char: string; time: number }[] = [];
 
+      // Coalesced force-flush of the DOM renderer after PTY output. xterm's
+      // write schedules a render via requestAnimationFrame; when the main
+      // webview is occlusion-throttled (the native browser sibling is forward),
+      // that frame can be dropped, leaving the rendered view stale after the
+      // shell already advanced — e.g. an answered CC prompt that stays on
+      // screen (#555). A short post-write refresh re-queues the render so the
+      // view self-heals as soon as a frame lands.
+      let flushTimer: ReturnType<typeof setTimeout> | null = null;
+      const scheduleFlush = () => {
+        if (flushTimer) return; // coalesce a burst into one refresh
+        flushTimer = setTimeout(() => {
+          flushTimer = null;
+          const t = xtermRef.current;
+          if (t) {
+            try {
+              t.refresh(0, t.rows - 1);
+            } catch {
+              /* ignore refresh during teardown/layout transitions */
+            }
+          }
+        }, 80);
+      };
+
       // Set up PTY data/exit listeners
       let unlistenData: (() => void) | null = null;
       let unlistenExit: (() => void) | null = null;
@@ -182,6 +206,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
               }
               if (output.length > 0) {
                 term.write(output);
+                scheduleFlush();
               }
 
               // Parse OSC 7 (CWD reporting) from the full data, not the stripped output
@@ -338,6 +363,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         unlistenExit?.();
         unlistenEcho?.();
         if (resizeTimer) clearTimeout(resizeTimer);
+        if (flushTimer) clearTimeout(flushTimer);
         resizeObserver.disconnect();
         term.dispose();
         xtermRef.current = null;
@@ -379,6 +405,25 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
       return () => clearTimeout(timer);
     }
   }, [isVisible]);
+
+  // Force-flush the DOM renderer when the webview regains focus/visibility.
+  // After macOS occlusion throttling freezes this view (terminal vanishes on
+  // focus-loss in fullscreen #517; CC pane blank #551), the buffer is current
+  // but the painted frame is stale — re-fit (guarded) and refresh so it
+  // self-heals immediately on regain instead of waiting for an interaction.
+  useEffect(() => {
+    return onRepaintRegain(() => {
+      const el = containerRef.current;
+      const term = xtermRef.current;
+      if (!term || !el || el.offsetWidth === 0 || el.offsetHeight === 0) return;
+      try {
+        fitAddonRef.current?.fit();
+        term.refresh(0, term.rows - 1);
+      } catch {
+        /* ignore during layout transitions */
+      }
+    });
+  }, []);
 
   // Cmd+K to clear
   useEffect(() => {
