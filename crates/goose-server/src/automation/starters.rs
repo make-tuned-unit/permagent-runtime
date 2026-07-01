@@ -22,20 +22,24 @@ struct StarterRecipe {
     yaml: &'static str,
 }
 
+// Crons are stored in 6-field (seconds-prefixed) form so the scheduler never
+// has to convert a legacy 5-field expression at load time — see
+// `normalize_cron_to_6field` in scheduler.rs, which migrates any pre-existing
+// 5-field jobs once.
 const STARTERS: &[StarterRecipe] = &[
     StarterRecipe {
         id: "workspace-snapshot",
-        cron: "0 8 * * 1-5",
+        cron: "0 0 8 * * 1-5",
         yaml: WORKSPACE_SNAPSHOT_YAML,
     },
     StarterRecipe {
         id: "storage-insights",
-        cron: "0 19 * * 0",
+        cron: "0 0 19 * * 0",
         yaml: STORAGE_INSIGHTS_YAML,
     },
     StarterRecipe {
         id: "git-steward",
-        cron: "0 6 * * 1-5",
+        cron: "0 0 6 * * 1-5",
         yaml: STEWARD_YAML,
     },
 ];
