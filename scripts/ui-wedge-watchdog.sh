@@ -22,7 +22,10 @@
 #        - sample of each WebContent child
 #        - daemon health curl            (auto re-confirms the #562 boundary)
 #        - tail of the probe JSONL        (fd/conn trend into the wedge)
-#   4. Fire once per episode; re-arm when the main thread returns to idle or the
+#   4. On wedge, after capture, RECOVER: kill the wedged GUI + relaunch it
+#      (RELAUNCH=1 default; the daemon is never touched). Set RELAUNCH=0 for
+#      capture-only. This is the UI-side of #560's fail-fast-recover.
+#   5. Fire once per episode; re-arm when the main thread returns to idle or the
 #      pid changes.
 #
 # Ships FIRST, mirroring DURABILITY_AUDIT.md (#560) "Part A external sampler".
@@ -43,6 +46,12 @@ PROBE_MAX_BYTES="${PROBE_MAX_BYTES:-5242880}"   # 5 MiB, self-rotated (never F5)
 DAEMON_URL="${DAEMON_URL:-http://127.0.0.1:3001/api/people}"
 # GUI process match: the app bundle's MacOS binary, NOT permagentd, NOT this script.
 GUI_PATTERN="${GUI_PATTERN:-Permagent.app/Contents/MacOS/permagent-app}"
+# Auto-recover: after capturing evidence, kill the wedged GUI and relaunch it.
+# This is the UI-side of #560's fail-fast-recover (the daemon has launchd;
+# the UI gets the watchdog). The daemon is NEVER touched. Set RELAUNCH=0 to
+# make the watchdog capture-only.
+RELAUNCH="${RELAUNCH:-1}"
+APP_BUNDLE="${APP_BUNDLE:-/Applications/Permagent.app}"
 
 # Absolute paths — a Python package on PATH shadows `sample` with a broken
 # stub, and `spindump` lives in /usr/sbin. Never rely on PATH resolution here.
@@ -168,6 +177,30 @@ capture() {
   echo "$dir"
 }
 
+# Recover the wedged GUI: kill it and relaunch. NEVER touches permagentd — the
+# daemon is healthy during the wedge (that is the whole #562 finding) and has
+# its own launchd supervision. Idempotent and best-effort.
+relaunch_gui() {
+  local pid="$1" dir="$2"
+  if [ "$RELAUNCH" != "1" ]; then
+    log "RELAUNCH=0 — capture-only, leaving wedged GUI (pid $pid) in place"
+    return 0
+  fi
+  log "recovering: killing wedged GUI pid $pid (daemon untouched) + relaunching"
+  # Target the GUI binary ONLY (pattern excludes permagentd); escalate to -9.
+  pkill -f "$GUI_PATTERN" 2>/dev/null
+  sleep 2
+  pkill -9 -f "$GUI_PATTERN" 2>/dev/null
+  sleep 1
+  if [ -d "$APP_BUNDLE" ]; then
+    open "$APP_BUNDLE" 2>/dev/null && log "relaunched $APP_BUNDLE"
+  else
+    log "APP_BUNDLE not found ($APP_BUNDLE) — relaunch skipped; killed only"
+  fi
+  echo "relaunched: $(date '+%Y-%m-%dT%H:%M:%S%z') (RELAUNCH=$RELAUNCH, bundle=$APP_BUNDLE)" \
+    >> "$dir/recovery.txt"
+}
+
 # ---- main tick -------------------------------------------------------------
 
 CONSEC=0          # consecutive wedged ticks
@@ -192,8 +225,9 @@ tick() {
     CONSEC=$((CONSEC + 1))
     log "main-thread non-idle wait ($CONSEC consecutive) pid $pid"
     if [ "$CONSEC" -ge 2 ] && [ "$ARMED" -eq 1 ]; then
-      capture "$pid"
-      ARMED=0     # one capture per episode
+      local dir; dir=$(capture "$pid")
+      relaunch_gui "$pid" "$dir"
+      ARMED=0     # one capture+recover per episode
     fi
   else
     if [ "$CONSEC" -gt 0 ]; then log "main thread back to idle wait — re-armed"; fi
