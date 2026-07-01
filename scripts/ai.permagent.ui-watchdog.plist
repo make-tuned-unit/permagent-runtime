@@ -29,6 +29,10 @@
     <dict>
         <key>TICK</key>
         <string>30</string>
+        <!-- 1 = capture the wedged stack THEN kill+relaunch the GUI (daemon
+             untouched). Set to 0 for capture-only. -->
+        <key>RELAUNCH</key>
+        <string>1</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>
