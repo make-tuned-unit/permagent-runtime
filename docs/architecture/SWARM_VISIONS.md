@@ -231,9 +231,11 @@ serves render, AgentPicker, camera-follow, and HUDs). Each is gated on the same 
 2. **`WorkerPersona`** in `default_roster()`
    (`crates/goose/src/config/agent_identity.rs`) — `first_name`, `role`, `traits`, `tone`, `tool_kinds`,
    `availability_check`, `engine`. Today's roster: Claude Code / Codex (both `ExternalCli`) and the Librarian
-   (`Pending`). The Steward's `engine` is the open question (**V2-I**): it is a **read-only detector** that
-   *proposes* and dispatches fixes *via Henry*, so it does not run `claude`/`codex` itself — its "engine" is
-   the scheduler-driven sweep recipe, i.e. `Pending`/a local-detector kind, **not** `ExternalCli`.
+   (`Pending`). The Steward's `engine` is **`Pending`/a local-detector kind, NOT `ExternalCli`** (ruled,
+   **V2-I**): its *watching* (CI, repo state, health) is continuous local-model detection like the Librarian,
+   while its *acting* (fix-dispatch) goes through Henry's gated pipeline — so it never runs `claude`/`codex`
+   itself. **Local-detector for watch, Henry-dispatch for act.** The `first_name`/`traits`/`tone` (the
+   character's voice) are deferred to Jesse with placement (**V2-H**).
 3. **`WORKER_DESCRIPTOR`** — **extend the in-flight `git_steward` descriptor #552 is already adding.**
    *Audited reality:* on `origin/main` the Steward exists in self-knowledge only as a **guard**
    (`steward::secret_scan::SELF_KNOWLEDGE_FEATURE` in `GUARD_DESCRIPTORS`) plus the safety core; the
@@ -390,7 +392,7 @@ read/propose, `$0` local) + the safety core (`steward/mod.rs`) + the `secret_sca
 
 | Slice | What it adds | Touches | Risk / routing | Gate |
 |---|---|---|---|---|
-| **(a) Character layer** | The four roster slots (§2.0) — makes the Steward a **visible peer agent**. Pure presentation, **zero new authority**. | `roster.ts` (+1 `AgentIdentity`), `agent_identity.rs` (+1 `WorkerPersona`), promote `git_steward` into `WORKER_DESCRIPTORS`, `events/mod.rs` (+`steward_*`). | None — no repo mutation, no egress. | **Needs Jesse:** V2-H (placement/trim/zone), V2-I (persona + engine kind). Cheap; can land first. |
+| **(a) Character layer** | The four roster slots (§2.0) — makes the Steward a **visible peer agent**. Pure presentation, **zero new authority**. | `roster.ts` (+1 `AgentIdentity`), `agent_identity.rs` (+1 `WorkerPersona`, engine `Pending`/local-detector per V2-I), promote `git_steward` into `WORKER_DESCRIPTORS`, `events/mod.rs` (+`steward_*`). | None — no repo mutation, no egress. | Engine kind ruled (V2-I). **Needs Jesse:** V2-H (placement/trim/zone + persona/voice). Cheap; lands after #552. |
 | **(b) CI-watch + detect** | Run the project's CI; detect CI-red, dirty tree, stale branch, orphaned worktree, diverged remote. Emits `steward_*` events + **proposals only**. | New detector wired to the scheduler tick; reuses §2.2 routing. | **Autonomous** — effect-free observation; bound by *resource/cost* (disk/concurrency cap), not by approval. | Reasonable as designed; **settle at build**. Depends on (a) for visible presence. |
 | **(c) Fix-propose via Henry** | The dispatch seam: a detected failure → **proposal** → **Henry** dispatches a fix-goal (`ExternalCliEngine`, isolated worktree) → Review → **user approves merge**. | No new safety code — reuses card/inbox seam (§2.4/§3), `advance_goal_checked`. Steward **never** dispatches/merges itself. | **Tier-gated** (V2-B) — same gates as any Henry goal. **No shortcut.** | INVIOLABLE boundary (V2-A). Depends on (b). |
 | **(d) Multi-repo registry** | `~/.permagent/repos.yaml` (root-folder scan *proposes* additions) + `steward_repos` per-repo state (CI status, clean/dirty, ahead/behind, last sweep). Per-repo sweep under the disk/concurrency cap. | New registry + table; extends the (b) detector to loop repos. | Read-only registry; scan **proposes**, user confirms (explicit-config rule). | V2-C reasonable; **settle exact shape at build**. Depends on (b). |
@@ -419,8 +421,8 @@ read/propose, `$0` local) + the safety core (`steward/mod.rs`) + the `secret_sca
 | **V2-F** | Is this one epic or several? | ✅ Reasonable as designed (sliced: CI-runner + detection → multi-repo registry → fix-dispatch wiring → cross-device reconciliation after the spike) — **settle sequence when V2 is scoped for build.** |
 | **V2-G** | Proposal surface (shared with V1-D — ruled once below). | ✅ **Target the Decision Inbox; build against the card seam until the orchestrator is enabled; migrate card→inbox when it goes live** (§3). Same approach the Steward output-fix follows now. |
 | **V2-CHAR** | Promote the Steward to its own character-agent, or absorb it into an existing one? | ✅ **PROMOTE — RULED 2026-06-30.** Repo/CI/git health is a genuinely distinct role with no existing agent to absorb it (the asymmetry vs the Enricher, §2.0). Fill the four roster slots; peer agent, not a Henry subagent. The capability bounds (V2-A) are untouched. |
-| **V2-H** | ⏸️ **NEEDS JESSE** — Steward's World View placement: trim color + home zone. | Like V1-B for the Librarian — a feel/placement call. The Reader took ground floor, the Librarian the mezzanine. Not blocking the *capability* build; blocks slice (a)'s final form. |
-| **V2-I** | ⏸️ **NEEDS JESSE** — persona identity (name/traits/tone) **and engine kind.** | The character's voice is yours to design (a repo-keeper/CI-guardian). **Engine:** because the Steward is a read-only detector that proposes + dispatches *via Henry*, it does **not** run `claude`/`codex` itself — recommend `engine: Pending`/a local-detector kind, **not** `ExternalCli`. Confirm. |
+| **V2-H** | ⏸️ **DEFERRED to Jesse** — Steward's **World View placement (trim color + home zone) AND persona/voice** (name, traits, tone — the character's feel). | Ruled together when Jesse designs the feel (same as the Enricher's persona was deferred, V1-C). Creative/feel call — a repo-keeper/CI-guardian custodian. The Reader took ground floor, the Librarian the mezzanine. **Not blocking the capability build; gated behind the build sequence — no rush.** Blocks slice (a)'s final form only. |
+| **V2-I** | Engine kind for the Steward's `WorkerPersona`. | ✅ **`Pending`/local-detector — RULED 2026-06-30, NOT `ExternalCli`.** The Steward's **watching** (CI, repo state, health) is continuous local-model detection work, like the Librarian → local engine. The **acting** (fix-dispatch) goes through Henry's gated pipeline per the detector/proposer boundary, so the Steward itself never runs `claude`/`codex`. **Local-detector for watch, Henry-dispatch for act.** |
 | **V2-J** | Sequence of the character build vs the capability build. | ✅ Reasonable as designed (§2.6): **(a) character layer first** (cheap, no new authority, lands after #552), then **(b) detect → (c) fix-propose → (d) multi-repo → (e) cross-device after the spike**. **Settle final ordering at build**; (e) blocked on the sizing spike. |
 
 ---
@@ -479,9 +481,11 @@ V2-B fix-dispatch = **same gates as any Henry goal** (no shortcut) · V2-C repo 
 build) · **V2-D cross-device scope I RULED as designed — proceed to sizing spike** · V2-E scope II **RULED
 OUT** (own spike if ever) · V2-F/V2-J slice sequence reasonable — **(a) character layer first**, then detect →
 fix-propose → multi-repo → cross-device-after-spike (§2.6) · V2-G proposal surface → Decision Inbox via card
-seam (shared ruling). **NEEDS JESSE:** **V2-H** (World View placement/trim/zone) + **V2-I** (persona +
-engine kind — recommend `Pending`/local-detector, *not* `ExternalCli`). *This is a new epic; the cross-device
-sizing spike precedes the (e) build.*
+seam (shared ruling) · **V2-I engine kind RULED: `Pending`/local-detector, NOT `ExternalCli`** (local-detector
+for watch, Henry-dispatch for act). **DEFERRED to Jesse:** **V2-H** — World View placement (trim/zone) +
+persona/voice, ruled together when he designs the feel (gated behind the build sequence, no rush). *New epic;
+#559 builds from nothing until (1) #552 lands the `git_steward` descriptor, (2) the cross-device sizing spike
+sizes slice (e), and (3) Jesse rules V2-H persona/placement.*
 
 **Shared:** proposal surface ruled once (§3) — target the Decision Inbox, build against the card seam,
 migrate when the orchestrator is enabled.
