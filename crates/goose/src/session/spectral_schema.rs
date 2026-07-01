@@ -769,6 +769,7 @@ pub async fn apply_people_schema(pool: &Pool<Sqlite>) -> Result<()> {
             phone           TEXT,
             notes           TEXT,
             last_contact_at TEXT,
+            graph_entity_id TEXT,
             created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
             updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
         )",
@@ -777,6 +778,9 @@ pub async fn apply_people_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_people_company ON people(company)")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_people_graph_entity ON people(graph_entity_id)")
         .execute(&mut *tx)
         .await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_people_role ON people(role)")
@@ -1190,6 +1194,44 @@ pub async fn migrate_v19_to_v20(pool: &Pool<Sqlite>) -> Result<()> {
         .execute(pool)
         .await?;
     info!("Spectral schema migrated to v20 (project_people + project_memories)");
+    Ok(())
+}
+
+/// Migrate an existing database to the people↔graph bridge schema (v21, #255/B).
+///
+/// Adds the immutable `graph_entity_id` column to `people` — the bridge key that
+/// carries an identity-only person row to its attributes in the Spectral graph
+/// (`entity_fields`). The value is the bare 64-hex blake3 `EntityId`, NOT derived
+/// from the mutable `canonical_id` (which would mis-join — see
+/// `identity::canonical::graph_canonical`).
+///
+/// Idempotent + base-independent: SQLite has no `ADD COLUMN IF NOT EXISTS`, so the
+/// add is guarded on `PRAGMA table_info`. Fresh installs already get the column
+/// from `apply_people_schema` via `init_spectral_db`, so this guard lets the step
+/// run harmlessly on fresh and existing DBs alike. SPECTRAL_SCHEMA_VERSION stays 14.
+pub async fn migrate_v20_to_v21(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v20 -> v21 (people.graph_entity_id bridge column)");
+
+    let has_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('people') WHERE name = 'graph_entity_id'",
+    )
+    .fetch_one(pool)
+    .await?;
+
+    if has_column == 0 {
+        sqlx::query("ALTER TABLE people ADD COLUMN graph_entity_id TEXT")
+            .execute(pool)
+            .await?;
+    }
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_people_graph_entity ON people(graph_entity_id)")
+        .execute(pool)
+        .await?;
+
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (21)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v21 (people.graph_entity_id)");
     Ok(())
 }
 
@@ -1961,6 +2003,59 @@ mod people_schema_tests {
             // Idempotent: a second run is a no-op, not an error.
             migrate_v11_to_v12(&pool).await.unwrap();
         }
+    }
+
+    /// migrate_v20_to_v21 adds graph_entity_id to an old (column-less) people
+    /// table and is idempotent — safe to re-run over a DB that already has the
+    /// column (the fresh-install case, where apply_people_schema added it).
+    #[tokio::test]
+    async fn v21_adds_graph_entity_id_and_is_idempotent() {
+        async fn has_graph_col(pool: &Pool<Sqlite>) -> i64 {
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM pragma_table_info('people') WHERE name = 'graph_entity_id'",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap()
+        }
+
+        // Old v20 DB: a people table WITHOUT graph_entity_id.
+        let pool = mem_pool().await;
+        sqlx::query(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
+                 applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO schema_version (version) VALUES (20)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE people (entity_uuid TEXT PRIMARY KEY,
+                 canonical_id TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(has_graph_col(&pool).await, 0);
+
+        migrate_v20_to_v21(&pool).await.unwrap();
+        assert_eq!(has_graph_col(&pool).await, 1);
+        assert_eq!(current_version(&pool).await, 21);
+
+        // Idempotent: re-run is a clean no-op (guard prevents a duplicate column).
+        migrate_v20_to_v21(&pool).await.unwrap();
+        assert_eq!(has_graph_col(&pool).await, 1);
+
+        // Over a fresh-init DB (column already present via apply_people_schema):
+        // also a clean no-op.
+        let fresh = mem_pool().await;
+        init_spectral_db(&fresh).await.unwrap();
+        assert_eq!(has_graph_col(&fresh).await, 1);
+        migrate_v20_to_v21(&fresh).await.unwrap();
+        assert_eq!(has_graph_col(&fresh).await, 1);
     }
 }
 

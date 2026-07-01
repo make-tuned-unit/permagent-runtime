@@ -765,6 +765,13 @@ impl SessionStorage {
                     if version < 20 {
                         spectral_schema::migrate_v19_to_v20(&self.pool).await?;
                     }
+                    // v21: people↔graph bridge column (#255/B). Adds the immutable
+                    // graph_entity_id to `people`. Idempotent (PRAGMA-guarded ADD
+                    // COLUMN) + base-independent; fresh installs get the column from
+                    // apply_people_schema, so this runs harmlessly over both.
+                    if version < 21 {
+                        spectral_schema::migrate_v20_to_v21(&self.pool).await?;
+                    }
                 } else {
                     info!("Initializing Spectral schema at {:?}", self.db_path);
                     spectral_schema::init_spectral_db(&self.pool).await?;

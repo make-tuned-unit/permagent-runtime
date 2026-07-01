@@ -124,6 +124,35 @@ pub fn canonicalize_entity_id(
     Ok(format!("{}:{}", prefix, result))
 }
 
+/// Normalize a name into the Spectral graph's *canonical* form.
+///
+/// This is **distinct** from [`canonicalize_entity_id`]: the graph keys entities
+/// on `entity_id(entity_type, canonical)` where `canonical` is the lowercased,
+/// whitespace-collapsed name with punctuation preserved (the convention in
+/// `ontology.toml`, e.g. `"jesse sharratt"`, `"next.js"`). It is NOT the dash-slug
+/// `canonicalize_entity_id` produces (`"person:jesse-sharratt"`). Because a
+/// Spectral `EntityId` is a blake3 hash of the exact bytes, using the dash-slug
+/// would hash to a *different* id and silently mis-join to no graph node — so the
+/// bridge MUST use this form.
+pub fn graph_canonical(name: &str) -> String {
+    name.to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Compute the graph EntityId (bare 64-hex blake3) for an entity, matching the
+/// key Spectral mints via `entity_id(entity_type, canonical)`.
+///
+/// The returned string is the bare 64-char hex (the key `entity_fields_for` is
+/// indexed on, and what `EntityId::from_str` round-trips) — **not** the
+/// `"e:"`-prefixed presentation form used by the brain graph route.
+pub fn graph_entity_id_hex(entity_type: &str, name: &str) -> String {
+    let canonical = graph_canonical(name);
+    let id = spectral::core::entity_id::entity_id(entity_type, &canonical);
+    hex::encode(id.as_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,6 +203,35 @@ mod tests {
             canonicalize_entity_id(EntityPrefix::Org, "Atlas Atlantic"),
             Ok("org:atlas-atlantic".into())
         );
+    }
+
+    #[test]
+    fn graph_canonical_lowercases_and_collapses_whitespace() {
+        assert_eq!(graph_canonical("Jesse Sharratt"), "jesse sharratt");
+        assert_eq!(graph_canonical("  Mel   Schembri "), "mel schembri");
+        // Punctuation is preserved (graph convention), unlike the dash-slug.
+        assert_eq!(graph_canonical("Next.JS"), "next.js");
+    }
+
+    #[test]
+    fn graph_entity_id_hex_matches_spectral_and_is_bare_hex() {
+        let got = graph_entity_id_hex("person", "Jesse Sharratt");
+        let expect = hex::encode(
+            spectral::core::entity_id::entity_id("person", "jesse sharratt").as_bytes(),
+        );
+        assert_eq!(got, expect);
+        assert_eq!(got.len(), 64); // bare 64-hex, no "e:" prefix
+    }
+
+    #[test]
+    fn graph_id_differs_from_dash_slug_hash() {
+        // The bug Decision B originally specified: hashing the dash-slug instead of
+        // the graph canonical produces a DIFFERENT id that mis-joins to no node.
+        let correct = graph_entity_id_hex("person", "Jesse Sharratt");
+        let wrong = hex::encode(
+            spectral::core::entity_id::entity_id("person", "jesse-sharratt").as_bytes(),
+        );
+        assert_ne!(correct, wrong);
     }
 
     #[test]

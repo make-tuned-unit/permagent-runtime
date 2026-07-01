@@ -229,6 +229,25 @@ impl AppState {
             agent_manager.scheduler(),
         );
 
+        // People↔graph bridge (#255/B): mint identity-only `people` rows for graph
+        // person entities (e.g. "mel schembri") and backfill graph_entity_id on
+        // pre-bridge rows, so the CRM directory shows everyone the Brain knows.
+        // Idempotent; the ontology is the authoritative person set. Non-fatal.
+        if let Ok(pool) = agent_manager.session_manager().pool_clone().await {
+            let ontology_path = permagent::config::paths::Paths::brain_ontology();
+            match permagent::people_bridge::sync_people_from_ontology(&pool, &ontology_path).await {
+                Ok(n) => tracing::info!(
+                    target: "permagentd::people_bridge",
+                    "People↔graph bridge synced ({n} rows minted/backfilled)"
+                ),
+                Err(e) => tracing::warn!(
+                    target: "permagentd::people_bridge",
+                    error = %e,
+                    "People↔graph bridge sync failed (non-fatal)"
+                ),
+            }
+        }
+
         // Self-healing annotation backfill — runs at daemon startup, not gated on Ollama.
         // Parses "Related terms:" from existing Librarian descriptions and populates
         // memory_annotations. First run annotates ~1384 memories; subsequent starts are no-ops.

@@ -335,9 +335,16 @@ async fn list_project_people_handler(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
         .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
-    let people = project_association::list_project_people(&pool, &project.id)
+    let mut people = project_association::list_project_people(&pool, &project.id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    // Attributes come from the graph (Decision A, #255); project_role/associated_at
+    // stay from the join. Overlay onto each row's inner Person.
+    crate::routes::people::overlay_graph_attributes(
+        state.brain.as_ref(),
+        people.iter_mut().map(|pp| &mut pp.person).collect(),
+    )
+    .await;
     Ok(Json(people))
 }
 
