@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd agent for scripts/ui-wedge-watchdog.sh (#562).
+
+  Runs the UI-wedge watchdog continuously as the logged-in user so it can
+  `sample`/`spindump` the Permagent desktop process when it hangs after idle.
+
+  INSTALL (edit the two __PATH__ placeholders first):
+    cp scripts/ai.permagent.ui-watchdog.plist ~/Library/LaunchAgents/
+    # replace __REPO__ with the absolute repo path, __HOME__ with $HOME
+    launchctl load  ~/Library/LaunchAgents/ai.permagent.ui-watchdog.plist
+  UNINSTALL:
+    launchctl unload ~/Library/LaunchAgents/ai.permagent.ui-watchdog.plist
+
+  NOTE on spindump: `sample` works unprivileged for your own processes and is
+  the primary artifact. `spindump` may require Developer Tools rights; the
+  watchdog degrades gracefully (writes a note) when it is denied.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.permagent.ui-watchdog</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__REPO__/scripts/ui-wedge-watchdog.sh</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>TICK</key>
+        <string>30</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+    <key>StandardOutPath</key>
+    <string>__HOME__/.permagent/logs/ui-watchdog.out</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.permagent/logs/ui-watchdog.err</string>
+</dict>
+</plist>
