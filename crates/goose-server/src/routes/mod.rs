@@ -127,7 +127,11 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
 
     protected = protected.layer(middleware::from_fn_with_state(state, require_bearer_token));
 
-    public.merge(protected)
+    // Outermost layer so the access log sees every request's final status,
+    // including 401s produced by the bearer middleware above.
+    public.merge(protected).layer(middleware::from_fn(
+        crate::middleware::access_log::http_access_log,
+    ))
 }
 
 /// Locate the Command Center dist directory.
