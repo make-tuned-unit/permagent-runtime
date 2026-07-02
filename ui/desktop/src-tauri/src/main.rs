@@ -151,6 +151,45 @@ fn raise_chat_above_main(app: tauri::AppHandle) {
     let _ = app;
 }
 
+/// Path of the main-thread liveness heartbeat file (`~/.permagent/logs/ui-heartbeat`).
+fn heartbeat_path() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    std::path::PathBuf::from(home).join(".permagent/logs/ui-heartbeat")
+}
+
+/// Main-thread liveness heartbeat (#562).
+///
+/// A background thread asks the **main thread** to stamp `ui-heartbeat` every
+/// few seconds. The file's mtime advances only if the AppKit main run loop
+/// actually drains the request — so a stale heartbeat is a direct, crisp signal
+/// that the main thread is wedged (the idle-wedge failure). This must run on the
+/// main thread: a JS or async-command heartbeat executes off-main (Tokio worker)
+/// and would stay fresh *through* a main-thread wedge, detecting nothing.
+///
+/// The external `scripts/ui-wedge-watchdog.sh` reads this file to trigger a
+/// stack capture. Best-effort: any write error is ignored (the app runs on).
+fn start_main_thread_heartbeat(app: &tauri::AppHandle) {
+    const INTERVAL_SECS: u64 = 5;
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        if let Some(dir) = heartbeat_path().parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(INTERVAL_SECS));
+            // Runs ON the main thread; if the run loop is wedged this closure
+            // never executes and the heartbeat mtime goes stale.
+            let _ = handle.run_on_main_thread(|| {
+                let stamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let _ = std::fs::write(heartbeat_path(), stamp.to_string());
+            });
+        }
+    });
+}
+
 fn main() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -182,6 +221,9 @@ fn main() {
         ])
         .setup(|app| {
             daemon::start_daemon(app.handle())?;
+            // Main-thread liveness heartbeat (#562) — lets the external watchdog
+            // detect an idle-wedge of the AppKit main run loop.
+            start_main_thread_heartbeat(app.handle());
             // Media capture is enabled per-window via enable_media_capture_cmd,
             // called from JS on mount. NOT done here — the WKWebView is not
             // fully initialized during did_finish_launching.

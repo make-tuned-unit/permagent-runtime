@@ -174,6 +174,16 @@ export function Browser() {
   }, []);
 
   // ── ResizeObserver + visibility polling keeps webview in sync ──
+  //
+  // Nap-safe pump (#562 C1). The 500 ms poll drives a MAIN-THREAD native op
+  // (`set_position`/`set_size`) on the child WKWebView every tick. Left running
+  // while the window is hidden/occluded it keeps the app's AppKit main thread
+  // coupled to a throttled/App-Napped WebContent process — the mechanism of the
+  // idle-wedge. So we SUSPEND the pump whenever `document.hidden` and resume it
+  // (with one immediate re-sync) on return. Nothing keeps the main thread busy
+  // against a napped surface while idle, so App-Nap becomes harmless rather than
+  // something to hold a wake-lock against. ResizeObserver/resize fire only on
+  // real layout changes (never while hidden), so they need no gating.
   useEffect(() => {
     if (!containerRef.current || !api) return;
 
@@ -183,15 +193,36 @@ export function Browser() {
     const observer = new ResizeObserver(() => syncBounds());
     observer.observe(containerRef.current);
 
-    // ResizeObserver doesn't fire on display:none changes (workspace switches).
-    // Poll visibility at low frequency so native webviews get hidden promptly.
-    const visibilityInterval = setInterval(syncBounds, 500);
+    // The 500 ms poll exists because ResizeObserver doesn't fire on display:none
+    // changes (workspace switches). Gate it on visibility so it never runs while
+    // occluded.
+    let pump: ReturnType<typeof setInterval> | null = null;
+    const startPump = () => {
+      if (pump === null) pump = setInterval(syncBounds, 500);
+    };
+    const stopPump = () => {
+      if (pump !== null) {
+        clearInterval(pump);
+        pump = null;
+      }
+    };
+    const onVisibility = () => {
+      if (document.hidden) {
+        stopPump();
+      } else {
+        syncBounds(); // re-align immediately on return
+        startPump();
+      }
+    };
+    if (!document.hidden) startPump();
+    document.addEventListener('visibilitychange', onVisibility);
 
     window.addEventListener('resize', syncBounds);
 
     return () => {
       observer.disconnect();
-      clearInterval(visibilityInterval);
+      stopPump();
+      document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('resize', syncBounds);
     };
   }, [api, syncBounds]);
