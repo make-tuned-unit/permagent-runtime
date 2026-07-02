@@ -36,6 +36,10 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
 
     crate::logging::setup_logging(Some("permagentd"))?;
 
+    // Cap the launchd-managed daemon.err/daemon.log files (#560 F5) — the
+    // HTTP access log below raises their growth rate.
+    crate::logging::spawn_launchd_log_rotation();
+
     let settings = configuration::Settings::new()?.with_overrides(host, port);
 
     let app_state = state::AppState::new(settings.tls).await?;

@@ -73,3 +73,94 @@ pub fn setup_logging(name: Option<&str>) -> Result<()> {
 
     Ok(())
 }
+
+/// Size cap for the launchd stderr/stdout capture files (#560 F5). launchd
+/// appends to `daemon.err`/`daemon.log` forever with no rotation; the HTTP
+/// access log increases their growth rate, so the daemon caps them itself.
+const LAUNCHD_LOG_MAX_BYTES: u64 = 32 * 1024 * 1024;
+const ROTATION_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Spawn the size-cap rotation task for `~/.permagent/logs/daemon.{err,log}`.
+/// Each file is copy-truncated to a single `.1` backup once it passes
+/// [`LAUNCHD_LOG_MAX_BYTES`], so the worst-case footprint per file is 2× the
+/// cap. First check runs immediately on boot.
+pub fn spawn_launchd_log_rotation() {
+    tokio::spawn(async {
+        let logs = permagent::config::paths::Paths::in_state_dir("logs");
+        let targets = [logs.join("daemon.err"), logs.join("daemon.log")];
+        let mut interval = tokio::time::interval(ROTATION_CHECK_INTERVAL);
+        loop {
+            interval.tick().await;
+            for path in &targets {
+                match rotate_if_oversize(path, LAUNCHD_LOG_MAX_BYTES) {
+                    Ok(Some(bytes)) => {
+                        tracing::info!("rotated {} ({} bytes) to .1 backup", path.display(), bytes)
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::warn!("log rotation failed for {}: {}", path.display(), e)
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Copy-truncate `path` to `<path>.1` if it exceeds `max_bytes`, returning
+/// the rotated size. launchd holds an O_APPEND fd on these files, so rename
+/// would not detach the writer — the contents are copied aside and the file
+/// truncated in place (O_APPEND writes continue safely at the new EOF).
+/// Lines appended between the copy and the truncate are lost; that is the
+/// standard copytruncate trade-off.
+fn rotate_if_oversize(path: &std::path::Path, max_bytes: u64) -> std::io::Result<Option<u64>> {
+    let len = match std::fs::metadata(path) {
+        Ok(m) => m.len(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    if len <= max_bytes {
+        return Ok(None);
+    }
+
+    let mut backup = path.as_os_str().to_owned();
+    backup.push(".1");
+    std::fs::copy(path, std::path::Path::new(&backup))?;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)?
+        .set_len(0)?;
+    Ok(Some(len))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rotate_if_oversize;
+
+    #[test]
+    fn rotates_oversize_file_and_keeps_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("daemon.err");
+        std::fs::write(&path, vec![b'x'; 2048]).unwrap();
+
+        let rotated = rotate_if_oversize(&path, 1024).unwrap();
+        assert_eq!(rotated, Some(2048));
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+
+        let backup = dir.path().join("daemon.err.1");
+        assert_eq!(std::fs::metadata(&backup).unwrap().len(), 2048);
+    }
+
+    #[test]
+    fn leaves_small_and_missing_files_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("daemon.err");
+        std::fs::write(&path, b"small").unwrap();
+
+        assert_eq!(rotate_if_oversize(&path, 1024).unwrap(), None);
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 5);
+        assert!(!dir.path().join("daemon.err.1").exists());
+
+        let missing = dir.path().join("nope.err");
+        assert_eq!(rotate_if_oversize(&missing, 1024).unwrap(), None);
+    }
+}
