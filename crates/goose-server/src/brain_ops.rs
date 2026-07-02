@@ -63,6 +63,17 @@ pub async fn inject_recall(
                 );
             }
 
+            // Recognition seam (query mode): the verdict-alongside-recall
+            // hook. Today a debug log; when Spectral's recognize() lands, this
+            // is where its RecognitionResult is forwarded to the sink and
+            // persisted next to this recall's outcome row.
+            #[cfg(feature = "spectral-recognition")]
+            permagent::recognition_sink::observe_recall_stimulus(
+                user_query,
+                recognition_ctx.focus_wing.as_deref(),
+                recognition_ctx.session_id.as_deref(),
+            );
+
             let top_hits = filter_recall_hits(&result.merged_hits);
 
             if top_hits.is_empty() {

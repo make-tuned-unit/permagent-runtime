@@ -772,6 +772,16 @@ impl SessionStorage {
                     if version < 21 {
                         spectral_schema::migrate_v20_to_v21(&self.pool).await?;
                     }
+                    // v22: recognition_verdict + familiarity columns (PRAGMA-
+                    // guarded ADDs) + recognition_tool_events feed table
+                    // (spectral-recognition prep). Cfg-gated so a feature-off
+                    // build leaves the DB untouched at v21 — no behavior change
+                    // when the flag is off. Idempotent + base-independent, so
+                    // mixed feature-on/off build orders are all safe.
+                    #[cfg(feature = "spectral-recognition")]
+                    if version < 22 {
+                        spectral_schema::migrate_v21_to_v22(&self.pool).await?;
+                    }
                 } else {
                     info!("Initializing Spectral schema at {:?}", self.db_path);
                     spectral_schema::init_spectral_db(&self.pool).await?;

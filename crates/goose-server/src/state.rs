@@ -114,6 +114,30 @@ impl AppState {
         crate::verification::install_review_hook();
         tracing::info!("Goal review hook installed (post-Review verification)");
 
+        // Per-project wing rules (spectral-recognition prep, the "double
+        // lever"): wing labels are both the recognition-validation ground
+        // truth and the gate on Spectral's TACT fast path. Generated from the
+        // project registry so content mentioning a project classifies into
+        // that project's wing instead of Spectral's demo defaults (which dump
+        // most real content into "general"). Empty (registry unavailable, no
+        // projects, or feature off) → builder gets no rules → Spectral
+        // defaults, exactly as before.
+        #[cfg(feature = "spectral-recognition")]
+        let project_wing_rules: Vec<(String, String)> =
+            match agent_manager.session_manager().pool_clone().await {
+                Ok(pool) => permagent::wing_rules::load_project_wing_rules(&pool).await,
+                Err(e) => {
+                    tracing::warn!(
+                        target: "permagentd::brain",
+                        error = %e,
+                        "No session pool for wing-rule generation — using default wing rules"
+                    );
+                    Vec::new()
+                }
+            };
+        #[cfg(not(feature = "spectral-recognition"))]
+        let project_wing_rules: Vec<(String, String)> = Vec::new();
+
         // Mount Spectral Brain for long-term memory.
         // Brain::builder().build() creates its own tokio runtime internally,
         // so we must run it off the async executor via spawn_blocking.
@@ -121,100 +145,108 @@ impl AppState {
         // Brain::builder().build() creates its own tokio runtime internally,
         // so we must run it off the async executor via spawn_blocking.
         // What leaves this block is a SafeBrain.
-        let brain: Option<permagent::brain_handle::SafeBrain> = tokio::task::spawn_blocking(|| {
-            let brain_dir = permagent::config::paths::Paths::brain_dir();
-            let ontology_path = permagent::config::paths::Paths::brain_ontology();
+        let brain: Option<permagent::brain_handle::SafeBrain> =
+            tokio::task::spawn_blocking(move || {
+                let brain_dir = permagent::config::paths::Paths::brain_dir();
+                let ontology_path = permagent::config::paths::Paths::brain_ontology();
 
-            if !brain_dir.exists() || !ontology_path.exists() {
-                tracing::info!(
-                    target: "permagentd::brain",
-                    "No brain directory at {} — running without long-term memory",
-                    brain_dir.display()
-                );
-                return None;
-            }
-
-            // ── Pre-migration backup: brain/memory.db ──
-            // Must run before Brain::builder().build() which triggers Spectral
-            // auto-migration. Also before sync_graph_with_ontology which mutates
-            // graph.kz (separate store, but keeps backup timing unambiguous).
-            {
-                let source = brain_dir.join("memory.db");
-                let backup_root = permagent::config::paths::Paths::data_dir().join("backups");
-                if let Err(e) = crate::backup::snapshot_if_stale(
-                    &source,
-                    &backup_root,
-                    crate::backup::DbTarget::Brain,
-                ) {
-                    tracing::error!(
-                        target: "permagentd::backup",
-                        error = %e,
-                        "Startup backup of brain/memory.db failed (non-fatal)"
-                    );
-                }
-            }
-
-            // Reconcile Kuzu graph with ontology before Brain opens.
-            // This removes entities that were pruned from ontology.toml.
-            crate::brain_sync::sync_graph_with_ontology(&brain_dir, &ontology_path);
-
-            let device_id_str =
-                std::env::var("HOSTNAME").unwrap_or_else(|_| "permagent-host".into());
-
-            let raw_brain = match spectral::Brain::builder()
-                .data_dir(&brain_dir)
-                .ontology_path(&ontology_path)
-                .device_id(spectral::DeviceId::from_descriptor(&device_id_str))
-                .build()
-            {
-                Ok(b) => {
+                if !brain_dir.exists() || !ontology_path.exists() {
                     tracing::info!(
                         target: "permagentd::brain",
-                        "Brain mounted at {}",
+                        "No brain directory at {} — running without long-term memory",
                         brain_dir.display()
-                    );
-                    b
-                }
-                Err(e) => {
-                    tracing::error!(
-                        target: "permagentd::brain",
-                        "Brain failed to open at {}: {}",
-                        brain_dir.display(),
-                        e
                     );
                     return None;
                 }
-            };
 
-            // Startup health check: verify brain is queryable (still raw, pre-wrap)
-            match raw_brain.recall("permagent", spectral::Visibility::Private) {
-                Ok(result) => {
+                // ── Pre-migration backup: brain/memory.db ──
+                // Must run before Brain::builder().build() which triggers Spectral
+                // auto-migration. Also before sync_graph_with_ontology which mutates
+                // graph.kz (separate store, but keeps backup timing unambiguous).
+                {
+                    let source = brain_dir.join("memory.db");
+                    let backup_root = permagent::config::paths::Paths::data_dir().join("backups");
+                    if let Err(e) = crate::backup::snapshot_if_stale(
+                        &source,
+                        &backup_root,
+                        crate::backup::DbTarget::Brain,
+                    ) {
+                        tracing::error!(
+                            target: "permagentd::backup",
+                            error = %e,
+                            "Startup backup of brain/memory.db failed (non-fatal)"
+                        );
+                    }
+                }
+
+                // Reconcile Kuzu graph with ontology before Brain opens.
+                // This removes entities that were pruned from ontology.toml.
+                crate::brain_sync::sync_graph_with_ontology(&brain_dir, &ontology_path);
+
+                let device_id_str =
+                    std::env::var("HOSTNAME").unwrap_or_else(|_| "permagent-host".into());
+
+                let mut builder = spectral::Brain::builder()
+                    .data_dir(&brain_dir)
+                    .ontology_path(&ontology_path)
+                    .device_id(spectral::DeviceId::from_descriptor(&device_id_str));
+                if !project_wing_rules.is_empty() {
                     tracing::info!(
                         target: "permagentd::brain",
-                        "Brain healthy — recall('permagent') returned {} hits",
-                        result.memory_hits.len()
+                        rules = project_wing_rules.len(),
+                        "Opening Brain with per-project wing rules"
                     );
+                    builder = builder.wing_rules(project_wing_rules);
                 }
-                Err(e) => {
-                    tracing::warn!(
-                        target: "permagentd::brain",
-                        "Brain recall test failed: {}",
-                        e
-                    );
-                }
-            }
+                let raw_brain = match builder.build() {
+                    Ok(b) => {
+                        tracing::info!(
+                            target: "permagentd::brain",
+                            "Brain mounted at {}",
+                            brain_dir.display()
+                        );
+                        b
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            target: "permagentd::brain",
+                            "Brain failed to open at {}: {}",
+                            brain_dir.display(),
+                            e
+                        );
+                        return None;
+                    }
+                };
 
-            Some(permagent::brain_handle::SafeBrain::new(raw_brain))
-        })
-        .await
-        .unwrap_or_else(|e| {
-            tracing::error!(
-                target: "permagentd::brain",
-                "Brain spawn_blocking task panicked: {}",
-                e
-            );
-            None
-        });
+                // Startup health check: verify brain is queryable (still raw, pre-wrap)
+                match raw_brain.recall("permagent", spectral::Visibility::Private) {
+                    Ok(result) => {
+                        tracing::info!(
+                            target: "permagentd::brain",
+                            "Brain healthy — recall('permagent') returned {} hits",
+                            result.memory_hits.len()
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "permagentd::brain",
+                            "Brain recall test failed: {}",
+                            e
+                        );
+                    }
+                }
+
+                Some(permagent::brain_handle::SafeBrain::new(raw_brain))
+            })
+            .await
+            .unwrap_or_else(|e| {
+                tracing::error!(
+                    target: "permagentd::brain",
+                    "Brain spawn_blocking task panicked: {}",
+                    e
+                );
+                None
+            });
 
         // Wire Brain into scheduler so scheduled jobs get recall/remember.
         agent_manager.scheduler().set_brain(brain.clone()).await;

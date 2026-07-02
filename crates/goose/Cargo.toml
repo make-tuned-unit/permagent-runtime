@@ -11,6 +11,12 @@ description.workspace = true
 [features]
 default = ["code-mode", "local-inference", "aws-providers", "telemetry", "otel", "rustls-tls"]
 telemetry = []
+# Consumer-side prep for Spectral's recognition subsystem (recognize() query
+# mode + session stream tracker, branch tier0-oracle-and-levers). Gates the
+# RecognitionSink seam, per-project wing rules, the v22 verdict-column
+# migration, and tool-event feed writes. OFF by default: a default build has
+# zero behavior change. Enabling requires NO Spectral dep upgrade.
+spectral-recognition = []
 otel = [
     "dep:tracing-opentelemetry",
     "dep:opentelemetry",
