@@ -14,15 +14,21 @@
 # WHAT it does each tick (default 30 s):
 #   1. Locate the GUI process + its WebContent children; append one self-rotating
 #      JSONL probe line (ps/fd/tcp) to ~/.permagent/logs/ui-durability-probe.jsonl
-#   2. Wedge test: `sample <pid> 1`; if thread 0 (main) is in a NON-idle wait for
-#      two consecutive ticks -> declare a wedge.
+#   2. Wedge test: PRIMARY = the app's main-thread heartbeat file has gone stale
+#      (main.rs stamps ~/.permagent/logs/ui-heartbeat every 5s from the main
+#      thread; stale => the run loop is not draining). FALLBACK (older builds w/o
+#      the heartbeat) = `sample <pid> 1` shows thread 0 in a NON-idle wait. Two
+#      consecutive wedged ticks -> declare a wedge.
 #   3. On wedge, capture ~/.permagent/logs/ui-wedge-<ts>/:
 #        - sample <gui-pid> 10           (money shot: main-thread stack)
 #        - spindump <gui-pid> 10         (best-effort; needs privileges)
 #        - sample of each WebContent child
 #        - daemon health curl            (auto re-confirms the #562 boundary)
 #        - tail of the probe JSONL        (fd/conn trend into the wedge)
-#   4. Fire once per episode; re-arm when the main thread returns to idle or the
+#   4. On wedge, after capture, RECOVER: kill the wedged GUI + relaunch it
+#      (RELAUNCH=1 default; the daemon is never touched). Set RELAUNCH=0 for
+#      capture-only. This is the UI-side of #560's fail-fast-recover.
+#   5. Fire once per episode; re-arm when the main thread returns to idle or the
 #      pid changes.
 #
 # Ships FIRST, mirroring DURABILITY_AUDIT.md (#560) "Part A external sampler".
@@ -43,6 +49,18 @@ PROBE_MAX_BYTES="${PROBE_MAX_BYTES:-5242880}"   # 5 MiB, self-rotated (never F5)
 DAEMON_URL="${DAEMON_URL:-http://127.0.0.1:3001/api/people}"
 # GUI process match: the app bundle's MacOS binary, NOT permagentd, NOT this script.
 GUI_PATTERN="${GUI_PATTERN:-Permagent.app/Contents/MacOS/permagent-app}"
+# Main-thread heartbeat file stamped by the app (main.rs start_main_thread_heartbeat,
+# #562). When present it is the PRIMARY, crisp wedge signal; the sample heuristic
+# is the fallback for app builds that predate it. Stale past this many seconds
+# (with the process alive) = the main run loop is not draining = wedged.
+HEARTBEAT="${HEARTBEAT:-$LOG_DIR/ui-heartbeat}"
+HEARTBEAT_STALE_SECS="${HEARTBEAT_STALE_SECS:-20}"   # app stamps every 5s
+# Auto-recover: after capturing evidence, kill the wedged GUI and relaunch it.
+# This is the UI-side of #560's fail-fast-recover (the daemon has launchd;
+# the UI gets the watchdog). The daemon is NEVER touched. Set RELAUNCH=0 to
+# make the watchdog capture-only.
+RELAUNCH="${RELAUNCH:-1}"
+APP_BUNDLE="${APP_BUNDLE:-/Applications/Permagent.app}"
 
 # Absolute paths — a Python package on PATH shadows `sample` with a broken
 # stub, and `spindump` lives in /usr/sbin. Never rely on PATH resolution here.
@@ -92,9 +110,28 @@ probe_line() {
     "$ts" "$pid" "${pcpu:-?}" "${rss:-?}" "${state:-?}" "${etime:-?}" "${fd:-0}" "${tcp:-0}"
 }
 
+# Heartbeat age in seconds, or empty if the file is absent (older app build).
+heartbeat_age() {
+  [ -f "$HEARTBEAT" ] || return 1
+  local mtime now
+  mtime=$(stat -f%m "$HEARTBEAT" 2>/dev/null) || return 1
+  now=$(date +%s)
+  echo $(( now - mtime ))
+}
+
+# Primary wedge signal: the main-thread heartbeat has gone stale. Returns 0 when
+# the heartbeat exists AND is older than the threshold (main run loop not
+# draining). Returns 1 when fresh; returns 2 when the file is absent (caller
+# should fall back to the sample heuristic).
+heartbeat_wedged() {
+  local age; age=$(heartbeat_age) || return 2
+  [ "$age" -gt "$HEARTBEAT_STALE_SECS" ] && return 0 || return 1
+}
+
 # Is the GUI main thread (thread 0) in a NON-idle wait? Returns 0 (wedged-ish)
 # when the sampled thread-0 stack is a real block, 1 when it looks like the
-# benign CFRunLoop event wait (normal idle) or we can't tell.
+# benign CFRunLoop event wait (normal idle) or we can't tell. This is the
+# FALLBACK detector for app builds without the heartbeat.
 #
 # A healthy idle Cocoa main thread sits in mach_msg_trap under
 # __CFRunLoopServiceMachPort / __CFRunLoopRun. A wedge that will not drag shows a
@@ -168,6 +205,30 @@ capture() {
   echo "$dir"
 }
 
+# Recover the wedged GUI: kill it and relaunch. NEVER touches permagentd — the
+# daemon is healthy during the wedge (that is the whole #562 finding) and has
+# its own launchd supervision. Idempotent and best-effort.
+relaunch_gui() {
+  local pid="$1" dir="$2"
+  if [ "$RELAUNCH" != "1" ]; then
+    log "RELAUNCH=0 — capture-only, leaving wedged GUI (pid $pid) in place"
+    return 0
+  fi
+  log "recovering: killing wedged GUI pid $pid (daemon untouched) + relaunching"
+  # Target the GUI binary ONLY (pattern excludes permagentd); escalate to -9.
+  pkill -f "$GUI_PATTERN" 2>/dev/null
+  sleep 2
+  pkill -9 -f "$GUI_PATTERN" 2>/dev/null
+  sleep 1
+  if [ -d "$APP_BUNDLE" ]; then
+    open "$APP_BUNDLE" 2>/dev/null && log "relaunched $APP_BUNDLE"
+  else
+    log "APP_BUNDLE not found ($APP_BUNDLE) — relaunch skipped; killed only"
+  fi
+  echo "relaunched: $(date '+%Y-%m-%dT%H:%M:%S%z') (RELAUNCH=$RELAUNCH, bundle=$APP_BUNDLE)" \
+    >> "$dir/recovery.txt"
+}
+
 # ---- main tick -------------------------------------------------------------
 
 CONSEC=0          # consecutive wedged ticks
@@ -188,15 +249,30 @@ tick() {
     LAST_PID="$pid"; CONSEC=0; ARMED=1
   fi
 
-  if main_thread_wedged "$pid"; then
+  # Primary signal: stale main-thread heartbeat. Fall back to the sample
+  # heuristic when the app predates the heartbeat (heartbeat_wedged -> 2).
+  local wedged sig
+  heartbeat_wedged; local hb=$?
+  if [ "$hb" -eq 0 ]; then
+    wedged=0; sig="heartbeat stale >${HEARTBEAT_STALE_SECS}s"
+  elif [ "$hb" -eq 1 ]; then
+    wedged=1; sig="heartbeat fresh"
+  elif main_thread_wedged "$pid"; then
+    wedged=0; sig="main-thread non-idle wait (no heartbeat)"
+  else
+    wedged=1; sig="idle (no heartbeat)"
+  fi
+
+  if [ "$wedged" -eq 0 ]; then
     CONSEC=$((CONSEC + 1))
-    log "main-thread non-idle wait ($CONSEC consecutive) pid $pid"
+    log "wedge signal: $sig ($CONSEC consecutive) pid $pid"
     if [ "$CONSEC" -ge 2 ] && [ "$ARMED" -eq 1 ]; then
-      capture "$pid"
-      ARMED=0     # one capture per episode
+      local dir; dir=$(capture "$pid")
+      relaunch_gui "$pid" "$dir"
+      ARMED=0     # one capture+recover per episode
     fi
   else
-    if [ "$CONSEC" -gt 0 ]; then log "main thread back to idle wait — re-armed"; fi
+    if [ "$CONSEC" -gt 0 ]; then log "recovered ($sig) — re-armed"; fi
     CONSEC=0; ARMED=1
   fi
 }
