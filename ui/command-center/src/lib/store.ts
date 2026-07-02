@@ -309,6 +309,13 @@ interface CommandCenterStore {
   pushBrowserOverlay: () => void;
   popBrowserOverlay: () => void;
 
+  // --- Collapsed chat launcher corner reservation (#553) ---
+  // Measured size of the collapsed ChatLauncher pill (null when absent, i.e.
+  // the chat window is open). The Browser subtracts this corner from the
+  // native webview bounds — CSS z-index cannot cover a native child surface.
+  chatLauncherSize: { width: number; height: number } | null;
+  setChatLauncherSize: (size: { width: number; height: number } | null) => void;
+
   // --- Per-session SSE ---
   _eventSource: EventSource | null;
   _reconnectTimer: ReturnType<typeof setTimeout> | null;
@@ -1039,6 +1046,15 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   overlayBlockingBrowser: 0,
   pushBrowserOverlay: () => set(s => ({ overlayBlockingBrowser: s.overlayBlockingBrowser + 1 })),
   popBrowserOverlay: () => set(s => ({ overlayBlockingBrowser: Math.max(0, s.overlayBlockingBrowser - 1) })),
+
+  // Collapsed chat launcher corner reservation (#553)
+  chatLauncherSize: null,
+  setChatLauncherSize: (size) => set(s => {
+    const prev = s.chatLauncherSize;
+    if (prev === size) return s;
+    if (prev && size && prev.width === size.width && prev.height === size.height) return s;
+    return { chatLauncherSize: size };
+  }),
 
   // ── Per-session SSE (replaces WebSocket) ──
   _eventSource: null,
