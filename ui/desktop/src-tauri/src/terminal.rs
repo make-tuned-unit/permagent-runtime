@@ -184,10 +184,19 @@ pub async fn spawn_pty_session(
     // Inject OSC 7 precmd hook so zsh reports CWD changes to the terminal.
     // macOS zsh only does this for Apple_Terminal — we need our own hook.
     // Leading space suppresses zsh history recording (HIST_IGNORE_SPACE).
+    //
+    // The OSC 133;D hook (semantic-prompt "command finished" mark, carrying
+    // `$?`) MUST be registered BEFORE the OSC 7 hook: `$?` inside the first
+    // precmd function is the last user command's exit status; later hooks see
+    // the previous hook's status instead. Terminal.tsx pairs the mark with the
+    // command it sniffed at Enter to emit terminal_command_completed — the
+    // initiative layer's (#360) input signal. OSC 7 emission is unchanged.
     let mut writer = writer;
     if shell_path.contains("zsh") {
         let init = concat!(
             " autoload -Uz add-zsh-hook 2>/dev/null;",
+            " __permagent_osc133d() { printf '\\e]133;D;%s\\a' \"$?\" };",
+            " add-zsh-hook precmd __permagent_osc133d;",
             " __permagent_osc7() { printf '\\e]7;file://%s%s\\a' \"${HOST}\" \"${PWD}\" };",
             " add-zsh-hook precmd __permagent_osc7;",
             " clear\n",
@@ -215,11 +224,7 @@ pub async fn spawn_pty_session(
 }
 
 #[tauri::command]
-pub async fn write_to_pty(
-    app: AppHandle,
-    session_id: String,
-    data: String,
-) -> Result<(), String> {
+pub async fn write_to_pty(app: AppHandle, session_id: String, data: String) -> Result<(), String> {
     let sessions = app.state::<PtySessions>();
     let mut map = sessions.0.lock().unwrap();
     let session = map
