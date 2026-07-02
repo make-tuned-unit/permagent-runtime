@@ -490,6 +490,18 @@ impl AppState {
             (None, None)
         };
 
+        // Initiative driver (#360): native tick loop consuming the same event
+        // bus as the ingester above. Explicitly gated (initiative_enabled,
+        // default off) — spawn() logs the on/off state either way.
+        if let Ok(pool) = agent_manager.session_manager().pool_clone().await {
+            permagent::initiative::driver::spawn(pool);
+        } else {
+            tracing::warn!(
+                target: "initiative",
+                "no app DB pool available — initiative driver not started"
+            );
+        }
+
         // Librarian warm-load scheduler: checks once per minute if it's time
         // to warm the Librarian's Ollama model for the configured window.
         tokio::spawn(async move {

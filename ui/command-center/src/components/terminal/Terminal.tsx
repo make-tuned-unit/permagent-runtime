@@ -249,6 +249,34 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
 
       // Forward keystrokes to PTY
       let inputBuffer = '';
+      // Last Enter-sniffed command awaiting its OSC 133;D completion mark
+      // (the zsh precmd hook injected by terminal.rs). Null when no command
+      // is in flight — the mark also fires on bare prompts, which are ignored.
+      let pendingCommand: string | null = null;
+
+      // OSC 133;D;<exit> — pair the completion mark with the sniffed command
+      // and emit terminal_command_completed (the initiative layer's #360
+      // signal). Same transitional frontend-emission caveat as onData below.
+      const oscHandlerDisposable = term.parser.registerOscHandler(133, (data) => {
+        if (!data.startsWith('D')) return false;
+        const command = pendingCommand;
+        pendingCommand = null;
+        if (command && api) {
+          const exitCode = Number(data.split(';')[1]);
+          api.invoke('emit_activity', {
+            event_type: 'terminal_command_completed',
+            source_surface: 'terminal',
+            payload: {
+              command,
+              exit_code: Number.isFinite(exitCode) ? exitCode : null,
+              working_directory: cwdRef.current || null,
+            },
+            session_id: null,
+            project_id: null,
+          }).catch((err: unknown) => console.debug('[activity] terminal_command_completed emission failed:', err));
+        }
+        return true;
+      });
 
       const onDataDisposable = term.onData((data) => {
         // Local echo: render printable ASCII immediately for instant feedback.
@@ -292,6 +320,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
                 project_id: null,
               }).catch((err: unknown) => console.debug('[activity] terminal_command_started emission failed:', err));
             }
+            pendingCommand = command;
           }
           inputBuffer = '';
         } else if (data === '\x7f') {
@@ -356,6 +385,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
             project_id: null,
           }).catch((err: unknown) => console.debug('[activity] terminal_session_ended emission failed:', err));
         }
+        oscHandlerDisposable.dispose();
         onDataDisposable.dispose();
         onTitleDisposable.dispose();
         onResizeDisposable.dispose();
