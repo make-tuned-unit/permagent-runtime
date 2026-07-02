@@ -33,18 +33,8 @@ pub fn setup_logging(name: Option<&str>) -> Result<()> {
         .with_ansi(false)
         .with_file(true);
 
-    let base_env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new("")
-            .add_directive("mcp_client=info".parse().unwrap())
-            .add_directive("goose=info".parse().unwrap())
-            .add_directive("goose_server=info".parse().unwrap())
-            .add_directive("permagentd=info".parse().unwrap())
-            .add_directive("tower_http=info".parse().unwrap())
-            // #341: dedicated target for session-list latency instrumentation,
-            // visible regardless of crate-name filter drift.
-            .add_directive("session_perf=info".parse().unwrap())
-            .add_directive(LevelFilter::WARN.into())
-    });
+    let base_env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| default_env_filter());
 
     let console_layer = fmt::layer()
         .with_writer(std::io::stderr)
@@ -72,6 +62,28 @@ pub fn setup_logging(name: Option<&str>) -> Result<()> {
     subscriber.try_init()?;
 
     Ok(())
+}
+
+/// The default filter used when `RUST_LOG` is unset. The global floor is
+/// WARN, so any target that logs state at INFO must be listed here or its
+/// lines silently vanish from every sink — the trap that hid the initiative
+/// driver's ON/OFF startup lines behind a healthy-looking daemon.
+fn default_env_filter() -> EnvFilter {
+    EnvFilter::new("")
+        .add_directive("mcp_client=info".parse().unwrap())
+        .add_directive("goose=info".parse().unwrap())
+        .add_directive("goose_server=info".parse().unwrap())
+        .add_directive("permagentd=info".parse().unwrap())
+        .add_directive("tower_http=info".parse().unwrap())
+        // #341: dedicated target for session-list latency instrumentation,
+        // visible regardless of crate-name filter drift.
+        .add_directive("session_perf=info".parse().unwrap())
+        // #360: the initiative driver logs its ON/OFF state at startup under
+        // this target; without the directive both lines fall below the WARN
+        // floor and the "never silent" contract in initiative::driver::spawn
+        // is defeated.
+        .add_directive("initiative=info".parse().unwrap())
+        .add_directive(LevelFilter::WARN.into())
 }
 
 /// Size cap for the launchd stderr/stdout capture files (#560 F5). launchd
@@ -134,7 +146,21 @@ fn rotate_if_oversize(path: &std::path::Path, max_bytes: u64) -> std::io::Result
 
 #[cfg(test)]
 mod tests {
-    use super::rotate_if_oversize;
+    use super::{default_env_filter, rotate_if_oversize};
+
+    /// Targets that log meaningful state at INFO must be visible under the
+    /// default filter — otherwise their lines vanish from every sink and the
+    /// component looks like it never ran (the initiative-driver silence bug).
+    #[test]
+    fn default_filter_passes_dedicated_info_targets() {
+        let directives = default_env_filter().to_string();
+        for target in ["initiative", "session_perf", "permagentd"] {
+            assert!(
+                directives.contains(&format!("{target}=info")),
+                "default env filter is missing `{target}=info`: {directives}"
+            );
+        }
+    }
 
     #[test]
     fn rotates_oversize_file_and_keeps_backup() {
