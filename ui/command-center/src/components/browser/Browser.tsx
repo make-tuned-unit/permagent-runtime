@@ -13,6 +13,7 @@ import {
   FiGlobe,
 } from 'react-icons/fi';
 import { BrowserTabs, type BrowserTab } from './BrowserTabs';
+import { CHAT_LAUNCHER_MARGIN } from '../chat/ChatLauncher';
 
 // ── Tauri API loader (cached, no module-level mutation) ──
 
@@ -88,6 +89,7 @@ let persistedActiveTabId: string | null = null;
 export function Browser() {
   const { colors } = useTheme();
   const overlayBlocking = useCommandCenter(s => s.overlayBlockingBrowser);
+  const chatLauncherSize = useCommandCenter(s => s.chatLauncherSize);
   const pendingBrowserUrl = useCommandCenter(s => s.pendingBrowserUrl);
   const clearPendingBrowserUrl = useCommandCenter(s => s.clearPendingBrowserUrl);
 
@@ -112,6 +114,8 @@ export function Browser() {
   activeTabIdRef.current = activeTabId;
   const apiRef = useRef(api);
   apiRef.current = api;
+  const chatLauncherSizeRef = useRef(chatLauncherSize);
+  chatLauncherSizeRef.current = chatLauncherSize;
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
 
@@ -157,6 +161,27 @@ export function Browser() {
       return;
     }
 
+    // Bounds-subtract the collapsed chat launcher's corner (#553, ruled D2 in
+    // WEBVIEW_LIFECYCLE.md). The launcher is DOM inside the main webview; the
+    // browser is a native child surface that always composites above it, so
+    // the only way to keep the launcher visible is to keep the webview's rect
+    // out of its corner. When the webview's bottom-right reaches the reserved
+    // corner (launcher size + margins, anchored bottom-right), raise the
+    // webview's bottom edge above it. When the chat window is open the
+    // launcher unmounts (size = null) and the webview gets the full rect —
+    // that window is a separate native surface ordered above main already.
+    let height = rect.height;
+    const launcher = chatLauncherSizeRef.current;
+    if (launcher) {
+      const reservedTop = window.innerHeight - launcher.height - 2 * CHAT_LAUNCHER_MARGIN;
+      const reservedLeft = window.innerWidth - launcher.width - 2 * CHAT_LAUNCHER_MARGIN;
+      const intersectsCorner =
+        rect.y + rect.height > reservedTop && rect.x + rect.width > reservedLeft;
+      if (intersectsCorner && reservedTop - rect.y > 0) {
+        height = reservedTop - rect.y;
+      }
+    }
+
     currentTabs.forEach((t) => {
       if (!t.webviewId) return;
       if (t.id === currentActiveId) {
@@ -165,7 +190,7 @@ export function Browser() {
           x: rect.x,
           y: rect.y,
           width: rect.width,
-          height: rect.height,
+          height,
         }).catch(() => {});
       } else {
         inv.invoke('hide_browser', { webviewId: t.webviewId }).catch(() => {});
@@ -231,6 +256,12 @@ export function Browser() {
   useEffect(() => {
     syncBounds();
   }, [activeTabId, tabs, syncBounds]);
+
+  // ── Re-sync when the chat launcher appears/disappears/resizes (#553) ──
+  // Event-driven, not polled — composes with the nap-safe pump suspension.
+  useEffect(() => {
+    syncBounds();
+  }, [chatLauncherSize, syncBounds]);
 
   // ── Hide all webviews when a transient overlay is open ──
   useEffect(() => {

@@ -1,15 +1,44 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
 import { font, ease } from '../../styles/tokens';
 import { api } from '../../lib/api';
 import { useTheme } from '../../styles/useTheme';
+import { useCommandCenter } from '../../lib/store';
 import { createChatWindow } from '../../lib/chatWindow';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+
+// Distance from the viewport's bottom/right edges. The Browser derives the
+// launcher's reserved corner from this anchor + the published size (#553).
+export const CHAT_LAUNCHER_MARGIN = 20;
 
 export function ChatLauncher() {
   const { colors, theme } = useTheme();
   const [agentName, setAgentName] = useState('Agent');
   const [chatWindowOpen, setChatWindowOpen] = useState(false);
+  const setChatLauncherSize = useCommandCenter(s => s.setChatLauncherSize);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+
+  // Publish the pill's measured size so the Browser can subtract its corner
+  // from the native webview bounds (#553). ResizeObserver fires only on real
+  // layout changes (e.g. the agent name loading) — no polling.
+  useLayoutEffect(() => {
+    const el = buttonRef.current;
+    if (chatWindowOpen || !el) {
+      setChatLauncherSize(null);
+      return;
+    }
+    const publish = () => {
+      const r = el.getBoundingClientRect();
+      setChatLauncherSize({ width: r.width, height: r.height });
+    };
+    publish();
+    const observer = new ResizeObserver(publish);
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+      setChatLauncherSize(null);
+    };
+  }, [chatWindowOpen, setChatLauncherSize]);
 
   useEffect(() => {
     api.getIdentity().then(id => setAgentName(id.first_name)).catch(() => {});
@@ -95,8 +124,8 @@ export function ChatLauncher() {
   if (chatWindowOpen) return null;
 
   return (
-    <button onClick={openChatWindow} style={{
-      position: 'fixed', bottom: 20, right: 20, zIndex: 9999,
+    <button ref={buttonRef} onClick={openChatWindow} style={{
+      position: 'fixed', bottom: CHAT_LAUNCHER_MARGIN, right: CHAT_LAUNCHER_MARGIN, zIndex: 9999,
       display: 'flex', alignItems: 'center', gap: 10,
       padding: '12px 20px', borderRadius: 999,
       background: colors.surface, backdropFilter: 'blur(16px)',
