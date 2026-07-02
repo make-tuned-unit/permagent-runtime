@@ -146,7 +146,7 @@ function AssociatePicker({ colors, excludeIds, onPick }: {
     return () => { live = false; };
   }, [query]);
 
-  const candidates = results.filter(p => !excludeIds.has(p.entity_uuid)).slice(0, 8);
+  const candidates = results.filter(p => !excludeIds.has(p.entity_uuid));
 
   return (
     <div style={{ marginBottom: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -166,7 +166,7 @@ function AssociatePicker({ colors, excludeIds, onPick }: {
           {results.length === 0 ? 'No people in the directory.' : 'No more to add.'}
         </div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 240, overflowY: 'auto' }}>
           {candidates.map(p => (
             <button
               key={p.entity_uuid}
