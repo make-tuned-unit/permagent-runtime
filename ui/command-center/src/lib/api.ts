@@ -179,13 +179,28 @@ export async function apiFetch<T>(endpoint: string, options?: RequestInit): Prom
   // Ensure the daemon token is loaded before making any authenticated request.
   if (!_daemonToken && isTauri) await loadDaemonToken();
   const url = `${API_BASE_URL}${endpoint}`;
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      ...authHeaders(),
-      ...(options?.headers ?? {}),
-    },
-  });
+  const method = (options?.method ?? 'GET').toUpperCase();
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...options,
+      headers: {
+        ...authHeaders(),
+        ...(options?.headers ?? {}),
+      },
+    });
+  } catch (e) {
+    // The request never left the client (bad URL, daemon down, CORS). Without
+    // this line such failures are indistinguishable from a backend reject.
+    console.error(`[api] ${method} ${endpoint} — request failed to send:`, e);
+    throw e;
+  }
+
+  // Mutations are rare enough to log unconditionally; the daemon keeps no HTTP
+  // access log, so this console line is the only request-level trace.
+  if (method !== 'GET') {
+    console.info(`[api] ${method} ${endpoint} → ${response.status}`);
+  }
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ message: 'Unknown error' }));
@@ -199,7 +214,11 @@ export async function apiFetch<T>(endpoint: string, options?: RequestInit): Prom
     throw err;
   }
 
-  return response.json() as Promise<T>;
+  // Some mutation routes (e.g. the #530 project-association POST/DELETE) return
+  // a bare status code with an empty body; response.json() rejects on empty
+  // input, which turned those 2xx successes into client-side "failures" (#561).
+  const text = await response.text();
+  return (text ? JSON.parse(text) : undefined) as T;
 }
 
 /** Read a File as base64 data string (no data-URI prefix). */
