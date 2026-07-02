@@ -51,6 +51,9 @@ pub mod reader;
 pub mod recipe;
 pub mod recipe_deeplink;
 pub mod recognition;
+pub mod recognition_consent;
+#[cfg(feature = "spectral-recognition")]
+pub mod recognition_sink;
 pub mod scheduler;
 pub mod scheduler_trait;
 pub mod security;
@@ -68,6 +71,7 @@ pub mod tool_inspection;
 pub mod tool_monitor;
 pub mod tracing;
 pub mod utils;
+pub mod wing_rules;
 pub mod workspaces;
 
 /// Re-exported so dependents (goose-server) can name pool types from the

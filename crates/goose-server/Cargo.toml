@@ -19,6 +19,7 @@ aws-providers = ["permagent/aws-providers"]
 cuda = ["permagent/cuda", "local-inference"]
 telemetry = ["permagent/telemetry"]
 otel = ["permagent/otel"]
+spectral-recognition = ["permagent/spectral-recognition"]
 rustls-tls = [
     "reqwest/rustls",
     "tokio-tungstenite/rustls-tls-native-roots",

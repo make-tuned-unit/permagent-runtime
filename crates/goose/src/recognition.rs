@@ -216,6 +216,82 @@ async fn write_back_outcome(
 }
 
 // ---------------------------------------------------------------------------
+// Spectral-recognition prep (schema v22).
+//
+// `record_verdict` writes a recognize() verdict NEXT TO the outcome columns —
+// the pairing that makes this table the recognition validation ground truth.
+// No production caller feeds real verdicts yet (Spectral's recognize() is not
+// in the pinned dep); the sink seam (`crate::recognition_sink`) is where the
+// wiring lands. `spawn_log_tool_event` feeds the `recognition_tool_events`
+// stream (the path-pursuit tracker input); its only caller is feature-gated.
+// Both are best-effort, matching everything else in this module.
+// ---------------------------------------------------------------------------
+
+/// Record a recognition verdict + familiarity on an already-persisted recall
+/// event, keyed on `retrieval_id` (schema v22 columns). Best-effort.
+pub async fn record_verdict(
+    pool: &Pool<Sqlite>,
+    retrieval_id: &str,
+    verdict: &str,
+    familiarity: f64,
+) {
+    let result = sqlx::query(
+        "UPDATE recognition_events
+            SET recognition_verdict = ?, familiarity = ?
+          WHERE retrieval_id = ?",
+    )
+    .bind(verdict)
+    .bind(familiarity)
+    .bind(retrieval_id)
+    .execute(pool)
+    .await;
+
+    if let Err(e) = result {
+        warn!(
+            target: "permagent::recognition",
+            "Failed to record verdict for retrieval {}: {}",
+            retrieval_id,
+            e
+        );
+    }
+}
+
+/// Persist one timestamped tool-call event into `recognition_tool_events`,
+/// fire-and-forget. Content-free by design: tool name, wing, coarse
+/// args-class (the argument SHAPE hash, never argument values), session.
+pub fn spawn_log_tool_event(
+    pool: Pool<Sqlite>,
+    tool_name: String,
+    wing: Option<String>,
+    args_class: Option<String>,
+    session_id: Option<String>,
+) {
+    tokio::spawn(async move {
+        let result = sqlx::query(
+            "INSERT INTO recognition_tool_events
+                (occurred_at, tool_name, wing, args_class, session_id)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(now_iso())
+        .bind(&tool_name)
+        .bind(&wing)
+        .bind(&args_class)
+        .bind(&session_id)
+        .execute(&pool)
+        .await;
+
+        if let Err(e) = result {
+            warn!(
+                target: "permagent::recognition",
+                "Failed to log tool event {}: {}",
+                tool_name,
+                e
+            );
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Read side (the #360 initiative-layer glue).
 //
 // These are the ONLY query accessors over `recognition_events`. They expose the
@@ -557,5 +633,114 @@ mod tests {
             0,
             "empty session short-circuits"
         );
+    }
+
+    // ----- spectral-recognition prep (schema v22) -----
+
+    #[tokio::test]
+    async fn verdict_records_next_to_outcome() {
+        let pool = test_pool().await;
+        persist_recognition(&pool, &ctx("sess-v"), "q", "cascade", &[])
+            .await
+            .unwrap();
+        let retrieval_id: String =
+            sqlx::query_scalar("SELECT retrieval_id FROM recognition_events")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        // Fresh init leaves the v22 columns NULL.
+        let row = sqlx::query("SELECT recognition_verdict, familiarity FROM recognition_events")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(row
+            .get::<Option<String>, _>("recognition_verdict")
+            .is_none());
+        assert!(row.get::<Option<f64>, _>("familiarity").is_none());
+
+        // A verdict and an outcome coexist on the same row — the ground-truth
+        // pairing the table exists for.
+        record_verdict(&pool, &retrieval_id, "familiar", 0.62).await;
+        write_back_task_outcome(&pool, "sess-v").await;
+
+        let row = sqlx::query(
+            "SELECT recognition_verdict, familiarity, outcome_kind FROM recognition_events",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            row.get::<Option<String>, _>("recognition_verdict")
+                .as_deref(),
+            Some("familiar")
+        );
+        assert_eq!(row.get::<Option<f64>, _>("familiarity"), Some(0.62));
+        assert_eq!(
+            row.get::<Option<String>, _>("outcome_kind").as_deref(),
+            Some("TaskResolved")
+        );
+    }
+
+    #[tokio::test]
+    async fn migrate_v21_to_v22_adds_columns_and_is_idempotent() {
+        use crate::session::spectral_schema::migrate_v21_to_v22;
+        let pool = test_pool().await;
+        // Fresh init already carries the columns; the migration must be a
+        // harmless no-op there — and running it twice must also be safe.
+        migrate_v21_to_v22(&pool).await.unwrap();
+        migrate_v21_to_v22(&pool).await.unwrap();
+
+        let cols: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('recognition_events')
+              WHERE name IN ('recognition_verdict', 'familiarity')",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(cols, 2);
+    }
+
+    #[tokio::test]
+    async fn tool_event_feed_persists_content_free_rows() {
+        let pool = test_pool().await;
+        spawn_log_tool_event(
+            pool.clone(),
+            "developer__shell".into(),
+            Some("permagent".into()),
+            Some("abc123".into()),
+            Some("sess-t".into()),
+        );
+        // spawn is fire-and-forget; poll briefly for the row.
+        let mut rows = 0i64;
+        for _ in 0..50 {
+            rows = sqlx::query_scalar("SELECT COUNT(*) FROM recognition_tool_events")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            if rows > 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(rows, 1, "tool event landed");
+
+        let row = sqlx::query(
+            "SELECT tool_name, wing, args_class, session_id, occurred_at
+               FROM recognition_tool_events",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.get::<String, _>("tool_name"), "developer__shell");
+        assert_eq!(
+            row.get::<Option<String>, _>("wing").as_deref(),
+            Some("permagent")
+        );
+        assert_eq!(
+            row.get::<Option<String>, _>("args_class").as_deref(),
+            Some("abc123")
+        );
+        assert!(!row.get::<String, _>("occurred_at").is_empty());
     }
 }

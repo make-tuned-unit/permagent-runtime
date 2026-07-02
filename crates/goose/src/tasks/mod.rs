@@ -127,8 +127,24 @@ impl TaskLogger {
                 .await
                 .ok()
                 .flatten();
-        if let Some(sid) = task_session_id {
+        if let Some(sid) = task_session_id.clone() {
             crate::recognition::write_back_task_outcome(&self.pool, &sid).await;
+        }
+
+        // Recognition tool-event feed: one content-free row per completed tool
+        // call (tool name + argument SHAPE hash, never values). A sequential
+        // event stream is what Spectral's path-pursuit tracker consumes for
+        // step-level routine recognition. Wing is not known at this layer —
+        // left NULL; the tracker can join wing via the session's memories.
+        #[cfg(feature = "spectral-recognition")]
+        if let Some(tool) = tool_used {
+            crate::recognition::spawn_log_tool_event(
+                self.pool.clone(),
+                tool.to_string(),
+                None,
+                shape_hash.clone(),
+                task_session_id,
+            );
         }
 
         events::emit(events::task_completed(task_id, output_json, duration_ms));

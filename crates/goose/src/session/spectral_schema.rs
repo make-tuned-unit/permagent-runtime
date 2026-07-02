@@ -666,6 +666,11 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // project_memories. Idempotent; shared with migrate_v19_to_v20.
     apply_project_association_schema(pool).await?;
 
+    // Recognition tool-event feed table (schema v22). Idempotent; shared with
+    // migrate_v21_to_v22. Fresh installs get the recognition_verdict /
+    // familiarity columns from apply_recognition_schema's CREATE directly.
+    apply_recognition_feed_schema(pool).await?;
+
     info!(
         "Spectral schema v{} initialized successfully",
         SPECTRAL_SCHEMA_VERSION
@@ -680,6 +685,10 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
 /// Outcome columns are nullable and filled later by async write-back keyed on
 /// `retrieval_id` (task-resolution + decision approve/bounce). Distinct names
 /// avoid collision with Spectral's own precursor `retrieval_events` table.
+///
+/// `recognition_verdict` + `familiarity` (schema v22, spectral-recognition
+/// prep) are nullable and stay NULL until the Spectral recognize() path is
+/// wired; existing DBs gain them via `migrate_v21_to_v22`'s guarded ALTERs.
 ///
 /// Fully idempotent — every statement uses IF NOT EXISTS — so it is safe on
 /// fresh installs and on every boot.
@@ -704,7 +713,9 @@ pub async fn apply_recognition_schema(pool: &Pool<Sqlite>) -> Result<()> {
             outcome_polarity    TEXT,
             outcome_source      TEXT,
             outcome_observed_at TEXT,
-            cited_memory_ids    TEXT NOT NULL DEFAULT '[]'
+            cited_memory_ids    TEXT NOT NULL DEFAULT '[]',
+            recognition_verdict TEXT,
+            familiarity         REAL
         )",
     )
     .execute(&mut *tx)
@@ -1232,6 +1243,96 @@ pub async fn migrate_v20_to_v21(pool: &Pool<Sqlite>) -> Result<()> {
         .execute(pool)
         .await?;
     info!("Spectral schema migrated to v21 (people.graph_entity_id)");
+    Ok(())
+}
+
+/// Apply the recognition tool-event feed schema (v22, spectral-recognition
+/// prep): `recognition_tool_events`, a timestamped, content-free stream of
+/// tool calls (tool name, wing, coarse args-class). A sequential event stream
+/// is the input Spectral's path-pursuit tracker needs for step-level routine
+/// recognition; writes are feature-gated (`spectral-recognition`) and
+/// fire-and-forget from the TaskLogger choke point.
+///
+/// Fully idempotent — every statement uses IF NOT EXISTS — safe on fresh
+/// installs (via `init_spectral_db`) and as a migration step alike.
+pub async fn apply_recognition_feed_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool.begin().await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS recognition_tool_events (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            occurred_at TEXT NOT NULL,
+            tool_name   TEXT NOT NULL,
+            wing        TEXT,
+            args_class  TEXT,
+            session_id  TEXT
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_tool_events_time ON recognition_tool_events(occurred_at)",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_tool_events_session ON recognition_tool_events(session_id, occurred_at)",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Migrate v21 -> v22 (spectral-recognition prep, two additive pieces):
+///
+/// 1. nullable `recognition_verdict TEXT` + `familiarity REAL` on
+///    `recognition_events` — verdicts logged NEXT TO outcomes make the table
+///    the validation ground truth for Spectral's recognize(); both stay NULL
+///    until that path is wired. SQLite has no `ADD COLUMN IF NOT EXISTS`, so
+///    the adds are guarded on `PRAGMA table_info` (fresh installs already get
+///    the columns from `apply_recognition_schema`'s CREATE).
+/// 2. the `recognition_tool_events` feed table (see
+///    [`apply_recognition_feed_schema`]).
+///
+/// Idempotent + base-version independent. Records v22 (hardcoded per the
+/// migration precedent in this file); SPECTRAL_SCHEMA_VERSION stays 14. The
+/// session_manager gate for this step is `#[cfg(feature =
+/// "spectral-recognition")]` — a feature-off build leaves the DB untouched at
+/// v21 (constraint: zero behavior change when the flag is off), and the
+/// guarded adds make it safe whichever build order a DB sees.
+pub async fn migrate_v21_to_v22(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v21 -> v22 (recognition verdict columns + tool-event feed)");
+
+    for (column, ddl) in [
+        (
+            "recognition_verdict",
+            "ALTER TABLE recognition_events ADD COLUMN recognition_verdict TEXT",
+        ),
+        (
+            "familiarity",
+            "ALTER TABLE recognition_events ADD COLUMN familiarity REAL",
+        ),
+    ] {
+        let has_column: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('recognition_events') WHERE name = ?",
+        )
+        .bind(column)
+        .fetch_one(pool)
+        .await?;
+        if has_column == 0 {
+            sqlx::query(ddl).execute(pool).await?;
+        }
+    }
+
+    apply_recognition_feed_schema(pool).await?;
+
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (22)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v22 (recognition_verdict + familiarity + recognition_tool_events)");
     Ok(())
 }
 

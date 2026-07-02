@@ -330,6 +330,17 @@ impl ActivityIngester {
                     &event_type_name,
                     wing_override.as_deref(),
                 ));
+                // Recognition seam (stream mode): every ambient memory that
+                // actually lands is a cue for the routine tracker. Consent-
+                // gated inside (per-wing opt-in + per-source exclusions);
+                // today a debug log, later feeds Spectral's session tracker.
+                #[cfg(feature = "spectral-recognition")]
+                crate::recognition_sink::observe_ambient_cue(
+                    wing_override.as_deref(),
+                    &source_surface,
+                    &event_type_name,
+                    content.len(),
+                );
                 if is_aggregated {
                     if let Ok(mut queue) = self.aggregation_queue.lock() {
                         queue.push(result.memory_id);
