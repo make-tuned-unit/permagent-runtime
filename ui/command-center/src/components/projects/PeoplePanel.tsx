@@ -28,6 +28,10 @@ export function PeoplePanel({ project }: { project: Project }) {
   const peopleRev = useCommandCenter(s => s.peopleRev);
   const [people, setPeople] = useState<ProjectPerson[]>([]);
   const [picking, setPicking] = useState(false);
+  // Associate outcome, surfaced inline. Previously the POST failure was swallowed
+  // by an empty catch, so a fast 400 was indistinguishable from "the click did
+  // nothing" (#561) — the wire is correct, but the failure was invisible.
+  const [associateError, setAssociateError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -44,15 +48,21 @@ export function PeoplePanel({ project }: { project: Project }) {
   const associatedIds = useMemo(() => new Set(people.map(p => p.entity_uuid)), [people]);
 
   const associate = async (person: Person) => {
+    setAssociateError(null);
     try {
       await apiFetch(`/api/projects/${encodeURIComponent(project.id)}/people`, {
         method: 'POST',
         body: JSON.stringify({ entityUuid: person.entity_uuid }),
       });
+      // Success: close the picker and re-fetch — the person moves into the list.
       setPicking(false);
       bumpPeople();
-    } catch {
-      // Surfaced inline by the picker's own error path if needed; keep panel calm.
+    } catch (e) {
+      // Keep the picker open and show why, so a non-2xx (e.g. a 400 FK reject) is
+      // visible instead of looking like a dead click (#561).
+      const err = e as Error & { status?: number };
+      const status = err.status ? `${err.status} ` : '';
+      setAssociateError(`Couldn't associate ${person.display_name}: ${status}${err.message || 'request failed'}`);
     }
   };
 
@@ -61,7 +71,7 @@ export function PeoplePanel({ project }: { project: Project }) {
       title="People"
       action={
         <button
-          onClick={() => setPicking(v => !v)}
+          onClick={() => { setAssociateError(null); setPicking(v => !v); }}
           style={{
             fontSize: 11, color: colors.cyan, background: 'none', border: 'none',
             cursor: 'pointer', fontFamily: font.body, padding: 0,
@@ -77,6 +87,12 @@ export function PeoplePanel({ project }: { project: Project }) {
           excludeIds={associatedIds}
           onPick={associate}
         />
+      )}
+
+      {associateError && (
+        <div style={{ fontSize: 11, color: colors.danger, marginBottom: 8 }}>
+          {associateError}
+        </div>
       )}
 
       {people.length === 0 ? (
