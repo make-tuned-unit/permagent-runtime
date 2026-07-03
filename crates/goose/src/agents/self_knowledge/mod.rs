@@ -139,8 +139,10 @@ pub static WORKER_DESCRIPTORS: &[FeatureDescriptor] = &[
 
 /// Deterministic guardrails the agent operates under. Co-located with the
 /// safety-core module that enforces each one.
-pub static GUARD_DESCRIPTORS: &[FeatureDescriptor] =
-    &[crate::steward::secret_scan::SELF_KNOWLEDGE_FEATURE];
+pub static GUARD_DESCRIPTORS: &[FeatureDescriptor] = &[
+    crate::steward::secret_scan::SELF_KNOWLEDGE_FEATURE,
+    crate::session::crash_capture::DURABILITY_FEATURE,
+];
 
 /// User-facing surfaces. Each entry is a `const` co-located with its module.
 pub static SURFACE_DESCRIPTORS: &[FeatureDescriptor] = &[
@@ -525,7 +527,7 @@ mod tests {
     /// constraint he is subject to.
     #[test]
     fn guardrails_have_descriptors_and_render() {
-        const KNOWN_GUARD_IDS: &[&str] = &["credential_commit_guard"];
+        const KNOWN_GUARD_IDS: &[&str] = &["credential_commit_guard", "durability_supervision"];
         for id in KNOWN_GUARD_IDS {
             let n = GUARD_DESCRIPTORS.iter().filter(|d| d.id == *id).count();
             assert_eq!(n, 1, "guard id {id:?} must have exactly one descriptor");
