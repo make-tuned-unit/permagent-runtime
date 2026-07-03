@@ -223,7 +223,7 @@ mod tests {
     #[tokio::test]
     async fn long_title_is_truncated_to_a_valid_headline() {
         let pool = test_pool().await;
-        let long_title = "Automate ".to_string() + &"x".repeat(200);
+        let long_title = format!("Automate {}", "x".repeat(200));
         let outcome = surface_initiative_proposal(
             &pool,
             PERSONAL_PROJECT_ID,
