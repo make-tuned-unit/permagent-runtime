@@ -782,6 +782,13 @@ impl SessionStorage {
                     if version < 22 {
                         spectral_schema::migrate_v21_to_v22(&self.pool).await?;
                     }
+                    // v23: entity_provenance side table (people-in-graph v1 #583).
+                    // Purely additive, base-independent, always-on (not feature-
+                    // gated). Makes runtime person-creation durable — the daemon
+                    // reconciler prunes only ontology-sourced entities.
+                    if version < 23 {
+                        spectral_schema::migrate_v22_to_v23(&self.pool).await?;
+                    }
                 } else {
                     info!("Initializing Spectral schema at {:?}", self.db_path);
                     spectral_schema::init_spectral_db(&self.pool).await?;
