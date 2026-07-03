@@ -7,6 +7,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Local, Utc};
+use futures::future::FutureExt as _;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tokio_cron_scheduler::{job::JobId, Job, JobScheduler as TokioJobScheduler};
@@ -324,7 +325,13 @@ impl Scheduler {
                 let brain_snapshot = brain_for_task.read().await.clone();
                 let persona_snapshot = persona_for_task.read().await.clone();
                 let ac_snapshot = agent_config_for_task.read().await.clone();
-                let result = execute_job(
+                // Isolate a job panic (durability F3): without this, an
+                // `.unwrap()`/index/overflow inside execute_job would unwind past
+                // here and could take down the whole cron loop — freezing ALL
+                // future firings of ALL jobs. catch_unwind converts the panic into
+                // an Err so the cleanup below (clearing `currently_running`) still
+                // runs and other jobs keep firing.
+                let result = std::panic::AssertUnwindSafe(execute_job(
                     job_to_execute,
                     current_jobs_arc.clone(),
                     task_job_id.clone(),
@@ -332,8 +339,22 @@ impl Scheduler {
                     brain_snapshot,
                     persona_snapshot,
                     ac_snapshot,
-                )
-                .await;
+                ))
+                .catch_unwind()
+                .await
+                .unwrap_or_else(|panic| {
+                    let msg = panic
+                        .downcast_ref::<&str>()
+                        .map(|s| s.to_string())
+                        .or_else(|| panic.downcast_ref::<String>().cloned())
+                        .unwrap_or_else(|| "<non-string panic payload>".to_string());
+                    tracing::error!(
+                        target: "durability",
+                        job = %task_job_id,
+                        "scheduler job panicked (contained, loop survives): {msg}"
+                    );
+                    Err(anyhow!("job '{}' panicked: {}", task_job_id, msg))
+                });
 
                 {
                     let mut tasks = running_tasks.lock().await;
@@ -542,6 +563,8 @@ impl Scheduler {
         // scheduler stops converting (and warning) on every load. Persisted once
         // below; subsequent loads see 6-field and this is a no-op.
         let mut crons_normalized = false;
+        // Also persist once if we reconcile any stale run-flags below.
+        let mut reconciled = false;
 
         for mut job_to_load in list {
             if !Path::new(&job_to_load.source).exists() {
@@ -551,6 +574,24 @@ impl Scheduler {
                     job_to_load.id
                 );
                 continue;
+            }
+
+            // Startup reconciliation (durability F2): a job persisted with
+            // `currently_running = true` was left mid-run by a prior process that
+            // died or half-died. At load time nothing is actually running, so the
+            // flag is definitionally stale — and there is no other reset path, so
+            // it would otherwise wedge Librarian/Steward/etc. forever. Clear it so
+            // the job can fire again.
+            if job_to_load.currently_running {
+                tracing::warn!(
+                    target: "durability",
+                    "Reconciling stale currently_running=true for job '{}' left by a prior process; resetting so it can run again",
+                    job_to_load.id
+                );
+                job_to_load.currently_running = false;
+                job_to_load.current_session_id = None;
+                job_to_load.process_start_time = None;
+                reconciled = true;
             }
 
             if let Some(normalized) = normalize_cron_to_6field(&job_to_load.cron) {
@@ -592,10 +633,11 @@ impl Scheduler {
             jobs_guard.insert(job_to_load.id.clone(), (job_uuid, job_to_load));
         }
 
-        // Persist the normalized crons exactly once, so the next load is a no-op.
-        if crons_normalized {
+        // Persist once if we normalized crons and/or reconciled stale run-flags,
+        // so the next load is a no-op.
+        if crons_normalized || reconciled {
             if let Err(e) = persist_jobs(&self.storage_path, &self.jobs).await {
-                tracing::warn!("Failed to persist normalized crons: {}", e);
+                tracing::warn!("Failed to persist scheduler reconciliation: {}", e);
             }
         }
     }

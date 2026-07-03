@@ -14,13 +14,30 @@
 
 use std::backtrace::Backtrace;
 use std::path::{Path, PathBuf};
-use std::sync::Once;
+use std::sync::{Mutex, Once};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::paths::Paths;
 
 const CRASH_SUBDIR: &str = "crashes";
 /// Keep only the most recent N crash reports on disk.
 const MAX_CRASH_FILES: usize = 20;
+
+/// Panic circuit-breaker defaults (durability F1). A single panic in a spawned
+/// task unwinds only that task — the process limps on "half-dead", invisible to
+/// launchd (which restarts only on process *exit*). To fail-fast-recover-clean
+/// instead, we count panics in a sliding window; once a cluster forms (the
+/// systemic "something is spiralling" signal), we force a clean `exit(1)` so
+/// launchd relaunches a fresh process. A single isolated panic does NOT exit —
+/// that would over-react to a locally-recoverable task panic — but a burst does.
+/// Tune via env for ops; the launchd `ThrottleInterval` provides the across-
+/// restart backoff so a crash-loop can't tight-loop.
+const PANIC_BREAKER_MAX_DEFAULT: usize = 3;
+const PANIC_BREAKER_WINDOW_SECS_DEFAULT: u64 = 60;
+
+/// Sliding window of recent panic unix-timestamps (seconds). Guarded by a Mutex;
+/// poison is recovered (a poisoned lock just means a prior panic held it).
+static PANIC_TIMES: Mutex<Vec<u64>> = Mutex::new(Vec::new());
 
 /// Directory where crash reports are written (`<state>/crashes`).
 pub fn crash_dir() -> PathBuf {
@@ -43,6 +60,27 @@ pub fn crash_reports_consented() -> bool {
         false
     }
 }
+
+/// Self-knowledge descriptor for the daemon's durability supervision (the
+/// "weeks-untouched" guarantee). A `Guard`, not a tool: Henry does not *call*
+/// this — the daemon runs it *around* him. Co-located here with the panic
+/// circuit-breaker (the F1 core); the same capability also covers the scheduler
+/// startup reconciliation, the WAL-checkpoint timer, and the external health
+/// watchdog + metrics probe. Static — a live/queryable version awaits the
+/// `/api/health/durability` endpoint (follow-up). Aggregated by
+/// `crate::agents::self_knowledge::GUARD_DESCRIPTORS`.
+pub const DURABILITY_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "durability_supervision",
+        display_name: "Durability supervision",
+        category: crate::agents::self_knowledge::FeatureCategory::Guard,
+        what_it_does:
+            "Keeps my daemon healthy for weeks unattended: a panic circuit-breaker forces a clean restart instead of limping half-dead, an external watchdog restarts me if I stop answering, my databases' write-ahead logs are truncated on a timer so they cannot fill the disk, and my scheduled work is reconciled after every restart",
+        why_it_matters:
+            "It is why you can leave me running and reach me days later and I just work — nothing silently died, wedged, leaked, or filled the disk in the meantime",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        teaching: &[],
+    };
 
 /// A captured crash, rendered to a stable text report.
 #[derive(Debug, Clone)]
@@ -177,16 +215,58 @@ fn report_from_panic(info: &std::panic::PanicHookInfo<'_>, backtrace: &Backtrace
 
 static INSTALL_ONCE: Once = Once::new();
 
-/// Install the global panic hook (idempotent). Writes crash reports to
-/// [`crash_dir`] and then chains to the previous hook so stderr output is
-/// unchanged.
-pub fn install_panic_hook() {
-    install_panic_hook_to(crash_dir());
+/// Read the circuit-breaker thresholds (max panics, window seconds), env-first
+/// with the compile-time defaults as the floor. Explicit config over hidden
+/// magic; env keeps it out of the async config path (this runs inside the panic
+/// hook, during unwind).
+fn breaker_config() -> (usize, u64) {
+    let max = std::env::var("PERMAGENT_PANIC_BREAKER_MAX")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(PANIC_BREAKER_MAX_DEFAULT);
+    let window = std::env::var("PERMAGENT_PANIC_BREAKER_WINDOW_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(PANIC_BREAKER_WINDOW_SECS_DEFAULT);
+    (max, window)
 }
 
-/// Install the panic hook targeting a specific directory. Used by tests and the
-/// evidence harness; production calls [`install_panic_hook`].
+/// Record a panic at `now_secs` and return `true` if the number of panics within
+/// the trailing `window_secs` has reached `max` (the crash-loop threshold).
+/// Pure and deterministic — the caller owns the `exit` decision so this is unit-
+/// testable without terminating the test process.
+fn record_panic_and_check(now_secs: u64, max: usize, window_secs: u64) -> bool {
+    let mut times = PANIC_TIMES.lock().unwrap_or_else(|e| e.into_inner());
+    check_window(&mut times, now_secs, max, window_secs)
+}
+
+/// Pure sliding-window check: prune timestamps older than `window_secs`, record
+/// `now_secs`, and report whether the count has reached `max`. Split out so it is
+/// testable against a local buffer (no shared global state).
+fn check_window(times: &mut Vec<u64>, now_secs: u64, max: usize, window_secs: u64) -> bool {
+    times.retain(|&t| now_secs.saturating_sub(t) < window_secs);
+    times.push(now_secs);
+    times.len() >= max
+}
+
+/// Install the global panic hook (idempotent). Writes crash reports to
+/// [`crash_dir`], chains to the previous hook so stderr output is unchanged, and
+/// arms the panic circuit-breaker (a panic cluster forces a clean `exit(1)` for
+/// launchd to relaunch). Production entrypoint.
+pub fn install_panic_hook() {
+    install_panic_hook_inner(crash_dir(), true);
+}
+
+/// Install the panic hook targeting a specific directory, WITHOUT the exit-on-
+/// cluster circuit-breaker. Used by tests and the evidence harness so a panicking
+/// test can't tear down the test process; production calls [`install_panic_hook`].
 pub fn install_panic_hook_to(dir: PathBuf) {
+    install_panic_hook_inner(dir, false);
+}
+
+fn install_panic_hook_inner(dir: PathBuf, breaker: bool) {
     INSTALL_ONCE.call_once(move || {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
@@ -194,6 +274,26 @@ pub fn install_panic_hook_to(dir: PathBuf) {
             let report = report_from_panic(info, &bt);
             let _ = record_crash(&dir, &report);
             previous(info);
+            if breaker {
+                let (max, window) = breaker_config();
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                if record_panic_and_check(now, max, window) {
+                    // Loud, unmissable, on both stderr (launchd → daemon.err) and
+                    // the structured log — silence is impossible by design.
+                    eprintln!(
+                        "[panic-circuit-breaker] {max} panics within {window}s — forcing clean exit(1) so launchd relaunches a fresh daemon instead of limping half-dead"
+                    );
+                    tracing::error!(
+                        target: "durability",
+                        max, window_secs = window,
+                        "panic circuit-breaker tripped; forcing clean exit(1) for launchd relaunch"
+                    );
+                    std::process::exit(1);
+                }
+            }
         }));
     });
 }
@@ -201,6 +301,27 @@ pub fn install_panic_hook_to(dir: PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn breaker_trips_only_on_cluster_within_window() {
+        // A single isolated panic does not trip (max=3).
+        let mut t = Vec::new();
+        assert!(!check_window(&mut t, 100, 3, 60));
+        assert!(!check_window(&mut t, 110, 3, 60));
+        // Third panic inside the 60s window trips.
+        assert!(check_window(&mut t, 120, 3, 60));
+    }
+
+    #[test]
+    fn breaker_prunes_stale_panics_outside_window() {
+        let mut t = Vec::new();
+        assert!(!check_window(&mut t, 0, 3, 60));
+        assert!(!check_window(&mut t, 30, 3, 60));
+        // This panic is >60s after the first, which is pruned — only 2 remain, no trip.
+        assert!(!check_window(&mut t, 70, 3, 60));
+        // A cluster that stays inside the window still trips.
+        assert!(check_window(&mut t, 80, 3, 60));
+    }
 
     fn report(msg: &str, ts: &str) -> CrashReport {
         CrashReport {
