@@ -96,7 +96,63 @@ pub async fn sync_people_from_ontology(
         .filter(|e| e.entity_type == "person")
     {
         let graph_entity_id = hex::encode(ontology.entity_id_for(entity).as_bytes());
+        // Stamp provenance=ontology (people-in-graph v1 #583). First-source-wins,
+        // so a person created at runtime and later curated keeps its runtime
+        // origin (Decision G). Non-fatal — the mint proceeds regardless.
+        let _ = crate::people_provenance::record_provenance(
+            pool,
+            &graph_entity_id,
+            crate::people_provenance::Provenance::Ontology,
+        )
+        .await;
         if upsert_identity_from_graph(pool, &entity.canonical, &graph_entity_id).await? {
+            touched += 1;
+        }
+    }
+    Ok(touched)
+}
+
+/// Mirror **runtime / extracted** graph persons into identity-only `people` rows —
+/// the graph-side counterpart to [`sync_people_from_ontology`] (people-in-graph
+/// v1, #583).
+///
+/// Together the two are the *union mint*: curated persons (from the ontology) plus
+/// emergent persons (created at runtime by the Henry tool / UI, or extracted by
+/// the v1.5 Librarian). Ontology persons keep minting through the other function;
+/// this one handles only the provenance-protected ids so the two never contend.
+///
+/// Idempotent: skips ids that already have a `people` row, and resolves each
+/// remaining id's canonical from the **live** Brain (no second Kuzu connection).
+/// A protected id whose graph node is gone is silently skipped. Returns the number
+/// of rows minted this pass.
+pub async fn sync_people_from_graph(
+    pool: &Pool<Sqlite>,
+    brain: &crate::brain_handle::SafeBrain,
+) -> Result<usize, String> {
+    let protected = crate::people_provenance::protected_entity_ids(pool).await;
+    let mut touched = 0usize;
+    for id_bytes in protected {
+        let id_hex = hex::encode(id_bytes);
+        // Already minted? (the people row carries graph_entity_id) — skip without
+        // touching the graph.
+        let existing: Option<String> =
+            sqlx::query_scalar("SELECT entity_uuid FROM people WHERE graph_entity_id = ?")
+                .bind(&id_hex)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+        if existing.is_some() {
+            continue;
+        }
+        // Resolve the canonical from the live graph; skip if the node is gone.
+        let Some(canonical) = brain
+            .entity_canonical(&id_hex)
+            .await
+            .map_err(|e| e.to_string())?
+        else {
+            continue;
+        };
+        if upsert_identity_from_graph(pool, &canonical, &id_hex).await? {
             touched += 1;
         }
     }

@@ -40,6 +40,8 @@ pub mod oauth;
 pub mod otel;
 pub mod people;
 pub mod people_bridge;
+pub mod people_create;
+pub mod people_provenance;
 pub mod permission;
 #[cfg(feature = "telemetry")]
 pub mod posthog;

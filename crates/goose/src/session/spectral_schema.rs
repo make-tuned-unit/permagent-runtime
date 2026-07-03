@@ -671,6 +671,10 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // familiarity columns from apply_recognition_schema's CREATE directly.
     apply_recognition_feed_schema(pool).await?;
 
+    // Entity provenance side table (schema v23, people-in-graph v1 #583).
+    // Idempotent; shared with migrate_v22_to_v23.
+    apply_entity_provenance_schema(pool).await?;
+
     info!(
         "Spectral schema v{} initialized successfully",
         SPECTRAL_SCHEMA_VERSION
@@ -807,6 +811,44 @@ pub async fn apply_people_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await?;
 
     tx.commit().await?;
+    Ok(())
+}
+
+/// Apply the entity-provenance schema (v23, people-in-graph v1 #583): a
+/// permagent.db side table recording where each graph entity came from
+/// (`ontology` | `runtime` | `extracted`), keyed on the bare 64-hex `EntityId`.
+///
+/// This is what makes runtime person-creation durable: the daemon reconciler
+/// (`sync_graph_with_ontology`) prunes only `ontology`-sourced entities, so
+/// `runtime`/`extracted` entities survive across restarts. See
+/// [`crate::people_provenance`]. Fully idempotent (`CREATE TABLE IF NOT EXISTS`).
+pub async fn apply_entity_provenance_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS entity_provenance (
+            entity_id_hex TEXT PRIMARY KEY,
+            source        TEXT NOT NULL CHECK (source IN ('ontology','runtime','extracted')),
+            created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Migrate an existing database to the entity-provenance schema (schema v23).
+///
+/// Purely additive and base-version independent (`CREATE TABLE IF NOT EXISTS`),
+/// so it applies cleanly over any earlier base. Records v23 in `schema_version`.
+pub async fn migrate_v22_to_v23(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v22 -> v23 (entity provenance)");
+
+    apply_entity_provenance_schema(pool).await?;
+
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (23)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v23 (entity provenance)");
+
     Ok(())
 }
 
