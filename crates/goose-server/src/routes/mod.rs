@@ -69,6 +69,22 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         // (WebSocket upgrade can't use the Bearer middleware).
         .merge(voice::routes(state.clone()));
 
+    // ── Debug: env-gated panic-injection endpoint (durability #560 dogfood) ──
+    // Mounts ONLY when PERMAGENT_DEBUG_PANIC_ENDPOINT=1, so the route does not
+    // exist in normal runs and cannot be hit in production. It triggers a genuine
+    // panic on the request-handling path to exercise the panic circuit-breaker
+    // end-to-end (pair with PERMAGENT_PANIC_BREAKER_MAX=1 so one hit trips it).
+    // NOT gated on `debug_assertions`: the dogfood runs the RELEASE binary, which
+    // would compile that out — the exact build we must test. Logged loudly on
+    // mount so its presence is never silent.
+    if std::env::var("PERMAGENT_DEBUG_PANIC_ENDPOINT").as_deref() == Ok("1") {
+        tracing::warn!(
+            target: "durability",
+            "[debug] panic-injection endpoint ENABLED via PERMAGENT_DEBUG_PANIC_ENDPOINT=1 — POST /debug/panic will panic the request handler"
+        );
+        public = public.route("/debug/panic", axum::routing::post(debug_panic_handler));
+    }
+
     // Static UI assets
     let ui_dir = ui_dist_path();
     if let Some(dir) = ui_dir {
@@ -132,6 +148,19 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
     public.merge(protected).layer(middleware::from_fn(
         crate::middleware::access_log::http_access_log,
     ))
+}
+
+/// Deliberate panic on the request path, to exercise the panic circuit-breaker
+/// during the durability dogfood. Only reachable when the route is mounted (env
+/// flag set). The panic fires the global panic hook → the breaker counts it →
+/// with `PERMAGENT_PANIC_BREAKER_MAX=1` it forces a clean `exit(1)` and launchd
+/// relaunches a fresh daemon. Never returns.
+async fn debug_panic_handler() -> axum::http::StatusCode {
+    tracing::error!(
+        target: "durability",
+        "[debug] /debug/panic hit — triggering a deliberate panic to exercise the circuit-breaker"
+    );
+    panic!("[debug] deliberate panic-injection via POST /debug/panic (durability #560 dogfood)");
 }
 
 /// Locate the Command Center dist directory.
