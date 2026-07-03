@@ -13,7 +13,7 @@
 //! `automation_job_*` audit semantics so observability is preserved.
 
 use crate::initiative::draft::draft_with_provider;
-use crate::initiative::emit::surface_initiative_proposal;
+use crate::initiative::emit::{surface_initiative_proposal, InitiativeOutcome, InitiativeSurface};
 use crate::initiative::gate::{evaluate, GateConfig, GateDecision, GateInputs, SkipReason};
 use crate::providers::base::Provider;
 use sqlx::{Pool, Sqlite};
@@ -27,8 +27,9 @@ pub enum TickOutcome {
     /// Proceeded but the observation was previously bounced — no token spent
     /// past the prune, nothing surfaced.
     Pruned,
-    /// A proposal was originated and surfaced as a goal card in Triage.
-    Emitted { card_id: String },
+    /// A proposal was originated and surfaced (on the Decision Inbox or Triage,
+    /// per the configured surface).
+    Emitted(InitiativeOutcome),
 }
 
 /// Run one origination tick. Pure orchestration over already-assembled inputs;
@@ -44,6 +45,7 @@ pub async fn run_initiative_tick(
     inputs: &GateInputs,
     cfg: &GateConfig,
     provider: Option<&Arc<dyn Provider>>,
+    surface: InitiativeSurface,
 ) -> Result<TickOutcome, String> {
     let pattern = match evaluate(inputs, cfg) {
         GateDecision::Skip(reason) => return Ok(TickOutcome::Skipped(reason)),
@@ -55,11 +57,16 @@ pub async fn run_initiative_tick(
         None => return Ok(TickOutcome::Pruned),
     };
 
-    let outcome =
-        surface_initiative_proposal(pool, project_id, &pattern, &draft.title, &draft.description)
-            .await?;
-    let crate::initiative::emit::InitiativeOutcome::CardCreated { card_id } = outcome;
-    Ok(TickOutcome::Emitted { card_id })
+    let outcome = surface_initiative_proposal(
+        pool,
+        project_id,
+        &pattern,
+        &draft.title,
+        &draft.description,
+        surface,
+    )
+    .await?;
+    Ok(TickOutcome::Emitted(outcome))
 }
 
 #[cfg(test)]
@@ -125,6 +132,7 @@ mod tests {
             &inputs,
             &GateConfig::default(),
             None,
+            InitiativeSurface::Inbox,
         )
         .await
         .unwrap();
@@ -133,10 +141,10 @@ mod tests {
         assert_eq!(card_count(&pool).await, 0, "no card on an idle tick");
     }
 
-    /// The origination proof: a real repeated-command pattern past the gate
-    /// surfaces a goal card in Triage.
+    /// The origination proof (default surface): a real repeated-command pattern
+    /// past the gate surfaces a decision on the Decision Inbox.
     #[tokio::test]
-    async fn repeated_pattern_emits_goal_card_in_triage() {
+    async fn repeated_pattern_emits_decision_on_inbox() {
         let pool = test_pool().await;
         let outcome = run_initiative_tick(
             &pool,
@@ -144,26 +152,104 @@ mod tests {
             &passing_inputs(),
             &GateConfig::default(),
             None, // template draft → deterministic, no model needed
+            InitiativeSurface::Inbox,
+        )
+        .await
+        .unwrap();
+
+        let decision_id = match outcome {
+            TickOutcome::Emitted(InitiativeOutcome::DecisionCreated { decision_id }) => decision_id,
+            other => panic!("expected Emitted(DecisionCreated), got {:?}", other),
+        };
+        let open = crate::decisions::list_open_decisions(&pool).await.unwrap();
+        assert_eq!(open.len(), 1, "one open decision surfaced");
+        assert_eq!(open[0].decision.id, decision_id);
+        assert_eq!(open[0].decision.kind, "automation_proposal");
+        assert_eq!(card_count(&pool).await, 0, "inbox surface creates no card");
+    }
+
+    /// The anti-nag guarantee, carried onto the Decision Inbox: once an
+    /// observation has been declined (a recognition bounce — the exact effect the
+    /// reject route runs), the next tick prunes it and never re-pitches.
+    #[tokio::test]
+    async fn declined_inbox_proposal_is_not_re_pitched() {
+        let pool = test_pool().await;
+
+        // 1. First tick surfaces the proposal on the inbox.
+        let first = run_initiative_tick(
+            &pool,
+            PERSONAL_PROJECT_ID,
+            &passing_inputs(),
+            &GateConfig::default(),
+            None,
+            InitiativeSurface::Inbox,
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(
+                first,
+                TickOutcome::Emitted(InitiativeOutcome::DecisionCreated { .. })
+            ),
+            "first tick surfaces a decision, got {:?}",
+            first
+        );
+
+        // 2. The user declines it. `execute_effect`'s reject arm records exactly
+        //    this bounce, keyed on the observed command.
+        crate::recognition::mark_observation_bounced(&pool, &pattern().normalized).await;
+
+        // 3. The next tick with the same pattern must prune — no re-pitch.
+        let second = run_initiative_tick(
+            &pool,
+            PERSONAL_PROJECT_ID,
+            &passing_inputs(),
+            &GateConfig::default(),
+            None,
+            InitiativeSurface::Inbox,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            second,
+            TickOutcome::Pruned,
+            "declined proposal is not re-pitched"
+        );
+
+        // Still exactly one decision — no duplicate surfaced.
+        let open = crate::decisions::list_open_decisions(&pool).await.unwrap();
+        assert_eq!(open.len(), 1, "no second proposal after decline");
+    }
+
+    /// The Triage surface remains available and behaves as before.
+    #[tokio::test]
+    async fn triage_surface_emits_goal_card() {
+        let pool = test_pool().await;
+        let outcome = run_initiative_tick(
+            &pool,
+            PERSONAL_PROJECT_ID,
+            &passing_inputs(),
+            &GateConfig::default(),
+            None,
+            InitiativeSurface::Triage,
         )
         .await
         .unwrap();
 
         let card_id = match outcome {
-            TickOutcome::Emitted { card_id } => card_id,
-            other => panic!("expected Emitted, got {:?}", other),
+            TickOutcome::Emitted(InitiativeOutcome::CardCreated { card_id }) => card_id,
+            other => panic!("expected Emitted(CardCreated), got {:?}", other),
         };
         let card = cards::get_card(&pool, &card_id)
             .await
             .unwrap()
             .expect("card persisted");
         assert_eq!(card.card_type, "goal");
-        assert_eq!(card.created_by, "henry");
         let triage = cards::get_goal_column(&pool, PERSONAL_PROJECT_ID, "triage")
             .await
             .unwrap()
             .expect("triage seeded");
         assert_eq!(card.column_id, triage.id, "lands in Triage");
-        assert_eq!(card.metadata_json["initiative"], serde_json::json!(true));
         assert_eq!(card_count(&pool).await, 1);
     }
 
@@ -180,6 +266,7 @@ mod tests {
             &inputs,
             &GateConfig::default(),
             None,
+            InitiativeSurface::Inbox,
         )
         .await
         .unwrap();

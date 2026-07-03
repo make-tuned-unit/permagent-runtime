@@ -92,6 +92,20 @@ pub struct RiskGatePayload {
     pub requested_by: String,
 }
 
+/// Payload for `kind='automation_proposal'` — the Initiative layer (#360) noticed
+/// a repeated command and proposes saving it as an automation. Answered
+/// approve/reject; a reject records a recognition bounce so it is never
+/// re-pitched (the anti-nag guarantee, carried onto the Decision Inbox surface).
+/// Provenance is deterministic: the normalized command and how often it recurred.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AutomationProposalPayload {
+    pub normalized_command: String,
+    pub occurrence_count: u64,
+    #[serde(default)]
+    pub exemplars: Vec<String>,
+}
+
 // ── Decision rows ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -193,7 +207,15 @@ pub async fn tier_for_action_class(pool: &Pool<Sqlite>, action_class: &str) -> i
 /// Validate a NewDecision. Returns Err(reason) when the request must be
 /// stored as malformed.
 fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
-    if !["approve_review", "unblock", "choice", "risk_gate"].contains(&req.kind.as_str()) {
+    if ![
+        "approve_review",
+        "unblock",
+        "choice",
+        "risk_gate",
+        "automation_proposal",
+    ]
+    .contains(&req.kind.as_str())
+    {
         return Err(format!("unknown decision kind '{}'", req.kind));
     }
     let headline = req.headline.as_deref().map(str::trim).unwrap_or("");
@@ -229,6 +251,11 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
         "risk_gate" => serde_json::from_value::<RiskGatePayload>(req.payload.clone())
             .map(|_| ())
             .map_err(|e| e.to_string()),
+        "automation_proposal" => {
+            serde_json::from_value::<AutomationProposalPayload>(req.payload.clone())
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        }
         _ => unreachable!("kind validated above"),
     };
     payload_result.map_err(|e| format!("payload failed schema for kind '{}': {}", req.kind, e))
@@ -1033,6 +1060,52 @@ mod tests {
         };
         let d = create_decision(&pool, req).await.unwrap();
         assert_eq!(d.kind, "malformed");
+    }
+
+    #[tokio::test]
+    async fn automation_proposal_is_valid_and_user_only() {
+        let pool = test_pool().await;
+        let req = NewDecision {
+            kind: "automation_proposal".to_string(),
+            project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+            headline: Some("Automate your morning git sync?".to_string()),
+            detail: Some("You've run `git status && git pull` 3 times.".to_string()),
+            payload: serde_json::json!({
+                "normalized_command": "git status && git pull",
+                "occurrence_count": 3,
+                "exemplars": ["git status && git pull"]
+            }),
+            ..Default::default()
+        };
+        let d = create_decision(&pool, req).await.unwrap();
+        assert_eq!(
+            d.kind, "automation_proposal",
+            "a real proposal, not coerced"
+        );
+        assert_eq!(d.tier, 2, "no seeded class → user-only (fail-closed)");
+        assert_eq!(d.status, "open");
+        assert_eq!(
+            d.payload["normalized_command"],
+            serde_json::json!("git status && git pull")
+        );
+    }
+
+    #[tokio::test]
+    async fn automation_proposal_rejects_unknown_payload_fields() {
+        let pool = test_pool().await;
+        let req = NewDecision {
+            kind: "automation_proposal".to_string(),
+            headline: Some("Automate something?".to_string()),
+            detail: Some("detail".to_string()),
+            payload: serde_json::json!({
+                "normalized_command": "ls",
+                "occurrence_count": 3,
+                "bogus": true
+            }),
+            ..Default::default()
+        };
+        let d = create_decision(&pool, req).await.unwrap();
+        assert_eq!(d.kind, "malformed", "deny_unknown_fields holds");
     }
 
     #[tokio::test]
