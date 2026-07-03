@@ -19,6 +19,7 @@ mod tunnel;
 #[allow(dead_code)]
 mod verification;
 mod voice;
+mod wal_checkpoint;
 
 use std::path::PathBuf;
 

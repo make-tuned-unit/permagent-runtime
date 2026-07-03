@@ -545,6 +545,21 @@ impl AppState {
             crate::backup::backup_scheduler_loop().await;
         });
 
+        // WAL checkpoint timer (durability F4): periodically TRUNCATE the Brain
+        // and Spectral WALs so a long-lived / pinned reader can't let them grow
+        // unbounded and fill a near-full disk.
+        match agent_manager.session_manager().pool_clone().await {
+            Ok(pool) => {
+                tokio::spawn(async move {
+                    crate::wal_checkpoint::wal_checkpoint_loop(pool).await;
+                });
+            }
+            Err(e) => tracing::warn!(
+                target: "durability",
+                "could not clone Spectral pool; WAL checkpoint timer not started: {e}"
+            ),
+        }
+
         // Load app catalog (static tab/view descriptions for agent navigation).
         let app_catalog = crate::app_catalog::init();
 
