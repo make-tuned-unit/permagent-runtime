@@ -789,6 +789,12 @@ impl SessionStorage {
                     if version < 23 {
                         spectral_schema::migrate_v22_to_v23(&self.pool).await?;
                     }
+                    // v24: project_documents hub table (#471 Layer 2). Purely
+                    // additive, base-independent, always-on. Per-project file
+                    // attachments backing the in-app document viewer.
+                    if version < 24 {
+                        spectral_schema::migrate_v23_to_v24(&self.pool).await?;
+                    }
                 } else {
                     info!("Initializing Spectral schema at {:?}", self.db_path);
                     spectral_schema::init_spectral_db(&self.pool).await?;

@@ -68,6 +68,21 @@ export interface ProjectPerson {
 /** A bare CRM person (#530 `GET /api/people`), used by the associate picker. */
 export type Person = Omit<ProjectPerson, 'project_role' | 'associated_at'>;
 
+/**
+ * A document attached to a project (#471 Layer 2,
+ * `GET /api/projects/{id}/documents`). Serialized **snake_case** (the backend
+ * `ProjectDocument` struct carries no `rename_all`) — match the wire exactly.
+ */
+export interface ProjectDocument {
+  id: string;
+  project_id: string;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  path: string;
+  uploaded_at: string;
+}
+
 /** The implicit Personal project — undeletable, can't change status. */
 export const PERSONAL_ID = '00000000-0000-0000-0000-000000000001';
 

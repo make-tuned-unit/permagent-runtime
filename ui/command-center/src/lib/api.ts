@@ -3,6 +3,8 @@
  * Aligned with the actual permagentd endpoints.
  */
 
+import type { ProjectDocument } from '../components/projects/types';
+
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 const API_BASE_URL = (
   (import.meta.env.VITE_DAEMON_URL as string | undefined) ||
@@ -693,6 +695,52 @@ export const api = {
   deleteAttachment: (sessionId: string, attachmentId: string) =>
     fetch(
       `${API_BASE_URL}/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`,
+      { method: 'DELETE', headers: authHeaders() },
+    ),
+
+  // ── Project documents (#471 Layer 2) ──────────────────────────────────────
+
+  /** List the documents attached to a project. */
+  listProjectDocuments: (projectId: string) =>
+    apiFetch<ProjectDocument[]>(`/api/projects/${encodeURIComponent(projectId)}/documents`),
+
+  /** Upload one or more files into a project's document hub (multipart). */
+  uploadProjectDocuments: async (
+    projectId: string,
+    files: File[],
+  ): Promise<{ documents: ProjectDocument[] }> => {
+    const form = new FormData();
+    for (const file of files) form.append('files', file, file.name);
+    if (!_daemonToken && isTauri) await loadDaemonToken();
+    const headers: Record<string, string> = {};
+    if (_daemonToken) headers['Authorization'] = `Bearer ${_daemonToken}`;
+    const response = await fetch(
+      `${API_BASE_URL}/api/projects/${encodeURIComponent(projectId)}/documents`,
+      { method: 'POST', headers, body: form },
+    );
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ message: 'Upload failed' }));
+      throw new Error(err.message || `HTTP ${response.status}`);
+    }
+    return response.json();
+  },
+
+  /** Fetch a document's bytes (authed) as a Blob — the viewer wraps it in an
+   *  object URL so `<img>`/`<iframe>` render it without a token in the URL. */
+  fetchProjectDocumentBlob: async (projectId: string, docId: string): Promise<Blob> => {
+    if (!_daemonToken && isTauri) await loadDaemonToken();
+    const response = await fetch(
+      `${API_BASE_URL}/api/projects/${encodeURIComponent(projectId)}/documents/${encodeURIComponent(docId)}`,
+      { headers: authHeaders() },
+    );
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.blob();
+  },
+
+  /** Delete a project document (row + on-disk file). */
+  deleteProjectDocument: (projectId: string, docId: string) =>
+    fetch(
+      `${API_BASE_URL}/api/projects/${encodeURIComponent(projectId)}/documents/${encodeURIComponent(docId)}`,
       { method: 'DELETE', headers: authHeaders() },
     ),
 

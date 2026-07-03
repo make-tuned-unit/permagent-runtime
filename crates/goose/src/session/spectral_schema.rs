@@ -675,6 +675,10 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // Idempotent; shared with migrate_v22_to_v23.
     apply_entity_provenance_schema(pool).await?;
 
+    // Project document hub table (schema v24, #471 Layer 2). Idempotent;
+    // shared with migrate_v23_to_v24. Purely additive, base-independent.
+    apply_project_documents_schema(pool).await?;
+
     info!(
         "Spectral schema v{} initialized successfully",
         SPECTRAL_SCHEMA_VERSION
@@ -848,6 +852,56 @@ pub async fn migrate_v22_to_v23(pool: &Pool<Sqlite>) -> Result<()> {
         .execute(pool)
         .await?;
     info!("Spectral schema migrated to v23 (entity provenance)");
+
+    Ok(())
+}
+
+/// Apply the project-document-hub schema (v24, #471 Layer 2): `project_documents`,
+/// a per-project attachment relation. Each row references a file on disk under
+/// `~/.permagent/project-docs/<project_id>/<id>/<filename>`; the row carries the
+/// mime type so the in-app viewer can dispatch a renderer. The `project_id` FK
+/// cascades on project delete (the route layer removes the files). Fully
+/// idempotent (`CREATE TABLE / INDEX IF NOT EXISTS`).
+pub async fn apply_project_documents_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool.begin().await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS project_documents (
+            id           TEXT PRIMARY KEY,
+            project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            filename     TEXT NOT NULL,
+            mime_type    TEXT NOT NULL,
+            size_bytes   INTEGER NOT NULL,
+            path         TEXT NOT NULL,
+            uploaded_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_project_documents_project \
+         ON project_documents(project_id, uploaded_at DESC)",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Migrate an existing database to the project-document-hub schema (schema v24).
+///
+/// Purely additive and base-version independent (`CREATE TABLE IF NOT EXISTS`),
+/// so it applies cleanly over any earlier base. Records v24 in `schema_version`.
+pub async fn migrate_v23_to_v24(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v23 -> v24 (project documents)");
+
+    apply_project_documents_schema(pool).await?;
+
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (24)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v24 (project documents)");
 
     Ok(())
 }

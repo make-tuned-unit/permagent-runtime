@@ -7,17 +7,17 @@ import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
 import { useCommandCenter } from '../../lib/store';
 import { Panel } from './Panel';
 import { PeoplePanel } from './PeoplePanel';
+import { DocumentsPanel } from './DocumentsPanel';
 import type { Project, BoardColumn, Card } from './types';
 
 // ── Project Overview ────────────────────────────────────────────────────────
 //
 // The "command-center dash" lens of the Projects tab (#471, Layer 1). A
 // two-column read of a single project. LEFT = substance, RIGHT = people +
-// action. This slice ships only the panels whose data exists today (Summary,
-// Key Facts, Links, Tasks) — all from existing endpoints, no backend route.
-// The Memories / Documents / People panels are deferred to the association
-// layer (built separately); their slots are reserved in-layout below so they
-// drop in without restructuring.
+// action. Ships Summary, Key Facts, Links, Tasks, People, and Documents (the
+// #471 Layer 2 document hub + in-app viewer). The Memories panel is still
+// deferred to the association layer; its slot is reserved in-layout below so it
+// drops in without restructuring.
 
 export function ProjectOverview({ project }: { project: Project }) {
   const { colors, gradient } = useTheme();
@@ -56,7 +56,7 @@ export function ProjectOverview({ project }: { project: Project }) {
           <SummaryPanel project={project} />
           <KeyFactsPanel project={project} />
           {/* Memories panel slots here (association layer). */}
-          {/* Documents panel slots here (document hub). */}
+          <DocumentsPanel project={project} />
         </div>
 
         {/* RIGHT — people + action */}
