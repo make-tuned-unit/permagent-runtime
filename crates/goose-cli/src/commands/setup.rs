@@ -504,6 +504,13 @@ fn register_launchd_daemon() -> Result<()> {
         <false/>
     </dict>
 
+    <!-- Across-restart backoff (durability F1/F6): if the daemon exits (a real
+         crash, or the panic circuit-breaker forcing a clean exit(1)), launchd
+         waits at least this many seconds before relaunching, so a crash-loop
+         cannot tight-loop and hammer the CPU/disk. 30s mirrors the UI watchdog. -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
     <key>StandardOutPath</key>
     <string>{home}/.permagent/logs/daemon.log</string>
 
