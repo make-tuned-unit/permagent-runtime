@@ -32,7 +32,7 @@ pub mod tick;
 
 pub use command_counter::{CommandCounter, CommandPattern};
 pub use draft::{draft_with_provider, DraftedProposal};
-pub use emit::{surface_initiative_proposal, InitiativeOutcome};
+pub use emit::{surface_initiative_proposal, InitiativeOutcome, InitiativeSurface};
 pub use gate::{evaluate, GateConfig, GateDecision, GateInputs, SkipReason};
 pub use tick::{run_initiative_tick, TickOutcome};
 
@@ -49,14 +49,15 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
         what_it_does: "An ambient origination loop that passively watches activity for repeated \
              successful terminal commands. When the same command crosses a repeat threshold \
              and the user has been quiet for a few minutes, it drafts an automation proposal \
-             (cheap local model with a deterministic template fallback) and surfaces it as a \
-             goal card in the Triage column — it only ever proposes, never acts. A proposal \
-             the user declined is remembered and never re-pitched",
+             (cheap local model with a deterministic template fallback) and surfaces it on the \
+             Decision Inbox for the user to approve or decline — it only ever proposes, never \
+             acts (the surface is configurable to the Triage board instead). A proposal the \
+             user declined is remembered and never re-pitched",
         why_it_matters:
             "It is how the agent notices work worth automating without being asked — the one \
-             capability that requires watching everything locally. Every proposal is a \
-             visible card the user approves or archives; nothing fires silently and there is \
-             a cooldown between proposals",
+             capability that requires watching everything locally. Every proposal is a visible \
+             decision the user approves or declines; nothing fires silently and there is a \
+             cooldown between proposals",
         state_source: crate::agents::self_knowledge::StateSource::Queryable,
         teaching: &[],
     };

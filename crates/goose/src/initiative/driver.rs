@@ -30,6 +30,7 @@ use crate::config::Config;
 use crate::events::activity::{ActivityEvent, ActivityEventType};
 use crate::events::{self, PermagentEventType};
 use crate::initiative::command_counter::{CommandCounter, CommandPattern};
+use crate::initiative::emit::{InitiativeOutcome, InitiativeSurface};
 use crate::initiative::gate::{evaluate, GateConfig, GateDecision, GateInputs};
 use crate::initiative::tick::{run_initiative_tick, TickOutcome};
 use crate::projects::PERSONAL_PROJECT_ID;
@@ -47,6 +48,9 @@ pub const INITIATIVE_TICK_SECS_KEY: &str = "initiative_tick_secs";
 /// Gate windows (fall back to the gate's own defaults when unset).
 pub const INITIATIVE_QUIET_SECS_KEY: &str = "initiative_quiet_secs";
 pub const INITIATIVE_COOLDOWN_SECS_KEY: &str = "initiative_cooldown_secs";
+/// Where an originated proposal surfaces: `"inbox"` (default) or `"triage"`.
+/// Explicit + reversible; unknown/absent → the Decision Inbox.
+pub const INITIATIVE_SURFACE_KEY: &str = "initiative_surface";
 /// Cheap-draft model routing (#249 pattern). Empty string = explicit opt-out
 /// (template drafts only). Mirrors `ORCHESTRATOR_DECOMPOSITION_*`.
 pub const INITIATIVE_DRAFT_PROVIDER_KEY: &str = "INITIATIVE_DRAFT_PROVIDER";
@@ -84,14 +88,16 @@ pub fn spawn(pool: Pool<Sqlite>) {
         .unwrap_or(DEFAULT_TICK_SECS)
         .max(5);
     let cfg = gate_config();
+    let surface = resolve_surface();
     tracing::info!(
         target: "initiative",
         tick_secs,
         quiet_secs = cfg.quiet_secs,
         cooldown_secs = cfg.cooldown_secs,
+        surface = surface.as_str(),
         "initiative driver ON — observing activity for repeated-command patterns"
     );
-    tokio::spawn(run_driver(pool, tick_secs, cfg));
+    tokio::spawn(run_driver(pool, tick_secs, cfg, surface));
 }
 
 fn gate_config() -> GateConfig {
@@ -104,6 +110,14 @@ fn gate_config() -> GateConfig {
             .get_param::<i64>(INITIATIVE_COOLDOWN_SECS_KEY)
             .unwrap_or(defaults.cooldown_secs),
     }
+}
+
+/// Resolve the configured proposal surface (default: the Decision Inbox).
+fn resolve_surface() -> InitiativeSurface {
+    Config::global()
+        .get_param::<String>(INITIATIVE_SURFACE_KEY)
+        .map(|s| InitiativeSurface::from_config_str(&s))
+        .unwrap_or_default()
 }
 
 fn load_cursor(key: &str) -> Option<DateTime<Utc>> {
@@ -148,7 +162,12 @@ async fn resolve_draft_provider() -> Option<Arc<dyn Provider>> {
     }
 }
 
-async fn run_driver(pool: Pool<Sqlite>, tick_secs: u64, cfg: GateConfig) {
+async fn run_driver(
+    pool: Pool<Sqlite>,
+    tick_secs: u64,
+    cfg: GateConfig,
+    surface: InitiativeSurface,
+) {
     let mut rx = events::subscribe();
     let mut interval = tokio::time::interval(Duration::from_secs(tick_secs));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -210,7 +229,7 @@ async fn run_driver(pool: Pool<Sqlite>, tick_secs: u64, cfg: GateConfig) {
                     GateDecision::Proceed(_) => resolve_draft_provider().await,
                     GateDecision::Skip(_) => None,
                 };
-                match run_initiative_tick(&pool, PERSONAL_PROJECT_ID, &inputs, &cfg, provider.as_ref()).await {
+                match run_initiative_tick(&pool, PERSONAL_PROJECT_ID, &inputs, &cfg, provider.as_ref(), surface).await {
                     Ok(TickOutcome::Skipped(reason)) => {
                         tracing::trace!(target: "initiative", ?reason, "tick skipped at Tier 0");
                     }
@@ -221,12 +240,21 @@ async fn run_driver(pool: Pool<Sqlite>, tick_secs: u64, cfg: GateConfig) {
                         );
                         pending_pattern = None;
                     }
-                    Ok(TickOutcome::Emitted { card_id }) => {
-                        tracing::info!(
-                            target: "initiative",
-                            %card_id,
-                            "initiative surfaced — automation proposal card in Triage"
-                        );
+                    Ok(TickOutcome::Emitted(outcome)) => {
+                        match &outcome {
+                            InitiativeOutcome::DecisionCreated { decision_id } => tracing::info!(
+                                target: "initiative",
+                                %decision_id,
+                                surface = surface.as_str(),
+                                "initiative surfaced — automation proposal on the Decision Inbox"
+                            ),
+                            InitiativeOutcome::CardCreated { card_id } => tracing::info!(
+                                target: "initiative",
+                                %card_id,
+                                surface = surface.as_str(),
+                                "initiative surfaced — automation proposal card in Triage"
+                            ),
+                        }
                         pending_pattern = None;
                         last_proposal_at = Some(inputs.now);
                         store_cursor(LAST_PROPOSAL_KEY, inputs.now);

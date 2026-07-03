@@ -358,6 +358,41 @@ async fn execute_effect(
                 format!("goal {} was already gone", goal_id)
             }))
         }
+        // Declined automation proposal (Initiative → Decision Inbox). Record a
+        // recognition bounce keyed on the observed command so the initiative gate
+        // prunes it and never re-pitches — the anti-nag guarantee, carried onto
+        // the inbox surface. Provenance lives in the decision payload.
+        ("automation_proposal", Some("reject")) => {
+            let normalized = decision
+                .payload
+                .get("normalized_command")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if !normalized.is_empty() {
+                permagent::recognition::mark_observation_bounced(pool, normalized).await;
+            }
+            tracing::info!(
+                target: "initiative",
+                decision_id = %decision.id,
+                normalized,
+                "automation proposal declined on Decision Inbox — pruned, will not re-pitch"
+            );
+            Ok(Some(
+                "automation proposal declined; will not re-pitch".to_string(),
+            ))
+        }
+        // Approved automation proposal: recorded now; building the saved recipe
+        // is the orchestrator's job (not yet enabled), so there is no effect to
+        // run yet — parity with today's Triage card, which is likewise unconsumed
+        // until the orchestrator turns on.
+        ("automation_proposal", Some("approve")) => {
+            tracing::info!(
+                target: "initiative",
+                decision_id = %decision.id,
+                "automation proposal approved on Decision Inbox"
+            );
+            Ok(Some("automation proposal approved".to_string()))
+        }
         // Remaining shapes route through L3's resume:auto — `choice` answers
         // and `unblock` answered with input on a PARKED goal make it
         // re-dispatch eligible (Triage → Ready through the guard). Everything
