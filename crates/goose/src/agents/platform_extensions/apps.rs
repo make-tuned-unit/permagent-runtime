@@ -236,7 +236,7 @@ impl AppsManagerClient {
     fn create_app_content_tool() -> rmcp::model::Tool {
         rmcp::model::Tool::new(
             "create_app_content".to_string(),
-            "Generate content for a new Goose app. Returns the HTML code, app name, description, and window properties.".to_string(),
+            "Generate content for a new app. Returns the HTML code, app name, description, and window properties.".to_string(),
             Self::schema::<CreateAppContentResponse>(),
         )
     }
@@ -244,7 +244,7 @@ impl AppsManagerClient {
     fn update_app_content_tool() -> rmcp::model::Tool {
         rmcp::model::Tool::new(
             "update_app_content".to_string(),
-            "Generate updated content for an existing Goose app. Returns the improved HTML code, updated description, and optionally updated window properties.".to_string(),
+            "Generate updated content for an existing app. Returns the improved HTML code, updated description, and optionally updated window properties.".to_string(),
             Self::schema::<UpdateAppContentResponse>(),
         )
     }
@@ -507,12 +507,12 @@ impl McpClientTrait for AppsManagerClient {
         let tools = vec![
             McpTool::new(
                 "list_apps".to_string(),
-                "List all available Goose apps with their names and descriptions. Use this to see what apps exist before creating or modifying apps.".to_string(),
+                "List all available apps with their names and descriptions. Use this to see what apps exist before creating or modifying apps.".to_string(),
                 schema::<ListAppsParams>(),
             ),
             McpTool::new(
                 "create_app".to_string(),
-                "Create a new Goose app based on a description or PRD. The extension will use an LLM to generate the HTML/CSS/JavaScript. Apps are sandboxed and run in standalone windows.".to_string(),
+                "Create a new app based on a description or PRD. The extension will use an LLM to generate the HTML/CSS/JavaScript. Apps are sandboxed and run in standalone windows.".to_string(),
                 schema::<CreateAppParams>(),
             ),
             McpTool::new(

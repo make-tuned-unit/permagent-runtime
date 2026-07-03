@@ -775,20 +775,20 @@
   {
     "id": "tom",
     "name": "Top of Mind",
-    "description": "Inject persistent instructions into goose's working memory every turn",
+    "description": "Inject persistent instructions into the agent's working memory every turn",
     "command": "",
     "link": "https://github.com/aaif-goose/goose/tree/main/crates/goose/src/agents/platform_extensions/tom.rs",
-    "installation_notes": "This is a built-in platform extension that comes with goose and is enabled by default. Configure via GOOSE_MOIM_MESSAGE_TEXT or GOOSE_MOIM_MESSAGE_FILE environment variables.",
+    "installation_notes": "This is a built-in platform extension that is enabled by default. Configure via the PERMAGENT_MOIM_MESSAGE_TEXT or PERMAGENT_MOIM_MESSAGE_FILE environment variables.",
     "is_builtin": true,
     "endorsed": true,
     "environmentVariables": [
       {
-        "name": "GOOSE_MOIM_MESSAGE_TEXT",
+        "name": "PERMAGENT_MOIM_MESSAGE_TEXT",
         "description": "Literal text injected into working memory each turn",
         "required": false
       },
       {
-        "name": "GOOSE_MOIM_MESSAGE_FILE",
+        "name": "PERMAGENT_MOIM_MESSAGE_FILE",
         "description": "Path to a file whose contents are injected (supports ~/)",
         "required": false
       }
