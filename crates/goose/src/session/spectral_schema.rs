@@ -1350,7 +1350,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS decisions (
             id            TEXT PRIMARY KEY,
             kind          TEXT NOT NULL CHECK (kind IN
-                            ('approve_review','unblock','choice','risk_gate','malformed')),
+                            ('approve_review','unblock','choice','risk_gate','automation_proposal','malformed')),
             goal_id       TEXT REFERENCES cards(id) ON DELETE SET NULL,
             project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
             tier          INTEGER NOT NULL CHECK (tier IN (0,1,2)),
@@ -1393,6 +1393,73 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
         if !decision_cols.iter().any(|c| c == col) {
             sqlx::query(ddl).execute(&mut *tx).await?;
         }
+    }
+
+    // Widen the `kind` CHECK to admit 'automation_proposal' (Initiative → Decision
+    // Inbox). SQLite cannot ALTER a CHECK, so an older table is rebuilt in place.
+    // FK-safe: nothing references `decisions` via a foreign key (decision_audit
+    // stores a plain TEXT id; the complete-guard trigger resolves by name after
+    // the rename). Gated on the constraint text, so it runs at most once.
+    let decisions_ddl: Option<String> =
+        sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE type='table' AND name='decisions'")
+            .fetch_optional(&mut *tx)
+            .await?;
+    if decisions_ddl
+        .map(|sql| !sql.contains("automation_proposal"))
+        .unwrap_or(false)
+    {
+        info!("Widening decisions.kind CHECK for 'automation_proposal' (in-place rebuild)");
+        // Indexes on the old table are dropped with it; recreated below.
+        sqlx::query("DROP INDEX IF EXISTS idx_decisions_open")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DROP INDEX IF EXISTS idx_decisions_goal")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "CREATE TABLE decisions_new (
+                id            TEXT PRIMARY KEY,
+                kind          TEXT NOT NULL CHECK (kind IN
+                                ('approve_review','unblock','choice','risk_gate','automation_proposal','malformed')),
+                goal_id       TEXT REFERENCES cards(id) ON DELETE SET NULL,
+                project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
+                tier          INTEGER NOT NULL CHECK (tier IN (0,1,2)),
+                headline      TEXT NOT NULL CHECK (length(headline) > 0 AND length(headline) <= 80),
+                detail        TEXT NOT NULL CHECK (length(detail) > 0),
+                payload_json  TEXT NOT NULL DEFAULT '{}',
+                rank          REAL,
+                status        TEXT NOT NULL DEFAULT 'open'
+                              CHECK (status IN ('open','answered','expired','superseded')),
+                answer        TEXT CHECK (answer IN ('approve','reject','choice','input')),
+                answer_note   TEXT,
+                answer_choice_id TEXT,
+                answer_input  TEXT,
+                acted_by      TEXT CHECK (acted_by IN ('jesse','henry-policy','system')),
+                created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                resolved_at   TEXT,
+                CHECK (status != 'answered'
+                       OR (answer IS NOT NULL AND acted_by IS NOT NULL AND resolved_at IS NOT NULL))
+            )",
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO decisions_new (id, kind, goal_id, project_id, tier, headline, detail,
+                 payload_json, rank, status, answer, answer_note, answer_choice_id, answer_input,
+                 acted_by, created_at, resolved_at)
+             SELECT id, kind, goal_id, project_id, tier, headline, detail,
+                 payload_json, rank, status, answer, answer_note, answer_choice_id, answer_input,
+                 acted_by, created_at, resolved_at
+             FROM decisions",
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DROP TABLE decisions")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("ALTER TABLE decisions_new RENAME TO decisions")
+            .execute(&mut *tx)
+            .await?;
     }
 
     sqlx::query(
