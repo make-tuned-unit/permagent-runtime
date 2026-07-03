@@ -789,6 +789,16 @@ impl SessionStorage {
                     if version < 23 {
                         spectral_schema::migrate_v22_to_v23(&self.pool).await?;
                     }
+                    // Version-independent safety net for the cfg-gated v22
+                    // recognition columns. The always-on v23 above can stamp
+                    // schema_version past the `version < 22` gate on a feature-off
+                    // DB, so a later feature-on boot would skip v21->v22 and the
+                    // recognition columns would be silently missing (breakage on
+                    // activation). Apply them by column-existence, independent of
+                    // the version stamp, so activation is safe from any version.
+                    // Idempotent — a steady-state boot adds nothing.
+                    #[cfg(feature = "spectral-recognition")]
+                    spectral_schema::apply_recognition_v22_columns(&self.pool).await?;
                 } else {
                     info!("Initializing Spectral schema at {:?}", self.db_path);
                     spectral_schema::init_spectral_db(&self.pool).await?;
