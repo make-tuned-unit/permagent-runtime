@@ -1402,6 +1402,29 @@ pub async fn apply_recognition_feed_schema(pool: &Pool<Sqlite>) -> Result<()> {
 pub async fn migrate_v21_to_v22(pool: &Pool<Sqlite>) -> Result<()> {
     info!("Migrating Spectral schema v21 -> v22 (recognition verdict columns + tool-event feed)");
 
+    apply_recognition_v22_columns(pool).await?;
+
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (22)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v22 (recognition_verdict + familiarity + recognition_tool_events)");
+    Ok(())
+}
+
+/// Ensure the v22 recognition columns + feed table exist, **independent of the
+/// global schema version**. Idempotent (PRAGMA-guarded `ADD COLUMN` +
+/// `CREATE TABLE IF NOT EXISTS`) and safe to run on every boot.
+///
+/// This exists to close the cfg-gated-migration-skip hazard: the v22 step is
+/// gated behind `#[cfg(feature = "spectral-recognition")]`, but a later
+/// always-on migration (v23) can stamp `schema_version` past 22 while the
+/// feature is OFF. A version-gated `if version < 22` would then never run when
+/// the feature is later turned ON, so the columns would be silently missing and
+/// the recognition path would break on activation. Applying by
+/// column-existence — not by version — makes activation safe from any stamped
+/// version. Observable: logs each column/table it actually adds (a steady-state
+/// boot is silent).
+pub async fn apply_recognition_v22_columns(pool: &Pool<Sqlite>) -> Result<()> {
     for (column, ddl) in [
         (
             "recognition_verdict",
@@ -1420,15 +1443,14 @@ pub async fn migrate_v21_to_v22(pool: &Pool<Sqlite>) -> Result<()> {
         .await?;
         if has_column == 0 {
             sqlx::query(ddl).execute(pool).await?;
+            info!(
+                "recognition schema repair: added missing column '{column}' to recognition_events \
+                 (version-independent — cfg-gated v22 was skipped by a later version stamp)"
+            );
         }
     }
 
     apply_recognition_feed_schema(pool).await?;
-
-    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (22)")
-        .execute(pool)
-        .await?;
-    info!("Spectral schema migrated to v22 (recognition_verdict + familiarity + recognition_tool_events)");
     Ok(())
 }
 
@@ -2158,6 +2180,60 @@ mod recognition_schema_tests {
         );
         assert!(table_exists(&pool, "recognition_events").await);
         assert!(table_exists(&pool, "recognition_set_members").await);
+    }
+
+    /// The cfg-gated-migration-skip guarantee: the v22 recognition columns are
+    /// applied by column-existence, independent of the global version stamp — so a
+    /// DB stamped past 22 (by the always-on v23) with the columns never applied
+    /// still gets them repaired. This is the exact case that would silently break
+    /// on `spectral-recognition` activation without the fix.
+    #[tokio::test]
+    async fn recognition_v22_columns_applied_independent_of_version() {
+        let pool = mem_pool().await;
+        // Simulate a DB that never ran v22: a bare recognition_events (no verdict
+        // columns) and schema_version already stamped at 23 (as the always-on v23
+        // migration does on a feature-off DB).
+        sqlx::query("CREATE TABLE schema_version (version INTEGER PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO schema_version (version) VALUES (23)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE recognition_events (retrieval_id TEXT PRIMARY KEY, query TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let cols = |pool: Pool<Sqlite>| async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM pragma_table_info('recognition_events') \
+                 WHERE name IN ('recognition_verdict','familiarity')",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        };
+
+        assert_eq!(cols(pool.clone()).await, 0, "precondition: columns absent");
+
+        // Version-independent repair: applies despite the version being past 22.
+        apply_recognition_v22_columns(&pool).await.unwrap();
+
+        assert_eq!(
+            cols(pool.clone()).await,
+            2,
+            "v22 columns applied even though schema_version is stamped at 23"
+        );
+        assert!(
+            table_exists(&pool, "recognition_tool_events").await,
+            "feed table also ensured"
+        );
+
+        // Idempotent: a second boot adds nothing.
+        apply_recognition_v22_columns(&pool).await.unwrap();
+        assert_eq!(cols(pool.clone()).await, 2, "idempotent on re-run");
     }
 
     #[tokio::test]

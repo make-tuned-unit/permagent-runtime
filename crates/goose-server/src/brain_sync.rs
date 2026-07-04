@@ -259,7 +259,19 @@ mod tests {
     /// (provenance-protected, absent from the ontology) SURVIVES a reconcile,
     /// while a genuinely stale ontology entity is still pruned. This is the exact
     /// no-prune property that makes runtime create durable across restarts.
+    ///
+    /// Skipped on Linux CI: this is the only test in the workspace test run that
+    /// opens a Kùzu `Database`, and Kùzu's C++ engine aborts (SIGABRT) at process
+    /// teardown on glibc — it hangs ~5 min after the suite passes, then aborts,
+    /// failing whatever test binary runs it (merely linking Kùzu is fine; only
+    /// opening a `Database` triggers it). The daemon ships macOS-only, so the
+    /// guarantee is still verified on `test (macos-latest)` and via
+    /// `cargo test -- --ignored` locally; only the glibc teardown is avoided.
     #[test]
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "kuzu Database teardown SIGABRTs on glibc at process exit; runs on macOS CI (daemon is macOS-only)"
+    )]
     fn runtime_person_survives_reconcile_stale_ontology_entity_pruned() {
         let dir = tempfile::tempdir().unwrap();
         let brain_dir = dir.path();

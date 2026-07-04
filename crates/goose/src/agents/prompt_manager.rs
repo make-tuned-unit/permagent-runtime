@@ -503,6 +503,16 @@ mod tests {
 
     #[test]
     fn test_basic() {
+        // Pin config resolution to an empty temp root so the rendered brief is
+        // deterministic regardless of the machine's real config (e.g. local
+        // initiative_enabled). Structural — not an operator-remembered env var.
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let temp_root = tmp_dir.path().display().to_string();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(temp_root.as_str())),
+            ("PERMAGENT_PATH_ROOT", Some(temp_root.as_str())),
+        ]);
+
         let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
 
         let system_prompt = manager.builder().build();
@@ -512,6 +522,13 @@ mod tests {
 
     #[test]
     fn test_one_extension() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let temp_root = tmp_dir.path().display().to_string();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(temp_root.as_str())),
+            ("PERMAGENT_PATH_ROOT", Some(temp_root.as_str())),
+        ]);
+
         let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
 
         let system_prompt = manager
@@ -528,6 +545,13 @@ mod tests {
 
     #[test]
     fn test_typical_setup() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let temp_root = tmp_dir.path().display().to_string();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(temp_root.as_str())),
+            ("PERMAGENT_PATH_ROOT", Some(temp_root.as_str())),
+        ]);
+
         let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
 
         let system_prompt = manager
