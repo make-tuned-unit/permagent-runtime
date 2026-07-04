@@ -152,6 +152,49 @@ pub async fn write_back_decision_outcome(pool: &Pool<Sqlite>, goal_id: &str, app
     write_back_outcome(pool, &session_id, kind, polarity, "Decision").await;
 }
 
+/// Mark an observation (an exact normalized command) as bounced so the
+/// Initiative gate prunes it and never re-pitches it. Inserts a minimal
+/// `Negative` `recognition_events` row keyed on `query = normalized`; because
+/// [`seen_observation`] reads the MOST RECENT row for a query, this fresh row is
+/// what [`RecognitionSeen::was_bounced`] then reports.
+///
+/// This is the direct-by-query counterpart to [`write_back_decision_outcome`]:
+/// an initiative automation proposal has no worker session to 2-hop through
+/// (nothing ran), so the decline records the bounce straight against the
+/// observation. Called when a user declines an automation proposal on the
+/// Decision Inbox. Best-effort — failures are logged, never propagated.
+pub async fn mark_observation_bounced(pool: &Pool<Sqlite>, normalized: &str) {
+    if normalized.is_empty() {
+        return;
+    }
+    let now = now_iso();
+    let retrieval_id = format!("initiative-decline:{}", Uuid::now_v7());
+    let result = sqlx::query(
+        "INSERT INTO recognition_events
+            (retrieval_id, session_id, query, retrieved_at, rc_persona, strategy,
+             outcome_kind, outcome_polarity, outcome_source, outcome_observed_at)
+         VALUES (?, 'initiative', ?, ?, 'henry', 'initiative',
+                 'DecisionBounced', 'Negative', 'Decision', ?)",
+    )
+    .bind(&retrieval_id)
+    .bind(normalized)
+    .bind(&now)
+    .bind(&now)
+    .execute(pool)
+    .await;
+
+    match result {
+        Ok(_) => debug!(
+            target: "permagent::recognition",
+            "Marked observation bounced (initiative decline): {}", normalized
+        ),
+        Err(e) => warn!(
+            target: "permagent::recognition",
+            "Failed to mark observation bounced for '{}': {}", normalized, e
+        ),
+    }
+}
+
 /// Resolve a goal's worker session id from `cards.metadata_json`, preferring the
 /// current `worker_session_id`, then the most recent of `worker_session_ids`.
 async fn resolve_worker_session_id(pool: &Pool<Sqlite>, goal_id: &str) -> Option<String> {
@@ -388,6 +431,23 @@ mod tests {
             .with_persona("henry")
             .with_session(session)
             .with_focus_wing("permagent")
+    }
+
+    #[tokio::test]
+    async fn mark_observation_bounced_makes_it_seen_as_bounced() {
+        let pool = test_pool().await;
+        let cmd = "git status && git pull";
+        // Never seen → novel.
+        assert!(seen_observation(&pool, cmd).await.is_none());
+
+        mark_observation_bounced(&pool, cmd).await;
+
+        let seen = seen_observation(&pool, cmd)
+            .await
+            .expect("row now exists for the observation");
+        assert!(seen.was_bounced(), "declined observation reads as bounced");
+        // Empty command is a no-op (defensive).
+        mark_observation_bounced(&pool, "").await;
     }
 
     #[tokio::test]

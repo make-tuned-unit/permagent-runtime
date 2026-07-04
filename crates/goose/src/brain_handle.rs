@@ -229,6 +229,85 @@ impl SafeBrain {
             .map_err(Into::into)
     }
 
+    /// Create (or idempotently return) a **person** node in the graph, returning
+    /// its bare 64-hex `EntityId` — the people-bridge key.
+    ///
+    /// This is the *only* safe runtime graph-write for a person (people-in-graph
+    /// v1, #583). It is narrow and validated — person-only `entity_type`, a
+    /// canonicalized name, and it rejects a name that is empty after
+    /// normalization — so it can never write a malformed node.
+    ///
+    /// The node materializes directly via `KuzuStore::upsert_entity`: a bare node
+    /// needs no triple, `Brain::open` does not eager-seed the ontology, and
+    /// `assert()` under the default `Strict` entity policy *rejects* entities
+    /// absent from the ontology — so a triple-assert cannot create a novel person
+    /// (the #583 no-eager-seed finding). Idempotent: re-creating an existing
+    /// person returns its id and preserves the original `created_at`.
+    ///
+    /// Provenance is written *before* this call by [`crate::people_create`], so a
+    /// graph node can never exist without protecting provenance.
+    pub async fn create_person_entity(
+        &self,
+        display_name: &str,
+        visibility: spectral::Visibility,
+    ) -> anyhow::Result<String> {
+        let canonical = crate::identity::canonical::graph_canonical(display_name);
+        if canonical.is_empty() {
+            anyhow::bail!("cannot create person: name is empty after normalization");
+        }
+        let brain = self.inner.clone();
+        tokio::task::spawn_blocking(move || {
+            use spectral::core::entity_id::entity_id;
+            use spectral::graph::kuzu_store::Entity;
+
+            let id = entity_id("person", &canonical);
+            let store = brain.store();
+            // Idempotent: preserve an existing node (and its created_at).
+            if let Ok(Some(existing)) = store.get_entity(&id) {
+                return Ok(hex::encode(existing.id.as_bytes()));
+            }
+            let now = chrono::Utc::now();
+            let entity = Entity {
+                id,
+                entity_type: "person".to_string(),
+                canonical,
+                visibility,
+                created_at: now,
+                updated_at: now,
+                weight: 1.0,
+                description: None,
+            };
+            store
+                .upsert_entity(&entity)
+                .map_err(|e| anyhow::anyhow!("upsert person entity: {e}"))?;
+            Ok(hex::encode(entity.id.as_bytes()))
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: create_person_entity: {e}"))?
+    }
+
+    /// Look up a graph entity's canonical name by its bare 64-hex `EntityId`.
+    /// `None` if no such node exists. Used by the graph-side people bridge
+    /// ([`crate::people_bridge::sync_people_from_graph`]) to resolve runtime /
+    /// extracted persons for minting — reads the live Brain, no second Kuzu
+    /// connection.
+    pub async fn entity_canonical(&self, id_hex: &str) -> anyhow::Result<Option<String>> {
+        let brain = self.inner.clone();
+        let id_hex = id_hex.to_string();
+        tokio::task::spawn_blocking(move || {
+            let id: spectral::core::entity_id::EntityId = id_hex
+                .parse()
+                .map_err(|e| anyhow::anyhow!("invalid entity id hex: {e:?}"))?;
+            match brain.store().get_entity(&id) {
+                Ok(Some(e)) => Ok(Some(e.canonical)),
+                Ok(None) => Ok(None),
+                Err(e) => Err(anyhow::anyhow!("get_entity: {e}")),
+            }
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: entity_canonical: {e}"))?
+    }
+
     /// Write a typed field on a graph entity, with provenance. The
     /// manual-not-clobbered rule is enforced in Spectral's store: an
     /// `Enriched` write never overwrites a field whose stored source is

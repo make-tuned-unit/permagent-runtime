@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd agent for scripts/daemon-health-watchdog.sh (#560, item 2).
+
+  Restarts permagentd when it is ALIVE BUT WEDGED — the failure launchd's
+  KeepAlive (exit-only) cannot see. Pings the public /status endpoint and, after
+  FAIL_THRESHOLD consecutive unreachable ticks, `launchctl kickstart -k`s the
+  daemon. Mirrors the UI-wedge watchdog.
+
+  INSTALL (edit the two __PATH__ placeholders first):
+    cp scripts/ai.permagent.daemon-watchdog.plist ~/Library/LaunchAgents/
+    # replace __REPO__ with the absolute repo path, __HOME__ with $HOME
+    launchctl load  ~/Library/LaunchAgents/ai.permagent.daemon-watchdog.plist
+  UNINSTALL:
+    launchctl unload ~/Library/LaunchAgents/ai.permagent.daemon-watchdog.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.permagent.daemon-watchdog</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__REPO__/scripts/daemon-health-watchdog.sh</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>TICK</key>
+        <string>15</string>
+        <!-- Consecutive unreachable ticks before a restart. -->
+        <key>FAIL_THRESHOLD</key>
+        <string>3</string>
+        <!-- 1 = restart the wedged daemon via launchctl kickstart -k.
+             Set to 0 for capture-only (never restart). -->
+        <key>RESTART</key>
+        <string>1</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+    <key>StandardOutPath</key>
+    <string>__HOME__/.permagent/logs/daemon-watchdog.out</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.permagent/logs/daemon-watchdog.err</string>
+</dict>
+</plist>

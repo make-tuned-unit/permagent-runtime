@@ -15,7 +15,20 @@ use std::path::Path;
 ///
 /// Gated on a hash of ontology.toml: only runs when the ontology has
 /// changed since the last successful sync.
-pub fn sync_graph_with_ontology(brain_dir: &Path, ontology_path: &Path) {
+///
+/// `protected_ids` is the set of entity ids the reconciler must **never** prune —
+/// those with `runtime` / `extracted` provenance (people-in-graph v1, #583),
+/// loaded from `permagent.db` by
+/// [`permagent::people_provenance::protected_entity_ids`]. It is the whole reason
+/// runtime person-creation is durable: without it, a person created at runtime
+/// (absent from the curated ontology) would be deleted here on the next ontology
+/// change. An empty set reproduces the original prune-all-not-in-ontology
+/// behaviour.
+pub fn sync_graph_with_ontology(
+    brain_dir: &Path,
+    ontology_path: &Path,
+    protected_ids: &HashSet<[u8; 32]>,
+) {
     let graph_path = brain_dir.join("graph.kz");
     if !graph_path.exists() {
         tracing::debug!(target: "permagentd::brain_sync", "No graph.kz — skipping sync");
@@ -132,6 +145,7 @@ pub fn sync_graph_with_ontology(brain_dir: &Path, ontology_path: &Path) {
     // Find stale entities (in Kuzu but not in ontology)
     let mut removed = 0;
     let mut kept = 0;
+    let mut protected = 0;
     for (id_bytes, canonical, entity_type) in &all_entities {
         let id_array: [u8; 32] = match id_bytes.as_slice().try_into() {
             Ok(a) => a,
@@ -140,6 +154,22 @@ pub fn sync_graph_with_ontology(brain_dir: &Path, ontology_path: &Path) {
 
         if valid_ids.contains(&id_array) {
             kept += 1;
+            continue;
+        }
+
+        // Provenance guard (people-in-graph v1 #583): a runtime/extracted entity
+        // is absent from the curated ontology by design — it must NOT be pruned.
+        // Deterministic (explicit set membership, no heuristics) and observable
+        // (logs what + why), so a runtime person is structurally safe from the
+        // reconciler.
+        if protected_ids.contains(&id_array) {
+            protected += 1;
+            tracing::info!(
+                target: "permagentd::brain_sync",
+                "Kept runtime/extracted entity '{}' ({}) — provenance-protected, absent from ontology",
+                canonical,
+                entity_type
+            );
             continue;
         }
 
@@ -177,7 +207,7 @@ pub fn sync_graph_with_ontology(brain_dir: &Path, ontology_path: &Path) {
 
     tracing::info!(
         target: "permagentd::brain_sync",
-        "Sync complete: kept {kept}, removed {removed} stale entities"
+        "Sync complete: kept {kept}, protected {protected} runtime/extracted, removed {removed} stale entities"
     );
 
     // Drop DB connection before writing hash (ensures Kuzu is closed)
@@ -203,4 +233,82 @@ fn md5_hash(data: &[u8]) -> u128 {
         h = h.wrapping_mul(0x100000001b3);
     }
     h
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use spectral::core::entity_id::entity_id;
+    use spectral::graph::kuzu_store::{Entity, KuzuStore};
+
+    fn person(canonical: &str) -> Entity {
+        let now = chrono::Utc::now();
+        Entity {
+            id: entity_id("person", canonical),
+            entity_type: "person".to_string(),
+            canonical: canonical.to_string(),
+            visibility: spectral::Visibility::Private,
+            created_at: now,
+            updated_at: now,
+            weight: 1.0,
+            description: None,
+        }
+    }
+
+    /// THE acceptance guarantee (people-in-graph v1 #583): a runtime person
+    /// (provenance-protected, absent from the ontology) SURVIVES a reconcile,
+    /// while a genuinely stale ontology entity is still pruned. This is the exact
+    /// no-prune property that makes runtime create durable across restarts.
+    ///
+    /// Skipped on Linux CI: this is the only test in the workspace test run that
+    /// opens a Kùzu `Database`, and Kùzu's C++ engine aborts (SIGABRT) at process
+    /// teardown on glibc — it hangs ~5 min after the suite passes, then aborts,
+    /// failing whatever test binary runs it (merely linking Kùzu is fine; only
+    /// opening a `Database` triggers it). The daemon ships macOS-only, so the
+    /// guarantee is still verified on `test (macos-latest)` and via
+    /// `cargo test -- --ignored` locally; only the glibc teardown is avoided.
+    #[test]
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "kuzu Database teardown SIGABRTs on glibc at process exit; runs on macOS CI (daemon is macOS-only)"
+    )]
+    fn runtime_person_survives_reconcile_stale_ontology_entity_pruned() {
+        let dir = tempfile::tempdir().unwrap();
+        let brain_dir = dir.path();
+        let graph_path = brain_dir.join("graph.kz");
+
+        // Two person nodes in the graph, NEITHER in the ontology.
+        let sabaa = person("sabaa quao"); // runtime — must survive
+        let stale = person("stale person"); // curated-then-removed — must prune
+        {
+            let store = KuzuStore::open(&graph_path).unwrap();
+            store.upsert_entity(&sabaa).unwrap();
+            store.upsert_entity(&stale).unwrap();
+        } // drop the store so the reconciler can open the DB
+
+        // An ontology that contains neither (a lone unrelated curated person).
+        let ontology_path = brain_dir.join("ontology.toml");
+        std::fs::write(
+            &ontology_path,
+            "version = 1\n\n[[entity]]\ntype = \"person\"\ncanonical = \"someone else\"\naliases = []\nvisibility = \"private\"\n",
+        )
+        .unwrap();
+
+        // Only Sabaa is provenance-protected.
+        let mut protected: HashSet<[u8; 32]> = HashSet::new();
+        protected.insert(*sabaa.id.as_bytes());
+
+        sync_graph_with_ontology(brain_dir, &ontology_path, &protected);
+
+        // Sabaa survives; the unprotected stale entity is gone.
+        let store = KuzuStore::open(&graph_path).unwrap();
+        assert!(
+            store.get_entity(&sabaa.id).unwrap().is_some(),
+            "runtime person MUST survive the reconciler (the #583 no-prune guarantee)"
+        );
+        assert!(
+            store.get_entity(&stale.id).unwrap().is_none(),
+            "an unprotected stale ontology entity must still be pruned (curated pruning preserved)"
+        );
+    }
 }

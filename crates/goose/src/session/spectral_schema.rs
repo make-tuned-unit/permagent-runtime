@@ -671,6 +671,10 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // familiarity columns from apply_recognition_schema's CREATE directly.
     apply_recognition_feed_schema(pool).await?;
 
+    // Entity provenance side table (schema v23, people-in-graph v1 #583).
+    // Idempotent; shared with migrate_v22_to_v23.
+    apply_entity_provenance_schema(pool).await?;
+
     info!(
         "Spectral schema v{} initialized successfully",
         SPECTRAL_SCHEMA_VERSION
@@ -807,6 +811,44 @@ pub async fn apply_people_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await?;
 
     tx.commit().await?;
+    Ok(())
+}
+
+/// Apply the entity-provenance schema (v23, people-in-graph v1 #583): a
+/// permagent.db side table recording where each graph entity came from
+/// (`ontology` | `runtime` | `extracted`), keyed on the bare 64-hex `EntityId`.
+///
+/// This is what makes runtime person-creation durable: the daemon reconciler
+/// (`sync_graph_with_ontology`) prunes only `ontology`-sourced entities, so
+/// `runtime`/`extracted` entities survive across restarts. See
+/// [`crate::people_provenance`]. Fully idempotent (`CREATE TABLE IF NOT EXISTS`).
+pub async fn apply_entity_provenance_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS entity_provenance (
+            entity_id_hex TEXT PRIMARY KEY,
+            source        TEXT NOT NULL CHECK (source IN ('ontology','runtime','extracted')),
+            created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Migrate an existing database to the entity-provenance schema (schema v23).
+///
+/// Purely additive and base-version independent (`CREATE TABLE IF NOT EXISTS`),
+/// so it applies cleanly over any earlier base. Records v23 in `schema_version`.
+pub async fn migrate_v22_to_v23(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v22 -> v23 (entity provenance)");
+
+    apply_entity_provenance_schema(pool).await?;
+
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (23)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v23 (entity provenance)");
+
     Ok(())
 }
 
@@ -1306,6 +1348,29 @@ pub async fn apply_recognition_feed_schema(pool: &Pool<Sqlite>) -> Result<()> {
 pub async fn migrate_v21_to_v22(pool: &Pool<Sqlite>) -> Result<()> {
     info!("Migrating Spectral schema v21 -> v22 (recognition verdict columns + tool-event feed)");
 
+    apply_recognition_v22_columns(pool).await?;
+
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (22)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v22 (recognition_verdict + familiarity + recognition_tool_events)");
+    Ok(())
+}
+
+/// Ensure the v22 recognition columns + feed table exist, **independent of the
+/// global schema version**. Idempotent (PRAGMA-guarded `ADD COLUMN` +
+/// `CREATE TABLE IF NOT EXISTS`) and safe to run on every boot.
+///
+/// This exists to close the cfg-gated-migration-skip hazard: the v22 step is
+/// gated behind `#[cfg(feature = "spectral-recognition")]`, but a later
+/// always-on migration (v23) can stamp `schema_version` past 22 while the
+/// feature is OFF. A version-gated `if version < 22` would then never run when
+/// the feature is later turned ON, so the columns would be silently missing and
+/// the recognition path would break on activation. Applying by
+/// column-existence — not by version — makes activation safe from any stamped
+/// version. Observable: logs each column/table it actually adds (a steady-state
+/// boot is silent).
+pub async fn apply_recognition_v22_columns(pool: &Pool<Sqlite>) -> Result<()> {
     for (column, ddl) in [
         (
             "recognition_verdict",
@@ -1324,15 +1389,14 @@ pub async fn migrate_v21_to_v22(pool: &Pool<Sqlite>) -> Result<()> {
         .await?;
         if has_column == 0 {
             sqlx::query(ddl).execute(pool).await?;
+            info!(
+                "recognition schema repair: added missing column '{column}' to recognition_events \
+                 (version-independent — cfg-gated v22 was skipped by a later version stamp)"
+            );
         }
     }
 
     apply_recognition_feed_schema(pool).await?;
-
-    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (22)")
-        .execute(pool)
-        .await?;
-    info!("Spectral schema migrated to v22 (recognition_verdict + familiarity + recognition_tool_events)");
     Ok(())
 }
 
@@ -1350,7 +1414,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS decisions (
             id            TEXT PRIMARY KEY,
             kind          TEXT NOT NULL CHECK (kind IN
-                            ('approve_review','unblock','choice','risk_gate','malformed')),
+                            ('approve_review','unblock','choice','risk_gate','automation_proposal','malformed')),
             goal_id       TEXT REFERENCES cards(id) ON DELETE SET NULL,
             project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
             tier          INTEGER NOT NULL CHECK (tier IN (0,1,2)),
@@ -1393,6 +1457,73 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
         if !decision_cols.iter().any(|c| c == col) {
             sqlx::query(ddl).execute(&mut *tx).await?;
         }
+    }
+
+    // Widen the `kind` CHECK to admit 'automation_proposal' (Initiative → Decision
+    // Inbox). SQLite cannot ALTER a CHECK, so an older table is rebuilt in place.
+    // FK-safe: nothing references `decisions` via a foreign key (decision_audit
+    // stores a plain TEXT id; the complete-guard trigger resolves by name after
+    // the rename). Gated on the constraint text, so it runs at most once.
+    let decisions_ddl: Option<String> =
+        sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE type='table' AND name='decisions'")
+            .fetch_optional(&mut *tx)
+            .await?;
+    if decisions_ddl
+        .map(|sql| !sql.contains("automation_proposal"))
+        .unwrap_or(false)
+    {
+        info!("Widening decisions.kind CHECK for 'automation_proposal' (in-place rebuild)");
+        // Indexes on the old table are dropped with it; recreated below.
+        sqlx::query("DROP INDEX IF EXISTS idx_decisions_open")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DROP INDEX IF EXISTS idx_decisions_goal")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "CREATE TABLE decisions_new (
+                id            TEXT PRIMARY KEY,
+                kind          TEXT NOT NULL CHECK (kind IN
+                                ('approve_review','unblock','choice','risk_gate','automation_proposal','malformed')),
+                goal_id       TEXT REFERENCES cards(id) ON DELETE SET NULL,
+                project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
+                tier          INTEGER NOT NULL CHECK (tier IN (0,1,2)),
+                headline      TEXT NOT NULL CHECK (length(headline) > 0 AND length(headline) <= 80),
+                detail        TEXT NOT NULL CHECK (length(detail) > 0),
+                payload_json  TEXT NOT NULL DEFAULT '{}',
+                rank          REAL,
+                status        TEXT NOT NULL DEFAULT 'open'
+                              CHECK (status IN ('open','answered','expired','superseded')),
+                answer        TEXT CHECK (answer IN ('approve','reject','choice','input')),
+                answer_note   TEXT,
+                answer_choice_id TEXT,
+                answer_input  TEXT,
+                acted_by      TEXT CHECK (acted_by IN ('jesse','henry-policy','system')),
+                created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                resolved_at   TEXT,
+                CHECK (status != 'answered'
+                       OR (answer IS NOT NULL AND acted_by IS NOT NULL AND resolved_at IS NOT NULL))
+            )",
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO decisions_new (id, kind, goal_id, project_id, tier, headline, detail,
+                 payload_json, rank, status, answer, answer_note, answer_choice_id, answer_input,
+                 acted_by, created_at, resolved_at)
+             SELECT id, kind, goal_id, project_id, tier, headline, detail,
+                 payload_json, rank, status, answer, answer_note, answer_choice_id, answer_input,
+                 acted_by, created_at, resolved_at
+             FROM decisions",
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DROP TABLE decisions")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("ALTER TABLE decisions_new RENAME TO decisions")
+            .execute(&mut *tx)
+            .await?;
     }
 
     sqlx::query(
@@ -1995,6 +2126,60 @@ mod recognition_schema_tests {
         );
         assert!(table_exists(&pool, "recognition_events").await);
         assert!(table_exists(&pool, "recognition_set_members").await);
+    }
+
+    /// The cfg-gated-migration-skip guarantee: the v22 recognition columns are
+    /// applied by column-existence, independent of the global version stamp — so a
+    /// DB stamped past 22 (by the always-on v23) with the columns never applied
+    /// still gets them repaired. This is the exact case that would silently break
+    /// on `spectral-recognition` activation without the fix.
+    #[tokio::test]
+    async fn recognition_v22_columns_applied_independent_of_version() {
+        let pool = mem_pool().await;
+        // Simulate a DB that never ran v22: a bare recognition_events (no verdict
+        // columns) and schema_version already stamped at 23 (as the always-on v23
+        // migration does on a feature-off DB).
+        sqlx::query("CREATE TABLE schema_version (version INTEGER PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO schema_version (version) VALUES (23)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE recognition_events (retrieval_id TEXT PRIMARY KEY, query TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let cols = |pool: Pool<Sqlite>| async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM pragma_table_info('recognition_events') \
+                 WHERE name IN ('recognition_verdict','familiarity')",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        };
+
+        assert_eq!(cols(pool.clone()).await, 0, "precondition: columns absent");
+
+        // Version-independent repair: applies despite the version being past 22.
+        apply_recognition_v22_columns(&pool).await.unwrap();
+
+        assert_eq!(
+            cols(pool.clone()).await,
+            2,
+            "v22 columns applied even though schema_version is stamped at 23"
+        );
+        assert!(
+            table_exists(&pool, "recognition_tool_events").await,
+            "feed table also ensured"
+        );
+
+        // Idempotent: a second boot adds nothing.
+        apply_recognition_v22_columns(&pool).await.unwrap();
+        assert_eq!(cols(pool.clone()).await, 2, "idempotent on re-run");
     }
 
     #[tokio::test]

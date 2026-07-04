@@ -11,6 +11,7 @@ pub mod goal_engine;
 pub mod librarian;
 pub mod librarian_state;
 pub mod orchestrator;
+pub mod people;
 pub mod project_manager;
 pub mod recipe_author;
 pub mod skills;
@@ -411,6 +412,23 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                     "Gates destructive git operations behind human approval so autonomous repo work stays safe.",
                 teaching: &[],
                 client_factory: |ctx| Box::new(steward::StewardClient::new(ctx).unwrap()),
+            },
+        );
+
+        map.insert(
+            people::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: people::EXTENSION_NAME,
+                display_name: "People",
+                description:
+                    "Create people and associate them with projects — mints a durable graph entity plus a CRM directory row in one deterministic step",
+                default_enabled: true,
+                unprefixed_tools: true,
+                hidden: false,
+                why_it_matters:
+                    "When the user says \"add <name>\" or \"associate <name> with <project>\", do it directly — you create and link people, you do not just remember them as a note.",
+                teaching: &[],
+                client_factory: |ctx| Box::new(people::PeopleClient::new(ctx).unwrap()),
             },
         );
 

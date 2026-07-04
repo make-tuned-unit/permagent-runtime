@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd agent for scripts/durability-probe.sh (#560, item 6).
+
+  Appends one JSON metrics line every ~5 min to a self-rotating
+  ~/.permagent/logs/durability-probe.jsonl so slow leaks / drift (RSS, fd, WAL,
+  disk, wedged scheduler jobs) become visible over days — the measure-over-time
+  proof that the "runs-for-weeks" bar actually holds.
+
+  INSTALL (edit the two __PATH__ placeholders first):
+    cp scripts/ai.permagent.durability-probe.plist ~/Library/LaunchAgents/
+    # replace __REPO__ with the absolute repo path, __HOME__ with $HOME
+    launchctl load  ~/Library/LaunchAgents/ai.permagent.durability-probe.plist
+  UNINSTALL:
+    launchctl unload ~/Library/LaunchAgents/ai.permagent.durability-probe.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.permagent.durability-probe</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__REPO__/scripts/durability-probe.sh</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>TICK</key>
+        <string>300</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+    <key>StandardOutPath</key>
+    <string>__HOME__/.permagent/logs/durability-probe.out</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.permagent/logs/durability-probe.err</string>
+</dict>
+</plist>

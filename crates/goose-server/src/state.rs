@@ -145,6 +145,15 @@ impl AppState {
         // Brain::builder().build() creates its own tokio runtime internally,
         // so we must run it off the async executor via spawn_blocking.
         // What leaves this block is a SafeBrain.
+        //
+        // Provenance-protected entity ids (people-in-graph v1 #583): loaded here in
+        // the async context (the reconciler runs inside spawn_blocking and has no
+        // pool). The reconciler must never prune these runtime/extracted persons.
+        // Tolerant — an empty set on any error reproduces prune-all-not-in-ontology.
+        let protected_ids = match agent_manager.session_manager().pool_clone().await {
+            Ok(pool) => permagent::people_provenance::protected_entity_ids(&pool).await,
+            Err(_) => std::collections::HashSet::new(),
+        };
         let brain: Option<permagent::brain_handle::SafeBrain> =
             tokio::task::spawn_blocking(move || {
                 let brain_dir = permagent::config::paths::Paths::brain_dir();
@@ -180,8 +189,13 @@ impl AppState {
                 }
 
                 // Reconcile Kuzu graph with ontology before Brain opens.
-                // This removes entities that were pruned from ontology.toml.
-                crate::brain_sync::sync_graph_with_ontology(&brain_dir, &ontology_path);
+                // This removes entities that were pruned from ontology.toml —
+                // except provenance-protected runtime/extracted persons (#583).
+                crate::brain_sync::sync_graph_with_ontology(
+                    &brain_dir,
+                    &ontology_path,
+                    &protected_ids,
+                );
 
                 let device_id_str =
                     std::env::var("HOSTNAME").unwrap_or_else(|_| "permagent-host".into());
@@ -277,6 +291,23 @@ impl AppState {
                     error = %e,
                     "People↔graph bridge sync failed (non-fatal)"
                 ),
+            }
+
+            // Graph-side bridge (people-in-graph v1 #583): mint rows for runtime /
+            // extracted graph persons (Henry create / UI / v1.5 extraction). The
+            // union counterpart to the ontology bridge above. Non-fatal.
+            if let Some(ref b) = brain {
+                match permagent::people_bridge::sync_people_from_graph(&pool, b).await {
+                    Ok(n) => tracing::info!(
+                        target: "permagentd::people_bridge",
+                        "People↔graph bridge (graph side) synced ({n} runtime/extracted rows minted)"
+                    ),
+                    Err(e) => tracing::warn!(
+                        target: "permagentd::people_bridge",
+                        error = %e,
+                        "People↔graph bridge (graph side) sync failed (non-fatal)"
+                    ),
+                }
             }
         }
 
@@ -544,6 +575,21 @@ impl AppState {
         tokio::spawn(async move {
             crate::backup::backup_scheduler_loop().await;
         });
+
+        // WAL checkpoint timer (durability F4): periodically TRUNCATE the Brain
+        // and Spectral WALs so a long-lived / pinned reader can't let them grow
+        // unbounded and fill a near-full disk.
+        match agent_manager.session_manager().pool_clone().await {
+            Ok(pool) => {
+                tokio::spawn(async move {
+                    crate::wal_checkpoint::wal_checkpoint_loop(pool).await;
+                });
+            }
+            Err(e) => tracing::warn!(
+                target: "durability",
+                "could not clone Spectral pool; WAL checkpoint timer not started: {e}"
+            ),
+        }
 
         // Load app catalog (static tab/view descriptions for agent navigation).
         let app_catalog = crate::app_catalog::init();
