@@ -733,4 +733,62 @@ mod tests {
         sorted.sort();
         assert_eq!(names, sorted);
     }
+
+    /// **Branding guard (systems fix).** No user-facing capability string may
+    /// leak the upstream `goose` fork name. Every field that renders into the
+    /// self-knowledge brief and the capability cards — `display_name`,
+    /// `what_it_does`, `why_it_matters` — is scanned case-insensitively across
+    /// all descriptor registries (platform extensions, workers, guards,
+    /// surfaces). A re-introduced "goose" in card copy or the brief fails the
+    /// build instead of shipping.
+    ///
+    /// In scope: rendered card/brief copy only. OUT of scope (never reaches
+    /// these strings): the internal crate name `goose`, directory paths, and
+    /// type identifiers — renaming those is a separate refactor. If a rendered
+    /// field must ever legitimately reference the crate, add an explicit
+    /// `(descriptor_id, field_name)` pair to `ALLOWLIST` with justification.
+    #[test]
+    fn no_user_facing_goose_branding_leak() {
+        // Internal-OK allowlist. Empty by design — nothing user-facing
+        // legitimately says "goose". Each entry is (descriptor id, field name).
+        const ALLOWLIST: &[(&str, &str)] = &[];
+
+        // Platform extensions render via their derived descriptor; the worker /
+        // guard / surface registries are already `FeatureDescriptor`s.
+        let platform: Vec<FeatureDescriptor> = PLATFORM_EXTENSIONS
+            .values()
+            .map(|d| d.descriptor())
+            .collect();
+        let sources: [(&str, &[FeatureDescriptor]); 4] = [
+            ("platform_extension", platform.as_slice()),
+            ("worker", WORKER_DESCRIPTORS),
+            ("guard", GUARD_DESCRIPTORS),
+            ("surface", SURFACE_DESCRIPTORS),
+        ];
+
+        let mut leaks = Vec::new();
+        for (kind, descriptors) in sources {
+            for d in descriptors {
+                for (field, text) in [
+                    ("display_name", d.display_name),
+                    ("what_it_does", d.what_it_does),
+                    ("why_it_matters", d.why_it_matters),
+                ] {
+                    if text.to_lowercase().contains("goose") && !ALLOWLIST.contains(&(d.id, field))
+                    {
+                        leaks.push(format!(
+                            "{kind} descriptor {:?} field `{field}` leaks 'goose': {text:?}",
+                            d.id
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            leaks.is_empty(),
+            "user-facing 'goose' branding leak(s) found — rebrand to Permagent \
+             (or allowlist if genuinely internal):\n{}",
+            leaks.join("\n")
+        );
+    }
 }

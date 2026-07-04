@@ -63,13 +63,13 @@ impl McpClientTrait for TomClient {
     async fn get_moim(&self, _session_id: &str) -> Option<String> {
         let mut parts = Vec::new();
 
-        if let Ok(text) = std::env::var("GOOSE_MOIM_MESSAGE_TEXT") {
+        if let Ok(text) = std::env::var("PERMAGENT_MOIM_MESSAGE_TEXT") {
             if !text.trim().is_empty() {
                 parts.push(truncate_utf8(text));
             }
         }
 
-        if let Ok(path) = std::env::var("GOOSE_MOIM_MESSAGE_FILE") {
+        if let Ok(path) = std::env::var("PERMAGENT_MOIM_MESSAGE_FILE") {
             let expanded = shellexpand::tilde(&path);
             if let Some(content) = read_bounded(&expanded).await {
                 if !content.trim().is_empty() {
