@@ -66,13 +66,16 @@ credential-shaped content and performs the push itself after the scan passes.";
 /// process (#523 hooks pattern): the push block is unconditional; the
 /// work-base hooks path is added when available. Inherited only by this
 /// worker's git subprocesses — the user's repo config is never touched.
-fn worker_git_env(hooks_dir: Option<&String>) -> Vec<(String, String)> {
+fn worker_git_env(hooks_dir: Option<&PathBuf>) -> Vec<(String, String)> {
     let mut pairs = vec![(
         "remote.origin.pushurl".to_string(),
         PUSH_BLOCK_SENTINEL.to_string(),
     )];
     if let Some(dir) = hooks_dir {
-        pairs.push(("core.hooksPath".to_string(), dir.clone()));
+        pairs.push((
+            "core.hooksPath".to_string(),
+            dir.to_string_lossy().into_owned(),
+        ));
     }
     pairs
 }
@@ -1881,11 +1884,14 @@ mod tests {
             )]
         );
 
-        let dir = "/tmp/hooks".to_string();
+        let dir = PathBuf::from("/tmp/hooks");
         let with_hooks = worker_git_env(Some(&dir));
         assert_eq!(with_hooks.len(), 2);
         assert_eq!(with_hooks[0].1, PUSH_BLOCK_SENTINEL);
-        assert_eq!(with_hooks[1], ("core.hooksPath".to_string(), dir));
+        assert_eq!(
+            with_hooks[1],
+            ("core.hooksPath".to_string(), "/tmp/hooks".to_string())
+        );
     }
 
     /// A worker-side `git push` under the injected env fails deterministically
