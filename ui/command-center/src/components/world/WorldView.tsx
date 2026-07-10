@@ -134,6 +134,8 @@ function SceneContent({
   hoveredAgent,
   onHoverStation,
   onClickStation,
+  focusPoint,
+  onFocusDone,
 }: {
   cameraMode: CameraMode;
   selectedAgentId: string | null;
@@ -143,6 +145,8 @@ function SceneContent({
   hoveredAgent: string | null;
   onHoverStation: (id: string | null) => void;
   onClickStation: (id: string) => void;
+  focusPoint: [number, number, number] | null;
+  onFocusDone: () => void;
 }) {
   const selectedAgent = useSelectedAgentProxy(selectedAgentId);
   const handleMoveAgent = useCallback(
@@ -165,6 +169,8 @@ function SceneContent({
         selectedAgent={selectedAgent}
         onModeChange={onModeChange}
         onMoveAgent={handleMoveAgent}
+        focusPoint={focusPoint}
+        onFocusDone={onFocusDone}
       />
       <TourMode cameraMode={cameraMode} />
       <WorldPostProcessing />
@@ -209,10 +215,21 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
     }
   }, []);
 
-  // TODO: Wire station clicks to real actions in future prompt
+  // #386: clicking a station glides the camera to it. The forum-portal
+  // pedestal is special — it leads to the Mesh Stargate in the colonnade
+  // opening (the Forum gateway, #306), not to its own plinth.
+  const [focusPoint, setFocusPoint] = useState<[number, number, number] | null>(null);
   const handleClickStation = useCallback((id: string) => {
     setHoveredStation(id);
+    if (id === 'forum-portal') {
+      const a = (5 * Math.PI) / 4; // the antechamber opening (areas/zones.ts)
+      setFocusPoint([Math.cos(a) * 14.6, 0, Math.sin(a) * 14.6]);
+      return;
+    }
+    const station = STATIONS.find((s) => s.id === id);
+    if (station) setFocusPoint([...station.position] as [number, number, number]);
   }, []);
+  const handleFocusDone = useCallback(() => setFocusPoint(null), []);
 
   // Toggle FPS with ~ key
   useEffect(() => {
@@ -294,6 +311,8 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
             hoveredAgent={hoveredAgent}
             onHoverStation={setHoveredStation}
             onClickStation={handleClickStation}
+            focusPoint={focusPoint}
+            onFocusDone={handleFocusDone}
           />
           {/* Shared perf probe (bible §6): publishes window.__worldPerf 1/s. */}
           <PerfSampler />

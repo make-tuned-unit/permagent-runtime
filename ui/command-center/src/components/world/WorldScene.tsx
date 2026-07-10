@@ -8,6 +8,9 @@ import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { HallStructure } from './areas/hall/HallStructure';
 import { MezzanineLibrary } from './areas/hall/MezzanineLibrary';
+import { WorkstationCluster } from './props/WorkstationCluster';
+import { GoalPlaques } from './props/GoalPlaques';
+import { ShelfBook } from './props/ShelfBook';
 import { Zones } from './areas/WorldZones';
 import { Atmosphere, DistantGrid } from './atmosphere/Atmosphere';
 import { LegacyFurniture } from './props/legacy/WorldFurniture';
@@ -85,6 +88,19 @@ export function WorldSceneContent({
       {/* Main hall — rotunda + mezzanine library */}
       <HallStructure onHoverStation={onHoverStation} onClickStation={onClickStation} />
       <MezzanineLibrary />
+
+      {/* The working bay (W2 WorkstationCluster, previously unmounted): six
+          real seat anchors by the Lab pedestal, with holo plaques bound to
+          REAL active goals — the Kanban made physical. The Librarian's shelf
+          book animates off the mezzanine wall on real describe events. */}
+      <WorkstationCluster
+        position={[0, 0, -11.4]}
+        rotationY={Math.PI}
+        areaId="hall"
+        idPrefix="hall.bay"
+      />
+      <GoalPlaques origin={[0, 0, -11.4]} rotationY={Math.PI} />
+      <ShelfBook />
 
       {/* Five zones off the rotunda — thresholds always on, interiors lazy (§3) */}
       <Zones />

@@ -10,6 +10,9 @@ interface WorldCameraProps {
   selectedAgent: AgentState | null;
   onModeChange: (mode: CameraMode) => void;
   onMoveAgent: (dx: number, dz: number) => void;
+  /** #386: orbit-mode glide target (station/gateway click). */
+  focusPoint: [number, number, number] | null;
+  onFocusDone: () => void;
 }
 
 const ORBIT_POSITION = new THREE.Vector3(20, 15, 20);
@@ -29,12 +32,21 @@ const _camRight = new THREE.Vector3();
 const _UP = new THREE.Vector3(0, 1, 0);
 const _desiredPos = new THREE.Vector3();
 const _desiredTarget = new THREE.Vector3();
+const _focusTarget = new THREE.Vector3();
+const _focusCamEnd = new THREE.Vector3();
 
 function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
 
-export function WorldCamera({ mode, selectedAgent, onModeChange, onMoveAgent }: WorldCameraProps) {
+export function WorldCamera({
+  mode,
+  selectedAgent,
+  onModeChange,
+  onMoveAgent,
+  focusPoint,
+  onFocusDone,
+}: WorldCameraProps) {
   const { camera, gl } = useThree();
   // While the tour owns the camera, OrbitControls must unmount (its damped
   // update loop would fight the spline every frame).
@@ -53,6 +65,26 @@ export function WorldCamera({ mode, selectedAgent, onModeChange, onMoveAgent }: 
   // Smoothly interpolated camera position/target for third-person following
   const smoothCamPos = useRef(new THREE.Vector3());
   const smoothCamTarget = useRef(new THREE.Vector3());
+
+  // #386 station-click navigation: while active, the orbit target and camera
+  // glide toward the clicked station; any user interaction cancels.
+  const focusActive = useRef(false);
+  useEffect(() => {
+    if (!focusPoint || mode !== 'orbit') {
+      focusActive.current = false;
+      return;
+    }
+    _focusTarget.set(focusPoint[0], focusPoint[1] + 1.4, focusPoint[2]);
+    // Approach from outside: camera lands past the point, looking inward.
+    const len = Math.hypot(focusPoint[0], focusPoint[2]) || 1;
+    _focusCamEnd.set(
+      focusPoint[0] + (focusPoint[0] / len) * 7,
+      focusPoint[1] + 4.5,
+      focusPoint[2] + (focusPoint[2] / len) * 7,
+    );
+    focusActive.current = true;
+    lastInteraction.current = Date.now(); // hold off auto-rotate
+  }, [focusPoint, mode]);
 
   const startTransitionToOrbit = useCallback(() => {
     transitionRef.current = {
@@ -212,6 +244,21 @@ export function WorldCamera({ mode, selectedAgent, onModeChange, onMoveAgent }: 
       camera.lookAt(smoothCamTarget.current);
     }
 
+    // #386: glide toward a clicked station. Damped follow: setting the
+    // controls target each frame wins over OrbitControls' own damping.
+    if (mode === 'orbit' && focusActive.current && controlsRef.current) {
+      const ctrl = controlsRef.current as unknown as { target: THREE.Vector3 };
+      ctrl.target.lerp(_focusTarget, 0.06);
+      camera.position.lerp(_focusCamEnd, 0.06);
+      if (
+        ctrl.target.distanceToSquared(_focusTarget) < 0.02 &&
+        camera.position.distanceToSquared(_focusCamEnd) < 0.05
+      ) {
+        focusActive.current = false;
+        onFocusDone();
+      }
+    }
+
     // Auto-rotate orbit when idle
     if (mode === 'orbit' && controlsRef.current) {
       const ctrl = controlsRef.current as unknown as { autoRotate: boolean };
@@ -222,7 +269,12 @@ export function WorldCamera({ mode, selectedAgent, onModeChange, onMoveAgent }: 
 
   const handleOrbitInteraction = useCallback(() => {
     lastInteraction.current = Date.now();
-  }, []);
+    // A user grab cancels an in-flight station glide (they took the wheel).
+    if (focusActive.current) {
+      focusActive.current = false;
+      onFocusDone();
+    }
+  }, [onFocusDone]);
 
   if (mode !== 'orbit' || tourActive) {
     return null;
