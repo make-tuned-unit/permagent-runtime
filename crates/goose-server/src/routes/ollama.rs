@@ -160,11 +160,88 @@ async fn ollama_warm(
     }))
 }
 
+// ── Model pull with SSE progress (#381, salvaged from #137) ─────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct PullModelRequest {
+    pub model: String,
+}
+
+/// POST /api/ollama/pull — proxy an Ollama model pull with SSE progress.
+/// Ollama streams NDJSON progress lines; each is forwarded as one SSE event
+/// so the wizard's hardware step can render a live progress bar.
+async fn ollama_pull(
+    Json(req): Json<PullModelRequest>,
+) -> Result<
+    axum::response::Sse<
+        impl futures::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
+    >,
+    ErrorResponse,
+> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3600)) // large models take a while
+        .build()
+        .map_err(|e| ErrorResponse::internal(format!("HTTP client error: {}", e)))?;
+
+    let resp = client
+        .post(format!("{}/api/pull", OLLAMA_BASE))
+        .json(&serde_json::json!({ "name": req.model, "stream": true }))
+        .send()
+        .await
+        .map_err(|e| ErrorResponse::internal(format!("Ollama unreachable: {}", e)))?;
+
+    if !resp.status().is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(ErrorResponse::internal(format!(
+            "Ollama pull failed: {}",
+            text
+        )));
+    }
+
+    tracing::info!(model = %req.model, "Ollama model pull started");
+
+    use futures::StreamExt;
+    let byte_stream = resp.bytes_stream();
+
+    let sse_stream = async_stream::stream! {
+        let mut buffer = String::new();
+        futures::pin_mut!(byte_stream);
+        while let Some(chunk) = byte_stream.next().await {
+            match chunk {
+                Ok(bytes) => {
+                    buffer.push_str(&String::from_utf8_lossy(&bytes));
+                    while let Some(newline_pos) = buffer.find('\n') {
+                        let line = buffer[..newline_pos].to_string();
+                        buffer = buffer[newline_pos + 1..].to_string();
+                        if !line.trim().is_empty() {
+                            yield Ok(axum::response::sse::Event::default().data(line));
+                        }
+                    }
+                }
+                Err(e) => {
+                    yield Ok(axum::response::sse::Event::default()
+                        .event("error")
+                        .data(format!("{{\"error\":\"{}\"}}", e)));
+                    break;
+                }
+            }
+        }
+        if !buffer.trim().is_empty() {
+            yield Ok(axum::response::sse::Event::default().data(buffer));
+        }
+    };
+
+    Ok(axum::response::Sse::new(sse_stream).keep_alive(
+        axum::response::sse::KeepAlive::new().interval(std::time::Duration::from_secs(15)),
+    ))
+}
+
 // ── Router ──────────────────────────────────────────────────────────
 
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/ollama/status", get(ollama_status))
         .route("/api/ollama/warm", post(ollama_warm))
+        .route("/api/ollama/pull", post(ollama_pull))
         .with_state(state)
 }
