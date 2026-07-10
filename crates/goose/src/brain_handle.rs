@@ -308,6 +308,104 @@ impl SafeBrain {
         .map_err(|e| anyhow::anyhow!("brain task panicked: entity_canonical: {e}"))?
     }
 
+    /// Best-effort graph edge for a person→project association (#495 slice 3):
+    /// assert `works_on(person, project)` directly against the store when both
+    /// endpoints are known. The association row (permagent.db `project_people`)
+    /// is the source of truth and the graph is allowed to lag behind it
+    /// (people-in-graph v1, #583) — so an endpoint the graph can't name yet is
+    /// a skip (`Ok(false)`), never a failure of the association itself.
+    ///
+    /// Resolution is deliberate: the person comes from their stored node (the
+    /// `people.graph_entity_id` bridge — mention-resolution would miss
+    /// runtime-created people, whose nodes bypass the in-process
+    /// `runtime_entities` list), and the project from ontology
+    /// canonicalization (alias + case aware). A project absent from the
+    /// ontology has no graph identity yet and is skipped. An ontology-resolved
+    /// project node is materialized on first edge (the ontology is not
+    /// eager-seeded) — a curated entity, so this stays within the
+    /// person-only-create rule for *novel* entities.
+    ///
+    /// Idempotent: an existing `works_on(person, project)` triple short-circuits
+    /// to `Ok(false)`. Returns `Ok(true)` only when a triple was written.
+    pub async fn assert_person_project_edge(
+        &self,
+        person_id_hex: &str,
+        project_name: &str,
+    ) -> anyhow::Result<bool> {
+        let brain = self.inner.clone();
+        let person_id_hex = person_id_hex.to_string();
+        let project_name = project_name.to_string();
+        tokio::task::spawn_blocking(move || {
+            use spectral::graph::canonicalize::Canonicalizer;
+            use spectral::graph::kuzu_store::{Entity, Triple};
+
+            let person_id: spectral::core::entity_id::EntityId = person_id_hex
+                .parse()
+                .map_err(|e| anyhow::anyhow!("invalid person entity id hex: {e:?}"))?;
+            let store = brain.store();
+            if store
+                .get_entity(&person_id)
+                .map_err(|e| anyhow::anyhow!("get_entity(person): {e}"))?
+                .is_none()
+            {
+                return Ok(false); // person node lags; nothing to hang the edge on
+            }
+
+            let project = match Canonicalizer::new(brain.ontology()).resolve_one(&project_name) {
+                Some(m) if m.entity_type == "project" => m,
+                _ => return Ok(false), // not an ontology project (yet) — graph lags
+            };
+
+            let existing = store
+                .find_triples(Some(&person_id), Some(&project.entity_id), Some("works_on"))
+                .map_err(|e| anyhow::anyhow!("find_triples: {e}"))?;
+            if !existing.is_empty() {
+                return Ok(false);
+            }
+
+            let now = chrono::Utc::now();
+            if store
+                .get_entity(&project.entity_id)
+                .map_err(|e| anyhow::anyhow!("get_entity(project): {e}"))?
+                .is_none()
+            {
+                store
+                    .upsert_entity(&Entity {
+                        id: project.entity_id,
+                        entity_type: "project".to_string(),
+                        canonical: project.canonical.clone(),
+                        visibility: spectral::Visibility::Private,
+                        created_at: now,
+                        updated_at: now,
+                        weight: 1.0,
+                        description: None,
+                    })
+                    .map_err(|e| anyhow::anyhow!("upsert project entity: {e}"))?;
+            }
+
+            brain
+                .ontology()
+                .validate_triple("works_on", "person", "project")
+                .map_err(|e| anyhow::anyhow!("validate works_on: {e}"))?;
+            store
+                .insert_triple(&Triple {
+                    from: person_id,
+                    to: project.entity_id,
+                    predicate: "works_on".to_string(),
+                    confidence: 1.0,
+                    source_doc_id: None,
+                    source_brain_id: *brain.brain_id(),
+                    asserted_at: now,
+                    visibility: spectral::Visibility::Private,
+                    weight: 1.0,
+                })
+                .map_err(|e| anyhow::anyhow!("insert works_on triple: {e}"))?;
+            Ok(true)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: assert_person_project_edge: {e}"))?
+    }
+
     /// Write a typed field on a graph entity, with provenance. The
     /// manual-not-clobbered rule is enforced in Spectral's store: an
     /// `Enriched` write never overwrites a field whose stored source is

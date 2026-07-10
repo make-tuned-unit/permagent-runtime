@@ -195,10 +195,11 @@ export class BrainScene {
 
   // ── Data ─────────────────────────────────────────────────────────────
   setData(data: BrainGraph) {
-    // Diff: skip full rebuild if the node set hasn't changed
+    // Diff: skip full rebuild if the node and edge sets haven't changed
     const memIds = data.memories.map(m => m.id).sort().join(',');
     const entIds = data.entities.map(e => e.id).sort().join(',');
-    const dataKey = `${memIds}|${entIds}`;
+    const edgeIds = (data.edges ?? []).map(e => `${e.from}>${e.to}:${e.predicate}`).sort().join(',');
+    const dataKey = `${memIds}|${entIds}|${edgeIds}`;
     if (dataKey === this.lastDataKey && this.nodes.length > 0) {
       return; // same data, skip rebuild — simulation continues undisturbed
     }
@@ -267,6 +268,21 @@ export class BrainScene {
       };
       this.nodes.push(node);
       this.edges.push({ a: selfNode, b: node, kind: 'self', k: 0.06, rest: 8.0, weight: 0.5 });
+    }
+
+    // Entity→entity connections (#495 slice 3): person→project / person→person
+    // lines from graph triples. The 'entity' edge kind (color + pulse) has been
+    // defined since the scene was built — this is its first producer. Endpoints
+    // must both be present as nodes; the backend already dedups per triple.
+    if (data.edges && data.edges.length > 0) {
+      const byId = new Map<string, SimNode>(this.nodes.map(n => [n.id, n]));
+      for (const e of data.edges) {
+        const a = byId.get(e.from);
+        const b = byId.get(e.to);
+        if (a && b && a !== b) {
+          this.edges.push({ a, b, kind: 'entity', k: 0.10, rest: 4.0, weight: 0.8 });
+        }
+      }
     }
 
     // Memories

@@ -3,8 +3,10 @@ import { apiFetch } from '../../lib/api';
 
 export interface GraphSelf { name: string; id: string }
 export interface GraphEntity { id: string; type: string; name: string; note: string }
+/** Entity→entity connection (graph triple) — person→project / person→person lines (#495 slice 3). */
+export interface GraphEdge { from: string; to: string; predicate: string }
 export interface GraphMemory { id: string; key?: string | null; text: string; description: string | null; ent: string[]; age: number; weight: number; timestamp: string }
-export interface BrainGraph { self: GraphSelf; entities: GraphEntity[]; memories: GraphMemory[] }
+export interface BrainGraph { self: GraphSelf; entities: GraphEntity[]; edges?: GraphEdge[]; memories: GraphMemory[] }
 
 export function useBrainData(searchQuery = '') {
   const [data, setData] = useState<BrainGraph | null>(null);

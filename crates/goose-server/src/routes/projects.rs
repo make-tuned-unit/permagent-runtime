@@ -380,6 +380,41 @@ async fn associate_person_handler(
     )
     .await
     .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+    // #495 slice 3: mirror the association as a works_on graph edge, best-effort.
+    // The project_people row is the source of truth and the graph may lag behind
+    // it (people-in-graph v1) — a skip or error here is logged, never a request
+    // failure.
+    if let Some(brain) = state.brain.as_ref() {
+        match permagent::people::get_by_uuid(&pool, &req.entity_uuid).await {
+            Ok(Some(person)) => {
+                if let Some(graph_id) = person.graph_entity_id.as_deref() {
+                    match brain
+                        .assert_person_project_edge(graph_id, &project.name)
+                        .await
+                    {
+                        Ok(true) => tracing::info!(
+                            project = %project.id, person = %req.entity_uuid,
+                            "graph works_on edge asserted"
+                        ),
+                        Ok(false) => tracing::debug!(
+                            project = %project.id, person = %req.entity_uuid,
+                            "graph works_on edge skipped (graph lagging)"
+                        ),
+                        Err(e) => tracing::warn!(
+                            project = %project.id, person = %req.entity_uuid, error = %e,
+                            "graph works_on edge assert failed"
+                        ),
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!(
+                person = %req.entity_uuid, error = %e,
+                "person lookup for graph edge failed"
+            ),
+        }
+    }
     Ok(StatusCode::CREATED)
 }
 
