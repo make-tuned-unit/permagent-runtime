@@ -267,12 +267,51 @@ struct GraphMemory {
     timestamp: String,
 }
 
+/// An entity→entity edge (graph triple) between two emitted entities —
+/// person→project / person→person connection lines (#495 slice 3).
+#[derive(Debug, Serialize)]
+struct GraphEdge {
+    /// Source entity id, `"e:<hex>"` — matches `GraphEntity.id`.
+    from: String,
+    /// Target entity id, `"e:<hex>"`.
+    to: String,
+    predicate: String,
+}
+
 #[derive(Debug, Serialize)]
 struct GraphResponse {
     #[serde(rename = "self")]
     self_node: GraphSelf,
     entities: Vec<GraphEntity>,
+    edges: Vec<GraphEdge>,
     memories: Vec<GraphMemory>,
+}
+
+/// Map neighborhood triples onto the emitted entity set: keep an edge only
+/// when BOTH endpoints were picked for display, dedup on (from, to, predicate).
+/// Duplicate triples can legitimately exist in the store (re-asserts append);
+/// display needs each connection once.
+fn collect_entity_edges(
+    triples: &[spectral::graph::kuzu_store::Triple],
+    picked_ids: &std::collections::HashSet<String>,
+) -> Vec<GraphEdge> {
+    let mut seen = std::collections::HashSet::new();
+    let mut edges = Vec::new();
+    for t in triples {
+        let from = format!("e:{}", hex::encode(t.from.as_bytes()));
+        let to = format!("e:{}", hex::encode(t.to.as_bytes()));
+        if !picked_ids.contains(&from) || !picked_ids.contains(&to) || from == to {
+            continue;
+        }
+        if seen.insert((from.clone(), to.clone(), t.predicate.clone())) {
+            edges.push(GraphEdge {
+                from,
+                to,
+                predicate: t.predicate.clone(),
+            });
+        }
+    }
+    edges
 }
 
 async fn brain_graph(
@@ -291,6 +330,7 @@ async fn brain_graph(
             return Ok(Json(GraphResponse {
                 self_node,
                 entities: Vec::new(),
+                edges: Vec::new(),
                 memories: Vec::new(),
             }));
         }
@@ -301,7 +341,7 @@ async fn brain_graph(
     const MAX_MEMORIES: usize = 100;
 
     // --- Entities: use recall's graph neighborhood (only source) ---
-    let entities = match brain
+    let (entities, edges) = match brain
         .recall(&self_node.name, spectral::Visibility::Private)
         .await
     {
@@ -326,13 +366,20 @@ async fn brain_graph(
                 }
             }
 
+            // Entity→entity edges (#495 slice 3): the neighborhood's triples
+            // were previously dropped here; keep the ones connecting two
+            // displayed entities.
+            let picked_ids: std::collections::HashSet<String> =
+                picked.iter().map(|p| p.0.clone()).collect();
+            let edges = collect_entity_edges(&result.graph.neighborhood.triples, &picked_ids);
+
             // Batch-load typed fields once; key is the entity's bare 64-hex id.
             let mut fields_map = brain
                 .entity_fields_for(picked.iter().map(|p| p.4).collect())
                 .await
                 .unwrap_or_default();
 
-            picked
+            let entities: Vec<GraphEntity> = picked
                 .into_iter()
                 .map(|(id_hex, entity_type, name, description, eid)| {
                     let fields = fields_map
@@ -358,9 +405,10 @@ async fn brain_graph(
                         fields,
                     }
                 })
-                .collect()
+                .collect();
+            (entities, edges)
         }
-        Err(_) => Vec::new(),
+        Err(_) => (Vec::new(), Vec::new()),
     };
 
     // --- Memories ---
@@ -566,6 +614,7 @@ async fn brain_graph(
     Ok(Json(GraphResponse {
         self_node,
         entities,
+        edges,
         memories,
     }))
 }
@@ -842,4 +891,66 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/api/brain/graph", get(brain_graph))
         .route("/api/brain/memories", get(brain_memories))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use spectral::core::entity_id::entity_id;
+    use spectral::graph::kuzu_store::Triple;
+
+    fn triple(from_canonical: &str, to_canonical: &str, predicate: &str) -> Triple {
+        Triple {
+            from: entity_id("person", from_canonical),
+            to: entity_id("project", to_canonical),
+            predicate: predicate.to_string(),
+            confidence: 1.0,
+            source_doc_id: None,
+            source_brain_id: spectral::core::identity::BrainId::from_bytes([0u8; 32]),
+            asserted_at: Utc::now(),
+            visibility: spectral::Visibility::Private,
+            weight: 1.0,
+        }
+    }
+
+    fn graph_id(entity_type: &str, canonical: &str) -> String {
+        format!(
+            "e:{}",
+            hex::encode(entity_id(entity_type, canonical).as_bytes())
+        )
+    }
+
+    #[test]
+    fn edges_kept_only_between_picked_entities_and_deduped() {
+        let triples = vec![
+            triple("jesse sharratt", "permagent", "works_on"),
+            // Duplicate assertion — the store appends, display must not.
+            triple("jesse sharratt", "permagent", "works_on"),
+            // Endpoint outside the picked set — dropped.
+            triple("jesse sharratt", "unpicked project", "works_on"),
+        ];
+        let picked: std::collections::HashSet<String> = [
+            graph_id("person", "jesse sharratt"),
+            graph_id("project", "permagent"),
+        ]
+        .into_iter()
+        .collect();
+
+        let edges = collect_entity_edges(&triples, &picked);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].from, graph_id("person", "jesse sharratt"));
+        assert_eq!(edges[0].to, graph_id("project", "permagent"));
+        assert_eq!(edges[0].predicate, "works_on");
+    }
+
+    #[test]
+    fn self_loops_and_foreign_edges_are_dropped() {
+        let mut loop_triple = triple("jesse sharratt", "x", "works_on");
+        loop_triple.to = loop_triple.from; // degenerate self-loop
+        let triples = vec![loop_triple, triple("someone else", "elsewhere", "works_on")];
+        let picked: std::collections::HashSet<String> =
+            [graph_id("person", "jesse sharratt")].into_iter().collect();
+
+        assert!(collect_entity_edges(&triples, &picked).is_empty());
+    }
 }
