@@ -35,9 +35,11 @@ git -C ~/dev/permagent-runtime fetch origin
 git worktree add ~/dev/permagent-worktrees/<name> -b <branch> origin/main
 export CARGO_TARGET_DIR=~/dev/permagent-worktrees/.shared-target/<name>   # per-lane target (#584)
 ```
-Work ONLY in this worktree. Never the main checkout. Remove the worktree after
-merge (and its `.shared-target/<name>` tree — the #581 reap). Symlink
-node_modules from main per the daemon-pkg pattern if needed.
+Work ONLY in this worktree. Never the main checkout. After merge, reap with
+`scripts/reap-worktrees.sh --apply --delete-remote` — it removes merged clean
+lanes (worktree + branch + `.shared-target/<name>` tree, #581) and refuses
+anything with uncommitted or unpushed work. Symlink node_modules from main per
+the daemon-pkg pattern if needed.
 
 **Per-lane CARGO_TARGET_DIR is a standing rule (#584, ruled 2026-07-03):** a
 shared target tree lets one worktree run ANOTHER worktree's compiled test
