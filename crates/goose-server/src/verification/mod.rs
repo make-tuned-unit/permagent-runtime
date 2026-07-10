@@ -5,7 +5,7 @@
 //! checks, analyzes the diff over the worker's own commits (`work_base..head`,
 //! #523), grades the work with a local Ollama model, and writes the result to
 //! `metadata_json.verification` via L1's narrow allowlist API
-//! `cards::set_goal_verification` (the sanctioned L2 write path).
+//! `cards::set_goal_verdict` (the sanctioned L2 write path).
 //!
 //! L1 contract (PHASE0-L2.md §4):
 //! - This module writes ONLY the `verification` key in metadata_json.
@@ -31,7 +31,10 @@ use digest::{DiffSummary, EvidenceDigest, PerFileDiff};
 use verifier::{Grade, VerdictStatus, VerifierRun};
 
 /// The single metadata key this module owns.
-pub const VERIFICATION_KEY: &str = "verification";
+/// Where the verifier's record lives: a `verdict` sub-object appended onto the
+/// goal's `dispatch_evidence` metadata — one evidence record per goal (#466).
+pub const DISPATCH_EVIDENCE_KEY: &str = "dispatch_evidence";
+pub const VERDICT_KEY: &str = "verdict";
 
 // ── Record schema (metadata_json.verification) ──────────────────────────────
 
@@ -294,7 +297,7 @@ pub async fn run_for_goal_with_cfg(
         &started_at,
     );
 
-    // ── 5. ONE atomic metadata write: only the `verification` key ──
+    // ── 5. ONE atomic metadata write: only `dispatch_evidence.verdict` (#466) ──
     write_verification(pool, goal_id, &record).await?;
 
     tracing::info!(
@@ -963,10 +966,11 @@ async fn write_verification(
     goal_id: &str,
     record: &VerificationRecord,
 ) -> Result<(), String> {
-    // L1's sanctioned narrow API (allowlist): writes ONLY the `verification`
-    // key, re-reading the card internally so concurrent L1 metadata writes
-    // are preserved. Never moves cards, never touches protected keys.
-    permagent::cards::set_goal_verification(
+    // L1's sanctioned narrow API (allowlist): appends ONLY the `verdict`
+    // sub-object onto `dispatch_evidence` (#466 single-source), re-reading the
+    // card internally so concurrent L1 metadata writes are preserved. Never
+    // moves cards, never touches protected keys.
+    permagent::cards::set_goal_verdict(
         pool,
         goal_id,
         serde_json::to_value(record).map_err(|e| e.to_string())?,
@@ -1225,7 +1229,10 @@ mod tests {
         let meta = after.metadata_json.as_object().unwrap();
         assert_eq!(meta.get("goal_state").unwrap(), "review");
         assert_eq!(meta.get("attempt_count").unwrap(), 1);
-        let v = meta.get("verification").expect("verification key written");
+        let v = meta
+            .get(DISPATCH_EVIDENCE_KEY)
+            .and_then(|e| e.get(VERDICT_KEY))
+            .expect("verdict appended onto dispatch_evidence");
         let parsed: VerificationRecord = serde_json::from_value(v.clone()).unwrap();
         assert_eq!(parsed.status, VerdictStatus::Pass);
         // Digest summary layer present.
@@ -1244,7 +1251,7 @@ mod tests {
 
     /// CONTRACT (L1 hardening × L2 allowlist, part 1): the module's REAL
     /// `metadata_json.verification` write — run_for_goal persisting via L1's
-    /// narrow API `cards::set_goal_verification` — succeeds against a goal
+    /// narrow API `cards::set_goal_verdict` — succeeds against a goal
     /// card, never moves it, and never disturbs protected keys.
     #[tokio::test]
     async fn contract_l1_allowlist_permits_verification_write_on_goal_card() {
@@ -1273,8 +1280,10 @@ mod tests {
             .unwrap();
         let meta = after.metadata_json.as_object().unwrap();
         assert!(
-            meta.contains_key(VERIFICATION_KEY),
-            "verification key written through the allowlist"
+            meta.get(DISPATCH_EVIDENCE_KEY)
+                .and_then(|e| e.get(VERDICT_KEY))
+                .is_some(),
+            "verdict written through the allowlist onto dispatch_evidence"
         );
         assert_eq!(after.column_id, card.column_id, "card never moved");
         assert_eq!(meta.get("goal_state").unwrap(), "review");
@@ -1294,8 +1303,8 @@ mod tests {
         // Allowed: general update carrying only a `verification` change.
         let mut meta = card.metadata_json.as_object().cloned().unwrap();
         meta.insert(
-            VERIFICATION_KEY.to_string(),
-            serde_json::json!({"status": "uncertain"}),
+            DISPATCH_EVIDENCE_KEY.to_string(),
+            serde_json::json!({"verdict": {"status": "uncertain"}}),
         );
         permagent::cards::update_card(
             &pool,

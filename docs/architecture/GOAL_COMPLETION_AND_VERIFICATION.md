@@ -45,18 +45,18 @@ The dogfood used `ExternalCliEngine` (claude → Reckonize). That distinction is
    - `analyze_diff(working_dir = root_path, baseline_commit, declared_paths)` (`:175-180`) → literal commands `git diff --name-only <baseline>`, `git diff --numstat <baseline>`, `git status --porcelain` (`verification/mod.rs:507-515`), all `current_dir(root_path)`.
    - builds an LLM prompt from that diff + checks, runs qwen (`:200-211`, `verifier::run_verifier`).
    - aggregates a verdict, **clamps to Fail if any check ≠ pass** (`:213-226`, the `checks_clamp`).
-   - **one atomic write** to card metadata key **`verification`** (`:228-229`, `cards::set_goal_verification` `cards.rs:730`).
+   - **one atomic write**, appending the **`verdict`** sub-object onto card metadata key **`dispatch_evidence`** (#466 single-source; `cards::set_goal_verdict`). Historically this was a separate top-level `verification` key.
    - **on Pass only:** auto-answers the open `approve_review` decision via Henry-policy Tier-1 (`:244-246` `henry_approve_after_pass`). On Fail/Uncertain: nothing moves, the human decides.
 
 6. **Review surfaces:**
-   - **Evidence panel** (`EvidenceDigest.tsx`) reads `metadata.verification.evidence_digest` (`client.ts:104-121`) — i.e. **the qwen verifier's record, computed against `root_path`.**
+   - **Evidence panel** (`EvidenceDigest.tsx`) reads `metadata.dispatch_evidence.verdict.evidence_digest` (legacy fallback: `metadata.verification.evidence_digest` for pre-#466 cards) (`client.ts`) — i.e. **the qwen verifier's record.**
    - **Discuss-with-Henry** (PR #454) reads `metadata.dispatch_evidence` (`session_events.rs:628+`, `format_dispatch_evidence_full`) — i.e. **the worktree-correct evidence.**
 
 ### The two-systems collision (the headline finding)
 
 | | Source PR | Diff computed in | Diff range | Metadata key | Surfaced by |
 |---|---|---|---|---|---|
-| **qwen verifier** | #311 (merged) | `project.root_path` ❌ | `baseline..worktree+HEAD of root_path` | `verification` | **Evidence panel** |
+| **qwen verifier** | #311 (merged), #466 (single-source) | worker's worktree ✅ (#454) | `baseline..HEAD` | `dispatch_evidence.verdict` | **Evidence panel** |
 | **dispatch evidence** | #454 (open) | worker's worktree ✅ | `baseline..HEAD` | `dispatch_evidence` | Decision detail + Discuss-with-Henry |
 
 For an external-CLI goal, `root_path` HEAD **==** `baseline` (the worker never touched it), so the verifier's `baseline..HEAD` is **empty** → "0 files changed" → check-clamp + LLM both say **fail**. Meanwhile `dispatch_evidence` correctly shows "3 files, +1159". **After #454 merges, the same card carries two contradictory evidence blocks, and the Evidence panel still shows the false one.**
