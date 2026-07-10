@@ -51,6 +51,40 @@ pub const DEFAULT_EXTERNAL_CLI_TIMEOUT_SECS: u64 = 2 * 60 * 60;
 /// prompt at dispatch time. Everything else passes through verbatim.
 pub const PROMPT_TOKEN: &str = "{prompt}";
 
+/// #522 — the worker cannot push. An ephemeral `remote.origin.pushurl`
+/// override points its git at this sentinel (an unsupported protocol), so any
+/// `git push` from the worker fails deterministically with this string in the
+/// error. Permagent performs the real push itself AFTER the credential scan
+/// (`scan_committed_changes`) passes — the leak-before-scan window of the
+/// post-exit-only guard (#508) is closed: a secret can never reach origin.
+pub const PUSH_BLOCK_SENTINEL: &str = "permagent-credential-guard://push-disabled";
+
+/// Standing constraint appended to every external-CLI worker prompt (#522).
+/// The pushurl override above is the enforcement; this line keeps the worker
+/// from burning its run retrying a push that can never succeed.
+const COMMIT_ONLY_BRIEF: &str =
+    "\n\nIMPORTANT: Commit your work in this worktree, but do NOT push. \
+Pushing from this worktree is disabled — Permagent scans your commits for \
+credential-shaped content and performs the push itself after the scan passes.";
+
+/// Compose the ephemeral `GIT_CONFIG_*` env pairs injected into the worker's
+/// process (#523 hooks pattern): the push block is unconditional; the
+/// work-base hooks path is added when available. Inherited only by this
+/// worker's git subprocesses — the user's repo config is never touched.
+fn worker_git_env(hooks_dir: Option<&PathBuf>) -> Vec<(String, String)> {
+    let mut pairs = vec![(
+        "remote.origin.pushurl".to_string(),
+        PUSH_BLOCK_SENTINEL.to_string(),
+    )];
+    if let Some(dir) = hooks_dir {
+        pairs.push((
+            "core.hooksPath".to_string(),
+            dir.to_string_lossy().into_owned(),
+        ));
+    }
+    pairs
+}
+
 /// Terminal outcome of a dispatched goal, produced by every engine.
 #[derive(Debug)]
 pub enum GoalOutcome {
@@ -318,10 +352,11 @@ pub struct ExternalCliEngine {
 
 impl ExternalCliEngine {
     fn build_prompt(&self, instructions: &str) -> String {
-        match &self.persona_override {
+        let base = match &self.persona_override {
             Some((block, _)) if !block.is_empty() => format!("{}\n\n{}", block, instructions),
             _ => instructions.to_string(),
-        }
+        };
+        format!("{}{}", base, COMMIT_ONLY_BRIEF)
     }
 }
 
@@ -364,13 +399,14 @@ impl GoalEngine for ExternalCliEngine {
         // pid for a cancel/timeout group-kill before handing the wait off to the
         // tracker task. A spawn failure here means the goal never started.
         let mut cmd = build_cli_command(&bin, &args, &worktree);
-        // Point the worker's git at our per-worktree hooks via ephemeral env
-        // (`GIT_CONFIG_*`) — inherited only by this worker's git subprocesses, so
-        // the user's repo config is never touched (#523).
-        if let Some(hooks_dir) = work_base_hooks.as_ref() {
-            cmd.env("GIT_CONFIG_COUNT", "1")
-                .env("GIT_CONFIG_KEY_0", "core.hooksPath")
-                .env("GIT_CONFIG_VALUE_0", hooks_dir);
+        // Ephemeral git config for the worker (#523 hooks + #522 push block) —
+        // inherited only by this worker's git subprocesses, so the user's repo
+        // config is never touched.
+        let env_pairs = worker_git_env(work_base_hooks.as_ref());
+        cmd.env("GIT_CONFIG_COUNT", env_pairs.len().to_string());
+        for (i, (key, value)) in env_pairs.iter().enumerate() {
+            cmd.env(format!("GIT_CONFIG_KEY_{i}"), key)
+                .env(format!("GIT_CONFIG_VALUE_{i}"), value);
         }
         let child = cmd
             .spawn()
@@ -835,6 +871,12 @@ async fn await_external_child(
                 if let Some(reason) = scan_committed_changes(&working_dir, &baseline).await {
                     return GoalOutcome::Blocked { reason };
                 }
+                // #522: the scan passed and the worker itself cannot push (its
+                // pushurl is the block sentinel) — Permagent owns the push.
+                // Best-effort: a push failure (e.g. non-fast-forward from a
+                // concurrent push) leaves the work reviewable-but-unpushed in
+                // the worktree rather than failing the goal.
+                push_clean_work(&working_dir, &baseline).await;
                 let worker_summary = tail(
                     &redact_secrets(&String::from_utf8_lossy(&output.stdout)),
                     4000,
@@ -898,6 +940,57 @@ async fn run_external_cli(
             .await
         }
         Err(e) => GoalOutcome::Failed(format!("Failed to run `{}`: {}", bin, e)),
+    }
+}
+
+/// #522 — the Permagent-owned push: after `scan_committed_changes` passes,
+/// push the worker's commits to `origin` `HEAD:main` (the target workers used
+/// when they owned the push). Skipped when the worker made no commits. A
+/// failure — unreachable remote, non-fast-forward from a concurrent push — is
+/// logged loudly and left for review-in-worktree; it never fails the goal and
+/// never bypasses the scan.
+async fn push_clean_work(worktree: &Path, baseline: &str) {
+    let range = format!("{}..HEAD", baseline);
+    let committed = git_text(worktree, &["rev-list", "--count", &range])
+        .await
+        .trim()
+        .parse::<u64>()
+        .unwrap_or(0);
+    if committed == 0 {
+        return; // nothing to publish (analysis/docs goal with no commits)
+    }
+
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
+        .arg(worktree)
+        .args(["push", "origin", "HEAD:main"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    configure_subprocess(&mut cmd);
+    match cmd.output().await {
+        Ok(out) if out.status.success() => {
+            tracing::info!(
+                worktree = %worktree.display(),
+                commits = committed,
+                "credential scan clean — pushed worker commits to origin/main (#522)"
+            );
+        }
+        Ok(out) => {
+            tracing::warn!(
+                worktree = %worktree.display(),
+                commits = committed,
+                error = %tail(&redact_secrets(&String::from_utf8_lossy(&out.stderr)), 500),
+                "post-scan push failed — work stays reviewable in the worktree, unpushed (#522)"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                worktree = %worktree.display(),
+                error = %e,
+                "post-scan push could not run — work stays reviewable in the worktree, unpushed (#522)"
+            );
+        }
     }
 }
 
@@ -1268,14 +1361,13 @@ mod tests {
                 }
             })
             .collect();
+        // #522: every worker prompt carries the commit-only brief.
+        assert_eq!(resolved[0], "-p");
         assert_eq!(
-            resolved,
-            vec![
-                "-p".to_string(),
-                "Implement the thing".to_string(),
-                "--dangerously-skip-permissions".to_string(),
-            ]
+            resolved[1],
+            format!("Implement the thing{}", COMMIT_ONLY_BRIEF)
         );
+        assert_eq!(resolved[2], "--dangerously-skip-permissions");
     }
 
     #[test]
@@ -1289,7 +1381,11 @@ mod tests {
             )),
         };
         let prompt = engine.build_prompt("Do the work");
-        assert_eq!(prompt, "You are Claude Code.\n\nDo the work");
+        // #522: the commit-only brief is appended after the persona + goal.
+        assert_eq!(
+            prompt,
+            format!("You are Claude Code.\n\nDo the work{}", COMMIT_ONLY_BRIEF)
+        );
     }
 
     #[tokio::test]
@@ -1779,6 +1875,97 @@ mod tests {
         std::fs::write(wt.join(file), "work").unwrap();
         git(wt, &["add", "."]);
         git(wt, &["commit", "-q", "-m", "work"]);
+    }
+
+    // ── #522 push-ownership inversion ───────────────────────────────────────
+
+    /// The env composer always blocks the worker's push and adds hooks when
+    /// available.
+    #[test]
+    fn worker_git_env_always_blocks_push() {
+        let no_hooks = worker_git_env(None);
+        assert_eq!(
+            no_hooks,
+            vec![(
+                "remote.origin.pushurl".to_string(),
+                PUSH_BLOCK_SENTINEL.to_string()
+            )]
+        );
+
+        let dir = PathBuf::from("/tmp/hooks");
+        let with_hooks = worker_git_env(Some(&dir));
+        assert_eq!(with_hooks.len(), 2);
+        assert_eq!(with_hooks[0].1, PUSH_BLOCK_SENTINEL);
+        assert_eq!(
+            with_hooks[1],
+            ("core.hooksPath".to_string(), "/tmp/hooks".to_string())
+        );
+    }
+
+    /// A worker-side `git push` under the injected env fails deterministically
+    /// — the sentinel is not a real protocol, so the push can never reach the
+    /// remote regardless of what the worker's model decides to do.
+    #[tokio::test]
+    async fn sentinel_env_blocks_worker_push() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, baseline) = init_repo_with_remote(tmp.path());
+        let wt = create_goal_worktree(&repo, &baseline, "cli-pushblock")
+            .await
+            .unwrap();
+        commit_in_worktree(&wt, "work.txt");
+
+        let pairs = worker_git_env(None);
+        let mut cmd = std::process::Command::new("git");
+        cmd.arg("-C")
+            .arg(&wt)
+            .args(["push", "origin", "HEAD:main"])
+            .env("GIT_CONFIG_COUNT", pairs.len().to_string());
+        for (i, (k, v)) in pairs.iter().enumerate() {
+            cmd.env(format!("GIT_CONFIG_KEY_{i}"), k)
+                .env(format!("GIT_CONFIG_VALUE_{i}"), v);
+        }
+        let out = cmd.output().unwrap();
+        assert!(!out.status.success(), "worker push must be refused");
+
+        // And nothing reached origin.
+        let remote_tip =
+            String::from_utf8(git(&repo, &["ls-remote", "origin", "refs/heads/main"]).stdout)
+                .unwrap();
+        assert!(
+            remote_tip.starts_with(&baseline),
+            "origin/main must still be at the baseline"
+        );
+    }
+
+    /// After a clean scan, Permagent's own push (no blocking env) publishes
+    /// the worker's commits; with no commits it is a no-op.
+    #[tokio::test]
+    async fn push_clean_work_publishes_commits() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, baseline) = init_repo_with_remote(tmp.path());
+        let wt = create_goal_worktree(&repo, &baseline, "cli-permagent-push")
+            .await
+            .unwrap();
+
+        // No commits: no-op, origin untouched.
+        push_clean_work(&wt, &baseline).await;
+        let tip = String::from_utf8(git(&repo, &["ls-remote", "origin", "refs/heads/main"]).stdout)
+            .unwrap();
+        assert!(tip.starts_with(&baseline));
+
+        // With a commit: origin/main advances to the worktree HEAD.
+        commit_in_worktree(&wt, "work.txt");
+        let head = String::from_utf8(git(&wt, &["rev-parse", "HEAD"]).stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+        push_clean_work(&wt, &baseline).await;
+        let tip = String::from_utf8(git(&repo, &["ls-remote", "origin", "refs/heads/main"]).stdout)
+            .unwrap();
+        assert!(
+            tip.starts_with(&head),
+            "origin/main must be at the worker's HEAD after the Permagent-owned push"
+        );
     }
 
     /// Tracked-remove: a Complete goal whose worktree is fully on origin is
