@@ -176,7 +176,7 @@ function HenryStatusBody({ status }: { status: HenryStatus | null }) {
 
       {/* Tasks */}
       <Section title="TASKS" trimColor={HENRY_TRIM}>
-        <StatRow label="In flight" value={status.tasks_in_flight} />
+        <StatRow label="Tasks running" value={status.tasks_in_flight} />
         {status.recent_tasks.length > 0 && (
           <div style={{ marginTop: 6 }}>
             <div style={{ fontSize: 10, color: '#6B7280', marginBottom: 3 }}>Recent:</div>

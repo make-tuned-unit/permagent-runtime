@@ -8,8 +8,7 @@ use serde::{Deserialize, Serialize};
 
 fn read_daemon_token() -> Option<String> {
     let home = std::env::var("HOME").ok()?;
-    let path = std::path::PathBuf::from(home)
-        .join(".permagent/secrets/daemon_token.json");
+    let path = std::path::PathBuf::from(home).join(".permagent/secrets/daemon_token.json");
     let content = std::fs::read_to_string(path).ok()?;
     let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
     parsed.get("token")?.as_str().map(|s| s.to_string())

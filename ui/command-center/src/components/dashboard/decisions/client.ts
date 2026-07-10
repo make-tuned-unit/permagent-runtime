@@ -107,10 +107,16 @@ export const realDecisionsClient: DecisionsClient = {
       const card = await decisionsFetch<{ metadataJson?: Record<string, unknown> | null }>(
         `/api/projects/${encodeURIComponent(projectId)}/cards/${encodeURIComponent(goalId)}`,
       );
-      const verification = card.metadataJson?.verification as
+      // #466 single-source: the verifier appends its verdict onto
+      // dispatch_evidence. The legacy top-level `verification` key is read as
+      // a fallback so goals verified before the consolidation still render.
+      const evidence = card.metadataJson?.dispatch_evidence as
+        | { verdict?: { evidence_digest?: EvidenceDigestData } }
+        | undefined;
+      const legacy = card.metadataJson?.verification as
         | { evidence_digest?: EvidenceDigestData }
         | undefined;
-      const digest = verification?.evidence_digest;
+      const digest = evidence?.verdict?.evidence_digest ?? legacy?.evidence_digest;
       // Minimal shape check before handing to the renderer.
       if (digest && digest.checks_summary && typeof digest.verifier_summary === 'string') {
         return digest;

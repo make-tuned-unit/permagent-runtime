@@ -8,6 +8,7 @@
  */
 
 import { useState, useCallback } from 'react';
+import { useLiveGoals } from '../../../lib/useLiveGoals';
 import { FiX } from 'react-icons/fi';
 import { font, radius, ease } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
@@ -51,7 +52,10 @@ export function DecisionInbox({ inbox, onClose }: Props) {
   const decisions = data?.decisions ?? [];
   const total = data?.total_pending ?? 0;
   const handled = data?.handled_count ?? 0;
-  const goals = data?.goals_in_flight ?? 0;
+  // #464/#515: the live shared source (event-driven, parked/archived excluded)
+  // — the summary number is only a fallback and now shares its definition.
+  const { activeCount: liveGoalCount, loaded: liveGoalsLoaded } = useLiveGoals();
+  const goals = liveGoalsLoaded ? liveGoalCount : (data?.goals_in_flight ?? 0);
   const moreCount = total - decisions.length;
   const tier1Rows = (history ?? []).filter(d => d.tier === 1);
 
