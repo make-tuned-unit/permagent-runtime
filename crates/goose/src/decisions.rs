@@ -473,14 +473,24 @@ pub async fn inbox_summary(pool: &Pool<Sqlite>) -> Result<InboxSummary, String> 
             .fetch_one(pool)
             .await
             .map_err(|e| e.to_string())?;
-    let goals_in_flight: i64 = sqlx::query_scalar(
+    // #464/#515: ONE definition of "in flight" everywhere. This must match
+    // `cards::list_active_goals` (the `/api/goals/active` source the dashboard
+    // uses): ACTIVE_BINDINGS states, parked (needs_human_attention) and
+    // archived excluded. It previously counted only `in_progress` without the
+    // parked filter — a different number than the list right next to it.
+    let placeholders = vec!["?"; crate::goal_state::GoalState::ACTIVE_BINDINGS.len()].join(", ");
+    let goals_sql = format!(
         "SELECT COUNT(*) FROM cards c JOIN board_columns bc ON c.column_id = bc.id \
-         WHERE c.card_type = 'goal' AND bc.state_binding = 'in_progress' \
-           AND c.archived_at IS NULL",
-    )
-    .fetch_one(pool)
-    .await
-    .map_err(|e| e.to_string())?;
+         WHERE c.card_type = 'goal' AND c.archived_at IS NULL \
+           AND bc.state_binding IN ({}) \
+           AND COALESCE(json_extract(c.metadata_json, '$.needs_human_attention'), 0) = 0",
+        placeholders
+    );
+    let mut goals_q = sqlx::query_scalar(&goals_sql);
+    for b in crate::goal_state::GoalState::ACTIVE_BINDINGS {
+        goals_q = goals_q.bind(*b);
+    }
+    let goals_in_flight: i64 = goals_q.fetch_one(pool).await.map_err(|e| e.to_string())?;
     let oldest_pending_at: Option<String> =
         sqlx::query_scalar("SELECT MIN(created_at) FROM decisions WHERE status = 'open'")
             .fetch_one(pool)
