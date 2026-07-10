@@ -1356,14 +1356,13 @@ mod tests {
                 }
             })
             .collect();
+        // #522: every worker prompt carries the commit-only brief.
+        assert_eq!(resolved[0], "-p");
         assert_eq!(
-            resolved,
-            vec![
-                "-p".to_string(),
-                "Implement the thing".to_string(),
-                "--dangerously-skip-permissions".to_string(),
-            ]
+            resolved[1],
+            format!("Implement the thing{}", COMMIT_ONLY_BRIEF)
         );
+        assert_eq!(resolved[2], "--dangerously-skip-permissions");
     }
 
     #[test]
@@ -1377,7 +1376,11 @@ mod tests {
             )),
         };
         let prompt = engine.build_prompt("Do the work");
-        assert_eq!(prompt, "You are Claude Code.\n\nDo the work");
+        // #522: the commit-only brief is appended after the persona + goal.
+        assert_eq!(
+            prompt,
+            format!("You are Claude Code.\n\nDo the work{}", COMMIT_ONLY_BRIEF)
+        );
     }
 
     #[tokio::test]
