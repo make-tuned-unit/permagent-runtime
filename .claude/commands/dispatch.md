@@ -33,9 +33,20 @@ Before writing ANY code:
 git worktree list                       # verify the name is free FIRST
 git -C ~/dev/permagent-runtime fetch origin
 git worktree add ~/dev/permagent-worktrees/<name> -b <branch> origin/main
+export CARGO_TARGET_DIR=~/dev/permagent-worktrees/.shared-target/<name>   # per-lane target (#584)
 ```
 Work ONLY in this worktree. Never the main checkout. Remove the worktree after
-merge. Symlink node_modules from main per the daemon-pkg pattern if needed.
+merge (and its `.shared-target/<name>` tree — the #581 reap). Symlink
+node_modules from main per the daemon-pkg pattern if needed.
+
+**Per-lane CARGO_TARGET_DIR is a standing rule (#584, ruled 2026-07-03):** a
+shared target tree lets one worktree run ANOTHER worktree's compiled test
+binary and report false-green — cargo's fingerprint does not disambiguate two
+lanes building the same crate version. Every cargo command in the lane runs
+with the lane's own CARGO_TARGET_DIR set (state it in the dispatch log — the
+convention is explicit and visible, not walked-up-and-discovered).
+`scripts/build-guard.sh` enforces this: it refuses a build from a worktree
+lane whose resolved target dir isn't namespaced by the lane (exit 12).
 
 ## Build
 Implement against the Phase 0 plan. Constraints:
@@ -65,6 +76,9 @@ and what it returned.
 ## Disk discipline (M1, 16GB)
 - `df -h /System/Volumes/Data` is authoritative (NOT `df /`).
 - Max two concurrent cargo builds. If another build is active, wait.
+- Wrap cargo builds/tests in `scripts/build-guard.sh -- <cmd…>`: it enforces
+  the free-space floor, serializes same-target-dir builds, and refuses a
+  worktree-lane build on a non-lane target dir (#584).
 
 ## PR
 - `Closes #NNN` for EVERY issue this addresses (multi-issue PRs must list each
