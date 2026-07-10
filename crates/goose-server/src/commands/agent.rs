@@ -57,6 +57,13 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
             Ok(false) => {}
             Err(e) => tracing::warn!("Failed to add Projects workspace: {}", e),
         }
+        // Normalize preset sidebar order to the code-owned canon (runs every
+        // start; user-created workspaces untouched).
+        match permagent::workspaces::ensure_canonical_workspace_order(&pool).await {
+            Ok(true) => info!("Reordered sidebar workspaces to the canonical order"),
+            Ok(false) => {}
+            Err(e) => tracing::warn!("Failed to normalize workspace order: {}", e),
+        }
     }
 
     // Initialize default provider from config.yaml so new sessions work immediately.
