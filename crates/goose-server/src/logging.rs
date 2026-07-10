@@ -71,8 +71,13 @@ pub fn setup_logging(name: Option<&str>) -> Result<()> {
 fn default_env_filter() -> EnvFilter {
     EnvFilter::new("")
         .add_directive("mcp_client=info".parse().unwrap())
-        .add_directive("goose=info".parse().unwrap())
-        .add_directive("goose_server=info".parse().unwrap())
+        // #580: the crate roots. `goose=info` / `goose_server=info` sat here
+        // long after the crates were renamed to permagent / permagent-daemon —
+        // so every MODULE-PATH info line in both crates (`permagent::…`,
+        // `permagent_daemon::…`) was silently dropped while the filter looked
+        // healthy. The registry test below now red-builds on that class.
+        .add_directive("permagent=info".parse().unwrap())
+        .add_directive("permagent_daemon=info".parse().unwrap())
         .add_directive("permagentd=info".parse().unwrap())
         .add_directive("tower_http=info".parse().unwrap())
         // #341: dedicated target for session-list latency instrumentation,
@@ -83,6 +88,11 @@ fn default_env_filter() -> EnvFilter {
         // floor and the "never silent" contract in initiative::driver::spawn
         // is defeated.
         .add_directive("initiative=info".parse().unwrap())
+        // #560: circuit-breaker trips / WAL checkpoints / watchdog. Its
+        // error!/warn! lines cleared the WARN floor but the INFO heartbeats
+        // ("WAL checkpoint ok") were in the trap.
+        .add_directive("durability=info".parse().unwrap())
+        .add_directive("steward=info".parse().unwrap())
         .add_directive(LevelFilter::WARN.into())
 }
 
@@ -154,10 +164,78 @@ mod tests {
     #[test]
     fn default_filter_passes_dedicated_info_targets() {
         let directives = default_env_filter().to_string();
-        for target in ["initiative", "session_perf", "permagentd"] {
+        for target in [
+            "initiative",
+            "session_perf",
+            "permagentd",
+            "permagent",
+            "permagent_daemon",
+            "durability",
+            "steward",
+        ] {
             assert!(
                 directives.contains(&format!("{target}=info")),
                 "default env filter is missing `{target}=info`: {directives}"
+            );
+        }
+    }
+
+    /// #580 — the log-allowlist trap, made a red build instead of a silent
+    /// drop: every explicit tracing target string used by a macro in the
+    /// daemon or the permagent lib must have its ROOT covered by a directive
+    /// in the default filter. Adding a new target without wiring it here now
+    /// fails this test instead of shipping an invisible subsystem. (The
+    /// scanner reads raw source, comments included — don't write the target
+    /// key + quote pattern in prose.)
+    #[test]
+    fn every_tracing_target_in_source_has_a_default_directive() {
+        fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    collect_rs_files(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let roots = [manifest.join("src"), manifest.join("../goose/src")];
+        let mut files = Vec::new();
+        for root in &roots {
+            assert!(root.exists(), "source root moved: {}", root.display());
+            collect_rs_files(root, &mut files);
+        }
+        assert!(files.len() > 50, "suspiciously few source files scanned");
+
+        let mut target_roots = std::collections::BTreeSet::new();
+        for file in &files {
+            let Ok(text) = std::fs::read_to_string(file) else {
+                continue;
+            };
+            for chunk in text.split("target: \"").skip(1) {
+                if let Some(target) = chunk.split('"').next() {
+                    let root = target.split("::").next().unwrap_or(target);
+                    target_roots.insert(root.to_string());
+                }
+            }
+        }
+        assert!(
+            !target_roots.is_empty(),
+            "no explicit tracing targets found — scanner broken?"
+        );
+
+        let directives = default_env_filter().to_string();
+        for root in &target_roots {
+            assert!(
+                directives.contains(&format!("{root}=")),
+                "tracing target root `{root}` is used in source but has no \
+                 directive in default_env_filter() — its lines are silently \
+                 dropped (the #580 trap). Add `{root}=info` to logging.rs."
             );
         }
     }
