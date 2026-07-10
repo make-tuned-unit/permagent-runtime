@@ -763,7 +763,72 @@ export const api = {
     return fetch(url, { ...options, headers: { ...headers, ...(options?.headers as Record<string, string> ?? {}) } });
   },
 
+  // ── System info (#381: wizard hardware scan) ────────────────────
+
+  getSystemInfo: () =>
+    apiFetch<{
+      app_version: string;
+      os: string;
+      os_version: string;
+      architecture: string;
+      provider: string | null;
+      model: string | null;
+      enabled_extensions: string[];
+      total_ram_bytes: number | null;
+      cpu_brand: string | null;
+      disk_free_bytes: number | null;
+    }>('/api/system_info'),
+
   // ── Ollama + Librarian ──────────────────────────────────────────
+
+  /** Pull an Ollama model with SSE progress streaming (#381). Each event's
+   *  data is one NDJSON progress line from Ollama:
+   *  {"status":"pulling …","digest":"sha256:…","total":N,"completed":N} */
+  pullOllamaModel: (
+    model: string,
+    onProgress: (data: { status: string; total?: number; completed?: number }) => void,
+  ) => {
+    const url = `${API_BASE_URL}/api/ollama/pull`;
+    const controller = new AbortController();
+    const promise = (async () => {
+      if (!_daemonToken && isTauri) await loadDaemonToken();
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ model }),
+        signal: controller.signal,
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const reader = resp.body?.getReader();
+      if (!reader) throw new Error('No response body');
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          const trimmed = line.replace(/^data:\s*/, '').trim();
+          if (!trimmed) continue;
+          try { onProgress(JSON.parse(trimmed)); } catch { /* skip non-JSON */ }
+        }
+      }
+      if (buffer.trim()) {
+        const trimmed = buffer.replace(/^data:\s*/, '').trim();
+        try { onProgress(JSON.parse(trimmed)); } catch { /* skip non-JSON */ }
+      }
+    })();
+    return { promise, abort: () => controller.abort() };
+  },
+
+  /** Best-effort auto-start of a locally installed Ollama (#381 one-click). */
+  startOllama: () =>
+    apiFetch<{ launched: boolean; method: string | null }>('/api/ollama/start', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
 
   getOllamaStatus: () =>
     apiFetch<{

@@ -7598,6 +7598,7 @@ name = "permagent-daemon"
 version = "1.31.0"
 dependencies = [
  "anyhow",
+ "async-stream",
  "async-trait",
  "aws-lc-rs",
  "axum",

@@ -59,6 +59,9 @@ pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/status", get(status))
         .route("/system_info", get(system_info))
+        // /api-prefixed alias (#381): the wizard's hardware scan calls the
+        // modern /api surface (also what the vite dev proxy forwards).
+        .route("/api/system_info", get(system_info))
         .route("/diagnostics/{session_id}", get(diagnostics))
         .with_state(state)
 }
