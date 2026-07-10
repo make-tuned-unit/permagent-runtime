@@ -15,7 +15,7 @@ use crate::projects::PERSONAL_PROJECT_ID;
 
 /// Check a metadata replacement against the protected-key set for goal cards.
 /// Any change (add / remove / modify) to a protected key is refused. The
-/// `verification` key is deliberately NOT protected (Lane L2 allowlist).
+/// `dispatch_evidence` key is deliberately NOT protected (Lane L2 appends\n/// its `verdict` sub-object there, #466).
 fn check_protected_metadata(
     existing: &serde_json::Value,
     proposed: &serde_json::Value,
@@ -991,13 +991,15 @@ pub async fn reorder_cards(
     Ok(())
 }
 
-/// Narrow API for Lane L2's verification module (allowlist): writes ONLY the
-/// `verification` metadata key on a goal card. Never moves cards, never
-/// touches protected keys.
-pub async fn set_goal_verification(
+/// Narrow API for Lane L2's verification module (allowlist): appends ONLY the
+/// `verdict` sub-object onto the goal's `dispatch_evidence` metadata — one
+/// evidence record per goal instead of two drifting keys (#466). Re-reads the
+/// card internally so concurrent L1 metadata writes are preserved. Never
+/// moves cards, never touches protected keys.
+pub async fn set_goal_verdict(
     pool: &Pool<Sqlite>,
     card_id: &str,
-    verification: serde_json::Value,
+    verdict: serde_json::Value,
 ) -> Result<(), String> {
     let card = get_card(pool, card_id)
         .await?
@@ -1006,7 +1008,16 @@ pub async fn set_goal_verification(
         return Err(format!("Card '{}' is not a goal", card_id));
     }
     let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
-    meta.insert("verification".to_string(), verification);
+    let mut evidence = meta
+        .get("dispatch_evidence")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    evidence.insert("verdict".to_string(), verdict);
+    meta.insert(
+        "dispatch_evidence".to_string(),
+        serde_json::Value::Object(evidence),
+    );
     let meta_str =
         serde_json::to_string(&serde_json::Value::Object(meta)).map_err(|e| e.to_string())?;
     sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
@@ -1022,7 +1033,7 @@ pub async fn set_goal_verification(
 /// ONLY the `dispatch_evidence` metadata key on a goal card — the deterministic
 /// proof-of-work (commit SHAs, diffstat, push target, worker summary) captured
 /// when an external-CLI goal completes. Never moves cards, never touches
-/// protected keys. Mirrors [`set_goal_verification`] (the L2 verifier's seam).
+/// protected keys. Mirrors [`set_goal_verdict`] (the L2 verifier's seam).
 pub async fn set_goal_dispatch_evidence(
     pool: &Pool<Sqlite>,
     card_id: &str,
@@ -1849,15 +1860,17 @@ mod tests {
             Some("passed")
         );
 
-        // The narrow L2 API also works and touches only `verification`.
-        set_goal_verification(&pool, &goal.id, serde_json::json!({"status": "failed"}))
+        // The narrow L2 API touches only `dispatch_evidence.verdict` (#466),
+        // preserving sibling evidence fields.
+        set_goal_verdict(&pool, &goal.id, serde_json::json!({"status": "failed"}))
             .await
             .unwrap();
         let after = get_card(&pool, &goal.id).await.unwrap().unwrap();
         assert_eq!(
             after
                 .metadata_json
-                .get("verification")
+                .get("dispatch_evidence")
+                .and_then(|v| v.get("verdict"))
                 .and_then(|v| v.get("status"))
                 .and_then(|v| v.as_str()),
             Some("failed")
