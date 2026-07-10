@@ -210,6 +210,12 @@ pub struct WorkerPersona {
     /// How this worker is run when dispatched. Absent → in-process subagent.
     #[serde(default)]
     pub engine: WorkerEngineKind,
+    /// Per-dispatch wall-clock bound override, in seconds (#467). Absent →
+    /// `goal_engine::DEFAULT_EXTERNAL_CLI_TIMEOUT_SECS` (2 h). On expiry the
+    /// goal parks with an unblock decision — this bounds a hung worker, so
+    /// keep it finite.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
 }
 
 impl Default for WorkerPersona {
@@ -225,6 +231,7 @@ impl Default for WorkerPersona {
             availability_check: default_availability(),
             cost_tier: default_cost_tier(),
             engine: WorkerEngineKind::default(),
+            timeout_secs: None,
         }
     }
 }
@@ -629,6 +636,23 @@ workers:
         assert_eq!(
             chosen, "claude_code",
             "expected the Claude Code reference worker"
+        );
+    }
+
+    /// #467: `timeout_secs` is an optional per-worker override; absent means
+    /// the goal-engine default (2 h) applies at the dispatch site.
+    #[test]
+    fn worker_timeout_secs_parses_and_defaults_to_none() {
+        let with: WorkerPersona =
+            serde_yaml::from_str("first_name: W\ntimeout_secs: 7200\n").unwrap();
+        assert_eq!(with.timeout_secs, Some(7200));
+
+        let without: WorkerPersona = serde_yaml::from_str("first_name: W\n").unwrap();
+        assert_eq!(without.timeout_secs, None);
+        assert_eq!(
+            crate::agents::platform_extensions::goal_engine::DEFAULT_EXTERNAL_CLI_TIMEOUT_SECS,
+            2 * 60 * 60,
+            "the #467 default is 2 h"
         );
     }
 }

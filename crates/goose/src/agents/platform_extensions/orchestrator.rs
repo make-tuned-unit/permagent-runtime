@@ -668,41 +668,44 @@ impl OrchestratorClient {
 
         // Resolve the engine for this worker and dispatch. The engine owns *how*
         // the goal runs; the card lifecycle around it stays here.
+        let worker_cfg = config.workers.get(&worker_key);
+        let timeout_secs = worker_cfg
+            .and_then(|w| w.timeout_secs)
+            .unwrap_or(goal_engine::DEFAULT_EXTERNAL_CLI_TIMEOUT_SECS);
         let task = goal_engine::GoalTask {
             card_title: card.title.clone(),
             instructions,
             working_dir,
             baseline_commit: baseline_commit.clone(),
-            timeout: std::time::Duration::from_secs(goal_engine::DEFAULT_EXTERNAL_CLI_TIMEOUT_SECS),
+            timeout: std::time::Duration::from_secs(timeout_secs),
         };
 
-        let engine: Box<dyn goal_engine::GoalEngine> =
-            match config.workers.get(&worker_key).map(|w| &w.engine) {
-                Some(agent_identity::WorkerEngineKind::ExternalCli { bin, args }) => {
-                    Box::new(goal_engine::ExternalCliEngine {
-                        bin: bin.clone(),
-                        args: args.clone(),
-                        persona_override,
-                    })
-                }
-                Some(agent_identity::WorkerEngineKind::Pending) => {
-                    return Err(format!(
-                        "Worker '{}' has no runnable engine yet (engine pending) — not dispatched",
-                        worker_key
-                    ));
-                }
-                // InternalSubagent (default), or worker entry absent.
-                _ => {
-                    let provider = self.get_provider().await?;
-                    let extensions = self.parent_extensions();
-                    Box::new(goal_engine::InternalSubagentEngine {
-                        session_manager: self.context.session_manager.clone(),
-                        provider,
-                        extensions,
-                        persona_override,
-                    })
-                }
-            };
+        let engine: Box<dyn goal_engine::GoalEngine> = match worker_cfg.map(|w| &w.engine) {
+            Some(agent_identity::WorkerEngineKind::ExternalCli { bin, args }) => {
+                Box::new(goal_engine::ExternalCliEngine {
+                    bin: bin.clone(),
+                    args: args.clone(),
+                    persona_override,
+                })
+            }
+            Some(agent_identity::WorkerEngineKind::Pending) => {
+                return Err(format!(
+                    "Worker '{}' has no runnable engine yet (engine pending) — not dispatched",
+                    worker_key
+                ));
+            }
+            // InternalSubagent (default), or worker entry absent.
+            _ => {
+                let provider = self.get_provider().await?;
+                let extensions = self.parent_extensions();
+                Box::new(goal_engine::InternalSubagentEngine {
+                    session_manager: self.context.session_manager.clone(),
+                    provider,
+                    extensions,
+                    persona_override,
+                })
+            }
+        };
 
         let goal_engine::DispatchedWork {
             run_id: session_id,

@@ -40,7 +40,12 @@ use crate::subprocess::configure_subprocess;
 
 /// Default wall-clock bound for a single external-CLI dispatch. On expiry the
 /// goal is PARKED (unblock decision), never retried.
-pub const DEFAULT_EXTERNAL_CLI_TIMEOUT_SECS: u64 = 30 * 60;
+///
+/// 2 h (#467): the old 30-min cap killed legitimately long goals (bug audits,
+/// large refactors) mid-work. Per-worker override: `timeout_secs` on the
+/// worker's agent.yaml entry. Per-goal bounds are a future enhancement,
+/// deliberately not this knob.
+pub const DEFAULT_EXTERNAL_CLI_TIMEOUT_SECS: u64 = 2 * 60 * 60;
 
 /// Literal token in an external worker's arg template, replaced with the goal
 /// prompt at dispatch time. Everything else passes through verbatim.
