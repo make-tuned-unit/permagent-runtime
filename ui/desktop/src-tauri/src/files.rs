@@ -49,8 +49,7 @@ pub async fn read_dropped_file(path: String) -> Result<(String, String, String),
 
     let mime_type = mime_from_ext(&ext).to_string();
 
-    let data = std::fs::read(&path)
-        .map_err(|e| format!("Failed to read file {}: {}", path, e))?;
+    let data = std::fs::read(&path).map_err(|e| format!("Failed to read file {}: {}", path, e))?;
 
     let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
 
