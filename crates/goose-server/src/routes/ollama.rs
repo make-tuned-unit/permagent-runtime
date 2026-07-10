@@ -250,10 +250,13 @@ async fn ollama_pull(
                 Ok(bytes) => {
                     buffer.push_str(&String::from_utf8_lossy(&bytes));
                     while let Some(newline_pos) = buffer.find('\n') {
-                        let line = buffer[..newline_pos].to_string();
-                        buffer = buffer[newline_pos + 1..].to_string();
+                        // drain (not index-slicing): find() returns a char
+                        // boundary, but clippy::string_slice is denied
+                        // workspace-wide and drain sidesteps it entirely.
+                        let line: String = buffer.drain(..=newline_pos).collect();
+                        let line = line.trim_end();
                         if !line.trim().is_empty() {
-                            yield Ok(axum::response::sse::Event::default().data(line));
+                            yield Ok(axum::response::sse::Event::default().data(line.to_string()));
                         }
                     }
                 }
