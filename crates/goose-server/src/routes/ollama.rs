@@ -256,7 +256,7 @@ async fn ollama_pull(
                         let line: String = buffer.drain(..=newline_pos).collect();
                         let line = line.trim_end();
                         if !line.trim().is_empty() {
-                            yield Ok(axum::response::sse::Event::default().data(line.to_string()));
+                            yield Ok(axum::response::sse::Event::default().data(line));
                         }
                     }
                 }
