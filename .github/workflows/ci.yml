@@ -10,6 +10,10 @@ env:
   # Single source of truth for the sherpa-onnx prebuilt lib version.
   # Must match the sherpa-onnx crate version in crates/goose-server/Cargo.toml.
   SHERPA_ONNX_VERSION: 1.13.2
+  # macos-26 image (2026-07-10): OpenSSL headers left the default include path,
+  # breaking llama-cpp-sys-2's vendored cpp-httplib (openssl/err.h not found).
+  # Point cmake at the brew openssl explicitly; harmless on ubuntu.
+  OPENSSL_ROOT_DIR: /opt/homebrew/opt/openssl@3
 
 jobs:
   test:
@@ -18,12 +22,7 @@ jobs:
       # exactly the cross-platform signal the matrix exists for.
       fail-fast: false
       matrix:
-        # macos-latest rolled to the macos-26 image (2026-07-10), which no
-        # longer ships OpenSSL headers where llama-cpp-sys-2 0.1.146's vendored
-        # cpp-httplib expects them (openssl/err.h not found) — every macOS run
-        # red. Pinned to macos-15 until #543 (llama-cpp-2 0.1.150 migration)
-        # lands; unpin in that PR.
-        os: [ubuntu-latest, macos-15]
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     env:
       # The ubuntu runner is disk-bound at link: the ~50GB build sits at the
