@@ -160,6 +160,45 @@ async fn ollama_warm(
     }))
 }
 
+/// POST /api/ollama/start — best-effort launch of a locally installed Ollama
+/// (#381 one-click setup). On macOS try the app bundle first (`open -a
+/// Ollama` starts the menubar server), then fall back to a detached
+/// `ollama serve`. Returns whether a launch was attempted; the wizard polls
+/// `/api/ollama/status` to observe it coming up.
+async fn ollama_start() -> Json<serde_json::Value> {
+    // The app bundle path (macOS): starts the full app incl. the server.
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(status) = tokio::process::Command::new("open")
+            .args(["-a", "Ollama"])
+            .status()
+            .await
+        {
+            if status.success() {
+                tracing::info!("Ollama app launched via `open -a Ollama`");
+                return Json(serde_json::json!({ "launched": true, "method": "app" }));
+            }
+        }
+    }
+    // CLI fallback (any platform): a detached `ollama serve`.
+    let spawned = tokio::process::Command::new("ollama")
+        .arg("serve")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    match spawned {
+        Ok(_child) => {
+            tracing::info!("Ollama started via detached `ollama serve`");
+            Json(serde_json::json!({ "launched": true, "method": "serve" }))
+        }
+        Err(e) => {
+            tracing::info!(error = %e, "Ollama not installed — cannot auto-start");
+            Json(serde_json::json!({ "launched": false, "method": null }))
+        }
+    }
+}
+
 // ── Model pull with SSE progress (#381, salvaged from #137) ─────────────────
 
 #[derive(Debug, Deserialize)]
@@ -243,5 +282,6 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/api/ollama/status", get(ollama_status))
         .route("/api/ollama/warm", post(ollama_warm))
         .route("/api/ollama/pull", post(ollama_pull))
+        .route("/api/ollama/start", post(ollama_start))
         .with_state(state)
 }

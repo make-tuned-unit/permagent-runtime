@@ -3,7 +3,7 @@ import { color, font, ease } from '../../styles/tokens';
 import { PrimaryButton, GhostLink, Glass, Particles, Select, type SelectOption } from './atoms';
 import { Mobius } from '../mobius/Mobius';
 import { api } from '../../lib/api';
-import { recommendModel, compatibleModels, type ModelTier, MIN_RAM_GB } from '../../lib/modelTiers';
+import { recommendModel, compatibleModels, MODEL_TIERS, type ModelTier, MIN_RAM_GB } from '../../lib/modelTiers';
 
 type Phase = 'scanning' | 'recommend' | 'downloading' | 'skipped' | 'ready' | 'error';
 
@@ -35,6 +35,8 @@ export function MomentHardware({ onAdvance }: Props) {
   const [pullStatus, setPullStatus] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [scanNonce, setScanNonce] = useState(0);
+  const [ollamaStarting, setOllamaStarting] = useState(false);
+  const autoStartTried = useRef(false);
   const pullAbortRef = useRef<(() => void) | null>(null);
 
   // Phase 1: Scan hardware (re-runs when Retry bumps the nonce)
@@ -78,6 +80,44 @@ export function MomentHardware({ onAdvance }: Props) {
     })();
     return () => { cancelled = true; };
   }, [scanNonce]);
+
+  // One-click (#381): when Ollama is unreachable, try to start it ourselves
+  // (installed-but-not-running is the common case) and poll status — the user
+  // never has to hit a re-check button. The install panel only appears once
+  // the auto-start window has passed with no server coming up.
+  useEffect(() => {
+    if (phase !== 'recommend' || ollamaReachable !== false) return;
+    let cancelled = false;
+    let polls = 0;
+    if (!autoStartTried.current) {
+      autoStartTried.current = true;
+      setOllamaStarting(true);
+      api.startOllama().catch(() => { /* not installed — polling will time out */ });
+    }
+    const timer = setInterval(async () => {
+      polls += 1;
+      try {
+        const status = await api.getOllamaStatus();
+        if (cancelled) return;
+        if (status.reachable) {
+          setOllamaReachable(true);
+          setOllamaStarting(false);
+          return;
+        }
+      } catch { /* keep polling */ }
+      if (polls >= 8) setOllamaStarting(false); // ~16s: assume not installed
+    }, 2000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [phase, ollamaReachable]);
+
+  // Ready: auto-advance after a beat — the success state should not need a
+  // click, but the button stays for the impatient.
+  useEffect(() => {
+    if (phase !== 'ready') return;
+    const t = setTimeout(onAdvance, 1600);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
 
   // Check if selected model is installed when selection changes
   useEffect(() => {
@@ -155,6 +195,8 @@ export function MomentHardware({ onAdvance }: Props) {
     }
   }
 
+  const selectedTier = MODEL_TIERS.find(t => t.model === selectedModel);
+
   // Build model dropdown options
   const modelOptions: SelectOption[] = hardware
     ? compatibleModels(hardware.totalRamBytes).map(t => ({
@@ -228,10 +270,12 @@ export function MomentHardware({ onAdvance }: Props) {
                 </GhostLink>
               )}
 
-              {/* PATH A: Set up */}
+              {/* PATH A: one-click setup */}
               <div style={{ width: 400, display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <PrimaryButton onClick={handleSetup} disabled={!ollamaReachable && ollamaReachable !== null} full>
-                  Set up the Librarian
+                <PrimaryButton onClick={handleSetup} disabled={!ollamaReachable} full>
+                  {modelInstalled
+                    ? 'Enable the Librarian'
+                    : `Install ${selectedModel}${selectedTier ? ` — ${selectedTier.downloadSizeGB} GB, free` : ''}`}
                 </PrimaryButton>
                 <p style={fineprint}>
                   Your agent's memory will be enriched with descriptions,
@@ -239,21 +283,21 @@ export function MomentHardware({ onAdvance }: Props) {
                   learns and improves over time.
                 </p>
 
-                {ollamaReachable === false && (
+                {ollamaReachable === false && ollamaStarting && (
+                  <p style={{ ...fineprint, color: color.textMuted, marginTop: 4 }}>
+                    Starting the local model runtime…
+                  </p>
+                )}
+
+                {ollamaReachable === false && !ollamaStarting && (
                   <Glass r={10} padding={14} style={{ marginTop: 4 }}>
-                    <p style={{ ...fineprint, color: color.danger, margin: '0 0 8px' }}>
-                      Ollama is not running. Install it to use local models.
+                    <p style={{ ...fineprint, margin: '0 0 8px' }}>
+                      One quick install first: Ollama runs the model on your
+                      machine — free and private. We'll pick things up here
+                      automatically the moment it's ready.
                     </p>
                     <GhostLink onClick={() => window.open('https://ollama.com/download', '_blank')}>
-                      Download Ollama
-                    </GhostLink>
-                    <GhostLink onClick={async () => {
-                      try {
-                        const s = await api.getOllamaStatus();
-                        setOllamaReachable(s.reachable);
-                      } catch { setOllamaReachable(false); }
-                    }} style={{ marginLeft: 16 }}>
-                      Re-check
+                      Get Ollama
                     </GhostLink>
                   </Glass>
                 )}
@@ -337,6 +381,7 @@ export function MomentHardware({ onAdvance }: Props) {
           <PrimaryButton onClick={onAdvance} full style={{ width: 360, marginTop: 20 }}>
             Continue
           </PrimaryButton>
+          <p style={{ ...fineprint, marginTop: 10 }}>Continuing automatically…</p>
         </>
       )}
 

@@ -823,6 +823,13 @@ export const api = {
     return { promise, abort: () => controller.abort() };
   },
 
+  /** Best-effort auto-start of a locally installed Ollama (#381 one-click). */
+  startOllama: () =>
+    apiFetch<{ launched: boolean; method: string | null }>('/api/ollama/start', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+
   getOllamaStatus: () =>
     apiFetch<{
       reachable: boolean;
