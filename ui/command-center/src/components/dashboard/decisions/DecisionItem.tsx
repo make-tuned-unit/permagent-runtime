@@ -14,6 +14,8 @@
  *  - choice: answer='choice' + choiceId from payload.options
  *    (decisions.rs:625-643); payload.default marks Henry's recommendation.
  *  - risk_gate: approve authorizes the gated action class; reject records.
+ *  - enrichment_proposal: approve writes the proposed person fields with
+ *    Enriched provenance (manual entries protected); reject records only.
  *  - malformed: acknowledgement only — recorded, no state change.
  *
  * S2: every string from the daemon renders as a React text node. No markdown,
@@ -70,6 +72,11 @@ function effectTextFor(kind: string, answer: 'approve' | 'reject', agentName: st
       ? `Confirm approve — ${agentName} may go ahead with this action.`
       : `Confirm reject — ${agentName} will not go ahead with this.`;
   }
+  if (kind === 'enrichment_proposal') {
+    return answer === 'approve'
+      ? `Confirm approve — ${agentName} will save these details to the person's profile (your manual entries stay protected).`
+      : 'Confirm reject — nothing is written to the profile.';
+  }
   // malformed and anything unknown: recorded only, no state change.
   return answer === 'approve'
     ? 'Confirm — this is recorded for the audit trail; nothing else changes.'
@@ -117,7 +124,8 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
   const isUnblock = d.kind === 'unblock';
   const isChoice = d.kind === 'choice';
   const isApprovalLike =
-    d.kind === 'approve_review' || d.kind === 'risk_gate' || d.kind === 'malformed';
+    d.kind === 'approve_review' || d.kind === 'risk_gate' || d.kind === 'malformed' ||
+    d.kind === 'enrichment_proposal';
   const options = choiceOptions(d);
   const recommendedId = recommendedChoiceId(d);
   const recommended = options.find(o => o.id === recommendedId) ?? null;
@@ -393,6 +401,7 @@ function badgeFor(d: Decision, colors: ReturnType<typeof useTheme>['colors']) {
     case 'unblock': return { label: 'unblock', color: colors.warning, bg: colors.warning + '24' };
     case 'choice': return { label: 'choice', color: colors.purpleBright, bg: colors.purpleSoft };
     case 'risk_gate': return { label: 'permission', color: colors.danger, bg: colors.danger + '24' };
+    case 'enrichment_proposal': return { label: 'enrichment', color: colors.purpleBright, bg: colors.purpleSoft };
     case 'malformed': return { label: 'review', color: colors.warning, bg: colors.warning + '24' };
     default: return { label: 'approval', color: colors.cyan, bg: colors.cyanSoft };
   }

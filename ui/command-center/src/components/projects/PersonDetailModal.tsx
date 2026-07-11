@@ -8,6 +8,9 @@
  * the modal makes no extra GET. The one mutation is *disassociate* (DELETE
  * /api/projects/{id}/people/{entity_uuid}, #530), after which it bumps the
  * store's people revision so the decoupled panel refetches, and closes.
+ * "Refresh enrichment" (#495 slice 4) mutates nothing here: it copies a
+ * prepared prompt and navigates to chat; writes happen only after the user
+ * approves the resulting Decision Inbox proposal.
  *
  * Editing the typed fields and showing #499 entity_fields provenance are
  * deliberately deferred to a later slice (each needs its own authoritative-store
@@ -19,7 +22,7 @@
 
 import { useState } from 'react';
 import { apiFetch } from '../../lib/api';
-import { useCommandCenter } from '../../lib/store';
+import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { DetailModal } from '../common/DetailModal';
@@ -45,6 +48,22 @@ export function PersonDetailModal({
   const [confirming, setConfirming] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [promptCopied, setPromptCopied] = useState(false);
+
+  // The Enricher (#495 slice 4), prepared-prompt pattern: copy the enrichment
+  // request to the clipboard and take the user to chat — the agent runs
+  // enrich_person → researches with its web tools → propose_enrichment, and
+  // findings wait in the Decision Inbox for approval. Nothing here writes.
+  const requestEnrichment = () => {
+    const prompt =
+      `Refresh enrichment for ${person.display_name}: call enrich_person with ` +
+      `person "${person.display_name}", research the enrichable fields with your ` +
+      `web tools, then call propose_enrichment so I can review the findings in ` +
+      `the Decision Inbox.`;
+    navigator.clipboard?.writeText(prompt).catch(() => {});
+    setPromptCopied(true);
+    navigateToTool('chat');
+  };
 
   const doDisassociate = async () => {
     setRemoving(true);
@@ -79,9 +98,15 @@ export function PersonDetailModal({
       </button>
     </>
   ) : (
-    <button onClick={() => setConfirming(true)} style={dangerBtn(colors)}>
-      Remove from project
-    </button>
+    <>
+      <button onClick={requestEnrichment} style={ghostBtn(colors)}>
+        {promptCopied ? 'Prompt copied — paste it in chat' : 'Refresh enrichment'}
+      </button>
+      <span style={{ flex: 1 }} />
+      <button onClick={() => setConfirming(true)} style={dangerBtn(colors)}>
+        Remove from project
+      </button>
+    </>
   );
 
   return (
