@@ -2,7 +2,15 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { apiFetch } from '../../lib/api';
 
 export interface GraphSelf { name: string; id: string }
-export interface GraphEntity { id: string; type: string; name: string; note: string }
+export interface GraphEntityField {
+  field_name: string;
+  value: string;
+  /** Provenance: 'manual' | 'enriched'. Manual is never clobbered by enrichment. */
+  source: string;
+  source_url?: string | null;
+  updated_at: string;
+}
+export interface GraphEntity { id: string; type: string; name: string; note: string; fields?: GraphEntityField[] }
 /** Entity→entity connection (graph triple) — person→project / person→person lines (#495 slice 3). */
 export interface GraphEdge { from: string; to: string; predicate: string }
 export interface GraphMemory { id: string; key?: string | null; text: string; description: string | null; ent: string[]; age: number; weight: number; timestamp: string }

@@ -411,6 +411,44 @@ impl SafeBrain {
     /// `Enriched` write never overwrites a field whose stored source is
     /// `Manual`. Returns `false` when the write was suppressed by that rule,
     /// `true` when applied.
+    /// Write the freeform description on a graph entity (#387 — the Brain
+    /// view's entity cards read it as `note`). Idempotent in Spectral: setting
+    /// the same value twice is a no-op.
+    pub async fn set_entity_description(
+        &self,
+        entity_id: spectral::core::entity_id::EntityId,
+        description: &str,
+    ) -> anyhow::Result<()> {
+        let brain = self.inner.clone();
+        let description = description.to_string();
+        tokio::task::spawn_blocking(move || brain.set_entity_description(&entity_id, &description))
+            .await
+            .map_err(|e| anyhow::anyhow!("brain task panicked: set_entity_description: {e}"))?
+            .map_err(Into::into)
+    }
+
+    /// Entities within the recall neighborhood that still lack a description —
+    /// the #387 Librarian entity pass's work queue. Bounded by the same 2-hop
+    /// neighborhood the Brain graph shows (Spectral has no all-entities
+    /// enumeration yet; disconnected entities are out of reach until it does —
+    /// documented cap, not a bug).
+    pub async fn undescribed_entities(
+        &self,
+        seed: &str,
+        cap: usize,
+    ) -> anyhow::Result<Vec<(spectral::core::entity_id::EntityId, String, String)>> {
+        let result = self.recall(seed, spectral::Visibility::Private).await?;
+        Ok(result
+            .graph
+            .neighborhood
+            .entities
+            .iter()
+            .filter(|e| e.description.as_deref().is_none_or(str::is_empty))
+            .take(cap)
+            .map(|e| (e.id, e.entity_type.clone(), e.canonical.clone()))
+            .collect())
+    }
+
     pub async fn set_entity_field(
         &self,
         entity_id: spectral::core::entity_id::EntityId,

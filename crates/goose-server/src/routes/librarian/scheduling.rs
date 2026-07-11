@@ -329,6 +329,21 @@ async fn warm_and_run(schedule: &LibrarianSchedule, keep_alive_secs: u64) -> Res
         librarian_state::set_error(e);
     }
 
+    // #387 — the entity-summary pass rides the same warm model: reachable
+    // undescribed graph entities (people/projects/topics) get one-line
+    // descriptions so the Brain view reads like the memory cards do.
+    match permagent::agents::platform_extensions::librarian::describe_entities_batch(
+        &brain,
+        20,
+        &schedule.model,
+    )
+    .await
+    {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(entities = n, "Librarian entity pass complete (#387)"),
+        Err(e) => tracing::warn!(error = %e, "Librarian entity pass failed (#387)"),
+    }
+
     result
 }
 

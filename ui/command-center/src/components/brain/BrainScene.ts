@@ -16,6 +16,8 @@ interface SimNode {
   mesh: THREE.Mesh;
   pinned: boolean;
   data: GraphEntity | GraphMemory | null;
+  /** Degree-derived rest scale (Obsidian pass) — hover restores to this. */
+  baseScale?: number;
 }
 
 interface SimEdge {
@@ -125,6 +127,8 @@ export class BrainScene {
   private dragMoved = false;
   private dragStart = { x: 0, y: 0 };
   private hoveredNode: SimNode | null = null;
+  /** node id → connected node ids (non-self edges) for hover highlighting. */
+  private adjacency = new Map<string, Set<string>>();
 
   private search = '';
   private typeFilter: TypeFilters = { person: true, project: true, tool: true, location: true, organization: true, concept: true, memory: true };
@@ -332,6 +336,30 @@ export class BrainScene {
       }
     }
 
+    // Obsidian pass: degree-based sizing + adjacency for hover highlighting.
+    // Degree counts entity+memory connections (self-spokes excluded — they
+    // connect everything and carry no signal). Projects visibly accumulate:
+    // every new memory link, person, or edge grows the node.
+    this.adjacency.clear();
+    const degree = new Map<string, number>();
+    for (const e of this.edges) {
+      if (e.kind === 'self') continue;
+      degree.set(e.a.id, (degree.get(e.a.id) ?? 0) + 1);
+      degree.set(e.b.id, (degree.get(e.b.id) ?? 0) + 1);
+      if (!this.adjacency.has(e.a.id)) this.adjacency.set(e.a.id, new Set());
+      if (!this.adjacency.has(e.b.id)) this.adjacency.set(e.b.id, new Set());
+      this.adjacency.get(e.a.id)!.add(e.b.id);
+      this.adjacency.get(e.b.id)!.add(e.a.id);
+    }
+    for (const n of this.nodes) {
+      if (n.kind === 'self' || n.kind === 'memory') continue;
+      const d = degree.get(n.id) ?? 0;
+      const scale = 1 + Math.min(d, 14) * 0.09;
+      n.baseScale = scale;
+      n.mesh.scale.setScalar(scale);
+      n.mass = 2.0 + Math.min(d, 14) * 0.2; // hubs anchor the layout
+    }
+
     // Build edge geometry and re-apply current filter state to new nodes
     this.rebuildEdges();
     this.rebuildPulses();
@@ -372,6 +400,23 @@ export class BrainScene {
     }
     this.rebuildEdges();
     this.alpha = Math.max(this.alpha, 0.6);
+  }
+
+  /** Obsidian-style focus: hovering a node dims everything outside its 1-ring
+   *  so the neighborhood pops. Null restores the filter/search baseline. */
+  private applyHoverHighlight(node: SimNode | null) {
+    if (!node) {
+      this.applyFilters(); // restores the exact baseline opacities
+      return;
+    }
+    const ring = this.adjacency.get(node.id);
+    for (const n of this.nodes) {
+      if (!n.mesh.visible || n.kind === 'self') continue;
+      const mat = n.mesh.material as THREE.MeshPhysicalMaterial;
+      const inRing = n === node || (ring?.has(n.id) ?? false);
+      mat.opacity = inRing ? 0.98 : 0.10;
+      mat.emissiveIntensity = inRing ? (n === node ? 1.1 : 0.85) : 0.04;
+    }
   }
 
   // ── Edge Geometry ────────────────────────────────────────────────────
@@ -546,15 +591,17 @@ export class BrainScene {
         const mesh = hits[0].object as THREE.Mesh;
         const node = this.nodes.find(n => n.mesh === mesh);
         if (node && node !== this.hoveredNode) {
-          if (this.hoveredNode) this.hoveredNode.mesh.scale.setScalar(1);
+          if (this.hoveredNode) this.hoveredNode.mesh.scale.setScalar(this.hoveredNode.baseScale ?? 1);
           this.hoveredNode = node;
-          node.mesh.scale.setScalar(1.6);
+          node.mesh.scale.setScalar((node.baseScale ?? 1) * 1.5);
+          this.applyHoverHighlight(node);
           this.renderer.domElement.style.cursor = 'pointer';
           this.callbacks.onHover({ id: node.id, kind: node.kind, label: node.label, note: node.note, x: e.clientX, y: e.clientY });
         }
       } else if (this.hoveredNode) {
-        this.hoveredNode.mesh.scale.setScalar(1);
+        this.hoveredNode.mesh.scale.setScalar(this.hoveredNode.baseScale ?? 1);
         this.hoveredNode = null;
+        this.applyHoverHighlight(null);
         this.renderer.domElement.style.cursor = 'grab';
         this.callbacks.onHover(null);
       }

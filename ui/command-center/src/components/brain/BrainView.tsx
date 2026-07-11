@@ -333,12 +333,55 @@ export function BrainView() {
               {selected.label}
             </h3>
 
-            {/* Entity: note or fallback */}
-            {selected.kind !== 'memory' && (
-              <p style={{ fontFamily: font.body, fontSize: 13, color: colors.textMuted, lineHeight: 1.6, margin: '0 0 16px' }}>
-                {selected.note || 'No description yet.'}
-              </p>
-            )}
+            {/* Entity card: description + typed fields with provenance +
+                connection stats — the entity now reads like a memory card. */}
+            {selected.kind !== 'memory' && (() => {
+              const ent = selected.data as GraphEntity | undefined;
+              const fields = ent?.fields ?? [];
+              const degree = data?.edges?.filter(e => e.from === selected.id || e.to === selected.id).length ?? 0;
+              const memLinks = data?.memories?.filter(m => m.ent.includes(selected.id)).length ?? 0;
+              return (<>
+                <p style={{ fontFamily: font.body, fontSize: 13, color: colors.textMuted, lineHeight: 1.6, margin: '0 0 16px' }}>
+                  {selected.note || 'No description yet — the Librarian writes one on its next run.'}
+                </p>
+
+                {fields.length > 0 && (
+                  <div style={{ marginBottom: 16, overflowY: 'auto', maxHeight: 200 }}>
+                    {fields.map(f => (
+                      <div key={f.field_name} style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '5px 0', borderBottom: `1px solid ${colors.border}` }}>
+                        <span style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.06em', minWidth: 84 }}>
+                          {f.field_name.replace(/_/g, ' ')}
+                        </span>
+                        <span style={{ fontFamily: font.body, fontSize: 12, color: colors.text, flex: 1, overflowWrap: 'anywhere' }}>
+                          {f.source_url ? (
+                            <a href={f.source_url} target="_blank" rel="noreferrer" style={{ color: colors.cyan, textDecoration: 'none' }}>{f.value}</a>
+                          ) : f.value}
+                        </span>
+                        <span style={{
+                          fontFamily: font.mono, fontSize: 8, padding: '1px 5px', borderRadius: 3,
+                          color: f.source === 'manual' ? colors.cyan : colors.textMuted,
+                          border: `1px solid ${f.source === 'manual' ? colors.cyan : colors.border}`,
+                          textTransform: 'uppercase', letterSpacing: '0.08em', flexShrink: 0,
+                        }}>{f.source}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', gap: 18, marginTop: 'auto', paddingTop: 12, borderTop: `1px solid ${colors.border}` }}>
+                  {[
+                    { label: 'CONNECTIONS', value: degree },
+                    { label: 'MEMORIES', value: memLinks },
+                    { label: 'FIELDS', value: fields.length },
+                  ].map(stat => (
+                    <div key={stat.label}>
+                      <div style={{ fontFamily: font.display, fontSize: 18, fontWeight: 700, color: colors.text }}>{stat.value}</div>
+                      <div style={{ fontFamily: font.mono, fontSize: 9, color: colors.textDim, letterSpacing: '0.08em' }}>{stat.label}</div>
+                    </div>
+                  ))}
+                </div>
+              </>);
+            })()}
 
             {/* Memory: description + content + chips + stats */}
             {selected.kind === 'memory' && selected.data && (() => {
