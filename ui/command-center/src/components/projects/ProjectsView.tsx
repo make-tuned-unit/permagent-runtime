@@ -126,10 +126,14 @@ export function ProjectsView() {
   return <AllProjectsView projects={projects} onOpenProject={openProject} onStatusChange={handleStatusChange} />;
 }
 
-// ── All Projects View (projects-as-cards in status columns) ────────────────
+// ── All Projects View — Active-dominant landing (Jesse's ruling 2026-07-10) ──
+//
+// Progressive disclosure (the pattern behind Linear/Notion/Vercel landings):
+// most projects are active, so Active IS the page — a responsive card grid.
+// Paused and Archived collapse into slim disclosure strips below, expanding
+// on demand and doubling as drop targets, so drag-to-change-status survives.
 
-const STATUS_COLUMNS = [
-  { key: 'active', label: 'Active' },
+const SECONDARY_STATUSES = [
   { key: 'paused', label: 'Paused' },
   { key: 'archived', label: 'Archived' },
 ];
@@ -143,6 +147,7 @@ projects, onOpenProject, onStatusChange }: {
   const { colors } = useTheme();
   const { gradient } = useTheme();
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   const handleDragStart = (e: React.DragEvent, projectId: string) => {
     e.dataTransfer.setData('text/plain', projectId);
@@ -168,22 +173,60 @@ projects, onOpenProject, onStatusChange }: {
     }
   };
 
+  const byRecency = (a: Project, b: Project) => {
+    if (a.id === PERSONAL_ID) return -1;
+    if (b.id === PERSONAL_ID) return 1;
+    return new Date(b.lastOpenedAt).getTime() - new Date(a.lastOpenedAt).getTime();
+  };
+  const active = projects.filter(p => p.status === 'active').sort(byRecency);
+
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: gradient.workspace, color: colors.text, fontFamily: font.body }}>
       {/* Header */}
       <div style={{ padding: '16px 24px', borderBottom: `1px solid ${colors.border}`, flexShrink: 0 }}>
         <div style={{ fontFamily: font.display, fontSize: 16, fontWeight: 600, letterSpacing: '-0.01em' }}>Projects</div>
         <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2 }}>
-          {projects.length} project{projects.length !== 1 ? 's' : ''} — drag to change status
+          {active.length} active — drag a card onto Paused or Archived below to shelve it
         </div>
       </div>
 
-      {/* Kanban columns */}
-      <div style={{ flex: 1, display: 'flex', gap: 1, padding: '16px 16px', overflow: 'auto' }}>
-        {STATUS_COLUMNS.map(col => {
-          const colProjects = projects.filter(p => p.status === col.key);
-          const isOver = dragOverCol === col.key;
+      <div style={{ flex: 1, overflowY: 'auto', padding: '18px 24px' }}>
+        {/* ACTIVE — the page. Responsive grid, drop target for reactivation. */}
+        <div
+          onDragOver={(e) => handleDragOver(e, 'active')}
+          onDragLeave={handleDragLeave}
+          onDrop={(e) => handleDrop(e, 'active')}
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
+            gap: 12,
+            borderRadius: 12,
+            padding: 4,
+            border: dragOverCol === 'active' ? '1px solid rgba(0,213,255,0.25)' : '1px solid transparent',
+            background: dragOverCol === 'active' ? 'rgba(0,213,255,0.04)' : 'transparent',
+            transition: 'all 150ms',
+          }}
+        >
+          {active.map(project => (
+            <ProjectCard
+              key={project.id}
+              project={project}
+              onOpen={() => onOpenProject(project.id)}
+              onDragStart={(e) => handleDragStart(e, project.id)}
+            />
+          ))}
+          {active.length === 0 && (
+            <div style={{ gridColumn: '1 / -1', padding: 40, textAlign: 'center', fontSize: 12, color: colors.textDim }}>
+              No active projects — create one, or drag one out of the shelves below.
+            </div>
+          )}
+        </div>
 
+        {/* PAUSED / ARCHIVED — slim disclosure shelves, also drop targets. */}
+        {SECONDARY_STATUSES.map(col => {
+          const colProjects = projects.filter(p => p.status === col.key).sort(byRecency);
+          const isOver = dragOverCol === col.key;
+          const isOpen = expanded[col.key] ?? false;
           return (
             <div
               key={col.key}
@@ -191,32 +234,44 @@ projects, onOpenProject, onStatusChange }: {
               onDragLeave={handleDragLeave}
               onDrop={(e) => handleDrop(e, col.key)}
               style={{
-                flex: 1, minWidth: 220, display: 'flex', flexDirection: 'column',
-                background: isOver ? 'rgba(0,213,255,0.04)' : 'rgba(255,255,255,0.02)',
-                borderRadius: 10, padding: '12px 10px',
-                border: isOver ? `1px solid rgba(0,213,255,0.2)` : '1px solid transparent',
+                marginTop: 14, borderRadius: 10,
+                border: isOver ? '1px solid rgba(0,213,255,0.25)' : `1px solid ${colors.border}`,
+                background: isOver ? 'rgba(0,213,255,0.05)' : 'rgba(255,255,255,0.02)',
                 transition: 'all 150ms',
               }}
             >
-              {/* Column header */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 4px 10px', borderBottom: `1px solid ${colors.border}` }}>
-                <span style={{ fontSize: 12, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              <button
+                onClick={() => setExpanded(prev => ({ ...prev, [col.key]: !isOpen }))}
+                style={{
+                  width: '100%', display: 'flex', alignItems: 'center', gap: 8,
+                  padding: '9px 14px', background: 'transparent', border: 'none',
+                  color: colors.textMuted, cursor: 'pointer', fontFamily: font.body,
+                }}
+              >
+                <span style={{
+                  fontSize: 10, transform: isOpen ? 'rotate(90deg)' : 'none',
+                  transition: 'transform 150ms', display: 'inline-block',
+                }}>▶</span>
+                <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                   {col.label}
                 </span>
                 <span style={{ fontSize: 10, color: colors.textDim, background: 'rgba(255,255,255,0.06)', padding: '1px 6px', borderRadius: 8 }}>
                   {colProjects.length}
                 </span>
-              </div>
-
-              {/* Project cards */}
-              <div style={{ flex: 1, paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 6, overflow: 'auto' }}>
-                {colProjects
-                  .sort((a, b) => {
-                    if (a.id === PERSONAL_ID) return -1;
-                    if (b.id === PERSONAL_ID) return 1;
-                    return new Date(b.lastOpenedAt).getTime() - new Date(a.lastOpenedAt).getTime();
-                  })
-                  .map(project => (
+                {!isOpen && colProjects.length > 0 && (
+                  <span style={{ fontSize: 10, color: colors.textDim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {colProjects.slice(0, 4).map(p => p.name).join(' · ')}{colProjects.length > 4 ? ' · …' : ''}
+                  </span>
+                )}
+                {isOver && <span style={{ fontSize: 10, color: colors.cyan, marginLeft: 'auto' }}>drop to {col.label.toLowerCase()}</span>}
+              </button>
+              {isOpen && colProjects.length > 0 && (
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
+                  gap: 10, padding: '4px 12px 12px',
+                }}>
+                  {colProjects.map(project => (
                     <ProjectCard
                       key={project.id}
                       project={project}
@@ -224,7 +279,11 @@ projects, onOpenProject, onStatusChange }: {
                       onDragStart={(e) => handleDragStart(e, project.id)}
                     />
                   ))}
-              </div>
+                </div>
+              )}
+              {isOpen && colProjects.length === 0 && (
+                <div style={{ padding: '4px 14px 12px', fontSize: 11, color: colors.textDim }}>Empty.</div>
+              )}
             </div>
           );
         })}
