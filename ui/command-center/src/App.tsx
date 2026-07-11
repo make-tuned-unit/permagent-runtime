@@ -8,6 +8,7 @@ import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { WizardShell } from './components/wizard/WizardShell';
 import { Splash } from './components/splash/Splash';
 import { ChatLauncher } from './components/chat/ChatLauncher';
+import { ChatDock } from './components/chat/ChatDock';
 import { GoalDetailModalHost } from './components/goals/GoalDetailModal';
 import { PersonDetailModalHost } from './components/projects/PersonDetailModal';
 import { DropZone } from './components/chat/DropZone';
@@ -230,6 +231,7 @@ function App() {
           </DropZone>
         </main>
         <ChatLauncher />
+        <ChatDock />
       </div>
       <GoalDetailModalHost />
       <NotificationHost />

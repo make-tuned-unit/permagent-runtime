@@ -324,6 +324,13 @@ interface CommandCenterStore {
   chatLauncherSize: { width: number; height: number } | null;
   setChatLauncherSize: (size: { width: number; height: number } | null) => void;
 
+  // --- Chat dock (2026-07-11): chat opens as a right sidebar first, detaches
+  // to a window on demand (validated UX pattern). Mutually exclusive with the
+  // detached window; the Browser reserves its strip like the launcher pill. ---
+  chatDockOpen: boolean;
+  openChatDock: () => void;
+  closeChatDock: () => void;
+
   // --- Per-session SSE ---
   _eventSource: EventSource | null;
   _reconnectTimer: ReturnType<typeof setTimeout> | null;
@@ -1070,6 +1077,9 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
   // Collapsed chat launcher corner reservation (#553)
   chatLauncherSize: null,
+  chatDockOpen: false,
+  openChatDock: () => set({ chatDockOpen: true }),
+  closeChatDock: () => set({ chatDockOpen: false }),
   setChatLauncherSize: (size) => set(s => {
     const prev = s.chatLauncherSize;
     if (prev === size) return s;
