@@ -83,7 +83,7 @@ export function ConfigureProviderModal({ provider, onClose }: Props) {
   const handleRemoveKey = async () => {
     if (!secretKey) return;
     try {
-      await api.upsertConfig(secretKey.name, '', true);
+      await api.removeConfig(secretKey.name, true);
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to remove key');
