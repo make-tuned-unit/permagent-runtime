@@ -4,6 +4,10 @@ import { api } from '../../lib/api';
 import { font, ease, setTheme as setThemeFn, setMobiusGlow, setIdleAnim, setShowHeroMobius, setDensity as setDensityFn, setReduceMotion as setReduceMotionFn, type ThemeId, type IdleAnim, type UIDensity } from '../../styles/tokens';
 import { useTheme as useThemeHook } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
+import {
+  getNotificationPrefs, setNotificationPref, getOsNotificationsEnabled,
+  setOsNotificationsEnabled, KIND_LABELS, type NotificationKind,
+} from '../../lib/notifications';
 import { ProvidersSection } from './ProvidersSection';
 import { SearchToolsSection } from './SearchToolsSection';
 import { usePersona } from './useSettings';
@@ -211,11 +215,33 @@ function PreferencesPanel() {
           </div>
         </Row>
       </Section>
-      <Section title="Notifications">
-        <Row label="When agent finishes a task"><select style={selectStyle(colors)}><option>Desktop notification</option><option>In-app only</option><option>Silent</option></select></Row>
-        <Row label="When agent needs your input"><select style={selectStyle(colors)}><option>Desktop + sound</option><option>Desktop only</option><option>Silent</option></select></Row>
-      </Section>
+      <NotificationSettings />
     </div>
+  );
+}
+
+/** #618 — LIVE notification preferences: per-kind toggles feed the tray/toast
+ *  stream directly (localStorage, consumed in lib/notifications.ts), plus the
+ *  OS-level opt-in which requests real Notification permission. This replaced
+ *  the dead mockup selects the 2026-07-10 audit flagged. */
+function NotificationSettings() {
+  const [prefs, setPrefs] = useState(getNotificationPrefs());
+  const [osOn, setOsOn] = useState(getOsNotificationsEnabled());
+  const kinds = Object.keys(KIND_LABELS) as NotificationKind[];
+  return (
+    <Section title="Notifications" sub="Live — the agent reaches out when something needs you. Each toggle silences its kind everywhere (tray, toasts, system).">
+      {kinds.map(k => (
+        <Row key={k} label={KIND_LABELS[k]}>
+          <Toggle on={prefs[k]} onChange={v => {
+            setNotificationPref(k, v);
+            setPrefs(getNotificationPrefs());
+          }} />
+        </Row>
+      ))}
+      <Row label="System notifications" hint="Also notify at the OS level (asks for permission).">
+        <Toggle on={osOn} onChange={async v => setOsOn(await setOsNotificationsEnabled(v))} />
+      </Row>
+    </Section>
   );
 }
 
