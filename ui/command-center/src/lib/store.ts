@@ -194,6 +194,9 @@ interface CommandCenterStore {
 
   // --- Provider state ---
   providers: ProviderInfo[];
+  /** True when the last loadProviders() failed — lets the UI show a retry
+      state instead of an indistinguishable, permanent "Loading…". */
+  providersError: boolean;
   currentModel: string | null;
   loadProviders: () => Promise<void>;
   setDefaultProvider: (name: string, model: string) => Promise<void>;
@@ -483,6 +486,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
   // Providers
   providers: [],
+  providersError: false,
   currentModel: null,
   loadProviders: async () => {
     try {
@@ -492,6 +496,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
       const raw = await api.getProviders();
       set({
+        providersError: false,
         currentModel: currentModel || null,
         providers: raw.map(p => ({
           name: p.name,
@@ -505,7 +510,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         })),
       });
     } catch {
-      set({ providers: [] });
+      set({ providers: [], providersError: true });
     }
   },
 
