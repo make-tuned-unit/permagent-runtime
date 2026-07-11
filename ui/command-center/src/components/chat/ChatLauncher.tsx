@@ -14,6 +14,8 @@ export function ChatLauncher() {
   const { colors } = useTheme();
   const [agentName, setAgentName] = useState('Agent');
   const [chatWindowOpen, setChatWindowOpen] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  const [pressed, setPressed] = useState(false);
   const setChatLauncherSize = useCommandCenter(s => s.setChatLauncherSize);
   const buttonRef = useRef<HTMLButtonElement>(null);
 
@@ -55,17 +57,30 @@ export function ChatLauncher() {
     })();
   }, []);
 
-  // Poll whether the chat window exists (handles user closing it via traffic light)
+  // React to the chat window closing (e.g. user hits the traffic-light) via its
+  // close event instead of polling once a second — no timer, fires immediately.
   useEffect(() => {
     if (!isTauri || !chatWindowOpen) return;
-    const interval = setInterval(async () => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    (async () => {
       try {
         const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
         const existing = await WebviewWindow.getByLabel('chat');
-        if (!existing) setChatWindowOpen(false);
-      } catch { setChatWindowOpen(false); }
-    }, 1000);
-    return () => clearInterval(interval);
+        if (!existing) {
+          setChatWindowOpen(false);
+          return;
+        }
+        const un = await existing.onCloseRequested(() => setChatWindowOpen(false));
+        if (disposed) un(); else unlisten = un;
+      } catch {
+        setChatWindowOpen(false);
+      }
+    })();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, [chatWindowOpen]);
 
   // While the chat window is open, re-assert its stacking just above the main
@@ -121,15 +136,26 @@ export function ChatLauncher() {
   if (chatWindowOpen) return null;
 
   return (
-    <button ref={buttonRef} onClick={openChatWindow} style={{
+    <button
+      ref={buttonRef}
+      onClick={openChatWindow}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => { setHovered(false); setPressed(false); }}
+      onMouseDown={() => setPressed(true)}
+      onMouseUp={() => setPressed(false)}
+      style={{
       position: 'fixed', bottom: CHAT_LAUNCHER_MARGIN, right: CHAT_LAUNCHER_MARGIN, zIndex: 9999,
       display: 'flex', alignItems: 'center', gap: 10,
       padding: '12px 20px', borderRadius: 999,
       background: colors.surface, backdropFilter: 'blur(16px)',
-      border: `1px solid ${colors.borderHi}`,
+      // Theme-safe elevation — a cool soft shadow on silver, deep on dark
+      // (the hardcoded black glow was invisible on the light themes).
+      border: `1px solid ${hovered ? colors.cyan : colors.borderHi}`,
       color: colors.cyan, cursor: 'pointer',
       fontFamily: font.body, fontSize: 13, fontWeight: 600,
-      boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+      boxShadow: colors.cardShadow,
+      // Tactile feedback: lift on hover, settle on press.
+      transform: pressed ? 'scale(0.97)' : hovered ? 'translateY(-2px)' : 'translateY(0)',
       transition: `all 200ms ${ease.out}`,
     }}>
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
