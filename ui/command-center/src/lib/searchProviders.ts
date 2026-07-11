@@ -51,8 +51,8 @@ export const SEARCH_PROVIDERS: SearchProvider[] = [
     keyName: 'BRAVE_API_KEY',
     keyPageUrl: 'https://api-dashboard.search.brave.com/app/keys',
     keyPageLabel: 'Brave Search API keys',
-    entryPath: 'node_modules/@modelcontextprotocol/server-brave-search/dist/index.js',
-    npxArgs: ['-y', '@modelcontextprotocol/server-brave-search'],
+    entryPath: 'node_modules/@brave/brave-search-mcp-server/dist/index.js',
+    npxArgs: ['-y', '@brave/brave-search-mcp-server'],
   },
   {
     id: 'tavily',
