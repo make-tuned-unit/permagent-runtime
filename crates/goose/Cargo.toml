@@ -139,7 +139,7 @@ sqlx = { version = "0.8", default-features = false, features = [
 
 # For Bedrock provider (optional, behind "aws-providers" feature)
 aws-config = { version = "=1.8.13", features = ["behavior-version-latest"], optional = true }
-aws-smithy-types = { version = "=1.5.0", optional = true }
+aws-smithy-types = { version = "=1.6.1", optional = true }
 aws-sdk-bedrockruntime = { version = "=1.124.0", default-features = false, features = ["default-https-client", "rt-tokio"], optional = true }
 
 # For SageMaker TGI provider (optional, behind "aws-providers" feature)
