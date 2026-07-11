@@ -77,34 +77,35 @@ struct InboxView: View {
     @State private var items: [OpenDecision] = []
     @State private var busy: Set<String> = []
     @State private var errorText: String?
+    @State private var resolvedCount = 0
 
     var body: some View {
         NavigationStack {
             List {
                 if let errorText {
-                    Text(errorText).font(.caption).foregroundStyle(Brand.danger)
+                    Text(errorText).font(.brandCaption).foregroundStyle(Brand.danger)
                         .listRowBackground(Color.clear).listRowSeparator(.hidden)
                 }
                 if items.isEmpty {
                     Text("Nothing needs you right now. Henry surfaces risk gates, reviews, and unblock requests here — approve or send back with a tap.")
-                        .font(.caption).foregroundStyle(Brand.textMuted)
+                        .font(.brandCaption).foregroundStyle(Brand.textMuted)
                         .listRowBackground(Color.clear).listRowSeparator(.hidden)
                 }
                 ForEach(items) { d in
                     GlassCard {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(d.kind.replacingOccurrences(of: "_", with: " ").uppercased())
-                                .font(.system(.caption2, design: .monospaced).weight(.semibold))
+                                .font(.brandLabel)
                                 .foregroundStyle(Brand.cyan)
                             Text(d.headline ?? "Decision")
-                                .font(.subheadline.weight(.semibold))
+                                .font(.brandHeadline)
                                 .foregroundStyle(Brand.text)
                             if let detail = d.detail, !detail.isEmpty {
-                                Text(detail).font(.caption).foregroundStyle(Brand.textMuted).lineLimit(4)
+                                Text(detail).font(.brandCaption).foregroundStyle(Brand.textMuted).lineLimit(4)
                             }
                             if let goal = d.goal_title, !goal.isEmpty {
                                 Text("Goal: \(goal)")
-                                    .font(.system(.caption2, design: .monospaced))
+                                    .font(.brandLabel)
                                     .foregroundStyle(Brand.textDim)
                             }
                             actions(for: d)
@@ -120,6 +121,8 @@ struct InboxView: View {
             .navigationTitle("Decisions")
             .refreshable { await load() }
             .task { await load() }
+            // Tactile: a success tap when you clear a decision.
+            .sensoryFeedback(.success, trigger: resolvedCount)
         }
     }
 
@@ -162,7 +165,8 @@ struct InboxView: View {
             struct Resp: Decodable { let effect: String? }
             do {
                 _ = try await APIClient.shared.post("/api/decisions/\(id)/answer", body: Body(answer: verb), as: Resp.self)
-                withAnimation { items.removeAll { $0.id == id } }
+                resolvedCount += 1
+                withAnimation(Motion.spring) { items.removeAll { $0.id == id } }
             } catch {
                 errorText = "Couldn't submit that — check the hub, or answer on the desktop."
             }
@@ -229,6 +233,7 @@ struct ChatView: View {
     @State private var draft = ""
     @State private var messages: [ChatBubble] = []
     @State private var sending = false
+    @State private var sentCount = 0
     @State private var sessionId = MobileSession.chatSessionId()
 
     var body: some View {
@@ -239,7 +244,7 @@ struct ChatView: View {
                         VStack(alignment: .leading, spacing: 10) {
                             if messages.isEmpty {
                                 Text("Ask Henry to do something on your hub — open a site in the desktop browser, dispatch a goal, check the Brain. It runs on your Mac; you watch it here.")
-                                    .font(.caption)
+                                    .font(.brandCaption)
                                     .foregroundStyle(Brand.textMuted)
                                     .padding(.top, 48)
                                     .padding(.horizontal, 4)
@@ -250,7 +255,7 @@ struct ChatView: View {
                     }
                     .onChange(of: messages.count) { _, _ in
                         if let last = messages.last {
-                            withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                            withAnimation(Motion.spring) { proxy.scrollTo(last.id, anchor: .bottom) }
                         }
                     }
                 }
@@ -258,21 +263,31 @@ struct ChatView: View {
             }
             .background(Brand.shell)
             .navigationTitle("Henry")
+            // Tactile: a light tap when you send.
+            .sensoryFeedback(.impact(weight: .light), trigger: sentCount)
         }
     }
 
     private func bubble(_ m: ChatBubble) -> some View {
         HStack {
             if m.role == "user" { Spacer(minLength: 44) }
-            Text(m.text.isEmpty ? "…" : m.text)
-                .font(.subheadline)
-                .foregroundStyle(m.role == "user" ? Brand.deepVoid : Brand.text)
-                .padding(12)
-                .background(m.role == "user" ? Brand.cyan : Brand.surface)
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            Group {
+                if m.role != "user" && m.text.isEmpty {
+                    ThinkingDots()
+                } else {
+                    Text(m.text)
+                        .font(.brandBody)
+                        .foregroundStyle(m.role == "user" ? Brand.deepVoid : Brand.text)
+                        .textSelection(.enabled)
+                }
+            }
+            .padding(12)
+            .background(m.role == "user" ? Brand.cyan : Brand.surface)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             if m.role != "user" { Spacer(minLength: 44) }
         }
         .id(m.id)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
     private var composer: some View {
@@ -304,8 +319,11 @@ struct ChatView: View {
         guard !text.isEmpty, !sending else { return }
         draft = ""
         sending = true
-        messages.append(ChatBubble(role: "user", text: text))
-        messages.append(ChatBubble(role: "assistant", text: ""))
+        sentCount += 1
+        withAnimation(Motion.spring) {
+            messages.append(ChatBubble(role: "user", text: text))
+            messages.append(ChatBubble(role: "assistant", text: ""))
+        }
         let idx = messages.count - 1
         Task {
             do {
