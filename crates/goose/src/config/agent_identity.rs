@@ -62,6 +62,51 @@ pub const PERSONA_PICKER_FEATURE: crate::agents::self_knowledge::FeatureDescript
         ],
     };
 
+/// Self-knowledge descriptor for the voice modality (#353). Co-located with
+/// the persona config because the voice identity is chosen here; the audio
+/// pipeline itself lives in the daemon (sherpa STT + Kokoro TTS).
+pub const VOICE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "voice",
+        display_name: "Voice",
+        category: crate::agents::self_knowledge::FeatureCategory::Surface,
+        what_it_does:
+            "Push-to-talk speech input and spoken replies: the user holds the mic, speaks, and \
+             you answer out loud in the persona's chosen voice. Works everywhere chat works, \
+             including hands-free instructions like asking you to open a site and read it aloud",
+        why_it_matters:
+            "Many users drive you primarily by voice — treat spoken turns exactly like typed \
+             ones. When asked to 'read' something aloud, answer in flowing sentences suited to \
+             listening, not bullet fragments",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        teaching: &[crate::agents::self_knowledge::TeachingStep {
+            title: "Talk instead of type",
+            body: "Show the user the mic control: hold to talk, release to send. Your reply \
+                   comes back both as text and spoken in the voice they chose for you.",
+            open_surface: None,
+            confirm: None,
+        }],
+    };
+
+/// Self-knowledge descriptor for web search (#353). The search tools arrive
+/// via a bundled MCP server (Brave or Tavily) the user connects in the wizard
+/// or Settings — the descriptor keeps the brief honest either way.
+pub const WEB_SEARCH_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "web_search",
+        display_name: "Web search",
+        category: crate::agents::self_knowledge::FeatureCategory::Surface,
+        what_it_does:
+            "Live web lookup through a connected search provider (Brave or Tavily). When one is \
+             connected its search tools appear in your tool list; without one, offer to set it \
+             up — a one-key step in Settings or the setup wizard",
+        why_it_matters:
+            "Fresh information beyond your training data. Check your live tool list before \
+             claiming you can or cannot search — the truth is whatever tools are present",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        teaching: &[],
+    };
+
 /// Primary agent persona configuration.
 /// Stored at ~/.permagent/agent.yaml under the `primary` key.
 #[derive(Debug, Clone, Serialize, Deserialize)]

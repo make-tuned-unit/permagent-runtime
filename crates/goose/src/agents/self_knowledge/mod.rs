@@ -150,8 +150,11 @@ pub static SURFACE_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::events::WORLD_VIEW_FEATURE,
     crate::brain_handle::BRAIN_FEATURE,
     crate::config::agent_identity::PERSONA_PICKER_FEATURE,
+    crate::config::agent_identity::VOICE_FEATURE,
+    crate::config::agent_identity::WEB_SEARCH_FEATURE,
     crate::agents::platform_extensions::project_manager::BUILD_TAB_FEATURE,
     crate::agents::platform_extensions::project_manager::PROJECT_WORKSPACE_FEATURE,
+    crate::decision_inbox::DECISION_INBOX_FEATURE,
     crate::inbox::INBOX_FEATURE,
 ];
 
@@ -489,8 +492,11 @@ mod tests {
         "world_view",
         "brain",
         "persona",
+        "voice",
+        "web_search",
         "build",
         "projects",
+        "decision_inbox",
         "inbox",
     ];
     /// The Phase-2-v1 lesson set — each must resolve to a descriptor with steps.

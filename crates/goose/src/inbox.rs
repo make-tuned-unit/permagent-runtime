@@ -24,7 +24,7 @@ use uuid::Uuid;
 pub const INBOX_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
     crate::agents::self_knowledge::FeatureDescriptor {
         id: "inbox",
-        display_name: "Inbox",
+        display_name: "Downloads inbox",
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
         what_it_does:
             "A Permagent-owned intake folder — files you download in the in-app browser land here (on disk under ~/.permagent/inbox/, with a row in your database) instead of disappearing into Finder",

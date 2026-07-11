@@ -75,9 +75,9 @@ pub const DURABILITY_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         display_name: "Durability supervision",
         category: crate::agents::self_knowledge::FeatureCategory::Guard,
         what_it_does:
-            "Keeps my daemon healthy for weeks unattended: a panic circuit-breaker forces a clean restart instead of limping half-dead, an external watchdog restarts me if I stop answering, my databases' write-ahead logs are truncated on a timer so they cannot fill the disk, and my scheduled work is reconciled after every restart",
+            "Keeps your daemon healthy for weeks unattended: a panic circuit-breaker forces a clean restart instead of limping half-dead, an external watchdog restarts you if you stop answering, the databases' write-ahead logs are truncated on a timer so they cannot fill the disk, and scheduled work is reconciled after every restart",
         why_it_matters:
-            "It is why you can leave me running and reach me days later and I just work — nothing silently died, wedged, leaked, or filled the disk in the meantime",
+            "It is why the user can leave you running and reach you days later and you just work — nothing silently died, wedged, leaked, or filled the disk in the meantime",
         state_source: crate::agents::self_knowledge::StateSource::Static,
         teaching: &[],
     };

@@ -27,7 +27,7 @@ pub const BRAIN_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         display_name: "Brain",
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
         what_it_does:
-            "Your persistent memory — durable facts, conversations, and ingested content that survive across every session",
+            "Your persistent memory — durable facts, conversations, and ingested content that survive across every session. The graph draws real connection lines between entities — person-to-project working relationships included",
         why_it_matters:
             "It is what makes you continuous rather than a fresh chatbot each time; recall it before assuming you do not know something",
         state_source: crate::agents::self_knowledge::StateSource::Static,
