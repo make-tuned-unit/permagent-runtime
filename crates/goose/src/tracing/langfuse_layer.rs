@@ -199,14 +199,21 @@ mod tests {
         original_subscriber: Option<dispatcher::Dispatch>,
         original_env_vars: HashMap<String, String>,
         mock_server: Option<MockServer>,
+        /// Serializes env mutation across parallel tests (see ENV_LOCK).
+        _env_guard: Option<std::sync::MutexGuard<'static, ()>>,
     }
 
     impl TestFixture {
         async fn new() -> Self {
+            // Take the env lock FIRST — env snapshot and all later mutation
+            // happen under it. Poisoned locks are recovered: a panicked test
+            // must not cascade into every later env test failing.
+            let env_guard = Some(ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner()));
             Self {
                 original_subscriber: Some(dispatcher::get_default(dispatcher::Dispatch::clone)),
                 original_env_vars: Self::save_env_vars(),
                 mock_server: None,
+                _env_guard: env_guard,
             }
         }
 
@@ -267,6 +274,13 @@ mod tests {
             }
         }
     }
+
+    /// Process env vars are global: two tests mutating LANGFUSE_* in parallel
+    /// race each other (bit main once on 2026-07-10 — 'Observer should be
+    /// Some' failed because a sibling test's cleanup removed the keys mid-
+    /// test). Every env-touching test path goes through TestFixture, so the
+    /// fixture holds this lock for its lifetime.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn create_test_event() -> Value {
         json!({
