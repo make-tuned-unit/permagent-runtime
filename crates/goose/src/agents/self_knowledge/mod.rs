@@ -154,6 +154,7 @@ pub static SURFACE_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::config::agent_identity::WEB_SEARCH_FEATURE,
     crate::agents::platform_extensions::project_manager::BUILD_TAB_FEATURE,
     crate::agents::platform_extensions::project_manager::PROJECT_WORKSPACE_FEATURE,
+    crate::agents::platform_extensions::project_manager::DEVICES_FEATURE,
     crate::decision_inbox::DECISION_INBOX_FEATURE,
     crate::inbox::INBOX_FEATURE,
 ];
@@ -496,6 +497,7 @@ mod tests {
         "web_search",
         "build",
         "projects",
+        "devices",
         "decision_inbox",
         "inbox",
     ];

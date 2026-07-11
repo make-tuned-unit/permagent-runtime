@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
-import { api } from '../../lib/api';
+import { api, apiFetch, loadDaemonToken } from '../../lib/api';
 import { font, ease, setTheme as setThemeFn, setMobiusGlow, setIdleAnim, setShowHeroMobius, setDensity as setDensityFn, setReduceMotion as setReduceMotionFn, type ThemeId, type IdleAnim, type UIDensity } from '../../styles/tokens';
 import { useTheme as useThemeHook } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
@@ -72,6 +72,7 @@ const CATEGORIES = [
     { key: 'tools',       label: 'Tools & MCPs',     icon: 'M14.7 6.3a1 1 0 011.4 0l1.6 1.6a1 1 0 010 1.4l-9 9-3 .6.6-3 9-9.6zM3 21h18' },
     { key: 'models',      label: 'Models',           icon: 'M3 12h4l3-9 4 18 3-9h4' },
     { key: 'keys',        label: 'API keys',         icon: 'M14 8a4 4 0 100 8 4 4 0 000-8zm0 4l-9 9m4-4l3 3' },
+    { key: 'devices',    label: 'Devices',          icon: 'M17 2H7a2 2 0 00-2 2v16a2 2 0 002 2h10a2 2 0 002-2V4a2 2 0 00-2-2zM12 18h.01' },
     { key: 'search',      label: 'Search & tools',   icon: 'M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z' },
   ]},
   { group: 'System', items: [
@@ -691,9 +692,91 @@ function DataPanel() {
 const PANELS: Record<string, (props: PanelProps) => JSX.Element> = {
   agent: PersonaPanel, profile: ProfilePanel, preferences: PreferencesPanel,
   memory: MemoryPanel, autonomy: AutonomyPanel, tools: ToolsPanel,
-  models: ModelsPanel, keys: KeysPanel, search: SearchPanel,
+  models: ModelsPanel, keys: KeysPanel, devices: DevicesPanel, search: SearchPanel,
   appearance: AppearancePanel, shortcuts: ShortcutsPanel, data: DataPanel,
 };
+
+/** Devices — hub-and-spoke pairing (MULTI_DEVICE.md). The hub (this machine)
+ *  holds the one Brain; every other device connects to it over the tailnet by
+ *  opening the pairing URL once (the token rides the #fragment and is
+ *  captured into that device's localStorage — see api.ts browserToken). */
+function DevicesPanel() {
+  const { colors } = useThemeHook();
+  const [token, setToken] = useState<string | null>(null);
+  const [host, setHost] = useState('your-mac.tailnet-name.ts.net');
+  const [copied, setCopied] = useState(false);
+  const [tailnet, setTailnet] = useState<{ installed: boolean; running: boolean; magic_dns_name: string | null } | null>(null);
+  useEffect(() => { loadDaemonToken().then(setToken); }, []);
+  // Deterministic detection: when the hub is on a tailnet, the address fills
+  // itself — the user types nothing (Jesse's zero-strain rule, 2026-07-11).
+  useEffect(() => {
+    apiFetch<{ installed: boolean; running: boolean; magic_dns_name: string | null }>('/api/tailnet/status')
+      .then(t => {
+        setTailnet(t);
+        if (t.magic_dns_name) setHost(t.magic_dns_name);
+      })
+      .catch(() => setTailnet(null));
+  }, []);
+  const pairingUrl = token
+    ? `http://${host}:3001/ui/#token=${token}`
+    : null;
+  return (
+    <div>
+      <H1 sub="One Brain, one truth: this machine is the hub — every other device connects to it. No accounts, no sync conflicts; pairing is this URL, opened once per device.">Devices</H1>
+      <Section title="Pair a device" sub="Live — requires the daemon bound to your tailnet (HOST=0.0.0.0 or your Tailscale IP in the daemon environment) and Tailscale on both devices.">
+        <Row label="Tailnet" hint={tailnet?.running ? 'Detected — address filled in automatically.' : tailnet?.installed ? 'Tailscale is installed but not connected.' : 'Tailscale not detected on this machine.'}>
+          {tailnet?.running ? (
+            <span style={{ fontSize: 12, color: colors.cyan }}>● Connected{tailnet.magic_dns_name ? ` — ${tailnet.magic_dns_name}` : ''}</span>
+          ) : (
+            <button
+              style={ghost(colors)}
+              title="Copies a setup request and opens chat — Henry runs the terminal steps for you."
+              onClick={() => {
+                navigator.clipboard.writeText(
+                  'Set up Tailscale on this machine so my other devices can reach Permagent: '
+                  + 'check if it is installed, install it if not, bring it up (open the login '
+                  + 'page for me in the browser when it appears), then tell me my MagicDNS name '
+                  + 'and confirm the Devices pairing page shows it.'
+                ).catch(() => {});
+                navigateToTool('chat');
+              }}
+            >Have Henry set it up</button>
+          )}
+        </Row>
+        <Row label="Hub address" hint="Your machine's Tailscale MagicDNS name (auto-filled when the tailnet is detected).">
+          <TextInput value={host} onChange={setHost} placeholder="my-mac.tailnet-name.ts.net" />
+        </Row>
+        <Row label="Pairing URL" hint="Open this on the new device's browser. The token is captured on first load and scrubbed from the URL.">
+          {pairingUrl ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+              <code style={{
+                fontFamily: font.mono, fontSize: 10, color: colors.cyan,
+                background: colors.bgDeeper, padding: '6px 8px', borderRadius: 6,
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 320,
+              }}>{pairingUrl}</code>
+              <button
+                style={ghost(colors)}
+                onClick={() => {
+                  navigator.clipboard.writeText(pairingUrl).then(() => {
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 1600);
+                  });
+                }}
+              >{copied ? 'Copied ✓' : 'Copy'}</button>
+            </div>
+          ) : (
+            <span style={{ fontSize: 12, color: colors.textDim }}>
+              Token unavailable — pairing works from the desktop app on the hub machine.
+            </span>
+          )}
+        </Row>
+        <Row label="Security" hint="The URL contains this daemon's bearer token — share it only through your own devices. Tailscale encrypts the transport; the token is the pairing secret.">
+          <span style={{ fontSize: 12, color: colors.textMuted }}>Treat the pairing URL like a password.</span>
+        </Row>
+      </Section>
+    </div>
+  );
+}
 
 // ── Main Settings View ───────────────────────────────────────────────
 
