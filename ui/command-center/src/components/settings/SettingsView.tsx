@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { api, apiFetch, loadDaemonToken } from '../../lib/api';
-import { font, ease, setTheme as setThemeFn, setMobiusGlow, setIdleAnim, setShowHeroMobius, setDensity as setDensityFn, setReduceMotion as setReduceMotionFn, type ThemeId, type IdleAnim, type UIDensity } from '../../styles/tokens';
+import { font, ease, setTheme as setThemeFn, setMobiusGlow, setIdleAnim, setShowHeroMobius, setDensity as setDensityFn, setReduceMotion as setReduceMotionFn, type ThemePref, type IdleAnim, type UIDensity } from '../../styles/tokens';
 import { useTheme as useThemeHook } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import {
@@ -618,7 +618,8 @@ function AppearancePanel() {
   const { colors } = useThemeHook();
   const prefs = useThemeHook();
   // Literal hex by design: these swatch gradients intentionally depict each theme's own palette, regardless of the active theme.
-  const themes: Array<{ id: ThemeId; l: string; g: string }> = [
+  const themes: Array<{ id: ThemePref; l: string; g: string }> = [
+    { id: 'system', l: 'System', g: 'linear-gradient(135deg, #F8FAFC 0%, #D8DEE8 48%, #0B1220 52%, #1E2433 100%)' },
     { id: 'dark', l: 'Permagent dark', g: 'linear-gradient(135deg, #0B1220, #1E2433)' },
     { id: 'aurora', l: 'Aurora', g: 'linear-gradient(135deg, #0B1220 30%, #8D44AE)' },
     { id: 'silver', l: 'Silver', g: 'linear-gradient(135deg, #F8FAFC 0%, #D8DEE8 70%, #00BFEF 85%, #8B5CFF 100%)' },
@@ -630,10 +631,10 @@ function AppearancePanel() {
   return (
     <div>
       <H1 sub="How Permagent looks while it runs alongside you.">Appearance</H1>
-      <Section title="Theme">
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+      <Section title="Theme" sub="System follows your device — silver by day, dark when your other apps go dark.">
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
           {themes.map(th => {
-            const on = prefs.theme === th.id;
+            const on = prefs.themePref === th.id;
             return (
               <div key={th.id} onClick={() => setThemeFn(th.id)} style={{
                 padding: 4, borderRadius: 12, cursor: 'pointer',
