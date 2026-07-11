@@ -666,6 +666,19 @@ impl OrchestratorClient {
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .filter(|s| !s.is_empty());
 
+        // #456: author the goal's completion criterion at dispatch. Seeds the
+        // project-default build check (`command_exit_zero`) onto code-flavored
+        // goals — explicit `project.metadata_json.build_command` first, else
+        // stack detection; goals that already declare checks (or are typed
+        // non-code) are left alone. The verifier runs these in the worker's
+        // worktree and clamps the verdict to Fail when the build breaks.
+        let seeded_checks = default_completion_checks(
+            &card.metadata_json,
+            &project.metadata_json,
+            &working_dir,
+            baseline_commit.is_some(),
+        );
+
         // Resolve the engine for this worker and dispatch. The engine owns *how*
         // the goal runs; the card lifecycle around it stays here.
         let worker_cfg = config.workers.get(&worker_key);
@@ -859,6 +872,19 @@ impl OrchestratorClient {
         );
         if let Some(ref baseline) = baseline_commit {
             patch.insert("baseline_commit".to_string(), serde_json::json!(baseline));
+        }
+        if let Some(checks) = seeded_checks {
+            tracing::info!(
+                target: "permagentd::brain",
+                "Seeding project-default completion check onto goal '{}': {}",
+                card.title,
+                checks
+            );
+            patch.insert("completion_checks".to_string(), checks);
+            patch.insert(
+                "completion_checks_source".to_string(),
+                serde_json::json!("project-default"),
+            );
         }
 
         goal_transition::advance_goal_checked(
@@ -2509,6 +2535,85 @@ pub static GOAL_REVIEW_HOOK: std::sync::OnceLock<GoalReviewHook> = std::sync::On
 /// needs_human_attention. Otherwise leaves in InProgress for retry.
 ///
 /// Gracefully no-ops if the card is no longer in InProgress (manual intervention).
+/// Goal types that never get a forced build check (#456, ruled 2026-06-23):
+/// prose/content-flavored work has no build to run — seeding one would
+/// false-fail correct work. Content goals get their publish-sequence +
+/// live-check default with #457.
+const NON_CODE_GOAL_TYPES: &[&str] = &["prose", "content", "writing", "docs", "research"];
+
+/// Default timeout for the seeded build check (checks.rs clamps to 600s max).
+const DEFAULT_BUILD_CHECK_TIMEOUT_SECS: u64 = 600;
+
+/// Default completion checks for a code-flavored goal at dispatch (#456).
+///
+/// Opt-in with per-goal-type defaults (Jesse's ruling, 2026-06-23). Seeds a
+/// single `command_exit_zero` build check ONLY when ALL of:
+/// * the goal declares no `completion_checks` of its own — user authoring and
+///   retry re-dispatches always win; this never overwrites;
+/// * the goal is not explicitly typed as a non-code goal (`goal_type`);
+/// * the project root is a git repo (`is_git_repo` — the dispatch baseline
+///   resolved), the code-flavor heuristic;
+/// * a build command is known: explicit `project.metadata_json.build_command`
+///   first (explicit config over hidden defaults), else conservative stack
+///   detection — `npm run build` when package.json declares a build script,
+///   `cargo check` for a Cargo project.
+///
+/// Returns the JSON array for `metadata_json.completion_checks`
+/// (verification/checks.rs schema) or None to seed nothing. Never guesses a
+/// command: an unknown stack seeds nothing — a check `error` clamps the
+/// verdict to Fail, and manufacturing false-fails is the one thing the ruling
+/// forbids.
+fn default_completion_checks(
+    card_meta: &serde_json::Value,
+    project_meta: &serde_json::Value,
+    working_dir: &std::path::Path,
+    is_git_repo: bool,
+) -> Option<serde_json::Value> {
+    if !is_git_repo || card_meta.get("completion_checks").is_some() {
+        return None;
+    }
+    if let Some(goal_type) = card_meta.get("goal_type").and_then(|v| v.as_str()) {
+        if NON_CODE_GOAL_TYPES.contains(&goal_type) {
+            return None;
+        }
+    }
+
+    let explicit = project_meta
+        .get("build_command")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let cmd: String = match explicit {
+        Some(c) => c.to_string(),
+        None => {
+            let has_npm_build = std::fs::read_to_string(working_dir.join("package.json"))
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .and_then(|pkg| pkg.get("scripts")?.get("build").cloned())
+                .is_some();
+            if has_npm_build {
+                "npm run build".to_string()
+            } else if working_dir.join("Cargo.toml").is_file() {
+                "cargo check".to_string()
+            } else {
+                return None;
+            }
+        }
+    };
+
+    let timeout_secs = project_meta
+        .get("build_timeout_secs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(DEFAULT_BUILD_CHECK_TIMEOUT_SECS);
+
+    Some(serde_json::json!([{
+        "type": "command_exit_zero",
+        "cmd": cmd,
+        "timeout_secs": timeout_secs,
+    }]))
+}
+
 /// The canned approve_review detail used when no deterministic evidence is
 /// available (in-process subagent, pre-evidence goals).
 fn review_detail_base(card_id: &str) -> String {
@@ -3350,6 +3455,144 @@ async fn try_complete_dead_worker_from_worktree(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── default_completion_checks (#456 seeding heuristic) ──────────────────
+
+    fn seeded_cmd(checks: &serde_json::Value) -> &str {
+        checks[0]["cmd"].as_str().unwrap()
+    }
+
+    #[test]
+    fn seed_uses_explicit_project_build_command_over_detection() {
+        let dir = tempfile::tempdir().unwrap();
+        // Detection would say npm, but explicit config must win.
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts": {"build": "vite build"}}"#,
+        )
+        .unwrap();
+        let checks = default_completion_checks(
+            &serde_json::json!({}),
+            &serde_json::json!({"build_command": "just build", "build_timeout_secs": 120}),
+            dir.path(),
+            true,
+        )
+        .expect("explicit build_command must seed");
+        assert_eq!(seeded_cmd(&checks), "just build");
+        assert_eq!(checks[0]["type"], "command_exit_zero");
+        assert_eq!(checks[0]["timeout_secs"], 120);
+    }
+
+    #[test]
+    fn seed_detects_npm_and_cargo_stacks() {
+        let npm = tempfile::tempdir().unwrap();
+        std::fs::write(
+            npm.path().join("package.json"),
+            r#"{"scripts": {"build": "tsc && vite build"}}"#,
+        )
+        .unwrap();
+        let checks =
+            default_completion_checks(&serde_json::json!({}), &serde_json::json!({}), npm.path(), true)
+                .expect("npm build script must seed");
+        assert_eq!(seeded_cmd(&checks), "npm run build");
+        assert_eq!(checks[0]["timeout_secs"], DEFAULT_BUILD_CHECK_TIMEOUT_SECS);
+
+        let cargo = tempfile::tempdir().unwrap();
+        std::fs::write(cargo.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        let checks = default_completion_checks(
+            &serde_json::json!({}),
+            &serde_json::json!({}),
+            cargo.path(),
+            true,
+        )
+        .expect("Cargo project must seed");
+        assert_eq!(seeded_cmd(&checks), "cargo check");
+    }
+
+    #[test]
+    fn seed_never_overwrites_and_skips_non_code_cases() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\n").unwrap();
+
+        // Existing checks (user-authored or a retry re-dispatch) win.
+        assert!(default_completion_checks(
+            &serde_json::json!({"completion_checks": []}),
+            &serde_json::json!({"build_command": "make"}),
+            dir.path(),
+            true,
+        )
+        .is_none());
+
+        // Explicitly non-code goal types are never force-checked.
+        assert!(default_completion_checks(
+            &serde_json::json!({"goal_type": "prose"}),
+            &serde_json::json!({"build_command": "make"}),
+            dir.path(),
+            true,
+        )
+        .is_none());
+
+        // Not a git repo (no dispatch baseline) → not code-flavored.
+        assert!(default_completion_checks(
+            &serde_json::json!({}),
+            &serde_json::json!({"build_command": "make"}),
+            dir.path(),
+            false,
+        )
+        .is_none());
+
+        // Unknown stack and no explicit command → seed nothing, never guess.
+        let bare = tempfile::tempdir().unwrap();
+        assert!(default_completion_checks(
+            &serde_json::json!({}),
+            &serde_json::json!({}),
+            bare.path(),
+            true,
+        )
+        .is_none());
+
+        // package.json WITHOUT a build script must not seed npm.
+        let no_build = tempfile::tempdir().unwrap();
+        std::fs::write(
+            no_build.path().join("package.json"),
+            r#"{"dependencies": {"esbuild": "^0.20"}}"#,
+        )
+        .unwrap();
+        assert!(default_completion_checks(
+            &serde_json::json!({}),
+            &serde_json::json!({}),
+            no_build.path(),
+            true,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn seeded_checks_parse_against_the_checks_schema() {
+        // The seeded JSON must round-trip through the deny_unknown_fields
+        // CompletionCheck schema the verifier parses (verification/checks.rs
+        // mirrors this shape; goal_transition's serde types are the contract
+        // available from this crate — assert the wire shape directly).
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\n").unwrap();
+        let checks = default_completion_checks(
+            &serde_json::json!({}),
+            &serde_json::json!({}),
+            dir.path(),
+            true,
+        )
+        .unwrap();
+        let arr = checks.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        let obj = arr[0].as_object().unwrap();
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec!["cmd", "timeout_secs", "type"],
+            "exactly the fields command_exit_zero accepts (deny_unknown_fields)"
+        );
+    }
 
     async fn test_pool() -> sqlx::Pool<sqlx::Sqlite> {
         use crate::session::spectral_schema::init_spectral_db;

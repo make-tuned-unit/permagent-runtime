@@ -17,6 +17,12 @@ pub struct Project {
     pub site_url: Option<String>,
     pub repo_url: Option<String>,
     pub notes: String,
+    /// General project metadata bag (schema v25; mirrors `cards.metadata_json`
+    /// — ruling 3 in GOAL_COMPLETION_AND_VERIFICATION.md §3d). Known keys:
+    /// `build_command` (string) — project build check the orchestrator seeds
+    /// onto code-flavored goals as a `command_exit_zero` completion check;
+    /// `build_timeout_secs` (number) — optional timeout for it.
+    pub metadata_json: serde_json::Value,
     pub tags: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -24,6 +30,7 @@ pub struct Project {
 }
 
 fn row_to_project(r: &sqlx::sqlite::SqliteRow) -> Project {
+    let metadata_raw: String = r.get("metadata_json");
     Project {
         id: r.get("id"),
         user_id: r.get("user_id"),
@@ -35,6 +42,8 @@ fn row_to_project(r: &sqlx::sqlite::SqliteRow) -> Project {
         site_url: r.get("site_url"),
         repo_url: r.get("repo_url"),
         notes: r.get("notes"),
+        metadata_json: serde_json::from_str(&metadata_raw)
+            .unwrap_or_else(|_| serde_json::json!({})),
         tags: Vec::new(),
         created_at: r.get("created_at"),
         updated_at: r.get("updated_at"),
@@ -172,7 +181,7 @@ pub async fn create_project(pool: &Pool<Sqlite>, input: CreateProject) -> Result
 
 pub async fn get_project(pool: &Pool<Sqlite>, id: &str) -> Result<Option<Project>, String> {
     let row = sqlx::query(
-        "SELECT id, user_id, slug, name, description, status, root_path, site_url, repo_url, notes, created_at, updated_at, last_opened_at
+        "SELECT id, user_id, slug, name, description, status, root_path, site_url, repo_url, notes, metadata_json, created_at, updated_at, last_opened_at
          FROM projects WHERE id = ?",
     )
     .bind(id)
@@ -199,7 +208,7 @@ pub async fn get_project_by_id_or_slug(
         return Ok(Some(p));
     }
     let row = sqlx::query(
-        "SELECT id, user_id, slug, name, description, status, root_path, site_url, repo_url, notes, created_at, updated_at, last_opened_at
+        "SELECT id, user_id, slug, name, description, status, root_path, site_url, repo_url, notes, metadata_json, created_at, updated_at, last_opened_at
          FROM projects WHERE user_id = 'default' AND slug = ?",
     )
     .bind(id_or_slug)
@@ -223,7 +232,7 @@ pub async fn list_projects(
 ) -> Result<Vec<Project>, String> {
     let rows = if let Some(status) = status_filter {
         sqlx::query(
-            "SELECT id, user_id, slug, name, description, status, root_path, site_url, repo_url, notes, created_at, updated_at, last_opened_at
+            "SELECT id, user_id, slug, name, description, status, root_path, site_url, repo_url, notes, metadata_json, created_at, updated_at, last_opened_at
              FROM projects WHERE user_id = 'default' AND status = ?
              ORDER BY last_opened_at DESC",
         )
@@ -232,7 +241,7 @@ pub async fn list_projects(
         .await
     } else {
         sqlx::query(
-            "SELECT id, user_id, slug, name, description, status, root_path, site_url, repo_url, notes, created_at, updated_at, last_opened_at
+            "SELECT id, user_id, slug, name, description, status, root_path, site_url, repo_url, notes, metadata_json, created_at, updated_at, last_opened_at
              FROM projects WHERE user_id = 'default'
              ORDER BY last_opened_at DESC",
         )
@@ -258,6 +267,8 @@ pub struct UpdateProject {
     pub site_url: Option<Option<String>>,
     pub repo_url: Option<Option<String>>,
     pub notes: Option<String>,
+    /// Full replacement of the project metadata bag (must be a JSON object).
+    pub metadata_json: Option<serde_json::Value>,
 }
 
 pub async fn update_project(
@@ -363,6 +374,18 @@ pub async fn update_project(
     if let Some(ref repo_url) = input.repo_url {
         sqlx::query("UPDATE projects SET repo_url = ? WHERE id = ?")
             .bind(repo_url.as_deref())
+            .bind(id)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    if let Some(ref metadata) = input.metadata_json {
+        if !metadata.is_object() {
+            return Err("metadata_json must be a JSON object".to_string());
+        }
+        let raw = serde_json::to_string(metadata).map_err(|e| e.to_string())?;
+        sqlx::query("UPDATE projects SET metadata_json = ? WHERE id = ?")
+            .bind(&raw)
             .bind(id)
             .execute(pool)
             .await
@@ -576,6 +599,52 @@ mod tests {
         .unwrap();
         assert_eq!(updated.name, "New Name");
         assert_eq!(updated.root_path.as_deref(), Some("/dev/myproject"));
+    }
+
+    #[tokio::test]
+    async fn metadata_json_defaults_empty_and_roundtrips() {
+        let pool = test_pool().await;
+        let p = create_project(
+            &pool,
+            CreateProject {
+                name: "Meta".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(p.metadata_json, serde_json::json!({}));
+
+        let updated = update_project(
+            &pool,
+            &p.id,
+            UpdateProject {
+                metadata_json: Some(serde_json::json!({
+                    "build_command": "npm run build",
+                    "build_timeout_secs": 300
+                })),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            updated.metadata_json.get("build_command").unwrap(),
+            "npm run build"
+        );
+
+        // Non-object metadata is refused.
+        let err = update_project(
+            &pool,
+            &p.id,
+            UpdateProject {
+                metadata_json: Some(serde_json::json!(["not", "an", "object"])),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert!(err.is_err());
     }
 
     #[tokio::test]
