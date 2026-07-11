@@ -3,7 +3,6 @@ import { font, ease } from '../../styles/tokens';
 import { api } from '../../lib/api';
 import { useTheme } from '../../styles/useTheme';
 import { useCommandCenter } from '../../lib/store';
-import { createChatWindow } from '../../lib/chatWindow';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
@@ -12,7 +11,7 @@ const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 export const CHAT_LAUNCHER_MARGIN = 20;
 
 export function ChatLauncher() {
-  const { colors, theme } = useTheme();
+  const { colors } = useTheme();
   const [agentName, setAgentName] = useState('Agent');
   const [chatWindowOpen, setChatWindowOpen] = useState(false);
   const setChatLauncherSize = useCommandCenter(s => s.setChatLauncherSize);
@@ -89,8 +88,14 @@ export function ChatLauncher() {
     return () => { unlisten?.(); };
   }, [chatWindowOpen]);
 
+  const openChatDock = useCommandCenter(s => s.openChatDock);
   const openChatWindow = useCallback(async () => {
-    if (!isTauri) return;
+    // Dock-first (2026-07-11): the pill opens the right-side sidebar. If the
+    // user has already DETACHED chat to its own window, focus that instead.
+    if (!isTauri) {
+      openChatDock();
+      return;
+    }
     try {
       const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
 
@@ -105,21 +110,13 @@ export function ChatLauncher() {
         return;
       }
 
-      const chatWindow = await createChatWindow(theme);
-
-      chatWindow.once('tauri://created', async () => {
-        setChatWindowOpen(true);
-        // Ensure chat window comes to front above the main window
-        await chatWindow.setFocus();
-      });
-      chatWindow.once('tauri://error', (e) => {
-        console.error('Chat window error:', e);
-        setChatWindowOpen(false);
-      });
+      // No detached window → open the dock (the new default surface).
+      openChatDock();
     } catch (e) {
-      console.error('Failed to open chat window:', e);
+      console.error('Failed to open chat:', e);
+      openChatDock();
     }
-  }, [theme]);
+  }, [openChatDock]);
 
   if (chatWindowOpen) return null;
 
