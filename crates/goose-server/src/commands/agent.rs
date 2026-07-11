@@ -162,13 +162,13 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
             #[cfg(feature = "rustls-tls")]
             axum_server::bind_rustls(addr, tls_setup.config)
                 .handle(handle)
-                .serve(app.into_make_service())
+                .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>())
                 .await?;
 
             #[cfg(feature = "native-tls")]
             axum_server::bind_openssl(addr, tls_setup.config)
                 .handle(handle)
-                .serve(app.into_make_service())
+                .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>())
                 .await?;
         }
 
@@ -189,14 +189,19 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
             &spectral_path,
         ));
 
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async {
-                shutdown_signal().await;
-                events::emit(events::daemon_stopped("user_request"));
-                // Brief pause to let WebSocket clients receive the event
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            })
-            .await?;
+        // ConnectInfo peer address is required by the loopback guard on the
+        // browser bridge (#630); without it that guard fails closed.
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(async {
+            shutdown_signal().await;
+            events::emit(events::daemon_stopped("user_request"));
+            // Brief pause to let WebSocket clients receive the event
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        })
+        .await?;
     }
 
     #[cfg(feature = "otel")]
