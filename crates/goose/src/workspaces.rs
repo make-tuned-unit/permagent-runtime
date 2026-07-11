@@ -43,6 +43,14 @@ fn build_layout() -> serde_json::Value {
     })
 }
 
+fn grow_layout() -> serde_json::Value {
+    serde_json::json!({
+        "type": "panel",
+        "tool": "grow",
+        "config": {}
+    })
+}
+
 fn projects_layout() -> serde_json::Value {
     serde_json::json!({
         "type": "panel",
@@ -96,9 +104,10 @@ pub async fn seed_presets_if_empty(pool: &Pool<Sqlite>) -> Result<bool, String> 
         ("Home", "home", 0, home_layout(), true),
         ("Projects", "columns", 1, projects_layout(), false),
         ("Build", "code", 2, build_layout(), false),
-        ("Automate", "layout-dashboard", 3, automate_layout(), false),
-        ("World", "globe", 4, world_layout(), false),
-        ("Brain", "brain", 5, brain_layout(), false),
+        ("Grow", "trending-up", 3, grow_layout(), false),
+        ("Automate", "layout-dashboard", 4, automate_layout(), false),
+        ("World", "globe", 5, world_layout(), false),
+        ("Brain", "brain", 6, brain_layout(), false),
     ];
 
     let mut first_id = String::new();
@@ -143,9 +152,10 @@ pub const CANONICAL_WORKSPACE_ORDER: &[(&str, i32)] = &[
     ("Home", 0),
     ("Projects", 1),
     ("Build", 2),
-    ("Automate", 3),
-    ("World", 4),
-    ("Brain", 5),
+    ("Grow", 3),
+    ("Automate", 4),
+    ("World", 5),
+    ("Brain", 6),
 ];
 
 /// Normalize the preset workspaces' sort_order to [`CANONICAL_WORKSPACE_ORDER`].
@@ -206,6 +216,46 @@ pub async fn ensure_projects_workspace(pool: &Pool<Sqlite>) -> Result<bool, Stri
     .await
     .map_err(|e| e.to_string())?;
 
+    Ok(true)
+}
+
+/// Ensure the "Grow" workspace exists for existing users seeded before it was
+/// added (mirrors [`ensure_projects_workspace`]). Inserted at sort_order 3;
+/// [`ensure_canonical_workspace_order`] runs right after at startup and
+/// normalizes every preset's position, so the exact number here only needs to
+/// be in the right neighborhood. Idempotent.
+pub async fn ensure_grow_workspace(pool: &Pool<Sqlite>) -> Result<bool, String> {
+    let has_grow: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM workspaces WHERE user_id = 'default' AND name = 'Grow')",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    if has_grow {
+        return Ok(false);
+    }
+
+    // Make room at position 3 (Automate/World/Brain slide up; canonical order
+    // finalizes the exact values on this same startup).
+    sqlx::query(
+        "UPDATE workspaces SET sort_order = sort_order + 1
+         WHERE user_id = 'default' AND sort_order >= 3",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let id = Uuid::now_v7().to_string();
+    let layout_str = serde_json::to_string(&grow_layout()).map_err(|e| e.to_string())?;
+    sqlx::query(
+        "INSERT INTO workspaces (id, user_id, name, icon, sort_order, layout_json, is_default)
+         VALUES (?, 'default', 'Grow', 'trending-up', 3, ?, 0)",
+    )
+    .bind(&id)
+    .bind(&layout_str)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
     Ok(true)
 }
 
