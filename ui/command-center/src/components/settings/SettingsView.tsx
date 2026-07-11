@@ -720,9 +720,57 @@ function DevicesPanel() {
   const pairingUrl = token
     ? `http://${host}:3001/ui/#token=${token}`
     : null;
+  const isHub = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+  const [detail, setDetail] = useState(0); // progressive disclosure depth
+  const [hubUp, setHubUp] = useState<boolean | null>(null);
+  useEffect(() => {
+    apiFetch<{ status: string }>('/status').then(() => setHubUp(true)).catch(() => setHubUp(false));
+  }, []);
   return (
     <div>
-      <H1 sub="One Brain, one truth: this machine is the hub — every other device connects to it. No accounts, no sync conflicts; pairing is this URL, opened once per device.">Devices</H1>
+      <H1 sub="One Brain, one truth: your strongest machine is the hub — every other device connects to it. No accounts, no sync conflicts; pairing is a URL, opened once per device.">Devices</H1>
+
+      {/* Role clarity (Jesse's rule 2026-07-11): friendly first, deeper on ask. */}
+      <Section title={isHub ? 'This device is your hub' : 'This device is a companion'}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+          <span style={{
+            width: 8, height: 8, borderRadius: '50%',
+            background: hubUp === false ? colors.danger : colors.cyan,
+            boxShadow: hubUp === false ? 'none' : `0 0 8px ${colors.cyan}`,
+          }} />
+          <span style={{ fontSize: 13, color: colors.text }}>
+            {isHub
+              ? 'Everything lives here — your memories, projects, and models. Keep this machine on so your other devices can reach Permagent.'
+              : hubUp === false
+                ? 'The hub is not answering — make sure it is awake and on the tailnet.'
+                : 'You are connected to your hub. Everything you see lives there, not on this device.'}
+          </span>
+        </div>
+        {detail < 2 && (
+          <button style={ghost(colors)} onClick={() => setDetail(d => d + 1)}>
+            {detail === 0 ? 'Tell me more' : 'How does it work exactly?'}
+          </button>
+        )}
+        {detail >= 1 && (
+          <p style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.6, margin: '10px 0 0' }}>
+            Permagent works like a home base with visitors: the hub is the one machine that runs
+            the Permagent daemon and stores every memory, project, and model. Phones, laptops,
+            and tablets are companions — they show you everything and let you act from anywhere,
+            but they keep nothing except their key to the hub. If the hub is asleep or offline,
+            companions can't reach Permagent until it's back.
+          </p>
+        )}
+        {detail >= 2 && (
+          <p style={{ fontSize: 12, color: colors.textDim, lineHeight: 1.6, margin: '10px 0 0' }}>
+            Under the hood: the hub's daemon (permagentd) serves the API and this very interface
+            over your private Tailscale network; companions authenticate with the pairing token
+            (a bearer secret — no accounts). There is exactly one writable Brain, so nothing
+            ever needs to sync or merge. The hub should be your most capable, always-on machine
+            — most RAM and storage, since it runs the largest local model and holds all data.
+            Full design: docs/architecture/MULTI_DEVICE.md in the repo.
+          </p>
+        )}
+      </Section>
       <Section title="Pair a device" sub="Live — requires the daemon bound to your tailnet (HOST=0.0.0.0 or your Tailscale IP in the daemon environment) and Tailscale on both devices.">
         <Row label="Tailnet" hint={tailnet?.running ? 'Detected — address filled in automatically.' : tailnet?.installed ? 'Tailscale is installed but not connected.' : 'Tailscale not detected on this machine.'}>
           {tailnet?.running ? (
