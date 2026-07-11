@@ -13,6 +13,7 @@ import { ExecutionTrace } from '../trace/ExecutionTrace';
 import { BrainView } from '../brain/BrainView';
 import { Dashboard } from '../dashboard/Dashboard';
 import { BuildView } from '../build/BuildView';
+import { GrowView } from '../grow/GrowView';
 import { AutomateView } from '../automate/AutomateView';
 import { ProjectsView } from '../projects/ProjectsView';
 
@@ -26,6 +27,7 @@ const TOOL_COMPONENTS: Record<ToolType, React.ComponentType> = {
   memory: BrainView,
   dashboard: Dashboard,
   build: BuildView,
+  grow: GrowView,
   automate: AutomateView,
   projects: ProjectsView,
 };
