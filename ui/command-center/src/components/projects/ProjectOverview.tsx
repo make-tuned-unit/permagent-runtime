@@ -134,8 +134,8 @@ function KeyFactsPanel({ project }: { project: Project }) {
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
             <span style={{ fontSize: 11, color: colors.textDim, width: 88, flexShrink: 0 }}>Tags</span>
             <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-              {project.tags.map(tag => (
-                <span key={tag} style={{
+              {project.tags.map((tag, ti) => (
+                <span key={`${tag}-${ti}`} style={{
                   fontSize: 9, padding: '1px 6px', borderRadius: 4,
                   background: 'rgba(255,255,255,0.06)', color: colors.textDim,
                 }}>

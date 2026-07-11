@@ -77,13 +77,14 @@ fn default_status() -> String {
 /// Emits a BrowserContentRequested event on the global bus, then blocks until
 /// the frontend extracts content and POSTs it to the fulfill endpoint.
 ///
-/// Auth: unauthenticated (localhost-only, called by in-process MCP tool).
-/// This is deliberate — the tool runs inside the daemon process and doesn't
-/// have access to the daemon token. Acceptable because the endpoint only
-/// triggers a content read of the user's own browser tab.
+/// Auth: unauthenticated but loopback-only — the tool runs inside the daemon
+/// process and has no daemon token, so instead of a bearer check the whole
+/// bridge is gated by `require_loopback` (#630): only same-box peers reach it,
+/// regardless of bind host. A network-bound daemon (multi-device/tailnet) can't
+/// be driven here from off-box.
 ///
-/// TODO(mesh): If read_browser_content moves out-of-process (Mesh skill,
-/// remote agent), this assumption breaks — add Bearer token auth.
+/// TODO(mesh): If read_browser_content moves out-of-process (Mesh skill, remote
+/// agent), the loopback assumption breaks — add Bearer token auth alongside.
 async fn read_content(State(state): State<Arc<AppState>>) -> Result<Json<PageContent>, StatusCode> {
     let (request_id, rx) = state.browser_content_bridge.request().await;
 
@@ -156,5 +157,11 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/api/browser/navigate", axum::routing::post(navigate))
         .route("/api/browser/content/read", post(read_content))
         .route("/api/browser/content/{request_id}", post(fulfill_content))
+        // Loopback-only (#630): these routes are unauthenticated by design
+        // (in-process MCP tool, no token), so they must never be reachable once
+        // the daemon binds a routable address for multi-device/tailnet.
+        .layer(axum::middleware::from_fn(
+            crate::middleware::loopback::require_loopback,
+        ))
         .with_state(state)
 }
