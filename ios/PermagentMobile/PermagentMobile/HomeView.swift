@@ -135,13 +135,16 @@ struct HomeView: View {
 
     private func load() async {
         struct Status: Decodable { let status: String }
-        struct Decisions: Decodable { let total_pending: Int? }
+        // The inbox returns { items, summary:{ total_pending } } — the count
+        // lives under summary (was read at top level, so it always showed "–").
+        struct Summary: Decodable { let total_pending: Int? }
+        struct Decisions: Decodable { let summary: Summary? }
         struct Goals: Decodable { struct G: Decodable { let id: String }; let goals: [G] }
         struct Activity: Decodable { let items: [ActivityRow]? }
 
         snap.healthy = (try? await APIClient.shared.get("/status", as: Status.self)) != nil
         if let d = try? await APIClient.shared.get("/api/decisions", as: Decisions.self) {
-            snap.decisionsPending = d.total_pending
+            snap.decisionsPending = d.summary?.total_pending
         }
         if let g = try? await APIClient.shared.get("/api/goals/active", as: Goals.self) {
             snap.goalsActive = g.goals.count

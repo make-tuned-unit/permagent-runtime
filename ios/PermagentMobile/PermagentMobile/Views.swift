@@ -55,35 +55,64 @@ struct PairingView: View {
     }
 }
 
-// ── Decisions (the phone's killer surface) ───────────────────────────────────
+// ── Decisions (the phone's killer surface — approve/reject from anywhere) ─────
 
-struct DecisionItem: Decodable, Identifiable {
+// Mirrors the daemon's OpenDecisionItem (a flattened Decision + goal_title).
+// Fields are snake_case (Decision has no camelCase rename); the wrapper is
+// { items, summary }. The old scaffold decoded { decisions:[{title}] }, which
+// never matched — so this fixes a latent "inbox always empty" bug too.
+struct OpenDecision: Decodable, Identifiable {
     let id: String
     let kind: String
-    let title: String?
+    let headline: String?
     let detail: String?
+    let goal_title: String?
+
+    /// choice / input decisions need a picker or free text — not a binary
+    /// approve/reject. Those are answered on the desktop for now.
+    var isBinary: Bool { kind != "choice" && kind != "input" }
 }
 
 struct InboxView: View {
-    @State private var items: [DecisionItem] = []
+    @State private var items: [OpenDecision] = []
+    @State private var busy: Set<String> = []
+    @State private var errorText: String?
+
     var body: some View {
         NavigationStack {
-            List(items) { d in
-                GlassCard {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(d.kind.replacingOccurrences(of: "_", with: " ").uppercased())
-                            .font(.system(.caption2, design: .monospaced).weight(.semibold))
-                            .foregroundStyle(Brand.cyan)
-                        Text(d.title ?? "Decision")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(Brand.text)
-                        if let detail = d.detail, !detail.isEmpty {
-                            Text(detail).font(.caption).foregroundStyle(Brand.textMuted).lineLimit(3)
+            List {
+                if let errorText {
+                    Text(errorText).font(.caption).foregroundStyle(Brand.danger)
+                        .listRowBackground(Color.clear).listRowSeparator(.hidden)
+                }
+                if items.isEmpty {
+                    Text("Nothing needs you right now. Henry surfaces risk gates, reviews, and unblock requests here — approve or send back with a tap.")
+                        .font(.caption).foregroundStyle(Brand.textMuted)
+                        .listRowBackground(Color.clear).listRowSeparator(.hidden)
+                }
+                ForEach(items) { d in
+                    GlassCard {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(d.kind.replacingOccurrences(of: "_", with: " ").uppercased())
+                                .font(.system(.caption2, design: .monospaced).weight(.semibold))
+                                .foregroundStyle(Brand.cyan)
+                            Text(d.headline ?? "Decision")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(Brand.text)
+                            if let detail = d.detail, !detail.isEmpty {
+                                Text(detail).font(.caption).foregroundStyle(Brand.textMuted).lineLimit(4)
+                            }
+                            if let goal = d.goal_title, !goal.isEmpty {
+                                Text("Goal: \(goal)")
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundStyle(Brand.textDim)
+                            }
+                            actions(for: d)
                         }
                     }
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
                 }
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
@@ -93,10 +122,58 @@ struct InboxView: View {
             .task { await load() }
         }
     }
+
+    @ViewBuilder
+    private func actions(for d: OpenDecision) -> some View {
+        if d.isBinary {
+            HStack(spacing: 10) {
+                answerButton(d, verb: "reject", label: "Send back", tint: Brand.textMuted, fill: Brand.surface)
+                answerButton(d, verb: "approve", label: "Approve", tint: Brand.deepVoid, fill: Brand.cyan)
+            }
+            .padding(.top, 2)
+        } else {
+            Text("Open on your desktop to answer this one.")
+                .font(.caption2).foregroundStyle(Brand.textDim).padding(.top, 2)
+        }
+    }
+
+    private func answerButton(_ d: OpenDecision, verb: String, label: String, tint: Color, fill: Color) -> some View {
+        Button {
+            answer(d.id, verb)
+        } label: {
+            Text(busy.contains(d.id) ? "…" : label)
+                .font(.caption.weight(.semibold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 9)
+                .background(fill)
+                .foregroundStyle(tint)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(busy.contains(d.id))
+    }
+
+    private func answer(_ id: String, _ verb: String) {
+        guard !busy.contains(id) else { return }
+        busy.insert(id)
+        errorText = nil
+        Task {
+            struct Body: Encodable { let answer: String }
+            struct Resp: Decodable { let effect: String? }
+            do {
+                _ = try await APIClient.shared.post("/api/decisions/\(id)/answer", body: Body(answer: verb), as: Resp.self)
+                withAnimation { items.removeAll { $0.id == id } }
+            } catch {
+                errorText = "Couldn't submit that — check the hub, or answer on the desktop."
+            }
+            busy.remove(id)
+        }
+    }
+
     func load() async {
-        struct Resp: Decodable { let decisions: [DecisionItem] }
+        struct Resp: Decodable { let items: [OpenDecision] }
         if let resp = try? await APIClient.shared.get("/api/decisions", as: Resp.self) {
-            items = resp.decisions
+            items = resp.items
         }
     }
 }

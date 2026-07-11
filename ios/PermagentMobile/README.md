@@ -32,6 +32,7 @@ bound to the tailnet (`HOST=0.0.0.0`).
   liveness sweep issue.
 
 ## Roadmap
-Approve/decline decisions in-app · push via #618's escalation channel ·
-per-device tokens (#628) · Tailscale iOS hints. (Streaming chat ✓ — verify the
-first `/reply` round-trip on the mini once Xcode-built.)
+Choice/input decisions in-app (approve/reject ✓) · push via #618's escalation
+channel · per-device tokens (#628) · Tailscale iOS hints. (Streaming chat ✓,
+approve/reject decisions ✓ — verify the first `/reply` + `/answer` round-trips
+on the mini once Xcode-built.)
