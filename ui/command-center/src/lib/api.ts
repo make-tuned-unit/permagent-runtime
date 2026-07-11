@@ -545,6 +545,15 @@ export const api = {
       body: JSON.stringify({ key, value, is_secret: isSecret ?? false }),
     }),
 
+  /** Delete a config key (secret keys are removed from the keychain). The
+   *  upsert-empty-string trick this replaces left providers looking
+   *  'Connected' with a dead key. */
+  removeConfig: (key: string, isSecret = false) =>
+    apiFetch<string>('/config/remove', {
+      method: 'POST',
+      body: JSON.stringify({ key, is_secret: isSecret }),
+    }),
+
   // Add or update an MCP extension (persists to config.yaml). Used to register
   // the Brave / Tavily search connectors once their key is stored.
   addExtension: (query: ExtensionQuery) =>
@@ -779,6 +788,7 @@ export const api = {
       duration_minutes: number;
       model: string;
       run_if_launched_in_window: boolean;
+      pruning_enabled?: boolean;
     }>('/api/librarian/schedule'),
 
   setLibrarianSchedule: async (schedule: {
@@ -787,6 +797,7 @@ export const api = {
     duration_minutes: number;
     model: string;
     run_if_launched_in_window: boolean;
+    pruning_enabled?: boolean;
   }) => {
     const url = `${API_BASE_URL}/api/librarian/schedule`;
     const resp = await fetch(url, {
