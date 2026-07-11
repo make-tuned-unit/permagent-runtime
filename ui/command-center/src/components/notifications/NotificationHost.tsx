@@ -45,8 +45,9 @@ export function NotificationHost() {
       {/* Bell */}
       <button
         onClick={() => {
+          // Mark read on CLOSE so the unread highlight is visible while open.
+          if (open) markAllRead();
           setOpen((o) => !o);
-          if (!open) markAllRead();
         }}
         title="Notifications"
         style={{

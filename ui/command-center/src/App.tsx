@@ -4,6 +4,7 @@ import { useTheme } from './styles/useTheme';
 import { Sidebar } from './components/sidebar/Sidebar';
 import { SettingsView } from './components/settings/SettingsView';
 import { WorkspaceRenderer } from './components/workspaces/WorkspaceRenderer';
+import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { WizardShell } from './components/wizard/WizardShell';
 import { Splash } from './components/splash/Splash';
 import { ChatLauncher } from './components/chat/ChatLauncher';
@@ -61,7 +62,9 @@ function MainContent() {
           className="absolute inset-0"
           style={{ display: (!showSettings && ws.id === activeWorkspaceId) ? 'block' : 'none' }}
         >
-          <WorkspaceRenderer workspaceId={ws.id} />
+          <ErrorBoundary surface="the workspace">
+            <WorkspaceRenderer workspaceId={ws.id} />
+          </ErrorBoundary>
         </div>
       ))}
     </div>
