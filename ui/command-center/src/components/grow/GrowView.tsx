@@ -14,7 +14,7 @@ import { useEffect, useState } from 'react';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { apiFetch } from '../../lib/api';
-import { navigateToTool } from '../../lib/store';
+import { useCommandCenter } from '../../lib/store';
 import type { Project } from '../projects/types';
 
 // The five GTM pillars (research: target market · value prop · pricing &
@@ -69,6 +69,10 @@ export function GrowView() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [posts, setPosts] = useState<SocialCard[]>([]);
   const [lens, setLens] = useState<GrowLens>('strategy');
+  const [ctx, setCtx] = useState<{ people: number; goals: number } | null>(null);
+  const setActivePanel = useCommandCenter((st) => st.setActivePanel);
+  const sendMessage = useCommandCenter((st) => st.sendMessage);
+  const openGrowForProject = useCommandCenter((st) => st.openGrowForProject);
 
   useEffect(() => {
     apiFetch<Project[]>('/api/projects')
@@ -90,19 +94,57 @@ export function GrowView() {
   }, [activeId]);
 
   const active = projects.find((p) => p.id === activeId) ?? null;
+
+  // Honor a cross-tab deep link (Projects → Grow this project).
+  useEffect(() => {
+    if (openGrowForProject) {
+      setActiveId(openGrowForProject);
+    }
+  }, [openGrowForProject]);
+
+  // Real project context — Grow feels connected because it shows the project's
+  // actual state (people, shipped work), not a blank canvas.
+  useEffect(() => {
+    if (!activeId) { setCtx(null); return; }
+    let alive = true;
+    (async () => {
+      const [people, cards] = await Promise.all([
+        apiFetch<unknown[]>(`/api/projects/${encodeURIComponent(activeId)}/people`).catch(() => []),
+        apiFetch<{ card_type: string }[]>(`/api/projects/${encodeURIComponent(activeId)}/cards`).catch(() => []),
+      ]);
+      if (!alive) return;
+      const goals = cards.filter((c) => c.card_type === 'goal').length;
+      setCtx({ people: people.length, goals });
+    })();
+    return () => { alive = false; };
+  }, [activeId]);
+
+  // One-click hand-off: surface chat and send the GTM prompt directly to Henry,
+  // grounded in the selected project (the Discuss-with-Henry pattern). No
+  // clipboard, no tab hunting.
   const send = (prompt: string) => {
-    navigator.clipboard.writeText(prompt).catch(() => {});
-    navigateToTool('chat');
+    setActivePanel('chat');
+    void sendMessage(prompt);
   };
 
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: gradient.workspace, color: colors.text, fontFamily: font.body }}>
-      {/* Header + project switcher */}
-      <div style={{ padding: '16px 24px', borderBottom: `1px solid ${colors.border}`, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 16 }}>
+      {/* Header + project switcher — brand ribbon accent */}
+      <div style={{ position: 'relative', padding: '16px 24px', borderBottom: `1px solid ${colors.border}`, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 16 }}>
+        <div style={{ position: 'absolute', left: 0, right: 0, bottom: -1, height: 2, background: `linear-gradient(90deg, ${colors.cyan}, ${colors.purple})`, opacity: 0.5 }} />
         <div>
           <div style={{ fontFamily: font.display, fontSize: 16, fontWeight: 600, letterSpacing: '-0.01em' }}>Grow</div>
-          <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2 }}>
-            Take {active ? active.name : 'your project'} to market — Henry knows the project, so he drafts with real context.
+          <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 3, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <span>Take {active ? active.name : 'your project'} to market — Henry drafts with the project's real context.</span>
+            {active?.siteUrl && (
+              <a href={active.siteUrl} target="_blank" rel="noreferrer" style={{ color: colors.cyan, textDecoration: 'none' }}>site ↗</a>
+            )}
+            {active?.repoUrl && (
+              <a href={active.repoUrl} target="_blank" rel="noreferrer" style={{ color: colors.cyan, textDecoration: 'none' }}>repo ↗</a>
+            )}
+            {ctx && (
+              <span style={{ color: colors.textDim }}>{ctx.goals} shipped · {ctx.people} {ctx.people === 1 ? 'person' : 'people'}</span>
+            )}
           </div>
         </div>
         <div style={{ flex: 1 }} />
