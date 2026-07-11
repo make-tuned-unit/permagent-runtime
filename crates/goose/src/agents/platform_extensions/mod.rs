@@ -393,12 +393,12 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: app_conductor::EXTENSION_NAME,
                 display_name: "App Conductor",
-                description: "Navigate the user to specific tabs and views in the Permagent app",
+                description: "Navigate the user to tabs and views AND act within them — open/close/detach the chat dock, show/hide the Build tab's browser and terminal panes — in the Permagent app",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
                 why_it_matters:
-                    "Take the user straight to the right view instead of telling them where to click.",
+                    "Drive the app for the user — take them to the right view and operate it — instead of telling them where to click.",
                 teaching: &[],
                 client_factory: |ctx| {
                     Box::new(app_conductor::AppConductorClient::new(ctx).unwrap())

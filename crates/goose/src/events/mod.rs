@@ -254,6 +254,9 @@ pub enum PermagentEventType {
     BrowserNavigateRequested,
     // App navigation (chat agent → frontend)
     AppNavigate,
+    // App action — act WITHIN a surface, not just navigate to it (chat agent →
+    // frontend): toggle a Build pane, open/close/detach the chat dock, etc.
+    AppAction,
     // Project terminal launch (chat agent → frontend Build tab)
     ProjectLaunch,
     // Goal lifecycle (create / transition / park / requeue / failure / delete)
@@ -581,6 +584,29 @@ pub fn app_navigate(
             "panel_type": panel_type,
             "section": section,
             "state": state,
+            "reason": reason,
+        }),
+    )
+}
+
+/// Emitted when the chat agent wants to ACT within a surface rather than just
+/// navigate to it — toggle a Build pane, open/close/detach the chat dock, etc.
+/// Sibling to [`app_navigate`]: the daemon never touches the DOM; the frontend
+/// dispatcher catches this and calls the matching store action. `surface` +
+/// `action` are validated against the app_conductor action catalog before this
+/// is emitted, so the frontend can trust the pair.
+pub fn app_action(
+    surface: &str,
+    action: &str,
+    params: Option<&serde_json::Value>,
+    reason: &str,
+) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::AppAction,
+        serde_json::json!({
+            "surface": surface,
+            "action": action,
+            "params": params,
             "reason": reason,
         }),
     )
