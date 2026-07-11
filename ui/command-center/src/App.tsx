@@ -10,6 +10,8 @@ import { ChatLauncher } from './components/chat/ChatLauncher';
 import { GoalDetailModalHost } from './components/goals/GoalDetailModal';
 import { PersonDetailModalHost } from './components/projects/PersonDetailModal';
 import { DropZone } from './components/chat/DropZone';
+import { NotificationHost } from './components/notifications/NotificationHost';
+import { toast } from './lib/notifications';
 import { VersionSkewBanner } from './components/version/VersionSkewBanner';
 import { api, fileToBase64 } from './lib/api';
 import { createChatWindow } from './lib/chatWindow';
@@ -195,7 +197,7 @@ function App() {
       await emit('chat_drop_files', { files: payload });
     } else {
       console.error('[drop] chat window did not become ready');
-      window.alert('Could not deliver files to chat — please try again');
+      toast('Could not deliver files to chat', 'The chat window did not answer — please try the drop again.');
     }
   }, [activeWorkspace, theme]);
 
@@ -227,6 +229,7 @@ function App() {
         <ChatLauncher />
       </div>
       <GoalDetailModalHost />
+      <NotificationHost />
       <PersonDetailModalHost />
     </div>
   );

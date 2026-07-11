@@ -1,9 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
-import { api } from '../../lib/api';
+import { api, apiFetch, loadDaemonToken } from '../../lib/api';
 import { font, ease, setTheme as setThemeFn, setMobiusGlow, setIdleAnim, setShowHeroMobius, setDensity as setDensityFn, setReduceMotion as setReduceMotionFn, type ThemeId, type IdleAnim, type UIDensity } from '../../styles/tokens';
 import { useTheme as useThemeHook } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
+import {
+  getNotificationPrefs, setNotificationPref, getOsNotificationsEnabled,
+  setOsNotificationsEnabled, KIND_LABELS, type NotificationKind,
+} from '../../lib/notifications';
 import { ProvidersSection } from './ProvidersSection';
 import { SearchToolsSection } from './SearchToolsSection';
 import { usePersona } from './useSettings';
@@ -72,6 +76,7 @@ const CATEGORIES = [
     { key: 'tools',       label: 'Tools & MCPs',     icon: 'M14.7 6.3a1 1 0 011.4 0l1.6 1.6a1 1 0 010 1.4l-9 9-3 .6.6-3 9-9.6zM3 21h18' },
     { key: 'models',      label: 'Models',           icon: 'M3 12h4l3-9 4 18 3-9h4' },
     { key: 'keys',        label: 'API keys',         icon: 'M14 8a4 4 0 100 8 4 4 0 000-8zm0 4l-9 9m4-4l3 3' },
+    { key: 'devices',    label: 'Devices',          icon: 'M17 2H7a2 2 0 00-2 2v16a2 2 0 002 2h10a2 2 0 002-2V4a2 2 0 00-2-2zM12 18h.01' },
     { key: 'search',      label: 'Search & tools',   icon: 'M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z' },
   ]},
   { group: 'System', items: [
@@ -211,11 +216,33 @@ function PreferencesPanel() {
           </div>
         </Row>
       </Section>
-      <Section title="Notifications">
-        <Row label="When agent finishes a task"><select style={selectStyle(colors)}><option>Desktop notification</option><option>In-app only</option><option>Silent</option></select></Row>
-        <Row label="When agent needs your input"><select style={selectStyle(colors)}><option>Desktop + sound</option><option>Desktop only</option><option>Silent</option></select></Row>
-      </Section>
+      <NotificationSettings />
     </div>
+  );
+}
+
+/** #618 — LIVE notification preferences: per-kind toggles feed the tray/toast
+ *  stream directly (localStorage, consumed in lib/notifications.ts), plus the
+ *  OS-level opt-in which requests real Notification permission. This replaced
+ *  the dead mockup selects the 2026-07-10 audit flagged. */
+function NotificationSettings() {
+  const [prefs, setPrefs] = useState(getNotificationPrefs());
+  const [osOn, setOsOn] = useState(getOsNotificationsEnabled());
+  const kinds = Object.keys(KIND_LABELS) as NotificationKind[];
+  return (
+    <Section title="Notifications" sub="Live — the agent reaches out when something needs you. Each toggle silences its kind everywhere (tray, toasts, system).">
+      {kinds.map(k => (
+        <Row key={k} label={KIND_LABELS[k]}>
+          <Toggle on={prefs[k]} onChange={v => {
+            setNotificationPref(k, v);
+            setPrefs(getNotificationPrefs());
+          }} />
+        </Row>
+      ))}
+      <Row label="System notifications" hint="Also notify at the OS level (asks for permission).">
+        <Toggle on={osOn} onChange={async v => setOsOn(await setOsNotificationsEnabled(v))} />
+      </Row>
+    </Section>
   );
 }
 
@@ -691,9 +718,139 @@ function DataPanel() {
 const PANELS: Record<string, (props: PanelProps) => JSX.Element> = {
   agent: PersonaPanel, profile: ProfilePanel, preferences: PreferencesPanel,
   memory: MemoryPanel, autonomy: AutonomyPanel, tools: ToolsPanel,
-  models: ModelsPanel, keys: KeysPanel, search: SearchPanel,
+  models: ModelsPanel, keys: KeysPanel, devices: DevicesPanel, search: SearchPanel,
   appearance: AppearancePanel, shortcuts: ShortcutsPanel, data: DataPanel,
 };
+
+/** Devices — hub-and-spoke pairing (MULTI_DEVICE.md). The hub (this machine)
+ *  holds the one Brain; every other device connects to it over the tailnet by
+ *  opening the pairing URL once (the token rides the #fragment and is
+ *  captured into that device's localStorage — see api.ts browserToken). */
+function DevicesPanel() {
+  const { colors } = useThemeHook();
+  const [token, setToken] = useState<string | null>(null);
+  const [host, setHost] = useState('your-mac.tailnet-name.ts.net');
+  const [copied, setCopied] = useState(false);
+  const [tailnet, setTailnet] = useState<{ installed: boolean; running: boolean; magic_dns_name: string | null } | null>(null);
+  useEffect(() => { loadDaemonToken().then(setToken); }, []);
+  // Deterministic detection: when the hub is on a tailnet, the address fills
+  // itself — the user types nothing (Jesse's zero-strain rule, 2026-07-11).
+  useEffect(() => {
+    apiFetch<{ installed: boolean; running: boolean; magic_dns_name: string | null }>('/api/tailnet/status')
+      .then(t => {
+        setTailnet(t);
+        if (t.magic_dns_name) setHost(t.magic_dns_name);
+      })
+      .catch(() => setTailnet(null));
+  }, []);
+  const pairingUrl = token
+    ? `http://${host}:3001/ui/#token=${token}`
+    : null;
+  const isHub = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+  const [detail, setDetail] = useState(0); // progressive disclosure depth
+  const [hubUp, setHubUp] = useState<boolean | null>(null);
+  useEffect(() => {
+    apiFetch<{ status: string }>('/status').then(() => setHubUp(true)).catch(() => setHubUp(false));
+  }, []);
+  return (
+    <div>
+      <H1 sub="One Brain, one truth: your strongest machine is the hub — every other device connects to it. No accounts, no sync conflicts; pairing is a URL, opened once per device.">Devices</H1>
+
+      {/* Role clarity (Jesse's rule 2026-07-11): friendly first, deeper on ask. */}
+      <Section title={isHub ? 'This device is your hub' : 'This device is a companion'}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+          <span style={{
+            width: 8, height: 8, borderRadius: '50%',
+            background: hubUp === false ? colors.danger : colors.cyan,
+            boxShadow: hubUp === false ? 'none' : `0 0 8px ${colors.cyan}`,
+          }} />
+          <span style={{ fontSize: 13, color: colors.text }}>
+            {isHub
+              ? 'Everything lives here — your memories, projects, and models. Keep this machine on so your other devices can reach Permagent.'
+              : hubUp === false
+                ? 'The hub is not answering — make sure it is awake and on the tailnet.'
+                : 'You are connected to your hub. Everything you see lives there, not on this device.'}
+          </span>
+        </div>
+        {detail < 2 && (
+          <button style={ghost(colors)} onClick={() => setDetail(d => d + 1)}>
+            {detail === 0 ? 'Tell me more' : 'How does it work exactly?'}
+          </button>
+        )}
+        {detail >= 1 && (
+          <p style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.6, margin: '10px 0 0' }}>
+            Permagent works like a home base with visitors: the hub is the one machine that runs
+            the Permagent daemon and stores every memory, project, and model. Phones, laptops,
+            and tablets are companions — they show you everything and let you act from anywhere,
+            but they keep nothing except their key to the hub. If the hub is asleep or offline,
+            companions can't reach Permagent until it's back.
+          </p>
+        )}
+        {detail >= 2 && (
+          <p style={{ fontSize: 12, color: colors.textDim, lineHeight: 1.6, margin: '10px 0 0' }}>
+            Under the hood: the hub's daemon (permagentd) serves the API and this very interface
+            over your private Tailscale network; companions authenticate with the pairing token
+            (a bearer secret — no accounts). There is exactly one writable Brain, so nothing
+            ever needs to sync or merge. The hub should be your most capable, always-on machine
+            — most RAM and storage, since it runs the largest local model and holds all data.
+            Full design: docs/architecture/MULTI_DEVICE.md in the repo.
+          </p>
+        )}
+      </Section>
+      <Section title="Pair a device" sub="Live — requires the daemon bound to your tailnet (HOST=0.0.0.0 or your Tailscale IP in the daemon environment) and Tailscale on both devices.">
+        <Row label="Tailnet" hint={tailnet?.running ? 'Detected — address filled in automatically.' : tailnet?.installed ? 'Tailscale is installed but not connected.' : 'Tailscale not detected on this machine.'}>
+          {tailnet?.running ? (
+            <span style={{ fontSize: 12, color: colors.cyan }}>● Connected{tailnet.magic_dns_name ? ` — ${tailnet.magic_dns_name}` : ''}</span>
+          ) : (
+            <button
+              style={ghost(colors)}
+              title="Copies a setup request and opens chat — Henry runs the terminal steps for you."
+              onClick={() => {
+                navigator.clipboard.writeText(
+                  'Set up Tailscale on this machine so my other devices can reach Permagent: '
+                  + 'check if it is installed, install it if not, bring it up (open the login '
+                  + 'page for me in the browser when it appears), then tell me my MagicDNS name '
+                  + 'and confirm the Devices pairing page shows it.'
+                ).catch(() => {});
+                navigateToTool('chat');
+              }}
+            >Have Henry set it up</button>
+          )}
+        </Row>
+        <Row label="Hub address" hint="Your machine's Tailscale MagicDNS name (auto-filled when the tailnet is detected).">
+          <TextInput value={host} onChange={setHost} placeholder="my-mac.tailnet-name.ts.net" />
+        </Row>
+        <Row label="Pairing URL" hint="Open this on the new device's browser. The token is captured on first load and scrubbed from the URL.">
+          {pairingUrl ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+              <code style={{
+                fontFamily: font.mono, fontSize: 10, color: colors.cyan,
+                background: colors.bgDeeper, padding: '6px 8px', borderRadius: 6,
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 320,
+              }}>{pairingUrl}</code>
+              <button
+                style={ghost(colors)}
+                onClick={() => {
+                  navigator.clipboard.writeText(pairingUrl).then(() => {
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 1600);
+                  });
+                }}
+              >{copied ? 'Copied ✓' : 'Copy'}</button>
+            </div>
+          ) : (
+            <span style={{ fontSize: 12, color: colors.textDim }}>
+              Token unavailable — pairing works from the desktop app on the hub machine.
+            </span>
+          )}
+        </Row>
+        <Row label="Security" hint="The URL contains this daemon's bearer token — share it only through your own devices. Tailscale encrypts the transport; the token is the pairing secret.">
+          <span style={{ fontSize: 12, color: colors.textMuted }}>Treat the pairing URL like a password.</span>
+        </Row>
+      </Section>
+    </div>
+  );
+}
 
 // ── Main Settings View ───────────────────────────────────────────────
 

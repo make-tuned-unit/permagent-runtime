@@ -340,12 +340,33 @@ async fn brain_graph(
     let max_age_secs: f64 = 90.0 * 24.0 * 3600.0; // 90 days
     const MAX_MEMORIES: usize = 100;
 
-    // --- Entities: use recall's graph neighborhood (only source) ---
+    // --- Entities: recall's graph neighborhood, search-aware ---
+    // The self-name neighborhood is the base view. When the user searches,
+    // ALSO seed recall on the query and union the two neighborhoods — before
+    // this, `q` re-scoped memories only and typing a person or project name
+    // changed zero entities on screen (the search box lied about its reach).
+    let search_seed = params.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
+    let query_result = match search_seed {
+        Some(q) => brain.recall(q, spectral::Visibility::Private).await.ok(),
+        None => None,
+    };
     let (entities, edges) = match brain
         .recall(&self_node.name, spectral::Visibility::Private)
         .await
     {
-        Ok(result) => {
+        Ok(mut result) => {
+            if let Some(extra) = query_result {
+                result
+                    .graph
+                    .neighborhood
+                    .entities
+                    .extend(extra.graph.neighborhood.entities);
+                result
+                    .graph
+                    .neighborhood
+                    .triples
+                    .extend(extra.graph.neighborhood.triples);
+            }
             // Dedup entities (cap 80), keeping the display data plus the raw
             // EntityId for a single batched field lookup.
             let mut seen = std::collections::HashSet::new();
