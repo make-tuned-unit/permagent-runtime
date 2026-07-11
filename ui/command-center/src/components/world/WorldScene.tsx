@@ -12,6 +12,7 @@ import { WorkstationCluster } from './props/WorkstationCluster';
 import { GoalPlaques } from './props/GoalPlaques';
 import { ShelfBook } from './props/ShelfBook';
 import { Zones } from './areas/WorldZones';
+import { Agora, PortalStream } from './areas/forum/Agora';
 import { Atmosphere, DistantGrid } from './atmosphere/Atmosphere';
 import { LegacyFurniture } from './props/legacy/WorldFurniture';
 import { PerfSampler } from './shared/perf';
@@ -102,8 +103,16 @@ export function WorldSceneContent({
       <GoalPlaques origin={[0, 0, -11.4]} rotationY={Math.PI} />
       <ShelfBook />
 
-      {/* Five zones off the rotunda — thresholds always on, interiors lazy (§3) */}
-      <Zones />
+      {/* The relocated Mesh Stargate in the colonnade opening (clickable → the
+          Agora arc, #306). */}
+      <Zones onClickStation={onClickStation} />
+
+      {/* THE AGORA — the collective mind of the mesh, beyond the Stargate. A dark
+          constellation of sovereign glyph-stars (honest-empty today). The portal
+          dissolve/reconstitute stream lives in world space (crosses the boundary
+          between the warm Rotunda and the weightless data-volume). */}
+      <Agora />
+      <PortalStream />
 
       {/* Legacy station-corner furniture (W2 takes over in props/) */}
       <LegacyFurniture />

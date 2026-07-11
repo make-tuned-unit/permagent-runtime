@@ -129,7 +129,7 @@ export type ActivePanel = 'chat' | 'skills' | 'events' | 'settings' | 'sessions'
 
 // ── Workspace types ──
 
-export type ToolType = 'chat' | 'skills' | 'trace' | 'world' | 'terminal' | 'browser' | 'memory' | 'dashboard' | 'build' | 'automate' | 'projects';
+export type ToolType = 'chat' | 'skills' | 'trace' | 'world' | 'terminal' | 'browser' | 'memory' | 'dashboard' | 'build' | 'grow' | 'automate' | 'projects';
 
 export interface LayoutSplit {
   type: 'split';
@@ -302,6 +302,10 @@ interface CommandCenterStore {
 
   // --- In-app browser navigation (chat links, agent tour #353) ---
   pendingBrowserUrl: string | null;
+  // Grow deep-link (2026-07-11): Projects → 'Grow this project' sets this, the
+  // Grow tab reads it to preselect the project.
+  openGrowForProject: string | null;
+  growProject: (projectId: string) => void;
   openInBrowser: (url: string) => void;
   clearPendingBrowserUrl: () => void;
 
@@ -1051,6 +1055,8 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   // URL still resolves if the workspace was not yet open. Shared by chat-link
   // clicks and the self-knowledge tour (#353).
   pendingBrowserUrl: null,
+  openGrowForProject: null,
+  growProject: (projectId) => { set({ openGrowForProject: projectId }); navigateToTool('grow'); },
   buildTerminalHidden: false,
   buildBrowserHidden: false,
   // Never allow both hidden: hiding one re-shows the other.

@@ -199,15 +199,48 @@ function _set(key: string, value: string) {
   _notify();
 }
 
-// Theme
-let _activeTheme: ThemeId = _get('permagent-theme', 'dark') as ThemeId;
-// Migrate 'slate' -> 'silver' (one-time, idempotent)
-if ((_activeTheme as string) === 'slate') {
-  _activeTheme = 'silver'; _set('permagent-theme', 'silver');
+// Theme. The stored PREFERENCE may be 'system' (light-awareness, à la
+// ChatGPT/Claude): follow the OS — silver during light hours, dark when the
+// device is dark, live-switching when the OS does. The resolved _activeTheme
+// is always a concrete ThemeId so every consumer keeps working.
+export type ThemePref = ThemeId | 'system';
+
+function _prefersDark(): boolean {
+  return typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(prefers-color-scheme: dark)').matches;
 }
+
+function _resolve(pref: ThemePref): ThemeId {
+  if (pref === 'system') return _prefersDark() ? 'dark' : 'silver';
+  return pref;
+}
+
+let _themePref: ThemePref = _get('permagent-theme', 'dark') as ThemePref;
+// Migrate 'slate' -> 'silver' (one-time, idempotent)
+if ((_themePref as string) === 'slate') {
+  _themePref = 'silver'; _set('permagent-theme', 'silver');
+}
+let _activeTheme: ThemeId = _resolve(_themePref);
 export function getTheme(): ThemeId { return _activeTheme; }
+export function getThemePref(): ThemePref { return _themePref; }
 export function getThemeGradient() { return THEME_GRADIENTS[_activeTheme]; }
-export function setTheme(id: ThemeId) { _activeTheme = id; _set('permagent-theme', id); }
+export function setTheme(pref: ThemePref) {
+  _themePref = pref;
+  _activeTheme = _resolve(pref);
+  _set('permagent-theme', pref);
+}
+
+// Live OS-theme switching: when the preference is 'system', re-resolve and
+// notify on every prefers-color-scheme flip (the day/night shift).
+if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    if (_themePref === 'system') {
+      _activeTheme = _resolve('system');
+      _notify();
+    }
+  });
+}
 
 // Extract RGB channel triplet from a hex color string for Tailwind alpha-modifier support.
 // e.g. '#0B1220' → '11 18 32'. Only call on solid hex values, not rgba().
@@ -261,7 +294,8 @@ _listeners.add(_syncCssVars); // re-sync on theme change
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (e) => {
     if (e.key === 'permagent-theme' && e.newValue) {
-      _activeTheme = e.newValue as ThemeId;
+      _themePref = e.newValue as ThemePref;
+      _activeTheme = _resolve(_themePref);
       _notify();
     }
   });
