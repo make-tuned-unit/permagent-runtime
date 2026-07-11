@@ -10,6 +10,7 @@
 
 import { ZONES } from './zones';
 import { StargatePortal } from './antechamber/Stargate';
+import { ForumPlaque } from './antechamber/ForumPlaque';
 
 const MESH = ZONES.find((z) => z.id === 'antechamber')!;
 
@@ -22,6 +23,7 @@ export function Zones() {
         rotation-y={Math.PI / 2 - MESH.angle}
       >
         <StargatePortal />
+        <ForumPlaque />
       </group>
     </group>
   );

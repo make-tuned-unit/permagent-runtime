@@ -25,9 +25,9 @@ pub const WORLD_VIEW_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         display_name: "World View",
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
         what_it_does:
-            "A live 3D rotunda ringed by a colonnade where your three agents — Henry (the orchestrator), the Librarian, and the Reader — are embodied and animate from your real memory recall, worker state, and events streamed over /events",
+            "A live 3D rotunda ringed by a colonnade where your three agents — Henry (the orchestrator), the Librarian, and the Reader — are embodied and animate from your real memory recall, worker state, and events streamed over /events. Real active goals light plaques over the working bay's benches, the Librarian pulls a book from the mezzanine wall during real describe runs, clicking a pedestal glides the camera to it, and the Mesh Stargate stands at the colonnade opening with an honest Forum plaque",
         why_it_matters:
-            "The user can watch your background activity in real time, pick any agent from the roster to follow in third-person and open its live HUD (the Reader and Librarian each have one), and even drive the followed agent on foot with the arrow keys or WASD",
+            "The user can watch your background activity in real time, press T for a guided camera tour, pick any agent from the roster to follow in third-person and open its live HUD, and drive the followed agent on foot with the arrow keys or WASD",
         state_source: crate::agents::self_knowledge::StateSource::Static,
         teaching: &[],
     };
@@ -249,6 +249,9 @@ pub enum PermagentEventType {
     LibrarianDescribeCompleted,
     // Browser content extraction
     BrowserContentRequested,
+    /// The agent asked the in-app browser to open a URL (#567). The frontend
+    /// bridge listens and routes it to the Build tab's browser.
+    BrowserNavigateRequested,
     // App navigation (chat agent → frontend)
     AppNavigate,
     // Project terminal launch (chat agent → frontend Build tab)

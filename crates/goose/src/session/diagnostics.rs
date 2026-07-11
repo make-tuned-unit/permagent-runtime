@@ -22,6 +22,12 @@ pub struct SystemInfo {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub enabled_extensions: Vec<String>,
+    /// Total physical RAM in bytes
+    pub total_ram_bytes: Option<u64>,
+    /// CPU brand string (e.g. "Apple M1 Max")
+    pub cpu_brand: Option<String>,
+    /// Free disk space in bytes on the data volume
+    pub disk_free_bytes: Option<u64>,
 }
 
 impl SystemInfo {
@@ -34,6 +40,21 @@ impl SystemInfo {
             .map(|ext| ext.name().to_string())
             .collect();
 
+        let total_ram_bytes = sys_info::mem_info().ok().map(|m| m.total * 1024); // mem_info().total is in KiB
+
+        let cpu_brand = if cfg!(target_os = "macos") {
+            std::process::Command::new("sysctl")
+                .args(["-n", "machdep.cpu.brand_string"])
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim().to_string())
+        } else {
+            None
+        };
+
+        let disk_free_bytes = sys_info::disk_info().ok().map(|d| d.free * 1024); // disk_info().free is in KiB
+
         Self {
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             os: std::env::consts::OS.to_string(),
@@ -42,6 +63,9 @@ impl SystemInfo {
             provider,
             model,
             enabled_extensions,
+            total_ram_bytes,
+            cpu_brand,
+            disk_free_bytes,
         }
     }
 
@@ -54,6 +78,9 @@ impl SystemInfo {
              Provider: {}\n\
              Model: {}\n\
              Enabled Extensions: {}\n\
+             CPU: {}\n\
+             RAM: {}\n\
+             Disk Free: {}\n\
              Timestamp: {}\n",
             self.app_version,
             self.os,
@@ -62,6 +89,13 @@ impl SystemInfo {
             self.provider.as_deref().unwrap_or("unknown"),
             self.model.as_deref().unwrap_or("unknown"),
             self.enabled_extensions.join(", "),
+            self.cpu_brand.as_deref().unwrap_or("unknown"),
+            self.total_ram_bytes
+                .map(|b| format!("{} GB", b / (1024 * 1024 * 1024)))
+                .unwrap_or_else(|| "unknown".to_string()),
+            self.disk_free_bytes
+                .map(|b| format!("{} GB", b / (1024 * 1024 * 1024)))
+                .unwrap_or_else(|| "unknown".to_string()),
             chrono::Utc::now().to_rfc3339()
         )
     }
@@ -208,17 +242,6 @@ pub async fn generate_diagnostics(
             let content = template.user_content.unwrap_or(template.default_content);
             zip.start_file(format!("prompts/{}.txt", template.name), options)?;
             zip.write_all(content.as_bytes())?;
-        }
-
-        // Crash reports — included ONLY with the user's consent (off by default,
-        // reusing the telemetry opt-in). Capture is always-on locally (#299);
-        // this gate controls sharing, and there is no upload path (→ #327).
-        if crate::session::crash_capture::crash_reports_consented() {
-            let crash_dir = crate::session::crash_capture::crash_dir();
-            for (name, bytes) in crate::session::crash_capture::collect_crash_logs(&crash_dir) {
-                zip.start_file(format!("crashes/{}", name), options)?;
-                zip.write_all(&bytes)?;
-            }
         }
 
         zip.finish()?;

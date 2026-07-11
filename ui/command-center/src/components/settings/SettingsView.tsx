@@ -22,6 +22,23 @@ function PreviewBadge() {
   );
 }
 
+/** The 2026-07-10 settings audit rule: a control that does nothing must SAY
+ *  so. Preview sections render this banner and their controls disabled until
+ *  each is wired end to end. */
+function PreviewNotice() {
+  const { colors } = useThemeHook();
+  return (
+    <div style={{
+      padding: '10px 14px', borderRadius: 10, margin: '4px 0 18px',
+      background: colors.purpleSoft, border: `1px solid ${colors.purple}40`,
+      color: colors.textMuted, fontSize: 12, lineHeight: 1.5,
+    }}>
+      This section is a design preview — these controls aren't wired up yet and
+      changing them has no effect. They'll activate as each lands.
+    </div>
+  );
+}
+
 // ── Shared button styles (theme-aware via colors param) ─────────────
 type C = ReturnType<typeof useThemeHook>['colors'];
 
@@ -157,6 +174,7 @@ function ProfilePanel() {
   return (
     <div>
       <H1 sub="Your account — visible to your agent and to anyone you share a workspace with."><>Profile<PreviewBadge /></></H1>
+      <PreviewNotice />
       <Section title="Account">
         <Row label="Display name"><TextInput value="Jesse Sharratt" /></Row>
         <Row label="Email" hint="Used for sign-in and notifications."><TextInput value="" placeholder="email@example.com" /></Row>
@@ -177,6 +195,7 @@ function PreferencesPanel() {
   return (
     <div>
       <H1 sub="Defaults that follow you across sessions. Changes saved locally."><>Preferences<PreviewBadge /></></H1>
+      <PreviewNotice />
       <Section title="Defaults">
         <Row label="Open on launch" hint="Where Permagent lands when you open the app.">
           <select style={selectStyle(colors)}><option>Mission control</option><option>Last open task</option><option>Build</option><option>Brain</option></select>
@@ -209,6 +228,7 @@ function MemoryPanel() {
   return (
     <div>
       <H1 sub="What your agent remembers about you, your projects, and the people in your world."><>Memory<PreviewBadge /></></H1>
+      <PreviewNotice />
       <Section title="Memory budget" sub="When the brain gets too full, the agent will compress or forget the lowest-signal items first.">
         <Row label="Max memory" hint="Soft cap. The agent prefers to keep things small."><Slider value={maxMem} onChange={setMaxMem} min={200} max={5000} suffix=" nodes" /></Row>
         <Row label="Forget threshold" hint="Items not touched in this many days become candidates for compression."><Slider value={forget} onChange={setForget} min={7} max={365} suffix="d" /></Row>
@@ -224,8 +244,9 @@ function MemoryPanel() {
       <Section title="Manage">
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button style={ghost(colors)} onClick={() => navigateToTool('memory')}>Open Brain view</button>
-          <button style={ghost(colors)}>Export memory</button>
-          <button style={{ ...ghost(colors), color: colors.danger, borderColor: 'rgba(255,180,162,0.30)' }}>Forget everything</button>
+          {/* Export/Forget removed (2026-07-10 audit): a destructive-styled
+              button with no handler is worse than no button. They return
+              with real endpoints behind them. */}
         </div>
       </Section>
     </div>
@@ -234,37 +255,51 @@ function MemoryPanel() {
 
 function AutonomyPanel() {
   const { colors } = useThemeHook();
-  const [trust, setTrust] = useState(1);
+  // Trust level is REAL (2026-07-10 audit): it reads/writes the daemon's
+  // GOOSE_MODE, which gates tool-call approval in the agent loop.
+  const [trust, setTrust] = useState<string | null>(null);
+  useEffect(() => {
+    api.getConfig().then(cfg => {
+      const mode = (cfg.config as Record<string, unknown>)?.GOOSE_MODE;
+      setTrust(typeof mode === 'string' ? mode : 'smart_approve');
+    }).catch(() => setTrust('smart_approve'));
+  }, []);
+  const saveTrust = (mode: string) => {
+    setTrust(mode);
+    api.upsertConfig('GOOSE_MODE', mode).catch(() => {});
+  };
   const [confirms, setConfirms] = useState([true, true, true, true, false]);
   const [perSession, setPerSession] = useState(5);
   const [perDay, setPerDay] = useState(20);
   const trustLevels = [
-    { l: 'Tight', d: 'Always ask first' },
-    { l: 'Default', d: 'Ask for state changes' },
-    { l: 'Loose', d: 'Run, summarize after' },
-    { l: 'YOLO', d: 'Trust me' },
+    { v: 'approve', l: 'Tight', d: 'Ask before every tool call' },
+    { v: 'smart_approve', l: 'Default', d: 'Ask only for sensitive tool calls' },
+    { v: 'auto', l: 'Loose', d: 'Approve tool calls automatically' },
+    { v: 'chat', l: 'Chat only', d: 'No tool calls at all' },
   ];
   const confirmItems = ['Sending email or messages', 'Spending money', 'Deleting files or records', 'Pushing to main / production', 'Reading sensitive memory'];
   return (
     <div>
       <H1 sub="How much your agent can do without checking in. Higher autonomy = faster, but more rope."><>Autonomy &amp; guardrails<PreviewBadge /></></H1>
-      <Section title="Default autonomy">
-        <Row label="Trust level" hint="Applies when no project-specific level is set.">
+      <Section title="Default autonomy" sub="Live — this writes the daemon's tool-approval mode (GOOSE_MODE) and applies to new turns.">
+        <Row label="Trust level" hint="How tool calls are approved.">
           <div style={{ display: 'flex', gap: 6 }}>
-            {trustLevels.map((opt, i) => (
-              <button key={opt.l} onClick={() => setTrust(i)} style={{
+            {trustLevels.map(opt => (
+              <button key={opt.v} onClick={() => saveTrust(opt.v)} style={{
                 padding: 12, borderRadius: 10, cursor: 'pointer',
-                background: trust === i ? colors.cyanSoft : colors.bgDeeper,
-                border: trust === i ? `1px solid ${colors.borderHi}` : `1px solid ${colors.border}`,
+                background: trust === opt.v ? colors.cyanSoft : colors.bgDeeper,
+                border: trust === opt.v ? `1px solid ${colors.borderHi}` : `1px solid ${colors.border}`,
                 color: colors.text, textAlign: 'left', flex: 1, fontFamily: font.body,
+                opacity: trust === null ? 0.5 : 1,
               }}>
-                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4, color: trust === i ? colors.cyan : colors.text }}>{opt.l}</div>
+                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4, color: trust === opt.v ? colors.cyan : colors.text }}>{opt.l}</div>
                 <div style={{ fontSize: 11, color: colors.textMuted }}>{opt.d}</div>
               </button>
             ))}
           </div>
         </Row>
       </Section>
+      <PreviewNotice />
       <Section title="Always confirm before…">
         {confirmItems.map((l, i) => (
           <div key={l} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '10px 0', borderTop: `1px solid ${colors.border}` }}>
@@ -324,7 +359,7 @@ function ToolsPanel() {
 type OllamaModel = { name: string; size: number; digest: string; modified_at: string };
 type OllamaRunning = { name: string; size: number; size_vram: number; digest: string; expires_at: string };
 type OllamaStatus = { reachable: boolean; installed: OllamaModel[]; running: OllamaRunning[] };
-type LibSchedule = { enabled: boolean; start_time: string; duration_minutes: number; model: string; run_if_launched_in_window: boolean };
+type LibSchedule = { enabled: boolean; start_time: string; duration_minutes: number; model: string; run_if_launched_in_window: boolean; pruning_enabled?: boolean };
 
 function formatBytes(b: number): string {
   if (b < 1e9) return `${(b / 1e6).toFixed(0)} MB`;
@@ -412,15 +447,9 @@ function ModelsPanel({ goto }: PanelProps) {
       <Section title="Providers" sub="Provider credentials live in the API keys tab — add or update a key there, then route to it below.">
         <button style={ghost(colors)} onClick={() => goto('keys')}>Manage API keys</button>
       </Section>
-      <Section title="Routing">
-        <Row label="Primary" hint="Used for thinking, planning, and replies."><select style={selectStyle(colors)}><option>Claude Sonnet 4.5</option><option>Claude Opus 4.5</option><option>GPT-5</option><option>Gemini 2.5 Pro</option></select></Row>
-        <Row label="Quick" hint="Used for short tools, classification, and summaries."><select style={selectStyle(colors)}><option>Claude Haiku 4.5</option><option>GPT-5 mini</option><option>Llama 4 70B</option></select></Row>
-        <Row label="Reasoning" hint="Used for hard plans, math, and code review."><select style={selectStyle(colors)}><option>o3</option><option>Claude Opus 4.5</option></select></Row>
-      </Section>
-      <Section title="Behavior">
-        <Row label="Temperature" hint="Higher = more wandering. Lower = more grounded."><Slider value={50} suffix="%" /></Row>
-        <Row label="Max thinking budget" hint="How many tokens to spend on a single thought."><Slider value={4096} min={512} max={32768} suffix=" tok" /></Row>
-      </Section>
+      {/* The old Routing/Behavior selects were decorative — hardcoded options
+          wired to nothing (2026-07-10 settings audit). The real model/default
+          switch lives in the provider modal on the API keys tab. */}
 
       {/* ── Ollama Status ────────────────────────────────────────── */}
       <Section title="Local models (Ollama)">
@@ -473,7 +502,7 @@ function ModelsPanel({ goto }: PanelProps) {
                   type="time"
                   value={schedule.start_time}
                   onChange={e => handleScheduleChange({ start_time: e.target.value })}
-                  style={{ ...selectStyle, minWidth: 120, width: 'auto' }}
+                  style={{ ...selectStyle(colors), minWidth: 120, width: 'auto' }}
                 />
               </Row>
               <Row label="Duration" hint="How long to keep the model loaded (minutes).">
@@ -483,15 +512,29 @@ function ModelsPanel({ goto }: PanelProps) {
                   max={720}
                   value={schedule.duration_minutes}
                   onChange={e => handleScheduleChange({ duration_minutes: Math.max(15, Math.min(720, parseInt(e.target.value) || 15)) })}
-                  style={{ ...selectStyle, minWidth: 100, width: 'auto' }}
+                  style={{ ...selectStyle(colors), minWidth: 100, width: 'auto' }}
                 />
                 <span style={{ fontSize: 11, color: colors.textDim, marginLeft: 6 }}>min</span>
               </Row>
-              <Row label="Model" hint="Ollama model used by the Librarian.">
+              <Row label="Model" hint="Ollama model used by the Librarian. Installed models only.">
                 <span style={{ fontSize: 13, color: colors.text, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  {schedule.model}
+                  <select
+                    style={{ ...selectStyle(colors), width: 'auto', minWidth: 160 }}
+                    value={schedule.model}
+                    onChange={e => handleScheduleChange({ model: e.target.value })}
+                  >
+                    {!(ollama?.installed ?? []).some(m => m.name === schedule.model) && (
+                      <option value={schedule.model}>{schedule.model} (not installed)</option>
+                    )}
+                    {(ollama?.installed ?? []).map(m => (
+                      <option key={m.name} value={m.name}>{m.name}</option>
+                    ))}
+                  </select>
                   <ModelStateBadge state={modelState(schedule.model)} />
                 </span>
+              </Row>
+              <Row label="Nightly pruning" hint="Let the Librarian retire stale, low-signal memories during its window.">
+                <Toggle on={schedule.pruning_enabled ?? false} onChange={v => handleScheduleChange({ pruning_enabled: v })} />
               </Row>
               <Row label="Next run" hint={nextRunText(schedule)}>
                 <span style={{ fontSize: 12, color: colors.textMuted }}>{nextRunText(schedule)}</span>
@@ -601,7 +644,7 @@ function ShortcutsPanel() {
   ];
   return (
     <div>
-      <H1 sub="Click any shortcut to rebind. Reset to defaults at the bottom."><>Shortcuts<PreviewBadge /></></H1>
+      <H1 sub="The current keyboard map. Rebinding is coming — these are reference-only today."><>Shortcuts<PreviewBadge /></></H1>
       {groups.map(grp => (
         <Section key={grp.g} title={grp.g}>
           {grp.items.map(([l, keys]) => (
@@ -617,14 +660,14 @@ function ShortcutsPanel() {
 }
 
 function DataPanel() {
-  const { colors } = useThemeHook();
   const [localFirst, setLocalFirst] = useState(true);
   const [e2e, setE2e] = useState(true);
   const [diagnostics, setDiagnostics] = useState(true);
   const [sharePrompts, setSharePrompts] = useState(false);
   return (
     <div>
-      <H1 sub="Your data is yours. These controls govern what we keep and what we use."><>Data &amp; privacy<PreviewBadge /></></H1>
+      <H1 sub="Your data is yours. Everything is local-first today; these controls activate as remote features land."><>Data &amp; privacy<PreviewBadge /></></H1>
+      <PreviewNotice />
       <Section title="Local-first">
         <Row label="Keep everything on this device" hint="Memory and traces never leave your machine. Cloud sync turns off."><Toggle on={localFirst} onChange={setLocalFirst} /></Row>
         <Row label="End-to-end encryption" hint="Required when you have external collaborators."><Toggle on={e2e} onChange={setE2e} /></Row>
@@ -635,9 +678,8 @@ function DataPanel() {
       </Section>
       <Section title="Manage">
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button style={ghost(colors)}>Export workspace</button>
-          <button style={ghost(colors)}>Download memory</button>
-          <button style={{ ...ghost(colors), color: colors.danger, borderColor: 'rgba(255,180,162,0.30)' }}>Delete workspace</button>
+          {/* Export/Download/Delete removed (2026-07-10 audit): action-styled
+              buttons with no handlers. They return with real endpoints. */}
         </div>
       </Section>
     </div>
