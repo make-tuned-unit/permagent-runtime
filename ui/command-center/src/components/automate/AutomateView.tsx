@@ -326,7 +326,7 @@ export function AutomateView() {
             background: 'rgba(91,209,127,0.1)', border: '1px solid rgba(91,209,127,0.25)',
             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           }}>
-            <span style={{ fontSize: 13, color: '#5BD17F' }}>&#10003; "{completionToast}" completed.</span>
+            <span style={{ fontSize: 13, color: colors.success }}>&#10003; "{completionToast}" completed.</span>
             <button onClick={() => setCompletionToast(null)} style={{ background: 'none', border: 'none', color: colors.textDim, cursor: 'pointer', fontSize: 16 }}>&times;</button>
           </div>
         )}
@@ -338,7 +338,7 @@ export function AutomateView() {
             background: 'rgba(255,100,100,0.1)', border: '1px solid rgba(255,100,100,0.25)',
             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           }}>
-            <span style={{ fontSize: 13, color: '#ff6b6b' }}>{runError}</span>
+            <span style={{ fontSize: 13, color: colors.danger }}>{runError}</span>
             <button onClick={() => setRunError(null)} style={{ background: 'none', border: 'none', color: colors.textDim, cursor: 'pointer', fontSize: 16 }}>&times;</button>
           </div>
         )}
@@ -371,7 +371,7 @@ export function AutomateView() {
 
         {/* ── RUNNING NOW ── (only when something is executing) */}
         {runningJobs.length > 0 && (
-          <Section title="Running Now" count={runningJobs.length} accentColor="#5BD17F">
+          <Section title="Running Now" count={runningJobs.length} accentColor={colors.success}>
             {runningJobs.map(job => (
               <RecipeCard key={job.id} job={job} onRunNow={handleRunNow} onPause={handlePause}
                 onUnpause={handleUnpause} onDelete={handleDelete} onKill={handleKill}
@@ -431,9 +431,9 @@ export function AutomateView() {
                   transition: 'border-color 150ms',
                 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
-                    <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#FFB347' }} />
+                    <div style={{ width: 8, height: 8, borderRadius: '50%', background: colors.warning }} />
                     <div style={{ fontSize: 14, fontWeight: 600, fontFamily: font.display, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{proposal.description}</div>
-                    <span style={{ fontSize: 9, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: 'rgba(255,179,71,0.15)', color: '#FFB347' }}>PROPOSED</span>
+                    <span style={{ fontSize: 9, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: 'rgba(255,179,71,0.15)', color: colors.warning }}>PROPOSED</span>
                   </div>
                   <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5, marginBottom: 8 }}>
                     Seen {proposal.occurrence_count} time{proposal.occurrence_count !== 1 ? 's' : ''} using {proposal.tool_used}
@@ -459,8 +459,8 @@ export function AutomateView() {
                   const uses = skill.usageCount || 0;
                   const tier = uses >= 10 ? 'MASTERED' : uses >= 3 ? 'TRUSTED' : 'LEARNED';
                   const tierBg = tier === 'MASTERED' ? 'rgba(255,179,71,0.15)' : tier === 'TRUSTED' ? 'rgba(91,209,127,0.12)' : colors.purpleSoft;
-                  const tierFg = tier === 'MASTERED' ? '#FFB347' : tier === 'TRUSTED' ? '#5BD17F' : colors.purpleBright;
-                  const dotColor = tier === 'MASTERED' ? '#FFB347' : tier === 'TRUSTED' ? '#5BD17F' : (skill.status === 'active' ? colors.purpleBright : colors.textDim);
+                  const tierFg = tier === 'MASTERED' ? colors.warning : tier === 'TRUSTED' ? colors.success : colors.purpleBright;
+                  const dotColor = tier === 'MASTERED' ? colors.warning : tier === 'TRUSTED' ? colors.success : (skill.status === 'active' ? colors.purpleBright : colors.textDim);
                   return (
                     <div key={skill.id} style={{
                       padding: '16px 20px', borderRadius: radius.lg, cursor: 'pointer',
@@ -530,7 +530,7 @@ export function AutomateView() {
                     width: '100%', transition: 'background 100ms',
                   }} onMouseEnter={e => (e.currentTarget.style.background = colors.border)}
                      onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                    <span style={{ fontSize: 11, color: '#5BD17F' }}>&#10003;</span>
+                    <span style={{ fontSize: 11, color: colors.success }}>&#10003;</span>
                     <span style={{ fontSize: 12, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName}</span>
                     <span style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono, flexShrink: 0 }}>{run.messageCount} msgs</span>
                     <span style={{ fontSize: 10, color: colors.textDim, flexShrink: 0 }}>{timeAgo(run.createdAt)}</span>
@@ -604,7 +604,7 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
   const name = job.display_name || job.id;
   const desc = job.description || '';
   const schedule = cronToEnglish(job.cron);
-  const statusColor = job.currently_running ? '#5BD17F' : job.paused ? colors.textDim : colors.cyan;
+  const statusColor = job.currently_running ? colors.success : job.paused ? colors.textDim : colors.cyan;
   const hasUpdate = job.starter_id && job.user_customized && job.embedded_version && job.version !== job.embedded_version;
 
   return (
@@ -632,7 +632,7 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
       {desc && <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5, marginBottom: 8, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' } as React.CSSProperties}>{desc}</div>}
       <div style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono, marginBottom: 10 }}>
         {schedule} &middot; {job.last_run ? `Ran ${timeAgo(job.last_run)}` : 'Never run yet'}
-        {hasUpdate && <> &middot; <span style={{ color: '#FFB347' }}>Update available</span></>}
+        {hasUpdate && <> &middot; <span style={{ color: colors.warning }}>Update available</span></>}
       </div>
       <div style={{ display: 'flex', gap: 6 }} onClick={e => e.stopPropagation()}>
         {job.currently_running ? (
@@ -711,7 +711,7 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
 }) {
   const { colors } = useTheme();
   const name = job.display_name || job.id;
-  const statusColor = job.currently_running ? '#5BD17F' : job.paused ? colors.textDim : colors.cyan;
+  const statusColor = job.currently_running ? colors.success : job.paused ? colors.textDim : colors.cyan;
   const hasUpdate = job.starter_id && job.user_customized && job.embedded_version && job.version !== job.embedded_version;
   return (
     <>
@@ -722,7 +722,7 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
       </div>
       {job.description && <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.6, marginBottom: 16 }}>{job.description}</div>}
       {hasUpdate && (
-        <div style={{ marginBottom: 16, padding: '10px 16px', borderRadius: radius.md, background: 'rgba(255,179,71,0.08)', border: '1px solid rgba(255,179,71,0.2)', fontSize: 12, color: '#FFB347' }}>
+        <div style={{ marginBottom: 16, padding: '10px 16px', borderRadius: radius.md, background: 'rgba(255,179,71,0.08)', border: '1px solid rgba(255,179,71,0.2)', fontSize: 12, color: colors.warning }}>
           Update available (v{job.embedded_version}). Reset to default to apply.
         </div>
       )}
@@ -891,7 +891,7 @@ label, onClick, primary, danger, muted, actionState, successLabel, loadingLabel,
   const isLoading = phase === 'loading';
   const isSuccess = phase === 'success';
   const bg = isSuccess ? 'rgba(91,209,127,0.15)' : isLoading ? colors.border : primary ? colors.cyan : danger ? 'rgba(255,100,100,0.1)' : colors.border;
-  const fg = isSuccess ? '#5BD17F' : isLoading ? colors.textDim : primary ? '#000' : danger ? '#ff6b6b' : colors.textMuted;
+  const fg = isSuccess ? colors.success : isLoading ? colors.textDim : primary ? '#000' : danger ? colors.danger : colors.textMuted;
   const bdr = isSuccess ? 'rgba(91,209,127,0.3)' : isLoading ? colors.border : primary ? 'transparent' : danger ? 'rgba(255,100,100,0.2)' : colors.border;
   const displayLabel = isSuccess ? `\u2713 ${successLabel || label}` : isLoading ? (loadingLabel || label) : label;
   return (
@@ -1024,7 +1024,7 @@ findings, actionInFlight, onAction, totalRecovered, allActioned }: {
         background: allActioned ? 'linear-gradient(135deg, rgba(91,209,127,0.12), rgba(91,209,127,0.04))' : 'linear-gradient(135deg, rgba(0,213,255,0.1), rgba(141,68,174,0.06))',
         border: `1px solid ${allActioned ? 'rgba(91,209,127,0.25)' : colors.borderHi}`,
       }}>
-        <div style={{ fontSize: 22, fontWeight: 700, fontFamily: font.display, color: allActioned ? '#5BD17F' : colors.text }}>
+        <div style={{ fontSize: 22, fontWeight: 700, fontFamily: font.display, color: allActioned ? colors.success : colors.text }}>
           {allActioned ? `${formatBytes(totalRecovered)} recovered` : `${formatBytes(totalPendingBytes)} to clean up`}
         </div>
         <div style={{ fontSize: 13, color: colors.textMuted, marginTop: 4 }}>
@@ -1081,10 +1081,10 @@ findings, actionInFlight, onAction, totalRecovered, allActioned }: {
                   </div>
                 </button>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 15, fontWeight: 600, fontFamily: font.display, color: allDone ? '#5BD17F' : colors.text }}>{groupName}</div>
+                  <div style={{ fontSize: 15, fontWeight: 600, fontFamily: font.display, color: allDone ? colors.success : colors.text }}>{groupName}</div>
                   <div style={{ fontSize: 12, color: colors.textDim, marginTop: 2 }}>{allDone ? `Cleaned — ${formatBytes(groupRecovered)}` : `${pending.length} items · ${formatBytes(pendingBytes)}`}</div>
                 </div>
-                {allDone ? <div style={{ padding: '8px 16px', borderRadius: radius.md, background: 'rgba(91,209,127,0.1)', color: '#5BD17F', fontSize: 12, fontWeight: 600 }}>Done</div> : (
+                {allDone ? <div style={{ padding: '8px 16px', borderRadius: radius.md, background: 'rgba(91,209,127,0.1)', color: colors.success, fontSize: 12, fontWeight: 600 }}>Done</div> : (
                   <button onClick={() => setPreviewGroup(groupName)} style={{ padding: '10px 22px', borderRadius: radius.md, background: colors.cyan, color: '#000', fontWeight: 700, fontSize: 13, border: 'none', cursor: 'pointer', fontFamily: font.body }}>Clean — {formatBytes(pendingBytes)}</button>
                 )}
               </div>
@@ -1105,8 +1105,8 @@ function FindingRow({
 finding, loading, onAction }: { finding: Finding; loading: boolean; onAction: (a: string) => void }) {
   const { colors } = useTheme();
   const fileName = finding.path.split('/').pop() || finding.path;
-  if (finding.action_taken === 'trashed') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: 'rgba(91,209,127,0.05)', border: '1px solid rgba(91,209,127,0.12)' }}><span style={{ fontSize: 12, color: '#5BD17F' }}>Trashed</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</span>{finding.size_recovered_bytes != null && <span style={{ fontSize: 11, color: '#5BD17F', fontFamily: font.mono }}>+{formatBytes(finding.size_recovered_bytes)}</span>}</div>;
-  if (finding.action_taken === 'error') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: 'rgba(255,100,100,0.06)', border: '1px solid rgba(255,100,100,0.15)' }}><span style={{ fontSize: 12, color: '#ff6b6b', fontWeight: 600, flexShrink: 0 }}>Failed</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={finding.error_message || undefined}>{finding.error_message || fileName}</span><button onClick={() => onAction('trash')} style={{ padding: '2px 6px', borderRadius: radius.sm, background: 'rgba(255,100,100,0.1)', border: '1px solid rgba(255,100,100,0.2)', color: '#ff6b6b', fontSize: 9, cursor: 'pointer', fontFamily: font.body, flexShrink: 0 }}>Retry</button></div>;
+  if (finding.action_taken === 'trashed') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: 'rgba(91,209,127,0.05)', border: '1px solid rgba(91,209,127,0.12)' }}><span style={{ fontSize: 12, color: colors.success }}>Trashed</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</span>{finding.size_recovered_bytes != null && <span style={{ fontSize: 11, color: colors.success, fontFamily: font.mono }}>+{formatBytes(finding.size_recovered_bytes)}</span>}</div>;
+  if (finding.action_taken === 'error') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: 'rgba(255,100,100,0.06)', border: '1px solid rgba(255,100,100,0.15)' }}><span style={{ fontSize: 12, color: colors.danger, fontWeight: 600, flexShrink: 0 }}>Failed</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={finding.error_message || undefined}>{finding.error_message || fileName}</span><button onClick={() => onAction('trash')} style={{ padding: '2px 6px', borderRadius: radius.sm, background: 'rgba(255,100,100,0.1)', border: '1px solid rgba(255,100,100,0.2)', color: colors.danger, fontSize: 9, cursor: 'pointer', fontFamily: font.body, flexShrink: 0 }}>Retry</button></div>;
   if (finding.action_taken) return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, opacity: 0.6 }}><span style={{ fontSize: 12, color: colors.textMuted }}>Kept</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1 }}>{fileName}</span></div>;
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: radius.sm, background: colors.surface, border: `1px solid ${colors.border}`, marginTop: 4 }}>
@@ -1115,7 +1115,7 @@ finding, loading, onAction }: { finding: Finding; loading: boolean; onAction: (a
         <div style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono, marginTop: 2 }}>{formatBytes(finding.size_bytes)}{finding.age_days != null && <> &middot; {finding.age_days}d old</>}</div>
       </div>
       <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-        <button onClick={() => onAction('trash')} disabled={loading} style={{ padding: '3px 8px', borderRadius: radius.sm, background: 'rgba(255,100,100,0.1)', border: '1px solid rgba(255,100,100,0.2)', color: '#ff6b6b', fontSize: 10, fontWeight: 600, cursor: loading ? 'wait' : 'pointer', fontFamily: font.body }}>{loading ? '...' : 'Trash'}</button>
+        <button onClick={() => onAction('trash')} disabled={loading} style={{ padding: '3px 8px', borderRadius: radius.sm, background: 'rgba(255,100,100,0.1)', border: '1px solid rgba(255,100,100,0.2)', color: colors.danger, fontSize: 10, fontWeight: 600, cursor: loading ? 'wait' : 'pointer', fontFamily: font.body }}>{loading ? '...' : 'Trash'}</button>
         <button onClick={() => onAction('keep')} disabled={loading} style={{ padding: '3px 8px', borderRadius: radius.sm, background: colors.border, border: `1px solid ${colors.border}`, color: colors.textMuted, fontSize: 10, cursor: loading ? 'wait' : 'pointer', fontFamily: font.body }}>Keep</button>
       </div>
     </div>
@@ -1196,7 +1196,7 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
           </div>
         )}
 
-        {error && <div style={{ fontSize: 12, color: '#ff6b6b', marginBottom: 12 }}>{error}</div>}
+        {error && <div style={{ fontSize: 12, color: colors.danger, marginBottom: 12 }}>{error}</div>}
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           <button onClick={onClose} style={{ padding: '8px 16px', borderRadius: radius.sm, background: 'transparent', border: `1px solid ${colors.border}`, color: colors.textMuted, fontSize: 12, cursor: 'pointer', fontFamily: font.body }}>Cancel</button>

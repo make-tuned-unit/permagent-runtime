@@ -327,7 +327,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
               }}
               disabled={submitting}
               style={{
-                background: 'none', border: 'none', color: '#F59E0B',
+                background: 'none', border: 'none', color: colors.warning,
                 fontSize: 11, fontFamily: font.body,
                 cursor: submitting ? 'default' : 'pointer', padding: 4,
                 opacity: submitting ? 0.5 : 1,
