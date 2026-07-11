@@ -67,6 +67,7 @@ struct MainTabs: View {
     @EnvironmentObject var session: HubSession
     var body: some View {
         TabView {
+            HomeView().tabItem { Label("Home", systemImage: "circle.hexagongrid.fill") }
             ChatView().tabItem { Label("Henry", systemImage: "bubble.left.and.bubble.right.fill") }
             InboxView().tabItem { Label("Decisions", systemImage: "tray.full.fill") }
                 .badge(session.unread)
