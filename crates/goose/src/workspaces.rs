@@ -89,12 +89,15 @@ pub async fn seed_presets_if_empty(pool: &Pool<Sqlite>) -> Result<bool, String> 
         return Ok(false);
     }
 
+    // Sidebar order is a product decision (Jesse, 2026-07-10):
+    // Home, Projects, Build, Automate, World — Brain follows.
+    // Keep in lockstep with CANONICAL_WORKSPACE_ORDER below.
     let presets = [
         ("Home", "home", 0, home_layout(), true),
-        ("Automate", "layout-dashboard", 1, automate_layout(), false),
-        ("World", "globe", 2, world_layout(), false),
-        ("Build", "code", 3, build_layout(), false),
-        ("Projects", "columns", 4, projects_layout(), false),
+        ("Projects", "columns", 1, projects_layout(), false),
+        ("Build", "code", 2, build_layout(), false),
+        ("Automate", "layout-dashboard", 3, automate_layout(), false),
+        ("World", "globe", 4, world_layout(), false),
         ("Brain", "brain", 5, brain_layout(), false),
     ];
 
@@ -130,6 +133,39 @@ pub async fn seed_presets_if_empty(pool: &Pool<Sqlite>) -> Result<bool, String> 
 
     tx.commit().await.map_err(|e| e.to_string())?;
     Ok(true)
+}
+
+/// The code-owned sidebar order (Jesse's ruling, 2026-07-10). Applied at every
+/// startup by [`ensure_canonical_workspace_order`] so existing installs pick
+/// up order changes without a reseed; workspaces outside this list (user-
+/// created) keep their own sort_order untouched.
+pub const CANONICAL_WORKSPACE_ORDER: &[(&str, i32)] = &[
+    ("Home", 0),
+    ("Projects", 1),
+    ("Build", 2),
+    ("Automate", 3),
+    ("World", 4),
+    ("Brain", 5),
+];
+
+/// Normalize the preset workspaces' sort_order to [`CANONICAL_WORKSPACE_ORDER`].
+/// Idempotent; returns true if any row changed.
+pub async fn ensure_canonical_workspace_order(pool: &Pool<Sqlite>) -> Result<bool, String> {
+    let mut changed = false;
+    for (name, order) in CANONICAL_WORKSPACE_ORDER {
+        let result = sqlx::query(
+            "UPDATE workspaces SET sort_order = ?
+             WHERE user_id = 'default' AND name = ? AND sort_order != ?",
+        )
+        .bind(order)
+        .bind(name)
+        .bind(order)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        changed |= result.rows_affected() > 0;
+    }
+    Ok(changed)
 }
 
 /// Ensure the "Projects" workspace exists for existing users who were seeded
@@ -291,4 +327,69 @@ pub async fn set_active_workspace(pool: &Pool<Sqlite>, workspace_id: &str) -> Re
         .map_err(|e| e.to_string())?;
 
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn test_pool() -> Pool<Sqlite> {
+        use crate::session::spectral_schema::init_spectral_db;
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        init_spectral_db(&pool).await.unwrap();
+        pool
+    }
+
+    async fn order_of(pool: &Pool<Sqlite>) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT name FROM workspaces WHERE user_id = 'default' ORDER BY sort_order",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    /// The sidebar order is a product decision (2026-07-10): fresh seeds land
+    /// in canon, and installs seeded under the OLD order are normalized on
+    /// startup without touching user-created workspaces.
+    #[tokio::test]
+    async fn canonical_order_seeds_and_normalizes() {
+        let pool = test_pool().await;
+        seed_presets_if_empty(&pool).await.unwrap();
+        assert_eq!(
+            order_of(&pool).await,
+            ["Home", "Projects", "Build", "Automate", "World", "Brain"]
+        );
+
+        // Simulate a legacy install: scramble to the pre-2026-07-10 order and
+        // add a user-created workspace beyond the presets.
+        for (name, order) in [("Automate", 1), ("World", 2), ("Build", 3), ("Projects", 4)] {
+            sqlx::query("UPDATE workspaces SET sort_order = ? WHERE name = ?")
+                .bind(order)
+                .bind(name)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO workspaces (id, user_id, name, icon, sort_order, layout_json, is_default)
+             VALUES ('custom-1', 'default', 'My Lab', 'flask', 9, '{}', 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let changed = ensure_canonical_workspace_order(&pool).await.unwrap();
+        assert!(changed, "legacy order must be rewritten");
+        assert_eq!(
+            order_of(&pool).await,
+            ["Home", "Projects", "Build", "Automate", "World", "Brain", "My Lab"]
+        );
+
+        // Idempotent: a second run changes nothing.
+        assert!(!ensure_canonical_workspace_order(&pool).await.unwrap());
+    }
 }
