@@ -563,6 +563,65 @@ pub async fn describe_one(
 /// on the next batch. The re-call to Ollama is a known cost — the description content
 /// may differ slightly but is functionally equivalent. Not worth guarding against
 /// since set_description failures indicate a deeper Spectral issue.
+/// #387 — the entity-summary pass. After the memory describe batch, give every
+/// reachable undescribed graph entity a one-line description so the Brain
+/// view's people/projects/topics read like the memories do. Same warmed model,
+/// same run window. Returns how many entities were described.
+pub async fn describe_entities_batch(
+    brain: &crate::brain_handle::SafeBrain,
+    cap: usize,
+    model: &str,
+) -> Result<usize, String> {
+    // Seed with the persona name — the same neighborhood the graph shows.
+    let seed = crate::config::agent_identity::load_agent_config()
+        .primary
+        .first_name;
+    let entities = brain
+        .undescribed_entities(&seed, cap)
+        .await
+        .map_err(|e| format!("Brain error: {}", e))?;
+    if entities.is_empty() {
+        return Ok(0);
+    }
+
+    let mut described = 0;
+    for (entity_id, entity_type, canonical) in entities {
+        // Ground the summary in the entity's typed fields when it has any.
+        let fields = brain
+            .get_entity_fields(entity_id)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|f| format!("{}: {}", f.field_name, f.value))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let prompt = format!(
+            "You maintain a personal knowledge graph. Write ONE plain sentence (max 25 words) \
+             describing this {entity_type} for a hover card. No preamble, no quotes — just the \
+             sentence.\n\nName: {canonical}\nType: {entity_type}\nKnown fields: {}",
+            if fields.is_empty() { "(none)" } else { &fields }
+        );
+        let raw = call_ollama_streaming(OLLAMA_BASE_URL, &prompt, model, false, &canonical)
+            .await
+            .map_err(|e| format!("Ollama error describing entity '{canonical}': {e}"))?;
+        let description = raw.trim().trim_matches('"').to_string();
+        if description.is_empty() {
+            continue;
+        }
+        brain
+            .set_entity_description(entity_id, &description)
+            .await
+            .map_err(|e| format!("Brain error writing entity description: {e}"))?;
+        tracing::info!(
+            target: "permagentd::librarian",
+            entity = %canonical,
+            "entity description written (#387)"
+        );
+        described += 1;
+    }
+    Ok(described)
+}
+
 pub async fn run_batch(
     brain: &crate::brain_handle::SafeBrain,
     batch_size: usize,
