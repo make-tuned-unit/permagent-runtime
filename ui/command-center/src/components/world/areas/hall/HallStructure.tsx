@@ -9,6 +9,7 @@ import * as THREE from 'three';
 import { COLORS, STATIONS, COLUMN_COUNT, ROTUNDA_RADIUS, DOME_HEIGHT, PLATFORM_RADIUS } from '../../constants';
 import { isPunchedAngle } from '../zones';
 import { HallDetail } from './HallDetail';
+import { HallInlay } from './HallInlay';
 // W4 reactivity seam (bible §7): the colonnade veins brighten with the live
 // working-agent count. The driving signal stays in the atmosphere lane; this is
 // the one cross-lane read W4 flagged in its PR for W1 awareness.
@@ -349,6 +350,9 @@ export function HallStructure({
       {/* Second layer of architectural detail — entablature, fluting, dome ribs,
           floor inlay, platform rim (areas/hall/HallDetail.tsx). */}
       <HallDetail />
+      {/* Engraved circuit-node inlay (instanced) + the omphalos: the rotunda's
+          reactive heart, breathing with REAL Brain events (HallInlay.tsx). */}
+      <HallInlay />
       <StationPedestals onHoverStation={onHoverStation} onClickStation={onClickStation} />
 
       {/* Orbital arcs — signature dynamic visual */}

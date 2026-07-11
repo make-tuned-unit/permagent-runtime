@@ -24,6 +24,7 @@ export function ProjectOverview({ project }: { project: Project }) {
   const [columns, setColumns] = useState<BoardColumn[]>([]);
   const [cards, setCards] = useState<Card[]>([]);
   const openGoalDetail = useCommandCenter(s => s.openGoalDetail);
+  const growProject = useCommandCenter(s => s.growProject);
 
   const loadBoard = useCallback(async () => {
     try {
@@ -61,6 +62,22 @@ export function ProjectOverview({ project }: { project: Project }) {
 
         {/* RIGHT — people + action */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
+          {/* Build → Grow bridge: take the finished work to market. */}
+          <button
+            onClick={() => growProject(project.id)}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+              padding: '11px 14px', borderRadius: 12, cursor: 'pointer',
+              background: `linear-gradient(90deg, ${colors.cyan}22, ${colors.purple}22)`,
+              border: `1px solid ${colors.borderHi}`, color: colors.text,
+              fontFamily: font.body, fontSize: 13, fontWeight: 600,
+            }}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={colors.cyan} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 17l6-6 4 4 8-8M17 7h4v4" />
+            </svg>
+            Grow this project
+          </button>
           <PeoplePanel project={project} />
           <LinksPanel project={project} />
           <TasksPanel

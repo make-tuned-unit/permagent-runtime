@@ -24,6 +24,7 @@ import {
 } from './poses';
 import { publishHenryPosition } from './henryPresence';
 import { advanceMining, resolveTablet } from './librarianMining';
+import { getDissolve } from '../areas/forum/agoraArc';
 
 const LABEL_ON_DIST = 18;
 const LABEL_OFF_DIST = 20; // hysteresis so the label doesn't strobe at the boundary
@@ -242,6 +243,15 @@ export function AgentCharacterV2({
 
     // ── Per-agent specials ──
     if (identity.isHenry) {
+      // BODY ⇄ CODE (Agora arc, areas/forum/agoraArc.ts): Henry's embodied rig
+      // dissolves into code as he crosses the portal and REMATERIALIZES on the
+      // return — one system, both sides, driven by the single `dissolve` scalar
+      // (0 = body … 1 = code). Scaling rig.root implodes/reforms the whole avatar
+      // symmetrically; the code stream + his Agora glyph carry the crossing. The
+      // literal per-vertex skinned-mesh shatter is deferred polish (see PR).
+      const emb = 1 - getDissolve(); // 1 fully embodied … 0 fully code
+      rig.root.scale.setScalar(Math.max(0.0001, emb));
+      rig.root.visible = emb > 0.02;
       // Henry presides — publish his live position so W4 can gather light where he
       // stands (bible §4: "light gathers slightly where he stands"). He never lifts.
       publishHenryPosition(m.x, m.y, m.z, hud);
