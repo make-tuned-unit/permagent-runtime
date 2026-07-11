@@ -87,6 +87,9 @@ fn guard_public_host(url: &str) -> Result<(), String> {
 }
 
 /// `<title>` of an HTML document, entity-light.
+// string_slice: every index comes from `find()` on the same string, which
+// always returns char boundaries — the lint's mid-UTF-8 panic cannot occur.
+#[allow(clippy::string_slice)]
 fn extract_title(html: &str) -> Option<String> {
     let lower = html.to_ascii_lowercase();
     let start = lower.find("<title")?;
@@ -100,6 +103,9 @@ fn extract_title(html: &str) -> Option<String> {
 /// turns tags into whitespace (block tags into newlines), decodes the common
 /// entities, and collapses runs of blank space. Not a browser — good enough
 /// to read a news homepage aloud without a rendering engine.
+// string_slice: all indices are `find()` results on the same string (char
+// boundaries by contract) or advance tag-by-tag from them.
+#[allow(clippy::string_slice)]
 fn html_to_text(html: &str) -> String {
     const SKIP: &[&str] = &["script", "style", "noscript", "head", "svg", "template"];
     const BLOCK: &[&str] = &[
@@ -290,6 +296,9 @@ impl BrowserClient {
     /// works even when no browser tab is open, and is the reliable path for
     /// "read me the BBC homepage". SSRF-guarded: https/http only, private and
     /// loopback hosts refused, redirects re-checked per hop.
+    // string_slice: the truncation walks back to `is_char_boundary` before
+    // slicing; the byte-cap slice is length-clamped on raw bytes pre-UTF-8.
+    #[allow(clippy::string_slice)]
     async fn handle_read_webpage(&self, url: &str) -> Result<Vec<Content>, String> {
         let url = normalize_web_url(url)?;
         guard_public_host(&url)?;
