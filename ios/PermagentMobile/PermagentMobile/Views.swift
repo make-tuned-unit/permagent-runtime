@@ -140,42 +140,110 @@ struct GoalsView: View {
     }
 }
 
-// ── Chat (v1: send + poll the session reply) ─────────────────────────────────
+// ── Chat (real: send to the hub's /reply, stream Henry's answer) ─────────────
+
+struct ChatBubble: Identifiable {
+    let id = UUID()
+    let role: String   // "user" | "assistant"
+    var text: String
+}
 
 struct ChatView: View {
     @State private var draft = ""
-    @State private var lines: [String] = []
+    @State private var messages: [ChatBubble] = []
+    @State private var sending = false
+    @State private var sessionId = MobileSession.chatSessionId()
+
     var body: some View {
         NavigationStack {
-            VStack {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 12) {
-                        ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                            GlassCard { Text(line).font(.subheadline).foregroundStyle(Brand.text) }
+            VStack(spacing: 0) {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 10) {
+                            if messages.isEmpty {
+                                Text("Ask Henry to do something on your hub — open a site in the desktop browser, dispatch a goal, check the Brain. It runs on your Mac; you watch it here.")
+                                    .font(.caption)
+                                    .foregroundStyle(Brand.textMuted)
+                                    .padding(.top, 48)
+                                    .padding(.horizontal, 4)
+                            }
+                            ForEach(messages) { bubble($0) }
+                        }
+                        .padding()
+                    }
+                    .onChange(of: messages.count) { _, _ in
+                        if let last = messages.last {
+                            withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
                         }
                     }
-                    .padding()
                 }
-                HStack(spacing: 8) {
-                    TextField("Ask Henry…", text: $draft)
-                        .padding(12)
-                        .background(Brand.surface)
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .foregroundStyle(Brand.text)
-                    Button {
-                        // v1 scaffold: wire to the hub's reply/session API on
-                        // the mini (SSE streaming needs device testing).
-                        if !draft.isEmpty { lines.append(draft); draft = "" }
-                    } label: {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.title2)
-                            .foregroundStyle(Brand.cyan)
-                    }
-                }
-                .padding()
+                composer
             }
             .background(Brand.shell)
             .navigationTitle("Henry")
+        }
+    }
+
+    private func bubble(_ m: ChatBubble) -> some View {
+        HStack {
+            if m.role == "user" { Spacer(minLength: 44) }
+            Text(m.text.isEmpty ? "…" : m.text)
+                .font(.subheadline)
+                .foregroundStyle(m.role == "user" ? Brand.deepVoid : Brand.text)
+                .padding(12)
+                .background(m.role == "user" ? Brand.cyan : Brand.surface)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            if m.role != "user" { Spacer(minLength: 44) }
+        }
+        .id(m.id)
+    }
+
+    private var composer: some View {
+        HStack(spacing: 8) {
+            TextField("Ask Henry…", text: $draft, axis: .vertical)
+                .lineLimit(1...4)
+                .padding(12)
+                .background(Brand.surface)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .foregroundStyle(Brand.text)
+            Button {
+                send()
+            } label: {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(canSend ? Brand.cyan : Brand.textDim)
+            }
+            .disabled(!canSend)
+        }
+        .padding()
+    }
+
+    private var canSend: Bool {
+        !sending && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func send() {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !sending else { return }
+        draft = ""
+        sending = true
+        messages.append(ChatBubble(role: "user", text: text))
+        messages.append(ChatBubble(role: "assistant", text: ""))
+        let idx = messages.count - 1
+        Task {
+            do {
+                for try await delta in APIClient.shared.replyStream(text, sessionId: sessionId) {
+                    if idx < messages.count { messages[idx].text += delta }
+                }
+                if idx < messages.count && messages[idx].text.isEmpty {
+                    messages[idx].text = "Done — check your desktop."
+                }
+            } catch {
+                if idx < messages.count {
+                    messages[idx].text = "⚠️ Couldn't reach Henry — is your Mac awake and on the tailnet?"
+                }
+            }
+            sending = false
         }
     }
 }
