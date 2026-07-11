@@ -14,6 +14,7 @@ import {
 } from 'react-icons/fi';
 import { BrowserTabs, type BrowserTab } from './BrowserTabs';
 import { CHAT_LAUNCHER_MARGIN } from '../chat/ChatLauncher';
+import { CHAT_DOCK_WIDTH } from '../chat/ChatDock';
 
 // ── Tauri API loader (cached, no module-level mutation) ──
 
@@ -90,6 +91,7 @@ export function Browser() {
   const { colors } = useTheme();
   const overlayBlocking = useCommandCenter(s => s.overlayBlockingBrowser);
   const chatLauncherSize = useCommandCenter(s => s.chatLauncherSize);
+  const chatDockOpen = useCommandCenter(s => s.chatDockOpen);
   const pendingBrowserUrl = useCommandCenter(s => s.pendingBrowserUrl);
   const clearPendingBrowserUrl = useCommandCenter(s => s.clearPendingBrowserUrl);
 
@@ -116,6 +118,8 @@ export function Browser() {
   apiRef.current = api;
   const chatLauncherSizeRef = useRef(chatLauncherSize);
   chatLauncherSizeRef.current = chatLauncherSize;
+  const chatDockOpenRef = useRef(chatDockOpen);
+  chatDockOpenRef.current = chatDockOpen;
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
 
@@ -171,6 +175,15 @@ export function Browser() {
     // launcher unmounts (size = null) and the webview gets the full rect —
     // that window is a separate native surface ordered above main already.
     let height = rect.height;
+    let width = rect.width;
+    // Chat dock (2026-07-11): when the sidebar is open, the native webview must
+    // not paint under it — reserve its right strip (matches the DOM overlay).
+    if (chatDockOpenRef.current && window.innerWidth >= 640) {
+      const dockLeft = window.innerWidth - CHAT_DOCK_WIDTH;
+      if (rect.x + width > dockLeft) {
+        width = Math.max(0, dockLeft - rect.x);
+      }
+    }
     const launcher = chatLauncherSizeRef.current;
     if (launcher) {
       const reservedTop = window.innerHeight - launcher.height - 2 * CHAT_LAUNCHER_MARGIN;
@@ -189,7 +202,7 @@ export function Browser() {
           webviewId: t.webviewId,
           x: rect.x,
           y: rect.y,
-          width: rect.width,
+          width,
           height,
         }).catch(() => {});
       } else {
@@ -261,7 +274,7 @@ export function Browser() {
   // Event-driven, not polled — composes with the nap-safe pump suspension.
   useEffect(() => {
     syncBounds();
-  }, [chatLauncherSize, syncBounds]);
+  }, [chatLauncherSize, chatDockOpen, syncBounds]);
 
   // ── Hide all webviews when a transient overlay is open ──
   useEffect(() => {
