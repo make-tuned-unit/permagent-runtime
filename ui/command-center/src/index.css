@@ -352,3 +352,38 @@ body {
 .density-compact .py-2\.5 { padding-top: 0.375rem; padding-bottom: 0.375rem; }
 .density-compact .gap-3 { gap: 0.375rem; }
 .density-compact .space-y-3 > * + * { margin-top: 0.375rem; }
+
+/* ── Premium a11y + motion (audit systemic wins) ─────────────────────────── */
+
+/* Global keyboard focus ring. ~17 surfaces strip `outline:none` with no
+   replacement, making keyboard nav invisible. This restores a branded ring
+   for keyboard users only (never on mouse click, via :focus-visible). */
+:focus-visible {
+  outline: 2px solid var(--tw-accent, #00D5FF);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+/* Buttons/links that opted out of the native outline still get the ring. */
+button:focus-visible,
+a:focus-visible,
+[role='button']:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--tw-accent, #00D5FF);
+  outline-offset: 2px;
+}
+
+/* Honor the OS reduced-motion preference app-wide. The in-app `reduceMotion`
+   toggle is threaded per-surface, but the OS signal was never read — this is
+   the safety net so animations calm down for users who asked the system to. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

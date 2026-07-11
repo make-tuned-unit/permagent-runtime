@@ -11,6 +11,7 @@ import { Browser } from '../browser';
 const LazyWorldView = lazy(() => import('../world/WorldView').then(m => ({ default: m.WorldView })));
 import { ExecutionTrace } from '../trace/ExecutionTrace';
 import { BrainView } from '../brain/BrainView';
+import { ErrorBoundary } from '../common/ErrorBoundary';
 import { Dashboard } from '../dashboard/Dashboard';
 import { BuildView } from '../build/BuildView';
 import { AutomateView } from '../automate/AutomateView';
@@ -51,9 +52,11 @@ function LayoutNodeRenderer({
       );
     }
     return (
-      <Suspense fallback={<div className="flex h-full items-center justify-center text-xs" style={{ fontFamily: font.body, color: colors.textMuted }}>Loading...</div>}>
-        <Component />
-      </Suspense>
+      <ErrorBoundary surface={panel.tool}>
+        <Suspense fallback={<div className="flex h-full items-center justify-center text-xs" style={{ fontFamily: font.body, color: colors.textMuted }}>Loading...</div>}>
+          <Component />
+        </Suspense>
+      </ErrorBoundary>
     );
   }
 

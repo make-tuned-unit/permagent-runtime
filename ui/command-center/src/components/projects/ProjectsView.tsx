@@ -333,8 +333,8 @@ project, onOpen, onDragStart }: {
       )}
       {project.tags.length > 0 && (
         <div style={{ display: 'flex', gap: 4, marginTop: 6, flexWrap: 'wrap' }}>
-          {project.tags.slice(0, 3).map(tag => (
-            <span key={tag} style={{ fontSize: 9, padding: '1px 5px', borderRadius: 4, background: 'rgba(255,255,255,0.06)', color: colors.textDim }}>
+          {project.tags.slice(0, 3).map((tag, ti) => (
+            <span key={`${tag}-${ti}`} style={{ fontSize: 9, padding: '1px 5px', borderRadius: 4, background: 'rgba(255,255,255,0.06)', color: colors.textDim }}>
               {tag}
             </span>
           ))}
