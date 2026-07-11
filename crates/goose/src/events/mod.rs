@@ -249,6 +249,9 @@ pub enum PermagentEventType {
     LibrarianDescribeCompleted,
     // Browser content extraction
     BrowserContentRequested,
+    /// The agent asked the in-app browser to open a URL (#567). The frontend
+    /// bridge listens and routes it to the Build tab's browser.
+    BrowserNavigateRequested,
     // App navigation (chat agent → frontend)
     AppNavigate,
     // Project terminal launch (chat agent → frontend Build tab)

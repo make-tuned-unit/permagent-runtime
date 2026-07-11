@@ -117,6 +117,7 @@ export type PermagentEventType =
   | 'entity_added' | 'entity_updated'
   | 'decision_created' | 'decision_resolved'
   | 'agent_state_changed' | 'goal_state_changed'
+  | 'browser_content_requested' | 'browser_navigate_requested'
   | 'skill_proposed' | 'skill_saved' | 'skill_triggered'
   | 'message_received' | 'stream_chunk'
   | 'integration_connected' | 'integration_error'
@@ -303,6 +304,13 @@ interface CommandCenterStore {
   pendingBrowserUrl: string | null;
   openInBrowser: (url: string) => void;
   clearPendingBrowserUrl: () => void;
+
+  // --- Build tab pane visibility (#567-adjacent UX): hide either pane so
+  // the other gets the full canvas. Persisted in-session only.
+  buildTerminalHidden: boolean;
+  buildBrowserHidden: boolean;
+  toggleBuildTerminal: () => void;
+  toggleBuildBrowser: () => void;
 
   // --- Browser overlay z-order ---
   overlayBlockingBrowser: number;
@@ -1036,6 +1044,19 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   // URL still resolves if the workspace was not yet open. Shared by chat-link
   // clicks and the self-knowledge tour (#353).
   pendingBrowserUrl: null,
+  buildTerminalHidden: false,
+  buildBrowserHidden: false,
+  // Never allow both hidden: hiding one re-shows the other.
+  toggleBuildTerminal: () =>
+    set(s => ({
+      buildTerminalHidden: !s.buildTerminalHidden,
+      buildBrowserHidden: s.buildTerminalHidden ? s.buildBrowserHidden : false,
+    })),
+  toggleBuildBrowser: () =>
+    set(s => ({
+      buildBrowserHidden: !s.buildBrowserHidden,
+      buildTerminalHidden: s.buildBrowserHidden ? s.buildTerminalHidden : false,
+    })),
   openInBrowser: (url) => {
     set({ pendingBrowserUrl: url });
     navigateToTool('build');

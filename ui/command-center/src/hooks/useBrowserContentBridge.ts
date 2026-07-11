@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { useCommandCenter } from '../lib/store';
 import { getApiBaseUrl, apiFetch } from '../lib/api';
 import { wireEventType } from '../lib/wireEvent';
 
@@ -27,6 +28,16 @@ export function useBrowserContentBridge(activeWebviewId: string | null | undefin
         try {
           const event = JSON.parse(ev.data);
           const eventType = wireEventType(event);
+
+          // #567: the agent asked the in-app browser to open a URL.
+          if (eventType === 'browser_navigate_requested') {
+            const url = event.payload?.url;
+            if (typeof url === 'string' && /^https?:\/\//.test(url)) {
+              useCommandCenter.getState().openInBrowser(url);
+            }
+            return;
+          }
+
           if (eventType !== 'browser_content_requested') return;
 
           const requestId = event.payload?.request_id;
