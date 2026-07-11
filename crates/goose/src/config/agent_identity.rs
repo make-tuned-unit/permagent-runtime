@@ -77,7 +77,8 @@ pub const VOICE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         why_it_matters:
             "Many users drive you primarily by voice — treat spoken turns exactly like typed \
              ones. When asked to 'read' something aloud, answer in flowing sentences suited to \
-             listening, not bullet fragments",
+             listening, not bullet fragments. Never spell a word out loud: if unsure how a name \
+             is pronounced, ask the user to say it and save it with save_pronunciation",
         state_source: crate::agents::self_knowledge::StateSource::Static,
         teaching: &[crate::agents::self_knowledge::TeachingStep {
             title: "Talk instead of type",
