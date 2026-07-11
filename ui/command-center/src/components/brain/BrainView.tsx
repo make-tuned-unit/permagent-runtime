@@ -40,7 +40,7 @@ export function BrainView() {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [modeBeforeSearch, setModeBeforeSearch] = useState<ViewMode>('graph');
 
-  const { data, loading } = useBrainData(debouncedSearch);
+  const { data, loading, error, refresh } = useBrainData(debouncedSearch);
   const [filters, setFilters] = useState<TypeFilters>({ person: true, project: true, tool: true, location: true, organization: true, concept: true, memory: true });
   const [topicsExpanded, setTopicsExpanded] = useState(false);
   const [timeValue, setTimeValue] = useState(1);
@@ -135,7 +135,28 @@ export function BrainView() {
       )}
 
       {/* Empty state overlay */}
-      {isEmpty && viewMode === 'graph' && (
+      {error && !data && (
+        <div style={{
+          position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center', zIndex: 11, gap: 12,
+          background: 'radial-gradient(ellipse 70% 50% at 50% 45%, rgba(0,213,255,0.04) 0%, transparent 70%)',
+        }}>
+          <div style={{ fontSize: 26, color: colors.textMuted }}>◇</div>
+          <h2 style={{ fontFamily: font.display, fontSize: 18, fontWeight: 700, color: colors.text }}>
+            Can't reach the Brain
+          </h2>
+          <p style={{ fontFamily: font.body, fontSize: 13, color: colors.textMuted, maxWidth: 340, textAlign: 'center', lineHeight: 1.5 }}>
+            The memory graph didn't load. It may be a brief hiccup — try again.
+          </p>
+          <button onClick={() => refresh()} style={{
+            marginTop: 4, padding: '8px 18px', borderRadius: 8,
+            border: `1px solid ${colors.borderHi}`, background: colors.cyanSoft,
+            color: colors.cyan, fontSize: 13, fontWeight: 600, cursor: 'pointer',
+          }}>Try again</button>
+        </div>
+      )}
+
+      {isEmpty && !error && viewMode === 'graph' && (
         <div style={{
           position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
           alignItems: 'center', justifyContent: 'center', zIndex: 10,
