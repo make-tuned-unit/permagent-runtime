@@ -124,13 +124,28 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: browser::EXTENSION_NAME,
                 display_name: "Browser",
-                description: "Read content from the page currently open in the Permagent browser",
+                description: "Drive and read the web: open any site in the in-app browser \
+                              (open_website), fetch a public page's readable text without a tab \
+                              (read_webpage), and read the page the user currently has open \
+                              (read_browser_content)",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
                 why_it_matters:
-                    "Use it to read what the user is actually looking at instead of guessing or asking them to paste.",
-                teaching: &[],
+                    "When the user says 'go to BBC and read me the homepage', open_website shows \
+                     it to them and read_webpage gives you the text to read aloud — no pasting, \
+                     no guessing. read_browser_content covers whatever tab they already have open.",
+                teaching: &[crate::agents::self_knowledge::TeachingStep {
+                    title: "Browse together",
+                    body: "Offer it live: open a site the user cares about with open_website, \
+                           then read_webpage the same URL and give them the highlights out \
+                           loud. Works by voice too — this is the hands-free news flow.",
+                    open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                        tab: "Build",
+                        section: Some("browser"),
+                    }),
+                    confirm: None,
+                }],
                 client_factory: |ctx| Box::new(browser::BrowserClient::new(ctx).unwrap()),
             },
         );

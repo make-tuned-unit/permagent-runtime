@@ -129,8 +129,31 @@ async fn fulfill_content(
     }
 }
 
+#[derive(serde::Deserialize)]
+struct NavigateRequest {
+    url: String,
+}
+
+/// POST /api/browser/navigate — the agent asks the in-app browser to open a
+/// URL (#567). Fire-and-forget: emits BrowserNavigateRequested; the frontend
+/// bridge opens it in the Build tab. Only http(s) URLs are accepted — the
+/// agent must not be able to drive file:// or custom schemes into the webview.
+async fn navigate(Json(req): Json<NavigateRequest>) -> StatusCode {
+    let url = req.url.trim();
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return StatusCode::UNPROCESSABLE_ENTITY;
+    }
+    tracing::info!(target: "permagentd::browser", %url, "agent navigate request");
+    permagent::events::emit(permagent::events::PermagentEvent::new(
+        permagent::events::PermagentEventType::BrowserNavigateRequested,
+        serde_json::json!({ "url": url }),
+    ));
+    StatusCode::ACCEPTED
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
+        .route("/api/browser/navigate", axum::routing::post(navigate))
         .route("/api/browser/content/read", post(read_content))
         .route("/api/browser/content/{request_id}", post(fulfill_content))
         .with_state(state)
