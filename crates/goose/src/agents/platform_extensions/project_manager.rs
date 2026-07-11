@@ -178,6 +178,45 @@ pub const BUILD_TAB_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
 /// opens into a workspace with two lenses: an Overview dashboard (summary, key
 /// facts, links, live task status) and the Kanban board. Static — always-on
 /// surface, co-located with the project tools that back it.
+/// Self-knowledge for the Devices pairing surface + the agent-driven tailnet
+/// runbook (MULTI_DEVICE.md, Jesse's zero-strain rule 2026-07-11): Henry sets
+/// the tailnet up himself with terminal commands; the user's only step is the
+/// Tailscale login click, which Henry opens for them.
+pub const DEVICES_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "devices",
+        display_name: "Devices",
+        category: crate::agents::self_knowledge::FeatureCategory::Surface,
+        what_it_does:
+            "Settings → Devices pairs the user's other devices to this machine (the hub): it \
+             shows a pairing URL carrying the daemon token, auto-fills the hub's Tailscale \
+             MagicDNS name when a tailnet is detected, and any browser on the tailnet that \
+             opens the URL becomes a full Permagent client. One Brain on the hub — other \
+             devices connect to it, nothing syncs",
+        why_it_matters:
+            "When the user wants Permagent on their phone or laptop, set the tailnet up FOR \
+             them with your terminal: (1) `tailscale status --json` — if it errors, install \
+             with `brew install --cask tailscale` and launch the app; (2) run \
+             `tailscale up` and when it prints a login URL, open_website it so they just \
+             click approve; (3) confirm with `tailscale status --json` (BackendState \
+             Running), read Self.DNSName, and tell them it now appears in Settings → \
+             Devices; (4) remind them the daemon needs HOST=0.0.0.0 to accept tailnet \
+             connections. Their only task is one login click — you do the rest",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        teaching: &[crate::agents::self_knowledge::TeachingStep {
+            title: "Put Permagent in their pocket",
+            body: "Offer to set up multi-device: run the tailnet steps yourself (install, \
+                   up, open the login page for them), then walk them to Settings → \
+                   Devices, have them open the pairing URL on their phone, and greet them \
+                   there.",
+            open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                tab: "Settings",
+                section: Some("devices"),
+            }),
+            confirm: None,
+        }],
+    };
+
 pub const PROJECT_WORKSPACE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
     crate::agents::self_knowledge::FeatureDescriptor {
         id: "projects",
