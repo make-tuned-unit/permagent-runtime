@@ -411,7 +411,7 @@ mod tests {
         seed_presets_if_empty(&pool).await.unwrap();
         assert_eq!(
             order_of(&pool).await,
-            ["Home", "Projects", "Build", "Automate", "World", "Brain"]
+            ["Home", "Projects", "Build", "Grow", "Automate", "World", "Brain"]
         );
 
         // Simulate a legacy install: scramble to the pre-2026-07-10 order and
@@ -436,7 +436,7 @@ mod tests {
         assert!(changed, "legacy order must be rewritten");
         assert_eq!(
             order_of(&pool).await,
-            ["Home", "Projects", "Build", "Automate", "World", "Brain", "My Lab"]
+            ["Home", "Projects", "Build", "Grow", "Automate", "World", "Brain", "My Lab"]
         );
 
         // Idempotent: a second run changes nothing.
