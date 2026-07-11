@@ -565,6 +565,70 @@ impl AppState {
             );
         }
 
+        // Durable activity journal (#619): a long-lived consumer on the same
+        // event bus, persisting selected kinds (goal transitions, decisions,
+        // librarian describe runs, task failures) as append-only rows so
+        // "what did my agents do today" survives the 1000-event ring buffer.
+        // Starts with a retention pass (rows older than 90 days). Failure-
+        // tolerant: a bad event is logged and skipped, never crashes the task.
+        if let Ok(pool) = agent_manager.session_manager().pool_clone().await {
+            tokio::spawn(async move {
+                match permagent::activity_journal::prune_older_than_days(
+                    &pool,
+                    permagent::activity_journal::RETENTION_DAYS,
+                )
+                .await
+                {
+                    Ok(n) if n > 0 => tracing::info!(
+                        target: "permagentd::journal",
+                        "Activity journal retention: pruned {} rows older than {} days",
+                        n,
+                        permagent::activity_journal::RETENTION_DAYS
+                    ),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(
+                        target: "permagentd::journal",
+                        error = %e,
+                        "Activity journal retention pass failed (non-fatal)"
+                    ),
+                }
+
+                let mut rx = permagent::events::subscribe();
+                tracing::info!(
+                    target: "permagentd::journal",
+                    "Activity journal subscribed to event bus"
+                );
+                loop {
+                    match rx.recv().await {
+                        Ok(event) => {
+                            if let Err(e) =
+                                permagent::activity_journal::record_event(&pool, &event).await
+                            {
+                                tracing::warn!(
+                                    target: "permagentd::journal",
+                                    error = %e,
+                                    "Failed to journal event (skipped)"
+                                );
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!(
+                                target: "permagentd::journal",
+                                "Activity journal consumer lagged, missed {} events",
+                                n
+                            );
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            });
+        } else {
+            tracing::warn!(
+                target: "permagentd::journal",
+                "no app DB pool available — activity journal disabled"
+            );
+        }
+
         // Librarian warm-load scheduler: checks once per minute if it's time
         // to warm the Librarian's Ollama model for the configured window.
         tokio::spawn(async move {

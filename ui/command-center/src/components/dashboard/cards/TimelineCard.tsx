@@ -1,0 +1,277 @@
+/**
+ * Activity Timeline — home card ("timeline" registry entry, #619).
+ *
+ * Reads the durable activity journal (`GET /api/activity`), the append-only
+ * record of what the agents did: goal transitions, decisions requested and
+ * resolved, librarian describe runs, task failures. Day-grouped, newest
+ * first, with "Show earlier" keyset pagination. Rows deep-link to their
+ * evidence: goal rows open the goal detail overlay, decision rows open the
+ * Decision Inbox, memory rows jump to the Memory tool.
+ */
+
+import { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  FiFlag, FiHelpCircle, FiCheckCircle, FiBookOpen, FiAlertTriangle, FiActivity,
+} from 'react-icons/fi';
+import { font, radius } from '../../../styles/tokens';
+import { useTheme } from '../../../styles/useTheme';
+import { SectionTitle } from '../atoms';
+import { apiFetch } from '../../../lib/api';
+import { useCommandCenter, navigateToTool } from '../../../lib/store';
+import { useDecisions } from '../decisions/useDecisions';
+import { DecisionInbox } from '../decisions/DecisionInbox';
+
+interface JournalItem {
+  id: string;
+  ts: string;
+  kind: string;
+  actor: string;
+  title: string;
+  detail: string | null;
+  ref_kind: string | null;
+  ref_id: string | null;
+  goal_project_id: string | null;
+}
+
+interface JournalPage {
+  items: JournalItem[];
+  next_before?: string | null;
+}
+
+const PAGE_SIZE = 50;
+
+function useActivityJournal() {
+  const [items, setItems] = useState<JournalItem[]>([]);
+  const [nextBefore, setNextBefore] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const intervalRef = useRef<ReturnType<typeof setInterval>>();
+
+  const fetchFirstPage = useCallback(async (initial: boolean) => {
+    try {
+      const page = await apiFetch<JournalPage>(`/api/activity?limit=${PAGE_SIZE}`);
+      setItems(prev => {
+        if (initial || prev.length === 0) return page.items;
+        // Refresh: prepend rows newer than what we already show, keeping
+        // any older pages the user has loaded.
+        const known = new Set(prev.map(i => i.id));
+        const fresh = page.items.filter(i => !known.has(i.id));
+        return fresh.length > 0 ? [...fresh, ...prev] : prev;
+      });
+      if (initial) setNextBefore(page.next_before ?? null);
+    } catch { /* ignore — stale data stays, matching useDashboard */ }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    fetchFirstPage(true);
+    intervalRef.current = setInterval(() => fetchFirstPage(false), 30_000);
+    return () => clearInterval(intervalRef.current);
+  }, [fetchFirstPage]);
+
+  const loadMore = useCallback(async () => {
+    if (!nextBefore || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await apiFetch<JournalPage>(
+        `/api/activity?limit=${PAGE_SIZE}&before=${encodeURIComponent(nextBefore)}`,
+      );
+      setItems(prev => {
+        const known = new Set(prev.map(i => i.id));
+        return [...prev, ...page.items.filter(i => !known.has(i.id))];
+      });
+      setNextBefore(page.next_before ?? null);
+    } catch { /* keep current cursor so the user can retry */ }
+    setLoadingMore(false);
+  }, [nextBefore, loadingMore]);
+
+  return { items, loading, loadMore, hasMore: nextBefore !== null, loadingMore };
+}
+
+function dayLabel(ts: string): string {
+  const d = new Date(ts);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  if (d.toDateString() === today.toDateString()) return 'Today';
+  if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+function timeLabel(ts: string): string {
+  return new Date(ts).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+}
+
+function groupByDay(items: JournalItem[]): { label: string; items: JournalItem[] }[] {
+  const groups: { label: string; items: JournalItem[] }[] = [];
+  for (const item of items) {
+    const label = dayLabel(item.ts);
+    const last = groups[groups.length - 1];
+    if (last && last.label === label) last.items.push(item);
+    else groups.push({ label, items: [item] });
+  }
+  return groups;
+}
+
+export function TimelineCard() {
+  const { colors } = useTheme();
+  const { items, loading, loadMore, hasMore, loadingMore } = useActivityJournal();
+  const [inboxOpen, setInboxOpen] = useState(false);
+  const groups = groupByDay(items);
+
+  return (
+    <>
+      <div style={{
+        height: '100%', boxSizing: 'border-box',
+        borderRadius: radius.lg,
+        background: colors.surface,
+        border: `1px solid ${colors.border}`,
+        boxShadow: [colors.cardShadow, colors.cardHighlight].filter(Boolean).join(', '),
+        padding: '18px 20px',
+        display: 'flex', flexDirection: 'column',
+        overflow: 'hidden',
+      }}>
+        <SectionTitle title="Timeline" right={items.length > 0 ? 'last 90 days' : undefined} />
+        {items.length === 0 ? (
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: 4 }}>
+                {loading ? 'Loading activity…' : 'No activity yet'}
+              </div>
+              {!loading && (
+                <div style={{ fontSize: 11, color: colors.textDim }}>
+                  Goal moves, decisions, and librarian runs will appear here
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div style={{ flex: 1, overflow: 'auto' }}>
+            {groups.map(group => (
+              <div key={group.label}>
+                <div style={{
+                  position: 'sticky', top: 0, zIndex: 1,
+                  padding: '6px 0 4px',
+                  background: colors.surface,
+                  fontFamily: font.body, fontSize: 11, fontWeight: 600,
+                  letterSpacing: '0.10em', textTransform: 'uppercase',
+                  color: colors.textDim,
+                }}>{group.label}</div>
+                {group.items.map((item, i) => (
+                  <TimelineRow
+                    key={item.id}
+                    item={item}
+                    isLast={i === group.items.length - 1}
+                    onOpenDecisions={() => setInboxOpen(true)}
+                  />
+                ))}
+              </div>
+            ))}
+            {hasMore && (
+              <button
+                onClick={loadMore}
+                disabled={loadingMore}
+                style={{
+                  width: '100%', margin: '10px 0 4px', padding: '7px 0',
+                  borderRadius: radius.md,
+                  border: `1px solid ${colors.border}`,
+                  background: colors.cyanSoft,
+                  color: colors.textMuted,
+                  fontFamily: font.body, fontSize: 12, fontWeight: 500,
+                  cursor: loadingMore ? 'default' : 'pointer',
+                  transition: 'border-color 150ms ease',
+                }}
+              >
+                {loadingMore ? 'Loading…' : 'Show earlier'}
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      {inboxOpen && <DecisionOverlayHost onClose={() => setInboxOpen(false)} />}
+    </>
+  );
+}
+
+/** Mounted only while open, so the decisions poll doesn't run idle. */
+function DecisionOverlayHost({ onClose }: { onClose: () => void }) {
+  const inbox = useDecisions();
+  return <DecisionInbox inbox={inbox} onClose={onClose} />;
+}
+
+const KIND_META: Record<string, { icon: React.ComponentType<{ size?: number }>; colorKey: 'cyan' | 'success' | 'danger' | 'warning' }> = {
+  goal_state_changed: { icon: FiFlag, colorKey: 'cyan' },
+  decision_created: { icon: FiHelpCircle, colorKey: 'warning' },
+  decision_resolved: { icon: FiCheckCircle, colorKey: 'success' },
+  librarian_describe_completed: { icon: FiBookOpen, colorKey: 'cyan' },
+  task_failed: { icon: FiAlertTriangle, colorKey: 'danger' },
+};
+
+function TimelineRow({ item, isLast, onOpenDecisions }: {
+  item: JournalItem;
+  isLast: boolean;
+  onOpenDecisions: () => void;
+}) {
+  const { colors } = useTheme();
+  const openGoalDetail = useCommandCenter(s => s.openGoalDetail);
+  const [hover, setHover] = useState(false);
+
+  const meta = KIND_META[item.kind] ?? { icon: FiActivity, colorKey: 'cyan' as const };
+  const Icon = meta.icon;
+  const accent = colors[meta.colorKey];
+
+  // Deep link to the evidence, via the existing navigation seams.
+  const onClick =
+    item.ref_kind === 'goal' && item.goal_project_id && item.ref_id
+      ? () => openGoalDetail(item.goal_project_id!, item.ref_id!)
+      : item.ref_kind === 'decision'
+        ? onOpenDecisions
+        : item.ref_kind === 'memory'
+          ? () => navigateToTool('memory')
+          : undefined;
+
+  return (
+    <div
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title={onClick ? 'View evidence' : undefined}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 12, padding: '9px 6px',
+        borderBottom: isLast ? 'none' : `1px solid ${colors.border}`,
+        borderRadius: radius.sm,
+        cursor: onClick ? 'pointer' : 'default',
+        background: onClick && hover ? colors.cyanSoft : 'transparent',
+        transition: 'background 120ms ease',
+      }}
+    >
+      <div style={{
+        width: 26, height: 26, borderRadius: '50%', flexShrink: 0,
+        background: accent + '26', color: accent,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}>
+        <Icon size={13} />
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{
+          fontFamily: font.body, fontSize: 13, fontWeight: 500, color: colors.text,
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>{item.title}</div>
+        {item.detail && (
+          <div style={{
+            fontSize: 11, color: colors.textMuted, marginTop: 1,
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>{item.detail}</div>
+        )}
+      </div>
+      <span style={{
+        fontFamily: font.mono, fontSize: 10, color: colors.textDim,
+        flexShrink: 0,
+      }}>{item.actor}</span>
+      <span style={{
+        fontFamily: font.body, fontSize: 11, color: colors.textDim,
+        flexShrink: 0, minWidth: 44, textAlign: 'right',
+      }}>{timeLabel(item.ts)}</span>
+    </div>
+  );
+}
