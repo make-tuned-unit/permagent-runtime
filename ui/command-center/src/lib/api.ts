@@ -372,6 +372,20 @@ export function extractText(msg: DaemonMessage): string {
 }
 
 /**
+ * Extract the model's reasoning ("thinking") content. Extended-thinking models
+ * stream `{ type: 'thinking', thinking: '…' }` blocks before the answer; the
+ * daemon passes them through (message.rs MessageContent::Thinking). This is what
+ * the reasoning-disclosure UI renders.
+ */
+export function extractThinking(msg: DaemonMessage): string {
+  return msg.content
+    .filter((c): c is { type: 'thinking'; thinking: string } =>
+      c.type === 'thinking' && typeof (c as { thinking?: unknown }).thinking === 'string')
+    .map(c => c.thinking)
+    .join('');
+}
+
+/**
  * Parse SSE events from a fetch Response body.
  * Calls onEvent for each parsed event, onDone when stream ends.
  */

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { api, apiFetch, extractText, fileToBase64, readerIngest } from './api';
+import { api, apiFetch, extractText, extractThinking, fileToBase64, readerIngest } from './api';
 import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload } from './api';
 import { startEventPruning } from './eventBus';
 import type { ProjectPerson } from '../components/projects/types';
@@ -80,6 +80,8 @@ export interface ChatMessage {
   task_id?: string;
   tool_calls?: ToolCall[];
   images?: ChatMessageImage[];
+  /** The model's reasoning, if it thought before answering (disclosure UI). */
+  thinking?: string;
   context_attached?: {
     probed_memories: ProbedMemoryRef[];
     recalled_memories: RecalledMemoryRef[];
@@ -374,6 +376,7 @@ function daemonMsgToChat(msg: DaemonMessage, index: number, sessionId: string): 
     }
   }
 
+  const thinking = extractThinking(msg);
   return {
     id: msg.id || `hist-${sessionId}-${index}`,
     role: msg.role,
@@ -381,6 +384,7 @@ function daemonMsgToChat(msg: DaemonMessage, index: number, sessionId: string): 
     timestamp: new Date(msg.created * 1000).toISOString(),
     tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
     images: images.length > 0 ? images : undefined,
+    thinking: thinking || undefined,
   };
 }
 
@@ -977,14 +981,20 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         const msg = (data as { type: string; message: DaemonMessage }).message;
         if (msg.role === 'assistant') {
           const delta = extractText(msg);
+          const thinkingDelta = extractThinking(msg);
           const streamMsgId = get()._streamingMessageId;
-          if (streamMsgId && delta) {
+          if (streamMsgId && (delta || thinkingDelta)) {
             const pending = get()._pendingContext;
             set(s => ({
               _pendingContext: null,
               chatMessages: s.chatMessages.map(m =>
                 m.id === streamMsgId
-                  ? { ...m, content: m.content + delta, ...(pending && !m.context_attached ? { context_attached: pending } : {}) }
+                  ? {
+                      ...m,
+                      content: m.content + delta,
+                      ...(thinkingDelta ? { thinking: (m.thinking ?? '') + thinkingDelta } : {}),
+                      ...(pending && !m.context_attached ? { context_attached: pending } : {}),
+                    }
                   : m
               ),
             }));
