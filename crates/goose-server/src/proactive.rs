@@ -1,25 +1,30 @@
 //! Echo / the Watcher (#672) — proactive, gentle, rare nudges from the hub.
 //!
 //! A second brain's value is *rediscovery*, and a permanent agent's value is
-//! *reaching out*. This background task periodically asks its signal sources for
-//! the single most useful thing to surface, and — if the gentle budget allows —
-//! emits ONE `proactive_nudge`. The frontend's notification stream turns that
-//! into an in-app + (opt-in) OS notification, so it arrives even when the app is
-//! backgrounded.
+//! *reaching out*. This background task periodically gathers candidate signals,
+//! lets the model exercise **taste** over them, and — if the gentle budget
+//! allows and something is genuinely worth it — emits ONE `proactive_nudge`. The
+//! frontend's notification stream turns that into an in-app + (opt-in) OS
+//! notification and (opt-in) a phone push, so it arrives even when you're away.
 //!
-//! Two signal sources, ranked timely-first:
-//!   1. **project-news** — something is happening in the world around a subject
-//!      you're actively working on (Google News over the entity's name). This is
-//!      the timeliest, so it wins when there's a genuinely fresh story.
-//!   2. **dormant-thread** — an entity you wove through many memories, then went
-//!      quiet on while newer memories piled up elsewhere.
+//! Signal sources:
+//!   - **project-news** — something happening in the world around a subject
+//!     you're actively working on (Google News over the entity's name).
+//!   - **dormant-thread** — an entity you wove through many memories, then went
+//!     quiet on while newer memories piled up elsewhere.
 //!
-//! Both are honest (real signals or nothing) and share one budget: at most ~once
-//! a day, quiet hours, dedup, persisted across restarts. Analytics + phone push
-//! (APNs) are the remaining #672 slices.
+//! The pick is not a heuristic: the candidates go to the model (the "Watcher"
+//! reasoning), which judges relevance honestly — for news, only if the headline
+//! is really about your work, not a name coincidence — chooses the single one
+//! worth interrupting for (or NONE, staying silent), and writes it in the
+//! agent's voice. If no model is configured, a deterministic pick + template is
+//! the fallback. Either way it's gentle: at most ~once a day, quiet hours,
+//! deduped, persisted across restarts.
 
 use crate::state::AppState;
 use chrono::{DateTime, Local, Timelike, Utc};
+use permagent::conversation::message::Message;
+use permagent::providers::base::Provider;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -29,20 +34,21 @@ const TICK: Duration = Duration::from_secs(3 * 3600);
 const STARTUP_DELAY: Duration = Duration::from_secs(180);
 const MIN_GAP_HOURS: i64 = 20;
 const DAY_MS: i64 = 86_400_000;
-/// A news item older than this isn't "happening" anymore.
 const NEWS_FRESH_DAYS: i64 = 7;
-/// A subject touched more recently than this counts as "active" (news-worthy).
 const ACTIVE_WINDOW_DAYS: i64 = 30;
 
+/// A candidate nudge — carries both a deterministic template `message` (the
+/// fallback) and a one-line `detail` the model uses to judge and voice it.
 struct Nudge {
     kind: &'static str,
     subject: String,
     count: i64,
     last_ts: String,
     message: String,
+    detail: String,
+    news_link: Option<String>,
 }
 
-/// Per-subject aggregate over the Brain's memories.
 struct Subj {
     ids: HashSet<String>,
     last: i64,
@@ -53,9 +59,7 @@ struct Subj {
 struct Budget {
     /// RFC3339 — a plain string so we don't depend on chrono's serde feature.
     last_delivered: Option<String>,
-    /// Dedup for the dormant source — never resurface the same thread twice.
     last_subject: Option<String>,
-    /// Dedup for the news source — never nudge the same story twice.
     last_news_link: Option<String>,
 }
 
@@ -102,30 +106,54 @@ pub fn spawn(state: Arc<AppState>) {
             if !(8u32..22).contains(&hour) {
                 continue;
             }
-            // No brain, nothing to work with.
             if state.brain.is_none() {
                 continue;
             }
 
-            // Timely-first: try news, then fall back to a dormant thread.
-            let picked = match compute_news(budget.last_news_link.as_deref()).await {
-                Some((nudge, link)) => Some((nudge, Some(link))),
-                None => match compute_dormant().await {
-                    // Don't resurface the same dormant thread twice running.
-                    Some(n) if budget.last_subject.as_deref() != Some(n.subject.as_str()) => {
-                        Some((n, None))
-                    }
-                    _ => None,
-                },
-            };
-            let Some((nudge, news_link)) = picked else {
+            // Gather candidates (dedup so we never re-nudge the same thing).
+            let mut candidates: Vec<Nudge> = Vec::new();
+            if let Some(n) = compute_news(budget.last_news_link.as_deref()).await {
+                candidates.push(n);
+            }
+            if let Some(n) = compute_dormant().await {
+                if budget.last_subject.as_deref() != Some(n.subject.as_str()) {
+                    candidates.push(n);
+                }
+            }
+            if candidates.is_empty() {
                 continue;
+            }
+
+            // The agent's name — for the voice.
+            let agent_name = {
+                let p = state.persona.read().await;
+                if p.first_name.is_empty() {
+                    "Aria".to_string()
+                } else {
+                    p.first_name.clone()
+                }
             };
+
+            // Let the Watcher exercise taste: pick one + voice it, decline, or
+            // (if no model) fall back to a deterministic pick + template.
+            let (idx, message) = match reason(&agent_name, &candidates).await {
+                Reasoned::Silence => continue, // the model judged nothing worth it
+                Reasoned::Pick(i, msg) => (i, msg),
+                Reasoned::Unavailable => {
+                    // Timely-first: prefer a news item, else the first candidate.
+                    let i = candidates
+                        .iter()
+                        .position(|n| n.kind == "project_news")
+                        .unwrap_or(0);
+                    (i, candidates[i].message.clone())
+                }
+            };
+            let nudge = &candidates[idx];
 
             permagent::events::emit(permagent::events::proactive_nudge(
                 nudge.kind,
                 &nudge.subject,
-                &nudge.message,
+                &message,
                 nudge.count,
                 &nudge.last_ts,
             ));
@@ -135,12 +163,10 @@ pub fn spawn(state: Arc<AppState>) {
                 subject = %nudge.subject,
                 "emitted proactive nudge"
             );
-            // Opt-in phone push (no Apple cert needed) — arrives even with the
-            // app closed. No-op unless the user has set a topic.
-            push_to_phone(&nudge.message).await;
+            push_to_phone(&message).await;
             budget.last_delivered = Some(now.to_rfc3339());
             budget.last_subject = Some(nudge.subject.clone());
-            if let Some(link) = news_link {
+            if let Some(link) = nudge.news_link.clone() {
                 budget.last_news_link = Some(link);
             }
             budget.save();
@@ -148,10 +174,98 @@ pub fn spawn(state: Arc<AppState>) {
     });
 }
 
-/// Opt-in phone push via ntfy — real notifications on the phone (even with the
-/// app closed) with NO Apple push cert. No-op unless `PERMAGENT_NTFY_TOPIC` is
-/// set, so it's fully private by default; point `PERMAGENT_NTFY_SERVER` at a
-/// self-hosted ntfy for zero third-party exposure. The hub just POSTs the nudge.
+// ── The Watcher's reasoning: taste over the candidates ───────────────────────
+
+enum Reasoned {
+    /// The model picked candidate `usize` and voiced it.
+    Pick(usize, String),
+    /// The model judged nothing worth interrupting for — stay silent.
+    Silence,
+    /// No model configured / call failed — caller uses the deterministic pick.
+    Unavailable,
+}
+
+async fn reason(agent_name: &str, candidates: &[Nudge]) -> Reasoned {
+    let Some(provider) = resolve_provider().await else {
+        return Reasoned::Unavailable;
+    };
+    let system = format!(
+        "You are {name}, a permanent AI companion with a long memory. At most once a day you may \
+         gently reach out about the ONE thing genuinely worth someone's attention — or stay silent \
+         if nothing truly is. You have taste and you protect their focus: never interrupt for the \
+         trivial or the irrelevant. For a news item, only pick it if the headline is really about \
+         their work, not a name coincidence. Reply ONLY as compact JSON: \
+         {{\"pick\": <0-based index into the list, or -1 for none>, \"message\": \"<one warm, \
+         specific sentence in your own voice; empty if none>\"}}.",
+        name = agent_name
+    );
+    let mut list = String::new();
+    for (i, c) in candidates.iter().enumerate() {
+        list.push_str(&format!(
+            "{}. [{}] {} — {}\n",
+            i, c.kind, c.subject, c.detail
+        ));
+    }
+    let user = Message::user().with_text(format!(
+        "Candidates you could mention today:\n{list}\nWhich single one is worth a gentle nudge \
+         right now? Judge honestly; -1 if none clears the bar."
+    ));
+    let Ok((response, _usage)) = provider
+        .complete_fast("echo-watcher", &system, std::slice::from_ref(&user), &[])
+        .await
+    else {
+        return Reasoned::Unavailable;
+    };
+    parse_reason(&response.as_concat_text(), candidates.len())
+}
+
+fn parse_reason(text: &str, n: usize) -> Reasoned {
+    let (Some(start), Some(end)) = (text.find('{'), text.rfind('}')) else {
+        return Reasoned::Unavailable;
+    };
+    let Some(slice) = text.get(start..=end) else {
+        return Reasoned::Unavailable;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(slice) else {
+        return Reasoned::Unavailable;
+    };
+    let Some(pick) = v.get("pick").and_then(|p| p.as_i64()) else {
+        return Reasoned::Unavailable;
+    };
+    if pick < 0 {
+        return Reasoned::Silence;
+    }
+    let idx = pick as usize;
+    if idx >= n {
+        return Reasoned::Unavailable;
+    }
+    let msg = v
+        .get("message")
+        .and_then(|m| m.as_str())
+        .unwrap_or("")
+        .trim();
+    if msg.is_empty() {
+        return Reasoned::Unavailable; // fall back to the template
+    }
+    Reasoned::Pick(idx, msg.to_string())
+}
+
+/// The provider for the Watcher's judgment. Uses the configured default provider
+/// (complete_fast routes to its cheap fast model). None → deterministic pick.
+async fn resolve_provider() -> Option<Arc<dyn Provider>> {
+    let config = permagent::config::Config::global();
+    let provider_name = config.get_goose_provider().ok()?;
+    let model_name = config.get_goose_model().ok()?;
+    if provider_name.trim().is_empty() || model_name.trim().is_empty() {
+        return None;
+    }
+    permagent::providers::create_with_named_model(&provider_name, &model_name, Vec::new())
+        .await
+        .ok()
+}
+
+// ── Opt-in phone push (ntfy — no Apple cert) ─────────────────────────────────
+
 async fn push_to_phone(message: &str) {
     let Ok(topic) = std::env::var("PERMAGENT_NTFY_TOPIC") else {
         return;
@@ -169,7 +283,6 @@ async fn push_to_phone(message: &str) {
     else {
         return;
     };
-    // Fire-and-forget: a failed push never disturbs the loop.
     let _ = client
         .post(&url)
         .header("Title", "Henry noticed something")
@@ -181,8 +294,6 @@ async fn push_to_phone(message: &str) {
 
 // ── Subject aggregation (shared by both sources) ─────────────────────────────
 
-/// Aggregate the Brain's memories by subject (annotation name). Returns the map
-/// plus the newest memory timestamp (ms), or None if the Brain is unreachable.
 fn aggregate_subjects() -> Option<(HashMap<String, Subj>, i64)> {
     let conn = crate::brain_ops::read_only_brain_conn().ok()?;
     let mut stmt = conn
@@ -221,7 +332,7 @@ fn aggregate_subjects() -> Option<(HashMap<String, Subj>, i64)> {
                 .or_else(|| cid.strip_prefix("cat:"))
                 .unwrap_or(cid);
             if name.is_empty() || name.starts_with("e:") || is_hexish(name) {
-                continue; // skip raw ids — a subject needs a readable name
+                continue;
             }
             let e = agg.entry(name.to_string()).or_insert_with(|| Subj {
                 ids: HashSet::new(),
@@ -239,18 +350,14 @@ fn aggregate_subjects() -> Option<(HashMap<String, Subj>, i64)> {
     Some((agg, newest))
 }
 
-// ── Source 1: project news ───────────────────────────────────────────────────
+// ── Source: project news ─────────────────────────────────────────────────────
 
-/// If something fresh is happening around the subject you're most actively
-/// working on, return the nudge + the story link (for dedup). Network-tolerant:
-/// any failure returns None and we fall back to a dormant thread.
-async fn compute_news(last_link: Option<&str>) -> Option<(Nudge, String)> {
+async fn compute_news(last_link: Option<&str>) -> Option<Nudge> {
     let (agg, _newest) = tokio::task::spawn_blocking(aggregate_subjects)
         .await
         .ok()
         .flatten()?;
 
-    // Pick the most-substantial *active* subject — what you're working on now.
     let now = Utc::now().timestamp_millis();
     let mut best: Option<(String, i64)> = None;
     for (name, s) in &agg {
@@ -265,7 +372,6 @@ async fn compute_news(last_link: Option<&str>) -> Option<(Nudge, String)> {
     }
     let (name, count) = best?;
 
-    // Google News RSS over the subject name. reqwest encodes the query.
     let client = reqwest::Client::builder()
         .user_agent("Permagent/1.0 (echo watcher)")
         .timeout(Duration::from_secs(12))
@@ -290,23 +396,24 @@ async fn compute_news(last_link: Option<&str>) -> Option<(Nudge, String)> {
 
     let pub_ms = parse_rfc2822_ms(&item.pub_date)?;
     if (now - pub_ms) / DAY_MS > NEWS_FRESH_DAYS {
-        return None; // not "happening" anymore
+        return None;
     }
     if Some(item.link.as_str()) == last_link {
-        return None; // already nudged this story
+        return None;
     }
 
-    let message = format!("Something's happening around \"{}\": {}", name, item.title);
-    Some((
-        Nudge {
-            kind: "project_news",
-            subject: name,
-            count,
-            last_ts: item.pub_date,
-            message,
-        },
-        item.link,
-    ))
+    Some(Nudge {
+        kind: "project_news",
+        message: format!("Something's happening around \"{}\": {}", name, item.title),
+        detail: format!(
+            "fresh headline \"{}\" about a subject they've touched in {} memories recently",
+            item.title, count
+        ),
+        subject: name,
+        count,
+        last_ts: item.pub_date,
+        news_link: Some(item.link),
+    })
 }
 
 struct RssItem {
@@ -315,8 +422,6 @@ struct RssItem {
     pub_date: String,
 }
 
-/// Extract the first `<item>` (title, link, pubDate) from an RSS feed with plain
-/// string ops — enough for Google News RSS, no XML crate needed.
 fn first_rss_item(xml: &str) -> Option<RssItem> {
     let item = between(xml, "<item>", "</item>")?;
     let title = between(item, "<title>", "</title>")
@@ -366,7 +471,7 @@ fn parse_rfc2822_ms(s: &str) -> Option<i64> {
         .map(|d| d.timestamp_millis())
 }
 
-// ── Source 2: dormant thread ─────────────────────────────────────────────────
+// ── Source: dormant thread ───────────────────────────────────────────────────
 
 async fn compute_dormant() -> Option<Nudge> {
     tokio::task::spawn_blocking(compute_dormant_blocking)
@@ -382,12 +487,12 @@ fn compute_dormant_blocking() -> Option<Nudge> {
     for (name, s) in agg {
         let count = s.ids.len() as i64;
         if count < 3 {
-            continue; // not substantial
+            continue;
         }
         let gap_days = (newest - s.last) as f64 / DAY_MS as f64;
         let span_days = (s.last - s.first) as f64 / DAY_MS as f64;
         if gap_days < 14.0 || span_days < 2.0 {
-            continue; // still warm, or a one-off burst — not a dormant thread
+            continue;
         }
         let score = count as f64 * (1.0 + gap_days).ln();
         if score > best_score {
@@ -395,19 +500,24 @@ fn compute_dormant_blocking() -> Option<Nudge> {
             let last_ts = DateTime::<Utc>::from_timestamp_millis(s.last)
                 .map(|d| d.to_rfc3339())
                 .unwrap_or_default();
-            let message = format!(
-                "You wove \"{}\" through {} memories, then it went quiet — last touched {}. \
-                 Threads like this are where the good ideas hide.",
-                name,
-                count,
-                rel_time(s.last)
-            );
             best = Some(Nudge {
                 kind: "dormant_thread",
+                message: format!(
+                    "You wove \"{}\" through {} memories, then it went quiet — last touched {}. \
+                     Threads like this are where the good ideas hide.",
+                    name,
+                    count,
+                    rel_time(s.last)
+                ),
+                detail: format!(
+                    "{} memories, went deep then quiet — last touched {}",
+                    count,
+                    rel_time(s.last)
+                ),
                 subject: name,
                 count,
                 last_ts,
-                message,
+                news_link: None,
             });
         }
     }
@@ -416,7 +526,6 @@ fn compute_dormant_blocking() -> Option<Nudge> {
 
 // ── Small helpers ────────────────────────────────────────────────────────────
 
-/// Parse the Brain's created_at (RFC3339 or `YYYY-MM-DD HH:MM:SS`) to epoch ms.
 fn parse_ms(s: &str) -> Option<i64> {
     if let Ok(dt) = s.parse::<DateTime<Utc>>() {
         return Some(dt.timestamp_millis());
@@ -426,7 +535,6 @@ fn parse_ms(s: &str) -> Option<i64> {
         .map(|dt| dt.and_utc().timestamp_millis())
 }
 
-/// True for opaque ids (raw hex) we don't want to show as a subject.
 fn is_hexish(s: &str) -> bool {
     s.len() >= 32 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
@@ -485,8 +593,6 @@ mod tests {
             <item><title><![CDATA[Acme raises $50M &amp; hires]]></title>
             <link>https://news.example/a</link>
             <pubDate>Tue, 07 Jul 2026 12:00:00 GMT</pubDate></item>
-            <item><title>Second</title><link>https://news.example/b</link>
-            <pubDate>Mon, 06 Jul 2026 12:00:00 GMT</pubDate></item>
             </channel></rss>"#;
         let item = first_rss_item(xml).expect("an item");
         assert_eq!(item.title, "Acme raises $50M & hires");
@@ -495,7 +601,20 @@ mod tests {
     }
 
     #[test]
-    fn no_item_yields_none() {
-        assert!(first_rss_item("<rss><channel></channel></rss>").is_none());
+    fn reason_parse_handles_pick_silence_and_garbage() {
+        match parse_reason("{\"pick\": 1, \"message\": \"hey\"}", 2) {
+            Reasoned::Pick(1, m) => assert_eq!(m, "hey"),
+            _ => panic!("expected Pick(1)"),
+        }
+        assert!(matches!(
+            parse_reason("noise {\"pick\": -1, \"message\": \"\"} tail", 2),
+            Reasoned::Silence
+        ));
+        assert!(matches!(parse_reason("not json", 2), Reasoned::Unavailable));
+        // out-of-range index falls back
+        assert!(matches!(
+            parse_reason("{\"pick\": 9, \"message\": \"x\"}", 2),
+            Reasoned::Unavailable
+        ));
     }
 }
