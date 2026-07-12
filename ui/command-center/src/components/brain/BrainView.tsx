@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { font, ease } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
@@ -49,6 +49,23 @@ export function BrainView() {
 
   const onHover = useCallback((item: HoverInfo | null) => setHover(item), []);
   const onSelect = useCallback((item: SelectedInfo | null) => setSelected(item), []);
+
+  // Resolve opaque entity IDs → entity records so memory→entity chips can show
+  // a human name and reuse the shared selection mechanism (same shape onSelect
+  // receives from the list rows and the 3D scene).
+  const entityById = useMemo(
+    () => new Map((data?.entities ?? []).map(e => [e.id, e])),
+    [data],
+  );
+
+  // Select an entity by id using the same channel the list/scene use.
+  const selectEntity = useCallback((ent: GraphEntity) => {
+    setSelected({ id: ent.id, kind: ent.type, label: ent.name, note: ent.note, data: ent });
+  }, []);
+
+  const reduceMotion = typeof window !== 'undefined'
+    && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  const chipTransition = reduceMotion ? 'none' : `all 140ms ${ease.out}`;
 
   // Initialize scene
   useEffect(() => {
@@ -153,6 +170,21 @@ export function BrainView() {
             border: `1px solid ${colors.borderHi}`, background: colors.cyanSoft,
             color: colors.cyan, fontSize: 13, fontWeight: 600, cursor: 'pointer',
           }}>Try again</button>
+        </div>
+      )}
+
+      {/* Loading state — distinct from empty: we don't yet know if the graph
+          has content, so show motion, not the "grows here" empty prompt. */}
+      {loading && !data && !error && viewMode === 'graph' && (
+        <div style={{
+          position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center', zIndex: 10, gap: 16,
+          background: 'radial-gradient(ellipse 70% 50% at 50% 45%, rgba(0,213,255,0.04) 0%, transparent 70%)',
+        }}>
+          <Mobius size={160} state={reduceMotion ? 'idle' : 'thinking'} />
+          <p style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, letterSpacing: '0.06em' }}>
+            recalling the graph…
+          </p>
         </div>
       )}
 
@@ -391,15 +423,39 @@ export function BrainView() {
 
                 <div style={{ display: 'flex', gap: 18, marginTop: 'auto', paddingTop: 12, borderTop: `1px solid ${colors.border}` }}>
                   {[
-                    { label: 'CONNECTIONS', value: degree },
-                    { label: 'MEMORIES', value: memLinks },
-                    { label: 'FIELDS', value: fields.length },
-                  ].map(stat => (
-                    <div key={stat.label}>
-                      <div style={{ fontFamily: font.display, fontSize: 18, fontWeight: 700, color: colors.text }}>{stat.value}</div>
-                      <div style={{ fontFamily: font.mono, fontSize: 9, color: colors.textDim, letterSpacing: '0.08em' }}>{stat.label}</div>
-                    </div>
-                  ))}
+                    { label: 'CONNECTIONS', value: degree, onClick: undefined as (() => void) | undefined },
+                    // Clicking MEMORIES surfaces the memories that mention this
+                    // entity — search the entity name, which auto-switches to the
+                    // list view (see the search effect above).
+                    {
+                      label: 'MEMORIES', value: memLinks,
+                      onClick: memLinks > 0 && ent?.name ? () => setSearch(ent.name) : undefined,
+                    },
+                    { label: 'FIELDS', value: fields.length, onClick: undefined },
+                  ].map(stat => {
+                    const interactive = !!stat.onClick;
+                    return (
+                      <button
+                        key={stat.label}
+                        type="button"
+                        onClick={stat.onClick}
+                        disabled={!interactive}
+                        title={interactive ? `Show memories that mention ${selected.label}` : undefined}
+                        style={{
+                          textAlign: 'left', background: 'transparent', border: 'none', padding: 0,
+                          cursor: interactive ? 'pointer' : 'default', borderRadius: 6,
+                          transition: chipTransition,
+                        }}
+                        onMouseEnter={e => { if (interactive) (e.currentTarget as HTMLButtonElement).style.opacity = '0.7'; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.opacity = '1'; }}
+                        onFocus={e => { if (interactive) (e.currentTarget as HTMLButtonElement).style.outline = `2px solid ${colors.cyan}`; }}
+                        onBlur={e => { (e.currentTarget as HTMLButtonElement).style.outline = 'none'; }}
+                      >
+                        <div style={{ fontFamily: font.display, fontSize: 18, fontWeight: 700, color: interactive ? colors.cyan : colors.text }}>{stat.value}</div>
+                        <div style={{ fontFamily: font.mono, fontSize: 9, color: colors.textDim, letterSpacing: '0.08em' }}>{stat.label}</div>
+                      </button>
+                    );
+                  })}
                 </div>
               </>);
             })()}
@@ -425,12 +481,38 @@ export function BrainView() {
                     </p>
                     {mem.ent.length > 0 && (
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                        {mem.ent.map(id => (
-                          <span key={id} style={{
-                            fontFamily: font.mono, fontSize: 10, color: colors.cyan,
-                            border: `1px solid ${colors.borderHi}`, borderRadius: 999, padding: '4px 10px',
-                          }}>{id}</span>
-                        ))}
+                        {mem.ent.map(id => {
+                          const ent = entityById.get(id);
+                          // Unresolved id — render an inert chip rather than a
+                          // dead link. Resolved entities become clickable and
+                          // select the entity via the shared mechanism.
+                          if (!ent) {
+                            return (
+                              <span key={id} title="Unknown entity" style={{
+                                fontFamily: font.mono, fontSize: 10, color: colors.textDim,
+                                border: `1px solid ${colors.border}`, borderRadius: 999, padding: '4px 10px',
+                              }}>{id}</span>
+                            );
+                          }
+                          return (
+                            <button
+                              key={id}
+                              type="button"
+                              onClick={() => selectEntity(ent)}
+                              title={`View ${ent.name}`}
+                              style={{
+                                fontFamily: font.body, fontSize: 11, fontWeight: 500, color: colors.cyan,
+                                background: colors.cyanSoft, cursor: 'pointer',
+                                border: `1px solid ${colors.borderHi}`, borderRadius: 999, padding: '4px 10px',
+                                transition: chipTransition,
+                              }}
+                              onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = colors.cyanGlow; }}
+                              onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = colors.cyanSoft; }}
+                              onFocus={e => { (e.currentTarget as HTMLButtonElement).style.outline = `2px solid ${colors.cyan}`; }}
+                              onBlur={e => { (e.currentTarget as HTMLButtonElement).style.outline = 'none'; }}
+                            >{ent.name}</button>
+                          );
+                        })}
                       </div>
                     )}
                   </div>

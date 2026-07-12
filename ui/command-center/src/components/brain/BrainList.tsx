@@ -271,7 +271,7 @@ export function BrainList({ onSelect, selectedId, timeValue, searchQuery, entiti
 
 // ── Highlight helper ─────────────────────────────────────────────────
 
-function highlightText(text: string, terms: string[], colors: { text: string }): React.ReactNode {
+function highlightText(text: string, terms: string[], colors: { text: string; cyanGlow: string }): React.ReactNode {
   if (terms.length === 0) return text;
   const escaped = terms.filter(t => t.length > 1).map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
   if (escaped.length === 0) return text;
@@ -279,7 +279,7 @@ function highlightText(text: string, terms: string[], colors: { text: string }):
   const parts = text.split(regex);
   return parts.map((part, i) =>
     regex.test(part)
-      ? <mark key={i} style={{ background: 'rgba(0,213,255,0.25)', color: colors.text, borderRadius: 2, padding: '0 1px' }}>{part}</mark>
+      ? <mark key={i} style={{ background: colors.cyanGlow, color: colors.text, borderRadius: 2, padding: '0 1px' }}>{part}</mark>
       : part
   );
 }
@@ -305,16 +305,23 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
 
   return (
     <div
+      role="button"
+      tabIndex={0}
+      aria-label={`Memory: ${title}`}
       onClick={onClick}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
       style={{
         padding: '10px 14px', marginBottom: 2, cursor: 'pointer',
         borderRadius: 8,
         background: rowBg,
         border: selected ? `1px solid ${colors.cyan}40` : '1px solid transparent',
+        outline: 'none',
         transition: `all 160ms ${ease.out}`,
       }}
       onMouseEnter={e => { if (!selected) (e.currentTarget as HTMLDivElement).style.background = rowHoverBg; }}
       onMouseLeave={e => { if (!selected) (e.currentTarget as HTMLDivElement).style.background = rowBg; }}
+      onFocus={e => { (e.currentTarget as HTMLDivElement).style.outline = `2px solid ${colors.cyan}`; }}
+      onBlur={e => { (e.currentTarget as HTMLDivElement).style.outline = 'none'; }}
     >
       {/* Title row */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
@@ -362,10 +369,24 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
 
 // ── Entity row component ────────────────────────────────────────────
 
-const TYPE_COLORS: Record<string, string> = {
-  person: '#c8e0ff', project: '#a855f7', tool: '#22d3ee',
-  location: '#4ade80', organization: '#fb923c', concept: '#7bb7ff',
-};
+/**
+ * Per-type accent, resolved from theme tokens so it stays legible on both the
+ * dark and silver themes (the old hardcoded palette was tuned for dark and went
+ * low-contrast/washed on white). The accent drives a small color dot — a
+ * non-text category cue — while the type label itself uses `textMuted`, which is
+ * AA on both themes.
+ */
+function typeAccent(type: string, colors: ReturnType<typeof useTheme>['colors']): string {
+  switch (type) {
+    case 'person': return colors.cyan;
+    case 'project': return colors.purple;
+    case 'tool': return colors.purpleBright;
+    case 'location': return colors.success;
+    case 'organization': return colors.warning;
+    case 'concept': return colors.textMuted;
+    default: return colors.textDim;
+  }
+}
 
 function EntityRow({ entity, selected, onClick }: {
   entity: GraphEntity;
@@ -377,27 +398,41 @@ function EntityRow({ entity, selected, onClick }: {
     ? colors.cyanSoft
     : theme === 'silver' ? 'rgba(255,255,255,0.7)' : 'rgba(20,28,48,0.4)';
   const rowHoverBg = theme === 'silver' ? 'rgba(255,255,255,0.9)' : 'rgba(20,28,48,0.65)';
-  const typeColor = TYPE_COLORS[entity.type] || colors.textDim;
+  const typeColor = typeAccent(entity.type, colors);
 
   return (
     <div
+      role="button"
+      tabIndex={0}
+      aria-label={`${entity.type}: ${entity.name}`}
       onClick={onClick}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
       style={{
         padding: '8px 14px', marginBottom: 2, cursor: 'pointer',
         borderRadius: 8, background: rowBg,
         border: selected ? `1px solid ${colors.cyan}40` : '1px solid transparent',
+        outline: 'none',
         transition: `all 160ms ${ease.out}`,
         display: 'flex', alignItems: 'center', gap: 10,
       }}
       onMouseEnter={e => { if (!selected) (e.currentTarget as HTMLDivElement).style.background = rowHoverBg; }}
       onMouseLeave={e => { if (!selected) (e.currentTarget as HTMLDivElement).style.background = rowBg; }}
+      onFocus={e => { (e.currentTarget as HTMLDivElement).style.outline = `2px solid ${colors.cyan}`; }}
+      onBlur={e => { (e.currentTarget as HTMLDivElement).style.outline = 'none'; }}
     >
       <span style={{
-        fontFamily: font.mono, fontSize: 9, fontWeight: 600,
-        color: typeColor, textTransform: 'uppercase', letterSpacing: '0.06em',
-        flexShrink: 0, width: 52, textAlign: 'right',
+        display: 'inline-flex', alignItems: 'center', gap: 6,
+        flexShrink: 0, width: 62, justifyContent: 'flex-end',
       }}>
-        {entity.type}
+        <span aria-hidden style={{
+          width: 6, height: 6, borderRadius: 999, background: typeColor, flexShrink: 0,
+        }} />
+        <span style={{
+          fontFamily: font.mono, fontSize: 9, fontWeight: 600,
+          color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em',
+        }}>
+          {entity.type}
+        </span>
       </span>
       <span style={{
         fontFamily: font.body, fontSize: 13, fontWeight: 600, color: colors.text,
