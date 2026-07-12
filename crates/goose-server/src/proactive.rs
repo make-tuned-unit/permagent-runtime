@@ -377,17 +377,13 @@ async fn compute_news(last_link: Option<&str>) -> Option<Nudge> {
         .timeout(Duration::from_secs(12))
         .build()
         .ok()?;
-    let resp = client
-        .get("https://news.google.com/rss/search")
-        .query(&[
-            ("q", name.as_str()),
-            ("hl", "en-US"),
-            ("gl", "US"),
-            ("ceid", "US:en"),
-        ])
-        .send()
-        .await
-        .ok()?;
+    // Build the URL by hand — this reqwest is configured without the `query`
+    // helper (default-features = false), same as browser.rs.
+    let url = format!(
+        "https://news.google.com/rss/search?q={}&hl=en-US&gl=US&ceid=US:en",
+        percent_encode(&name)
+    );
+    let resp = client.get(&url).send().await.ok()?;
     if !resp.status().is_success() {
         return None;
     }
@@ -469,6 +465,20 @@ fn parse_rfc2822_ms(s: &str) -> Option<i64> {
     DateTime::parse_from_rfc2822(s.trim())
         .ok()
         .map(|d| d.timestamp_millis())
+}
+
+/// Percent-encode a query value (this reqwest build lacks the `query` helper).
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
 }
 
 // ── Source: dormant thread ───────────────────────────────────────────────────
