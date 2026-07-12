@@ -21,6 +21,7 @@ pub mod decisions;
 pub mod dictation;
 pub mod doctor;
 pub mod download_manager;
+pub mod echo;
 pub mod events;
 pub mod execution;
 pub mod gateway;

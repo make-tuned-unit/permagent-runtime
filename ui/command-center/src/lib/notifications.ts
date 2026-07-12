@@ -31,6 +31,7 @@ export type NotificationKind =
   | 'goal_failure'
   | 'librarian'
   | 'initiative'
+  | 'echo'
   | 'system';
 
 export const KIND_LABELS: Record<NotificationKind, string> = {
@@ -39,6 +40,7 @@ export const KIND_LABELS: Record<NotificationKind, string> = {
   goal_failure: 'Goal failures',
   librarian: 'Librarian runs',
   initiative: 'Initiative proposals',
+  echo: "Echo — Henry's nudges",
   system: 'System messages',
 };
 
@@ -48,6 +50,7 @@ const DEFAULT_PREFS: Record<NotificationKind, boolean> = {
   goal_failure: true,
   librarian: false,
   initiative: true,
+  echo: true,
   system: true,
 };
 
@@ -234,6 +237,21 @@ function connect(): void {
                 kind: 'librarian',
                 title: 'Librarian finished a pass',
                 body: 'New memory descriptions are in the Brain',
+                target: 'memory',
+              });
+            }
+            break;
+          }
+          case 'proactive_nudge': {
+            // Echo / the Watcher (#672): Henry resurfaces a dormant thread (news
+            // + analytics later). The daemon owns the gentle once-a-day budget,
+            // so anything that arrives here is meant to be seen.
+            if (prefs.echo) {
+              const p = (evt.payload ?? {}) as { message?: string; subject?: string };
+              push({
+                kind: 'echo',
+                title: '✦ Henry noticed something',
+                body: p.message ?? `A thread worth revisiting${p.subject ? `: ${p.subject}` : ''}.`,
                 target: 'memory',
               });
             }

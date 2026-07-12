@@ -135,6 +135,7 @@ pub static WORKER_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::agents::platform_extensions::librarian::SELF_KNOWLEDGE_FEATURE,
     crate::steward::SELF_KNOWLEDGE_FEATURE,
     crate::initiative::SELF_KNOWLEDGE_FEATURE,
+    crate::echo::SELF_KNOWLEDGE_FEATURE,
 ];
 
 /// Deterministic guardrails the agent operates under. Co-located with the
@@ -486,7 +487,13 @@ mod tests {
 
     /// Every known worker id must have exactly one descriptor. Catches a worker
     /// added without a co-located descriptor wired into [`WORKER_DESCRIPTORS`].
-    const KNOWN_WORKER_IDS: &[&str] = &["scheduler", "librarian", "git_steward", "initiative"];
+    const KNOWN_WORKER_IDS: &[&str] = &[
+        "scheduler",
+        "librarian",
+        "git_steward",
+        "initiative",
+        "watcher",
+    ];
     /// Every known surface id must have exactly one descriptor.
     const KNOWN_SURFACE_IDS: &[&str] = &[
         "reader",
