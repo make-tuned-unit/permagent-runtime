@@ -4,7 +4,7 @@ import { useTheme } from '../../styles/useTheme';
 import { apiFetch } from '../../lib/api';
 import { useGoalEvents } from '../../lib/useGoalEvents';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
-import { useCommandCenter } from '../../lib/store';
+import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { Panel } from './Panel';
 import { PeoplePanel } from './PeoplePanel';
 import { DocumentsPanel } from './DocumentsPanel';
@@ -115,9 +115,8 @@ function KeyFactsPanel({ project }: { project: Project }) {
   const facts: { label: string; value: ReactNode }[] = [
     { label: 'Status', value: <StatusPill status={project.status} /> },
     { label: 'Slug', value: project.slug },
+    { label: 'Last opened', value: formatDate(project.lastOpenedAt) },
   ];
-  if (project.rootPath) facts.push({ label: 'Root path', value: <Mono>{project.rootPath}</Mono> });
-  facts.push({ label: 'Last opened', value: formatDate(project.lastOpenedAt) });
 
   return (
     <Panel title="Key facts">
@@ -130,6 +129,10 @@ function KeyFactsPanel({ project }: { project: Project }) {
             </span>
           </div>
         ))}
+        {/* Root path is actionable, not inert: open a project-aware terminal in
+            Build (the same createProjectTab path a launch button uses), or copy
+            the path. */}
+        {project.rootPath && <RootPathRow project={project} />}
         {project.tags.length > 0 && (
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
             <span style={{ fontSize: 11, color: colors.textDim, width: 88, flexShrink: 0 }}>Tags</span>
@@ -147,6 +150,85 @@ function KeyFactsPanel({ project }: { project: Project }) {
         )}
       </div>
     </Panel>
+  );
+}
+
+/**
+ * Root-path row — turns the project's filesystem path from inert text into two
+ * actions: "Open in Build" (reuses setPendingTerminalLaunch + navigateToTool,
+ * the same seam the agent's project_launch event and the human launch button
+ * ride) and copy-to-clipboard. No new backend calls.
+ */
+function RootPathRow({ project }: { project: Project }) {
+  const { colors, reduceMotion } = useTheme();
+  const setPendingTerminalLaunch = useCommandCenter(s => s.setPendingTerminalLaunch);
+  const [copied, setCopied] = useState(false);
+
+  const rootPath = project.rootPath;
+  if (!rootPath) return null;
+
+  const openInBuild = () => {
+    // Switch to Build first; only queue the launch if a Build workspace exists
+    // (mirrors useAppNavigate's project_launch handler).
+    if (!navigateToTool('build')) return;
+    setPendingTerminalLaunch({ rootPath, label: project.slug });
+  };
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(rootPath);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard denied (rare in-app) — leave the label unchanged.
+    }
+  };
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+      <span style={{ fontSize: 11, color: colors.textDim, width: 88, flexShrink: 0 }}>Root path</span>
+      <div style={{ minWidth: 0, flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <Mono>
+          <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {rootPath}
+          </span>
+        </Mono>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button
+            onClick={openInBuild}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5,
+              padding: '3px 9px', borderRadius: 6, cursor: 'pointer',
+              background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
+              color: colors.cyan, fontSize: 11, fontWeight: 600, fontFamily: font.body,
+              transition: reduceMotion ? 'none' : 'all 150ms',
+            }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.cyan; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+              <path d="M4 17l6-6-6-6M12 19h8" />
+            </svg>
+            Open in Build
+          </button>
+          <button
+            onClick={copy}
+            aria-label="Copy root path"
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5,
+              padding: '3px 9px', borderRadius: 6, cursor: 'pointer',
+              background: 'rgba(255,255,255,0.03)', border: `1px solid ${colors.border}`,
+              color: copied ? colors.success : colors.textMuted, fontSize: 11, fontFamily: font.body,
+              transition: reduceMotion ? 'none' : 'all 150ms',
+            }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; }}
+          >
+            {copied ? 'Copied' : 'Copy'}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -176,7 +258,7 @@ function LinksPanel({ project }: { project: Project }) {
                 color: colors.text, fontFamily: font.body, fontSize: 12, cursor: 'pointer',
                 transition: 'all 150ms', width: '100%',
               }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = 'rgba(0,213,255,0.3)'; }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; }}
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={colors.cyan} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
@@ -243,7 +325,11 @@ function TasksPanel({ columns, cards, onOpenGoal }: {
                     return (
                       <div
                         key={card.id}
+                        role={isGoal ? 'button' : undefined}
+                        tabIndex={isGoal ? 0 : undefined}
+                        aria-label={isGoal ? `Open goal ${card.title}` : undefined}
                         onClick={isGoal ? () => onOpenGoal(card.id) : undefined}
+                        onKeyDown={isGoal ? e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenGoal(card.id); } } : undefined}
                         style={{
                           fontSize: 12, padding: '4px 8px', borderRadius: 6,
                           background: 'rgba(255,255,255,0.02)',
@@ -251,11 +337,13 @@ function TasksPanel({ columns, cards, onOpenGoal }: {
                           display: 'flex', alignItems: 'center', gap: 6,
                           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                         }}
-                        onMouseEnter={e => { if (isGoal) (e.currentTarget as HTMLElement).style.background = 'rgba(0,213,255,0.05)'; }}
+                        onMouseEnter={e => { if (isGoal) (e.currentTarget as HTMLElement).style.background = colors.cyanSoft; }}
                         onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.02)'; }}
+                        onFocus={e => { if (isGoal) (e.currentTarget as HTMLElement).style.background = colors.cyanSoft; }}
+                        onBlur={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.02)'; }}
                       >
                         {isGoal && (
-                          <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#A78BFA', flexShrink: 0 }} />
+                          <span style={{ width: 5, height: 5, borderRadius: '50%', background: colors.purpleBright, flexShrink: 0 }} />
                         )}
                         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{card.title}</span>
                       </div>
@@ -275,7 +363,7 @@ function TasksPanel({ columns, cards, onOpenGoal }: {
 
 function StatusPill({ status }: { status: string }) {
   const { colors } = useTheme();
-  const map: Record<string, string> = { active: colors.cyan, paused: '#F59E0B', archived: colors.textDim };
+  const map: Record<string, string> = { active: colors.cyan, paused: colors.warning, archived: colors.textDim };
   const color = map[status] ?? colors.textMuted;
   return (
     <span style={{

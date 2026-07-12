@@ -28,6 +28,10 @@ export function PeoplePanel({ project }: { project: Project }) {
   const peopleRev = useCommandCenter(s => s.peopleRev);
   const [people, setPeople] = useState<ProjectPerson[]>([]);
   const [picking, setPicking] = useState(false);
+  // Distinguish first-load, load-failure, and genuinely-empty so a failed fetch
+  // never reads the same as "no people associated yet" (and never hangs on a
+  // perpetual spinner).
+  const [status, setStatus] = useState<'loading' | 'error' | 'ready'>('loading');
   // Associate outcome, surfaced inline. Previously the POST failure was swallowed
   // by an empty catch, so a fast 400 was indistinguishable from "the click did
   // nothing" (#561) — the wire is correct, but the failure was invisible.
@@ -37,9 +41,11 @@ export function PeoplePanel({ project }: { project: Project }) {
     try {
       const rows = await apiFetch<ProjectPerson[]>(`/api/projects/${encodeURIComponent(project.id)}/people`);
       setPeople(rows);
+      setStatus('ready');
     } catch {
-      // Routes are first-dogfooded here (#530 had no route-level tests); on
-      // failure the panel simply shows empty rather than breaking Overview.
+      // Routes are first-dogfooded here (#530 had no route-level tests); surface
+      // the failure as a recoverable error rather than a blank/empty panel.
+      setStatus('error');
     }
   }, [project.id]);
 
@@ -95,7 +101,22 @@ export function PeoplePanel({ project }: { project: Project }) {
         </div>
       )}
 
-      {people.length === 0 ? (
+      {status === 'loading' ? (
+        <div style={{ fontSize: 11, color: colors.textDim }}>Loading people…</div>
+      ) : status === 'error' ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 11, color: colors.danger }}>Couldn't load people.</span>
+          <button
+            onClick={load}
+            style={{
+              fontSize: 11, color: colors.cyan, background: 'none', border: 'none',
+              cursor: 'pointer', fontFamily: font.body, padding: 0, fontWeight: 600,
+            }}
+          >
+            Retry
+          </button>
+        </div>
+      ) : people.length === 0 ? (
         <div style={{ fontSize: 11, color: colors.textDim }}>No people associated yet.</div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -109,7 +130,7 @@ export function PeoplePanel({ project }: { project: Project }) {
                 background: 'rgba(255,255,255,0.02)', border: `1px solid ${colors.border}`,
                 color: colors.text, fontFamily: font.body, cursor: 'pointer', transition: 'border-color 150ms',
               }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = 'rgba(0,213,255,0.3)'; }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; }}
             >
               <span style={{ fontSize: 12, color: colors.text, flexShrink: 0 }}>{p.display_name}</span>
@@ -136,13 +157,15 @@ function AssociatePicker({ colors, excludeIds, onPick }: {
 }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Person[]>([]);
+  const [status, setStatus] = useState<'loading' | 'error' | 'ready'>('loading');
 
   useEffect(() => {
     let live = true;
+    setStatus('loading');
     const q = query.trim();
     apiFetch<Person[]>(`/api/people${q ? `?q=${encodeURIComponent(q)}` : ''}`)
-      .then(rows => { if (live) setResults(rows); })
-      .catch(() => { if (live) setResults([]); });
+      .then(rows => { if (live) { setResults(rows); setStatus('ready'); } })
+      .catch(() => { if (live) { setResults([]); setStatus('error'); } });
     return () => { live = false; };
   }, [query]);
 
@@ -161,7 +184,11 @@ function AssociatePicker({ colors, excludeIds, onPick }: {
           color: colors.text, fontFamily: font.body, outline: 'none',
         }}
       />
-      {candidates.length === 0 ? (
+      {status === 'loading' ? (
+        <div style={{ fontSize: 11, color: colors.textDim, padding: '2px 2px' }}>Searching…</div>
+      ) : status === 'error' ? (
+        <div style={{ fontSize: 11, color: colors.danger, padding: '2px 2px' }}>Couldn't search the directory.</div>
+      ) : candidates.length === 0 ? (
         <div style={{ fontSize: 11, color: colors.textDim, padding: '2px 2px' }}>
           {results.length === 0 ? 'No people in the directory.' : 'No more to add.'}
         </div>
@@ -177,7 +204,7 @@ function AssociatePicker({ colors, excludeIds, onPick }: {
                 background: 'none', border: 'none', color: colors.text,
                 fontFamily: font.body, cursor: 'pointer',
               }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(0,213,255,0.06)'; }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = colors.cyanSoft; }}
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'none'; }}
             >
               <span style={{ fontSize: 12, flexShrink: 0 }}>{p.display_name}</span>
