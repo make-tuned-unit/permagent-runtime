@@ -325,7 +325,7 @@ export function Dashboard() {
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             fontFamily: font.body, fontSize: 12, fontWeight: 600,
             color: colors.cyan,
-            boxShadow: `0 8px 24px rgba(0,0,0,0.4)`,
+            boxShadow: colors.elevationOverlay,
           }}>
             {entry.name}
           </div>
