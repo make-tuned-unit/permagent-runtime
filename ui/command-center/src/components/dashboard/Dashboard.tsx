@@ -10,6 +10,7 @@ import { CARD_REGISTRY } from './cards/registry';
 import { AddCardPicker } from './AddCardPicker';
 import { DashboardOverflowMenu } from './DashboardOverflowMenu';
 import { ResetConfirmModal } from './ResetConfirmModal';
+import { Echo } from './Echo';
 import { useState, useCallback, useRef, useMemo } from 'react';
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
@@ -236,6 +237,11 @@ export function Dashboard() {
           {isEditMode ? <><FiCheck size={14} /> Done</> : <FiEdit2 size={14} />}
         </button>
       </div>
+
+      {/* Echo — a forgotten thread from your Brain, resurfaced unprompted.
+          Renders itself only when there's a genuinely dormant thread and it
+          hasn't shown recently; otherwise nothing. Hidden while arranging cards. */}
+      {!isEditMode && <Echo />}
 
       {/* CSS Grid — reflows natively with the container, no JS width measurement */}
       <div
