@@ -261,6 +261,9 @@ pub enum PermagentEventType {
     ProjectLaunch,
     // Goal lifecycle (create / transition / park / requeue / failure / delete)
     GoalStateChanged,
+    // Echo/Watcher — the agent proactively resurfaces something worth your
+    // attention (a dormant Brain thread today; project news/analytics later).
+    ProactiveNudge,
 }
 
 // ── Convenience constructors ────────────────────────────────────────────────
@@ -631,6 +634,30 @@ pub fn project_launch(
             "command": command,
             "project_slug": project_slug,
             "reason": reason,
+        }),
+    )
+}
+
+/// Echo/Watcher (#672): the agent proactively surfaces the single most useful
+/// thing it noticed — a dormant Brain thread today, project news/analytics
+/// later. Delivered gently and rarely; the frontend's notification stream turns
+/// it into an in-app + (opt-in) OS notification. `kind` names the signal source
+/// so the UI can style/route it; the daemon owns the once-a-day budget.
+pub fn proactive_nudge(
+    kind: &str,
+    subject: &str,
+    message: &str,
+    count: i64,
+    last_ts: &str,
+) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::ProactiveNudge,
+        serde_json::json!({
+            "kind": kind,
+            "subject": subject,
+            "message": message,
+            "count": count,
+            "last_ts": last_ts,
         }),
     )
 }

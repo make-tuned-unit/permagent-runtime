@@ -136,6 +136,9 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
         gateway_manager.check_auto_start().await;
     });
 
+    // Echo / the Watcher (#672): gentle, rare proactive nudges from the hub.
+    crate::proactive::spawn(app_state.clone());
+
     // Emit daemon_started event after binding
     let version = env!("CARGO_PKG_VERSION");
     let config_path = std::env::var("PERMAGENT_CONFIG").unwrap_or_default();
