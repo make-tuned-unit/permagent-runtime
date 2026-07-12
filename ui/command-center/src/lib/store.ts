@@ -1083,6 +1083,18 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         // have created a skill (save_skill) or a new proposal may have fired.
         get().loadProposals();
         get().loadSkills();
+        // Rehydrate the conversation from the daemon now the turn is done: it's
+        // the authoritative copy, and only IT carries the tool requests joined
+        // to their responses (indexToolResponses). So tool cards light up with
+        // real names + typed results the moment the turn finishes — no manual
+        // reopen. Runs AFTER streaming ends (isStreaming already false), so it
+        // never races the streaming text path. (True mid-turn live tool render
+        // needs UpdateConversation reconciliation against the client streaming
+        // message — a separate, behaviorally-verified follow-on.)
+        {
+          const sid = get().chatSessionId;
+          if (sid) void get().loadSessionMessages(sid);
+        }
         break;
       }
       case 'ContextAttached': {
