@@ -622,7 +622,7 @@ export function ProjectKanban({ project }: { project: Project }) {
           position: 'fixed', left: ghostPos.x + 8, top: ghostPos.y - 12,
           padding: '6px 10px', borderRadius: 6,
           background: colors.surface, border: `1px solid ${colors.cyan}`,
-          boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
+          boxShadow: colors.elevationRaised,
           fontSize: 12, fontWeight: 500, color: colors.text,
           pointerEvents: 'none', zIndex: 9999, maxWidth: 200,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
@@ -681,7 +681,7 @@ card, onPointerDown, isDragging, onDelete, onCancel }: {
           style={{
             position: 'absolute', top: '100%', right: 0, marginTop: 2, zIndex: 10,
             background: gradient.dropdown, border: `1px solid ${colors.border}`, borderRadius: 6,
-            boxShadow: '0 4px 16px rgba(0,0,0,0.4)', padding: 2, minWidth: 100,
+            boxShadow: colors.elevationRaised, padding: 2, minWidth: 100,
           }}>
           {onCancel && (
             <button

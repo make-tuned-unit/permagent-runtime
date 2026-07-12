@@ -56,6 +56,13 @@ export interface ThemeColors {
   danger: string;
   /** Card elevation shadow (cool-tinted on silver) */
   cardShadow: string;
+  /** Discrete elevation ladder for floating layers (theme-aware — deep on the
+   *  void, soft-cool on silver where a black shadow is invisible). Use the level
+   *  that matches prominence: raised=dropdowns/menus, overlay=popovers/panels,
+   *  floating=toasts/notifications. Static content stays border-first, flat. */
+  elevationRaised: string;
+  elevationOverlay: string;
+  elevationFloating: string;
   /** Top-edge highlight for metallic cards (empty string on dark themes) */
   cardHighlight: string;
   /** Brand ribbon gradient for primary buttons / AI moments */
@@ -86,6 +93,9 @@ const DARK_COLORS: ThemeColors = {
   text: color.text, textMuted: color.textMuted, textDim: color.textDim,
   danger: color.danger,
   cardShadow: '0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04)',
+  elevationRaised: '0 4px 16px rgba(0,0,0,0.35)',
+  elevationOverlay: '0 8px 24px rgba(0,0,0,0.42)',
+  elevationFloating: '0 20px 52px rgba(0,0,0,0.5)',
   cardHighlight: '',
   ribbonGradient: 'linear-gradient(135deg, #00D5FF 0%, #6366F1 50%, #8D44AE 100%)',
   userBubble: 'rgba(141,68,174,0.18)',
@@ -126,6 +136,9 @@ const SILVER_COLORS: ThemeColors = {
   danger: '#DC2626',
   // Elevation — soft shadow + glass edge (cards MUST float via shadow, not color)
   cardShadow: '0 2px 12px rgba(30,37,48,0.10), 0 1px 4px rgba(30,37,48,0.06)',
+  elevationRaised: '0 4px 16px rgba(30,37,48,0.10)',
+  elevationOverlay: '0 8px 24px rgba(30,37,48,0.13)',
+  elevationFloating: '0 20px 52px rgba(30,37,48,0.17)',
   cardHighlight: 'inset 0 1px 0 rgba(255,255,255,0.9)',
   // Brand ribbon — weighted so text sits over blue→violet (AA large text)
   ribbonGradient: 'linear-gradient(135deg, #00BFEF 0%, #3A7BFF 30%, #8B5CFF 100%)',
