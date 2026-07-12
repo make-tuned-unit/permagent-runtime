@@ -60,7 +60,9 @@ export function ChatDock() {
         backdropFilter: 'blur(24px) saturate(140%)',
         WebkitBackdropFilter: 'blur(24px) saturate(140%)',
         borderLeft: `1px solid ${colors.borderHi}`,
-        boxShadow: '-24px 0 60px rgba(0,0,0,0.45)',
+        // Directional left-edge lift, theme-aware: a deep shadow reads on the
+        // void, a soft cool one on silver (a black glow is invisible on light).
+        boxShadow: theme === 'silver' ? '-24px 0 48px rgba(30,37,48,0.16)' : '-24px 0 60px rgba(0,0,0,0.45)',
       }}
     >
       {/* Dock header — detach + close */}

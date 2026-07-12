@@ -10,6 +10,7 @@ import { useVoice, VoiceState } from '../../hooks/useVoice';
 import { useCommandCenter } from '../../lib/store';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/useTheme';
+import { VoiceVisualizer } from './VoiceVisualizer';
 
 const STATE_LABELS: Record<VoiceState, string> = {
   idle: '',
@@ -54,6 +55,7 @@ export function VoiceButton() {
     deactivate,
     startRecording,
     stopRecording,
+    getAnalyser,
   } = useVoice({ sessionId: chatSessionId ?? undefined });
 
   const isRecordingRef = useRef(false);
@@ -170,7 +172,11 @@ export function VoiceButton() {
         </svg>
       </button>
 
-      {showLabel && (
+      {/* While the agent speaks, the waveform IS the label — a live frequency
+          visualization instead of static "Speaking..." text. */}
+      {state === 'playing' && !error ? (
+        <VoiceVisualizer getAnalyser={getAnalyser} active />
+      ) : showLabel ? (
         <span style={{
           fontSize: 10,
           color: error ? colors.danger : stateColor,
@@ -181,7 +187,7 @@ export function VoiceButton() {
         }}>
           {error || STATE_LABELS[state]}
         </span>
-      )}
+      ) : null}
     </div>
   );
 }
