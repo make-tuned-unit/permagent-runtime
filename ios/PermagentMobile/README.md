@@ -5,9 +5,10 @@ On-brand: deep-void dark, cyan→violet ribbon, glass cards (`Theme.swift`
 mirrors `ui/command-center/src/styles/tokens.ts` — keep in lockstep).
 
 ## v1 surfaces
-Pairing (paste the Settings → Devices URL) · Decisions · In Flight · Chat
-scaffold. Live events over the hub's `/events` WebSocket; pairing token in
-the Keychain; zero user data on-device.
+Pairing (paste the Settings → Devices URL) · Decisions · In Flight · **Chat
+(live)** — sends to the hub's `POST /reply` and streams Henry's answer over
+SSE, so an ask on the phone runs on the Mac. Live events over the hub's
+`/events` WebSocket; pairing token in the Keychain; zero user data on-device.
 
 ## Building
 Open in Xcode 16+ on a machine with the iOS SDK (the mini): create an iOS App
@@ -31,5 +32,7 @@ bound to the tailnet (`HOST=0.0.0.0`).
   liveness sweep issue.
 
 ## Roadmap
-Streaming chat (SSE) · approve/decline decisions in-app · push via #618's
-escalation channel · per-device tokens (#628) · Tailscale iOS hints.
+Choice/input decisions in-app (approve/reject ✓) · push via #618's escalation
+channel · per-device tokens (#628) · Tailscale iOS hints. (Streaming chat ✓,
+approve/reject decisions ✓ — verify the first `/reply` + `/answer` round-trips
+on the mini once Xcode-built.)

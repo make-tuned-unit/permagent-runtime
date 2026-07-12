@@ -36,12 +36,12 @@ struct HomeView: View {
                                 .shadow(color: Brand.cyanGlow, radius: snap.healthy == false ? 0 : 6)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(snap.healthy == false ? "Hub unreachable" : "Hub online")
-                                    .font(.subheadline.weight(.semibold))
+                                    .font(.brandHeadline)
                                     .foregroundStyle(Brand.text)
                                 Text(snap.healthy == false
                                      ? "Check that your Mac is awake and on the tailnet."
                                      : "Your Mac is holding the fort — Brain, models, and memory all live.")
-                                    .font(.caption)
+                                    .font(.brandCaption)
                                     .foregroundStyle(Brand.textMuted)
                             }
                             Spacer()
@@ -60,11 +60,11 @@ struct HomeView: View {
                     GlassCard {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("RECENT ACTIVITY")
-                                .font(.system(.caption2, design: .monospaced).weight(.semibold))
+                                .font(.brandLabel)
                                 .foregroundStyle(Brand.textDim)
                             if snap.activity.isEmpty {
                                 Text("All quiet. Henry will note goal moves, decisions, and Librarian passes here.")
-                                    .font(.caption)
+                                    .font(.brandCaption)
                                     .foregroundStyle(Brand.textMuted)
                             } else {
                                 ForEach(snap.activity.prefix(8)) { row in
@@ -72,7 +72,7 @@ struct HomeView: View {
                                         Text(icon(for: row.kind))
                                         VStack(alignment: .leading, spacing: 1) {
                                             Text(row.title)
-                                                .font(.caption)
+                                                .font(.brandCaption)
                                                 .foregroundStyle(Brand.text)
                                                 .lineLimit(2)
                                             Text(row.kind.replacingOccurrences(of: "_", with: " "))
@@ -89,10 +89,10 @@ struct HomeView: View {
                     GlassCard {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("REMOTE HANDS")
-                                .font(.system(.caption2, design: .monospaced).weight(.semibold))
+                                .font(.brandLabel)
                                 .foregroundStyle(Brand.textDim)
                             Text("Anything you ask Henry here happens on the hub — open a site in the desktop browser, launch a project terminal, dispatch a goal. Your desktop shows it live.")
-                                .font(.caption)
+                                .font(.brandCaption)
                                 .foregroundStyle(Brand.textMuted)
                         }
                     }
@@ -110,10 +110,12 @@ struct HomeView: View {
         GlassCard {
             VStack(alignment: .leading, spacing: 4) {
                 Text(value.map(String.init) ?? "–")
-                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .font(.brandDisplay)
+                    .monospacedDigit()               // tabular figures — counts don't jitter on refresh
+                    .contentTransition(.numericText()) // roll the digit when it changes
                     .foregroundStyle(accent)
                 Text(label.uppercased())
-                    .font(.system(.caption2, design: .monospaced).weight(.semibold))
+                    .font(.brandLabel)
                     .foregroundStyle(Brand.text)
                 Text(hint)
                     .font(.caption2)
@@ -135,16 +137,19 @@ struct HomeView: View {
 
     private func load() async {
         struct Status: Decodable { let status: String }
-        struct Decisions: Decodable { let total_pending: Int? }
+        // The inbox returns { items, summary:{ total_pending } } — the count
+        // lives under summary (was read at top level, so it always showed "–").
+        struct Summary: Decodable { let total_pending: Int? }
+        struct Decisions: Decodable { let summary: Summary? }
         struct Goals: Decodable { struct G: Decodable { let id: String }; let goals: [G] }
         struct Activity: Decodable { let items: [ActivityRow]? }
 
         snap.healthy = (try? await APIClient.shared.get("/status", as: Status.self)) != nil
         if let d = try? await APIClient.shared.get("/api/decisions", as: Decisions.self) {
-            snap.decisionsPending = d.total_pending
+            withAnimation(Motion.spring) { snap.decisionsPending = d.summary?.total_pending }
         }
         if let g = try? await APIClient.shared.get("/api/goals/active", as: Goals.self) {
-            snap.goalsActive = g.goals.count
+            withAnimation(Motion.spring) { snap.goalsActive = g.goals.count }
         }
         // The durable journal (#619); tolerant of the route not being live yet.
         if let a = try? await APIClient.shared.get("/api/activity", as: Activity.self) {

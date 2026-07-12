@@ -46,6 +46,33 @@ extension Color {
     }
 }
 
+// ── Typography (one scale, SF Pro; SF Mono for technical accents) ────────────
+// The web uses Inter/mono/display; on iOS the premium-native choice is SF Pro,
+// which also gives us Dynamic Type for free. Numbers use tabular figures so
+// stat tiles and counts don't jitter.
+extension Font {
+    /// Big hero numerals (stat tiles). Rounded + tabular so digits don't shift.
+    static let brandDisplay = Font.system(size: 30, weight: .bold, design: .rounded)
+    /// Section / screen titles.
+    static let brandTitle = Font.system(.title3, design: .default).weight(.semibold)
+    /// Card headlines, primary rows.
+    static let brandHeadline = Font.system(.subheadline).weight(.semibold)
+    /// Body copy.
+    static let brandBody = Font.system(.subheadline)
+    /// Secondary / supporting copy.
+    static let brandCaption = Font.system(.caption)
+    /// The house mono label — uppercase kicker over cards (kind badges, headers).
+    static let brandLabel = Font.system(.caption2, design: .monospaced).weight(.semibold)
+}
+
+// ── Motion tokens ────────────────────────────────────────────────────────────
+enum Motion {
+    /// The house ease — matches tokens.ts `ease.out` feel for view transitions.
+    static let ease = Animation.easeOut(duration: 0.22)
+    /// Springy, for content arrival (message bubbles, card removal).
+    static let spring = Animation.spring(response: 0.34, dampingFraction: 0.82)
+}
+
 /// The house glass card (Glass atom): blur + hairline + soft glow.
 struct GlassCard<Content: View>: View {
     var content: () -> Content
@@ -60,5 +87,32 @@ struct GlassCard<Content: View>: View {
                     .strokeBorder(Brand.borderHi, lineWidth: 1)
             )
             .shadow(color: .black.opacity(0.45), radius: 24, y: 12)
+    }
+}
+
+// ── Agent presence: the "Henry is thinking" indicator ────────────────────────
+// Premium agentic UX masks latency with a living cue, not a dead spinner. Three
+// dots breathe in sequence while we await the first streamed token. Honors
+// Reduce Motion (falls back to a static row).
+struct ThinkingDots: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var phase = false
+
+    var body: some View {
+        HStack(spacing: 5) {
+            ForEach(0..<3, id: \.self) { i in
+                Circle()
+                    .fill(Brand.cyan)
+                    .frame(width: 6, height: 6)
+                    .opacity(reduceMotion ? 0.6 : (phase ? 1 : 0.28))
+                    .animation(
+                        reduceMotion ? nil :
+                            .easeInOut(duration: 0.6).repeatForever().delay(Double(i) * 0.18),
+                        value: phase
+                    )
+            }
+        }
+        .onAppear { phase = true }
+        .accessibilityLabel("Henry is thinking")
     }
 }

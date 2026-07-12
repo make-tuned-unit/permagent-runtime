@@ -80,6 +80,98 @@ actor APIClient {
             continuation.onTermination = { _ in task.cancel(with: .goingAway, reason: nil) }
         }
     }
+
+    /// Ask Henry on the hub (POST /reply → an SSE stream of MessageEvents).
+    /// Yields the assistant's text as it arrives. The hub does the work — this
+    /// device only relays the ask and renders the reply. Matches the daemon's
+    /// `data: {json}\n\n` framing and the `type`-tagged MessageEvent enum.
+    nonisolated func replyStream(_ text: String, sessionId: String) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    await loadSavedPairing()
+                    guard let config = await self.config else {
+                        continuation.finish(throwing: APIError.notPaired); return
+                    }
+                    var req = URLRequest(url: config.baseURL.appendingPathComponent("/reply"))
+                    req.httpMethod = "POST"
+                    req.setValue("Bearer \(config.token)", forHTTPHeaderField: "Authorization")
+                    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                    let msg = ReplyMessage(
+                        role: "user",
+                        created: Int(Date().timeIntervalSince1970),
+                        content: [ReplyContent(type: "text", text: text)],
+                        metadata: ReplyMeta(userVisible: true, agentVisible: true)
+                    )
+                    req.httpBody = try JSONEncoder().encode(ReplyRequest(user_message: msg, session_id: sessionId))
+
+                    let (bytes, resp) = try await URLSession.shared.bytes(for: req)
+                    guard let http = resp as? HTTPURLResponse else { throw APIError.badStatus(0) }
+                    if http.statusCode == 401 { throw APIError.unauthorized }
+                    guard (200..<300).contains(http.statusCode) else { throw APIError.badStatus(http.statusCode) }
+
+                    for try await line in bytes.lines {
+                        guard line.hasPrefix("data: ") else { continue }
+                        let json = String(line.dropFirst(6))
+                        guard let data = json.data(using: .utf8),
+                              let event = try? JSONDecoder().decode(ReplyEvent.self, from: data)
+                        else { continue }
+                        switch event.type {
+                        case "Message":
+                            if let m = event.message, m.role == "assistant" {
+                                let t = m.content.compactMap(\.text).joined()
+                                if !t.isEmpty { continuation.yield(t) }
+                            }
+                        case "Finish":
+                            continuation.finish(); return
+                        case "Error":
+                            continuation.finish(throwing: APIError.badStatus(422)); return
+                        default:
+                            break
+                        }
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+}
+
+// ── /reply request + event shapes (mirror the daemon's serde) ────────────────
+
+/// A content block is `{ type, text? }`; tool blocks have no text and decode to
+/// nil, so `compactMap(\.text)` yields just the prose.
+private struct ReplyContent: Codable { let type: String; let text: String? }
+private struct ReplyMeta: Codable { let userVisible: Bool; let agentVisible: Bool }
+private struct ReplyMessage: Codable {
+    let role: String
+    let created: Int
+    let content: [ReplyContent]
+    let metadata: ReplyMeta
+}
+private struct ReplyRequest: Encodable {
+    let user_message: ReplyMessage
+    let session_id: String
+}
+private struct ReplyEvent: Decodable {
+    let type: String
+    let message: ReplyMessage?
+    let error: String?
+}
+
+/// A stable per-install chat session id so the conversation persists across
+/// launches. The hub creates the session lazily on first reply (get_agent).
+enum MobileSession {
+    private static let key = "ai.permagent.mobile-chat-session"
+    static func chatSessionId() -> String {
+        if let existing = UserDefaults.standard.string(forKey: key) { return existing }
+        let id = UUID().uuidString
+        UserDefaults.standard.set(id, forKey: key)
+        return id
+    }
 }
 
 struct DaemonEvent: Decodable {
