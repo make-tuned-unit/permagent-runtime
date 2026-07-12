@@ -30,6 +30,7 @@ export function ProjectsView() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
   const pendingProjectNavigation = useCommandCenter(s => s.pendingProjectNavigation);
   const setPendingProjectNavigation = useCommandCenter(s => s.setPendingProjectNavigation);
 
@@ -37,12 +38,18 @@ export function ProjectsView() {
     try {
       const data = await apiFetch<Project[]>('/api/projects');
       setProjects(data);
+      setError(false);
     } catch {
-      // silently fail
+      // Surface the failure instead of leaving a blank surface. Transient poll
+      // failures are ignored while we already have projects on screen; only a
+      // genuine load-with-nothing-to-show promotes to the error state below.
+      setError(true);
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const retry = useCallback(() => { setLoading(true); loadProjects(); }, [loadProjects]);
 
   useEffect(() => {
     loadProjects();
@@ -107,6 +114,21 @@ export function ProjectsView() {
     );
   }
 
+  // Initial load failed with nothing to show — an explicit, recoverable dead-end
+  // instead of a blank canvas.
+  if (error && projects.length === 0) {
+    return (
+      <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', background: gradient.workspace, fontFamily: font.body }}>
+        <StateBlock
+          tone="error"
+          title="Couldn't load projects"
+          detail="The projects service didn't respond. Check that the daemon is running, then try again."
+          onRetry={retry}
+        />
+      </div>
+    );
+  }
+
   if (activeProjectId) {
     const project = projects.find(p => p.id === activeProjectId);
     if (!project) {
@@ -124,6 +146,50 @@ export function ProjectsView() {
   }
 
   return <AllProjectsView projects={projects} onOpenProject={openProject} onStatusChange={handleStatusChange} />;
+}
+
+// ── Shared empty / error state block ────────────────────────────────────────
+//
+// One shape for every "nothing to show" moment on the Projects surface, so an
+// empty board and a failed fetch never read the same (blank) way. `error` tone
+// gets a danger accent + a Retry affordance; `empty` tone is calm/dim.
+
+function StateBlock({ tone, title, detail, onRetry, compact }: {
+  tone: 'empty' | 'error';
+  title: string;
+  detail?: string;
+  onRetry?: () => void;
+  compact?: boolean;
+}) {
+  const { colors } = useTheme();
+  const isError = tone === 'error';
+  const accent = isError ? colors.danger : colors.textMuted;
+  return (
+    <div style={{
+      display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
+      textAlign: 'center', padding: compact ? '20px 16px' : '40px 24px',
+      color: colors.textMuted, fontFamily: font.body,
+    }}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: accent }}>{title}</div>
+      {detail && (
+        <div style={{ fontSize: 11, color: colors.textDim, maxWidth: 320, lineHeight: 1.5 }}>
+          {detail}
+        </div>
+      )}
+      {onRetry && (
+        <button
+          onClick={onRetry}
+          style={{
+            marginTop: 6, padding: '5px 14px', borderRadius: 6, cursor: 'pointer',
+            background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
+            color: colors.cyan, fontSize: 11, fontWeight: 600, fontFamily: font.body,
+          }}
+        >
+          Try again
+        </button>
+      )}
+    </div>
+  );
 }
 
 // ── All Projects View — Active-dominant landing (Jesse's ruling 2026-07-10) ──
@@ -179,6 +245,7 @@ projects, onOpenProject, onStatusChange }: {
     return new Date(b.lastOpenedAt).getTime() - new Date(a.lastOpenedAt).getTime();
   };
   const active = projects.filter(p => p.status === 'active').sort(byRecency);
+  const hasShelved = projects.some(p => p.status === 'paused' || p.status === 'archived');
 
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: gradient.workspace, color: colors.text, fontFamily: font.body }}>
@@ -202,8 +269,8 @@ projects, onOpenProject, onStatusChange }: {
             gap: 12,
             borderRadius: 12,
             padding: 4,
-            border: dragOverCol === 'active' ? '1px solid rgba(0,213,255,0.25)' : '1px solid transparent',
-            background: dragOverCol === 'active' ? 'rgba(0,213,255,0.04)' : 'transparent',
+            border: dragOverCol === 'active' ? `1px solid ${colors.borderHi}` : '1px solid transparent',
+            background: dragOverCol === 'active' ? colors.cyanSoft : 'transparent',
             transition: 'all 150ms',
           }}
         >
@@ -216,8 +283,14 @@ projects, onOpenProject, onStatusChange }: {
             />
           ))}
           {active.length === 0 && (
-            <div style={{ gridColumn: '1 / -1', padding: 40, textAlign: 'center', fontSize: 12, color: colors.textDim }}>
-              No active projects — create one, or drag one out of the shelves below.
+            <div style={{ gridColumn: '1 / -1' }}>
+              <StateBlock
+                tone="empty"
+                title="No active projects yet"
+                detail={hasShelved
+                  ? 'Create one, or drag a project out of the Paused or Archived shelves below to reactivate it.'
+                  : 'Create your first project to start organizing goals, people, and documents.'}
+              />
             </div>
           )}
         </div>
@@ -235,8 +308,8 @@ projects, onOpenProject, onStatusChange }: {
               onDrop={(e) => handleDrop(e, col.key)}
               style={{
                 marginTop: 14, borderRadius: 10,
-                border: isOver ? '1px solid rgba(0,213,255,0.25)' : `1px solid ${colors.border}`,
-                background: isOver ? 'rgba(0,213,255,0.05)' : 'rgba(255,255,255,0.02)',
+                border: isOver ? `1px solid ${colors.borderHi}` : `1px solid ${colors.border}`,
+                background: isOver ? colors.cyanSoft : 'rgba(255,255,255,0.02)',
                 transition: 'all 150ms',
               }}
             >
@@ -298,27 +371,33 @@ project, onOpen, onDragStart }: {
   onOpen: () => void;
   onDragStart: (e: React.DragEvent) => void;
 }) {
-  const { colors } = useTheme();
+  const { colors, reduceMotion } = useTheme();
   const isPersonal = project.id === PERSONAL_ID;
 
   return (
     <div
+      role="button"
+      tabIndex={0}
+      aria-label={`Open project ${project.name}`}
       draggable={!isPersonal}
       onDragStart={onDragStart}
       onClick={onOpen}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); } }}
       style={{
         padding: '10px 12px', borderRadius: 8,
         background: colors.surface,
         border: `1px solid ${colors.border}`,
         cursor: 'pointer',
-        transition: 'all 150ms',
+        transition: reduceMotion ? 'none' : 'all 150ms',
       }}
-      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = 'rgba(0,213,255,0.3)'; }}
+      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
       onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; }}
+      onFocus={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
+      onBlur={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         {isPersonal && (
-          <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 4, background: 'rgba(0,213,255,0.1)', color: colors.cyan, fontWeight: 600 }}>
+          <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 4, background: colors.cyanSoft, color: colors.cyan, fontWeight: 600 }}>
             DEFAULT
           </span>
         )}
@@ -356,6 +435,7 @@ export function ProjectKanban({ project }: { project: Project }) {
   const [columns, setColumns] = useState<BoardColumn[]>([]);
   const [cards, setCards] = useState<Card[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
   const [addingCardCol, setAddingCardCol] = useState<string | null>(null);
   const [newCardTitle, setNewCardTitle] = useState('');
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
@@ -390,12 +470,17 @@ export function ProjectKanban({ project }: { project: Project }) {
       ]);
       setColumns(cols);
       setCards(cds);
+      setError(false);
     } catch {
-      // silently fail
+      // Don't leave the board blank on failure — flag it so the render path
+      // shows a recoverable error state instead of empty columns.
+      setError(true);
     } finally {
       setLoading(false);
     }
   }, [project.id]);
+
+  const retryBoard = useCallback(() => { setLoading(true); loadBoard(); }, [loadBoard]);
 
   useEffect(() => { loadBoard(); }, [loadBoard]);
   // Live board: refetch when any goal is created or transitions (shared
@@ -504,6 +589,33 @@ export function ProjectKanban({ project }: { project: Project }) {
     );
   }
 
+  // Fetch failed — a recoverable error rather than a blank board.
+  if (error && columns.length === 0) {
+    return (
+      <div style={{ width: '100%', flex: 1, minHeight: 0, display: 'grid', placeItems: 'center', background: gradient.workspace, fontFamily: font.body }}>
+        <StateBlock
+          tone="error"
+          title="Couldn't load this board"
+          detail="The board's columns and cards didn't load. Check the daemon connection and try again."
+          onRetry={retryBoard}
+        />
+      </div>
+    );
+  }
+
+  // Loaded cleanly but there is no board configured yet.
+  if (columns.length === 0) {
+    return (
+      <div style={{ width: '100%', flex: 1, minHeight: 0, display: 'grid', placeItems: 'center', background: gradient.workspace, fontFamily: font.body }}>
+        <StateBlock
+          tone="empty"
+          title="No board yet"
+          detail="This project doesn't have any columns. A board is created automatically once the project has its first goal or card."
+        />
+      </div>
+    );
+  }
+
   return (
     <div style={{ width: '100%', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', background: gradient.workspace, color: colors.text, fontFamily: font.body }}>
       {/* Kanban columns */}
@@ -518,9 +630,9 @@ export function ProjectKanban({ project }: { project: Project }) {
               ref={(el) => { if (el) colRefs.current.set(col.id, el); else colRefs.current.delete(col.id); }}
               style={{
                 flex: 1, minWidth: 200, display: 'flex', flexDirection: 'column',
-                background: isOver ? 'rgba(0,213,255,0.04)' : 'rgba(255,255,255,0.02)',
+                background: isOver ? colors.cyanSoft : 'rgba(255,255,255,0.02)',
                 borderRadius: 10, padding: '12px 10px',
-                border: isOver ? `1px solid rgba(0,213,255,0.2)` : '1px solid transparent',
+                border: isOver ? `1px solid ${colors.borderHi}` : '1px solid transparent',
                 transition: 'all 150ms',
               }}
             >
@@ -541,6 +653,7 @@ export function ProjectKanban({ project }: { project: Project }) {
                     key={card.id}
                     card={card}
                     onPointerDown={(e) => handleCardPointerDown(e, card.id, card.title)}
+                    onOpen={card.cardType === 'goal' ? () => openGoalDetail(project.id, card.id) : undefined}
                     isDragging={draggingCard === card.id}
                     onDelete={() => handleDeleteCard(card.id)}
                     onCancel={
@@ -578,7 +691,7 @@ export function ProjectKanban({ project }: { project: Project }) {
                       onClick={() => handleAddCard(col.id)}
                       style={{
                         flex: 1, padding: '4px 0', borderRadius: 5,
-                        background: 'rgba(0,213,255,0.15)', border: `1px solid rgba(0,213,255,0.3)`,
+                        background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
                         color: colors.cyan, fontSize: 11, fontFamily: font.body, fontWeight: 600, cursor: 'pointer',
                       }}
                     >
@@ -605,7 +718,7 @@ export function ProjectKanban({ project }: { project: Project }) {
                     color: colors.textDim, fontSize: 11, fontFamily: font.body,
                     cursor: 'pointer', transition: 'all 150ms',
                   }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = 'rgba(0,213,255,0.3)'; (e.currentTarget as HTMLElement).style.color = colors.textMuted; }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; (e.currentTarget as HTMLElement).style.color = colors.textMuted; }}
                   onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; (e.currentTarget as HTMLElement).style.color = colors.textDim; }}
                 >
                   + Add card
@@ -635,32 +748,67 @@ export function ProjectKanban({ project }: { project: Project }) {
 }
 
 function CardItem({
-card, onPointerDown, isDragging, onDelete, onCancel }: {
+card, onPointerDown, onOpen, isDragging, onDelete, onCancel }: {
   card: Card;
   onPointerDown: (e: React.PointerEvent) => void;
+  /** Activate the card (open goal detail) via keyboard — mirrors the click path
+   *  the parent's pointer handler runs. Absent for non-openable cards. */
+  onOpen?: () => void;
   isDragging: boolean;
   onDelete: () => void;
   onCancel?: () => void;
 }) {
-  const { colors, gradient } = useTheme();
+  const { colors, gradient, reduceMotion } = useTheme();
   const [showMenu, setShowMenu] = useState(false);
+  const isGoal = card.cardType === 'goal';
 
   return (
     <div
+      role="button"
+      tabIndex={0}
+      aria-label={onOpen ? `Open card ${card.title}` : card.title}
       onPointerDown={onPointerDown}
-      onContextMenu={e => { e.preventDefault(); setShowMenu(!showMenu); }}
+      onKeyDown={e => {
+        if (onOpen && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpen(); }
+        if (e.key === 'Escape') setShowMenu(false);
+      }}
+      onContextMenu={e => { e.preventDefault(); setShowMenu(m => !m); }}
       style={{
         padding: '8px 10px', borderRadius: 7,
         background: colors.surface,
         border: `1px solid ${colors.border}`,
         cursor: 'grab', position: 'relative',
         opacity: isDragging ? 0.4 : 1,
-        transition: 'opacity 150ms',
+        transition: reduceMotion ? 'none' : 'opacity 150ms',
       }}
-      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = 'rgba(255,255,255,0.12)'; }}
+      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
       onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; setShowMenu(false); }}
+      onFocus={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
+      onBlur={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; }}
     >
-      <div style={{ fontSize: 12, fontWeight: 500 }}>{card.title}</div>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+        <div style={{ fontSize: 12, fontWeight: 500, flex: 1, minWidth: 0 }}>{card.title}</div>
+        {/* Visible, keyboard-reachable menu trigger — right-click still works too.
+            stopPropagation on pointer-down so opening the menu never starts a drag. */}
+        <button
+          aria-label={`Card actions for ${card.title}`}
+          aria-haspopup="menu"
+          aria-expanded={showMenu}
+          onPointerDown={e => e.stopPropagation()}
+          onClick={e => { e.stopPropagation(); setShowMenu(m => !m); }}
+          style={{
+            flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            width: 18, height: 18, marginTop: -1, marginRight: -2, padding: 0, borderRadius: 4,
+            background: 'transparent', border: 'none', cursor: 'pointer',
+            color: showMenu ? colors.text : colors.textDim, lineHeight: 1, fontSize: 14,
+            transition: reduceMotion ? 'none' : 'color 150ms',
+          }}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = colors.text; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = showMenu ? colors.text : colors.textDim; }}
+        >
+          ⋯
+        </button>
+      </div>
       {card.description && (
         <div style={{ fontSize: 10, color: colors.textMuted, marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {card.description}
@@ -669,14 +817,15 @@ card, onPointerDown, isDragging, onDelete, onCancel }: {
       {card.cardType !== 'standard' && (
         <span style={{
           fontSize: 9, padding: '1px 5px', borderRadius: 4, marginTop: 4, display: 'inline-block',
-          background: card.cardType === 'goal' ? 'rgba(139,92,246,0.15)' : 'rgba(233,30,99,0.15)',
-          color: card.cardType === 'goal' ? '#A78BFA' : '#F48FB1',
+          background: isGoal ? colors.purpleSoft : colors.cyanSoft,
+          color: isGoal ? colors.purpleBright : colors.cyan,
         }}>
           {card.cardType}
         </span>
       )}
       {showMenu && (
         <div
+          role="menu"
           onPointerDown={e => e.stopPropagation()}
           style={{
             position: 'absolute', top: '100%', right: 0, marginTop: 2, zIndex: 10,
@@ -685,28 +834,30 @@ card, onPointerDown, isDragging, onDelete, onCancel }: {
           }}>
           {onCancel && (
             <button
+              role="menuitem"
               onClick={(e) => { e.stopPropagation(); setShowMenu(false); onCancel(); }}
               style={{
                 width: '100%', padding: '5px 8px', borderRadius: 4,
                 background: 'transparent', border: 'none',
-                color: '#F59E0B', fontSize: 11, fontFamily: font.body,
+                color: colors.warning, fontSize: 11, fontFamily: font.body,
                 cursor: 'pointer', textAlign: 'left',
               }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(245,158,11,0.1)'; }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = colors.warning + '1A'; }}
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
             >
               Cancel goal
             </button>
           )}
           <button
-            onClick={(e) => { e.stopPropagation(); onDelete(); }}
+            role="menuitem"
+            onClick={(e) => { e.stopPropagation(); setShowMenu(false); onDelete(); }}
             style={{
               width: '100%', padding: '5px 8px', borderRadius: 4,
               background: 'transparent', border: 'none',
-              color: '#EF4444', fontSize: 11, fontFamily: font.body,
+              color: colors.danger, fontSize: 11, fontFamily: font.body,
               cursor: 'pointer', textAlign: 'left',
             }}
-            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(239,68,68,0.1)'; }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = colors.danger + '1A'; }}
             onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
           >
             Delete card
