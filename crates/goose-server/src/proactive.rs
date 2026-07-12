@@ -439,6 +439,9 @@ fn first_rss_item(xml: &str) -> Option<RssItem> {
     })
 }
 
+// Safe slicing: `str::find` returns byte offsets on char boundaries, and
+// `start.len()` advances past a matched ASCII tag — so both slices are valid.
+#[allow(clippy::string_slice)]
 fn between<'a>(s: &'a str, start: &str, end: &str) -> Option<&'a str> {
     let i = s.find(start)? + start.len();
     let rest = &s[i..];
