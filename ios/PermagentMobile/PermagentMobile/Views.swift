@@ -227,6 +227,57 @@ struct ChatBubble: Identifiable {
     let id = UUID()
     let role: String   // "user" | "assistant"
     var text: String
+    var thinking: String = ""
+}
+
+/// Reasoning disclosure — mirrors the desktop chat: the model's thinking in a
+/// collapsible block that auto-opens while it's still thinking (no answer yet)
+/// and collapses to a one-line summary once the answer starts.
+struct ReasoningDisclosure: View {
+    let thinking: String
+    let hasAnswer: Bool
+    @State private var expanded: Bool
+    @State private var userToggled = false
+
+    init(thinking: String, hasAnswer: Bool) {
+        self.thinking = thinking
+        self.hasAnswer = hasAnswer
+        _expanded = State(initialValue: !hasAnswer)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Button {
+                userToggled = true
+                withAnimation(Motion.ease) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 5) {
+                    Text("✦").foregroundStyle(Brand.cyan).opacity(hasAnswer ? 0.65 : 1)
+                    Text(hasAnswer ? "Reasoning" : "Thinking…")
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(Brand.textDim)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(Brand.textDim)
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                }
+            }
+            .buttonStyle(.plain)
+            if expanded {
+                Text(thinking)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Brand.textMuted)
+                    .textSelection(.enabled)
+                    .padding(.leading, 9)
+                    .overlay(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 1).fill(Brand.borderHi).frame(width: 2)
+                    }
+            }
+        }
+        .onChange(of: hasAnswer) { _, has in
+            if has && !userToggled { withAnimation(Motion.ease) { expanded = false } }
+        }
+    }
 }
 
 struct ChatView: View {
@@ -271,10 +322,13 @@ struct ChatView: View {
     private func bubble(_ m: ChatBubble) -> some View {
         HStack {
             if m.role == "user" { Spacer(minLength: 44) }
-            Group {
-                if m.role != "user" && m.text.isEmpty {
+            VStack(alignment: .leading, spacing: 7) {
+                if m.role != "user" && !m.thinking.isEmpty {
+                    ReasoningDisclosure(thinking: m.thinking, hasAnswer: !m.text.isEmpty)
+                }
+                if m.role != "user" && m.text.isEmpty && m.thinking.isEmpty {
                     ThinkingDots()
-                } else {
+                } else if !m.text.isEmpty {
                     Text(m.text)
                         .font(.brandBody)
                         .foregroundStyle(m.role == "user" ? Brand.deepVoid : Brand.text)
@@ -328,7 +382,10 @@ struct ChatView: View {
         Task {
             do {
                 for try await delta in APIClient.shared.replyStream(text, sessionId: sessionId) {
-                    if idx < messages.count { messages[idx].text += delta }
+                    if idx < messages.count {
+                        messages[idx].text += delta.text
+                        messages[idx].thinking += delta.thinking
+                    }
                 }
                 if idx < messages.count && messages[idx].text.isEmpty {
                     messages[idx].text = "Done — check your desktop."
