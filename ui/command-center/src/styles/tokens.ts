@@ -26,6 +26,27 @@ export const font = {
   mono: '"JetBrains Mono", ui-monospace, SFMono-Regular, monospace',
 } as const;
 
+/**
+ * Fixed type ramp (design audit: "no arbitrary sizes"). Role-based — each style
+ * bundles size + line-height + weight + tracking, so callers spread one token
+ * (`style={{ ...type.body }}`) instead of setting the four ad hoc. Tracking
+ * tightens as size grows, per the audit. Sizes in px.
+ */
+export const type = {
+  display: { fontSize: 32, lineHeight: '38px', fontWeight: 600, letterSpacing: '-0.02em' },
+  title:   { fontSize: 20, lineHeight: '26px', fontWeight: 600, letterSpacing: '-0.01em' },
+  heading: { fontSize: 16, lineHeight: '22px', fontWeight: 600, letterSpacing: '-0.005em' },
+  body:    { fontSize: 14, lineHeight: '21px', fontWeight: 400 },
+  small:   { fontSize: 13, lineHeight: '19px', fontWeight: 400 },
+  caption: { fontSize: 12, lineHeight: '16px', fontWeight: 400 },
+  micro:   { fontSize: 11, lineHeight: '14px', fontWeight: 500 },
+  label:   { fontSize: 11, lineHeight: '14px', fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase' },
+} as const;
+
+/** Tabular figures — aligned numerals for metrics/counts/timers (never prose),
+ *  so digits don't reflow as values change. Spread onto any numeric display. */
+export const tabularNums = { fontVariantNumeric: 'tabular-nums' } as const;
+
 export const ease = {
   out: 'cubic-bezier(0.22, 1, 0.36, 1)',
   inOut: 'cubic-bezier(0.65, 0, 0.35, 1)',
@@ -40,7 +61,7 @@ export const shadow = {
   card: '0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04)',
 } as const;
 
-export const tokens = { color, font, ease, radius, shadow } as const;
+export const tokens = { color, font, type, tabularNums, ease, radius, shadow } as const;
 export type DesignTokens = typeof tokens;
 
 // ── Theme gradients + colors ────────────────────────────────────────

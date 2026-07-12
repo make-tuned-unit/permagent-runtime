@@ -6,7 +6,7 @@
  */
 
 import { useState } from 'react';
-import { font, radius } from '../../../styles/tokens';
+import { font, radius, tabularNums } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { useDecisions } from '../decisions/useDecisions';
 import { DecisionInbox } from '../decisions/DecisionInbox';
@@ -91,7 +91,7 @@ export function DecisionsCard({ activeCount }: Props = {}) {
             {/* Stat-style count */}
             <div style={{
               fontFamily: font.display, fontSize: 32, fontWeight: 600,
-              letterSpacing: '-0.02em',
+              letterSpacing: '-0.02em', ...tabularNums,
               color: count > 0 ? colors.cyan : colors.text,
             }}>
               {data === null ? '—' : count}
