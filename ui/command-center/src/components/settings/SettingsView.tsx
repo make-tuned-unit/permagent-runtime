@@ -369,7 +369,7 @@ function ToolsPanel() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
           {extensions.map(ext => (
             <div key={ext.name} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: 14, borderRadius: 10, background: colors.bgDeeper, border: `1px solid ${colors.border}` }}>
-              <div style={{ width: 32, height: 32, borderRadius: 8, background: ext.enabled ? 'rgba(0,213,255,0.08)' : 'rgba(255,255,255,0.04)', border: `1px solid ${ext.enabled ? colors.borderHi : colors.border}`, display: 'grid', placeItems: 'center', fontFamily: font.display, fontSize: 13, fontWeight: 700, color: ext.enabled ? colors.cyan : colors.textMuted }}>{ext.display_name[0]?.toUpperCase()}</div>
+              <div style={{ width: 32, height: 32, borderRadius: 8, background: ext.enabled ? colors.cyanSoft : colors.surfaceHi, border: `1px solid ${ext.enabled ? colors.borderHi : colors.border}`, display: 'grid', placeItems: 'center', fontFamily: font.display, fontSize: 13, fontWeight: 700, color: ext.enabled ? colors.cyan : colors.textMuted }}>{ext.display_name[0]?.toUpperCase()}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13, fontWeight: 600 }}>{ext.display_name}</div>
                 <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ext.type}{ext.bundled ? ' · bundled' : ''} · {ext.available_tools.length} tools</div>
@@ -413,9 +413,9 @@ function nextRunText(sched: LibSchedule): string {
 function ModelStateBadge({ state }: { state: 'running' | 'installed' | 'missing' }) {
   const { colors } = useThemeHook();
   const styles: Record<string, { bg: string; text: string; label: string }> = {
-    running: { bg: 'rgba(0,213,255,0.12)', text: colors.cyan, label: 'Loaded' },
-    installed: { bg: 'rgba(255,255,255,0.06)', text: colors.textMuted, label: 'Installed' },
-    missing: { bg: 'rgba(255,180,162,0.1)', text: colors.danger, label: 'Not installed' },
+    running: { bg: colors.cyanSoft, text: colors.cyan, label: 'Loaded' },
+    installed: { bg: colors.surfaceHi, text: colors.textMuted, label: 'Installed' },
+    missing: { bg: `${colors.danger}1A`, text: colors.danger, label: 'Not installed' },
   };
   const s = styles[state];
   return (
@@ -574,7 +574,7 @@ function ModelsPanel({ goto }: PanelProps) {
               disabled={runningNow || modelState(schedule.model) === 'missing'}
               style={{
                 height: 30, padding: '0 14px', borderRadius: 6,
-                background: runningNow ? 'rgba(0,213,255,0.08)' : 'rgba(0,213,255,0.12)',
+                background: colors.cyanSoft,
                 border: `1px solid ${colors.borderHi}`,
                 color: runningNow ? colors.textDim : colors.cyan,
                 fontSize: 12, fontWeight: 600, fontFamily: font.body,
@@ -632,15 +632,26 @@ function AppearancePanel() {
     <div>
       <H1 sub="How Permagent looks while it runs alongside you.">Appearance</H1>
       <Section title="Theme" sub="System follows your device — silver by day, dark when your other apps go dark.">
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+        <div role="radiogroup" aria-label="Theme" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
           {themes.map(th => {
             const on = prefs.themePref === th.id;
             return (
-              <div key={th.id} onClick={() => setThemeFn(th.id)} style={{
-                padding: 4, borderRadius: 12, cursor: 'pointer',
-                border: on ? `2px solid ${colors.cyan}` : '2px solid transparent',
-                boxShadow: on ? `0 0 14px ${colors.cyanGlow}` : 'none',
-              }}>
+              <div
+                key={th.id}
+                role="radio"
+                aria-checked={on}
+                aria-label={th.l}
+                tabIndex={0}
+                onClick={() => setThemeFn(th.id)}
+                onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setThemeFn(th.id); } }}
+                style={{
+                  padding: 4, borderRadius: 12, cursor: 'pointer', outline: 'none',
+                  border: on ? `2px solid ${colors.cyan}` : '2px solid transparent',
+                  boxShadow: on ? `0 0 14px ${colors.cyanGlow}` : 'none',
+                }}
+                onFocus={e => { if (!on) e.currentTarget.style.borderColor = colors.borderHi; }}
+                onBlur={e => { if (!on) e.currentTarget.style.borderColor = 'transparent'; }}
+              >
                 <div style={{ height: 96, borderRadius: 8, background: th.g, border: `1px solid ${colors.border}` }} />
                 <div style={{ fontSize: 12, padding: '8px 4px', textAlign: 'center', color: on ? colors.cyan : colors.text }}>{th.l}</div>
               </div>
@@ -881,7 +892,7 @@ export function SettingsView() {
               return (
                 <button key={it.key} onClick={() => setSection(it.key)} style={{
                   display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '8px 10px', borderRadius: 8,
-                  background: on ? 'rgba(0,213,255,0.08)' : 'transparent',
+                  background: on ? colors.cyanSoft : 'transparent',
                   border: on ? `1px solid ${colors.borderHi}` : '1px solid transparent',
                   color: on ? colors.cyan : colors.textMuted, cursor: 'pointer', textAlign: 'left',
                   fontFamily: font.body, fontSize: 13, fontWeight: on ? 600 : 500,
