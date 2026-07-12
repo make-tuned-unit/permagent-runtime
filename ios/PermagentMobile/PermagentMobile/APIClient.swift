@@ -82,10 +82,11 @@ actor APIClient {
     }
 
     /// Ask Henry on the hub (POST /reply → an SSE stream of MessageEvents).
-    /// Yields the assistant's text as it arrives. The hub does the work — this
-    /// device only relays the ask and renders the reply. Matches the daemon's
-    /// `data: {json}\n\n` framing and the `type`-tagged MessageEvent enum.
-    nonisolated func replyStream(_ text: String, sessionId: String) -> AsyncThrowingStream<String, Error> {
+    /// Yields the assistant's reply as it arrives — `text` (the answer) and
+    /// `thinking` (the reasoning, if an extended-thinking model). The hub does
+    /// the work; this device only relays the ask and renders the reply. Matches
+    /// the daemon's `data: {json}\n\n` framing and `type`-tagged MessageEvent enum.
+    nonisolated func replyStream(_ text: String, sessionId: String) -> AsyncThrowingStream<ReplyDelta, Error> {
         AsyncThrowingStream { continuation in
             Task {
                 do {
@@ -121,7 +122,10 @@ actor APIClient {
                         case "Message":
                             if let m = event.message, m.role == "assistant" {
                                 let t = m.content.compactMap(\.text).joined()
-                                if !t.isEmpty { continuation.yield(t) }
+                                let th = m.content.compactMap(\.thinking).joined()
+                                if !t.isEmpty || !th.isEmpty {
+                                    continuation.yield(ReplyDelta(text: t, thinking: th))
+                                }
                             }
                         case "Finish":
                             continuation.finish(); return
@@ -142,9 +146,12 @@ actor APIClient {
 
 // ── /reply request + event shapes (mirror the daemon's serde) ────────────────
 
-/// A content block is `{ type, text? }`; tool blocks have no text and decode to
-/// nil, so `compactMap(\.text)` yields just the prose.
-private struct ReplyContent: Codable { let type: String; let text: String? }
+/// One streamed slice of the reply: answer `text` and/or reasoning `thinking`.
+struct ReplyDelta { let text: String; let thinking: String }
+
+/// A content block is `{ type, text?, thinking? }`; tool blocks have neither and
+/// decode to nil. Thinking blocks carry `thinking`; answer blocks carry `text`.
+private struct ReplyContent: Codable { let type: String; let text: String?; let thinking: String? }
 private struct ReplyMeta: Codable { let userVisible: Bool; let agentVisible: Bool }
 private struct ReplyMessage: Codable {
     let role: String
