@@ -135,6 +135,9 @@ pub fn spawn(state: Arc<AppState>) {
                 subject = %nudge.subject,
                 "emitted proactive nudge"
             );
+            // Opt-in phone push (no Apple cert needed) — arrives even with the
+            // app closed. No-op unless the user has set a topic.
+            push_to_phone(&nudge.message).await;
             budget.last_delivered = Some(now.to_rfc3339());
             budget.last_subject = Some(nudge.subject.clone());
             if let Some(link) = news_link {
@@ -143,6 +146,37 @@ pub fn spawn(state: Arc<AppState>) {
             budget.save();
         }
     });
+}
+
+/// Opt-in phone push via ntfy — real notifications on the phone (even with the
+/// app closed) with NO Apple push cert. No-op unless `PERMAGENT_NTFY_TOPIC` is
+/// set, so it's fully private by default; point `PERMAGENT_NTFY_SERVER` at a
+/// self-hosted ntfy for zero third-party exposure. The hub just POSTs the nudge.
+async fn push_to_phone(message: &str) {
+    let Ok(topic) = std::env::var("PERMAGENT_NTFY_TOPIC") else {
+        return;
+    };
+    let topic = topic.trim();
+    if topic.is_empty() {
+        return;
+    }
+    let server =
+        std::env::var("PERMAGENT_NTFY_SERVER").unwrap_or_else(|_| "https://ntfy.sh".to_string());
+    let url = format!("{}/{}", server.trim_end_matches('/'), topic);
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+    else {
+        return;
+    };
+    // Fire-and-forget: a failed push never disturbs the loop.
+    let _ = client
+        .post(&url)
+        .header("Title", "Henry noticed something")
+        .header("Tags", "sparkles")
+        .body(message.to_string())
+        .send()
+        .await;
 }
 
 // ── Subject aggregation (shared by both sources) ─────────────────────────────
