@@ -91,6 +91,20 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
+// Derive a translucent tint from a semantic token so status backgrounds track
+// the theme's hue (e.g. Silver's darker green) instead of a frozen literal.
+// Non-hex tokens (already-rgba values) are returned unchanged.
+function withAlpha(hex: string, alpha: number): string {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return hex;
+  let h = m[1];
+  if (h.length === 3) h = h.split('').map(c => c + c).join('');
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 // ── Detail panel types ──────────────────────────────────────────────
 
 type DetailTarget =
@@ -111,6 +125,10 @@ export function AutomateView() {
   const [showModal, setShowModal] = useState(false);
   const [completionToast, setCompletionToast] = useState<string | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
+  const [jobsLoading, setJobsLoading] = useState(true);
+  const [jobsError, setJobsError] = useState<string | null>(null);
+  const [runsLoading, setRunsLoading] = useState(true);
+  const [runsError, setRunsError] = useState<string | null>(null);
   const [actionStates, setActionStates] = useState<Record<string, 'loading' | 'success'>>({});
   const [detail, setDetail] = useState<DetailTarget | null>(null);
   const [search, setSearch] = useState('');
@@ -152,16 +170,31 @@ export function AutomateView() {
         }
       }
       prevRunningRef.current = nowRunning;
-    } catch {}
+      setJobsError(null);
+    } catch (err) {
+      // Keep any jobs already loaded (a transient poll failure shouldn't blank
+      // the list); surface the error so an empty area isn't mistaken for "no
+      // automations yet".
+      setJobsError(err instanceof Error ? err.message : "Couldn't load automations.");
+    } finally {
+      setJobsLoading(false);
+    }
   }, []);
 
   const fetchAllSessions = useCallback(async (jobIds: string[]) => {
+    let loadedAny = false;
+    let failed = false;
     for (const jobId of jobIds) {
       try {
         const data = await apiFetch<SessionInfo[]>(`/schedule/${encodeURIComponent(jobId)}/sessions?limit=5`);
         setSessions(prev => new Map(prev).set(jobId, data));
-      } catch {}
+        loadedAny = true;
+      } catch { failed = true; }
     }
+    // Only treat it as an error when nothing at all came back — a partial fetch
+    // still renders useful history.
+    setRunsError(failed && !loadedAny ? "Couldn't load run history." : null);
+    setRunsLoading(false);
   }, []);
 
   const fetchExtensions = useCallback(async () => {
@@ -279,7 +312,10 @@ export function AutomateView() {
   }, [setActionState, fetchJobs]);
 
   // ── Truly-empty check ──
-  const trulyEmpty = jobs.length === 0 && skills.length === 0 && proposals.length === 0 && !skillsLoading;
+  // Only "truly empty" once loads have settled with no error — otherwise the
+  // invitation would flash over a loading state or hide a failed fetch.
+  const trulyEmpty = jobs.length === 0 && skills.length === 0 && proposals.length === 0
+    && !skillsLoading && !jobsLoading && !jobsError;
 
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', background: gradient.workspace, color: colors.text, fontFamily: font.body }}>
@@ -323,7 +359,7 @@ export function AutomateView() {
         {completionToast && (
           <div style={{
             marginBottom: 16, padding: '10px 16px', borderRadius: radius.md,
-            background: 'rgba(91,209,127,0.1)', border: '1px solid rgba(91,209,127,0.25)',
+            background: withAlpha(colors.success, 0.1), border: `1px solid ${withAlpha(colors.success, 0.25)}`,
             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           }}>
             <span style={{ fontSize: 13, color: colors.success }}>&#10003; "{completionToast}" completed.</span>
@@ -335,7 +371,7 @@ export function AutomateView() {
         {runError && (
           <div style={{
             marginBottom: 16, padding: '10px 16px', borderRadius: radius.md,
-            background: 'rgba(255,100,100,0.1)', border: '1px solid rgba(255,100,100,0.25)',
+            background: withAlpha(colors.danger, 0.1), border: `1px solid ${withAlpha(colors.danger, 0.25)}`,
             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           }}>
             <span style={{ fontSize: 13, color: colors.danger }}>{runError}</span>
@@ -383,11 +419,17 @@ export function AutomateView() {
         )}
 
         {/* ── RECIPES ── */}
-        {(filteredJobs.length > 0 || !trulyEmpty) && (
+        {!trulyEmpty && (
           <Section title="Recipes" count={filteredJobs.length}>
-            {filteredJobs.length === 0 ? (
+            {jobsLoading && jobs.length === 0 ? (
+              <SectionState kind="loading" message="Loading automations…" />
+            ) : jobsError && jobs.length === 0 ? (
+              <SectionState kind="error" message={`Couldn't load automations. ${jobsError}`} onRetry={() => { setJobsLoading(true); fetchJobs(); }} />
+            ) : filteredJobs.length === 0 ? (
               <div style={{ fontSize: 12, color: colors.textDim, padding: '8px 0' }}>
-                No recipes yet. Click "+ Create" to schedule your first automation.
+                {q
+                  ? `No recipes match "${search.trim()}".`
+                  : 'No recipes yet. Click "+ Create" to schedule your first automation.'}
               </div>
             ) : (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
@@ -410,7 +452,7 @@ export function AutomateView() {
           ) : filteredSkills.length === 0 && filteredProposals.length === 0 ? (
             <div style={{
               padding: '20px 24px', borderRadius: radius.lg,
-              background: 'rgba(141,68,174,0.04)', border: '1px solid rgba(141,68,174,0.12)',
+              background: withAlpha(colors.purple, 0.04), border: `1px solid ${withAlpha(colors.purple, 0.12)}`,
             }}>
               <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.6 }}>
                 When you repeat tasks, {agentName} notices patterns and offers to save them.
@@ -427,13 +469,13 @@ export function AutomateView() {
               {filteredProposals.map(proposal => (
                 <div key={proposal.argument_shape_hash} style={{
                   padding: '16px 20px', borderRadius: radius.lg,
-                  background: 'rgba(255,179,71,0.04)', border: '1px solid rgba(255,179,71,0.2)',
+                  background: withAlpha(colors.warning, 0.04), border: `1px solid ${withAlpha(colors.warning, 0.2)}`,
                   transition: 'border-color 150ms',
                 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
                     <div style={{ width: 8, height: 8, borderRadius: '50%', background: colors.warning }} />
                     <div style={{ fontSize: 14, fontWeight: 600, fontFamily: font.display, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{proposal.description}</div>
-                    <span style={{ fontSize: 9, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: 'rgba(255,179,71,0.15)', color: colors.warning }}>PROPOSED</span>
+                    <span style={{ fontSize: 9, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: withAlpha(colors.warning, 0.15), color: colors.warning }}>PROPOSED</span>
                   </div>
                   <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5, marginBottom: 8 }}>
                     Seen {proposal.occurrence_count} time{proposal.occurrence_count !== 1 ? 's' : ''} using {proposal.tool_used}
@@ -458,15 +500,15 @@ export function AutomateView() {
                 .map(skill => {
                   const uses = skill.usageCount || 0;
                   const tier = uses >= 10 ? 'MASTERED' : uses >= 3 ? 'TRUSTED' : 'LEARNED';
-                  const tierBg = tier === 'MASTERED' ? 'rgba(255,179,71,0.15)' : tier === 'TRUSTED' ? 'rgba(91,209,127,0.12)' : colors.purpleSoft;
+                  const tierBg = tier === 'MASTERED' ? withAlpha(colors.warning, 0.15) : tier === 'TRUSTED' ? withAlpha(colors.success, 0.12) : colors.purpleSoft;
                   const tierFg = tier === 'MASTERED' ? colors.warning : tier === 'TRUSTED' ? colors.success : colors.purpleBright;
                   const dotColor = tier === 'MASTERED' ? colors.warning : tier === 'TRUSTED' ? colors.success : (skill.status === 'active' ? colors.purpleBright : colors.textDim);
                   return (
                     <div key={skill.id} style={{
-                      padding: '16px 20px', borderRadius: radius.lg, cursor: 'pointer',
+                      padding: '16px 20px', borderRadius: radius.lg,
                       background: colors.surface, border: `1px solid ${colors.border}`,
                       transition: 'border-color 150ms',
-                    }} onClick={() => {}}>
+                    }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
                         <div style={{ width: 8, height: 8, borderRadius: '50%', background: dotColor }} />
                         <div style={{ fontSize: 14, fontWeight: 600, fontFamily: font.display, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{skill.name}</div>
@@ -517,27 +559,39 @@ export function AutomateView() {
         </Section>
 
         {/* ── RECENT ACTIVITY ── */}
-        {allRuns.length > 0 && (
+        {jobs.length > 0 && (
           <Section title="Recent Activity" count={allRuns.length}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              {allRuns.map(run => {
-                const displayName = jobNameMap.get(run.jobId) || run.jobId;
-                return (
-                  <button key={run.id} onClick={() => setDetail({ kind: 'run', run, displayName })} style={{
-                    display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
-                    borderRadius: radius.sm, background: 'transparent', border: 'none',
-                    cursor: 'pointer', textAlign: 'left', color: colors.text, fontFamily: font.body,
-                    width: '100%', transition: 'background 100ms',
-                  }} onMouseEnter={e => (e.currentTarget.style.background = colors.border)}
-                     onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                    <span style={{ fontSize: 11, color: colors.success }}>&#10003;</span>
-                    <span style={{ fontSize: 12, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName}</span>
-                    <span style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono, flexShrink: 0 }}>{run.messageCount} msgs</span>
-                    <span style={{ fontSize: 10, color: colors.textDim, flexShrink: 0 }}>{timeAgo(run.createdAt)}</span>
-                  </button>
-                );
-              })}
-            </div>
+            {runsLoading && allRuns.length === 0 ? (
+              <SectionState kind="loading" message="Loading run history…" />
+            ) : runsError && allRuns.length === 0 ? (
+              <SectionState kind="error" message={runsError} onRetry={() => { setRunsLoading(true); fetchAllSessions(jobs.map(j => j.id)); }} />
+            ) : allRuns.length === 0 ? (
+              <div style={{ fontSize: 12, color: colors.textDim, padding: '8px 0' }}>
+                No runs yet. History appears here once an automation runs — use "Run Now" on a recipe to try one.
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                {allRuns.map(run => {
+                  const displayName = jobNameMap.get(run.jobId) || run.jobId;
+                  return (
+                    <button key={run.id} onClick={() => setDetail({ kind: 'run', run, displayName })} style={{
+                      display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
+                      borderRadius: radius.sm, background: 'transparent', border: '1px solid transparent',
+                      cursor: 'pointer', textAlign: 'left', color: colors.text, fontFamily: font.body,
+                      width: '100%', transition: 'background 100ms, border-color 100ms', outline: 'none',
+                    }} onMouseEnter={e => (e.currentTarget.style.background = colors.border)}
+                       onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                       onFocus={e => { e.currentTarget.style.background = colors.border; e.currentTarget.style.borderColor = colors.borderHi; }}
+                       onBlur={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.borderColor = 'transparent'; }}>
+                      <span style={{ fontSize: 11, color: colors.success }}>&#10003;</span>
+                      <span style={{ fontSize: 12, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName}</span>
+                      <span style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono, flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>{run.messageCount} msgs</span>
+                      <span style={{ fontSize: 10, color: colors.textDim, flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>{timeAgo(run.createdAt)}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </Section>
         )}
       </div>
@@ -583,6 +637,38 @@ function Section({ title, count, accentColor, collapsed, children }: {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// Per-section loading / error state (distinct from empty, which each section
+// renders inline). Error offers a retry so a failed fetch is never a dead end.
+// ═══════════════════════════════════════════════════════════════════════
+
+function SectionState({ kind, message, onRetry }: {
+  kind: 'loading' | 'error'; message: string; onRetry?: () => void;
+}) {
+  const { colors } = useTheme();
+  if (kind === 'loading') {
+    return (
+      <div style={{ fontSize: 12, color: colors.textDim, padding: '8px 0' }}>{message}</div>
+    );
+  }
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+      padding: '12px 16px', borderRadius: radius.md,
+      background: withAlpha(colors.danger, 0.08), border: `1px solid ${withAlpha(colors.danger, 0.2)}`,
+    }}>
+      <span style={{ fontSize: 12, color: colors.danger, flex: 1, minWidth: 0 }}>{message}</span>
+      {onRetry && (
+        <button onClick={onRetry} style={{
+          padding: '4px 12px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.12),
+          border: `1px solid ${withAlpha(colors.danger, 0.25)}`, color: colors.danger,
+          fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: font.body, flexShrink: 0,
+        }}>Retry</button>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // Recipe card (for Recipes + Running Now sections)
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -608,11 +694,22 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
   const hasUpdate = job.starter_id && job.user_customized && job.embedded_version && job.version !== job.embedded_version;
 
   return (
-    <div onClick={onSelect} style={{
-      padding: '16px 20px', borderRadius: radius.lg, cursor: 'pointer',
-      background: selected ? 'rgba(0,213,255,0.04)' : colors.surface,
+    <div
+      onClick={onSelect}
+      role="button"
+      tabIndex={0}
+      aria-pressed={selected}
+      aria-label={`Open details for ${name}`}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(); } }}
+      onMouseEnter={e => { if (!selected) e.currentTarget.style.borderColor = colors.borderHi; }}
+      onMouseLeave={e => { if (!selected) e.currentTarget.style.borderColor = colors.border; }}
+      onFocus={e => { if (!selected) e.currentTarget.style.borderColor = colors.borderHi; e.currentTarget.style.boxShadow = `0 0 0 2px ${colors.cyanGlow}`; }}
+      onBlur={e => { if (!selected) e.currentTarget.style.borderColor = colors.border; e.currentTarget.style.boxShadow = 'none'; }}
+      style={{
+      padding: '16px 20px', borderRadius: radius.lg, cursor: 'pointer', outline: 'none',
+      background: selected ? withAlpha(colors.cyan, 0.04) : colors.surface,
       border: `1px solid ${selected ? colors.borderHi : colors.border}`,
-      transition: 'border-color 150ms, background 150ms',
+      transition: 'border-color 150ms, background 150ms, box-shadow 150ms',
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
         <div style={{
@@ -722,7 +819,7 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
       </div>
       {job.description && <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.6, marginBottom: 16 }}>{job.description}</div>}
       {hasUpdate && (
-        <div style={{ marginBottom: 16, padding: '10px 16px', borderRadius: radius.md, background: 'rgba(255,179,71,0.08)', border: '1px solid rgba(255,179,71,0.2)', fontSize: 12, color: colors.warning }}>
+        <div style={{ marginBottom: 16, padding: '10px 16px', borderRadius: radius.md, background: withAlpha(colors.warning, 0.08), border: `1px solid ${withAlpha(colors.warning, 0.2)}`, fontSize: 12, color: colors.warning }}>
           Update available (v{job.embedded_version}). Reset to default to apply.
         </div>
       )}
@@ -783,10 +880,16 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
   const [findings, setFindings] = useState<Finding[]>([]);
   const [actionInFlight, setActionInFlight] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [reloadTick, setReloadTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
+    setLoadError(false);
     (async () => {
+      let reportOk = false;
+      let findingsOk = false;
       try {
         const session = await apiFetch<{ conversation?: Array<{ role: string; content?: Array<{ type: string; text?: string }> }> }>(`/api/sessions/${encodeURIComponent(run.id)}`);
         if (!cancelled) {
@@ -796,15 +899,18 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
             .join('\n\n');
           setReportText(text.replace(/<findings>[\s\S]*?<\/findings>/g, '').trim() || 'No output captured.');
         }
+        reportOk = true;
       } catch {}
       try {
         const data = await apiFetch<{ findings: Finding[] }>(`/automation/run/${encodeURIComponent(run.id)}/findings`);
         if (!cancelled) setFindings(data.findings || []);
+        findingsOk = true;
       } catch {}
-      if (!cancelled) setLoading(false);
+      // Only an error if we got nothing at all — a partial load still shows a report.
+      if (!cancelled) { setLoadError(!reportOk && !findingsOk); setLoading(false); }
     })();
     return () => { cancelled = true; };
-  }, [run.id]);
+  }, [run.id, reloadTick]);
 
   const handleAction = async (findingId: string, action: string) => {
     setActionInFlight(findingId);
@@ -827,7 +933,7 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
   return (
     <>
       <div style={{ fontSize: 18, fontWeight: 600, fontFamily: font.display, marginBottom: 4 }}>{displayName}</div>
-      <div style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono, marginBottom: 16 }}>
+      <div style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono, marginBottom: 16, fontVariantNumeric: 'tabular-nums' }}>
         {new Date(run.createdAt).toLocaleString()} &middot; {run.messageCount} msgs &middot; {run.totalTokens ?? 0} tokens
       </div>
       {loading ? (
@@ -841,7 +947,13 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
         <>
           <div style={{ maxHeight: 600, overflowY: 'auto' }}><RenderedReport text={reportText} /></div>
         </>
-      ) : null}
+      ) : loadError ? (
+        <SectionState kind="error" message="Couldn't load this run's report." onRetry={() => setReloadTick(t => t + 1)} />
+      ) : (
+        <div style={{ fontSize: 12, color: colors.textDim, padding: '4px 0' }}>
+          No report was captured for this run.
+        </div>
+      )}
     </>
   );
 }
@@ -890,18 +1002,22 @@ label, onClick, primary, danger, muted, actionState, successLabel, loadingLabel,
 
   const isLoading = phase === 'loading';
   const isSuccess = phase === 'success';
-  const bg = isSuccess ? 'rgba(91,209,127,0.15)' : isLoading ? colors.border : primary ? colors.cyan : danger ? 'rgba(255,100,100,0.1)' : colors.border;
+  const isBusy = isLoading || isSuccess;
+  const bg = isSuccess ? withAlpha(colors.success, 0.15) : isLoading ? colors.border : primary ? colors.cyan : danger ? withAlpha(colors.danger, 0.1) : colors.border;
   const fg = isSuccess ? colors.success : isLoading ? colors.textDim : primary ? '#000' : danger ? colors.danger : colors.textMuted;
-  const bdr = isSuccess ? 'rgba(91,209,127,0.3)' : isLoading ? colors.border : primary ? 'transparent' : danger ? 'rgba(255,100,100,0.2)' : colors.border;
+  const bdr = isSuccess ? withAlpha(colors.success, 0.3) : isLoading ? colors.border : primary ? 'transparent' : danger ? withAlpha(colors.danger, 0.2) : colors.border;
   const displayLabel = isSuccess ? `\u2713 ${successLabel || label}` : isLoading ? (loadingLabel || label) : label;
   return (
-    <button onClick={handleClick} disabled={isLoading || isSuccess} style={{
+    <button onClick={handleClick} disabled={isBusy}
+      onMouseEnter={e => { if (!isBusy) e.currentTarget.style.filter = 'brightness(1.12)'; }}
+      onMouseLeave={e => { e.currentTarget.style.filter = 'none'; }}
+      style={{
       padding: primary ? '6px 16px' : '4px 10px', borderRadius: radius.sm,
       background: bg, border: `1px solid ${bdr}`, color: fg,
       fontSize: 11, fontWeight: primary ? 600 : 500, fontFamily: font.body,
-      cursor: isLoading || isSuccess ? 'default' : 'pointer',
+      cursor: isBusy ? 'default' : 'pointer',
       opacity: muted && !phase && !actionState ? 0.6 : 1,
-      transition: 'background 200ms, color 200ms, border-color 200ms',
+      transition: 'background 200ms, color 200ms, border-color 200ms, filter 150ms',
     }}>{displayLabel}</button>
   );
 }
@@ -1021,8 +1137,8 @@ findings, actionInFlight, onAction, totalRecovered, allActioned }: {
     <div style={{ marginTop: 12 }}>
       <div style={{
         padding: '20px 24px', borderRadius: radius.lg, marginBottom: 20,
-        background: allActioned ? 'linear-gradient(135deg, rgba(91,209,127,0.12), rgba(91,209,127,0.04))' : 'linear-gradient(135deg, rgba(0,213,255,0.1), rgba(141,68,174,0.06))',
-        border: `1px solid ${allActioned ? 'rgba(91,209,127,0.25)' : colors.borderHi}`,
+        background: allActioned ? `linear-gradient(135deg, ${withAlpha(colors.success, 0.12)}, ${withAlpha(colors.success, 0.04)})` : `linear-gradient(135deg, ${withAlpha(colors.cyan, 0.1)}, ${withAlpha(colors.purple, 0.06)})`,
+        border: `1px solid ${allActioned ? withAlpha(colors.success, 0.25) : colors.borderHi}`,
       }}>
         <div style={{ fontSize: 22, fontWeight: 700, fontFamily: font.display, color: allActioned ? colors.success : colors.text }}>
           {allActioned ? `${formatBytes(totalRecovered)} recovered` : `${formatBytes(totalPendingBytes)} to clean up`}
@@ -1058,7 +1174,7 @@ findings, actionInFlight, onAction, totalRecovered, allActioned }: {
         );
       })()}
       {cleaning && (
-        <div style={{ marginBottom: 16, padding: '16px 20px', borderRadius: radius.lg, background: 'rgba(0,213,255,0.06)', border: `1px solid ${colors.borderHi}` }}>
+        <div style={{ marginBottom: 16, padding: '16px 20px', borderRadius: radius.lg, background: withAlpha(colors.cyan, 0.06), border: `1px solid ${colors.borderHi}` }}>
           <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>Cleaning... {cleanProgress}/{cleanTotal}</div>
           <div style={{ marginTop: 8, height: 4, borderRadius: 2, background: colors.border, overflow: 'hidden' }}>
             <div style={{ height: '100%', borderRadius: 2, background: colors.cyan, width: `${(cleanProgress / cleanTotal) * 100}%`, transition: 'width 200ms' }} />
@@ -1073,7 +1189,7 @@ findings, actionInFlight, onAction, totalRecovered, allActioned }: {
           const isExpanded = expandedGroup === groupName;
           const allDone = pending.length === 0;
           return (
-            <div key={groupName} style={{ borderRadius: radius.lg, overflow: 'hidden', border: `1px solid ${allDone ? 'rgba(91,209,127,0.2)' : colors.border}`, background: allDone ? 'rgba(91,209,127,0.03)' : colors.surface }}>
+            <div key={groupName} style={{ borderRadius: radius.lg, overflow: 'hidden', border: `1px solid ${allDone ? withAlpha(colors.success, 0.2) : colors.border}`, background: allDone ? withAlpha(colors.success, 0.03) : colors.surface }}>
               <div style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 14 }}>
                 <button onClick={() => setExpandedGroup(isExpanded ? null : groupName)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, opacity: allDone ? 0.5 : 1 }}>
                   <div style={{ width: 36, height: 36, borderRadius: 8, background: colors.border, display: 'grid', placeItems: 'center' }}>
@@ -1084,7 +1200,7 @@ findings, actionInFlight, onAction, totalRecovered, allActioned }: {
                   <div style={{ fontSize: 15, fontWeight: 600, fontFamily: font.display, color: allDone ? colors.success : colors.text }}>{groupName}</div>
                   <div style={{ fontSize: 12, color: colors.textDim, marginTop: 2 }}>{allDone ? `Cleaned — ${formatBytes(groupRecovered)}` : `${pending.length} items · ${formatBytes(pendingBytes)}`}</div>
                 </div>
-                {allDone ? <div style={{ padding: '8px 16px', borderRadius: radius.md, background: 'rgba(91,209,127,0.1)', color: colors.success, fontSize: 12, fontWeight: 600 }}>Done</div> : (
+                {allDone ? <div style={{ padding: '8px 16px', borderRadius: radius.md, background: withAlpha(colors.success, 0.1), color: colors.success, fontSize: 12, fontWeight: 600 }}>Done</div> : (
                   <button onClick={() => setPreviewGroup(groupName)} style={{ padding: '10px 22px', borderRadius: radius.md, background: colors.cyan, color: '#000', fontWeight: 700, fontSize: 13, border: 'none', cursor: 'pointer', fontFamily: font.body }}>Clean — {formatBytes(pendingBytes)}</button>
                 )}
               </div>
@@ -1105,17 +1221,17 @@ function FindingRow({
 finding, loading, onAction }: { finding: Finding; loading: boolean; onAction: (a: string) => void }) {
   const { colors } = useTheme();
   const fileName = finding.path.split('/').pop() || finding.path;
-  if (finding.action_taken === 'trashed') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: 'rgba(91,209,127,0.05)', border: '1px solid rgba(91,209,127,0.12)' }}><span style={{ fontSize: 12, color: colors.success }}>Trashed</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</span>{finding.size_recovered_bytes != null && <span style={{ fontSize: 11, color: colors.success, fontFamily: font.mono }}>+{formatBytes(finding.size_recovered_bytes)}</span>}</div>;
-  if (finding.action_taken === 'error') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: 'rgba(255,100,100,0.06)', border: '1px solid rgba(255,100,100,0.15)' }}><span style={{ fontSize: 12, color: colors.danger, fontWeight: 600, flexShrink: 0 }}>Failed</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={finding.error_message || undefined}>{finding.error_message || fileName}</span><button onClick={() => onAction('trash')} style={{ padding: '2px 6px', borderRadius: radius.sm, background: 'rgba(255,100,100,0.1)', border: '1px solid rgba(255,100,100,0.2)', color: colors.danger, fontSize: 9, cursor: 'pointer', fontFamily: font.body, flexShrink: 0 }}>Retry</button></div>;
+  if (finding.action_taken === 'trashed') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: withAlpha(colors.success, 0.05), border: `1px solid ${withAlpha(colors.success, 0.12)}` }}><span style={{ fontSize: 12, color: colors.success }}>Trashed</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</span>{finding.size_recovered_bytes != null && <span style={{ fontSize: 11, color: colors.success, fontFamily: font.mono, fontVariantNumeric: 'tabular-nums' }}>+{formatBytes(finding.size_recovered_bytes)}</span>}</div>;
+  if (finding.action_taken === 'error') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.06), border: `1px solid ${withAlpha(colors.danger, 0.15)}` }}><span style={{ fontSize: 12, color: colors.danger, fontWeight: 600, flexShrink: 0 }}>Failed</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={finding.error_message || undefined}>{finding.error_message || fileName}</span><button onClick={() => onAction('trash')} style={{ padding: '2px 6px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.1), border: `1px solid ${withAlpha(colors.danger, 0.2)}`, color: colors.danger, fontSize: 9, cursor: 'pointer', fontFamily: font.body, flexShrink: 0 }}>Retry</button></div>;
   if (finding.action_taken) return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, opacity: 0.6 }}><span style={{ fontSize: 12, color: colors.textMuted }}>Kept</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1 }}>{fileName}</span></div>;
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: radius.sm, background: colors.surface, border: `1px solid ${colors.border}`, marginTop: 4 }}>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 12, fontWeight: 500, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</div>
-        <div style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono, marginTop: 2 }}>{formatBytes(finding.size_bytes)}{finding.age_days != null && <> &middot; {finding.age_days}d old</>}</div>
+        <div style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono, marginTop: 2, fontVariantNumeric: 'tabular-nums' }}>{formatBytes(finding.size_bytes)}{finding.age_days != null && <> &middot; {finding.age_days}d old</>}</div>
       </div>
       <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-        <button onClick={() => onAction('trash')} disabled={loading} style={{ padding: '3px 8px', borderRadius: radius.sm, background: 'rgba(255,100,100,0.1)', border: '1px solid rgba(255,100,100,0.2)', color: colors.danger, fontSize: 10, fontWeight: 600, cursor: loading ? 'wait' : 'pointer', fontFamily: font.body }}>{loading ? '...' : 'Trash'}</button>
+        <button onClick={() => onAction('trash')} disabled={loading} style={{ padding: '3px 8px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.1), border: `1px solid ${withAlpha(colors.danger, 0.2)}`, color: colors.danger, fontSize: 10, fontWeight: 600, cursor: loading ? 'wait' : 'pointer', fontFamily: font.body }}>{loading ? '...' : 'Trash'}</button>
         <button onClick={() => onAction('keep')} disabled={loading} style={{ padding: '3px 8px', borderRadius: radius.sm, background: colors.border, border: `1px solid ${colors.border}`, color: colors.textMuted, fontSize: 10, cursor: loading ? 'wait' : 'pointer', fontFamily: font.body }}>Keep</button>
       </div>
     </div>
