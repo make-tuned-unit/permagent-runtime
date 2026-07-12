@@ -47,6 +47,8 @@ export interface EventRecord {
 }
 
 export interface ToolCall {
+  /** Tool-request block id, used to join the tool's response back to its call. */
+  id?: string;
   name: string;
   arguments: Record<string, unknown>;
   result?: string;
@@ -352,20 +354,73 @@ const MAX_EVENTS_BUFFER = 1000;
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 
-/** Convert a DaemonMessage to a ChatMessage for display */
-function daemonMsgToChat(msg: DaemonMessage, index: number, sessionId: string): ChatMessage {
+/** Pull a toolRequest's name/args, tolerating the daemon's tool_result_serde
+ *  wrapper `{ status, value:{ name, arguments } }` as well as a flat shape.
+ *  (The old code read `.name` off the wrapper, so every tool showed "unknown".) */
+function readToolCallInner(toolCall: unknown): { name: string; arguments: Record<string, unknown> } {
+  const tc = toolCall as
+    | { name?: string; arguments?: Record<string, unknown>; value?: { name?: string; arguments?: Record<string, unknown> } }
+    | undefined;
+  const inner = tc && typeof tc === 'object' && 'value' in tc && tc.value ? tc.value : tc;
+  return { name: inner?.name || 'unknown', arguments: inner?.arguments || {} };
+}
+
+/** Turn a toolResponse's `toolResult` into a display string + status.
+ *  Shape (tool_result_serde::call_tool_result):
+ *    { status:'success', value:{ content:[{type:'text',text}] } | Content[] }
+ *    { status:'error',   error: string } */
+function readToolResult(toolResult: unknown): { result: string; success: boolean } {
+  const tr = toolResult as { status?: string; error?: unknown; value?: unknown } | undefined;
+  if (!tr || typeof tr !== 'object') return { result: '', success: true };
+  if (tr.status === 'error') {
+    return { result: typeof tr.error === 'string' ? tr.error : JSON.stringify(tr.error), success: false };
+  }
+  const value = tr.value;
+  const content = Array.isArray(value) ? value : (value as { content?: unknown } | undefined)?.content;
+  if (Array.isArray(content)) {
+    const text = content
+      .filter((x): x is { type: string; text: string } =>
+        !!x && (x as { type?: string }).type === 'text' && typeof (x as { text?: unknown }).text === 'string')
+      .map(x => x.text)
+      .join('\n');
+    return { result: text || JSON.stringify(value), success: true };
+  }
+  return { result: typeof value === 'string' ? value : JSON.stringify(value ?? ''), success: true };
+}
+
+/** Index every toolResponse block in a conversation by its request id, so each
+ *  toolRequest can be joined to the result it produced (they arrive in
+ *  different messages). */
+function indexToolResponses(messages: DaemonMessage[]): Map<string, { result: string; success: boolean }> {
+  const map = new Map<string, { result: string; success: boolean }>();
+  for (const m of messages) {
+    for (const c of m.content) {
+      if (c.type === 'toolResponse') {
+        const tr = c as { type: string; id: string; toolResult?: unknown };
+        if (tr.id) map.set(tr.id, readToolResult(tr.toolResult));
+      }
+    }
+  }
+  return map;
+}
+
+/** Convert a DaemonMessage to a ChatMessage for display. `responses` (built via
+ *  indexToolResponses over the whole conversation) lights up each tool card
+ *  with its result + success. */
+function daemonMsgToChat(
+  msg: DaemonMessage,
+  index: number,
+  sessionId: string,
+  responses?: Map<string, { result: string; success: boolean }>,
+): ChatMessage {
   const toolCalls: ToolCall[] = [];
   const images: ChatMessageImage[] = [];
   for (const c of msg.content) {
     if (c.type === 'toolRequest') {
-      const tr = c as { type: string; id: string; toolCall?: { name?: string; arguments?: Record<string, unknown> } };
-      const call = tr.toolCall;
-      if (call) {
-        toolCalls.push({
-          name: call.name || 'unknown',
-          arguments: call.arguments || {},
-        });
-      }
+      const tr = c as { type: string; id: string; toolCall?: unknown };
+      const { name, arguments: args } = readToolCallInner(tr.toolCall);
+      const resp = tr.id ? responses?.get(tr.id) : undefined;
+      toolCalls.push({ id: tr.id, name, arguments: args, result: resp?.result, success: resp?.success });
     } else if (c.type === 'image') {
       const img = c as { type: string; data: string; mimeType: string };
       if (img.data && img.mimeType) {
@@ -927,7 +982,8 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     try {
       const session = await api.getSession(sessionId);
       if (session.conversation && session.conversation.length > 0) {
-        const msgs = session.conversation.map((m, i) => daemonMsgToChat(m, i, sessionId));
+        const responses = indexToolResponses(session.conversation);
+        const msgs = session.conversation.map((m, i) => daemonMsgToChat(m, i, sessionId, responses));
         set({ chatMessages: msgs });
       }
     } catch {
