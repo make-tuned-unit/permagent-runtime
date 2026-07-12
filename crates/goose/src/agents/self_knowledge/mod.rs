@@ -135,6 +135,7 @@ pub static WORKER_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::agents::platform_extensions::librarian::SELF_KNOWLEDGE_FEATURE,
     crate::steward::SELF_KNOWLEDGE_FEATURE,
     crate::initiative::SELF_KNOWLEDGE_FEATURE,
+    crate::echo::SELF_KNOWLEDGE_FEATURE,
 ];
 
 /// Deterministic guardrails the agent operates under. Co-located with the
