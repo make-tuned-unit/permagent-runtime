@@ -10,9 +10,10 @@
 // (see the Grow epic); the GTM canvas persists per project via project tags/
 // metadata as those land.
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import type { ThemeColors } from '../../styles/tokens';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import type { Project } from '../projects/types';
@@ -62,36 +63,53 @@ interface SocialCard {
 }
 
 type GrowLens = 'strategy' | 'calendar' | 'analytics';
+// Async lifecycle for data-backed sections — loading / ready / error are
+// distinct so a fetch failure never masquerades as an empty result.
+type LoadState = 'loading' | 'ready' | 'error';
+
+const LENSES: GrowLens[] = ['strategy', 'calendar', 'analytics'];
 
 export function GrowView() {
-  const { colors, gradient } = useTheme();
+  const { colors, gradient, reduceMotion } = useTheme();
   const [projects, setProjects] = useState<Project[]>([]);
+  const [projectsState, setProjectsState] = useState<LoadState>('loading');
   const [activeId, setActiveId] = useState<string | null>(null);
   const [posts, setPosts] = useState<SocialCard[]>([]);
+  const [postsState, setPostsState] = useState<LoadState>('loading');
   const [lens, setLens] = useState<GrowLens>('strategy');
   const [ctx, setCtx] = useState<{ people: number; goals: number } | null>(null);
+  const [focusLens, setFocusLens] = useState<GrowLens | null>(null);
   const setActivePanel = useCommandCenter((st) => st.setActivePanel);
   const sendMessage = useCommandCenter((st) => st.sendMessage);
   const openGrowForProject = useCommandCenter((st) => st.openGrowForProject);
 
-  useEffect(() => {
+  const loadProjects = useCallback(() => {
+    setProjectsState('loading');
     apiFetch<Project[]>('/api/projects')
       .then((ps) => {
         const real = ps.filter((p) => p.status !== 'archived');
         setProjects(real);
         setActiveId((cur) => cur ?? real[0]?.id ?? null);
+        setProjectsState('ready');
       })
-      .catch(() => {});
+      .catch(() => setProjectsState('error'));
+  }, []);
+
+  useEffect(() => { loadProjects(); }, [loadProjects]);
+
+  // Content calendar = social_post cards on this project (reserved card type
+  // already exists; empty until Henry/the user create them).
+  const loadPosts = useCallback((id: string) => {
+    setPostsState('loading');
+    apiFetch<SocialCard[]>(`/api/projects/${encodeURIComponent(id)}/cards?card_type=social_post`)
+      .then((p) => { setPosts(p); setPostsState('ready'); })
+      .catch(() => { setPosts([]); setPostsState('error'); });
   }, []);
 
   useEffect(() => {
     if (!activeId) return;
-    // Content calendar = social_post cards on this project (reserved card
-    // type already exists; empty until Henry/the user create them).
-    apiFetch<SocialCard[]>(`/api/projects/${encodeURIComponent(activeId)}/cards?card_type=social_post`)
-      .then(setPosts)
-      .catch(() => setPosts([]));
-  }, [activeId]);
+    loadPosts(activeId);
+  }, [activeId, loadPosts]);
 
   const active = projects.find((p) => p.id === activeId) ?? null;
 
@@ -148,23 +166,37 @@ export function GrowView() {
           </div>
         </div>
         <div style={{ flex: 1 }} />
-        <div style={{ display: 'flex', gap: 2, background: colors.bgDeeper, borderRadius: radius.md, padding: 2 }}>
-          {(['strategy', 'calendar', 'analytics'] as GrowLens[]).map((l) => (
-            <button
-              key={l}
-              onClick={() => setLens(l)}
-              style={{
-                fontSize: 12, fontFamily: font.body, textTransform: 'capitalize',
-                padding: '5px 12px', borderRadius: radius.sm, cursor: 'pointer', border: 'none',
-                background: lens === l ? colors.cyanSoft : 'transparent',
-                color: lens === l ? colors.cyan : colors.textMuted,
-              }}
-            >{l}</button>
-          ))}
+        {/* VIEW axis — segmented tab toggle (mirrors the Kanban/overview toggle) */}
+        <div role="tablist" aria-label="Grow view" style={{ display: 'flex', gap: 2, background: colors.bgDeeper, borderRadius: radius.md, padding: 2 }}>
+          {LENSES.map((l) => {
+            const selected = lens === l;
+            return (
+              <button
+                key={l}
+                role="tab"
+                aria-selected={selected}
+                tabIndex={0}
+                onClick={() => setLens(l)}
+                onFocus={() => setFocusLens(l)}
+                onBlur={() => setFocusLens(null)}
+                style={{
+                  fontSize: 12, fontFamily: font.body, textTransform: 'capitalize',
+                  padding: '5px 12px', borderRadius: radius.sm, cursor: 'pointer', border: 'none',
+                  background: selected ? colors.cyanSoft : 'transparent',
+                  color: selected ? colors.cyan : colors.textMuted,
+                  fontWeight: selected ? 600 : 500,
+                  outline: 'none',
+                  boxShadow: focusLens === l ? `0 0 0 2px ${colors.borderHi}` : 'none',
+                  transition: reduceMotion ? 'none' : 'background 150ms ease, color 150ms ease',
+                }}
+              >{l}</button>
+            );
+          })}
         </div>
         <select
           value={activeId ?? ''}
           onChange={(e) => setActiveId(e.target.value)}
+          aria-label="Select project"
           style={{
             background: colors.bgDeeper, color: colors.text, border: `1px solid ${colors.border}`,
             borderRadius: radius.md, padding: '6px 10px', fontSize: 13, fontFamily: font.body,
@@ -174,31 +206,35 @@ export function GrowView() {
         </select>
       </div>
 
-      {active ? (
-        <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {projectsState === 'error' ? (
+        <ErrorState
+          colors={colors}
+          message="Couldn't load your projects."
+          onRetry={loadProjects}
+        />
+      ) : projectsState === 'loading' && projects.length === 0 ? (
+        <LoadingState colors={colors} label="Loading projects…" />
+      ) : active ? (
+        <div
+          role="tabpanel"
+          aria-label={`${lens} view`}
+          style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}
+        >
           {lens === 'analytics' && <GrowAnalytics project={active} posts={posts} colors={colors} />}
           {lens === 'strategy' && (
           <section>
             <h3 style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: '0 0 12px' }}>Go-to-market strategy</h3>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
               {PILLARS.map((pillar) => (
-                <div key={pillar.key} style={{
-                  background: colors.surface, backdropFilter: 'blur(24px) saturate(140%)',
-                  border: `1px solid ${colors.border}`, borderRadius: radius.lg, padding: 16,
-                  display: 'flex', flexDirection: 'column', gap: 8, minHeight: 120,
-                }}>
-                  <div style={{ fontFamily: font.body, fontSize: 14, fontWeight: 600, color: colors.text }}>{pillar.label}</div>
-                  <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5, flex: 1 }}>{pillar.hint}</div>
-                  <button
-                    onClick={() => send(pillar.prompt(active.name))}
-                    style={{
-                      alignSelf: 'flex-start', fontSize: 11, fontFamily: font.body,
-                      color: colors.cyan, background: colors.cyanSoft,
-                      border: `1px solid ${colors.borderHi}`, borderRadius: radius.md,
-                      padding: '5px 10px', cursor: 'pointer',
-                    }}
-                  >Ask Henry ↗</button>
-                </div>
+                <PillarCard
+                  key={pillar.key}
+                  label={pillar.label}
+                  hint={pillar.hint}
+                  projectName={active.name}
+                  colors={colors}
+                  reduceMotion={reduceMotion}
+                  onSend={() => send(pillar.prompt(active.name))}
+                />
               ))}
             </div>
           </section>
@@ -208,7 +244,7 @@ export function GrowView() {
           <section>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '0 0 12px' }}>
               <h3 style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>Content calendar</h3>
-              <span style={{ fontSize: 10, color: colors.textDim, background: 'rgba(255,255,255,0.06)', padding: '1px 6px', borderRadius: 8 }}>{posts.length}</span>
+              <span style={{ fontSize: 10, color: colors.textDim, background: colors.bgDeeper, padding: '1px 6px', borderRadius: radius.pill, fontVariantNumeric: 'tabular-nums' }}>{posts.length}</span>
               <div style={{ flex: 1 }} />
               <button
                 onClick={() => send(`For "${active.name}", draft a social post I can schedule (pick the best channel from the strategy above), and create it as a social_post card on this project.`)}
@@ -219,7 +255,16 @@ export function GrowView() {
                 }}
               >+ Draft a post with Henry</button>
             </div>
-            {posts.length === 0 ? (
+            {postsState === 'error' ? (
+              <ErrorState
+                colors={colors}
+                inline
+                message="Couldn't load the content calendar."
+                onRetry={() => loadPosts(active.id)}
+              />
+            ) : postsState === 'loading' ? (
+              <LoadingState colors={colors} inline label="Loading posts…" />
+            ) : posts.length === 0 ? (
               <div style={{
                 border: `1px dashed ${colors.border}`, borderRadius: radius.lg, padding: 28,
                 textAlign: 'center', fontSize: 12, color: colors.textDim,
@@ -253,6 +298,97 @@ export function GrowView() {
   );
 }
 
+// ── Strategy pillar card ─────────────────────────────────────────────────────
+// The whole card is the interactive surface (mirrors DecisionsCard): clickable,
+// keyboard-operable (Enter/Space), with hover + focus affordances. The "Ask
+// Henry" chip is a visual cue, not a nested control.
+function PillarCard({
+  label, hint, projectName, colors, reduceMotion, onSend,
+}: {
+  label: string;
+  hint: string;
+  projectName: string;
+  colors: ThemeColors;
+  reduceMotion: boolean;
+  onSend: () => void;
+}) {
+  const [hover, setHover] = useState(false);
+  const [focus, setFocus] = useState(false);
+  const lit = hover || focus;
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      aria-label={`Ask Henry about ${label} for ${projectName}`}
+      onClick={onSend}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSend(); } }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      onFocus={() => setFocus(true)}
+      onBlur={() => setFocus(false)}
+      style={{
+        background: colors.surface, backdropFilter: 'blur(24px) saturate(140%)',
+        border: `1px solid ${lit ? colors.borderHi : colors.border}`, borderRadius: radius.lg, padding: 16,
+        display: 'flex', flexDirection: 'column', gap: 8, minHeight: 120,
+        cursor: 'pointer', outline: 'none',
+        boxShadow: focus ? `0 0 0 2px ${colors.borderHi}` : 'none',
+        transition: reduceMotion ? 'none' : 'border-color 150ms ease',
+      }}
+    >
+      <div style={{ fontFamily: font.body, fontSize: 14, fontWeight: 600, color: colors.text }}>{label}</div>
+      <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5, flex: 1 }}>{hint}</div>
+      <span
+        aria-hidden
+        style={{
+          alignSelf: 'flex-start', fontSize: 11, fontFamily: font.body,
+          color: colors.cyan, background: colors.cyanSoft,
+          border: `1px solid ${colors.borderHi}`, borderRadius: radius.md,
+          padding: '5px 10px',
+        }}
+      >Ask Henry ↗</span>
+    </div>
+  );
+}
+
+// ── Shared async-state blocks ────────────────────────────────────────────────
+function LoadingState({ colors, label, inline }: { colors: ThemeColors; label: string; inline?: boolean }) {
+  const body = (
+    <div style={{ fontSize: 12, color: colors.textDim }}>{label}</div>
+  );
+  if (inline) {
+    return (
+      <div style={{ border: `1px dashed ${colors.border}`, borderRadius: radius.lg, padding: 28, textAlign: 'center' }}>{body}</div>
+    );
+  }
+  return (
+    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{body}</div>
+  );
+}
+
+function ErrorState({ colors, message, onRetry, inline }: { colors: ThemeColors; message: string; onRetry: () => void; inline?: boolean }) {
+  const body = (
+    <div style={{ textAlign: 'center' }}>
+      <div style={{ fontSize: 13, color: colors.text, marginBottom: 4 }}>{message}</div>
+      <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 12 }}>Something went wrong reaching the server.</div>
+      <button
+        onClick={onRetry}
+        style={{
+          fontSize: 12, fontFamily: font.body, color: colors.cyan, background: colors.cyanSoft,
+          border: `1px solid ${colors.borderHi}`, borderRadius: radius.md, padding: '6px 14px', cursor: 'pointer',
+        }}
+      >Retry</button>
+    </div>
+  );
+  if (inline) {
+    return (
+      <div style={{ border: `1px solid ${colors.border}`, borderRadius: radius.lg, padding: 28 }}>{body}</div>
+    );
+  }
+  return (
+    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{body}</div>
+  );
+}
+
 // ── Analytics lens — PostHog-style growth funnel + metric tiles ──────────────
 //
 // v1 shows REAL, derivable signal (content published, goals shipped) and the
@@ -267,7 +403,7 @@ function GrowAnalytics({
 }: {
   project: Project;
   posts: SocialCard[];
-  colors: ReturnType<typeof useTheme>['colors'];
+  colors: ThemeColors;
 }) {
   // The classic growth funnel (research: awareness → interest → action →
   // retention). Awareness/reach comes from published content; the deeper
@@ -291,8 +427,8 @@ function GrowAnalytics({
   return (
     <>
       <div style={{
-        fontSize: 11, color: colors.textDim, background: 'rgba(255,255,255,0.03)',
-        border: `1px solid ${colors.border}`, borderRadius: 8, padding: '8px 12px', marginBottom: 4,
+        fontSize: 11, color: colors.textDim, background: colors.bgDeeper,
+        border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: '8px 12px', marginBottom: 4,
       }}>
         Growth analytics for <strong style={{ color: colors.text }}>{project.name}</strong>. Real
         signal shows now; live product metrics (visitors, signups, retention) light up when the
@@ -304,9 +440,9 @@ function GrowAnalytics({
         {tiles.map((t) => (
           <div key={t.label} style={{
             background: colors.surface, border: `1px solid ${colors.border}`,
-            borderRadius: 14, padding: 16,
+            borderRadius: radius.lg, padding: 16,
           }}>
-            <div style={{ fontFamily: font.display, fontSize: 26, fontWeight: 700, color: colors.text }}>{t.value}</div>
+            <div style={{ fontFamily: font.display, fontSize: 26, fontWeight: 700, color: colors.text, fontVariantNumeric: 'tabular-nums' }}>{t.value}</div>
             <div style={{ fontFamily: font.mono, fontSize: 9, color: colors.textDim, letterSpacing: '0.08em', marginTop: 4 }}>{t.label}</div>
             <div style={{ fontSize: 10, color: colors.textDim, marginTop: 2 }}>{t.sub}</div>
           </div>
@@ -320,21 +456,23 @@ function GrowAnalytics({
           {funnel.map((f) => (
             <div key={f.stage} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <div style={{ width: 96, fontSize: 12, color: colors.textMuted, textAlign: 'right', flexShrink: 0 }}>{f.stage}</div>
-              <div style={{ flex: 1, height: 26, background: 'rgba(255,255,255,0.03)', borderRadius: 6, overflow: 'hidden', position: 'relative' }}>
+              <div style={{ flex: 1, height: 26, background: colors.bgDeeper, borderRadius: radius.sm, overflow: 'hidden', position: 'relative' }}>
                 {f.source ? (
                   <div style={{
                     width: `${Math.max(6, ((f.value ?? 0) / maxV) * 100)}%`, height: '100%',
                     background: `linear-gradient(90deg, ${colors.cyan}, ${colors.purple})`,
-                    borderRadius: 6, display: 'flex', alignItems: 'center', paddingLeft: 10,
-                  }}>
-                    <span style={{ fontFamily: font.mono, fontSize: 11, color: '#0A0E1A', fontWeight: 700 }}>{f.value}</span>
-                  </div>
+                    borderRadius: radius.sm,
+                  }} />
                 ) : (
                   <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', paddingLeft: 10 }}>
                     <span style={{ fontSize: 10, color: colors.textDim, fontStyle: 'italic' }}>{f.hint}</span>
                   </div>
                 )}
               </div>
+              <div style={{
+                width: 40, textAlign: 'right', flexShrink: 0, fontFamily: font.mono, fontSize: 12,
+                color: colors.text, fontVariantNumeric: 'tabular-nums',
+              }}>{f.source ? f.value : ''}</div>
             </div>
           ))}
         </div>
