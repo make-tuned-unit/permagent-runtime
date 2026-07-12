@@ -102,11 +102,17 @@ export function SearchToolsSection() {
               </div>
               <div className="flex items-center gap-2">
                 {r.configured ? (
-                  <span className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400">
+                  <span
+                    className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded"
+                    style={{ backgroundColor: `${colors.success}26`, color: colors.success }}
+                  >
                     <FiCheck size={10} /> Key saved
                   </span>
                 ) : (
-                  <span className="text-[10px] px-2 py-0.5 rounded bg-gray-500/15 text-gray-400">No key</span>
+                  <span
+                    className="text-[10px] px-2 py-0.5 rounded"
+                    style={{ backgroundColor: `${colors.textDim}26`, color: colors.textMuted }}
+                  >No key</span>
                 )}
                 <Toggle on={r.enabled} onChange={(v) => toggleEnabled(p, v)} />
               </div>
