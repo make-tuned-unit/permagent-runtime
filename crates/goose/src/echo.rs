@@ -31,6 +31,9 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
              permanent agent with a memory is uniquely able to offer. Gentle and rare by \
              construction: one nudge a day at most, quiet hours, deduped by subject and story, and \
              phone push stays off until the user opts in",
-        state_source: crate::agents::self_knowledge::StateSource::Static,
+        // Workers are Queryable by contract; the Watcher has no live status to
+        // merge yet, so it renders with no `_(now: …)_` suffix (worker_live_state
+        // returns None for it) — same as the Scheduler with no jobs.
+        state_source: crate::agents::self_knowledge::StateSource::Queryable,
         teaching: &[],
     };

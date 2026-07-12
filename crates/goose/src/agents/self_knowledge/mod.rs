@@ -487,7 +487,13 @@ mod tests {
 
     /// Every known worker id must have exactly one descriptor. Catches a worker
     /// added without a co-located descriptor wired into [`WORKER_DESCRIPTORS`].
-    const KNOWN_WORKER_IDS: &[&str] = &["scheduler", "librarian", "git_steward", "initiative"];
+    const KNOWN_WORKER_IDS: &[&str] = &[
+        "scheduler",
+        "librarian",
+        "git_steward",
+        "initiative",
+        "watcher",
+    ];
     /// Every known surface id must have exactly one descriptor.
     const KNOWN_SURFACE_IDS: &[&str] = &[
         "reader",
