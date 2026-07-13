@@ -719,12 +719,20 @@ async fn upload_project_documents_handler(
                                 tracing::info!(project = %project.id, %filename, memory = %mem.id, "project document indexed into brain");
                             }
                         }
-                        Ok(None) => tracing::warn!(project = %project.id, %filename, key = %digest.memory_key, "project document ingested but its memory was not found for association"),
-                        Err(e) => tracing::warn!(project = %project.id, %filename, error = %e, "project document memory lookup failed"),
+                        Ok(None) => {
+                            tracing::warn!(project = %project.id, %filename, key = %digest.memory_key, "project document ingested but its memory was not found for association")
+                        }
+                        Err(e) => {
+                            tracing::warn!(project = %project.id, %filename, error = %e, "project document memory lookup failed")
+                        }
                     }
                 }
-                Ok(_) => tracing::debug!(project = %project.id, %filename, "project document classified visual; text not indexed"),
-                Err(e) => tracing::warn!(project = %project.id, %filename, error = %e, "project document brain ingest failed (upload still succeeds)"),
+                Ok(_) => {
+                    tracing::debug!(project = %project.id, %filename, "project document classified visual; text not indexed")
+                }
+                Err(e) => {
+                    tracing::warn!(project = %project.id, %filename, error = %e, "project document brain ingest failed (upload still succeeds)")
+                }
             }
         }
 
@@ -912,11 +920,17 @@ async fn create_project_note_handler(
                             tracing::info!(project = %project.id, note = %note_id, memory = %mem.id, "project note indexed into brain");
                         }
                     }
-                    Ok(None) => tracing::warn!(project = %project.id, note = %note_id, key = %memory_key, "project note written but its memory was not found for association"),
-                    Err(e) => tracing::warn!(project = %project.id, note = %note_id, error = %e, "project note memory lookup failed"),
+                    Ok(None) => {
+                        tracing::warn!(project = %project.id, note = %note_id, key = %memory_key, "project note written but its memory was not found for association")
+                    }
+                    Err(e) => {
+                        tracing::warn!(project = %project.id, note = %note_id, error = %e, "project note memory lookup failed")
+                    }
                 }
             }
-            Err(e) => tracing::warn!(project = %project.id, note = %note_id, error = %e, "project note brain write failed (note still saved)"),
+            Err(e) => {
+                tracing::warn!(project = %project.id, note = %note_id, error = %e, "project note brain write failed (note still saved)")
+            }
         }
     }
 

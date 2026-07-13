@@ -210,7 +210,10 @@ mod tests {
 
         // Wrong project can neither read nor delete it.
         assert!(get_note(&pool, &other, "note-1").await.unwrap().is_none());
-        assert!(delete_note(&pool, &other, "note-1").await.unwrap().is_none());
+        assert!(delete_note(&pool, &other, "note-1")
+            .await
+            .unwrap()
+            .is_none());
 
         // Correct project reads it, then deletes once (returning its memory_key).
         assert!(get_note(&pool, &proj, "note-1").await.unwrap().is_some());
