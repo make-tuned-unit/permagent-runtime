@@ -8,14 +8,16 @@ import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { Panel } from './Panel';
 import { PeoplePanel } from './PeoplePanel';
 import { DocumentsPanel } from './DocumentsPanel';
+import { NotesPanel } from './NotesPanel';
 import type { Project, BoardColumn, Card } from './types';
 
 // ── Project Overview ────────────────────────────────────────────────────────
 //
 // The "command-center dash" lens of the Projects tab (#471, Layer 1). A
 // two-column read of a single project. LEFT = substance, RIGHT = people +
-// action. Ships Summary, Key Facts, Links, Tasks, People, and Documents (the
-// #471 Layer 2 document hub + in-app viewer). The Memories panel is still
+// action. Ships Summary, Key Facts, Links, Tasks, People, Documents (the
+// #471 Layer 2 document hub + in-app viewer), and Notes (freeform notes the
+// user writes, indexed into the Brain). The Memories panel is still
 // deferred to the association layer; its slot is reserved in-layout below so it
 // drops in without restructuring.
 
@@ -58,6 +60,7 @@ export function ProjectOverview({ project }: { project: Project }) {
           <KeyFactsPanel project={project} />
           {/* Memories panel slots here (association layer). */}
           <DocumentsPanel project={project} />
+          <NotesPanel project={project} />
         </div>
 
         {/* RIGHT — people + action */}
