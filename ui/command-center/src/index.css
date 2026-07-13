@@ -397,3 +397,12 @@ select:focus-visible {
     scroll-behavior: auto !important;
   }
 }
+
+/* Spinner utility — used for in-progress affordances (e.g. dictation
+   transcribing). Honors prefers-reduced-motion via the block above. */
+@keyframes pa-spin {
+  to { transform: rotate(360deg); }
+}
+.pa-spin {
+  animation: pa-spin 0.8s linear infinite;
+}
