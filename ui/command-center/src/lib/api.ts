@@ -3,7 +3,7 @@
  * Aligned with the actual permagentd endpoints.
  */
 
-import type { ProjectDocument } from '../components/projects/types';
+import type { ProjectDocument, ProjectNote } from '../components/projects/types';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 const API_BASE_URL = (
@@ -18,9 +18,34 @@ export function getApiBaseUrl(): string { return API_BASE_URL; }
 let _daemonToken: string | null = null;
 let _daemonTokenPromise: Promise<string | null> | null = null;
 
+const BROWSER_TOKEN_KEY = 'permagent-daemon-token';
+
+/** #366: browser-context pairing. A device opening
+ *  http://<hub>:3001/ui/#token=<daemon_token> captures the token once into
+ *  localStorage (and scrubs it from the URL so it never lingers in history).
+ *  Tauri keeps its IPC path; this is how phones/laptops on the tailnet pair. */
+function browserToken(): string | null {
+  try {
+    const frag = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+    const fromUrl = frag.get('token');
+    if (fromUrl) {
+      localStorage.setItem(BROWSER_TOKEN_KEY, fromUrl);
+      frag.delete('token');
+      const rest = frag.toString();
+      history.replaceState(null, '', window.location.pathname + window.location.search + (rest ? `#${rest}` : ''));
+    }
+    return localStorage.getItem(BROWSER_TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
 export function loadDaemonToken(): Promise<string | null> {
   if (_daemonToken) return Promise.resolve(_daemonToken);
-  if (!isTauri) return Promise.resolve(null);
+  if (!isTauri) {
+    _daemonToken = browserToken();
+    return Promise.resolve(_daemonToken);
+  }
   if (!_daemonTokenPromise) {
     _daemonTokenPromise = import('@tauri-apps/api/core')
       .then(({ invoke }) => invoke<string>('get_daemon_token'))
@@ -31,7 +56,7 @@ export function loadDaemonToken(): Promise<string | null> {
 }
 
 // Kick off token loading immediately so it's ready when needed.
-if (isTauri) loadDaemonToken();
+loadDaemonToken();
 
 // --- Daemon types ---
 
@@ -179,7 +204,7 @@ function authHeaders(): Record<string, string> {
 
 export async function apiFetch<T>(endpoint: string, options?: RequestInit): Promise<T> {
   // Ensure the daemon token is loaded before making any authenticated request.
-  if (!_daemonToken && isTauri) await loadDaemonToken();
+  if (!_daemonToken) await loadDaemonToken();
   const url = `${API_BASE_URL}${endpoint}`;
   const method = (options?.method ?? 'GET').toUpperCase();
   let response: Response;
@@ -256,7 +281,7 @@ export interface ReaderDigest {
  * sending the image to the agent so visual Q&A still works.
  */
 export async function readerIngest(file: File): Promise<ReaderDigest> {
-  if (!_daemonToken && isTauri) await loadDaemonToken();
+  if (!_daemonToken) await loadDaemonToken();
   const form = new FormData();
   form.append('file', file, file.name);
   // Do NOT set Content-Type — the browser adds the multipart boundary.
@@ -303,7 +328,7 @@ export interface VoiceDownloadProgress {
  * assets aren't downloaded yet — callers gate on getVoiceModelStatus first.
  */
 export async function synthesizeVoice(text: string, voiceId?: string | null): Promise<Blob> {
-  if (!_daemonToken && isTauri) await loadDaemonToken();
+  if (!_daemonToken) await loadDaemonToken();
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (_daemonToken) headers['Authorization'] = `Bearer ${_daemonToken}`;
   const resp = await fetch(`${API_BASE_URL}/voice/synthesize`, {
@@ -343,6 +368,20 @@ export function extractText(msg: DaemonMessage): string {
   return msg.content
     .filter((c): c is TextContent => c.type === 'text')
     .map(c => c.text)
+    .join('');
+}
+
+/**
+ * Extract the model's reasoning ("thinking") content. Extended-thinking models
+ * stream `{ type: 'thinking', thinking: '…' }` blocks before the answer; the
+ * daemon passes them through (message.rs MessageContent::Thinking). This is what
+ * the reasoning-disclosure UI renders.
+ */
+export function extractThinking(msg: DaemonMessage): string {
+  return msg.content
+    .filter((c): c is { type: 'thinking'; thinking: string } =>
+      c.type === 'thinking' && typeof (c as { thinking?: unknown }).thinking === 'string')
+    .map(c => c.thinking)
     .join('');
 }
 
@@ -419,7 +458,7 @@ export const api = {
   // watch `bytes` fall from ~700KB toward ~55KB for the same session count.
   getSessions: async (): Promise<SessionSummary[]> => {
     const t0 = performance.now();
-    if (!_daemonToken && isTauri) await loadDaemonToken();
+    if (!_daemonToken) await loadDaemonToken();
     const res = await fetch(`${API_BASE_URL}/api/sessions`, { headers: authHeaders() });
     const tResp = performance.now();
     if (!res.ok) {
@@ -683,7 +722,7 @@ export const api = {
     for (const file of files) {
       form.append('files', file, file.name);
     }
-    if (!_daemonToken && isTauri) await loadDaemonToken();
+    if (!_daemonToken) await loadDaemonToken();
     const headers: Record<string, string> = {};
     if (_daemonToken) headers['Authorization'] = `Bearer ${_daemonToken}`;
 
@@ -720,7 +759,7 @@ export const api = {
   ): Promise<{ documents: ProjectDocument[] }> => {
     const form = new FormData();
     for (const file of files) form.append('files', file, file.name);
-    if (!_daemonToken && isTauri) await loadDaemonToken();
+    if (!_daemonToken) await loadDaemonToken();
     const headers: Record<string, string> = {};
     if (_daemonToken) headers['Authorization'] = `Bearer ${_daemonToken}`;
     const response = await fetch(
@@ -737,7 +776,7 @@ export const api = {
   /** Fetch a document's bytes (authed) as a Blob — the viewer wraps it in an
    *  object URL so `<img>`/`<iframe>` render it without a token in the URL. */
   fetchProjectDocumentBlob: async (projectId: string, docId: string): Promise<Blob> => {
-    if (!_daemonToken && isTauri) await loadDaemonToken();
+    if (!_daemonToken) await loadDaemonToken();
     const response = await fetch(
       `${API_BASE_URL}/api/projects/${encodeURIComponent(projectId)}/documents/${encodeURIComponent(docId)}`,
       { headers: authHeaders() },
@@ -752,6 +791,63 @@ export const api = {
       `${API_BASE_URL}/api/projects/${encodeURIComponent(projectId)}/documents/${encodeURIComponent(docId)}`,
       { method: 'DELETE', headers: authHeaders() },
     ),
+
+  // ── Project notes (freeform notes indexed into the Brain) ──────────────────
+
+  /** List a project's notes, newest first. */
+  listProjectNotes: (projectId: string) =>
+    apiFetch<ProjectNote[]>(`/api/projects/${encodeURIComponent(projectId)}/notes`),
+
+  /** Create a note on a project. The backend indexes its text into the Brain
+   *  (best-effort) and returns the saved note. */
+  createProjectNote: (projectId: string, note: { title?: string; body: string }) =>
+    apiFetch<ProjectNote>(`/api/projects/${encodeURIComponent(projectId)}/notes`, {
+      method: 'POST',
+      body: JSON.stringify(note),
+    }),
+
+  /** Delete a project note (and best-effort disassociate its Brain memory). */
+  deleteProjectNote: (projectId: string, noteId: string) =>
+    fetch(
+      `${API_BASE_URL}/api/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}`,
+      { method: 'DELETE', headers: authHeaders() },
+    ),
+
+  /** Install the bundled dictation model on first run: the daemon copies the
+   *  bundled Whisper model into the data dir (once) and points
+   *  LOCAL_WHISPER_MODEL at it. Idempotent. `status` is "ready" once dictation
+   *  works, or "unavailable" when no bundle is present (e.g. a dev build). */
+  provisionDictationModel: (bundledPath: string) =>
+    apiFetch<{ status: string; model: string | null }>('/api/dictation/provision', {
+      method: 'POST',
+      body: JSON.stringify({ bundled_path: bundledPath }),
+    }),
+
+  /** Transcribe a dictated audio clip (WAV) to text locally, via the on-device
+   *  Whisper model. A 503 means dictation isn't set up on this install — the
+   *  caller should surface that as a setup prompt, not a hard error. */
+  transcribeAudio: async (audio: Blob): Promise<{ text: string }> => {
+    if (!_daemonToken) await loadDaemonToken();
+    const form = new FormData();
+    form.append('file', audio, 'dictation.wav');
+    // Only Authorization — NOT Content-Type: the browser must add the multipart
+    // boundary itself (mirrors readerIngest).
+    const headers: Record<string, string> = {};
+    if (_daemonToken) headers['Authorization'] = `Bearer ${_daemonToken}`;
+    const resp = await fetch(`${API_BASE_URL}/api/dictation/transcribe`, {
+      method: 'POST',
+      headers,
+      body: form,
+    });
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => '');
+      if (resp.status === 503) {
+        throw new Error(detail || 'Dictation is not set up on this install');
+      }
+      throw new Error(detail || `transcribe HTTP ${resp.status}`);
+    }
+    return resp.json() as Promise<{ text: string }>;
+  },
 
   // State snapshot (stubbed until daemon implements)
   getStateSnapshot: () => Promise.resolve({
@@ -800,7 +896,7 @@ export const api = {
     const url = `${API_BASE_URL}/api/ollama/pull`;
     const controller = new AbortController();
     const promise = (async () => {
-      if (!_daemonToken && isTauri) await loadDaemonToken();
+      if (!_daemonToken) await loadDaemonToken();
       const resp = await fetch(url, {
         method: 'POST',
         headers: authHeaders(),

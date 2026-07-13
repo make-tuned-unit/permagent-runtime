@@ -1,0 +1,108 @@
+# Release pipeline (#326/#378) — Jesse tags a version, this builds the signed,
+# notarized macOS bundle, publishes it + the Tauri updater manifest to a GitHub
+# Release, and every installed app self-updates on next launch.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# TO CUT A RELEASE (the whole job Jesse does):
+#     npm --prefix ui/desktop version 1.32.0   # bump, or edit tauri.conf version
+#     git commit -am "chore(release): 1.32.0" && git push
+#     git tag v1.32.0 && git push origin v1.32.0
+# That tag triggers this. Nothing else to do.
+#
+# ONE-TIME SECRETS (repo → Settings → Secrets → Actions), see RELEASE.md:
+#   TAURI_SIGNING_PRIVATE_KEY          updater keypair private half (tauri signer generate)
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD its password
+#   APPLE_CERTIFICATE                  base64 Developer ID Application .p12
+#   APPLE_CERTIFICATE_PASSWORD         the .p12 password
+#   APPLE_SIGNING_IDENTITY             "Developer ID Application: Name (TEAMID)"
+#   APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID   for notarization
+# Until the Apple secrets exist the build still runs UNSIGNED (usable via
+# right-click-open); the updater signing is independent and only needs the
+# TAURI_SIGNING_* pair.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build without publishing a release'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # create the GitHub Release + upload assets
+
+env:
+  CARGO_TERM_COLOR: always
+  SHERPA_ONNX_VERSION: 1.13.2
+  # macos-26 image dropped OpenSSL from the default include path; harmless here.
+  OPENSSL_ROOT_DIR: /opt/homebrew/opt/openssl@3
+
+jobs:
+  release:
+    # Pinned to macos-15 for the same reason CI is (#616 — llama-cpp-sys +
+    # macos-26 cold-build break); the release must build the daemon sidecar.
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # The bundle embeds the daemon as a sidecar + the MCP runtime + the local
+      # Whisper dictation model. This is the existing `build:all` chain minus the
+      # final tauri build (tauri-action does that): icons → command-center UI →
+      # daemon → sidecar → mcp-runtime → whisper-model.
+      - name: Stage sidecar + resources
+        working-directory: ui/desktop
+        run: |
+          npm ci
+          npm run build:icons
+          npm run build:ui
+          npm run build:daemon
+          npm run build:sidecar
+          npm run build:mcp-runtime
+          npm run build:whisper-model
+
+      - name: Build, sign, and publish the bundle
+        uses: tauri-apps/tauri-action@v0
+        env:
+          # Updater signing (independent of Apple — needed for self-update).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Apple code-signing + notarization (optional until set).
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: ui/desktop
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Permagent ${{ github.ref_name }}'
+          releaseBody: |
+            Automated release. Installed apps self-update on next launch.
+
+            First install: download the `.dmg`, drag Permagent to Applications.
+            (Until notarization is configured, right-click → Open the first time.)
+          releaseDraft: ${{ inputs.dry_run || false }}
+          prerelease: false
+          # Emit the updater manifest (latest.json) alongside the bundle so the
+          # app's endpoint resolves it.
+          includeUpdaterJson: true
+          args: --target universal-apple-darwin

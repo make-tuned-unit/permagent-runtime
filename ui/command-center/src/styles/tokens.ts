@@ -26,6 +26,27 @@ export const font = {
   mono: '"JetBrains Mono", ui-monospace, SFMono-Regular, monospace',
 } as const;
 
+/**
+ * Fixed type ramp (design audit: "no arbitrary sizes"). Role-based — each style
+ * bundles size + line-height + weight + tracking, so callers spread one token
+ * (`style={{ ...type.body }}`) instead of setting the four ad hoc. Tracking
+ * tightens as size grows, per the audit. Sizes in px.
+ */
+export const type = {
+  display: { fontSize: 32, lineHeight: '38px', fontWeight: 600, letterSpacing: '-0.02em' },
+  title:   { fontSize: 20, lineHeight: '26px', fontWeight: 600, letterSpacing: '-0.01em' },
+  heading: { fontSize: 16, lineHeight: '22px', fontWeight: 600, letterSpacing: '-0.005em' },
+  body:    { fontSize: 14, lineHeight: '21px', fontWeight: 400 },
+  small:   { fontSize: 13, lineHeight: '19px', fontWeight: 400 },
+  caption: { fontSize: 12, lineHeight: '16px', fontWeight: 400 },
+  micro:   { fontSize: 11, lineHeight: '14px', fontWeight: 500 },
+  label:   { fontSize: 11, lineHeight: '14px', fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase' },
+} as const;
+
+/** Tabular figures — aligned numerals for metrics/counts/timers (never prose),
+ *  so digits don't reflow as values change. Spread onto any numeric display. */
+export const tabularNums = { fontVariantNumeric: 'tabular-nums' } as const;
+
 export const ease = {
   out: 'cubic-bezier(0.22, 1, 0.36, 1)',
   inOut: 'cubic-bezier(0.65, 0, 0.35, 1)',
@@ -40,7 +61,7 @@ export const shadow = {
   card: '0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04)',
 } as const;
 
-export const tokens = { color, font, ease, radius, shadow } as const;
+export const tokens = { color, font, type, tabularNums, ease, radius, shadow } as const;
 export type DesignTokens = typeof tokens;
 
 // ── Theme gradients + colors ────────────────────────────────────────
@@ -56,6 +77,13 @@ export interface ThemeColors {
   danger: string;
   /** Card elevation shadow (cool-tinted on silver) */
   cardShadow: string;
+  /** Discrete elevation ladder for floating layers (theme-aware — deep on the
+   *  void, soft-cool on silver where a black shadow is invisible). Use the level
+   *  that matches prominence: raised=dropdowns/menus, overlay=popovers/panels,
+   *  floating=toasts/notifications. Static content stays border-first, flat. */
+  elevationRaised: string;
+  elevationOverlay: string;
+  elevationFloating: string;
   /** Top-edge highlight for metallic cards (empty string on dark themes) */
   cardHighlight: string;
   /** Brand ribbon gradient for primary buttons / AI moments */
@@ -86,6 +114,9 @@ const DARK_COLORS: ThemeColors = {
   text: color.text, textMuted: color.textMuted, textDim: color.textDim,
   danger: color.danger,
   cardShadow: '0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04)',
+  elevationRaised: '0 4px 16px rgba(0,0,0,0.35)',
+  elevationOverlay: '0 8px 24px rgba(0,0,0,0.42)',
+  elevationFloating: '0 20px 52px rgba(0,0,0,0.5)',
   cardHighlight: '',
   ribbonGradient: 'linear-gradient(135deg, #00D5FF 0%, #6366F1 50%, #8D44AE 100%)',
   userBubble: 'rgba(141,68,174,0.18)',
@@ -126,6 +157,9 @@ const SILVER_COLORS: ThemeColors = {
   danger: '#DC2626',
   // Elevation — soft shadow + glass edge (cards MUST float via shadow, not color)
   cardShadow: '0 2px 12px rgba(30,37,48,0.10), 0 1px 4px rgba(30,37,48,0.06)',
+  elevationRaised: '0 4px 16px rgba(30,37,48,0.10)',
+  elevationOverlay: '0 8px 24px rgba(30,37,48,0.13)',
+  elevationFloating: '0 20px 52px rgba(30,37,48,0.17)',
   cardHighlight: 'inset 0 1px 0 rgba(255,255,255,0.9)',
   // Brand ribbon — weighted so text sits over blue→violet (AA large text)
   ribbonGradient: 'linear-gradient(135deg, #00BFEF 0%, #3A7BFF 30%, #8B5CFF 100%)',
@@ -199,15 +233,48 @@ function _set(key: string, value: string) {
   _notify();
 }
 
-// Theme
-let _activeTheme: ThemeId = _get('permagent-theme', 'dark') as ThemeId;
-// Migrate 'slate' -> 'silver' (one-time, idempotent)
-if ((_activeTheme as string) === 'slate') {
-  _activeTheme = 'silver'; _set('permagent-theme', 'silver');
+// Theme. The stored PREFERENCE may be 'system' (light-awareness, à la
+// ChatGPT/Claude): follow the OS — silver during light hours, dark when the
+// device is dark, live-switching when the OS does. The resolved _activeTheme
+// is always a concrete ThemeId so every consumer keeps working.
+export type ThemePref = ThemeId | 'system';
+
+function _prefersDark(): boolean {
+  return typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(prefers-color-scheme: dark)').matches;
 }
+
+function _resolve(pref: ThemePref): ThemeId {
+  if (pref === 'system') return _prefersDark() ? 'dark' : 'silver';
+  return pref;
+}
+
+let _themePref: ThemePref = _get('permagent-theme', 'dark') as ThemePref;
+// Migrate 'slate' -> 'silver' (one-time, idempotent)
+if ((_themePref as string) === 'slate') {
+  _themePref = 'silver'; _set('permagent-theme', 'silver');
+}
+let _activeTheme: ThemeId = _resolve(_themePref);
 export function getTheme(): ThemeId { return _activeTheme; }
+export function getThemePref(): ThemePref { return _themePref; }
 export function getThemeGradient() { return THEME_GRADIENTS[_activeTheme]; }
-export function setTheme(id: ThemeId) { _activeTheme = id; _set('permagent-theme', id); }
+export function setTheme(pref: ThemePref) {
+  _themePref = pref;
+  _activeTheme = _resolve(pref);
+  _set('permagent-theme', pref);
+}
+
+// Live OS-theme switching: when the preference is 'system', re-resolve and
+// notify on every prefers-color-scheme flip (the day/night shift).
+if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    if (_themePref === 'system') {
+      _activeTheme = _resolve('system');
+      _notify();
+    }
+  });
+}
 
 // Extract RGB channel triplet from a hex color string for Tailwind alpha-modifier support.
 // e.g. '#0B1220' → '11 18 32'. Only call on solid hex values, not rgba().
@@ -261,7 +328,8 @@ _listeners.add(_syncCssVars); // re-sync on theme change
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (e) => {
     if (e.key === 'permagent-theme' && e.newValue) {
-      _activeTheme = e.newValue as ThemeId;
+      _themePref = e.newValue as ThemePref;
+      _activeTheme = _resolve(_themePref);
       _notify();
     }
   });

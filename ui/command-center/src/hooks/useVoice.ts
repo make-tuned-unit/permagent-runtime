@@ -95,6 +95,10 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const audioQueueRef = useRef<Float32Array[]>([]);
   const playingRef = useRef(false);
   const playbackCtxRef = useRef<AudioContext | null>(null);
+  // Frequency analyser tapping the TTS output, so the chat can draw a live
+  // waveform while the agent speaks. Lives on the playback context; recreated
+  // with it, nulled when it closes.
+  const analyserRef = useRef<AnalyserNode | null>(null);
   const onEventRef = useRef(onEvent);
   onEventRef.current = onEvent;
   const activeRef = useRef(false);
@@ -160,6 +164,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
       if (!pendingAudioRef.current) {
         playbackCtxRef.current?.close().catch(() => {});
         playbackCtxRef.current = null;
+        analyserRef.current = null;
         if (wsRef.current?.readyState === WebSocket.OPEN) {
           setStateAndEmit('ready');
           // Narration finished playing — release any deferred navigation now.
@@ -172,13 +177,22 @@ export function useVoice(options: UseVoiceOptions = {}) {
     try {
       if (!playbackCtxRef.current || playbackCtxRef.current.state === 'closed') {
         playbackCtxRef.current = new AudioContext({ sampleRate: 24000 });
+        // A small FFT — we only need a handful of bars, and low bins carry the
+        // voice energy. Smoothing keeps the waveform fluid, not jittery.
+        const analyser = playbackCtxRef.current.createAnalyser();
+        analyser.fftSize = 64;
+        analyser.smoothingTimeConstant = 0.75;
+        analyser.connect(playbackCtxRef.current.destination);
+        analyserRef.current = analyser;
       }
       const ctx = playbackCtxRef.current;
       const buffer = ctx.createBuffer(1, next.length, 24000);
       buffer.getChannelData(0).set(next);
       const source = ctx.createBufferSource();
       source.buffer = buffer;
-      source.connect(ctx.destination);
+      // Route through the analyser (a pass-through) so playback is unchanged
+      // but we can read live frequency data off it.
+      source.connect(analyserRef.current ?? ctx.destination);
       source.onended = () => {
         playingRef.current = false;
         playNextChunk();
@@ -357,6 +371,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     pendingNavRef.current = null;
     playbackCtxRef.current?.close().catch(() => {});
     playbackCtxRef.current = null;
+    analyserRef.current = null;
     lastActivityRef.current = Date.now();
 
     if (activeRef.current) {
@@ -486,6 +501,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     pendingNavRef.current = null;
     playbackCtxRef.current?.close().catch(() => {});
     playbackCtxRef.current = null;
+    analyserRef.current = null;
     // Close socket
     if (wsRef.current) {
       wsRef.current.onclose = null;
@@ -554,6 +570,9 @@ export function useVoice(options: UseVoiceOptions = {}) {
     }
   }, [sampleRate, setStateAndEmit]);
 
+  /** Live TTS frequency analyser (present only while the agent is speaking). */
+  const getAnalyser = useCallback(() => analyserRef.current, []);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -574,5 +593,6 @@ export function useVoice(options: UseVoiceOptions = {}) {
     deactivate,
     startRecording,
     stopRecording,
+    getAnalyser,
   };
 }

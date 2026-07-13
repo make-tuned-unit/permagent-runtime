@@ -30,6 +30,46 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use subtle;
 
+// ── User pronunciation lexicon (#516 follow-through: the never-spell rule) ──
+
+#[derive(serde::Deserialize)]
+struct SavePronunciationRequest {
+    word: String,
+    ipa: String,
+    sounds_like: String,
+}
+
+/// GET /voice/pronunciations — every saved pronunciation.
+async fn list_pronunciations(
+) -> Json<std::collections::HashMap<String, crate::voice::user_lexicon::PronunciationEntry>> {
+    Json(crate::voice::user_lexicon::all())
+}
+
+/// PUT /voice/pronunciations — upsert one; effective on the very next
+/// synthesized sentence (the lexicon is re-read per call).
+async fn save_pronunciation_route(
+    Json(req): Json<SavePronunciationRequest>,
+) -> Result<Json<serde_json::Value>, ErrorResponse> {
+    let count = crate::voice::user_lexicon::save(
+        &req.word,
+        crate::voice::user_lexicon::PronunciationEntry {
+            ipa: req.ipa,
+            sounds_like: req.sounds_like,
+        },
+    )
+    .map_err(ErrorResponse::bad_request)?;
+    tracing::info!(target: "permagentd::voice", word = %req.word, "pronunciation saved");
+    Ok(Json(serde_json::json!({ "saved": true, "total": count })))
+}
+
+/// DELETE /voice/pronunciations/{word}
+async fn delete_pronunciation(
+    axum::extract::Path(word): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, ErrorResponse> {
+    let removed = crate::voice::user_lexicon::remove(&word).map_err(ErrorResponse::bad_request)?;
+    Ok(Json(serde_json::json!({ "removed": removed })))
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new().route("/voice", get(voice_ws_handler).with_state(state))
 }
@@ -66,6 +106,14 @@ pub fn http_routes(state: Arc<AppState>) -> Router {
                 .delete(cancel_voice_models_download),
         )
         .route("/voice/synthesize", post(synthesize_voice))
+        .route(
+            "/voice/pronunciations",
+            axum::routing::get(list_pronunciations).put(save_pronunciation_route),
+        )
+        .route(
+            "/voice/pronunciations/{word}",
+            axum::routing::delete(delete_pronunciation),
+        )
         .route("/api/voices", get(get_voices))
         .with_state(state)
 }
@@ -217,7 +265,7 @@ async fn synthesize_voice(
             &TtsConfig {
                 voice_id,
                 speed: 1.0,
-                lexicon: None,
+                lexicon: crate::voice::user_lexicon::current(),
             },
         )
     })
@@ -875,6 +923,7 @@ async fn stream_reply_with_tts(
                                 &sent,
                                 &TtsConfig {
                                     voice_id,
+                                    lexicon: crate::voice::user_lexicon::current(),
                                     ..TtsConfig::default()
                                 },
                             )
@@ -951,6 +1000,7 @@ async fn stream_reply_with_tts(
                 &remainder,
                 &TtsConfig {
                     voice_id,
+                    lexicon: crate::voice::user_lexicon::current(),
                     ..TtsConfig::default()
                 },
             )

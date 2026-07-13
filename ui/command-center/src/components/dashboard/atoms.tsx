@@ -1,4 +1,4 @@
-import { font } from '../../styles/tokens';
+import { font, tabularNums } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 export function SectionTitle({ title, right }: { title: string; right?: string }) {
@@ -21,7 +21,7 @@ export function Stat({ label, value, suffix, delta, cyan }: {
         textTransform: 'uppercase', color: colors.textDim, marginBottom: 6 }}>{label}</div>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
         <div style={{ fontFamily: font.display, fontSize: 32, fontWeight: 600,
-          letterSpacing: '-0.02em',
+          letterSpacing: '-0.02em', ...tabularNums,
           color: cyan ? colors.cyan : colors.text }}>
           {value}<span style={{ fontSize: 18, color: colors.textMuted, marginLeft: 2 }}>{suffix || ''}</span>
         </div>

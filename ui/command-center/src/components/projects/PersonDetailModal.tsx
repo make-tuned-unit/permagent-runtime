@@ -20,7 +20,7 @@
  * store's `personDetail` target is set.
  */
 
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { font, radius } from '../../styles/tokens';
@@ -115,8 +115,12 @@ export function PersonDetailModal({
         <MetaGrid colors={colors} rows={[
           ['Role', person.role || '—'],
           ['Company', person.company || '—'],
-          ['Email', person.email || '—'],
-          ['Phone', person.phone || '—'],
+          ['Email', person.email
+            ? <a href={`mailto:${person.email}`} style={{ color: colors.cyan, textDecoration: 'none' }}>{person.email}</a>
+            : '—'],
+          ['Phone', person.phone
+            ? <a href={`tel:${person.phone}`} style={{ color: colors.cyan, textDecoration: 'none' }}>{person.phone}</a>
+            : '—'],
           ['Project role', person.project_role || '—'],
           ['Associated', fmtTime(person.associated_at)],
           ['Last contact', fmtTime(person.last_contact_at)],
@@ -155,7 +159,7 @@ export function PersonDetailModal({
 
 function MetaGrid({ colors, rows }: {
   colors: ReturnType<typeof useTheme>['colors'];
-  rows: [string, string][];
+  rows: [string, ReactNode][];
 }) {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 14px' }}>

@@ -3,6 +3,45 @@ import { getApiBaseUrl } from '../lib/api';
 import { wireEventType } from '../lib/wireEvent';
 import { useCommandCenter, navigateToTool } from '../lib/store';
 import type { ActivePanel } from '../lib/store';
+import { createChatWindow } from '../lib/chatWindow';
+import { useTheme } from '../styles/useTheme';
+
+const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+
+/**
+ * Agent-driven app_action: act WITHIN a surface (not just navigate to it).
+ * Mirrors the daemon's app_conductor ACTION_CATALOG — surface/action pairs are
+ * validated daemon-side before emit, so this only maps known pairs to the store
+ * actions that already back the human buttons. Reads live state imperatively via
+ * getState() so the WebSocket callback never goes stale.
+ */
+function dispatchAppAction(
+  payload: { surface?: string; action?: string; reason?: string },
+  theme: ReturnType<typeof useTheme>['theme'],
+) {
+  const { surface, action } = payload ?? {};
+  if (!surface || !action) return;
+  const s = useCommandCenter.getState();
+
+  if (surface === 'chat') {
+    if (action === 'open') s.openChatDock();
+    else if (action === 'close') s.closeChatDock();
+    else if (action === 'detach') {
+      s.closeChatDock();
+      if (isTauri) createChatWindow(theme).catch(() => { /* keep dock closed; user can reopen */ });
+    }
+  } else if (surface === 'build') {
+    // Acting on a Build pane only makes sense with the Build tab visible.
+    navigateToTool('build');
+    const st = useCommandCenter.getState();
+    if (action === 'hide_browser' && !st.buildBrowserHidden) st.toggleBuildBrowser();
+    else if (action === 'show_browser' && st.buildBrowserHidden) st.toggleBuildBrowser();
+    else if (action === 'hide_terminal' && !st.buildTerminalHidden) st.toggleBuildTerminal();
+    else if (action === 'show_terminal' && st.buildTerminalHidden) st.toggleBuildTerminal();
+  }
+
+  if (payload?.reason) showNavigationCue(payload.reason);
+}
 
 const VALID_TOOL_TYPES = new Set<string>([
   'chat', 'skills', 'trace', 'world', 'terminal', 'browser', 'memory', 'dashboard', 'build', 'automate', 'projects',
@@ -18,8 +57,11 @@ export function useAppNavigate() {
   const workspaces = useCommandCenter(s => s.workspaces);
   const setPendingProjectNavigation = useCommandCenter(s => s.setPendingProjectNavigation);
   const setPendingTerminalLaunch = useCommandCenter(s => s.setPendingTerminalLaunch);
+  const { theme } = useTheme();
 
   // Keep refs so the WebSocket callback always sees latest state
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
   const workspacesRef = useRef(workspaces);
   workspacesRef.current = workspaces;
   const switchWorkspaceRef = useRef(switchWorkspace);
@@ -108,6 +150,10 @@ export function useAppNavigate() {
             launchRef.current(event.payload ?? {});
             return;
           }
+          if (eventType === 'app_action') {
+            dispatchAppAction(event.payload ?? {}, themeRef.current);
+            return;
+          }
           if (eventType !== 'app_navigate') return;
           navigateRef.current(event.payload ?? {});
         } catch {
@@ -158,7 +204,11 @@ export function useAppNavigate() {
           'project_launch',
           (ev) => launchRef.current(ev.payload ?? {}),
         );
-        const stopBoth = () => { stop(); stopLaunch(); };
+        const stopAction = await listen<{ surface?: string; action?: string; reason?: string }>(
+          'app_action',
+          (ev) => dispatchAppAction(ev.payload ?? {}, themeRef.current),
+        );
+        const stopBoth = () => { stop(); stopLaunch(); stopAction(); };
         if (disposed) stopBoth(); else unlisten = stopBoth;
       } catch { /* not in Tauri / event API unavailable */ }
     })();

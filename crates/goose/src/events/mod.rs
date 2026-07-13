@@ -254,10 +254,16 @@ pub enum PermagentEventType {
     BrowserNavigateRequested,
     // App navigation (chat agent → frontend)
     AppNavigate,
+    // App action — act WITHIN a surface, not just navigate to it (chat agent →
+    // frontend): toggle a Build pane, open/close/detach the chat dock, etc.
+    AppAction,
     // Project terminal launch (chat agent → frontend Build tab)
     ProjectLaunch,
     // Goal lifecycle (create / transition / park / requeue / failure / delete)
     GoalStateChanged,
+    // Echo/Watcher — the agent proactively resurfaces something worth your
+    // attention (a dormant Brain thread today; project news/analytics later).
+    ProactiveNudge,
 }
 
 // ── Convenience constructors ────────────────────────────────────────────────
@@ -586,6 +592,29 @@ pub fn app_navigate(
     )
 }
 
+/// Emitted when the chat agent wants to ACT within a surface rather than just
+/// navigate to it — toggle a Build pane, open/close/detach the chat dock, etc.
+/// Sibling to [`app_navigate`]: the daemon never touches the DOM; the frontend
+/// dispatcher catches this and calls the matching store action. `surface` +
+/// `action` are validated against the app_conductor action catalog before this
+/// is emitted, so the frontend can trust the pair.
+pub fn app_action(
+    surface: &str,
+    action: &str,
+    params: Option<&serde_json::Value>,
+    reason: &str,
+) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::AppAction,
+        serde_json::json!({
+            "surface": surface,
+            "action": action,
+            "params": params,
+            "reason": reason,
+        }),
+    )
+}
+
 /// Emitted when the chat agent asks the frontend to open a project-aware
 /// terminal in the Build tab. Mirrors [`app_navigate`]: the agent does not
 /// spawn the PTY directly — the command-center catches this and calls the
@@ -605,6 +634,30 @@ pub fn project_launch(
             "command": command,
             "project_slug": project_slug,
             "reason": reason,
+        }),
+    )
+}
+
+/// Echo/Watcher (#672): the agent proactively surfaces the single most useful
+/// thing it noticed — a dormant Brain thread today, project news/analytics
+/// later. Delivered gently and rarely; the frontend's notification stream turns
+/// it into an in-app + (opt-in) OS notification. `kind` names the signal source
+/// so the UI can style/route it; the daemon owns the once-a-day budget.
+pub fn proactive_nudge(
+    kind: &str,
+    subject: &str,
+    message: &str,
+    count: i64,
+    last_ts: &str,
+) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::ProactiveNudge,
+        serde_json::json!({
+            "kind": kind,
+            "subject": subject,
+            "message": message,
+            "count": count,
+            "last_ts": last_ts,
         }),
     )
 }

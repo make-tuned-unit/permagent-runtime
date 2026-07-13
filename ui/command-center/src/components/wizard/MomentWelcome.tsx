@@ -65,7 +65,7 @@ export function MomentWelcome({ onAdvance }: Props) {
       <Particles density={24} />
       <Mobius size={160} state="idle" />
 
-      <h1 style={{ fontFamily: font.display, fontSize: 32, fontWeight: 700, color: colors.text, margin: '32px 0 10px', letterSpacing: '-0.02em' }}>
+      <h1 style={{ fontFamily: font.display, fontSize: 28, fontWeight: 700, color: colors.text, margin: '32px 0 10px', letterSpacing: '-0.02em' }}>
         Welcome to Permagent
       </h1>
       <p style={{ fontFamily: font.body, fontSize: 14, color: colors.textMuted, marginBottom: 32, textAlign: 'center', maxWidth: 380 }}>
@@ -79,7 +79,7 @@ export function MomentWelcome({ onAdvance }: Props) {
         )}
         {error && <p style={{ fontFamily: font.body, fontSize: 12, color: colors.danger, margin: 0 }}>{error}</p>}
         <PrimaryButton onClick={handleSubmit} disabled={!canContinue || validating} full>
-          {validating ? 'Connecting...' : 'Continue'}
+          {validating ? 'Saving...' : 'Continue'}
         </PrimaryButton>
         {!isLocal && (
           <GhostLink onClick={() => setShowHelp(true)} style={{ textAlign: 'center' }}>

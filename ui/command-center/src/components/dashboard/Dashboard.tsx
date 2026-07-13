@@ -10,6 +10,7 @@ import { CARD_REGISTRY } from './cards/registry';
 import { AddCardPicker } from './AddCardPicker';
 import { DashboardOverflowMenu } from './DashboardOverflowMenu';
 import { ResetConfirmModal } from './ResetConfirmModal';
+import { Echo } from './Echo';
 import { useState, useCallback, useRef, useMemo } from 'react';
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
@@ -237,6 +238,11 @@ export function Dashboard() {
         </button>
       </div>
 
+      {/* Echo — a forgotten thread from your Brain, resurfaced unprompted.
+          Renders itself only when there's a genuinely dormant thread and it
+          hasn't shown recently; otherwise nothing. Hidden while arranging cards. */}
+      {!isEditMode && <Echo />}
+
       {/* CSS Grid — reflows natively with the container, no JS width measurement */}
       <div
         ref={gridRef}
@@ -325,7 +331,7 @@ export function Dashboard() {
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             fontFamily: font.body, fontSize: 12, fontWeight: 600,
             color: colors.cyan,
-            boxShadow: `0 8px 24px rgba(0,0,0,0.4)`,
+            boxShadow: colors.elevationOverlay,
           }}>
             {entry.name}
           </div>

@@ -9,5 +9,9 @@ binaries/*.dylib
 # scripts/copy-mcp-runtime.sh, not committed — ~140MB) (#358)
 resources/mcp-runtime/
 
+# Bundled Whisper dictation model (fetched by scripts/copy-whisper-model.sh,
+# not committed — ~78MB)
+resources/whisper/
+
 # Node
 node_modules/

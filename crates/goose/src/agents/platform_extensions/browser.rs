@@ -7,6 +7,7 @@ use rmcp::model::{
     ServerCapabilities, Tool,
 };
 use serde::{Deserialize, Serialize};
+use std::net::{IpAddr, ToSocketAddrs};
 use tokio_util::sync::CancellationToken;
 
 pub static EXTENSION_NAME: &str = "browser";
@@ -41,11 +42,9 @@ fn normalize_web_url(input: &str) -> Result<String, String> {
     Ok(format!("https://{url}"))
 }
 
-/// SSRF guard for server-side fetches: refuse loopback, private-range, and
-/// link-local hosts so the agent cannot be steered into internal services.
-fn guard_public_host(url: &str) -> Result<(), String> {
-    let host = url
-        .split("://")
+/// Lowercased host from a URL (strips scheme, userinfo, port, IPv6 brackets).
+fn host_of(url: &str) -> String {
+    url.split("://")
         .nth(1)
         .and_then(|rest| rest.split(['/', '?', '#']).next())
         .map(|authority| authority.rsplit('@').next().unwrap_or(authority))
@@ -58,30 +57,84 @@ fn guard_public_host(url: &str) -> Result<(), String> {
             }
         })
         .unwrap_or_default()
-        .to_ascii_lowercase();
+        .to_ascii_lowercase()
+}
+
+/// True for any address the hub must never connect to: loopback, RFC1918
+/// private, link-local (incl. the 169.254.169.254 cloud-metadata endpoint),
+/// CGNAT, unspecified/broadcast, and their IPv6 equivalents (ULA fc00::/7,
+/// link-local fe80::/10, IPv4-mapped).
+fn is_private_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || o[0] == 0
+                || (o[0] == 100 && (64..=127).contains(&o[1])) // 100.64.0.0/10 CGNAT
+        }
+        IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || (v6.segments()[0] & 0xfe00) == 0xfc00 // fc00::/7 unique-local
+                || (v6.segments()[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
+                || v6
+                    .to_ipv4_mapped()
+                    .is_some_and(|m| is_private_ip(IpAddr::V4(m)))
+        }
+    }
+}
+
+/// SSRF guard. Unlike a naive string check, this RESOLVES a DNS name and checks
+/// the resolved IP(s), so a public name that resolves to 127.0.0.1 /
+/// 169.254.169.254 / a LAN address is refused (DNS-rebinding / metadata SSRF).
+/// Blocking (DNS): the initial check runs via spawn_blocking; the redirect hook
+/// runs it on reqwest's connection thread.
+///
+/// NOTE: a residual TOCTOU window remains — reqwest re-resolves at connect, so a
+/// rebinding attacker could flip the record between check and connect. Pinning
+/// the verified addresses into the client (`resolve_to_addrs`) is the hardening
+/// follow-on; this already closes the string-only bypass, which is the class the
+/// audit flagged.
+fn guard_public_host(url: &str) -> Result<(), String> {
+    let host = host_of(url);
     if host.is_empty() {
         return Err("URL has no host".to_string());
     }
-    let private = host == "localhost"
-        || host.ends_with(".local")
-        || host == "::1"
-        || host.starts_with("127.")
-        || host.starts_with("10.")
-        || host.starts_with("192.168.")
-        || host.starts_with("169.254.")
-        || host.starts_with("fe80:")
-        || host.starts_with("fd")
-        || (host.starts_with("172.")
-            && host
-                .split('.')
-                .nth(1)
-                .and_then(|o| o.parse::<u8>().ok())
-                .is_some_and(|o| (16..=31).contains(&o)));
-    if private {
+    // Names that must never be treated as public, even if they resolve.
+    if host == "localhost" || host.ends_with(".local") || host.ends_with(".localhost") {
         return Err(format!(
-            "Refusing to fetch a private/loopback host ({host}) — read_webpage is for public \
-             websites"
+            "Refusing to fetch a private/loopback host ({host})"
         ));
+    }
+    // An IP literal is checked directly — no DNS.
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return if is_private_ip(ip) {
+            Err(format!(
+                "Refusing to fetch a private/loopback address ({host})"
+            ))
+        } else {
+            Ok(())
+        };
+    }
+    // A DNS name: resolve and check EVERY address it points at.
+    let addrs = (host.as_str(), 443u16)
+        .to_socket_addrs()
+        .map_err(|e| format!("Could not resolve host {host}: {e}"))?;
+    let mut resolved = false;
+    for sa in addrs {
+        resolved = true;
+        if is_private_ip(sa.ip()) {
+            return Err(format!(
+                "Refusing to fetch {host} — it resolves to a private/loopback address"
+            ));
+        }
+    }
+    if !resolved {
+        return Err(format!("Host {host} did not resolve to any address"));
     }
     Ok(())
 }
@@ -301,7 +354,14 @@ impl BrowserClient {
     #[allow(clippy::string_slice)]
     async fn handle_read_webpage(&self, url: &str) -> Result<Vec<Content>, String> {
         let url = normalize_web_url(url)?;
-        guard_public_host(&url)?;
+        // The guard resolves DNS (blocking) — run the initial check off the
+        // async worker. (The redirect hook below runs it on reqwest's thread.)
+        {
+            let guard_url = url.clone();
+            tokio::task::spawn_blocking(move || guard_public_host(&guard_url))
+                .await
+                .map_err(|e| format!("SSRF guard task panicked: {e}"))??;
+        }
 
         let client = reqwest::Client::builder()
             .user_agent("Permagent/1.0 (in-app reader)")
@@ -456,5 +516,67 @@ impl McpClientTrait for BrowserClient {
 
     fn get_info(&self) -> Option<&InitializeResult> {
         Some(&self.info)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{guard_public_host, host_of, is_private_ip};
+    use std::net::IpAddr;
+
+    #[test]
+    fn is_private_ip_flags_dangerous_ranges() {
+        for s in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "192.168.1.1",
+            "172.16.0.1",
+            "172.31.255.255",
+            "169.254.169.254", // cloud metadata
+            "0.0.0.0",
+            "100.64.0.1", // CGNAT
+            "::1",
+            "fe80::1",
+            "fc00::1",
+        ] {
+            assert!(
+                is_private_ip(s.parse::<IpAddr>().unwrap()),
+                "{s} must be treated as private"
+            );
+        }
+        for s in [
+            "8.8.8.8",
+            "1.1.1.1",
+            "93.184.216.34",
+            "2606:4700:4700::1111",
+            "172.15.0.1", // just outside 172.16/12
+            "172.32.0.1",
+        ] {
+            assert!(
+                !is_private_ip(s.parse::<IpAddr>().unwrap()),
+                "{s} must be public"
+            );
+        }
+    }
+
+    #[test]
+    fn guard_rejects_private_literals_and_localhost_without_dns() {
+        assert!(guard_public_host("http://127.0.0.1/x").is_err());
+        assert!(guard_public_host("http://169.254.169.254/latest/meta-data/").is_err());
+        assert!(guard_public_host("http://10.0.0.5:8080").is_err());
+        assert!(guard_public_host("http://localhost:3001").is_err());
+        assert!(guard_public_host("http://foo.local/").is_err());
+        assert!(guard_public_host("http://[::1]/").is_err());
+        // A public IP literal passes without any DNS lookup.
+        assert!(guard_public_host("https://8.8.8.8/").is_ok());
+    }
+
+    #[test]
+    fn host_of_strips_scheme_userinfo_port_and_brackets() {
+        assert_eq!(
+            host_of("https://user:pw@Example.COM:8443/path?q"),
+            "example.com"
+        );
+        assert_eq!(host_of("http://[2606:4700::1111]:80/x"), "2606:4700::1111");
     }
 }

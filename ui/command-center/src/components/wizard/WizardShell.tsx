@@ -111,7 +111,10 @@ export function WizardShell({ onComplete }: Props) {
       {step > 0 && step < 6 && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px' }}>
           <BackChevron onClick={back} />
-          <ProgressDots count={6} current={step - 1} />
+          {/* Dots track the 5 interior config steps (1–5); step 0 (welcome) and
+              step 6 (chat) show no bar. count was 6 → a 6th dot that `current`
+              (max step-1 = 4) could never light. */}
+          <ProgressDots count={5} current={step - 1} />
           <div style={{ width: 60 }} />
         </div>
       )}

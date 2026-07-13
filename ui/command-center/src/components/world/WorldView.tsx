@@ -5,7 +5,8 @@ import type { CameraMode, AgentState } from './types';
 import { COLORS, STATIONS } from './constants';
 import { WorldSceneContent } from './WorldScene';
 // W3 v2 agent stack (mount swap, bible §5 — replaces legacy WorldCharacters/useAgentStates).
-import { WorldAgents, ROSTER, getAgentPosition, getHenryPresence, nudgeAgent } from './agents';
+import { WorldAgents, ROSTER, getAgentPosition, getHenryPresence, nudgeAgent, setPath } from './agents';
+import { enterAgora, exitAgora, useAgoraPhase, AGORA_CENTER, HALL_HOME } from './areas/forum/agoraArc';
 import { WorldCamera } from './camera/WorldCamera';
 import { WorldPostProcessing } from './WorldPostProcessing';
 import { WorldHUD } from './WorldHUD';
@@ -216,20 +217,46 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
   }, []);
 
   // #386: clicking a station glides the camera to it. The forum-portal
-  // pedestal is special — it leads to the Mesh Stargate in the colonnade
-  // opening (the Forum gateway, #306), not to its own plinth.
+  // pedestal / the Stargate itself are special — clicking them plays the Agora
+  // arc (#306): the sovereign agent descends into the portal, dissolves into
+  // code, and the camera dives through the membrane into the collective mind.
   const [focusPoint, setFocusPoint] = useState<[number, number, number] | null>(null);
+  const agoraPhase = useAgoraPhase();
   const handleClickStation = useCallback((id: string) => {
     setHoveredStation(id);
     if (id === 'forum-portal') {
-      const a = (5 * Math.PI) / 4; // the antechamber opening (areas/zones.ts)
-      setFocusPoint([Math.cos(a) * 14.6, 0, Math.sin(a) * 14.6]);
+      // Beat 1 (descent): draw the sovereign to the portal mouth. Beats 2-4
+      // (dissolve → absorb → witness) run off the arc + the camera dive.
+      const a = (5 * Math.PI) / 4;
+      setPath('henry', [
+        { x: Math.cos(a) * 13.6, y: 0, z: Math.sin(a) * 13.6, facing: a },
+      ]);
+      enterAgora();
+      setFocusPoint([...AGORA_CENTER]);
       return;
     }
     const station = STATIONS.find((s) => s.id === id);
     if (station) setFocusPoint([...station.position] as [number, number, number]);
   }, []);
   const handleFocusDone = useCallback(() => setFocusPoint(null), []);
+
+  // Beat 5 (return): pull back through the portal — Henry rematerializes on the
+  // Rotunda side (the dissolve played backward) and the camera comes home.
+  const handleExitAgora = useCallback(() => {
+    exitAgora();
+    setFocusPoint([...HALL_HOME]);
+  }, []);
+
+  // ESC returns from the Agora (in orbit mode ESC is otherwise free; third-person
+  // ESC is owned by WorldCamera).
+  useEffect(() => {
+    if (agoraPhase === 'home') return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') handleExitAgora();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [agoraPhase, handleExitAgora]);
 
   // Toggle FPS with ~ key
   useEffect(() => {
@@ -324,6 +351,33 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
         hoveredStation={hoveredStation}
         stationTooltip={stationTooltip}
       />
+      {/* Agora return affordance (#306 arc beat 5) — visible once you cross into
+          the mesh; returns you home through the portal (also bound to ESC). */}
+      {agoraPhase !== 'home' && (
+        <button
+          type="button"
+          onClick={handleExitAgora}
+          style={{
+            position: 'absolute',
+            bottom: 28,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            padding: '9px 20px',
+            background: 'rgba(10, 14, 26, 0.82)',
+            border: `1px solid ${COLORS.neonCyan}66`,
+            borderRadius: 6,
+            color: COLORS.neonCyan,
+            fontFamily: 'JetBrains Mono, monospace',
+            fontSize: 11,
+            letterSpacing: '0.18em',
+            cursor: 'pointer',
+            boxShadow: `0 0 18px ${COLORS.neonCyan}33`,
+            backdropFilter: 'blur(4px)',
+          }}
+        >
+          ↩ RETURN TO THE ROTUNDA · ESC
+        </button>
+      )}
       <HenryHUD
         visible={activeHud === 'henry'}
         onClose={() => setActiveHud(null)}

@@ -4,9 +4,11 @@ import { useTheme } from './styles/useTheme';
 import { Sidebar } from './components/sidebar/Sidebar';
 import { SettingsView } from './components/settings/SettingsView';
 import { WorkspaceRenderer } from './components/workspaces/WorkspaceRenderer';
+import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { WizardShell } from './components/wizard/WizardShell';
 import { Splash } from './components/splash/Splash';
 import { ChatLauncher } from './components/chat/ChatLauncher';
+import { ChatDock } from './components/chat/ChatDock';
 import { GoalDetailModalHost } from './components/goals/GoalDetailModal';
 import { PersonDetailModalHost } from './components/projects/PersonDetailModal';
 import { DropZone } from './components/chat/DropZone';
@@ -60,7 +62,9 @@ function MainContent() {
           className="absolute inset-0"
           style={{ display: (!showSettings && ws.id === activeWorkspaceId) ? 'block' : 'none' }}
         >
-          <WorkspaceRenderer workspaceId={ws.id} />
+          <ErrorBoundary surface="the workspace">
+            <WorkspaceRenderer workspaceId={ws.id} />
+          </ErrorBoundary>
         </div>
       ))}
     </div>
@@ -95,6 +99,26 @@ function App() {
   }, [theme]);
 
   const [phase, setPhase] = useState<'splash' | 'loading' | 'wizard' | 'app'>('splash');
+
+  // Install the bundled dictation model on first run so the mic "just works"
+  // offline, with no download and no setup. Resolves the bundled Whisper model
+  // (Tauri resource) and asks the daemon to install it + set LOCAL_WHISPER_MODEL.
+  // Idempotent, fire-and-forget; a dev/unbundled build simply no-ops. Gated on
+  // `phase === 'app'` so the daemon is known ready (mount is too early — the app
+  // is still waiting for the daemon, and provisioning runs only once).
+  const dictationProvisioned = useRef(false);
+  useEffect(() => {
+    if (phase !== 'app' || dictationProvisioned.current) return;
+    if (!('__TAURI_INTERNALS__' in window)) return;
+    dictationProvisioned.current = true;
+    (async () => {
+      try {
+        const { resolveResource } = await import('@tauri-apps/api/path');
+        const modelPath = await resolveResource('whisper/whisper-base-q8_0.gguf');
+        await api.provisionDictationModel(modelPath);
+      } catch { /* no bundled model (dev build) — dictation stays opt-in */ }
+    })();
+  }, [phase]);
 
   // Subscribe to AppNavigate events from the agent
   useAppNavigate();
@@ -227,6 +251,7 @@ function App() {
           </DropZone>
         </main>
         <ChatLauncher />
+        <ChatDock />
       </div>
       <GoalDetailModalHost />
       <NotificationHost />

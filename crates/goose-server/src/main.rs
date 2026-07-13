@@ -10,6 +10,7 @@ mod error;
 mod logging;
 mod middleware;
 mod openapi;
+mod proactive;
 mod routes;
 mod session_event_bus;
 mod state;

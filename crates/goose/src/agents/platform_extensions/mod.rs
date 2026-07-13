@@ -13,6 +13,7 @@ pub mod librarian_state;
 pub mod orchestrator;
 pub mod people;
 pub mod project_manager;
+pub mod pronunciation;
 pub mod recipe_author;
 pub mod skills;
 pub mod steward;
@@ -147,6 +148,36 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                     confirm: None,
                 }],
                 client_factory: |ctx| Box::new(browser::BrowserClient::new(ctx).unwrap()),
+            },
+        );
+
+        map.insert(
+            pronunciation::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: pronunciation::EXTENSION_NAME,
+                display_name: "Pronunciation",
+                description: "Save how a word is pronounced (save_pronunciation) so your spoken \
+                              voice says names like the user does — the fix for coined words \
+                              being spelled out letter by letter",
+                default_enabled: true,
+                unprefixed_tools: true,
+                hidden: false,
+                why_it_matters:
+                    "THE RULE: never spell a word out loud. If you are unsure how a name will \
+                     sound — or the user winces at your pronunciation — stop, ask them to say \
+                     it, save it with save_pronunciation (word + sounds-like + IPA), then say \
+                     it back to confirm. Saved once, spoken right forever.",
+                teaching: &[crate::agents::self_knowledge::TeachingStep {
+                    title: "Teach me your words",
+                    body: "Invite the user to say any name you might mangle — their company, \
+                           their dog, their product. Save each with save_pronunciation and \
+                           repeat it back in your voice so they hear it stick.",
+                    open_surface: None,
+                    confirm: None,
+                }],
+                client_factory: |ctx| {
+                    Box::new(pronunciation::PronunciationClient::new(ctx).unwrap())
+                },
             },
         );
 
@@ -362,12 +393,12 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: app_conductor::EXTENSION_NAME,
                 display_name: "App Conductor",
-                description: "Navigate the user to specific tabs and views in the Permagent app",
+                description: "Navigate the user to tabs and views AND act within them — open/close/detach the chat dock, show/hide the Build tab's browser and terminal panes — in the Permagent app",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
                 why_it_matters:
-                    "Take the user straight to the right view instead of telling them where to click.",
+                    "Drive the app for the user — take them to the right view and operate it — instead of telling them where to click.",
                 teaching: &[],
                 client_factory: |ctx| {
                     Box::new(app_conductor::AppConductorClient::new(ctx).unwrap())
