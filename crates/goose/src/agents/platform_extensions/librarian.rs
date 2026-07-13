@@ -1299,6 +1299,8 @@ mod tests {
             description: None,
             description_generated_at: None,
             content_hash: None,
+            signature: None,
+            source_brain_id: None,
         };
         let prompt = build_description_prompt(&memory);
         assert!(prompt.contains("session:2026-05-08:chat"));
