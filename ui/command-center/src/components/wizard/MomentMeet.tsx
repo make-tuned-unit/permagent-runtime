@@ -76,7 +76,14 @@ export function MomentMeet({ persona, setPersona, onAdvance }: Props) {
               }}
             />
           ) : (
-            <div onClick={() => setEditName(true)} style={{ cursor: 'pointer', display: 'flex', alignItems: 'baseline', gap: 8 }}>
+            <div
+              onClick={() => setEditName(true)}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setEditName(true); } }}
+              role="button"
+              tabIndex={0}
+              aria-label="Edit agent name"
+              style={{ cursor: 'pointer', display: 'flex', alignItems: 'baseline', gap: 8 }}
+            >
               <span style={{ fontFamily: font.display, fontSize: 22, fontWeight: 700, color: colors.text }}>
                 {persona.name || 'Click to name...'}
               </span>
@@ -125,7 +132,7 @@ export function MomentMeet({ persona, setPersona, onAdvance }: Props) {
             placeholder="Add a trait — type and press Enter"
             style={{
               width: '100%', fontFamily: font.body, fontSize: 13, color: colors.text,
-              background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)',
+              background: colors.inputBg, border: `1px solid ${colors.border}`,
               borderRadius: 8, padding: '8px 12px', outline: 'none',
             }}
           />
@@ -142,7 +149,7 @@ export function MomentMeet({ persona, setPersona, onAdvance }: Props) {
             rows={2}
             style={{
               width: '100%', fontFamily: font.body, fontSize: 13, color: colors.text,
-              background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)',
+              background: colors.inputBg, border: `1px solid ${colors.border}`,
               borderRadius: 8, padding: '10px 12px', outline: 'none', resize: 'none', lineHeight: 1.5,
             }}
           />
@@ -167,7 +174,7 @@ export function MomentMeet({ persona, setPersona, onAdvance }: Props) {
             rows={2}
             style={{
               width: '100%', fontFamily: font.body, fontSize: 13, color: colors.text,
-              background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)',
+              background: colors.inputBg, border: `1px solid ${colors.border}`,
               borderRadius: 8, padding: '10px 12px', outline: 'none', resize: 'none', lineHeight: 1.5,
             }}
           />

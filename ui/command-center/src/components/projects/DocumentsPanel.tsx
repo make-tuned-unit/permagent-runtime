@@ -21,7 +21,9 @@ import { DocumentViewer, formatSize } from './DocumentViewer';
 import type { Project, ProjectDocument } from './types';
 
 export function DocumentsPanel({ project }: { project: Project }) {
-  const { colors } = useTheme();
+  const { colors, theme } = useTheme();
+  // White veils vanish on silver — flip to a faint graphite tint there.
+  const rowVeil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
   const [docs, setDocs] = useState<ProjectDocument[]>([]);
   const [viewing, setViewing] = useState<ProjectDocument | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -102,6 +104,9 @@ export function DocumentsPanel({ project }: { project: Project }) {
 
         {/* Drop zone — also the empty state. */}
         <div
+          role="button"
+          tabIndex={0}
+          aria-label="Upload documents"
           onDragOver={e => { e.preventDefault(); setDragging(true); }}
           onDragLeave={() => setDragging(false)}
           onDrop={e => {
@@ -110,6 +115,7 @@ export function DocumentsPanel({ project }: { project: Project }) {
             upload(Array.from(e.dataTransfer.files ?? []));
           }}
           onClick={() => fileInput.current?.click()}
+          onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.current?.click(); } }}
           style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
             padding: '10px 12px', marginBottom: docs.length ? 8 : 0, cursor: 'pointer',
@@ -154,7 +160,7 @@ export function DocumentsPanel({ project }: { project: Project }) {
                 key={doc.id}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px',
-                  borderRadius: 7, background: 'rgba(255,255,255,0.02)', border: `1px solid ${colors.border}`,
+                  borderRadius: 7, background: rowVeil, border: `1px solid ${colors.border}`,
                   transition: 'border-color 150ms',
                 }}
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
