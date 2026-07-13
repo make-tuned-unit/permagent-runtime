@@ -225,14 +225,20 @@ pub const PROJECT_WORKSPACE_FEATURE: crate::agents::self_knowledge::FeatureDescr
         what_it_does:
             "The Projects tab where each project opens into a workspace with two lenses, toggled \
              in shared chrome: an Overview dashboard (summary, key facts, links, live task \
-             status, the People panel with person profile cards, and the Documents hub with an \
-             in-app viewer for PDFs/images/markdown) and the Kanban board of goal and to-do \
-             cards. A project switcher drives both lenses from the same selected project",
+             status, the People panel with person profile cards, the Documents hub with an \
+             in-app viewer for PDFs/images/markdown, and a Notes panel) and the Kanban board of \
+             goal and to-do cards. A document dropped into a project is extracted and indexed \
+             into your Brain and associated with that project; notes the user writes on a \
+             project are indexed into your Brain the same way — both recallable and \
+             Librarian-enriched, scoped to the project. A project switcher drives both lenses \
+             from the same selected project",
         why_it_matters:
             "It is the user's at-a-glance home for a project — what it is, its links, and the live \
-             state of its work. Reach for the project tools (list_projects, board_summary) to read \
-             or change what this surface shows; the Overview is the summary view, the Kanban the \
-             working board",
+             state of its work. Because dropped documents and written notes land in your Brain \
+             scoped to the project, you can recall a project's files and notes by content without \
+             the user re-pasting them. Reach for the project tools (list_projects, board_summary) \
+             to read or change what this surface shows; the Overview is the summary view, the \
+             Kanban the working board",
         state_source: crate::agents::self_knowledge::StateSource::Static,
         teaching: &[],
     };

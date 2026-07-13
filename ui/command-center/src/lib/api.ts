@@ -3,7 +3,7 @@
  * Aligned with the actual permagentd endpoints.
  */
 
-import type { ProjectDocument } from '../components/projects/types';
+import type { ProjectDocument, ProjectNote } from '../components/projects/types';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 const API_BASE_URL = (
@@ -789,6 +789,27 @@ export const api = {
   deleteProjectDocument: (projectId: string, docId: string) =>
     fetch(
       `${API_BASE_URL}/api/projects/${encodeURIComponent(projectId)}/documents/${encodeURIComponent(docId)}`,
+      { method: 'DELETE', headers: authHeaders() },
+    ),
+
+  // ── Project notes (freeform notes indexed into the Brain) ──────────────────
+
+  /** List a project's notes, newest first. */
+  listProjectNotes: (projectId: string) =>
+    apiFetch<ProjectNote[]>(`/api/projects/${encodeURIComponent(projectId)}/notes`),
+
+  /** Create a note on a project. The backend indexes its text into the Brain
+   *  (best-effort) and returns the saved note. */
+  createProjectNote: (projectId: string, note: { title?: string; body: string }) =>
+    apiFetch<ProjectNote>(`/api/projects/${encodeURIComponent(projectId)}/notes`, {
+      method: 'POST',
+      body: JSON.stringify(note),
+    }),
+
+  /** Delete a project note (and best-effort disassociate its Brain memory). */
+  deleteProjectNote: (projectId: string, noteId: string) =>
+    fetch(
+      `${API_BASE_URL}/api/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}`,
       { method: 'DELETE', headers: authHeaders() },
     ),
 

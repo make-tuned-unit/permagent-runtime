@@ -83,6 +83,21 @@ export interface ProjectDocument {
   uploaded_at: string;
 }
 
+/**
+ * A freeform note on a project (`GET /api/projects/{id}/notes`). Serialized
+ * **snake_case** (the backend `ProjectNote` struct carries no `rename_all`) —
+ * match the wire exactly. `title` and `memory_key` are nullable.
+ */
+export interface ProjectNote {
+  id: string;
+  project_id: string;
+  title: string | null;
+  body: string;
+  memory_key: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 /** The implicit Personal project — undeletable, can't change status. */
 export const PERSONAL_ID = '00000000-0000-0000-0000-000000000001';
 
