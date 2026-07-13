@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useId } from 'react';
 import { FiX, FiEye, FiEyeOff } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
@@ -14,29 +14,92 @@ interface Props {
 export function ConfigureProviderModal({ provider, onClose }: Props) {
   const { colors } = useTheme();
   const setDefaultProvider = useCommandCenter(s => s.setDefaultProvider);
+  const titleId = useId();
 
   const secretKey = provider.configKeys.find(k => k.secret);
   const [apiKey, setApiKey] = useState('');
   const [showKey, setShowKey] = useState(false);
   const [selectedModel, setSelectedModel] = useState(provider.defaultModel);
   const [models, setModels] = useState<string[]>(provider.knownModels);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState(false);
+  const [reloadModels, setReloadModels] = useState(0);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [setAsDefault, setSetAsDefault] = useState(!provider.isDefault);
 
-  useEffect(() => {
-    if (provider.isConfigured) {
-      api.getProviderModels(provider.name).then(m => {
-        if (m.length > 0) setModels(m);
-      });
-    }
-  }, [provider.name, provider.isConfigured]);
+  // Keep the latest onClose without re-running the focus-trap effect (the parent
+  // passes a fresh closure each render); the trap must set up once on mount.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const firstFieldRef = useRef<HTMLInputElement | HTMLSelectElement | null>(null);
+
+  // Fetch the live model list for configured providers. Handles the rejection
+  // (previously an unhandled promise) and drives explicit loading/error state so
+  // the select is never silently empty or stuck loading. `knownModels` remains
+  // the fallback, so an error still leaves a usable list.
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [onClose]);
+    if (!provider.isConfigured) return;
+    let active = true;
+    setModelsLoading(true);
+    setModelsError(false);
+    api.getProviderModels(provider.name)
+      .then(m => { if (active && m.length > 0) setModels(m); })
+      .catch(() => { if (active) setModelsError(true); })
+      .finally(() => { if (active) setModelsLoading(false); });
+    return () => { active = false; };
+  }, [provider.name, provider.isConfigured, reloadModels]);
+
+  // Focus management: autofocus the first field on open, trap Tab inside the
+  // dialog, close on Escape, and return focus to the trigger on close.
+  useEffect(() => {
+    const trigger = document.activeElement as HTMLElement | null;
+    const node = dialogRef.current;
+
+    const focusable = () =>
+      node
+        ? Array.from(
+            node.querySelectorAll<HTMLElement>(
+              'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+            ),
+          ).filter(el => el.offsetParent !== null)
+        : [];
+
+    const raf = requestAnimationFrame(() => {
+      (firstFieldRef.current ?? focusable()[0])?.focus();
+    });
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        // Stop the ancestor Settings-view handler from also firing (it dismisses
+        // the whole surface); Esc here should only close the modal.
+        e.stopPropagation();
+        onCloseRef.current();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      const els = focusable();
+      if (els.length === 0) return;
+      const first = els[0];
+      const last = els[els.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+      if (e.shiftKey) {
+        if (active === first || !node?.contains(active)) { e.preventDefault(); last.focus(); }
+      } else if (active === last || !node?.contains(active)) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      cancelAnimationFrame(raf);
+      document.removeEventListener('keydown', onKeyDown);
+      trigger?.focus?.();
+    };
+  }, []);
 
   const handleSave = async () => {
     const keyChanged = secretKey && apiKey.trim();
@@ -91,21 +154,32 @@ export function ConfigureProviderModal({ provider, onClose }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center backdrop-blur-sm"
+      style={{ background: 'rgba(0,0,0,0.5)' }}
+      onClick={onClose}
+    >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
         className="rounded-xl w-full max-w-md p-5"
         style={{ backgroundColor: colors.surface, border: `1px solid ${colors.border}`, boxShadow: colors.cardShadow }}
         onClick={e => e.stopPropagation()}
       >
         <style>{`.provider-modal-input::placeholder { color: ${colors.textMuted}; opacity: 0.6; }`}</style>
         <div className="flex items-center justify-between mb-4">
-          <h2 style={{ fontFamily: font.display, fontWeight: 600, color: colors.text }}>Configure {provider.displayName}</h2>
+          <h2 id={titleId} style={{ fontFamily: font.display, fontWeight: 600, color: colors.text }}>Configure {provider.displayName}</h2>
           <button
             onClick={onClose}
+            aria-label="Close"
             className="transition"
             style={{ color: colors.textMuted }}
             onMouseEnter={e => { e.currentTarget.style.color = colors.text; }}
             onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
+            onFocus={e => { e.currentTarget.style.color = colors.text; }}
+            onBlur={e => { e.currentTarget.style.color = colors.textMuted; }}
           >
             <FiX size={16} />
           </button>
@@ -114,11 +188,13 @@ export function ConfigureProviderModal({ provider, onClose }: Props) {
         <div className="space-y-4">
           {secretKey && (
             <div>
-              <label className="block text-xs mb-1.5" style={{ fontFamily: font.body, color: colors.textMuted }}>
+              <label htmlFor={`${titleId}-key`} className="block text-xs mb-1.5" style={{ fontFamily: font.body, color: colors.textMuted }}>
                 {secretKey.description || secretKey.name}
               </label>
               <div className="relative">
                 <input
+                  id={`${titleId}-key`}
+                  ref={firstFieldRef as React.RefObject<HTMLInputElement>}
                   type={showKey ? 'text' : 'password'}
                   value={apiKey}
                   onChange={e => setApiKey(e.target.value)}
@@ -131,10 +207,13 @@ export function ConfigureProviderModal({ provider, onClose }: Props) {
                 <button
                   type="button"
                   onClick={() => setShowKey(!showKey)}
+                  aria-label={showKey ? 'Hide API key' : 'Show API key'}
                   className="absolute right-2 top-1/2 -translate-y-1/2"
                   style={{ color: colors.textMuted }}
                   onMouseEnter={e => { e.currentTarget.style.color = colors.text; }}
                   onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
+                  onFocus={e => { e.currentTarget.style.color = colors.text; }}
+                  onBlur={e => { e.currentTarget.style.color = colors.textMuted; }}
                 >
                   {showKey ? <FiEyeOff size={14} /> : <FiEye size={14} />}
                 </button>
@@ -143,11 +222,14 @@ export function ConfigureProviderModal({ provider, onClose }: Props) {
           )}
 
           <div>
-            <label className="block text-xs mb-1.5" style={{ fontFamily: font.body, color: colors.textMuted }}>Model</label>
+            <label htmlFor={`${titleId}-model`} className="block text-xs mb-1.5" style={{ fontFamily: font.body, color: colors.textMuted }}>Model</label>
             <select
+              id={`${titleId}-model`}
+              ref={secretKey ? undefined : (firstFieldRef as React.RefObject<HTMLSelectElement>)}
               value={selectedModel}
               onChange={e => setSelectedModel(e.target.value)}
-              className="w-full px-3 py-2 rounded text-sm focus:outline-none"
+              disabled={modelsLoading && models.length === 0}
+              className="w-full px-3 py-2 rounded text-sm focus:outline-none disabled:opacity-60"
               style={{ backgroundColor: colors.inputBg, border: `1px solid ${colors.border}`, color: colors.text }}
               onFocus={e => { e.currentTarget.style.borderColor = `${colors.cyan}80`; }}
               onBlur={e => { e.currentTarget.style.borderColor = colors.border; }}
@@ -156,6 +238,31 @@ export function ConfigureProviderModal({ provider, onClose }: Props) {
                 <option key={m} value={m}>{m}</option>
               ))}
             </select>
+            {modelsLoading && (
+              <div className="text-[11px] mt-1.5" style={{ fontFamily: font.body, color: colors.textMuted }}>
+                Loading models…
+              </div>
+            )}
+            {!modelsLoading && modelsError && (
+              <div className="text-[11px] mt-1.5 flex items-center gap-1.5" style={{ fontFamily: font.body, color: colors.textMuted }}>
+                <span>Couldn't refresh the model list{models.length > 0 ? ' — showing known models' : ''}.</span>
+                <button
+                  type="button"
+                  onClick={() => setReloadModels(n => n + 1)}
+                  className="transition"
+                  style={{ color: colors.cyan }}
+                  onMouseEnter={e => { e.currentTarget.style.opacity = '0.8'; }}
+                  onMouseLeave={e => { e.currentTarget.style.opacity = '1'; }}
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+            {!modelsLoading && !modelsError && models.length === 0 && (
+              <div className="text-[11px] mt-1.5" style={{ fontFamily: font.body, color: colors.textMuted }}>
+                No models available. Add a key and save to load this provider's models.
+              </div>
+            )}
           </div>
 
           <label className="flex items-center gap-2 text-sm" style={{ fontFamily: font.body, color: colors.textMuted }}>
@@ -169,7 +276,10 @@ export function ConfigureProviderModal({ provider, onClose }: Props) {
           </label>
 
           {error && (
-            <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded px-3 py-2">
+            <div
+              className="text-xs rounded px-3 py-2"
+              style={{ color: colors.danger, backgroundColor: `${colors.danger}1A`, border: `1px solid ${colors.danger}33` }}
+            >
               {error}
             </div>
           )}
@@ -180,7 +290,12 @@ export function ConfigureProviderModal({ provider, onClose }: Props) {
             {provider.isConfigured && secretKey && (
               <button
                 onClick={handleRemoveKey}
-                className="text-[11px] text-red-400 hover:text-red-300 transition"
+                className="text-[11px] transition"
+                style={{ color: colors.danger }}
+                onMouseEnter={e => { e.currentTarget.style.opacity = '0.8'; }}
+                onMouseLeave={e => { e.currentTarget.style.opacity = '1'; }}
+                onFocus={e => { e.currentTarget.style.opacity = '0.8'; }}
+                onBlur={e => { e.currentTarget.style.opacity = '1'; }}
               >
                 Remove key
               </button>

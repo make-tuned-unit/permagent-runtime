@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import {
-  getTheme, getThemeGradient, getThemedColors, onThemeChange,
+  getTheme, getThemePref, getThemeGradient, getThemedColors, onThemeChange,
   getMobiusGlow, getIdleAnim, getShowHeroMobius,
   getDensity, getReduceMotion,
 } from './tokens';
@@ -11,6 +11,7 @@ export function useTheme() {
   useEffect(() => onThemeChange(() => setTick(t => t + 1)), []);
   return {
     theme: getTheme(),
+    themePref: getThemePref(),
     gradient: getThemeGradient(),
     colors: getThemedColors(),
     mobiusGlow: getMobiusGlow(),

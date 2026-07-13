@@ -12,13 +12,13 @@ interface Props {
   onBack: () => void;
 }
 
-type RowState = { input: string; saved: boolean; busy: boolean };
+type RowState = { input: string; saved: boolean; busy: boolean; error: string };
 
 export function MomentWebSearch({ personaName, onAdvance, onBack }: Props) {
   const { colors } = useTheme();
   const who = personaName?.trim() || 'your agent';
   const [rows, setRows] = useState<Record<string, RowState>>(
-    () => Object.fromEntries(SEARCH_PROVIDERS.map(p => [p.id, { input: '', saved: false, busy: false }])),
+    () => Object.fromEntries(SEARCH_PROVIDERS.map(p => [p.id, { input: '', saved: false, busy: false, error: '' }])),
   );
   const patch = (id: string, p: Partial<RowState>) =>
     setRows(prev => ({ ...prev, [id]: { ...prev[id], ...p } }));
@@ -28,12 +28,13 @@ export function MomentWebSearch({ personaName, onAdvance, onBack }: Props) {
   const save = async (p: SearchProvider) => {
     const key = rows[p.id].input.trim();
     if (!key) return;
-    patch(p.id, { busy: true });
+    patch(p.id, { busy: true, error: '' });
     try {
       await saveAndEnableSearchProvider(p, key);
-      patch(p.id, { input: '', saved: true });
+      patch(p.id, { input: '', saved: true, error: '' });
     } catch (e) {
       console.error('Failed to set up search provider:', e);
+      patch(p.id, { error: e instanceof Error ? e.message : "Couldn't save key. Please try again." });
     } finally {
       patch(p.id, { busy: false });
     }
@@ -48,7 +49,7 @@ export function MomentWebSearch({ personaName, onAdvance, onBack }: Props) {
     <div style={{ position: 'relative', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
       <Particles density={20} />
       <Mobius size={72} state="idle" glow={0.9} />
-      <div style={{ fontFamily: font.display, fontSize: 22, fontWeight: 700, letterSpacing: '-0.01em', color: colors.text, marginTop: 18, textAlign: 'center' }}>
+      <div style={{ fontFamily: font.display, fontSize: 28, fontWeight: 700, letterSpacing: '-0.01em', color: colors.text, marginTop: 18, textAlign: 'center' }}>
         Give {who} the web?
       </div>
       <div style={{ fontFamily: font.body, fontSize: 13, color: colors.textMuted, marginTop: 8, maxWidth: 440, textAlign: 'center', lineHeight: 1.5 }}>
@@ -66,7 +67,7 @@ export function MomentWebSearch({ personaName, onAdvance, onBack }: Props) {
               </div>
               <div style={{ fontFamily: font.body, fontSize: 11, color: colors.textMuted, marginTop: 2 }}>{p.description}</div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
-                <Input value={r.input} onChange={(v) => patch(p.id, { input: v })} type="password" placeholder={r.saved ? '(connected — enter new to replace)' : 'Paste API key'} style={{ flex: 1 }} />
+                <Input value={r.input} onChange={(v) => patch(p.id, { input: v, error: '' })} type="password" placeholder={r.saved ? '(connected — enter new to replace)' : 'Paste API key'} style={{ flex: 1 }} />
                 <button
                   onClick={() => save(p)}
                   disabled={r.busy || !r.input.trim()}
@@ -79,6 +80,11 @@ export function MomentWebSearch({ personaName, onAdvance, onBack }: Props) {
                   }}
                 >{r.busy ? 'Saving…' : 'Save'}</button>
               </div>
+              {r.error && (
+                <div role="alert" style={{ fontFamily: font.body, fontSize: 11, color: colors.danger, marginTop: 8 }}>
+                  {r.error}
+                </div>
+              )}
               <div style={{ marginTop: 6 }}>
                 <GhostLink onClick={() => getKey(p)} style={{ fontSize: 12 }}>Get a {p.keyPageLabel.replace(/ keys?$/i, '')} key ↗</GhostLink>
               </div>

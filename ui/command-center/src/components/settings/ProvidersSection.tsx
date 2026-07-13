@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { FiCheck, FiSettings, FiStar } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
 import type { ProviderInfo } from '../../lib/store';
@@ -9,18 +9,46 @@ import { ConfigureProviderModal } from './ConfigureProviderModal';
 export function ProvidersSection() {
   const { colors } = useTheme();
   const providers = useCommandCenter(s => s.providers);
+  const providersError = useCommandCenter(s => s.providersError);
   const loadProviders = useCommandCenter(s => s.loadProviders);
   const setDefaultProvider = useCommandCenter(s => s.setDefaultProvider);
   const [configuring, setConfiguring] = useState<ProviderInfo | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  useEffect(() => { loadProviders(); }, [loadProviders]);
+  // loadProviders never rejects (it sets providersError internally), so `.finally`
+  // is enough to end the loading state; the flag distinguishes failure from empty.
+  const load = useCallback(() => {
+    setLoading(true);
+    Promise.resolve(loadProviders()).finally(() => setLoading(false));
+  }, [loadProviders]);
+
+  useEffect(() => { load(); }, [load]);
 
   return (
     <div className="space-y-3">
       <p className="text-xs" style={{ fontFamily: font.body, color: colors.textMuted }}>Configure LLM providers and API keys. The default provider is used for new chat sessions.</p>
 
-      {providers.length === 0 && (
+      {providers.length === 0 && loading && (
         <div className="text-xs py-4 text-center" style={{ fontFamily: font.mono, color: colors.textMuted }}>Loading providers...</div>
+      )}
+
+      {providers.length === 0 && !loading && providersError && (
+        <div className="rounded-lg p-4 text-center space-y-2" style={{ backgroundColor: colors.surface, border: `1px solid ${colors.border}` }}>
+          <div className="text-xs" style={{ fontFamily: font.body, color: colors.danger }}>Couldn't load providers. Check that the daemon is running.</div>
+          <button
+            onClick={load}
+            className="text-[11px] px-3 py-1.5 rounded transition"
+            style={{ border: `1px solid ${colors.cyan}4D`, color: colors.cyan }}
+            onMouseEnter={e => { e.currentTarget.style.backgroundColor = colors.cyanSoft; }}
+            onMouseLeave={e => { e.currentTarget.style.backgroundColor = ''; }}
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
+      {providers.length === 0 && !loading && !providersError && (
+        <div className="text-xs py-4 text-center" style={{ fontFamily: font.mono, color: colors.textMuted }}>No providers available.</div>
       )}
 
       {providers.map(p => (

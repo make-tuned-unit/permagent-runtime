@@ -190,9 +190,46 @@ fn start_main_thread_heartbeat(app: &tauri::AppHandle) {
     });
 }
 
+/// Check the hosted updater manifest for a newer signed build and, if the user
+/// confirms, download + install + relaunch. Spawned detached so it never
+/// blocks startup; all failures are logged and swallowed (offline, no
+/// manifest, signature mismatch → the app just runs the current version).
+fn check_for_updates(handle: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        use tauri_plugin_updater::UpdaterExt;
+        let updater = match handle.updater() {
+            Ok(u) => u,
+            Err(e) => {
+                eprintln!("[updater] unavailable: {e}");
+                return;
+            }
+        };
+        match updater.check().await {
+            Ok(Some(update)) => {
+                eprintln!(
+                    "[updater] update {} available (current {})",
+                    update.version, update.current_version
+                );
+                // Download + install; Tauri verifies the signature against the
+                // pubkey in tauri.conf before applying. Relaunch on success.
+                match update.download_and_install(|_chunk, _total| {}, || {}).await {
+                    Ok(()) => {
+                        eprintln!("[updater] installed {}, relaunching", update.version);
+                        handle.restart();
+                    }
+                    Err(e) => eprintln!("[updater] install failed: {e}"),
+                }
+            }
+            Ok(None) => eprintln!("[updater] up to date"),
+            Err(e) => eprintln!("[updater] check failed (offline?): {e}"),
+        }
+    });
+}
+
 fn main() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.show();
@@ -221,6 +258,10 @@ fn main() {
         ])
         .setup(|app| {
             daemon::start_daemon(app.handle())?;
+            // Auto-update check (#326/#378): on launch, ask the hosted manifest
+            // if a newer signed build exists. Non-blocking, failure-tolerant —
+            // an offline or manifest-less launch is a no-op, never a crash.
+            check_for_updates(app.handle().clone());
             // Main-thread liveness heartbeat (#562) — lets the external watchdog
             // detect an idle-wedge of the AppKit main run loop.
             start_main_thread_heartbeat(app.handle());

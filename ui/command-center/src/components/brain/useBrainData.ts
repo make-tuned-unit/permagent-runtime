@@ -19,6 +19,7 @@ export interface BrainGraph { self: GraphSelf; entities: GraphEntity[]; edges?: 
 export function useBrainData(searchQuery = '') {
   const [data, setData] = useState<BrainGraph | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval>>();
   const queryRef = useRef(searchQuery);
   queryRef.current = searchQuery;
@@ -31,7 +32,12 @@ export function useBrainData(searchQuery = '') {
         : '/api/brain/graph';
       const result = await apiFetch<BrainGraph>(endpoint);
       setData(result);
-    } catch { /* ignore */ }
+      setError(null);
+    } catch (e) {
+      // Only surface the error when we have nothing to show — a failed poll
+      // while data is already on screen keeps the stale graph, not an alarm.
+      setError(e instanceof Error ? e.message : 'Could not reach the Brain');
+    }
     setLoading(false);
   }, []);
 
@@ -46,5 +52,5 @@ export function useBrainData(searchQuery = '') {
     fetchGraph();
   }, [searchQuery, fetchGraph]);
 
-  return { data, loading, refresh: fetchGraph };
+  return { data, loading, error, refresh: fetchGraph };
 }

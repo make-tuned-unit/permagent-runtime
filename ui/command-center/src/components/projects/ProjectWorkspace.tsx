@@ -106,7 +106,7 @@ function ProjectSwitcher({ project, projects, onSwitch }: {
           position: 'absolute', top: '100%', left: 0, marginTop: 6, zIndex: 50,
           minWidth: 200, maxHeight: 320, overflow: 'auto',
           background: gradient.dropdown, border: `1px solid ${colors.border}`, borderRadius: 8,
-          boxShadow: '0 8px 24px rgba(0,0,0,0.4)', padding: 4,
+          boxShadow: colors.elevationOverlay, padding: 4,
         }}>
           {sorted.map(p => (
             <button
@@ -115,7 +115,7 @@ function ProjectSwitcher({ project, projects, onSwitch }: {
               style={{
                 display: 'block', width: '100%', textAlign: 'left',
                 padding: '6px 10px', borderRadius: 5, cursor: 'pointer',
-                background: p.id === project.id ? 'rgba(0,213,255,0.1)' : 'transparent',
+                background: p.id === project.id ? colors.cyanSoft : 'transparent',
                 border: 'none', color: p.id === project.id ? colors.cyan : colors.text,
                 fontFamily: font.body, fontSize: 12, fontWeight: p.id === project.id ? 600 : 400,
               }}
@@ -152,7 +152,7 @@ function ViewToggle({ lens, onChange }: { lens: ProjectLens; onChange: (l: Proje
             onClick={() => onChange(t.key)}
             style={{
               padding: '4px 12px', borderRadius: 6, cursor: 'pointer', border: 'none',
-              background: active ? 'rgba(0,213,255,0.15)' : 'transparent',
+              background: active ? colors.cyanSoft : 'transparent',
               color: active ? colors.cyan : colors.textMuted,
               fontFamily: font.body, fontSize: 12, fontWeight: active ? 600 : 500,
               transition: 'all 150ms',

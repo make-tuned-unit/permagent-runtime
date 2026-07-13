@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import type { ThemeColors } from '../../styles/tokens';
 import { Mobius } from '../mobius/Mobius';
 import { useDashboard } from '../dashboard/useDashboard';
 import { useCommandCenter } from '../../lib/store';
@@ -21,8 +22,69 @@ function ensureScheme(url: string): string {
   return `https://${trimmed}`;
 }
 
+/**
+ * Pane-visibility toggle in the Build toolbar. It is a true toggle button:
+ * `active` = the pane is currently shown, surfaced to assistive tech via
+ * `aria-pressed`. Hover / focus / press states are driven from local state
+ * because the toolbar is styled inline (no stylesheet pseudo-classes here).
+ */
+function ToggleChip({
+  active, label, title, colors, reduceMotion, onToggle, children,
+}: {
+  active: boolean;
+  label: string;
+  title: string;
+  colors: ThemeColors;
+  reduceMotion: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  const [hover, setHover] = useState(false);
+  const [focus, setFocus] = useState(false);
+  const [pressed, setPressed] = useState(false);
+
+  const borderColor = active || hover || focus ? colors.borderHi : colors.border;
+  const ring = focus ? `, 0 0 0 3px ${colors.cyanGlow}` : '';
+
+  const style: React.CSSProperties = {
+    height: 30, padding: '0 12px', borderRadius: 8,
+    background: active ? colors.cyanSoft : hover ? colors.surfaceHi : 'transparent',
+    border: `1px solid ${borderColor}`,
+    fontFamily: font.body, fontSize: 12, fontWeight: 500,
+    color: active ? colors.text : colors.textMuted,
+    opacity: active ? 1 : 0.7,
+    cursor: 'pointer',
+    display: 'inline-flex', alignItems: 'center', gap: 6,
+    outline: 'none',
+    boxShadow: `none${ring}`,
+    transform: pressed ? 'translateY(0.5px)' : 'none',
+    transition: reduceMotion
+      ? 'none'
+      : 'background 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease, opacity 140ms ease',
+  };
+
+  return (
+    <button
+      type="button"
+      style={style}
+      aria-pressed={active}
+      aria-label={label}
+      title={title}
+      onClick={onToggle}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => { setHover(false); setPressed(false); }}
+      onMouseDown={() => setPressed(true)}
+      onMouseUp={() => setPressed(false)}
+      onFocus={() => setFocus(true)}
+      onBlur={() => { setFocus(false); setPressed(false); }}
+    >
+      {children}
+    </button>
+  );
+}
+
 export function BuildView() {
-  const { gradient, colors } = useTheme();
+  const { gradient, colors, reduceMotion } = useTheme();
 
   const ghostBtn: React.CSSProperties = {
     height: 30, padding: '0 12px', borderRadius: 8,
@@ -95,7 +157,7 @@ export function BuildView() {
             <span style={{
               width: 5, height: 5, borderRadius: '50%',
               background: hasActive ? colors.cyan : colors.textDim,
-              boxShadow: hasActive ? '0 0 6px rgba(0,213,255,0.7)' : 'none',
+              boxShadow: hasActive ? `0 0 6px ${colors.cyanGlow}` : 'none',
             }} />
             {agentName} · {hasActive ? 'thinking' : 'idle'}
           </div>
@@ -118,25 +180,32 @@ export function BuildView() {
         </div>
 
         {/* Pane visibility: hide one pane to give the other the full canvas.
-            The store guarantees both are never hidden at once. */}
-        <button
-          style={{ ...ghostBtn, opacity: buildTerminalHidden ? 0.45 : 1 }}
+            The store guarantees both are never hidden at once. Each chip is a
+            toggle button — `aria-pressed` reflects whether its pane is shown. */}
+        <ToggleChip
+          active={!buildTerminalHidden}
+          label={buildTerminalHidden ? 'Show terminal panel' : 'Hide terminal panel'}
           title={buildTerminalHidden ? 'Show terminal' : 'Hide terminal — full-screen browser'}
-          onClick={toggleBuildTerminal}
+          colors={colors}
+          reduceMotion={reduceMotion}
+          onToggle={toggleBuildTerminal}
         >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden="true">
             <polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" /></svg>
           Terminal
-        </button>
-        <button
-          style={{ ...ghostBtn, opacity: buildBrowserHidden ? 0.45 : 1 }}
+        </ToggleChip>
+        <ToggleChip
+          active={!buildBrowserHidden}
+          label={buildBrowserHidden ? 'Show browser panel' : 'Hide browser panel'}
           title={buildBrowserHidden ? 'Show browser' : 'Hide browser — full-screen terminal'}
-          onClick={toggleBuildBrowser}
+          colors={colors}
+          reduceMotion={reduceMotion}
+          onToggle={toggleBuildBrowser}
         >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden="true">
             <circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18" /></svg>
           Browser
-        </button>
+        </ToggleChip>
 
         {hasActive && (
           <>

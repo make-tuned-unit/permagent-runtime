@@ -10,6 +10,7 @@ pub mod cards;
 pub mod config_management;
 pub mod dashboard;
 pub mod decisions;
+pub mod dictation;
 pub mod errors;
 pub mod events;
 pub mod features;
@@ -115,6 +116,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(workspaces::routes(state.clone()))
         .merge(attachments::routes(state.clone()))
         .merge(reader::routes(state.clone()))
+        .merge(dictation::routes(state.clone()))
         .merge(brain::routes(state.clone()))
         .merge(people::routes(state.clone()))
         .merge(inbox::routes(state.clone()))

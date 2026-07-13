@@ -1,7 +1,7 @@
 //! Durable activity journal (#619) — one reviewable "what did my agents do"
 //! surface.
 //!
-//! An append-only `activity_journal` table (spectral schema v25) fed by the
+//! An append-only `activity_journal` table (spectral schema v26) fed by the
 //! existing [`crate::events`] emit() seam. A daemon-side consumer task
 //! (goose-server `state.rs`) subscribes to the bus and calls [`record_event`]
 //! for every event; [`entry_from_event`] selects the journal-worthy kinds
@@ -346,12 +346,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn migrate_v24_to_v25_idempotent() {
+    async fn migrate_v25_to_v26_idempotent() {
         let pool = test_pool().await; // fresh init already created the table
-        crate::session::spectral_schema::migrate_v24_to_v25(&pool)
+        crate::session::spectral_schema::migrate_v25_to_v26(&pool)
             .await
             .unwrap();
-        crate::session::spectral_schema::migrate_v24_to_v25(&pool)
+        crate::session::spectral_schema::migrate_v25_to_v26(&pool)
             .await
             .unwrap();
         // Table usable after double application.
