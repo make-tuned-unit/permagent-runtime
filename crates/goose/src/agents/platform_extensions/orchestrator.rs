@@ -322,6 +322,10 @@ impl OrchestratorClient {
                  based on capability match, cost tier, and current load\n\
                  - Run workers autonomously, track progress on a Kanban board, and retry on failure\n\
                  - Manage approval gates: nothing completes without the user's explicit approve\n\
+                 - Gate code goals on an authored done-criterion: dispatch seeds a default build \
+                 completion check (the project's configured build_command, else stack detection — \
+                 prose goals are never force-checked); the verifier runs the checks in the worker's \
+                 worktree and a failing check blocks auto-approval\n\
                  - Escalate with a typed decision item when blocked, instead of \
                  retrying silently\n\
                  - Give real-time status on what's in flight, stalled, or completed\n\n\
@@ -2527,14 +2531,6 @@ pub async fn format_board_summary(pool: &sqlx::Pool<sqlx::Sqlite>) -> Result<Str
 pub type GoalReviewHook = Box<dyn Fn(sqlx::Pool<sqlx::Sqlite>, String) + Send + Sync>;
 pub static GOAL_REVIEW_HOOK: std::sync::OnceLock<GoalReviewHook> = std::sync::OnceLock::new();
 
-/// Handle the completion of a dispatched goal worker.
-///
-/// Called by the tracker task spawned in dispatch_goal when the JoinHandle resolves.
-/// On success: moves card InProgress → Review.
-/// On failure: increments attempt_count. At 3 attempts, moves to Triage with
-/// needs_human_attention. Otherwise leaves in InProgress for retry.
-///
-/// Gracefully no-ops if the card is no longer in InProgress (manual intervention).
 /// Goal types that never get a forced build check (#456, ruled 2026-06-23):
 /// prose/content-flavored work has no build to run — seeding one would
 /// false-fail correct work. Content goals get their publish-sequence +
@@ -2795,6 +2791,14 @@ pub async fn cancel_goal(
     Ok(new_state)
 }
 
+/// Handle the completion of a dispatched goal worker.
+///
+/// Called by the tracker task spawned in dispatch_goal when the JoinHandle resolves.
+/// On success: moves card InProgress → Review.
+/// On failure: increments attempt_count. At 3 attempts, moves to Triage with
+/// needs_human_attention. Otherwise leaves in InProgress for retry.
+///
+/// Gracefully no-ops if the card is no longer in InProgress (manual intervention).
 pub async fn handle_goal_completion(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     card_id: &str,
@@ -3491,9 +3495,13 @@ mod tests {
             r#"{"scripts": {"build": "tsc && vite build"}}"#,
         )
         .unwrap();
-        let checks =
-            default_completion_checks(&serde_json::json!({}), &serde_json::json!({}), npm.path(), true)
-                .expect("npm build script must seed");
+        let checks = default_completion_checks(
+            &serde_json::json!({}),
+            &serde_json::json!({}),
+            npm.path(),
+            true,
+        )
+        .expect("npm build script must seed");
         assert_eq!(seeded_cmd(&checks), "npm run build");
         assert_eq!(checks[0]["timeout_secs"], DEFAULT_BUILD_CHECK_TIMEOUT_SECS);
 
