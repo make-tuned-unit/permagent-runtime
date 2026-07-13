@@ -813,6 +813,16 @@ export const api = {
       { method: 'DELETE', headers: authHeaders() },
     ),
 
+  /** Install the bundled dictation model on first run: the daemon copies the
+   *  bundled Whisper model into the data dir (once) and points
+   *  LOCAL_WHISPER_MODEL at it. Idempotent. `status` is "ready" once dictation
+   *  works, or "unavailable" when no bundle is present (e.g. a dev build). */
+  provisionDictationModel: (bundledPath: string) =>
+    apiFetch<{ status: string; model: string | null }>('/api/dictation/provision', {
+      method: 'POST',
+      body: JSON.stringify({ bundled_path: bundledPath }),
+    }),
+
   /** Transcribe a dictated audio clip (WAV) to text locally, via the on-device
    *  Whisper model. A 503 means dictation isn't set up on this install — the
    *  caller should surface that as a setup prompt, not a hard error. */

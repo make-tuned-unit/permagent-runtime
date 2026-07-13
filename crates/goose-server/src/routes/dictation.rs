@@ -18,12 +18,16 @@ use axum::extract::{DefaultBodyLimit, Multipart, State};
 use axum::http::StatusCode;
 use axum::routing::post;
 use axum::{Json, Router};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// 25 MB — a generous ceiling for a dictated clip (minutes of 16-bit WAV),
 /// well under anything that would stall local transcription.
 const MAX_AUDIO_SIZE: usize = 25 * 1024 * 1024;
+
+/// The model bundled in the shipped app (see scripts/copy-whisper-model.sh).
+/// "base" is the size/quality sweet spot for dictation.
+const BUNDLED_MODEL_ID: &str = "base";
 
 #[derive(Serialize)]
 pub struct TranscribeResponse {
@@ -37,7 +41,104 @@ pub fn routes(state: Arc<AppState>) -> Router {
             "/api/dictation/transcribe",
             post(transcribe_handler).layer(DefaultBodyLimit::max(MAX_AUDIO_SIZE * 2)),
         )
+        .route("/api/dictation/provision", post(provision_handler))
         .with_state(state)
+}
+
+#[derive(Deserialize)]
+pub struct ProvisionRequest {
+    /// Absolute path to the bundled model, resolved by the frontend via Tauri
+    /// `resolveResource('whisper/whisper-base-q8_0.gguf')`.
+    pub bundled_path: String,
+}
+
+#[derive(Serialize)]
+pub struct ProvisionResponse {
+    /// "ready" — the model is installed and `LOCAL_WHISPER_MODEL` is set, so
+    /// dictation works. "unavailable" — no bundled model was found (e.g. a dev
+    /// build); dictation stays unconfigured and the mic shows its setup hint.
+    pub status: String,
+    pub model: Option<String>,
+}
+
+/// POST /api/dictation/provision — install the bundled dictation model on first
+/// run so a shipped install dictates offline with zero setup. Copies the
+/// bundled Whisper model into the data dir (once) and points
+/// `LOCAL_WHISPER_MODEL` at it. Idempotent and cheap on subsequent calls: if the
+/// model is already installed it only re-affirms the config. Never an error when
+/// the bundle is simply absent — that's the normal dev case.
+async fn provision_handler(
+    State(_state): State<Arc<AppState>>,
+    Json(req): Json<ProvisionRequest>,
+) -> Result<Json<ProvisionResponse>, (StatusCode, String)> {
+    let model = permagent::dictation::whisper::get_model(BUNDLED_MODEL_ID).ok_or((
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "unknown bundled model id".to_string(),
+    ))?;
+    let target = model.local_path();
+
+    // Already installed → make sure the config points at it and return.
+    if target.exists() {
+        set_dictation_model(BUNDLED_MODEL_ID)?;
+        return Ok(Json(ProvisionResponse {
+            status: "ready".to_string(),
+            model: Some(BUNDLED_MODEL_ID.to_string()),
+        }));
+    }
+
+    // No bundled model present (dev/unbundled build) — not an error.
+    let src = std::path::Path::new(&req.bundled_path);
+    if !src.is_file() {
+        return Ok(Json(ProvisionResponse {
+            status: "unavailable".to_string(),
+            model: None,
+        }));
+    }
+
+    if let Some(parent) = target.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("create models dir: {e}"),
+            )
+        })?;
+    }
+    // Copy to a temp sibling then rename, so a crash mid-copy never leaves a
+    // truncated file that is_downloaded() would treat as a valid model.
+    let tmp = target.with_extension("partial");
+    tokio::fs::copy(src, &tmp).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("copy model: {e}"),
+        )
+    })?;
+    tokio::fs::rename(&tmp, &target).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("finalize model: {e}"),
+        )
+    })?;
+
+    set_dictation_model(BUNDLED_MODEL_ID)?;
+    tracing::info!(model = BUNDLED_MODEL_ID, path = %target.display(), "bundled dictation model installed");
+    Ok(Json(ProvisionResponse {
+        status: "ready".to_string(),
+        model: Some(BUNDLED_MODEL_ID.to_string()),
+    }))
+}
+
+fn set_dictation_model(model_id: &str) -> Result<(), (StatusCode, String)> {
+    permagent::config::Config::global()
+        .set_param(
+            permagent::dictation::whisper::LOCAL_WHISPER_MODEL_CONFIG_KEY,
+            model_id,
+        )
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("set config: {e}"),
+            )
+        })
 }
 
 async fn transcribe_handler(
