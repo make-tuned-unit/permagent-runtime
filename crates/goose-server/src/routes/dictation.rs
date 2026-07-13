@@ -70,7 +70,7 @@ async fn transcribe_handler(
 /// cfg-gate stays small and the "feature absent" fallback is explicit.
 #[cfg(feature = "local-inference")]
 async fn transcribe(audio: Vec<u8>) -> Result<Json<TranscribeResponse>, (StatusCode, String)> {
-    match permagent::dictation::transcribe_local(audio).await {
+    match permagent::dictation::providers::transcribe_local(audio).await {
         Ok(text) => Ok(Json(TranscribeResponse { text })),
         Err(e) => {
             let msg = e.to_string();
