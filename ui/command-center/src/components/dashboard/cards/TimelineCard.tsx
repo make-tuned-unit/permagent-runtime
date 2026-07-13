@@ -3,15 +3,17 @@
  *
  * Reads the durable activity journal (`GET /api/activity`), the append-only
  * record of what the agents did: goal transitions, decisions requested and
- * resolved, librarian describe runs, task failures. Day-grouped, newest
- * first, with "Show earlier" keyset pagination. Rows deep-link to their
- * evidence: goal rows open the goal detail overlay, decision rows open the
- * Decision Inbox, memory rows jump to the Memory tool.
+ * resolved, librarian describe runs, Watcher nudges, task failures.
+ * Day-grouped, newest first, with "Show earlier" keyset pagination and
+ * server-side kind/actor filters (chips + actor select) so pagination stays
+ * correct under a filter. Rows deep-link to their evidence: goal rows open
+ * the goal detail overlay, decision rows open the Decision Inbox, memory
+ * rows jump to the Memory tool.
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  FiFlag, FiHelpCircle, FiCheckCircle, FiBookOpen, FiAlertTriangle, FiActivity,
+  FiFlag, FiHelpCircle, FiCheckCircle, FiBookOpen, FiBell, FiAlertTriangle, FiActivity,
 } from 'react-icons/fi';
 import { font, radius } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
@@ -40,16 +42,37 @@ interface JournalPage {
 
 const PAGE_SIZE = 50;
 
-function useActivityJournal() {
+/** Kind-filter chips. `kinds: null` = no kind filter (All). */
+const KIND_CHIPS: { label: string; kinds: string[] | null }[] = [
+  { label: 'All', kinds: null },
+  { label: 'Goals', kinds: ['goal_state_changed'] },
+  { label: 'Decisions', kinds: ['decision_created', 'decision_resolved'] },
+  { label: 'Librarian', kinds: ['librarian_describe_completed'] },
+  { label: 'Watcher', kinds: ['proactive_nudge'] },
+  { label: 'Failures', kinds: ['task_failed'] },
+];
+
+function journalUrl(kinds: string[] | null, actor: string | null, before?: string): string {
+  const params = new URLSearchParams({ limit: String(PAGE_SIZE) });
+  if (kinds && kinds.length > 0) params.set('kind', kinds.join(','));
+  if (actor) params.set('actor', actor);
+  if (before) params.set('before', before);
+  return `/api/activity?${params.toString()}`;
+}
+
+function useActivityJournal(kinds: string[] | null, actor: string | null) {
   const [items, setItems] = useState<JournalItem[]>([]);
   const [nextBefore, setNextBefore] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
-  const intervalRef = useRef<ReturnType<typeof setInterval>>();
+  // Guards against a slow response landing after the filter changed.
+  const fetchSeq = useRef(0);
 
   const fetchFirstPage = useCallback(async (initial: boolean) => {
+    const seq = fetchSeq.current;
     try {
-      const page = await apiFetch<JournalPage>(`/api/activity?limit=${PAGE_SIZE}`);
+      const page = await apiFetch<JournalPage>(journalUrl(kinds, actor));
+      if (seq !== fetchSeq.current) return; // filter changed mid-flight
       setItems(prev => {
         if (initial || prev.length === 0) return page.items;
         // Refresh: prepend rows newer than what we already show, keeping
@@ -60,30 +83,36 @@ function useActivityJournal() {
       });
       if (initial) setNextBefore(page.next_before ?? null);
     } catch { /* ignore — stale data stays, matching useDashboard */ }
-    setLoading(false);
-  }, []);
+    if (seq === fetchSeq.current) setLoading(false);
+  }, [kinds, actor]);
 
+  // Filter change (or mount): reset and refetch; keep a 30s refresh going.
   useEffect(() => {
+    fetchSeq.current += 1;
+    setItems([]);
+    setNextBefore(null);
+    setLoading(true);
+    setLoadingMore(false);
     fetchFirstPage(true);
-    intervalRef.current = setInterval(() => fetchFirstPage(false), 30_000);
-    return () => clearInterval(intervalRef.current);
+    const interval = setInterval(() => fetchFirstPage(false), 30_000);
+    return () => clearInterval(interval);
   }, [fetchFirstPage]);
 
   const loadMore = useCallback(async () => {
     if (!nextBefore || loadingMore) return;
     setLoadingMore(true);
+    const seq = fetchSeq.current;
     try {
-      const page = await apiFetch<JournalPage>(
-        `/api/activity?limit=${PAGE_SIZE}&before=${encodeURIComponent(nextBefore)}`,
-      );
+      const page = await apiFetch<JournalPage>(journalUrl(kinds, actor, nextBefore));
+      if (seq !== fetchSeq.current) return; // filter changed mid-flight
       setItems(prev => {
         const known = new Set(prev.map(i => i.id));
         return [...prev, ...page.items.filter(i => !known.has(i.id))];
       });
       setNextBefore(page.next_before ?? null);
     } catch { /* keep current cursor so the user can retry */ }
-    setLoadingMore(false);
-  }, [nextBefore, loadingMore]);
+    if (seq === fetchSeq.current) setLoadingMore(false);
+  }, [nextBefore, loadingMore, kinds, actor]);
 
   return { items, loading, loadMore, hasMore: nextBefore !== null, loadingMore };
 }
@@ -115,8 +144,23 @@ function groupByDay(items: JournalItem[]): { label: string; items: JournalItem[]
 
 export function TimelineCard() {
   const { colors } = useTheme();
-  const { items, loading, loadMore, hasMore, loadingMore } = useActivityJournal();
+  const [chipIdx, setChipIdx] = useState(0);
+  const [actor, setActor] = useState<string | null>(null);
+  const { items, loading, loadMore, hasMore, loadingMore } =
+    useActivityJournal(KIND_CHIPS[chipIdx].kinds, actor);
   const [inboxOpen, setInboxOpen] = useState(false);
+  // Actor options accumulate across pages and filters so the select doesn't
+  // collapse to just the currently filtered actor.
+  const [actorOptions, setActorOptions] = useState<string[]>([]);
+  useEffect(() => {
+    setActorOptions(prev => {
+      const set = new Set(prev);
+      let grew = false;
+      for (const i of items) if (!set.has(i.actor)) { set.add(i.actor); grew = true; }
+      return grew ? [...set].sort() : prev;
+    });
+  }, [items]);
+  const filtered = chipIdx !== 0 || actor !== null;
   const groups = groupByDay(items);
 
   return (
@@ -132,13 +176,60 @@ export function TimelineCard() {
         overflow: 'hidden',
       }}>
         <SectionTitle title="Timeline" right={items.length > 0 ? 'last 90 days' : undefined} />
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap',
+          margin: '2px 0 8px',
+        }}>
+          {KIND_CHIPS.map((chip, idx) => {
+            const active = idx === chipIdx;
+            return (
+              <button
+                key={chip.label}
+                onClick={() => setChipIdx(idx)}
+                aria-pressed={active}
+                style={{
+                  padding: '3px 9px',
+                  borderRadius: 999,
+                  border: `1px solid ${active ? colors.cyan : colors.border}`,
+                  background: active ? colors.cyanSoft : 'transparent',
+                  color: active ? colors.cyan : colors.textDim,
+                  fontFamily: font.body, fontSize: 11, fontWeight: 500,
+                  cursor: 'pointer',
+                  transition: 'color 120ms ease, border-color 120ms ease, background 120ms ease',
+                }}
+              >
+                {chip.label}
+              </button>
+            );
+          })}
+          <div style={{ flex: 1 }} />
+          {actorOptions.length > 1 && (
+            <select
+              value={actor ?? ''}
+              onChange={e => setActor(e.target.value || null)}
+              aria-label="Filter by actor"
+              style={{
+                padding: '3px 6px',
+                borderRadius: radius.sm,
+                border: `1px solid ${actor ? colors.cyan : colors.border}`,
+                background: 'transparent',
+                color: actor ? colors.cyan : colors.textDim,
+                fontFamily: font.body, fontSize: 11,
+                cursor: 'pointer',
+              }}
+            >
+              <option value="">All actors</option>
+              {actorOptions.map(a => <option key={a} value={a}>{a}</option>)}
+            </select>
+          )}
+        </div>
         {items.length === 0 ? (
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <div style={{ textAlign: 'center' }}>
               <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: 4 }}>
-                {loading ? 'Loading activity…' : 'No activity yet'}
+                {loading ? 'Loading activity…' : filtered ? 'Nothing matches this filter' : 'No activity yet'}
               </div>
-              {!loading && (
+              {!loading && !filtered && (
                 <div style={{ fontSize: 11, color: colors.textDim }}>
                   Goal moves, decisions, and librarian runs will appear here
                 </div>
@@ -204,6 +295,7 @@ const KIND_META: Record<string, { icon: React.ComponentType<{ size?: number }>; 
   decision_created: { icon: FiHelpCircle, colorKey: 'warning' },
   decision_resolved: { icon: FiCheckCircle, colorKey: 'success' },
   librarian_describe_completed: { icon: FiBookOpen, colorKey: 'cyan' },
+  proactive_nudge: { icon: FiBell, colorKey: 'cyan' },
   task_failed: { icon: FiAlertTriangle, colorKey: 'danger' },
 };
 

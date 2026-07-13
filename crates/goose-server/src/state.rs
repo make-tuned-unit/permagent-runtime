@@ -567,8 +567,9 @@ impl AppState {
 
         // Durable activity journal (#619): a long-lived consumer on the same
         // event bus, persisting selected kinds (goal transitions, decisions,
-        // librarian describe runs, task failures) as append-only rows so
-        // "what did my agents do today" survives the 1000-event ring buffer.
+        // librarian describe runs, Watcher nudges, task failures) as
+        // append-only rows so "what did my agents do today" survives the
+        // 1000-event ring buffer.
         // Starts with a retention pass (rows older than 90 days). Failure-
         // tolerant: a bad event is logged and skipped, never crashes the task.
         if let Ok(pool) = agent_manager.session_manager().pool_clone().await {

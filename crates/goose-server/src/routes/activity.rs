@@ -103,6 +103,11 @@ pub struct JournalQuery {
     /// Pass the previous page's `next_before` to paginate.
     before: Option<String>,
     limit: Option<i64>,
+    /// Comma-separated journal kinds (validated against `KNOWN_KINDS` server
+    /// side — unknown names match nothing); absent = all kinds.
+    kind: Option<String>,
+    /// Exact actor match ("henry", "watcher", "librarian", …); absent = all.
+    actor: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -126,16 +131,29 @@ async fn get_journal(
             }),
         )
     })?;
-    let items = permagent::activity_journal::page(&pool, q.before.as_deref(), limit)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorBody {
-                    error: format!("journal query failed: {}", e),
-                }),
-            )
-        })?;
+    let kinds: Option<Vec<String>> = q.kind.as_deref().map(|s| {
+        s.split(',')
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+            .map(str::to_string)
+            .collect()
+    });
+    let items = permagent::activity_journal::page(
+        &pool,
+        q.before.as_deref(),
+        limit,
+        kinds.as_deref(),
+        q.actor.as_deref(),
+    )
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorBody {
+                error: format!("journal query failed: {}", e),
+            }),
+        )
+    })?;
     // A full page means there may be older rows; hand back the last ts as the
     // next exclusive cursor. A short page is the end of the journal.
     let next_before = if items.len() as i64 == limit {

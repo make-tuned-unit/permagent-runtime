@@ -5,9 +5,9 @@
 //! existing [`crate::events`] emit() seam. A daemon-side consumer task
 //! (goose-server `state.rs`) subscribes to the bus and calls [`record_event`]
 //! for every event; [`entry_from_event`] selects the journal-worthy kinds
-//! (goal transitions, decisions, librarian describe runs, task failures) and
-//! maps their payloads defensively — a missing field degrades to a generic
-//! label, never a dropped row.
+//! (goal transitions, decisions, librarian describe runs, Watcher nudges,
+//! task failures) and maps their payloads defensively — a missing field
+//! degrades to a generic label, never a dropped row.
 //!
 //! Discipline: the journal INDEXES the existing durable stores, it does not
 //! duplicate them. `ref_kind`/`ref_id` point at the card / decision / memory /
@@ -28,6 +28,22 @@ use sqlx::{Pool, Row, Sqlite};
 
 use crate::events::{PermagentEvent, PermagentEventType};
 
+/// Self-knowledge descriptor for the Home activity timeline — the user-facing
+/// surface this journal feeds. Registered in
+/// [`crate::agents::self_knowledge::SURFACE_DESCRIPTORS`].
+pub const TIMELINE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "timeline",
+        display_name: "Activity timeline",
+        category: crate::agents::self_knowledge::FeatureCategory::Surface,
+        what_it_does:
+            "A day-grouped timeline on the Home dashboard reading the durable activity journal — an append-only record of what you and your workers actually did: goal moves, decisions requested and resolved, librarian describe runs, Watcher nudges, and task failures, kept for 90 days and filterable by kind or actor",
+        why_it_matters:
+            "It is the user's reviewable answer to 'what did my agents do today and why' — every row carries an evidence pointer (the goal card, the decision, the memory), so when the user asks what happened, point them here instead of reconstructing history from your context window",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        teaching: &[],
+    };
+
 /// Journal rows older than this are deleted by the startup retention pass
 /// (the #560 standing size-cap discipline).
 pub const RETENTION_DAYS: i64 = 90;
@@ -35,6 +51,18 @@ pub const RETENTION_DAYS: i64 = 90;
 /// Display caps — the journal stores labels, not bodies.
 const TITLE_MAX: usize = 120;
 const DETAIL_MAX: usize = 300;
+
+/// The closed set of journaled kinds. The `kind` filter on [`page`] is
+/// validated against this list (unknown values simply match nothing), and the
+/// frontend's filter chips are built from the same names.
+pub const KNOWN_KINDS: [&str; 6] = [
+    "goal_state_changed",
+    "decision_created",
+    "decision_resolved",
+    "librarian_describe_completed",
+    "proactive_nudge",
+    "task_failed",
+];
 
 /// A journal row ready to insert (write side).
 #[derive(Debug, Clone)]
@@ -99,7 +127,8 @@ fn state_label(binding: &str) -> String {
 /// Map a bus event to a journal entry, or `None` for kinds the journal skips.
 ///
 /// Selected kinds: `goal_state_changed`, `decision_created`,
-/// `decision_resolved`, `librarian_describe_completed`, `task_failed`.
+/// `decision_resolved`, `librarian_describe_completed`, `proactive_nudge`,
+/// `task_failed`.
 /// Everything else — including the chatty `stream_chunk` / `activity` firehose
 /// and `browser_navigate_requested` (navigation noise) — is filtered here,
 /// cheaply, before any DB work.
@@ -194,6 +223,32 @@ pub fn entry_from_event(event: &PermagentEvent) -> Option<NewEntry> {
                 task_id.map(str::to_string),
             )
         }
+        PermagentEventType::ProactiveNudge => {
+            // The Watcher's initiative (#672): it chose to surface something.
+            // Dormant Brain threads carry a memory pointer; news nudges have
+            // no durable referent (the link lives in the notification).
+            let nudge_kind = payload_str(event, "kind").unwrap_or("nudge");
+            let subject = payload_str(event, "subject").unwrap_or("something");
+            let message = payload_str(event, "message");
+            let title = match nudge_kind {
+                "dormant_thread" => format!("Resurfaced '{}'", truncate(subject, 80)),
+                "project_news" => format!("News: {}", truncate(subject, 80)),
+                _ => format!("Nudge: {}", truncate(subject, 80)),
+            };
+            let (ref_kind, ref_id) = if nudge_kind == "dormant_thread" {
+                (Some("memory"), Some(subject.to_string()))
+            } else {
+                (None, None)
+            };
+            (
+                "proactive_nudge",
+                "watcher".to_string(),
+                title,
+                message.map(str::to_string),
+                ref_kind,
+                ref_id,
+            )
+        }
         // Everything else — stream chunks, activity firehose, browser
         // navigation (noise per #619), agent state ticks, … — is not journaled.
         _ => return None,
@@ -264,29 +319,63 @@ pub async fn record_event(pool: &Pool<Sqlite>, event: &PermagentEvent) -> Result
 
 /// Newest-first keyset page for `GET /api/activity`. `before` is an exclusive
 /// `ts` cursor (pass the last row's `ts` to get the next page); `None` starts
-/// from the newest row. Goal rows are enriched live with the card's
-/// `project_id` for deep-linking. Ties on `ts` break on `id` (UUIDv7, so
-/// id-order is emit-order); rows sharing the cursor's exact millisecond are
-/// the documented keyset edge and can be skipped across a page boundary.
+/// from the newest row. `kinds` / `actor` filter server-side so pagination
+/// stays correct under a filter; `kinds` is validated against [`KNOWN_KINDS`]
+/// (an all-unknown filter matches nothing). Goal rows are enriched live with
+/// the card's `project_id` for deep-linking. Ties on `ts` break on `id`
+/// (UUIDv7, so id-order is emit-order); rows sharing the cursor's exact
+/// millisecond are the documented keyset edge and can be skipped across a
+/// page boundary.
 pub async fn page(
     pool: &Pool<Sqlite>,
     before: Option<&str>,
     limit: i64,
+    kinds: Option<&[String]>,
+    actor: Option<&str>,
 ) -> Result<Vec<JournalItem>> {
-    let rows = sqlx::query(
+    // The IN clause is assembled ONLY from KNOWN_KINDS members (static
+    // literals) — requested kinds select which constants participate, their
+    // bytes never reach the SQL.
+    let kind_clause = match kinds {
+        Some(requested) if !requested.is_empty() => {
+            let valid: Vec<&str> = KNOWN_KINDS
+                .iter()
+                .copied()
+                .filter(|k| requested.iter().any(|r| r.as_str() == *k))
+                .collect();
+            if valid.is_empty() {
+                return Ok(Vec::new()); // filter names no known kind
+            }
+            format!(
+                "AND aj.kind IN ({})",
+                valid
+                    .iter()
+                    .map(|k| format!("'{k}'"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+        _ => String::new(),
+    };
+
+    let sql = format!(
         "SELECT aj.id, aj.ts, aj.kind, aj.actor, aj.title, aj.detail,
                 aj.ref_kind, aj.ref_id,
                 CASE WHEN aj.ref_kind = 'goal' THEN c.project_id END AS goal_project_id
          FROM activity_journal aj
          LEFT JOIN cards c ON aj.ref_kind = 'goal' AND c.id = aj.ref_id
          WHERE (?1 IS NULL OR aj.ts < ?1)
+           AND (?2 IS NULL OR aj.actor = ?2)
+           {kind_clause}
          ORDER BY aj.ts DESC, aj.id DESC
-         LIMIT ?2",
-    )
-    .bind(before)
-    .bind(limit.clamp(1, 500))
-    .fetch_all(pool)
-    .await?;
+         LIMIT ?3"
+    );
+    let rows = sqlx::query(&sql)
+        .bind(before)
+        .bind(actor)
+        .bind(limit.clamp(1, 500))
+        .fetch_all(pool)
+        .await?;
 
     Ok(rows
         .into_iter()
@@ -358,7 +447,7 @@ mod tests {
         insert_entry(&pool, &entry("e1", "2026-07-10T00:00:00.000Z"))
             .await
             .unwrap();
-        assert_eq!(page(&pool, None, 10).await.unwrap().len(), 1);
+        assert_eq!(page(&pool, None, 10, None, None).await.unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -372,21 +461,23 @@ mod tests {
             insert_entry(&pool, &entry(id, ts)).await.unwrap();
         }
 
-        let items = page(&pool, None, 10).await.unwrap();
+        let items = page(&pool, None, 10, None, None).await.unwrap();
         assert_eq!(
             items.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
             vec!["c", "b", "a"]
         );
 
         // Keyset cursor: page after the newest row's ts.
-        let next = page(&pool, Some(&items[0].ts), 10).await.unwrap();
+        let next = page(&pool, Some(&items[0].ts), 10, None, None)
+            .await
+            .unwrap();
         assert_eq!(
             next.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
             vec!["b", "a"]
         );
 
         // Limit respected.
-        let limited = page(&pool, None, 2).await.unwrap();
+        let limited = page(&pool, None, 2, None, None).await.unwrap();
         assert_eq!(limited.len(), 2);
         assert_eq!(limited[0].id, "c");
     }
@@ -397,7 +488,7 @@ mod tests {
         let e = entry("dup", "2026-07-10T10:00:00.000Z");
         insert_entry(&pool, &e).await.unwrap();
         insert_entry(&pool, &e).await.unwrap();
-        assert_eq!(page(&pool, None, 10).await.unwrap().len(), 1);
+        assert_eq!(page(&pool, None, 10, None, None).await.unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -413,7 +504,7 @@ mod tests {
 
         let deleted = prune_older_than_days(&pool, RETENTION_DAYS).await.unwrap();
         assert_eq!(deleted, 1);
-        let items = page(&pool, None, 10).await.unwrap();
+        let items = page(&pool, None, 10, None, None).await.unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].id, "fresh");
     }
@@ -486,7 +577,7 @@ mod tests {
         );
         assert!(record_event(&pool, &e).await.unwrap());
 
-        let items = page(&pool, None, 10).await.unwrap();
+        let items = page(&pool, None, 10, None, None).await.unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].title, "Ship the journal");
         assert_eq!(
@@ -499,6 +590,113 @@ mod tests {
         // Skipped kinds report false and write nothing.
         let skipped = events::stream_chunk("s", "tok", true);
         assert!(!record_event(&pool, &skipped).await.unwrap());
-        assert_eq!(page(&pool, None, 10).await.unwrap().len(), 1);
+        assert_eq!(page(&pool, None, 10, None, None).await.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn maps_proactive_nudges() {
+        // Dormant-thread nudge: watcher actor + memory evidence pointer.
+        let e = events::proactive_nudge(
+            "dormant_thread",
+            "Solar shed project",
+            "You haven't touched the solar shed thread in three weeks.",
+            4,
+            "2026-06-19T10:00:00.000Z",
+        );
+        let entry = entry_from_event(&e).expect("proactive_nudge is journaled");
+        assert_eq!(entry.kind, "proactive_nudge");
+        assert_eq!(entry.actor, "watcher");
+        assert_eq!(entry.title, "Resurfaced 'Solar shed project'");
+        assert_eq!(entry.ref_kind.as_deref(), Some("memory"));
+        assert_eq!(entry.ref_id.as_deref(), Some("Solar shed project"));
+        assert!(entry.detail.as_deref().unwrap().contains("three weeks"));
+
+        // News nudge: no durable referent, so no evidence pointer.
+        let news = entry_from_event(&events::proactive_nudge(
+            "project_news",
+            "kuzu 0.11",
+            "kuzu 0.11 shipped — relevant to the Brain.",
+            1,
+            "2026-07-10T10:00:00.000Z",
+        ))
+        .unwrap();
+        assert_eq!(news.title, "News: kuzu 0.11");
+        assert!(news.ref_kind.is_none());
+        assert!(news.ref_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn page_filters_by_kind_and_actor() {
+        let pool = test_pool().await;
+        let rows = [
+            (
+                "g1",
+                "2026-07-10T10:00:00.000Z",
+                "goal_state_changed",
+                "system",
+            ),
+            (
+                "d1",
+                "2026-07-10T11:00:00.000Z",
+                "decision_created",
+                "henry",
+            ),
+            (
+                "d2",
+                "2026-07-10T12:00:00.000Z",
+                "decision_resolved",
+                "jesse",
+            ),
+            (
+                "n1",
+                "2026-07-10T13:00:00.000Z",
+                "proactive_nudge",
+                "watcher",
+            ),
+        ];
+        for (id, ts, kind, actor) in rows {
+            let mut e = entry(id, ts);
+            e.kind = kind.to_string();
+            e.actor = actor.to_string();
+            insert_entry(&pool, &e).await.unwrap();
+        }
+
+        // Kind filter: multi-kind IN (the Decisions chip).
+        let kinds: &[String] = &[
+            "decision_created".to_string(),
+            "decision_resolved".to_string(),
+        ];
+        let items = page(&pool, None, 10, Some(kinds), None).await.unwrap();
+        assert_eq!(
+            items.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+            vec!["d2", "d1"]
+        );
+
+        // Actor filter composes with the cursor.
+        let items = page(&pool, None, 10, None, Some("watcher")).await.unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "n1");
+        let items = page(
+            &pool,
+            Some("2026-07-10T13:00:00.000Z"),
+            10,
+            None,
+            Some("watcher"),
+        )
+        .await
+        .unwrap();
+        assert!(items.is_empty(), "cursor excludes the watcher's only row");
+
+        // Unknown kinds match nothing (allowlist, not error).
+        let bogus: &[String] = &["'; DROP TABLE activity_journal; --".to_string()];
+        assert!(page(&pool, None, 10, Some(bogus), None)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            page(&pool, None, 10, None, None).await.unwrap().len(),
+            4,
+            "table intact after hostile kind filter"
+        );
     }
 }
