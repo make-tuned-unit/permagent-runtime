@@ -100,6 +100,26 @@ function App() {
 
   const [phase, setPhase] = useState<'splash' | 'loading' | 'wizard' | 'app'>('splash');
 
+  // Install the bundled dictation model on first run so the mic "just works"
+  // offline, with no download and no setup. Resolves the bundled Whisper model
+  // (Tauri resource) and asks the daemon to install it + set LOCAL_WHISPER_MODEL.
+  // Idempotent, fire-and-forget; a dev/unbundled build simply no-ops. Gated on
+  // `phase === 'app'` so the daemon is known ready (mount is too early — the app
+  // is still waiting for the daemon, and provisioning runs only once).
+  const dictationProvisioned = useRef(false);
+  useEffect(() => {
+    if (phase !== 'app' || dictationProvisioned.current) return;
+    if (!('__TAURI_INTERNALS__' in window)) return;
+    dictationProvisioned.current = true;
+    (async () => {
+      try {
+        const { resolveResource } = await import('@tauri-apps/api/path');
+        const modelPath = await resolveResource('whisper/whisper-base-q8_0.gguf');
+        await api.provisionDictationModel(modelPath);
+      } catch { /* no bundled model (dev build) — dictation stays opt-in */ }
+    })();
+  }, [phase]);
+
   // Subscribe to AppNavigate events from the agent
   useAppNavigate();
 
