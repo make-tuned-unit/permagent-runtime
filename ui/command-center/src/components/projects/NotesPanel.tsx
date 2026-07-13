@@ -12,17 +12,18 @@
  * surface inline rather than a silent catch. Styled strictly with the shared
  * Panel shell + theme tokens to match the surrounding Overview panels.
  *
- * Dictation (voice → note text) is a deliberate follow-up: the only voice input
- * today is the push-to-talk chat loop (a full STT→reply→TTS round-trip in
- * useVoice), which isn't a reusable "give me back text" primitive, and no HTTP
- * transcription endpoint is exposed to the frontend yet. Rather than ship a
- * fragile new audio pipeline, this panel ships the write path; a Dictate button
- * lands once a plain transcribe endpoint exists.
+ * Dictation (voice → note text): the mic button records a short clip via the
+ * Web Audio API, encodes it to WAV in-browser, and POSTs it to
+ * `/api/dictation/transcribe` for local (on-device) Whisper transcription; the
+ * returned text is appended to the composer so the user can speak a note
+ * instead of typing it (see useDictation). If dictation isn't set up on the
+ * install the endpoint answers 503 and the panel shows a gentle setup hint.
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { FiTrash2 } from 'react-icons/fi';
+import { FiTrash2, FiMic, FiSquare, FiLoader } from 'react-icons/fi';
 import { api } from '../../lib/api';
+import { useDictation } from '../../hooks/useDictation';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Panel } from './Panel';
@@ -36,6 +37,12 @@ export function NotesPanel({ project }: { project: Project }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<'loading' | 'error' | 'ready'>('loading');
+
+  // Dictation: append transcribed speech to the composer body.
+  const appendDictation = useCallback((text: string) => {
+    setBody(prev => (prev.trim() ? `${prev.trim()} ${text}` : text));
+  }, []);
+  const { state: dictation, error: dictationError, toggle: toggleDictation } = useDictation(appendDictation);
 
   const load = useCallback(async () => {
     try {
@@ -126,12 +133,40 @@ export function NotesPanel({ project }: { project: Project }) {
           >
             {saving ? 'Saving…' : 'Save note'}
           </button>
-          <span style={{ fontSize: 10, color: colors.textDim }}>⌘↵ to save</span>
+          <button
+            onClick={toggleDictation}
+            disabled={dictation === 'transcribing'}
+            title={
+              dictation === 'recording' ? 'Stop and transcribe'
+                : dictation === 'transcribing' ? 'Transcribing…'
+                : 'Dictate a note'
+            }
+            aria-label="Dictate a note"
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              width: 30, height: 30, borderRadius: 7,
+              cursor: dictation === 'transcribing' ? 'default' : 'pointer',
+              background: dictation === 'recording' ? colors.danger : 'rgba(255,255,255,0.02)',
+              border: `1px solid ${dictation === 'recording' ? colors.danger : colors.border}`,
+              color: dictation === 'recording' ? '#fff' : colors.textDim,
+            }}
+          >
+            {dictation === 'transcribing'
+              ? <FiLoader size={13} className="pa-spin" />
+              : dictation === 'recording'
+                ? <FiSquare size={12} />
+                : <FiMic size={13} />}
+          </button>
+          <span style={{ fontSize: 10, color: colors.textDim }}>
+            {dictation === 'recording' ? 'Recording — tap to stop'
+              : dictation === 'transcribing' ? 'Transcribing…'
+              : '⌘↵ to save'}
+          </span>
         </div>
       </div>
 
-      {error && (
-        <div style={{ fontSize: 11, color: colors.danger, marginBottom: 8 }}>{error}</div>
+      {(error || dictationError) && (
+        <div style={{ fontSize: 11, color: colors.danger, marginBottom: 8 }}>{error || dictationError}</div>
       )}
 
       {status === 'loading' && (

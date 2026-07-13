@@ -73,7 +73,9 @@ pub const VOICE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         what_it_does:
             "Push-to-talk speech input and spoken replies: the user holds the mic, speaks, and \
              you answer out loud in the persona's chosen voice. Works everywhere chat works, \
-             including hands-free instructions like asking you to open a site and read it aloud",
+             including hands-free instructions like asking you to open a site and read it aloud. \
+             The same on-device speech recognition also powers dictation — the user can speak a \
+             note and have it transcribed to text locally, such as dictating a note onto a project",
         why_it_matters:
             "Many users drive you primarily by voice — treat spoken turns exactly like typed \
              ones. When asked to 'read' something aloud, answer in flowing sentences suited to \

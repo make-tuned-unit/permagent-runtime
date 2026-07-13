@@ -813,6 +813,32 @@ export const api = {
       { method: 'DELETE', headers: authHeaders() },
     ),
 
+  /** Transcribe a dictated audio clip (WAV) to text locally, via the on-device
+   *  Whisper model. A 503 means dictation isn't set up on this install — the
+   *  caller should surface that as a setup prompt, not a hard error. */
+  transcribeAudio: async (audio: Blob): Promise<{ text: string }> => {
+    if (!_daemonToken) await loadDaemonToken();
+    const form = new FormData();
+    form.append('file', audio, 'dictation.wav');
+    // Only Authorization — NOT Content-Type: the browser must add the multipart
+    // boundary itself (mirrors readerIngest).
+    const headers: Record<string, string> = {};
+    if (_daemonToken) headers['Authorization'] = `Bearer ${_daemonToken}`;
+    const resp = await fetch(`${API_BASE_URL}/api/dictation/transcribe`, {
+      method: 'POST',
+      headers,
+      body: form,
+    });
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => '');
+      if (resp.status === 503) {
+        throw new Error(detail || 'Dictation is not set up on this install');
+      }
+      throw new Error(detail || `transcribe HTTP ${resp.status}`);
+    }
+    return resp.json() as Promise<{ text: string }>;
+  },
+
   // State snapshot (stubbed until daemon implements)
   getStateSnapshot: () => Promise.resolve({
     tasks: [] as Array<{ id: string; title: string | null; status: string; automation_id: string | null; created_at: string | null; updated_at: string }>,
