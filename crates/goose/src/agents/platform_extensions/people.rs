@@ -110,6 +110,12 @@ impl PeopleClient {
                 `create_person` with `associate_with_project`, or call
                 `associate_person_with_project` with `create_if_missing: true`.
 
+                Use `enrich_person` when the user asks to enrich, refresh, or look
+                up a contact's professional details: it returns a research briefing;
+                you research with your own web tools, then file findings with
+                `propose_enrichment`. Findings wait in the Decision Inbox — nothing
+                is written to a profile until the user approves.
+
                 Names are resolved against the directory. If a name is ambiguous the
                 tool returns the candidates instead of guessing — ask the user which
                 one they mean.
