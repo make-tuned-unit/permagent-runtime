@@ -37,6 +37,16 @@ body {
   background: var(--scrollbar-thumb-hover, #262D3F);
 }
 
+/* Brand text selection — a cyan tint instead of the browser default blue.
+   A fixed low-alpha cyan reads correctly over both the dark void and the
+   silver light theme, and keeps the selected text legible (color inherited). */
+::selection {
+  background: rgba(0, 213, 255, 0.28);
+}
+::-moz-selection {
+  background: rgba(0, 213, 255, 0.28);
+}
+
 /* Status dot pulse */
 @keyframes statusPulse {
   0%, 100% { opacity: 1; }
