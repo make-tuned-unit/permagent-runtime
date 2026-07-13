@@ -9,6 +9,7 @@ pub mod developer;
 pub mod ext_manager;
 pub mod goal_engine;
 pub mod librarian;
+pub mod librarian_atoms;
 pub mod librarian_state;
 pub mod orchestrator;
 pub mod people;

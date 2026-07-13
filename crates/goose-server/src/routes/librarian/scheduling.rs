@@ -344,7 +344,73 @@ async fn warm_and_run(schedule: &LibrarianSchedule, keep_alive_secs: u64) -> Res
         Err(e) => tracing::warn!(error = %e, "Librarian entity pass failed (#387)"),
     }
 
+    // ── Consolidation-atom pass (layered store) ──────────────────────────
+    // Write-time, strong-model, provenance-linked atoms over recurring
+    // clusters. GATED default-OFF behind LIBRARIAN_ATOMS_ENABLED — default-ON
+    // is gated on the mac-mini paired Arm A/B eval, which is NOT part of this
+    // change. Until the flag flips this pass is inert, so actor behavior is
+    // unchanged. Best-effort: a failure here never fails the warm-run.
+    if atoms_enabled() {
+        let provider = resolve_atom_provider().await;
+        if provider.is_none() {
+            tracing::info!(
+                target: "permagentd::librarian",
+                "atom pass: no strong-model provider resolved — using extractive fallback"
+            );
+        }
+        match permagent::agents::platform_extensions::librarian_atoms::run_atom_consolidation(
+            &brain,
+            ATOMS_PER_SWEEP,
+            provider,
+        )
+        .await
+        {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(
+                target: "permagentd::librarian",
+                atoms = n,
+                "Librarian consolidation-atom pass complete"
+            ),
+            Err(e) => tracing::warn!(
+                target: "permagentd::librarian",
+                error = %e,
+                "Librarian consolidation-atom pass failed"
+            ),
+        }
+    }
+
     result
+}
+
+/// Per-sweep cap on consolidation atoms written, so one warm window can't run
+/// an unbounded number of strong-model calls.
+const ATOMS_PER_SWEEP: usize = 10;
+
+/// Feature flag gating the entire consolidation-atom mechanism. Default OFF:
+/// default-ON is gated on the mac-mini paired eval (Arm B > Arm A). Read via
+/// `Config::global().get_param`; any error/absence is treated as OFF.
+fn atoms_enabled() -> bool {
+    permagent::config::Config::global()
+        .get_param::<bool>("LIBRARIAN_ATOMS_ENABLED")
+        .unwrap_or(false)
+}
+
+/// Resolve the strong-model provider for atom generation. Mirrors
+/// `proactive::resolve_provider`, but atoms call `provider.complete` (the
+/// lead/actor model) rather than `complete_fast` — the quality contract demands
+/// actor-tier or better. `None` → the extractive `$0` fallback still yields
+/// layered recall.
+async fn resolve_atom_provider() -> Option<std::sync::Arc<dyn permagent::providers::base::Provider>>
+{
+    let config = permagent::config::Config::global();
+    let provider_name = config.get_goose_provider().ok()?;
+    let model_name = config.get_goose_model().ok()?;
+    if provider_name.trim().is_empty() || model_name.trim().is_empty() {
+        return None;
+    }
+    permagent::providers::create_with_named_model(&provider_name, &model_name, Vec::new())
+        .await
+        .ok()
 }
 
 /// Background loop: ticks once per minute, warm-loads if in window.
