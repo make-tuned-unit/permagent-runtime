@@ -55,6 +55,53 @@ async fn diagnostics(
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
 }
+
+/// GET /api/tailnet/status — deterministic Tailscale detection for the
+/// Devices pairing surface (MULTI_DEVICE.md). Tries the CLI in PATH, then the
+/// macOS app bundle binary. Never errors: absence is a state, not a failure.
+async fn tailnet_status() -> Json<serde_json::Value> {
+    let candidates = [
+        "tailscale",
+        "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+    ];
+    for bin in candidates {
+        let out = tokio::process::Command::new(bin)
+            .args(["status", "--json"])
+            .output()
+            .await;
+        let Ok(out) = out else { continue };
+        if !out.status.success() {
+            // Installed but not up/logged in.
+            return Json(serde_json::json!({
+                "installed": true, "running": false,
+                "magic_dns_name": null, "ips": [],
+            }));
+        }
+        let parsed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+        let dns = parsed
+            .pointer("/Self/DNSName")
+            .and_then(|v| v.as_str())
+            .map(|d| d.trim_end_matches('.').to_string());
+        let ips = parsed
+            .pointer("/Self/TailscaleIPs")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([]));
+        let running = parsed
+            .pointer("/BackendState")
+            .and_then(|v| v.as_str())
+            .map(|st| st == "Running")
+            .unwrap_or(false);
+        return Json(serde_json::json!({
+            "installed": true, "running": running,
+            "magic_dns_name": dns, "ips": ips,
+        }));
+    }
+    Json(serde_json::json!({
+        "installed": false, "running": false,
+        "magic_dns_name": null, "ips": [],
+    }))
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/status", get(status))
@@ -62,6 +109,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
         // /api-prefixed alias (#381): the wizard's hardware scan calls the
         // modern /api surface (also what the vite dev proxy forwards).
         .route("/api/system_info", get(system_info))
+        .route("/api/tailnet/status", get(tailnet_status))
         .route("/diagnostics/{session_id}", get(diagnostics))
         .with_state(state)
 }

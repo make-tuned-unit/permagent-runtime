@@ -38,8 +38,8 @@ export function MomentMeet({ persona, setPersona, onAdvance }: Props) {
     updateField('traits', [...persona.traits, t]);
     setNewTrait('');
   };
-  const removeTrait = (i: number) =>
-    updateField('traits', persona.traits.filter((_, idx) => idx !== i));
+  const removeTrait = (trait: string) =>
+    updateField('traits', persona.traits.filter(t => t !== trait));
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', position: 'relative' }}>
@@ -91,8 +91,8 @@ export function MomentMeet({ persona, setPersona, onAdvance }: Props) {
             Traits
           </label>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
-            {persona.traits.map((trait, i) => (
-              <span key={i} style={{
+            {persona.traits.map((trait) => (
+              <span key={trait} style={{
                 fontFamily: font.body, fontSize: 12, fontWeight: 500,
                 color: colors.cyan, background: colors.cyanSoft,
                 borderRadius: 999, padding: '5px 12px',
@@ -100,8 +100,10 @@ export function MomentMeet({ persona, setPersona, onAdvance }: Props) {
               }}>
                 {trait}
                 <span
-                  onClick={() => removeTrait(i)}
+                  onClick={() => removeTrait(trait)}
+                  onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); removeTrait(trait); } }}
                   role="button"
+                  tabIndex={0}
                   aria-label={`Remove ${trait}`}
                   style={{ cursor: 'pointer', color: colors.textDim, fontWeight: 700, lineHeight: 1 }}
                 >

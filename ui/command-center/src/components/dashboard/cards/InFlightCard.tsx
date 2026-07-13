@@ -1,6 +1,7 @@
 import { memo } from 'react';
 import { font, radius } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
+import { useOrchestratorName } from '../../world/shared/useOrchestratorName';
 import { Mobius } from '../../mobius/Mobius';
 import { SectionTitle } from '../atoms';
 import { useCommandCenter } from '../../../lib/store';
@@ -18,6 +19,7 @@ interface Props {
 
 export const InFlightCard = memo(function InFlightCard({ goals }: Props) {
   const { colors } = useTheme();
+  const persona = useOrchestratorName() ?? 'your agent';
   return (
     <div style={{
       height: '100%', boxSizing: 'border-box',
@@ -36,7 +38,7 @@ export const InFlightCard = memo(function InFlightCard({ goals }: Props) {
         }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: 4 }}>No active goals</div>
-            <div style={{ fontSize: 11, color: colors.textDim }}>Goals Henry is working on appear here</div>
+            <div style={{ fontSize: 11, color: colors.textDim }}>{`Goals ${persona} is working on appear here`}</div>
           </div>
         </div>
       ) : (

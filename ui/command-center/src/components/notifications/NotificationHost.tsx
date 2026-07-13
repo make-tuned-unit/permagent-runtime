@@ -45,8 +45,9 @@ export function NotificationHost() {
       {/* Bell */}
       <button
         onClick={() => {
+          // Mark read on CLOSE so the unread highlight is visible while open.
+          if (open) markAllRead();
           setOpen((o) => !o);
-          if (!open) markAllRead();
         }}
         title="Notifications"
         style={{
@@ -78,7 +79,7 @@ export function NotificationHost() {
           maxHeight: '60vh', overflowY: 'auto',
           background: colors.surface, backdropFilter: 'blur(24px) saturate(140%)',
           border: `1px solid ${colors.borderHi}`, borderRadius: radius.lg,
-          boxShadow: '0 24px 60px rgba(0,0,0,0.5)', padding: 8,
+          boxShadow: colors.elevationFloating, padding: 8,
         }}>
           {items.length === 0 ? (
             <div style={{ padding: 18, textAlign: 'center', fontSize: 12, color: colors.textDim }}>
@@ -113,7 +114,7 @@ export function NotificationHost() {
             pointerEvents: 'auto', textAlign: 'left', cursor: 'pointer', width: 300,
             background: colors.surface, backdropFilter: 'blur(24px) saturate(140%)',
             border: `1px solid ${colors.borderHi}`, borderRadius: radius.md,
-            boxShadow: '0 12px 40px rgba(0,0,0,0.45)', padding: '10px 12px',
+            boxShadow: colors.elevationFloating, padding: '10px 12px',
             color: colors.text, animation: `pa-toast-in 220ms ${ease.out}`,
           }}>
             <div style={{ fontFamily: font.body, fontSize: 12, fontWeight: 600, color: colors.cyan }}>{n.title}</div>

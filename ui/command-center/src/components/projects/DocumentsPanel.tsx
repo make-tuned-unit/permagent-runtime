@@ -27,13 +27,19 @@ export function DocumentsPanel({ project }: { project: Project }) {
   const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // First-load / load-failure / ready — kept separate from `error` (which is for
+  // upload+delete failures) so a failed *list* fetch shows a recoverable error
+  // instead of the empty drop-zone, and never a perpetual spinner.
+  const [status, setStatus] = useState<'loading' | 'error' | 'ready'>('loading');
   const fileInput = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     try {
       setDocs(await api.listProjectDocuments(project.id));
+      setStatus('ready');
     } catch {
-      // On failure the panel shows empty rather than breaking Overview.
+      // Surface as a recoverable error rather than masquerading as empty.
+      setStatus('error');
     }
   }, [project.id]);
 
@@ -110,7 +116,7 @@ export function DocumentsPanel({ project }: { project: Project }) {
             borderRadius: 8, fontSize: 11,
             color: dragging ? colors.cyan : colors.textDim,
             border: `1px dashed ${dragging ? colors.cyan : colors.border}`,
-            background: dragging ? 'rgba(0,213,255,0.05)' : 'transparent',
+            background: dragging ? colors.cyanSoft : 'transparent',
             transition: 'all 150ms',
           }}
         >
@@ -122,7 +128,26 @@ export function DocumentsPanel({ project }: { project: Project }) {
           <div style={{ fontSize: 11, color: colors.danger, marginBottom: 8 }}>{error}</div>
         )}
 
-        {docs.length > 0 && (
+        {status === 'loading' && (
+          <div style={{ fontSize: 11, color: colors.textDim }}>Loading documents…</div>
+        )}
+
+        {status === 'error' && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 11, color: colors.danger }}>Couldn't load documents.</span>
+            <button
+              onClick={load}
+              style={{
+                fontSize: 11, color: colors.cyan, background: 'none', border: 'none',
+                cursor: 'pointer', fontFamily: font.body, padding: 0, fontWeight: 600,
+              }}
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
+        {status === 'ready' && docs.length > 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             {docs.map(doc => (
               <div
@@ -132,7 +157,7 @@ export function DocumentsPanel({ project }: { project: Project }) {
                   borderRadius: 7, background: 'rgba(255,255,255,0.02)', border: `1px solid ${colors.border}`,
                   transition: 'border-color 150ms',
                 }}
-                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = 'rgba(0,213,255,0.3)'; }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
                 onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; }}
               >
                 <button

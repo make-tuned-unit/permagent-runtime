@@ -89,8 +89,12 @@ value, onChange, options, style = {} }: {
   }, []);
   const current = options.find(o => o.value === value) || options[0];
   return (
-    <div ref={ref} style={{ position: 'relative', ...style }}>
-      <button onClick={() => setOpen(x => !x)} style={{
+    <div
+      ref={ref}
+      style={{ position: 'relative', ...style }}
+      onKeyDown={e => { if (e.key === 'Escape' && open) setOpen(false); }}
+    >
+      <button type="button" aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen(x => !x)} style={{
         width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         fontFamily: font.body, fontSize: 14, fontWeight: 500, color: colors.text,
         background: colors.inputBg,
@@ -108,26 +112,40 @@ value, onChange, options, style = {} }: {
         </svg>
       </button>
       {open && (
-        <div style={{
+        <div role="listbox" style={{
           position: 'absolute', top: 'calc(100% + 6px)', left: 0, right: 0,
           background: colors.surface, border: `1px solid ${colors.border}`,
           borderRadius: radius.md, padding: 6, boxShadow: colors.cardShadow, zIndex: 30,
         }}>
-          {options.map(o => (
-            <div key={o.value} onClick={() => { onChange(o.value); setOpen(false); }}
+          {options.map(o => {
+            const selected = o.value === value;
+            const choose = () => { onChange(o.value); setOpen(false); };
+            return (
+            <div
+              key={o.value}
+              role="option"
+              aria-selected={selected}
+              tabIndex={0}
+              onClick={choose}
+              // Keyboard-operable (was a bare div onClick): Enter/Space selects,
+              // Escape closes (handled on the container). Focus mirrors hover.
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); choose(); } }}
               style={{
                 display: 'flex', alignItems: 'center', gap: 10, padding: '10px 10px', borderRadius: 6,
                 fontFamily: font.body, fontSize: 13, color: colors.text,
-                background: o.value === value ? colors.cyanSoft : 'transparent', cursor: 'pointer',
+                background: selected ? colors.cyanSoft : 'transparent', cursor: 'pointer',
               }}
-              onMouseEnter={e => { if (o.value !== value) (e.currentTarget as HTMLElement).style.background = colors.surfaceHi; }}
-              onMouseLeave={e => { if (o.value !== value) (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+              onMouseEnter={e => { if (!selected) (e.currentTarget as HTMLElement).style.background = colors.surfaceHi; }}
+              onMouseLeave={e => { if (!selected) (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+              onFocus={e => { if (!selected) (e.currentTarget as HTMLElement).style.background = colors.surfaceHi; }}
+              onBlur={e => { if (!selected) (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
             >
               {o.dot && <span style={{ width: 8, height: 8, borderRadius: '50%', background: o.dot }} />}
               <span style={{ flex: 1 }}>{o.label}</span>
               {o.note && <span style={{ fontSize: 11, color: colors.textMuted }}>{o.note}</span>}
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

@@ -57,6 +57,12 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
             Ok(false) => {}
             Err(e) => tracing::warn!("Failed to add Projects workspace: {}", e),
         }
+        // Additive migration: ensure Grow workspace exists for existing users
+        match permagent::workspaces::ensure_grow_workspace(&pool).await {
+            Ok(true) => info!("Added Grow workspace for existing user"),
+            Ok(false) => {}
+            Err(e) => tracing::warn!("Failed to add Grow workspace: {}", e),
+        }
         // Normalize preset sidebar order to the code-owned canon (runs every
         // start; user-created workspaces untouched).
         match permagent::workspaces::ensure_canonical_workspace_order(&pool).await {
@@ -130,6 +136,9 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
         gateway_manager.check_auto_start().await;
     });
 
+    // Echo / the Watcher (#672): gentle, rare proactive nudges from the hub.
+    crate::proactive::spawn(app_state.clone());
+
     // Emit daemon_started event after binding
     let version = env!("CARGO_PKG_VERSION");
     let config_path = std::env::var("PERMAGENT_CONFIG").unwrap_or_default();
@@ -162,13 +171,13 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
             #[cfg(feature = "rustls-tls")]
             axum_server::bind_rustls(addr, tls_setup.config)
                 .handle(handle)
-                .serve(app.into_make_service())
+                .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>())
                 .await?;
 
             #[cfg(feature = "native-tls")]
             axum_server::bind_openssl(addr, tls_setup.config)
                 .handle(handle)
-                .serve(app.into_make_service())
+                .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>())
                 .await?;
         }
 
@@ -189,14 +198,19 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
             &spectral_path,
         ));
 
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async {
-                shutdown_signal().await;
-                events::emit(events::daemon_stopped("user_request"));
-                // Brief pause to let WebSocket clients receive the event
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            })
-            .await?;
+        // ConnectInfo peer address is required by the loopback guard on the
+        // browser bridge (#630); without it that guard fails closed.
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(async {
+            shutdown_signal().await;
+            events::emit(events::daemon_stopped("user_request"));
+            // Brief pause to let WebSocket clients receive the event
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        })
+        .await?;
     }
 
     #[cfg(feature = "otel")]

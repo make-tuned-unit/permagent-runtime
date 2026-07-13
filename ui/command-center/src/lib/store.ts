@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { api, apiFetch, extractText, fileToBase64, readerIngest } from './api';
+import { api, apiFetch, extractText, extractThinking, fileToBase64, readerIngest } from './api';
 import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload } from './api';
 import { startEventPruning } from './eventBus';
 import type { ProjectPerson } from '../components/projects/types';
@@ -47,6 +47,8 @@ export interface EventRecord {
 }
 
 export interface ToolCall {
+  /** Tool-request block id, used to join the tool's response back to its call. */
+  id?: string;
   name: string;
   arguments: Record<string, unknown>;
   result?: string;
@@ -80,6 +82,8 @@ export interface ChatMessage {
   task_id?: string;
   tool_calls?: ToolCall[];
   images?: ChatMessageImage[];
+  /** The model's reasoning, if it thought before answering (disclosure UI). */
+  thinking?: string;
   context_attached?: {
     probed_memories: ProbedMemoryRef[];
     recalled_memories: RecalledMemoryRef[];
@@ -129,7 +133,7 @@ export type ActivePanel = 'chat' | 'skills' | 'events' | 'settings' | 'sessions'
 
 // ── Workspace types ──
 
-export type ToolType = 'chat' | 'skills' | 'trace' | 'world' | 'terminal' | 'browser' | 'memory' | 'dashboard' | 'build' | 'automate' | 'projects';
+export type ToolType = 'chat' | 'skills' | 'trace' | 'world' | 'terminal' | 'browser' | 'memory' | 'dashboard' | 'build' | 'grow' | 'automate' | 'projects';
 
 export interface LayoutSplit {
   type: 'split';
@@ -194,6 +198,9 @@ interface CommandCenterStore {
 
   // --- Provider state ---
   providers: ProviderInfo[];
+  /** True when the last loadProviders() failed — lets the UI show a retry
+      state instead of an indistinguishable, permanent "Loading…". */
+  providersError: boolean;
   currentModel: string | null;
   loadProviders: () => Promise<void>;
   setDefaultProvider: (name: string, model: string) => Promise<void>;
@@ -302,6 +309,10 @@ interface CommandCenterStore {
 
   // --- In-app browser navigation (chat links, agent tour #353) ---
   pendingBrowserUrl: string | null;
+  // Grow deep-link (2026-07-11): Projects → 'Grow this project' sets this, the
+  // Grow tab reads it to preselect the project.
+  openGrowForProject: string | null;
+  growProject: (projectId: string) => void;
   openInBrowser: (url: string) => void;
   clearPendingBrowserUrl: () => void;
 
@@ -324,6 +335,13 @@ interface CommandCenterStore {
   chatLauncherSize: { width: number; height: number } | null;
   setChatLauncherSize: (size: { width: number; height: number } | null) => void;
 
+  // --- Chat dock (2026-07-11): chat opens as a right sidebar first, detaches
+  // to a window on demand (validated UX pattern). Mutually exclusive with the
+  // detached window; the Browser reserves its strip like the launcher pill. ---
+  chatDockOpen: boolean;
+  openChatDock: () => void;
+  closeChatDock: () => void;
+
   // --- Per-session SSE ---
   _eventSource: EventSource | null;
   _reconnectTimer: ReturnType<typeof setTimeout> | null;
@@ -338,20 +356,73 @@ const MAX_EVENTS_BUFFER = 1000;
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 
-/** Convert a DaemonMessage to a ChatMessage for display */
-function daemonMsgToChat(msg: DaemonMessage, index: number, sessionId: string): ChatMessage {
+/** Pull a toolRequest's name/args, tolerating the daemon's tool_result_serde
+ *  wrapper `{ status, value:{ name, arguments } }` as well as a flat shape.
+ *  (The old code read `.name` off the wrapper, so every tool showed "unknown".) */
+function readToolCallInner(toolCall: unknown): { name: string; arguments: Record<string, unknown> } {
+  const tc = toolCall as
+    | { name?: string; arguments?: Record<string, unknown>; value?: { name?: string; arguments?: Record<string, unknown> } }
+    | undefined;
+  const inner = tc && typeof tc === 'object' && 'value' in tc && tc.value ? tc.value : tc;
+  return { name: inner?.name || 'unknown', arguments: inner?.arguments || {} };
+}
+
+/** Turn a toolResponse's `toolResult` into a display string + status.
+ *  Shape (tool_result_serde::call_tool_result):
+ *    { status:'success', value:{ content:[{type:'text',text}] } | Content[] }
+ *    { status:'error',   error: string } */
+function readToolResult(toolResult: unknown): { result: string; success: boolean } {
+  const tr = toolResult as { status?: string; error?: unknown; value?: unknown } | undefined;
+  if (!tr || typeof tr !== 'object') return { result: '', success: true };
+  if (tr.status === 'error') {
+    return { result: typeof tr.error === 'string' ? tr.error : JSON.stringify(tr.error), success: false };
+  }
+  const value = tr.value;
+  const content = Array.isArray(value) ? value : (value as { content?: unknown } | undefined)?.content;
+  if (Array.isArray(content)) {
+    const text = content
+      .filter((x): x is { type: string; text: string } =>
+        !!x && (x as { type?: string }).type === 'text' && typeof (x as { text?: unknown }).text === 'string')
+      .map(x => x.text)
+      .join('\n');
+    return { result: text || JSON.stringify(value), success: true };
+  }
+  return { result: typeof value === 'string' ? value : JSON.stringify(value ?? ''), success: true };
+}
+
+/** Index every toolResponse block in a conversation by its request id, so each
+ *  toolRequest can be joined to the result it produced (they arrive in
+ *  different messages). */
+function indexToolResponses(messages: DaemonMessage[]): Map<string, { result: string; success: boolean }> {
+  const map = new Map<string, { result: string; success: boolean }>();
+  for (const m of messages) {
+    for (const c of m.content) {
+      if (c.type === 'toolResponse') {
+        const tr = c as { type: string; id: string; toolResult?: unknown };
+        if (tr.id) map.set(tr.id, readToolResult(tr.toolResult));
+      }
+    }
+  }
+  return map;
+}
+
+/** Convert a DaemonMessage to a ChatMessage for display. `responses` (built via
+ *  indexToolResponses over the whole conversation) lights up each tool card
+ *  with its result + success. */
+function daemonMsgToChat(
+  msg: DaemonMessage,
+  index: number,
+  sessionId: string,
+  responses?: Map<string, { result: string; success: boolean }>,
+): ChatMessage {
   const toolCalls: ToolCall[] = [];
   const images: ChatMessageImage[] = [];
   for (const c of msg.content) {
     if (c.type === 'toolRequest') {
-      const tr = c as { type: string; id: string; toolCall?: { name?: string; arguments?: Record<string, unknown> } };
-      const call = tr.toolCall;
-      if (call) {
-        toolCalls.push({
-          name: call.name || 'unknown',
-          arguments: call.arguments || {},
-        });
-      }
+      const tr = c as { type: string; id: string; toolCall?: unknown };
+      const { name, arguments: args } = readToolCallInner(tr.toolCall);
+      const resp = tr.id ? responses?.get(tr.id) : undefined;
+      toolCalls.push({ id: tr.id, name, arguments: args, result: resp?.result, success: resp?.success });
     } else if (c.type === 'image') {
       const img = c as { type: string; data: string; mimeType: string };
       if (img.data && img.mimeType) {
@@ -360,6 +431,7 @@ function daemonMsgToChat(msg: DaemonMessage, index: number, sessionId: string): 
     }
   }
 
+  const thinking = extractThinking(msg);
   return {
     id: msg.id || `hist-${sessionId}-${index}`,
     role: msg.role,
@@ -367,6 +439,7 @@ function daemonMsgToChat(msg: DaemonMessage, index: number, sessionId: string): 
     timestamp: new Date(msg.created * 1000).toISOString(),
     tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
     images: images.length > 0 ? images : undefined,
+    thinking: thinking || undefined,
   };
 }
 
@@ -472,6 +545,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
   // Providers
   providers: [],
+  providersError: false,
   currentModel: null,
   loadProviders: async () => {
     try {
@@ -481,6 +555,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
       const raw = await api.getProviders();
       set({
+        providersError: false,
         currentModel: currentModel || null,
         providers: raw.map(p => ({
           name: p.name,
@@ -494,7 +569,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         })),
       });
     } catch {
-      set({ providers: [] });
+      set({ providers: [], providersError: true });
     }
   },
 
@@ -911,7 +986,8 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     try {
       const session = await api.getSession(sessionId);
       if (session.conversation && session.conversation.length > 0) {
-        const msgs = session.conversation.map((m, i) => daemonMsgToChat(m, i, sessionId));
+        const responses = indexToolResponses(session.conversation);
+        const msgs = session.conversation.map((m, i) => daemonMsgToChat(m, i, sessionId, responses));
         set({ chatMessages: msgs });
       }
     } catch {
@@ -961,14 +1037,20 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         const msg = (data as { type: string; message: DaemonMessage }).message;
         if (msg.role === 'assistant') {
           const delta = extractText(msg);
+          const thinkingDelta = extractThinking(msg);
           const streamMsgId = get()._streamingMessageId;
-          if (streamMsgId && delta) {
+          if (streamMsgId && (delta || thinkingDelta)) {
             const pending = get()._pendingContext;
             set(s => ({
               _pendingContext: null,
               chatMessages: s.chatMessages.map(m =>
                 m.id === streamMsgId
-                  ? { ...m, content: m.content + delta, ...(pending && !m.context_attached ? { context_attached: pending } : {}) }
+                  ? {
+                      ...m,
+                      content: m.content + delta,
+                      ...(thinkingDelta ? { thinking: (m.thinking ?? '') + thinkingDelta } : {}),
+                      ...(pending && !m.context_attached ? { context_attached: pending } : {}),
+                    }
                   : m
               ),
             }));
@@ -1011,6 +1093,18 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         // have created a skill (save_skill) or a new proposal may have fired.
         get().loadProposals();
         get().loadSkills();
+        // Rehydrate the conversation from the daemon now the turn is done: it's
+        // the authoritative copy, and only IT carries the tool requests joined
+        // to their responses (indexToolResponses, #658). So tool cards light up
+        // with real names + typed results the moment the turn finishes — no
+        // manual reopen. Runs AFTER streaming ends (isStreaming already false),
+        // so it never races the streaming text path. (True mid-turn live tool
+        // render needs UpdateConversation reconciliation against the client
+        // streaming message — a separate, behaviorally-verified follow-on.)
+        {
+          const sid = get().chatSessionId;
+          if (sid) void get().loadSessionMessages(sid);
+        }
         break;
       }
       case 'ContextAttached': {
@@ -1044,6 +1138,8 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   // URL still resolves if the workspace was not yet open. Shared by chat-link
   // clicks and the self-knowledge tour (#353).
   pendingBrowserUrl: null,
+  openGrowForProject: null,
+  growProject: (projectId) => { set({ openGrowForProject: projectId }); navigateToTool('grow'); },
   buildTerminalHidden: false,
   buildBrowserHidden: false,
   // Never allow both hidden: hiding one re-shows the other.
@@ -1070,6 +1166,9 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
   // Collapsed chat launcher corner reservation (#553)
   chatLauncherSize: null,
+  chatDockOpen: false,
+  openChatDock: () => set({ chatDockOpen: true }),
+  closeChatDock: () => set({ chatDockOpen: false }),
   setChatLauncherSize: (size) => set(s => {
     const prev = s.chatLauncherSize;
     if (prev === size) return s;

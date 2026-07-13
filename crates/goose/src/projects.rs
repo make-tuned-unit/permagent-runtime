@@ -17,7 +17,7 @@ pub struct Project {
     pub site_url: Option<String>,
     pub repo_url: Option<String>,
     pub notes: String,
-    /// General project metadata bag (schema v25; mirrors `cards.metadata_json`
+    /// General project metadata bag (schema v26; mirrors `cards.metadata_json`
     /// — ruling 3 in GOAL_COMPLETION_AND_VERIFICATION.md §3d). Known keys:
     /// `build_command` (string) — project build check the orchestrator seeds
     /// onto code-flavored goals as a `command_exit_zero` completion check;

@@ -2,6 +2,7 @@ import type { ChatMessage } from '../../lib/store';
 import { MarkdownContent } from './MarkdownContent';
 import { ImageMessage } from './ImageMessage';
 import { AudioMessage } from './AudioMessage';
+import { ReasoningBlock } from './ReasoningBlock';
 import { ToolResult } from '../tool-results/ToolResult';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
@@ -40,6 +41,10 @@ export function MessageRenderer({ message, attachments, allImages }: MessageRend
             />
           ))}
         </div>
+      )}
+
+      {!isUser && message.thinking && (
+        <ReasoningBlock thinking={message.thinking} hasAnswer={!!message.content} />
       )}
 
       {message.content && (
