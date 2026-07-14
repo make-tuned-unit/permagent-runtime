@@ -330,15 +330,46 @@ pub async fn record_execution(
     Ok(())
 }
 
+// ── Evidence-based ranking (graduation) ──────────────────────────────────────
+
+/// A saved skill plus the evidence needed to rank it for prompt injection.
+/// `execution_count` is the number of recorded [`skill_executions`] — the
+/// proven-usage signal that graduates a skill ahead of never-used ones.
+pub struct RankedSkill {
+    pub name: String,
+    pub description: Option<String>,
+    pub definition_json: String,
+    pub execution_count: i64,
+    pub created_at: String,
+}
+
+/// Rank saved skills for the limited prompt slots: proven usage first (highest
+/// `execution_count`), ties broken by recency (newest `created_at`). Returns at
+/// most `limit` skills. Pure and DB-free so the ranking policy is unit-testable
+/// in isolation. `created_at` is an ISO-8601 UTC string whose lexicographic
+/// order matches chronological order.
+pub fn rank_skills_for_prompt(mut skills: Vec<RankedSkill>, limit: usize) -> Vec<RankedSkill> {
+    skills.sort_by(|a, b| {
+        b.execution_count
+            .cmp(&a.execution_count)
+            .then_with(|| b.created_at.cmp(&a.created_at))
+    });
+    skills.truncate(limit);
+    skills
+}
+
 /// Build the saved-skills prompt fragment for agent system prompt injection.
-/// Returns None if no saved skills exist.
+/// Skills are ranked by PROVEN USAGE (execution count) first, then recency, so
+/// the limited prompt slots go to skills the user actually relies on rather than
+/// whatever happened to be created most recently. Returns None if no active
+/// skills exist.
 pub async fn build_skills_prompt(pool: &Pool<Sqlite>) -> Result<Option<String>, String> {
     let rows = sqlx::query(
-        "SELECT s.name, s.description, s.definition_json
+        "SELECT s.name, s.description, s.definition_json, s.created_at,
+                (SELECT COUNT(*) FROM skill_executions se WHERE se.skill_id = s.id)
+                    AS execution_count
          FROM skills s
-         WHERE s.user_id = 'default' AND s.status = 'active'
-         ORDER BY s.created_at DESC
-         LIMIT 10",
+         WHERE s.user_id = 'default' AND s.status = 'active'",
     )
     .fetch_all(pool)
     .await
@@ -347,6 +378,20 @@ pub async fn build_skills_prompt(pool: &Pool<Sqlite>) -> Result<Option<String>, 
     if rows.is_empty() {
         return Ok(None);
     }
+
+    let candidates: Vec<RankedSkill> = rows
+        .iter()
+        .map(|row| RankedSkill {
+            name: row.get("name"),
+            description: row.get("description"),
+            definition_json: row.get("definition_json"),
+            execution_count: row.get("execution_count"),
+            created_at: row.get("created_at"),
+        })
+        .collect();
+
+    // Proven-usage-first ordering, capped at the prompt budget.
+    let ranked = rank_skills_for_prompt(candidates, 10);
 
     let mut lines = vec![
         "## Saved Skills".to_string(),
@@ -358,23 +403,21 @@ pub async fn build_skills_prompt(pool: &Pool<Sqlite>) -> Result<Option<String>, 
         String::new(),
     ];
 
-    for row in &rows {
-        let name: String = row.get("name");
-        let desc: Option<String> = row.get("description");
-        let def_str: String = row.get("definition_json");
-        let desc_text = desc.unwrap_or_default();
+    for skill in &ranked {
+        let desc_text = skill.description.clone().unwrap_or_default();
         // Extract a brief summary from definition_json if it contains useful info
-        let def_summary = if let Ok(def) = serde_json::from_str::<serde_json::Value>(&def_str) {
-            if let Some(obj) = def.as_object() {
-                obj.keys().take(3).cloned().collect::<Vec<_>>().join(", ")
+        let def_summary =
+            if let Ok(def) = serde_json::from_str::<serde_json::Value>(&skill.definition_json) {
+                if let Some(obj) = def.as_object() {
+                    obj.keys().take(3).cloned().collect::<Vec<_>>().join(", ")
+                } else {
+                    String::new()
+                }
             } else {
                 String::new()
-            }
-        } else {
-            String::new()
-        };
+            };
 
-        let mut skill_line = format!("- **{}**", name);
+        let mut skill_line = format!("- **{}**", skill.name);
         if !desc_text.is_empty() {
             skill_line.push_str(&format!(": {}", desc_text));
         }
@@ -385,4 +428,257 @@ pub async fn build_skills_prompt(pool: &Pool<Sqlite>) -> Result<Option<String>, 
     }
 
     Ok(Some(lines.join("\n")))
+}
+
+// ── Retirement sweep (grow-and-trim) ─────────────────────────────────────────
+
+/// Default grace window (days) before a never-used skill is retired. Mirrors the
+/// 30-day window used for `skill_dismissals` (see [`dismiss_skill`] /
+/// [`list_proposals`]) so the auto-skills policy stays consistent.
+pub const RETIREMENT_GRACE_DAYS: i64 = 30;
+
+/// A skill archived by the retirement sweep.
+pub struct RetiredSkill {
+    pub id: String,
+    pub name: String,
+}
+
+/// Retirement predicate: a saved skill is stale when it has NEVER executed AND it
+/// was created before the grace-window cutoff. A skill with ANY executions is
+/// never retired. Pure and DB-free so the policy is unit-testable. `created_at`
+/// and `cutoff` are ISO-8601 UTC strings (lexicographic == chronological order).
+pub fn skill_is_stale(execution_count: i64, created_at: &str, cutoff: &str) -> bool {
+    execution_count == 0 && created_at < cutoff
+}
+
+/// Retirement sweep: archive active skills that have never fired after the grace
+/// window, emitting a `SkillRetired` event for each. Never touches a skill with
+/// any executions. Returns the skills retired on this pass. Idempotent — an
+/// already-archived skill is skipped, so the event fires at most once per skill.
+pub async fn retire_stale_skills(
+    pool: &Pool<Sqlite>,
+    grace_days: i64,
+) -> Result<Vec<RetiredSkill>, String> {
+    // Compute the cutoff with SQLite's own clock so it matches the stored
+    // `created_at` format exactly (mirrors the `-30 days` window in list_proposals).
+    let cutoff: String = sqlx::query_scalar("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)")
+        .bind(format!("-{grace_days} days"))
+        .fetch_one(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let rows = sqlx::query(
+        "SELECT s.id, s.name, s.created_at,
+                (SELECT COUNT(*) FROM skill_executions se WHERE se.skill_id = s.id)
+                    AS execution_count
+         FROM skills s
+         WHERE s.user_id = 'default' AND s.status = 'active'",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut retired = Vec::new();
+    for row in &rows {
+        let execution_count: i64 = row.get("execution_count");
+        let created_at: String = row.get("created_at");
+        if !skill_is_stale(execution_count, &created_at, &cutoff) {
+            continue;
+        }
+
+        let id: String = row.get("id");
+        let name: String = row.get("name");
+        let result = sqlx::query(
+            "UPDATE skills
+             SET status = 'archived', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+             WHERE id = ? AND user_id = 'default' AND status = 'active'",
+        )
+        .bind(&id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        if result.rows_affected() > 0 {
+            events::emit(events::skill_retired(&id, &name));
+            retired.push(RetiredSkill { id, name });
+        }
+    }
+
+    Ok(retired)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    // ── Pure ranking / predicate tests (no DB) ──
+
+    fn ranked(name: &str, execution_count: i64, created_at: &str) -> RankedSkill {
+        RankedSkill {
+            name: name.to_string(),
+            description: None,
+            definition_json: "{}".to_string(),
+            execution_count,
+            created_at: created_at.to_string(),
+        }
+    }
+
+    #[test]
+    fn proven_usage_beats_recency() {
+        // A heavily-used old skill outranks a brand-new never-used one.
+        let out = rank_skills_for_prompt(
+            vec![
+                ranked("new_unused", 0, "2026-07-14T00:00:00.000Z"),
+                ranked("old_proven", 5, "2020-01-01T00:00:00.000Z"),
+            ],
+            10,
+        );
+        assert_eq!(out[0].name, "old_proven");
+        assert_eq!(out[1].name, "new_unused");
+    }
+
+    #[test]
+    fn recency_breaks_ties_at_equal_usage() {
+        let out = rank_skills_for_prompt(
+            vec![
+                ranked("older", 3, "2026-01-01T00:00:00.000Z"),
+                ranked("newer", 3, "2026-07-01T00:00:00.000Z"),
+            ],
+            10,
+        );
+        assert_eq!(out[0].name, "newer");
+        assert_eq!(out[1].name, "older");
+    }
+
+    #[test]
+    fn ranking_caps_at_limit() {
+        let out = rank_skills_for_prompt(
+            (0..15)
+                .map(|i| ranked(&format!("s{i}"), i, "2026-01-01T00:00:00.000Z"))
+                .collect(),
+            10,
+        );
+        assert_eq!(out.len(), 10);
+        // Highest usage wins the first slot.
+        assert_eq!(out[0].name, "s14");
+    }
+
+    #[test]
+    fn stale_predicate_matches_policy() {
+        let cutoff = "2026-06-14T00:00:00.000Z";
+        // Never used and created before the cutoff → retire.
+        assert!(skill_is_stale(0, "2026-01-01T00:00:00.000Z", cutoff));
+        // Never used but created after the cutoff (inside grace) → keep.
+        assert!(!skill_is_stale(0, "2026-07-01T00:00:00.000Z", cutoff));
+        // Any executions → never retire, however old.
+        assert!(!skill_is_stale(1, "2020-01-01T00:00:00.000Z", cutoff));
+        assert!(!skill_is_stale(9, "2020-01-01T00:00:00.000Z", cutoff));
+    }
+
+    // ── DB round-trip tests ──
+
+    async fn test_pool() -> Pool<Sqlite> {
+        use crate::session::spectral_schema::init_spectral_db;
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        init_spectral_db(&pool).await.unwrap();
+        pool
+    }
+
+    async fn insert_skill(pool: &Pool<Sqlite>, name: &str, created_at: &str) -> String {
+        let id = Uuid::now_v7().to_string();
+        sqlx::query(
+            "INSERT INTO skills (id, user_id, name, definition_json, status, created_at)
+             VALUES (?, 'default', ?, '{}', 'active', ?)",
+        )
+        .bind(&id)
+        .bind(name)
+        .bind(created_at)
+        .execute(pool)
+        .await
+        .unwrap();
+        id
+    }
+
+    async fn add_execution(pool: &Pool<Sqlite>, skill_id: &str) {
+        sqlx::query(
+            "INSERT INTO skill_executions (id, skill_id, user_id, status)
+             VALUES (?, ?, 'default', 'completed')",
+        )
+        .bind(Uuid::now_v7().to_string())
+        .bind(skill_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn status_of(pool: &Pool<Sqlite>, skill_id: &str) -> String {
+        sqlx::query_scalar("SELECT status FROM skills WHERE id = ?")
+            .bind(skill_id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    async fn now_iso(pool: &Pool<Sqlite>) -> String {
+        sqlx::query_scalar("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')")
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn build_prompt_ranks_proven_skill_first() {
+        let pool = test_pool().await;
+        let now = now_iso(&pool).await;
+        // old_proven: created long ago but used four times.
+        let proven = insert_skill(&pool, "old_proven", "2020-01-01T00:00:00.000Z").await;
+        for _ in 0..4 {
+            add_execution(&pool, &proven).await;
+        }
+        // new_unused: created just now, never used.
+        insert_skill(&pool, "new_unused", &now).await;
+
+        let prompt = build_skills_prompt(&pool).await.unwrap().unwrap();
+        let proven_at = prompt.find("old_proven").unwrap();
+        let unused_at = prompt.find("new_unused").unwrap();
+        assert!(
+            proven_at < unused_at,
+            "proven skill must be injected ahead of the newer unused one:\n{prompt}"
+        );
+    }
+
+    #[tokio::test]
+    async fn retirement_archives_only_stale_skills() {
+        let pool = test_pool().await;
+        let now = now_iso(&pool).await;
+
+        let old_unused = insert_skill(&pool, "old_unused", "2020-01-01T00:00:00.000Z").await;
+        let old_used = insert_skill(&pool, "old_used", "2020-01-01T00:00:00.000Z").await;
+        add_execution(&pool, &old_used).await;
+        let new_unused = insert_skill(&pool, "new_unused", &now).await;
+
+        let retired = retire_stale_skills(&pool, RETIREMENT_GRACE_DAYS)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            retired.len(),
+            1,
+            "only the old never-used skill should retire"
+        );
+        assert_eq!(retired[0].id, old_unused);
+        assert_eq!(status_of(&pool, &old_unused).await, "archived");
+        assert_eq!(status_of(&pool, &old_used).await, "active");
+        assert_eq!(status_of(&pool, &new_unused).await, "active");
+
+        // Idempotent: a second sweep retires nothing (the stale skill is archived).
+        let again = retire_stale_skills(&pool, RETIREMENT_GRACE_DAYS)
+            .await
+            .unwrap();
+        assert!(again.is_empty());
+    }
 }
