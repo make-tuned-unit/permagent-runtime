@@ -1695,7 +1695,7 @@ impl OrchestratorClient {
              Output ONLY a valid JSON object matching this exact schema — no prose, no markdown fences:\n\
              {\n  \"goals\": [\n    {\n      \"title\": \"short goal title\",\n      \
              \"description\": \"what to do and how to verify it's done\",\n      \
-             \"acceptance_criteria\": [\"criterion 1\", ...],\n      \
+             \"acceptance_criteria\": [\"measurable, mechanically-verifiable criterion\", ...],\n      \
              \"tags\": [\"code_edit\", \"shell\", ...],\n      \
              \"depends_on\": []  // indices of prerequisite goals (0-based)\n    }\n  ]\n}\n\n\
              Rules:\n\
@@ -1703,7 +1703,15 @@ impl OrchestratorClient {
              - Each goal completable in a single agent session (< 30 min of work)\n\
              - depends_on uses 0-based indices referencing other goals in the array\n\
              - No circular dependencies\n\
-             - Tags describe required capabilities: code_edit, shell, web_search, etc.";
+             - Tags describe required capabilities: code_edit, shell, web_search, etc.\n\
+             - acceptance_criteria are COMPILED INTO CHECKS THE DAEMON RUNS in the goal's \
+             worktree before the goal can be approved — they are enforced, not just advisory. \
+             Write each one measurable and tech-agnostic, and phrase mechanically-checkable \
+             ones so they map to a check: 'the project builds' / '`cargo test` passes' (a \
+             command exits 0), 'GET /health returns 200' (a loopback endpoint status), \
+             'docs/guide.md exists' (a file is created), 'no TODO remains in src/lib.rs' (a \
+             pattern is absent from a named file). Criteria that cannot be mechanically \
+             verified are still recorded for the human reviewer, but prefer verifiable ones.";
 
         let mut user_text = format!(
             "Objective: {}\nProject: {}\nProject root: {}",
@@ -2141,6 +2149,10 @@ impl McpClientTrait for OrchestratorClient {
                 "decompose_roadmap".to_string(),
                 "Decompose a high-level objective into a proposed roadmap of goal cards. \
                  Returns a PROPOSED plan for user review — does NOT create cards. \
+                 Each goal carries acceptance_criteria; mechanically-verifiable ones are \
+                 compiled into completion checks the daemon runs in the goal's worktree \
+                 before it can be approved, so phrase them measurably (a command exits 0, a \
+                 file exists, an endpoint returns a status, a pattern is absent). \
                  After the user approves, call create_roadmap with the goals JSON."
                     .to_string(),
                 schema::<DecomposeRoadmapParams>(),
@@ -2149,6 +2161,8 @@ impl McpClientTrait for OrchestratorClient {
                 "create_roadmap".to_string(),
                 "Create goal cards from an approved roadmap proposal. Call this ONLY after \
                  the user has reviewed and approved the output of decompose_roadmap. \
+                 Each goal's mechanically-verifiable acceptance_criteria are compiled into \
+                 enforced completion checks at dispatch (source 'spec-acceptance'). \
                  Root goals (no dependencies) are auto-dispatched to workers."
                     .to_string(),
                 schema::<CreateRoadmapParams>(),
