@@ -40,6 +40,23 @@ pub trait SchedulerTrait: Send + Sync {
     ) -> Result<Vec<(String, Session)>, SchedulerError>;
     async fn update_schedule(&self, sched_id: &str, new_cron: String)
         -> Result<(), SchedulerError>;
+    /// Generalized reschedule across kinds (cron / one-time `at` / interval
+    /// `every_seconds`) plus timezone. Sibling to `update_schedule` (which stays
+    /// cron-only for back-compat). Default impl delegates to `update_schedule`
+    /// when only a cron is supplied — so test doubles need not implement it.
+    async fn update_schedule_spec(
+        &self,
+        sched_id: &str,
+        cron: Option<String>,
+        _at: Option<DateTime<Utc>>,
+        _every_seconds: Option<u64>,
+        _tz: Option<String>,
+    ) -> Result<(), SchedulerError> {
+        match cron {
+            Some(c) => self.update_schedule(sched_id, c).await,
+            None => Ok(()),
+        }
+    }
     async fn kill_running_job(&self, sched_id: &str) -> Result<(), SchedulerError>;
     async fn get_running_job_info(
         &self,

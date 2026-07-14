@@ -93,6 +93,7 @@ pub async fn handle_schedule_add(
         starter_version: None,
         starter_content_hash: None,
         user_customized: None,
+        ..Default::default()
     };
 
     let scheduler_storage_path =

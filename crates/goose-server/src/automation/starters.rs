@@ -151,6 +151,7 @@ pub async fn seed_starter_recipes(scheduler: &dyn SchedulerTrait) {
             starter_version: Some(version),
             starter_content_hash: Some(hash),
             user_customized: Some(false),
+            ..Default::default()
         };
 
         match scheduler.add_scheduled_job(job, false).await {
@@ -562,6 +563,7 @@ mod tests {
             starter_version: Some(version.to_string()),
             starter_content_hash: Some(hash.to_string()),
             user_customized: Some(customized),
+            ..Default::default()
         }
     }
 

@@ -148,6 +148,7 @@ impl RecipeAuthorClient {
             starter_version: None,
             starter_content_hash: None,
             user_customized: None,
+            ..Default::default()
         };
 
         // Write recipe to disk and register with scheduler
