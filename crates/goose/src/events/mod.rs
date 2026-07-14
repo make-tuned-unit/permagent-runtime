@@ -681,11 +681,15 @@ mod tests {
         emit(event.clone());
 
         // Try to receive (non-blocking would need tokio runtime)
-        // Just verify buffer works
+        // Just verify buffer works. The buffer is process-global and sibling
+        // tests emit concurrently, so assert OUR event is present by id —
+        // `.last()` races with whatever another test emitted after us.
         let buffered = buffered_events();
         assert!(!buffered.is_empty());
-        let last = buffered.last().unwrap();
-        assert_eq!(last.event_type, PermagentEventType::DaemonStarted);
+        assert!(
+            buffered.iter().any(|e| e.id == event.id),
+            "emitted event not found in buffer"
+        );
     }
 
     #[test]

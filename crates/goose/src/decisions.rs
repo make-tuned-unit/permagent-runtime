@@ -106,6 +106,74 @@ pub struct AutomationProposalPayload {
     pub exemplars: Vec<String>,
 }
 
+/// One proposed field in an `enrichment_proposal` (#495 slice 4). The
+/// `source_url` is REQUIRED — verifiability is the point of bounding the
+/// Enricher to structured fields.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProposedEnrichmentField {
+    /// Must be one of [`crate::people::ENRICHABLE_FIELD_NAMES`].
+    pub field_name: String,
+    pub value: String,
+    /// The page where the value was verified.
+    pub source_url: String,
+}
+
+/// Payload for `kind='enrichment_proposal'` — the Enricher (#495 slice 4)
+/// researched a person and proposes structured field values. Review-gated
+/// (Approach B): the approve effect writes each field to the person's graph
+/// entity via `set_entity_field` with `FieldSource::Enriched`; a reject
+/// records and writes nothing. Manual-provenance fields are never overwritten
+/// (enforced in Spectral's store, re-checked at apply time).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnrichmentProposalPayload {
+    /// Display name at proposal time (for the human reading the inbox).
+    pub person_name: String,
+    /// Bare 64-hex Spectral `EntityId` of the person's graph node — the write
+    /// target, resolved at proposal time so the approve path never re-resolves.
+    pub graph_entity_id: String,
+    /// Directory row key (`people.entity_uuid`), when known.
+    #[serde(default)]
+    pub entity_uuid: Option<String>,
+    pub fields: Vec<ProposedEnrichmentField>,
+}
+
+/// Structural checks beyond serde for an enrichment proposal: at least one
+/// field, every field name on the enrichable allowlist, non-empty values and
+/// source URLs, and a well-formed 64-hex graph entity id. Failing any of
+/// these stores the request as `kind='malformed'` — never coerced (S2).
+fn validate_enrichment_payload(p: &EnrichmentProposalPayload) -> Result<(), String> {
+    if p.fields.is_empty() {
+        return Err("enrichment_proposal requires at least one field".to_string());
+    }
+    if p.graph_entity_id.len() != 64 || !p.graph_entity_id.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!(
+            "graph_entity_id must be a bare 64-hex EntityId, got '{}'",
+            p.graph_entity_id
+        ));
+    }
+    for f in &p.fields {
+        if !crate::people::ENRICHABLE_FIELD_NAMES.contains(&f.field_name.as_str()) {
+            return Err(format!(
+                "field '{}' is not enrichable (allowed: {})",
+                f.field_name,
+                crate::people::ENRICHABLE_FIELD_NAMES.join(", ")
+            ));
+        }
+        if f.value.trim().is_empty() {
+            return Err(format!("field '{}' has an empty value", f.field_name));
+        }
+        if f.source_url.trim().is_empty() {
+            return Err(format!(
+                "field '{}' is missing its source_url",
+                f.field_name
+            ));
+        }
+    }
+    Ok(())
+}
+
 // ── Decision rows ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -213,6 +281,7 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
         "choice",
         "risk_gate",
         "automation_proposal",
+        "enrichment_proposal",
     ]
     .contains(&req.kind.as_str())
     {
@@ -255,6 +324,12 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
             serde_json::from_value::<AutomationProposalPayload>(req.payload.clone())
                 .map(|_| ())
                 .map_err(|e| e.to_string())
+        }
+        "enrichment_proposal" => {
+            match serde_json::from_value::<EnrichmentProposalPayload>(req.payload.clone()) {
+                Ok(p) => validate_enrichment_payload(&p),
+                Err(e) => Err(e.to_string()),
+            }
         }
         _ => unreachable!("kind validated above"),
     };
@@ -1135,6 +1210,98 @@ mod tests {
         let d = create_decision(&pool, req).await.unwrap();
         assert_eq!(d.kind, "risk_gate");
         assert_eq!(d.tier, 2, "unknown action_class must fail closed");
+    }
+
+    // ── Enrichment proposals (#495 slice 4) ──
+
+    fn enrichment_fields(fields: serde_json::Value) -> NewDecision {
+        NewDecision {
+            kind: "enrichment_proposal".to_string(),
+            headline: Some("Approve enriched details for Jane Doe".to_string()),
+            detail: Some("linkedin: … (source: …)".to_string()),
+            payload: serde_json::json!({
+                "person_name": "Jane Doe",
+                "graph_entity_id": "ab".repeat(32),
+                "entity_uuid": "0197-fake",
+                "fields": fields,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn enrichment_proposal_is_valid_and_user_only() {
+        let pool = test_pool().await;
+        let req = enrichment_fields(serde_json::json!([
+            {
+                "field_name": "linkedin",
+                "value": "https://www.linkedin.com/in/janedoe",
+                "source_url": "https://www.linkedin.com/in/janedoe"
+            },
+            {
+                "field_name": "company",
+                "value": "Acme Corp",
+                "source_url": "https://acme.example/about"
+            }
+        ]));
+        let d = create_decision(&pool, req).await.unwrap();
+        assert_eq!(
+            d.kind, "enrichment_proposal",
+            "a real proposal, not coerced"
+        );
+        assert_eq!(d.tier, 2, "no seeded class → user-only (fail-closed)");
+        assert_eq!(d.status, "open");
+        assert_eq!(
+            d.payload["fields"][1]["value"],
+            serde_json::json!("Acme Corp")
+        );
+    }
+
+    #[tokio::test]
+    async fn enrichment_proposal_rejects_manual_only_field() {
+        let pool = test_pool().await;
+        // email is manual-only — OFF LIMITS to enrichment by ruling.
+        let req = enrichment_fields(serde_json::json!([
+            {
+                "field_name": "email",
+                "value": "jane@example.com",
+                "source_url": "https://acme.example/team"
+            }
+        ]));
+        let d = create_decision(&pool, req).await.unwrap();
+        assert_eq!(d.kind, "malformed", "manual-only field must be rejected");
+    }
+
+    #[tokio::test]
+    async fn enrichment_proposal_rejects_empty_fields_and_missing_source() {
+        let pool = test_pool().await;
+        let empty = enrichment_fields(serde_json::json!([]));
+        let d = create_decision(&pool, empty).await.unwrap();
+        assert_eq!(d.kind, "malformed", "zero fields is not a proposal");
+
+        let no_source = enrichment_fields(serde_json::json!([
+            { "field_name": "job_title", "value": "CTO", "source_url": "  " }
+        ]));
+        let d = create_decision(&pool, no_source).await.unwrap();
+        assert_eq!(d.kind, "malformed", "source_url is required per field");
+    }
+
+    #[tokio::test]
+    async fn enrichment_proposal_rejects_bad_entity_id_and_unknown_payload_fields() {
+        let pool = test_pool().await;
+        let mut bad_id = enrichment_fields(serde_json::json!([
+            { "field_name": "company", "value": "Acme", "source_url": "https://a.example" }
+        ]));
+        bad_id.payload["graph_entity_id"] = serde_json::json!("not-hex");
+        let d = create_decision(&pool, bad_id).await.unwrap();
+        assert_eq!(d.kind, "malformed", "graph_entity_id must be 64-hex");
+
+        let mut extra = enrichment_fields(serde_json::json!([
+            { "field_name": "company", "value": "Acme", "source_url": "https://a.example" }
+        ]));
+        extra.payload["bogus"] = serde_json::json!(true);
+        let d = create_decision(&pool, extra).await.unwrap();
+        assert_eq!(d.kind, "malformed", "deny_unknown_fields holds");
     }
 
     // ── S5: tier gates on answering ──

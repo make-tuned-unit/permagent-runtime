@@ -368,10 +368,23 @@ impl SelfKnowledgeBuilder {
                 .map(|n| format!("{n} job(s) scheduled")),
             id if id == librarian_state_id() => {
                 let s = librarian_state::get_state();
-                Some(format!(
-                    "{} described, {} pending",
-                    s.lifetime_stats.described, s.lifetime_stats.pending
-                ))
+                // The "awaiting your context" clause (#387 v2 ask-seam) renders
+                // only when non-zero: the zero state stays byte-identical to the
+                // pre-v2 brief (snapshot-stable), and the agent is only prompted
+                // to ask when there is actually something to ask about.
+                Some(if s.entities_awaiting_context > 0 {
+                    format!(
+                        "{} described, {} pending, {} awaiting your context",
+                        s.lifetime_stats.described,
+                        s.lifetime_stats.pending,
+                        s.entities_awaiting_context
+                    )
+                } else {
+                    format!(
+                        "{} described, {} pending",
+                        s.lifetime_stats.described, s.lifetime_stats.pending
+                    )
+                })
             }
             "initiative" => Some(if crate::initiative::driver::is_enabled() {
                 "on — watching for repeated commands".to_string()

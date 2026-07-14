@@ -54,6 +54,30 @@ struct AssociatePersonParams {
     create_if_missing: Option<bool>,
 }
 
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct EnrichPersonParams {
+    /// The person to enrich: canonical name or directory entity_uuid.
+    person: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct ProposedFieldParam {
+    /// One of: linkedin, job_title, company, x_handle, personal_site.
+    field_name: String,
+    /// The found value.
+    value: String,
+    /// The URL of the page where the value was verified.
+    source_url: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct ProposeEnrichmentParams {
+    /// The person the findings are for: canonical name or directory entity_uuid.
+    person: String,
+    /// The proposed field values, each with the source URL it was verified on.
+    fields: Vec<ProposedFieldParam>,
+}
+
 /// Result of resolving a name to a directory person.
 enum PersonMatch {
     One(Box<Person>),
@@ -85,6 +109,12 @@ impl PeopleClient {
                 project. For "add <name> and associate with <project>", either call
                 `create_person` with `associate_with_project`, or call
                 `associate_person_with_project` with `create_if_missing: true`.
+
+                Use `enrich_person` when the user asks to enrich, refresh, or look
+                up a contact's professional details: it returns a research briefing;
+                you research with your own web tools, then file findings with
+                `propose_enrichment`. Findings wait in the Decision Inbox — nothing
+                is written to a profile until the user approves.
 
                 Names are resolved against the directory. If a name is ambiguous the
                 tool returns the candidates instead of guessing — ask the user which
@@ -277,6 +307,214 @@ impl PeopleClient {
         ))])
     }
 
+    /// Resolve `person` as a directory `entity_uuid` first, then by name.
+    /// Enrichment must never guess an identity: an ambiguous name errors with
+    /// the candidates instead of picking one.
+    async fn resolve_person_strict(pool: &Pool<Sqlite>, q: &str) -> Result<Person, String> {
+        if let Some(p) = people::get_by_uuid(pool, q).await? {
+            return Ok(p);
+        }
+        match Self::resolve_person(pool, q).await? {
+            PersonMatch::One(p) => Ok(*p),
+            PersonMatch::None => Err(format!(
+                "No person named \"{q}\" in the directory. Create them first with create_person."
+            )),
+            PersonMatch::Many(candidates) => Err(format!(
+                "\"{q}\" matches {} people — ask which one: {}",
+                candidates.len(),
+                candidates
+                    .iter()
+                    .map(|p| format!(
+                        "{} (company: {})",
+                        p.display_name,
+                        p.company.as_deref().unwrap_or("—")
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
+
+    /// The Enricher's kickoff (#495 slice 4): resolve the person, show what the
+    /// graph already holds (with provenance), and return the research briefing.
+    /// This tool does NOT browse — the agent researches with its own web tools
+    /// and then calls `propose_enrichment`; nothing is written until the user
+    /// approves the resulting Decision Inbox item.
+    async fn handle_enrich_person(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let params: EnrichPersonParams = serde_json::from_value(serde_json::Value::Object(args))
+            .map_err(|e| format!("Invalid arguments: {e}"))?;
+        let pool = self.pool().await?;
+        let person = Self::resolve_person_strict(&pool, &params.person).await?;
+
+        // Current graph-side fields, with provenance, so the agent skips what
+        // is already manually set (an Enriched write could never clobber it
+        // anyway — Spectral's store enforces that — but proposing it wastes
+        // the user's attention).
+        let mut current = String::new();
+        if let (Some(hex), Some(brain)) = (person.graph_entity_id.as_deref(), get_global_brain()) {
+            if let Ok(eid) = hex.parse::<spectral::core::entity_id::EntityId>() {
+                if let Ok(fields) = brain.get_entity_fields(eid).await {
+                    for f in &fields {
+                        current.push_str(&format!(
+                            "\n  - {}: {} [{}]",
+                            f.field_name,
+                            f.value,
+                            f.source.as_str()
+                        ));
+                    }
+                }
+            }
+        }
+        if current.is_empty() {
+            current = "\n  (none on the graph yet)".to_string();
+        }
+
+        Ok(vec![Content::text(format!(
+            "Enrichment briefing for \"{}\" (entity_uuid: {}).\n\
+             \n\
+             Current graph fields (with provenance):{}\n\
+             \n\
+             Research ONLY these structured fields: {}.\n\
+             Manual-only fields are OFF LIMITS — do not research or propose email, phone, \
+             birthday, or notes.\n\
+             \n\
+             How to work:\n\
+             1. Use your own web tools (read_webpage, web search) to find this person's \
+             public professional presence.\n\
+             2. Verify every value on the page you cite — each proposed field needs the \
+             URL where you actually saw it.\n\
+             3. Skip fields already present with [manual] provenance above.\n\
+             4. If you cannot confidently tell WHICH \"{}\" this is (common name, several \
+             plausible matches), STOP and report the ambiguity to the user instead of \
+             proposing — never guess an identity.\n\
+             \n\
+             When done, call propose_enrichment with person \"{}\" and your findings as \
+             fields: [{{field_name, value, source_url}}]. Nothing is written to the profile \
+             until the user approves the proposal in the Decision Inbox.",
+            person.display_name,
+            person.entity_uuid,
+            current,
+            crate::people::ENRICHABLE_FIELD_NAMES.join(", "),
+            person.display_name,
+            person.display_name,
+        ))])
+    }
+
+    /// File the Enricher's findings as a review-gated Decision Inbox proposal
+    /// (kind `enrichment_proposal`). Field names are validated against the
+    /// enrichable allowlist here (friendly error) and again at decision
+    /// creation (malformed, fail-closed). On approve, the decision's effect
+    /// writes the fields with Enriched provenance.
+    async fn handle_propose_enrichment(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let params: ProposeEnrichmentParams =
+            serde_json::from_value(serde_json::Value::Object(args))
+                .map_err(|e| format!("Invalid arguments: {e}"))?;
+        let pool = self.pool().await?;
+        let person = Self::resolve_person_strict(&pool, &params.person).await?;
+
+        let graph_entity_id = person.graph_entity_id.clone().ok_or_else(|| {
+            format!(
+                "\"{}\" has no graph entity yet (the people→graph bridge hasn't reached this \
+                 row) — enrichment has no write target. Try again after the startup sync.",
+                person.display_name
+            )
+        })?;
+
+        if params.fields.is_empty() {
+            return Err("No fields proposed — nothing to review.".to_string());
+        }
+        for f in &params.fields {
+            if !crate::people::ENRICHABLE_FIELD_NAMES.contains(&f.field_name.as_str()) {
+                return Err(format!(
+                    "Field \"{}\" is not enrichable. Allowed fields: {}. Manual-only fields \
+                     (email, phone, birthday, notes) can never be proposed.",
+                    f.field_name,
+                    crate::people::ENRICHABLE_FIELD_NAMES.join(", ")
+                ));
+            }
+            if f.value.trim().is_empty() {
+                return Err(format!("Field \"{}\" has an empty value.", f.field_name));
+            }
+            if f.source_url.trim().is_empty() {
+                return Err(format!(
+                    "Field \"{}\" is missing its source_url — every finding must cite the \
+                     page it was verified on.",
+                    f.field_name
+                ));
+            }
+        }
+
+        let payload = crate::decisions::EnrichmentProposalPayload {
+            person_name: person.display_name.clone(),
+            graph_entity_id,
+            entity_uuid: Some(person.entity_uuid.clone()),
+            fields: params
+                .fields
+                .iter()
+                .map(|f| crate::decisions::ProposedEnrichmentField {
+                    field_name: f.field_name.clone(),
+                    value: f.value.trim().to_string(),
+                    source_url: f.source_url.trim().to_string(),
+                })
+                .collect(),
+        };
+
+        let mut headline = format!("Approve enriched details for {}", person.display_name);
+        if headline.chars().count() > 80 {
+            headline = headline.chars().take(79).collect::<String>() + "…";
+        }
+        let detail = params
+            .fields
+            .iter()
+            .map(|f| {
+                format!(
+                    "{}: {} (source: {})",
+                    f.field_name,
+                    f.value.trim(),
+                    f.source_url.trim()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let decision = crate::decisions::create_decision(
+            &pool,
+            crate::decisions::NewDecision {
+                kind: "enrichment_proposal".to_string(),
+                headline: Some(headline),
+                detail: Some(detail),
+                payload: serde_json::to_value(&payload).map_err(|e| e.to_string())?,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        if decision.kind == "malformed" {
+            return Err(format!(
+                "The proposal was rejected as malformed: {}",
+                decision.detail
+            ));
+        }
+
+        Ok(vec![Content::text(format!(
+            "Proposed {} field(s) for \"{}\" — decision {} is waiting in the Decision Inbox. \
+             Nothing is written to the profile until the user approves it there; approved \
+             fields are stored with Enriched provenance and can never overwrite a manually \
+             entered value.",
+            params.fields.len(),
+            person.display_name,
+            decision.id
+        ))])
+    }
+
     fn get_tools() -> Vec<Tool> {
         let create_schema = serde_json::to_value(schema_for!(CreatePersonParams)).unwrap();
         let associate_schema = serde_json::to_value(schema_for!(AssociatePersonParams)).unwrap();
@@ -317,6 +555,58 @@ impl PeopleClient {
                 Some(false),
                 Some(false),
             )),
+            Tool::new(
+                "enrich_person".to_string(),
+                indoc! {r#"
+                Start an enrichment pass on a CRM person (the Enricher, #495).
+                Returns a research briefing: the person's current graph fields
+                with provenance and the bounded set of enrichable fields
+                (linkedin, job_title, company, x_handle, personal_site). You do
+                the research yourself with your web tools, then file findings
+                via propose_enrichment. Manual-only fields (email, phone,
+                birthday, notes) are off limits. Use when the user asks to
+                enrich, refresh, or look up a contact's professional details.
+            "#}
+                .to_string(),
+                serde_json::to_value(schema_for!(EnrichPersonParams))
+                    .unwrap()
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Enrich Person".to_string()),
+                Some(true),
+                Some(false),
+                Some(true),
+                Some(false),
+            )),
+            Tool::new(
+                "propose_enrichment".to_string(),
+                indoc! {r#"
+                File researched person details as a review-gated proposal in the
+                Decision Inbox. Each field needs {field_name, value, source_url}
+                where source_url is the page the value was verified on. Only the
+                enrichable fields (linkedin, job_title, company, x_handle,
+                personal_site) are accepted. NOTHING is written to the person's
+                profile until the user approves the proposal; approved fields
+                are stored with Enriched provenance and never overwrite
+                manually entered values.
+            "#}
+                .to_string(),
+                serde_json::to_value(schema_for!(ProposeEnrichmentParams))
+                    .unwrap()
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Propose Enrichment".to_string()),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+            )),
         ]
     }
 }
@@ -354,6 +644,8 @@ impl McpClientTrait for PeopleClient {
         let content = match name {
             "create_person" => self.handle_create_person(arguments).await,
             "associate_person_with_project" => self.handle_associate(arguments).await,
+            "enrich_person" => self.handle_enrich_person(arguments).await,
+            "propose_enrichment" => self.handle_propose_enrichment(arguments).await,
             _ => Err(format!("Unknown tool: {name}")),
         };
         match content {

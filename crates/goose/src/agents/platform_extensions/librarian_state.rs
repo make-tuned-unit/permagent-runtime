@@ -49,6 +49,12 @@ pub struct LibrarianRuntimeState {
     pub error_message: Option<String>,
     pub session_stats: SessionStats,
     pub lifetime_stats: LifetimeStats,
+    /// #387 v2 — graph entities the entity sweep could not truthfully describe
+    /// (INSUFFICIENT_CONTEXT with real mention signal). Rendered in the
+    /// capabilities brief as "K awaiting your context" (omitted at 0) so the
+    /// agent knows to ask the user about them. Set by the entity sweep and
+    /// re-seeded from the sidecar ledger at daemon boot.
+    pub entities_awaiting_context: usize,
 }
 
 impl Default for LibrarianRuntimeState {
@@ -69,6 +75,7 @@ impl Default for LibrarianRuntimeState {
                 described: 0,
                 pending: 0,
             },
+            entities_awaiting_context: 0,
         }
     }
 }
@@ -180,6 +187,14 @@ pub fn set_error(message: &str) {
     state.current_task = format!("Error: {}", message);
     state.current_memory = None;
     state.error_message = Some(message.to_string());
+}
+
+/// #387 v2 — update the count of entities awaiting user context (the entity
+/// sweep's `needs_context` queue length). Rendered in the capabilities brief
+/// only when > 0, so the zero state stays snapshot-identical.
+pub fn set_entities_awaiting_context(count: usize) {
+    let mut state = LIBRARIAN_STATE.write().unwrap();
+    state.entities_awaiting_context = count;
 }
 
 /// Transition back to idle (e.g., after batch_complete timeout or scheduler resets).

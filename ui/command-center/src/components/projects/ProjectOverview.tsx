@@ -114,7 +114,9 @@ function SummaryPanel({ project }: { project: Project }) {
 }
 
 function KeyFactsPanel({ project }: { project: Project }) {
-  const { colors } = useTheme();
+  const { colors, theme } = useTheme();
+  // White veils vanish on silver — flip to a faint graphite tint there.
+  const chipVeil = theme === 'silver' ? 'rgba(30,37,48,0.06)' : 'rgba(255,255,255,0.06)';
   const facts: { label: string; value: ReactNode }[] = [
     { label: 'Status', value: <StatusPill status={project.status} /> },
     { label: 'Slug', value: project.slug },
@@ -143,7 +145,7 @@ function KeyFactsPanel({ project }: { project: Project }) {
               {project.tags.map((tag, ti) => (
                 <span key={`${tag}-${ti}`} style={{
                   fontSize: 9, padding: '1px 6px', borderRadius: 4,
-                  background: 'rgba(255,255,255,0.06)', color: colors.textDim,
+                  background: chipVeil, color: colors.textDim,
                 }}>
                   {tag}
                 </span>
@@ -289,7 +291,10 @@ function TasksPanel({ columns, cards, onOpenGoal }: {
   cards: Card[];
   onOpenGoal: (cardId: string) => void;
 }) {
-  const { colors } = useTheme();
+  const { colors, theme } = useTheme();
+  // White veils vanish on silver — flip to a faint graphite tint there.
+  const rowVeil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
+  const chipVeil = theme === 'silver' ? 'rgba(30,37,48,0.06)' : 'rgba(255,255,255,0.06)';
   const ordered = [...columns].sort((a, b) => {
     const ai = a.stateBinding ? STATE_ORDER.indexOf(a.stateBinding) : 99;
     const bi = b.stateBinding ? STATE_ORDER.indexOf(b.stateBinding) : 99;
@@ -318,7 +323,7 @@ function TasksPanel({ columns, cards, onOpenGoal }: {
                   <span style={{ fontSize: 10, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                     {col.name}
                   </span>
-                  <span style={{ fontSize: 9, color: colors.textDim, background: 'rgba(255,255,255,0.06)', padding: '0 5px', borderRadius: 7 }}>
+                  <span style={{ fontSize: 9, color: colors.textDim, background: chipVeil, padding: '0 5px', borderRadius: 7 }}>
                     {colCards.length}
                   </span>
                 </div>
@@ -335,15 +340,15 @@ function TasksPanel({ columns, cards, onOpenGoal }: {
                         onKeyDown={isGoal ? e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenGoal(card.id); } } : undefined}
                         style={{
                           fontSize: 12, padding: '4px 8px', borderRadius: 6,
-                          background: 'rgba(255,255,255,0.02)',
+                          background: rowVeil,
                           color: colors.text, cursor: isGoal ? 'pointer' : 'default',
                           display: 'flex', alignItems: 'center', gap: 6,
                           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                         }}
                         onMouseEnter={e => { if (isGoal) (e.currentTarget as HTMLElement).style.background = colors.cyanSoft; }}
-                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.02)'; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = rowVeil; }}
                         onFocus={e => { if (isGoal) (e.currentTarget as HTMLElement).style.background = colors.cyanSoft; }}
-                        onBlur={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.02)'; }}
+                        onBlur={e => { (e.currentTarget as HTMLElement).style.background = rowVeil; }}
                       >
                         {isGoal && (
                           <span style={{ width: 5, height: 5, borderRadius: '50%', background: colors.purpleBright, flexShrink: 0 }} />

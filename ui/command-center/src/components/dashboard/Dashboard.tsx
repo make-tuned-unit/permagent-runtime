@@ -52,7 +52,7 @@ const GAP = 16;
 
 export function Dashboard() {
   const { gradient, colors } = useTheme();
-  const { data, loading } = useDashboard();
+  const { data, loading, error, retry } = useDashboard();
   // One shared live-goal subscription for every "in flight" surface (count,
   // list, header, status) so they always agree. Sessions are a separate stat.
   const { goals: activeGoals, activeCount } = useLiveGoals();
@@ -183,7 +183,28 @@ export function Dashboard() {
   if (loading || !data) {
     return (
       <div style={{ width: '100%', height: '100%', background: colors.bg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <Mobius size={120} state="thinking" />
+        {!loading && error ? (
+          // Initial load failed with nothing to show — an explicit, recoverable
+          // dead-end instead of a spinner that never resolves.
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, textAlign: 'center', fontFamily: font.body }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: colors.danger }}>Couldn't load the dashboard</div>
+            <div style={{ fontSize: 11, color: colors.textDim, maxWidth: 320, lineHeight: 1.5 }}>
+              The daemon didn't respond. Check that it's running, then try again.
+            </div>
+            <button
+              onClick={retry}
+              style={{
+                marginTop: 6, padding: '5px 14px', borderRadius: 6, cursor: 'pointer',
+                background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
+                color: colors.cyan, fontSize: 11, fontWeight: 600, fontFamily: font.body,
+              }}
+            >
+              Try again
+            </button>
+          </div>
+        ) : (
+          <Mobius size={120} state="thinking" />
+        )}
       </div>
     );
   }
@@ -403,8 +424,8 @@ function RemoveButton({ disabled, onClick }: { disabled: boolean; onClick: () =>
       }}
       onMouseEnter={e => {
         if (!disabled) {
-          e.currentTarget.style.background = 'rgba(239,68,68,0.15)';
-          e.currentTarget.style.color = '#EF4444';
+          e.currentTarget.style.background = colors.danger + '26';
+          e.currentTarget.style.color = colors.danger;
         }
       }}
       onMouseLeave={e => {

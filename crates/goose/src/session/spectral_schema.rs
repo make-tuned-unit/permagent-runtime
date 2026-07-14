@@ -480,6 +480,7 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
             site_url        TEXT,
             repo_url        TEXT,
             notes           TEXT NOT NULL DEFAULT '',
+            metadata_json   TEXT NOT NULL DEFAULT '{}',
             created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
             updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
             last_opened_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -683,8 +684,8 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // migrate_v24_to_v25. Purely additive, base-independent.
     apply_project_notes_schema(pool).await?;
 
-    // Durable activity journal (schema v26, #619). Idempotent; shared with
-    // migrate_v25_to_v26. Purely additive, base-independent.
+    // Durable activity journal (schema v27, #619). Idempotent; shared with
+    // migrate_v26_to_v27. Purely additive, base-independent.
     apply_activity_journal_schema(pool).await?;
 
     info!(
@@ -963,7 +964,46 @@ pub async fn migrate_v24_to_v25(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
-/// Apply the durable activity-journal schema (v26, #619): `activity_journal`,
+/// Ensure `projects.metadata_json` exists (schema v26, #456 / ruling 3 in
+/// GOAL_COMPLETION_AND_VERIFICATION.md §3d): a general project metadata bag
+/// mirroring `cards.metadata_json`. First tenant: `build_command` — the
+/// project-level build check the orchestrator seeds onto code-flavored goals
+/// as a `command_exit_zero` completion check. The publish sequence (#457)
+/// lands in the same bag later. PRAGMA-guarded ADD COLUMN, idempotent.
+pub async fn apply_project_metadata_column(pool: &Pool<Sqlite>) -> Result<()> {
+    let has_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name = 'metadata_json'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if has_column == 0 {
+        sqlx::query("ALTER TABLE projects ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'")
+            .execute(pool)
+            .await?;
+        info!("Added projects.metadata_json column (schema v26)");
+    }
+    Ok(())
+}
+
+/// Migrate an existing database to the project-metadata schema (schema v26).
+///
+/// A single guarded `ALTER TABLE ... ADD COLUMN`, base-version independent and
+/// idempotent, so it applies cleanly over any earlier base. Records v26 in
+/// `schema_version`.
+pub async fn migrate_v25_to_v26(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v25 -> v26 (projects.metadata_json)");
+
+    apply_project_metadata_column(pool).await?;
+
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (26)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v26 (projects.metadata_json)");
+
+    Ok(())
+}
+
+/// Apply the durable activity-journal schema (v27, #619): `activity_journal`,
 /// an append-only log of selected event-bus kinds (goal transitions, decisions,
 /// librarian runs, task failures) with actor + evidence pointer. The journal
 /// INDEXES the existing durable stores — `ref_kind`/`ref_id` point at the card,
@@ -997,19 +1037,19 @@ pub async fn apply_activity_journal_schema(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
-/// Migrate an existing database to the activity-journal schema (schema v26).
+/// Migrate an existing database to the activity-journal schema (schema v27).
 ///
 /// Purely additive and base-version independent (`CREATE TABLE IF NOT EXISTS`),
-/// so it applies cleanly over any earlier base. Records v26 in `schema_version`.
-pub async fn migrate_v25_to_v26(pool: &Pool<Sqlite>) -> Result<()> {
-    info!("Migrating Spectral schema v25 -> v26 (activity journal)");
+/// so it applies cleanly over any earlier base. Records v27 in `schema_version`.
+pub async fn migrate_v26_to_v27(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v26 -> v27 (activity journal)");
 
     apply_activity_journal_schema(pool).await?;
 
-    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (26)")
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (27)")
         .execute(pool)
         .await?;
-    info!("Spectral schema migrated to v26 (activity journal)");
+    info!("Spectral schema migrated to v27 (activity journal)");
 
     Ok(())
 }
@@ -1576,7 +1616,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS decisions (
             id            TEXT PRIMARY KEY,
             kind          TEXT NOT NULL CHECK (kind IN
-                            ('approve_review','unblock','choice','risk_gate','automation_proposal','malformed')),
+                            ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','malformed')),
             goal_id       TEXT REFERENCES cards(id) ON DELETE SET NULL,
             project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
             tier          INTEGER NOT NULL CHECK (tier IN (0,1,2)),
@@ -1622,19 +1662,22 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
     }
 
     // Widen the `kind` CHECK to admit 'automation_proposal' (Initiative → Decision
-    // Inbox). SQLite cannot ALTER a CHECK, so an older table is rebuilt in place.
-    // FK-safe: nothing references `decisions` via a foreign key (decision_audit
-    // stores a plain TEXT id; the complete-guard trigger resolves by name after
-    // the rename). Gated on the constraint text, so it runs at most once.
+    // Inbox) and 'enrichment_proposal' (the Enricher, #495 slice 4). SQLite cannot
+    // ALTER a CHECK, so an older table is rebuilt in place. FK-safe: nothing
+    // references `decisions` via a foreign key (decision_audit stores a plain TEXT
+    // id; the complete-guard trigger resolves by name after the rename). Gated on
+    // the newest kind in the constraint text, so it runs at most once — a table
+    // missing 'automation_proposal' also misses 'enrichment_proposal' and this one
+    // rebuild widens for both.
     let decisions_ddl: Option<String> =
         sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE type='table' AND name='decisions'")
             .fetch_optional(&mut *tx)
             .await?;
     if decisions_ddl
-        .map(|sql| !sql.contains("automation_proposal"))
+        .map(|sql| !sql.contains("enrichment_proposal"))
         .unwrap_or(false)
     {
-        info!("Widening decisions.kind CHECK for 'automation_proposal' (in-place rebuild)");
+        info!("Widening decisions.kind CHECK for 'enrichment_proposal' (in-place rebuild)");
         // Indexes on the old table are dropped with it; recreated below.
         sqlx::query("DROP INDEX IF EXISTS idx_decisions_open")
             .execute(&mut *tx)
@@ -1646,7 +1689,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
             "CREATE TABLE decisions_new (
                 id            TEXT PRIMARY KEY,
                 kind          TEXT NOT NULL CHECK (kind IN
-                                ('approve_review','unblock','choice','risk_gate','automation_proposal','malformed')),
+                                ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','malformed')),
                 goal_id       TEXT REFERENCES cards(id) ON DELETE SET NULL,
                 project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
                 tier          INTEGER NOT NULL CHECK (tier IN (0,1,2)),

@@ -9,6 +9,8 @@ pub mod developer;
 pub mod ext_manager;
 pub mod goal_engine;
 pub mod librarian;
+pub mod librarian_atoms;
+pub mod librarian_entities;
 pub mod librarian_state;
 pub mod orchestrator;
 pub mod people;
@@ -467,12 +469,12 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: people::EXTENSION_NAME,
                 display_name: "People",
                 description:
-                    "Create people and associate them with projects — mints a durable graph entity plus a CRM directory row in one deterministic step",
+                    "Create people, associate them with projects, and enrich a person's professional details — creating mints a durable graph entity plus a CRM directory row in one deterministic step; enrichment researches structured fields and files a review-gated Decision Inbox proposal",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
                 why_it_matters:
-                    "When the user says \"add <name>\" or \"associate <name> with <project>\", do it directly — you create and link people, you do not just remember them as a note.",
+                    "When the user says \"add <name>\" or \"associate <name> with <project>\", do it directly — you create and link people, you do not just remember them as a note. When they ask to enrich or refresh a contact's details, start with enrich_person — nothing is written until they approve the proposal.",
                 teaching: &[],
                 client_factory: |ctx| Box::new(people::PeopleClient::new(ctx).unwrap()),
             },

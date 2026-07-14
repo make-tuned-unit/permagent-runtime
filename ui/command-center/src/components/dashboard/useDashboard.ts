@@ -10,13 +10,19 @@ export interface DashboardData { agent: DashboardAgent; stats: DashboardStats; i
 export function useDashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval>>();
 
   const fetchDashboard = async () => {
     try {
       const result = await apiFetch<DashboardData>('/api/dashboard');
       setData(result);
-    } catch { /* ignore */ }
+      setError(false);
+    } catch {
+      // Surface the failure instead of spinning forever — a failed poll while
+      // data is already on screen keeps the stale dashboard, not an alarm.
+      setError(true);
+    }
     setLoading(false);
   };
 
@@ -26,5 +32,7 @@ export function useDashboard() {
     return () => clearInterval(intervalRef.current);
   }, []);
 
-  return { data, loading, refresh: fetchDashboard };
+  const retry = () => { setLoading(true); fetchDashboard(); };
+
+  return { data, loading, error, retry, refresh: fetchDashboard };
 }

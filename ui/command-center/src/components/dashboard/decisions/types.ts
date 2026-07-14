@@ -28,6 +28,8 @@ export type DecisionKind =
   | 'choice'
   | 'unblock'
   | 'risk_gate'
+  | 'automation_proposal'
+  | 'enrichment_proposal'
   | 'malformed';
 
 /** One selectable option (decisions.rs:71-74 — {id, label} only). */
