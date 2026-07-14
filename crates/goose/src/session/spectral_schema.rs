@@ -480,6 +480,7 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
             site_url        TEXT,
             repo_url        TEXT,
             notes           TEXT NOT NULL DEFAULT '',
+            metadata_json   TEXT NOT NULL DEFAULT '{}',
             created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
             updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
             last_opened_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -955,6 +956,45 @@ pub async fn migrate_v24_to_v25(pool: &Pool<Sqlite>) -> Result<()> {
         .execute(pool)
         .await?;
     info!("Spectral schema migrated to v25 (project notes)");
+
+    Ok(())
+}
+
+/// Ensure `projects.metadata_json` exists (schema v26, #456 / ruling 3 in
+/// GOAL_COMPLETION_AND_VERIFICATION.md §3d): a general project metadata bag
+/// mirroring `cards.metadata_json`. First tenant: `build_command` — the
+/// project-level build check the orchestrator seeds onto code-flavored goals
+/// as a `command_exit_zero` completion check. The publish sequence (#457)
+/// lands in the same bag later. PRAGMA-guarded ADD COLUMN, idempotent.
+pub async fn apply_project_metadata_column(pool: &Pool<Sqlite>) -> Result<()> {
+    let has_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name = 'metadata_json'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if has_column == 0 {
+        sqlx::query("ALTER TABLE projects ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'")
+            .execute(pool)
+            .await?;
+        info!("Added projects.metadata_json column (schema v26)");
+    }
+    Ok(())
+}
+
+/// Migrate an existing database to the project-metadata schema (schema v26).
+///
+/// A single guarded `ALTER TABLE ... ADD COLUMN`, base-version independent and
+/// idempotent, so it applies cleanly over any earlier base. Records v26 in
+/// `schema_version`.
+pub async fn migrate_v25_to_v26(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v25 -> v26 (projects.metadata_json)");
+
+    apply_project_metadata_column(pool).await?;
+
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (26)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v26 (projects.metadata_json)");
 
     Ok(())
 }

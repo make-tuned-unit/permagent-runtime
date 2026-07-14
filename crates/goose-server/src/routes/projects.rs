@@ -54,6 +54,9 @@ pub struct ProjectResponse {
     site_url: Option<String>,
     repo_url: Option<String>,
     notes: String,
+    /// General project metadata bag (schema v26). Known keys: `build_command`
+    /// / `build_timeout_secs` — the project-level default completion check.
+    metadata_json: serde_json::Value,
     tags: Vec<String>,
     created_at: String,
     updated_at: String,
@@ -72,6 +75,7 @@ impl From<projects::Project> for ProjectResponse {
             site_url: p.site_url,
             repo_url: p.repo_url,
             notes: p.notes,
+            metadata_json: p.metadata_json,
             tags: p.tags,
             created_at: p.created_at,
             updated_at: p.updated_at,
@@ -104,6 +108,8 @@ pub struct UpdateProjectRequest {
     site_url: Option<Option<String>>,
     repo_url: Option<Option<String>>,
     notes: Option<String>,
+    /// Full replacement of the project metadata bag (JSON object).
+    metadata_json: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -212,6 +218,7 @@ async fn update_project_handler(
         site_url: req.site_url,
         repo_url: req.repo_url,
         notes: req.notes,
+        metadata_json: req.metadata_json,
     };
     let updated = projects::update_project(&pool, &project.id, input)
         .await

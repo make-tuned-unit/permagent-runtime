@@ -368,6 +368,7 @@ impl ProjectManagerClient {
             site_url: args.get("site_url").map(|v| v.as_str().map(String::from)),
             repo_url: args.get("repo_url").map(|v| v.as_str().map(String::from)),
             notes: args.get("notes").and_then(|v| v.as_str()).map(String::from),
+            metadata_json: None,
         };
         let updated = projects::update_project(&pool, &project.id, input)
             .await?
