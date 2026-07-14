@@ -243,6 +243,47 @@ pub fn build_code_map(root: &Path, max_depth: u32) -> CodeMap {
     }
 }
 
+/// Self-knowledge descriptor for the **codebase index** surface (#471): a
+/// project's code can be parsed into a durable, project-scoped code map in the
+/// Brain, then recalled and described like its documents. Co-located with
+/// [`build_code_map`] (the pass that produces the persisted map); aggregated by
+/// `crate::agents::self_knowledge::SURFACE_DESCRIPTORS`. Static — the capability
+/// is described without claiming a live per-project index status.
+pub const CODEBASE_INDEX_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "codebase",
+        display_name: "Codebase Index",
+        category: crate::agents::self_knowledge::FeatureCategory::Surface,
+        what_it_does:
+            "A project's codebase can be indexed into your Brain — the analyze extension's tree-sitter pass renders a durable code map of its directory structure and per-file symbols, stored and scoped to that project exactly as dropped documents and written notes are",
+        why_it_matters:
+            "It makes a codebase a first-class thing you remember and recall — not a transcript you parse once and forget; once a project is indexed you can recall how its code is shaped and what its symbols are without re-reading every file, and the Librarian describes the map just as it describes documents",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        // Onboarding lesson (Jesse's rule: every user-facing capability carries
+        // teaching steps, not just a descriptor). A Static surface that writes to
+        // the Brain confirms by the MemoryRecallable proxy — the sanctioned
+        // read-back when there is no live status to poll (mirrors the Reader).
+        teaching: &[
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Open a project's codebase",
+                body: "Take them to Projects, open a project that has a code folder, and point out the Codebase panel on its Overview — where its code can be indexed into your Brain the way its documents and notes already are.",
+                open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                    tab: "Projects",
+                    section: None,
+                }),
+                confirm: None,
+            },
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Index it, then ask about the code",
+                body: "Offer to index the project's code for them, then prove it landed: have them ask you about the codebase — its shape, where something lives, what its main pieces are — and answer from the code map you just stored, not by re-reading files.",
+                open_surface: None,
+                confirm: Some(crate::agents::self_knowledge::ConfirmCheck::MemoryRecallable(
+                    "this project's code structure and symbols — the code map you just indexed",
+                )),
+            },
+        ],
+    };
+
 #[async_trait]
 impl McpClientTrait for AnalyzeClient {
     async fn list_tools(
