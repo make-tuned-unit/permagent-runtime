@@ -684,6 +684,10 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // migrate_v24_to_v25. Purely additive, base-independent.
     apply_project_notes_schema(pool).await?;
 
+    // Durable activity journal (schema v27, #619). Idempotent; shared with
+    // migrate_v26_to_v27. Purely additive, base-independent.
+    apply_activity_journal_schema(pool).await?;
+
     info!(
         "Spectral schema v{} initialized successfully",
         SPECTRAL_SCHEMA_VERSION
@@ -995,6 +999,57 @@ pub async fn migrate_v25_to_v26(pool: &Pool<Sqlite>) -> Result<()> {
         .execute(pool)
         .await?;
     info!("Spectral schema migrated to v26 (projects.metadata_json)");
+
+    Ok(())
+}
+
+/// Apply the durable activity-journal schema (v27, #619): `activity_journal`,
+/// an append-only log of selected event-bus kinds (goal transitions, decisions,
+/// librarian runs, task failures) with actor + evidence pointer. The journal
+/// INDEXES the existing durable stores — `ref_kind`/`ref_id` point at the card,
+/// decision, memory, or task — it never duplicates their bodies. `ts` is an
+/// RFC3339 UTC millisecond timestamp (same shape as the strftime defaults
+/// elsewhere in this schema), so lexicographic order is chronological order and
+/// the DESC index serves the newest-first timeline page directly. Fully
+/// idempotent (`CREATE TABLE / INDEX IF NOT EXISTS`).
+pub async fn apply_activity_journal_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool.begin().await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS activity_journal (
+            id       TEXT PRIMARY KEY,
+            ts       TEXT NOT NULL,
+            kind     TEXT NOT NULL,
+            actor    TEXT NOT NULL,
+            title    TEXT NOT NULL,
+            detail   TEXT,
+            ref_kind TEXT,
+            ref_id   TEXT
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_activity_journal_ts ON activity_journal(ts DESC)")
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Migrate an existing database to the activity-journal schema (schema v27).
+///
+/// Purely additive and base-version independent (`CREATE TABLE IF NOT EXISTS`),
+/// so it applies cleanly over any earlier base. Records v27 in `schema_version`.
+pub async fn migrate_v26_to_v27(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v26 -> v27 (activity journal)");
+
+    apply_activity_journal_schema(pool).await?;
+
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (27)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v27 (activity journal)");
 
     Ok(())
 }
