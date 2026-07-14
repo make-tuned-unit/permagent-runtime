@@ -30,7 +30,9 @@ import { Panel } from './Panel';
 import type { Project, ProjectNote } from './types';
 
 export function NotesPanel({ project }: { project: Project }) {
-  const { colors } = useTheme();
+  const { colors, theme } = useTheme();
+  // White veils vanish on silver — flip to a faint graphite tint there.
+  const rowVeil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
   const [notes, setNotes] = useState<ProjectNote[]>([]);
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
@@ -100,7 +102,7 @@ export function NotesPanel({ project }: { project: Project }) {
           placeholder="Title (optional)"
           style={{
             fontSize: 12, padding: '6px 9px', borderRadius: 7,
-            background: 'rgba(255,255,255,0.02)', border: `1px solid ${colors.border}`,
+            background: colors.inputBg, border: `1px solid ${colors.border}`,
             color: colors.text, fontFamily: font.body, outline: 'none',
           }}
         />
@@ -115,7 +117,7 @@ export function NotesPanel({ project }: { project: Project }) {
           rows={3}
           style={{
             fontSize: 12, padding: '7px 9px', borderRadius: 7, resize: 'vertical', minHeight: 56,
-            background: 'rgba(255,255,255,0.02)', border: `1px solid ${colors.border}`,
+            background: colors.inputBg, border: `1px solid ${colors.border}`,
             color: colors.text, fontFamily: font.body, lineHeight: 1.5, outline: 'none',
           }}
         />
@@ -146,9 +148,9 @@ export function NotesPanel({ project }: { project: Project }) {
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               width: 30, height: 30, borderRadius: 7,
               cursor: dictation === 'transcribing' ? 'default' : 'pointer',
-              background: dictation === 'recording' ? colors.danger : 'rgba(255,255,255,0.02)',
+              background: dictation === 'recording' ? colors.danger : rowVeil,
               border: `1px solid ${dictation === 'recording' ? colors.danger : colors.border}`,
-              color: dictation === 'recording' ? '#fff' : colors.textDim,
+              color: dictation === 'recording' ? colors.textOnAccent : colors.textDim,
             }}
           >
             {dictation === 'transcribing'
@@ -195,7 +197,7 @@ export function NotesPanel({ project }: { project: Project }) {
               key={note.id}
               style={{
                 display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 10px',
-                borderRadius: 7, background: 'rgba(255,255,255,0.02)', border: `1px solid ${colors.border}`,
+                borderRadius: 7, background: rowVeil, border: `1px solid ${colors.border}`,
                 transition: 'border-color 150ms',
               }}
               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
