@@ -423,9 +423,11 @@ fn fetch_excerpts_blocking(
             let sql =
                 format!("SELECT content, created_at FROM memories WHERE id IN ({placeholders})");
             if let Ok(mut stmt) = conn.prepare(&sql) {
-                if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(take.iter()), |r| {
-                    Ok((r.get::<_, String>(1)?, r.get::<_, String>(0)?))
-                }) {
+                if let Ok(rows) = stmt
+                    .query_map(rusqlite::params_from_iter(take.iter().copied()), |r| {
+                        Ok((r.get::<_, String>(1)?, r.get::<_, String>(0)?))
+                    })
+                {
                     excerpts.extend(rows.flatten());
                 }
             }
