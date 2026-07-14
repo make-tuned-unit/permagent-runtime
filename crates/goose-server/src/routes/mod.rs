@@ -31,6 +31,7 @@ pub mod reader;
 pub mod recipe;
 pub mod recipe_utils;
 pub mod reply;
+pub mod runs;
 pub mod sampling;
 pub mod schedule;
 pub mod session;
@@ -128,6 +129,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(ollama::routes(state.clone()))
         .merge(librarian::routes(state.clone()))
         .merge(henry_status::routes(state.clone()))
+        .merge(runs::routes(state.clone()))
         .merge(world::routes(state.clone()))
         .merge(projects::routes(state.clone()))
         .merge(cards::routes(state.clone()))
