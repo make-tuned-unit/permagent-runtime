@@ -5,6 +5,7 @@ import { cronToEnglish } from '../../lib/schedule-format';
 import { useCommandCenter } from '../../lib/store';
 import { apiFetch } from '../../lib/api';
 import { usePersona } from '../settings/useSettings';
+import { RunRoster } from './RunRoster';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -402,6 +403,9 @@ export function AutomateView() {
             }}>+ Create</button>
           </div>
         </div>
+
+        {/* Live run roster — everything at work right now, at a glance */}
+        <RunRoster />
 
         {/* Run completion banner */}
         {completionToast && (
