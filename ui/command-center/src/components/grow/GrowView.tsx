@@ -62,6 +62,26 @@ interface SocialCard {
   metadata_json?: Record<string, unknown> | null;
 }
 
+// The deterministic growth inbox (backend GET /api/projects/:id/growth-inbox).
+// Ranked with NO LLM from the project's real signals — matches the Rust
+// response (camelCase). See crates/goose-server/src/routes/grow.rs.
+type MovePriority = 'high' | 'medium' | 'low';
+interface GrowthMove {
+  title: string;
+  why: string;
+  priority: MovePriority;
+  evidenceCount: number;
+}
+interface GrowthWin {
+  title: string;
+  why: string;
+}
+interface GrowthInboxData {
+  moves: GrowthMove[];
+  wins: GrowthWin[];
+  signal: { posts: number; shipped: number; activeGoals: number; daysSinceLastPost: number | null };
+}
+
 type GrowLens = 'strategy' | 'calendar' | 'analytics';
 // Async lifecycle for data-backed sections — loading / ready / error are
 // distinct so a fetch failure never masquerades as an empty result.
@@ -405,6 +425,21 @@ function GrowAnalytics({
   posts: SocialCard[];
   colors: ThemeColors;
 }) {
+  // The deterministic growth inbox — this week's ranked moves + wins, computed
+  // server-side (NO LLM) from the project's real signals. Fetched on-read so
+  // it's always fresh; its own load lifecycle keeps a fetch failure honest.
+  const [inbox, setInbox] = useState<GrowthInboxData | null>(null);
+  const [inboxState, setInboxState] = useState<LoadState>('loading');
+
+  const loadInbox = useCallback((id: string) => {
+    setInboxState('loading');
+    apiFetch<GrowthInboxData>(`/api/projects/${encodeURIComponent(id)}/growth-inbox`)
+      .then((d) => { setInbox(d); setInboxState('ready'); })
+      .catch(() => { setInbox(null); setInboxState('error'); });
+  }, []);
+
+  useEffect(() => { loadInbox(project.id); }, [project.id, loadInbox]);
+
   // The classic growth funnel (research: awareness → interest → action →
   // retention). Awareness/reach comes from published content; the deeper
   // stages await the analytics pipeline.
@@ -426,6 +461,14 @@ function GrowAnalytics({
 
   return (
     <>
+      {/* Growth inbox — the headline: your 2-3 ranked moves this week + wins. */}
+      <GrowthInboxSection
+        colors={colors}
+        state={inboxState}
+        inbox={inbox}
+        onRetry={() => loadInbox(project.id)}
+      />
+
       <div style={{
         fontSize: 11, color: colors.textDim, background: colors.bgDeeper,
         border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: '8px 12px', marginBottom: 4,
@@ -478,5 +521,124 @@ function GrowAnalytics({
         </div>
       </section>
     </>
+  );
+}
+
+// ── Growth inbox (Analytics lens headline) ───────────────────────────────────
+// The deterministic inbox rendered atop the analytics lens: this week's ranked
+// moves + a "keep doing" wins strip. All content comes from the backend ranker
+// (grow.rs) — this component only presents it, with honest loading / error /
+// empty states. No Henry drafting hand-offs here (those belong to GrowView's
+// prompt seams); the inbox is informational.
+
+function priorityMeta(priority: MovePriority, colors: ThemeColors): { label: string; color: string } {
+  switch (priority) {
+    case 'high': return { label: 'High priority', color: colors.warning };
+    case 'medium': return { label: 'Medium priority', color: colors.cyan };
+    default: return { label: 'Low priority', color: colors.textDim };
+  }
+}
+
+function GrowthInboxSection({
+  colors, state, inbox, onRetry,
+}: {
+  colors: ThemeColors;
+  state: LoadState;
+  inbox: GrowthInboxData | null;
+  onRetry: () => void;
+}) {
+  const hasSignal = !!inbox && (inbox.signal.posts > 0 || inbox.signal.shipped > 0);
+  const empty = !!inbox && inbox.moves.length === 0 && inbox.wins.length === 0;
+
+  return (
+    <section>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, margin: '0 0 12px', flexWrap: 'wrap' }}>
+        <h3 style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>
+          Your growth moves this week
+        </h3>
+        {hasSignal && inbox && (
+          <span style={{ fontSize: 10, color: colors.textDim }}>
+            from {inbox.signal.posts} {inbox.signal.posts === 1 ? 'post' : 'posts'} · {inbox.signal.shipped} shipped
+          </span>
+        )}
+      </div>
+
+      {state === 'error' ? (
+        <ErrorState colors={colors} inline message="Couldn't load your growth moves." onRetry={onRetry} />
+      ) : state === 'loading' ? (
+        <LoadingState colors={colors} inline label="Ranking your growth moves…" />
+      ) : !inbox ? null : empty ? (
+        <div style={{
+          border: `1px dashed ${colors.border}`, borderRadius: radius.lg, padding: 28,
+          textAlign: 'center', fontSize: 12, color: colors.textDim, lineHeight: 1.6,
+        }}>
+          Not enough signal yet. Publish a post or ship a goal and I'll start surfacing your 2-3
+          highest-leverage growth moves here each week — ranked, no guesswork.
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {inbox.moves.length > 0 ? (
+            inbox.moves.map((m) => <MoveCard key={m.title} move={m} colors={colors} />)
+          ) : (
+            <div style={{
+              border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: '12px 14px',
+              fontSize: 12, color: colors.textMuted, background: colors.surface,
+            }}>
+              You're on track — no urgent moves this week. Keep doing what's working below.
+            </div>
+          )}
+          {inbox.wins.length > 0 && <WinsStrip wins={inbox.wins} colors={colors} />}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function MoveCard({ move, colors }: { move: GrowthMove; colors: ThemeColors }) {
+  const meta = priorityMeta(move.priority, colors);
+  return (
+    <div style={{
+      display: 'flex', flexDirection: 'column', gap: 6,
+      background: colors.surface, border: `1px solid ${colors.border}`,
+      borderLeft: `3px solid ${meta.color}`, borderRadius: radius.md, padding: '12px 14px',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{
+          fontSize: 10, fontFamily: font.mono, textTransform: 'uppercase', letterSpacing: '0.06em',
+          color: meta.color, border: `1px solid ${meta.color}`, borderRadius: radius.pill, padding: '1px 8px',
+        }}>{meta.label}</span>
+        <div style={{ flex: 1 }} />
+        <span style={{ fontSize: 10, color: colors.textDim, fontVariantNumeric: 'tabular-nums' }}>
+          {move.evidenceCount} {move.evidenceCount === 1 ? 'signal' : 'signals'}
+        </span>
+      </div>
+      <div style={{ fontSize: 14, fontWeight: 600, color: colors.text }}>{move.title}</div>
+      <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>{move.why}</div>
+    </div>
+  );
+}
+
+function WinsStrip({ wins, colors }: { wins: GrowthWin[]; colors: ThemeColors }) {
+  return (
+    <div style={{ marginTop: 4 }}>
+      <div style={{ fontSize: 10, fontFamily: font.mono, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>
+        Keep doing
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {wins.map((w) => (
+          <div key={w.title} style={{
+            display: 'flex', alignItems: 'flex-start', gap: 8,
+            background: colors.surface, border: `1px solid ${colors.border}`,
+            borderLeft: `3px solid ${colors.success}`, borderRadius: radius.md, padding: '10px 12px',
+          }}>
+            <span aria-hidden style={{ color: colors.success, fontSize: 13, lineHeight: '18px' }}>✓</span>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>{w.title}</div>
+              <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5, marginTop: 2 }}>{w.why}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
