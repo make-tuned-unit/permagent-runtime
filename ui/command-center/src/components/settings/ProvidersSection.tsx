@@ -80,11 +80,17 @@ export function ProvidersSection() {
                 </span>
               )}
               {p.isConfigured ? (
-                <span className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400">
+                <span
+                  className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded"
+                  style={{ backgroundColor: `${colors.success}26`, color: colors.success }}
+                >
                   <FiCheck size={10} /> Connected
                 </span>
               ) : (
-                <span className="text-[10px] px-2 py-0.5 rounded bg-gray-500/15 text-gray-400">
+                <span
+                  className="text-[10px] px-2 py-0.5 rounded"
+                  style={{ backgroundColor: `${colors.textMuted}26`, color: colors.textMuted }}
+                >
                   Not configured
                 </span>
               )}

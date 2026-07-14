@@ -25,7 +25,9 @@ function formatGB(bytes: number): number {
 }
 
 export function MomentHardware({ onAdvance }: Props) {
-  const { colors } = useTheme();
+  const { colors, theme } = useTheme();
+  // Progress track: a white wash is invisible on silver — flip to graphite.
+  const trackVeil = theme === 'silver' ? 'rgba(30,37,48,0.08)' : 'rgba(255,255,255,0.06)';
   const [phase, setPhase] = useState<Phase>('scanning');
   const [hardware, setHardware] = useState<HardwareInfo | null>(null);
   const [recommended, setRecommended] = useState<ModelTier | null>(null);
@@ -330,7 +332,7 @@ export function MomentHardware({ onAdvance }: Props) {
             {/* Progress bar */}
             <div style={{
               width: '100%', height: 6, borderRadius: 999,
-              background: 'rgba(255,255,255,0.06)', overflow: 'hidden',
+              background: trackVeil, overflow: 'hidden',
             }}>
               <div style={{
                 width: `${pullProgress}%`, height: '100%', borderRadius: 999,

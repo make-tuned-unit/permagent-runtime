@@ -22,7 +22,9 @@ import { Panel } from './Panel';
 import type { Person, Project, ProjectPerson } from './types';
 
 export function PeoplePanel({ project }: { project: Project }) {
-  const { colors } = useTheme();
+  const { colors, theme } = useTheme();
+  // White veils vanish on silver — flip to a faint graphite tint there.
+  const rowVeil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
   const openPersonDetail = useCommandCenter(s => s.openPersonDetail);
   const bumpPeople = useCommandCenter(s => s.bumpPeople);
   const peopleRev = useCommandCenter(s => s.peopleRev);
@@ -127,7 +129,7 @@ export function PeoplePanel({ project }: { project: Project }) {
               style={{
                 display: 'flex', alignItems: 'baseline', gap: 8, textAlign: 'left',
                 padding: '6px 9px', borderRadius: 7, width: '100%',
-                background: 'rgba(255,255,255,0.02)', border: `1px solid ${colors.border}`,
+                background: rowVeil, border: `1px solid ${colors.border}`,
                 color: colors.text, fontFamily: font.body, cursor: 'pointer', transition: 'border-color 150ms',
               }}
               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}

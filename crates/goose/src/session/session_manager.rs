@@ -800,6 +800,14 @@ impl SessionStorage {
                     if version < 25 {
                         spectral_schema::migrate_v24_to_v25(&self.pool).await?;
                     }
+                    // v26: projects.metadata_json general metadata bag (#456,
+                    // GOAL_COMPLETION_AND_VERIFICATION.md ruling 3). Guarded
+                    // ADD COLUMN, base-independent, always-on. First tenant:
+                    // build_command — the project-level default build check the
+                    // orchestrator seeds onto code-flavored goals.
+                    if version < 26 {
+                        spectral_schema::migrate_v25_to_v26(&self.pool).await?;
+                    }
                     // Version-independent safety net for the cfg-gated v22
                     // recognition columns. The always-on v23 above can stamp
                     // schema_version past the `version < 22` gate on a feature-off

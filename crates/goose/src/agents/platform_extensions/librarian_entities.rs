@@ -247,9 +247,9 @@ fn load_app_rows_blocking() -> AppRows {
         "SELECT display_name, graph_entity_id FROM people \
          WHERE graph_entity_id IS NOT NULL AND graph_entity_id != ''",
     ) {
-        if let Ok(rows) = stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        }) {
+        if let Ok(rows) =
+            stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        {
             out.people = rows.flatten().collect();
         }
     }
@@ -274,9 +274,9 @@ fn load_app_rows_blocking() -> AppRows {
         "SELECT pm.memory_id, p.name FROM project_memories pm \
          JOIN projects p ON p.id = pm.project_id",
     ) {
-        if let Ok(rows) = stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        }) {
+        if let Ok(rows) =
+            stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        {
             for (mem_id, name) in rows.flatten() {
                 out.memory_projects.entry(mem_id).or_default().push(name);
             }
@@ -420,9 +420,8 @@ fn fetch_excerpts_blocking(
             let placeholders = std::iter::repeat_n("?", take.len())
                 .collect::<Vec<_>>()
                 .join(",");
-            let sql = format!(
-                "SELECT content, created_at FROM memories WHERE id IN ({placeholders})"
-            );
+            let sql =
+                format!("SELECT content, created_at FROM memories WHERE id IN ({placeholders})");
             if let Ok(mut stmt) = conn.prepare(&sql) {
                 if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(take.iter()), |r| {
                     Ok((r.get::<_, String>(1)?, r.get::<_, String>(0)?))
@@ -437,8 +436,8 @@ fn fetch_excerpts_blocking(
                      WHERE content LIKE '%' || ?1 || '%' \
                      ORDER BY created_at DESC LIMIT ?2",
                 ) {
-                    if let Ok(rows) =
-                        stmt.query_map(rusqlite::params![name, MAX_EXCERPTS as i64], |r| {
+                    if let Ok(rows) = stmt
+                        .query_map(rusqlite::params![name, MAX_EXCERPTS as i64], |r| {
                             Ok((r.get::<_, String>(1)?, r.get::<_, String>(0)?))
                         })
                     {
@@ -490,9 +489,10 @@ fn merge_into_worklist(
         project_row: None,
         snapshot,
     });
-    entry
-        .mention_names
-        .insert(graph_canonical(&entry.snapshot.canonical));
+    // Own the string first so the shared borrow of `entry.snapshot` is released
+    // before the mutable borrow of `entry.mention_names`.
+    let self_name = graph_canonical(&entry.snapshot.canonical);
+    entry.mention_names.insert(self_name);
     for n in names {
         let normalized = graph_canonical(&n);
         if !normalized.is_empty() {
@@ -746,12 +746,7 @@ pub async fn run_entity_sweep(brain: &SafeBrain, model: &str) -> Result<SweepSum
     let mut worklist: BTreeMap<String, WorkItem> = BTreeMap::new();
     for ((display_name, _), snap) in app_rows.people.iter().zip(people_snaps) {
         match snap {
-            Some(s) => merge_into_worklist(
-                &mut worklist,
-                s,
-                [display_name.clone()],
-                None,
-            ),
+            Some(s) => merge_into_worklist(&mut worklist, s, [display_name.clone()], None),
             None => summary.skipped_not_in_graph += 1,
         }
     }
@@ -763,10 +758,11 @@ pub async fn run_entity_sweep(brain: &SafeBrain, model: &str) -> Result<SweepSum
                 aliases.iter().cloned().chain([row.name.clone()]),
                 Some(row.clone()),
             ),
-            OntologyEntityResolution::NotInGraph => {
-                summary.skipped_not_in_graph += 1;
-                summary.skipped_no_graph_identity += 1; // no *live* graph identity yet
-            }
+            // Ontology-known but never materialized — a hard skip (describing it
+            // would MERGE a half-formed node). Counted once, under its own
+            // bucket; NOT under skipped_no_graph_identity (that is #595's
+            // no-ontology-identity case).
+            OntologyEntityResolution::NotInGraph => summary.skipped_not_in_graph += 1,
             OntologyEntityResolution::NoIdentity => summary.skipped_no_graph_identity += 1,
         }
     }
@@ -793,10 +789,7 @@ pub async fn run_entity_sweep(brain: &SafeBrain, model: &str) -> Result<SweepSum
     //    mention ids from the in-memory index) → current fingerprints.
     let all_ids: Vec<spectral::core::entity_id::EntityId> =
         items.iter().map(|i| i.snapshot.id).collect();
-    let mut fields_map = brain
-        .entity_fields_for(all_ids)
-        .await
-        .unwrap_or_default();
+    let mut fields_map = brain.entity_fields_for(all_ids).await.unwrap_or_default();
 
     let mut fields_by_item: Vec<Vec<(String, String)>> = Vec::with_capacity(items.len());
     let mut mention_ids_by_item: Vec<Vec<String>> = Vec::with_capacity(items.len());
@@ -860,11 +853,10 @@ pub async fn run_entity_sweep(brain: &SafeBrain, model: &str) -> Result<SweepSum
             )
         })
         .collect();
-    let mut excerpts_map = tokio::task::spawn_blocking(move || {
-        fetch_excerpts_blocking(excerpt_requests)
-    })
-    .await
-    .map_err(|e| format!("excerpt task panicked: {e}"))?;
+    let mut excerpts_map =
+        tokio::task::spawn_blocking(move || fetch_excerpts_blocking(excerpt_requests))
+            .await
+            .map_err(|e| format!("excerpt task panicked: {e}"))?;
 
     // 5. Generate under the truthfulness contract.
     let mut resolved_canonicals: HashSet<String> = HashSet::new();
@@ -1316,7 +1308,9 @@ mod tests {
             vec![nc("still-thin", 5), nc("brand-new", 3)],
         );
         assert_eq!(
-            list.iter().map(|e| e.canonical.as_str()).collect::<Vec<_>>(),
+            list.iter()
+                .map(|e| e.canonical.as_str())
+                .collect::<Vec<_>>(),
             vec!["still-thin", "brand-new"],
             "resolved entries drop, upsert refreshes mentions, sorted by signal"
         );
