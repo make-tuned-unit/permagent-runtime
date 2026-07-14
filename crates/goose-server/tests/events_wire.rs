@@ -11,6 +11,7 @@
 //! Run with `--nocapture` to print every captured frame as evidence.
 
 use futures::StreamExt;
+use serial_test::serial;
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -40,7 +41,10 @@ fn assert_envelope(frame: &serde_json::Value, expected_type: &str) {
     );
 }
 
+// #[serial]: mutates the process-global PERMAGENT_PATH_ROOT + subscribes to the
+// global event bus — must not run concurrently with other AppState tests.
 #[tokio::test(flavor = "multi_thread")]
+#[serial]
 async fn all_lanes_emit_to_real_websocket() {
     let tmp = tempfile::tempdir().unwrap();
     std::env::set_var("PERMAGENT_PATH_ROOT", tmp.path());

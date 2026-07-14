@@ -16,6 +16,7 @@ use tower::ServiceExt;
 use permagent::cards::{self, CreateCard};
 use permagent::decisions::{self, NewDecision};
 use permagent::projects::PERSONAL_PROJECT_ID;
+use serial_test::serial;
 
 async fn body_json(resp: axum::response::Response) -> serde_json::Value {
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
@@ -37,7 +38,10 @@ fn post_json(uri: &str, body: serde_json::Value) -> Request<Body> {
         .unwrap()
 }
 
+// #[serial]: mutates the process-global PERMAGENT_PATH_ROOT + shared startup
+// singletons — must not run concurrently with other AppState tests.
 #[tokio::test(flavor = "multi_thread")]
+#[serial]
 async fn decision_lifecycle_through_router() {
     // Throwaway data root for the whole process (single test in this binary).
     let tmp = tempfile::tempdir().unwrap();
