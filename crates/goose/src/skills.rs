@@ -358,6 +358,17 @@ pub fn rank_skills_for_prompt(mut skills: Vec<RankedSkill>, limit: usize) -> Vec
     skills
 }
 
+/// Execution count at which a saved skill is considered "proven" (graduated).
+/// Mirrors the command-center's TRUSTED tier (usageCount >= 3) so the backend's
+/// graduation notion and the UI's tier badges agree.
+pub const PROVEN_EXECUTION_THRESHOLD: i64 = 3;
+
+/// Graduation predicate: a skill is "proven" once it has fired at least
+/// [`PROVEN_EXECUTION_THRESHOLD`] times. Pure and unit-testable.
+pub fn skill_is_proven(execution_count: i64) -> bool {
+    execution_count >= PROVEN_EXECUTION_THRESHOLD
+}
+
 /// Build the saved-skills prompt fragment for agent system prompt injection.
 /// Skills are ranked by PROVEN USAGE (execution count) first, then recency, so
 /// the limited prompt slots go to skills the user actually relies on rather than
@@ -423,6 +434,11 @@ pub async fn build_skills_prompt(pool: &Pool<Sqlite>) -> Result<Option<String>, 
         }
         if !def_summary.is_empty() {
             skill_line.push_str(&format!(" (context: {})", def_summary));
+        }
+        // Graduation marker: signal battle-tested skills so the agent can lean on
+        // proven approaches over ones that merely exist.
+        if skill_is_proven(skill.execution_count) {
+            skill_line.push_str(" [proven]");
         }
         lines.push(skill_line);
     }
@@ -552,28 +568,79 @@ mod tests {
     }
 
     #[test]
-    fn ranking_caps_at_limit() {
+    fn ranking_cap_boundary_drops_lowest_usage() {
+        // 12 skills (usages 0..=11, same timestamp) capped at 10: the two
+        // least-used are dropped and the highest-used leads.
         let out = rank_skills_for_prompt(
-            (0..15)
+            (0..12)
                 .map(|i| ranked(&format!("s{i}"), i, "2026-01-01T00:00:00.000Z"))
                 .collect(),
             10,
         );
+        let names: Vec<&str> = out.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(out.len(), 10);
-        // Highest usage wins the first slot.
-        assert_eq!(out[0].name, "s14");
+        assert_eq!(out[0].name, "s11"); // highest usage first
+        assert_eq!(out[9].name, "s2"); // lowest surviving usage
+        assert!(!names.contains(&"s0"));
+        assert!(!names.contains(&"s1"));
     }
 
     #[test]
-    fn stale_predicate_matches_policy() {
+    fn ranking_keeps_all_within_limit() {
+        // Exactly at the limit → all kept.
+        let at = rank_skills_for_prompt(
+            (0..10)
+                .map(|i| ranked(&format!("s{i}"), i, "2026-01-01T00:00:00.000Z"))
+                .collect(),
+            10,
+        );
+        assert_eq!(at.len(), 10);
+        // Fewer than the limit → all kept.
+        let under = rank_skills_for_prompt(vec![ranked("solo", 1, "2026-01-01T00:00:00.000Z")], 10);
+        assert_eq!(under.len(), 1);
+    }
+
+    #[test]
+    fn ranking_empty_input_yields_empty() {
+        assert!(rank_skills_for_prompt(Vec::new(), 10).is_empty());
+    }
+
+    #[test]
+    fn graduation_threshold_below_at_above() {
+        assert_eq!(PROVEN_EXECUTION_THRESHOLD, 3);
+        assert!(!skill_is_proven(0));
+        assert!(!skill_is_proven(2)); // below
+        assert!(skill_is_proven(3)); // at
+        assert!(skill_is_proven(4)); // above
+        assert!(skill_is_proven(100));
+    }
+
+    #[test]
+    fn retire_predicate_zero_exec_past_grace() {
         let cutoff = "2026-06-14T00:00:00.000Z";
-        // Never used and created before the cutoff → retire.
         assert!(skill_is_stale(0, "2026-01-01T00:00:00.000Z", cutoff));
-        // Never used but created after the cutoff (inside grace) → keep.
+    }
+
+    #[test]
+    fn retire_predicate_never_with_any_execution() {
+        // The dangerous edge: a skill with ANY executions is never retired,
+        // however ancient.
+        let cutoff = "2026-06-14T00:00:00.000Z";
+        let ancient = "2000-01-01T00:00:00.000Z";
+        assert!(!skill_is_stale(1, ancient, cutoff));
+        assert!(!skill_is_stale(2, ancient, cutoff));
+        assert!(!skill_is_stale(100, ancient, cutoff));
+    }
+
+    #[test]
+    fn retire_predicate_never_inside_grace() {
+        let cutoff = "2026-06-14T00:00:00.000Z";
+        // Created after the cutoff (inside grace) → keep.
         assert!(!skill_is_stale(0, "2026-07-01T00:00:00.000Z", cutoff));
-        // Any executions → never retire, however old.
-        assert!(!skill_is_stale(1, "2020-01-01T00:00:00.000Z", cutoff));
-        assert!(!skill_is_stale(9, "2020-01-01T00:00:00.000Z", cutoff));
+        // Boundary: created exactly at the cutoff → keep (strictly-before retires).
+        assert!(!skill_is_stale(0, cutoff, cutoff));
+        // One millisecond before the cutoff → retire.
+        assert!(skill_is_stale(0, "2026-06-13T23:59:59.999Z", cutoff));
     }
 
     // ── DB round-trip tests ──
@@ -630,6 +697,30 @@ mod tests {
             .unwrap()
     }
 
+    async fn days_ago(pool: &Pool<Sqlite>, n: i64) -> String {
+        sqlx::query_scalar("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now', ?)")
+            .bind(format!("-{n} days"))
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn build_prompt_returns_none_when_no_active_skills() {
+        let pool = test_pool().await;
+        // Empty library → nothing to inject.
+        assert!(build_skills_prompt(&pool).await.unwrap().is_none());
+
+        // A library of only archived skills → still nothing to inject.
+        let id = insert_skill(&pool, "retired_one", "2020-01-01T00:00:00.000Z").await;
+        sqlx::query("UPDATE skills SET status = 'archived' WHERE id = ?")
+            .bind(&id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(build_skills_prompt(&pool).await.unwrap().is_none());
+    }
+
     #[tokio::test]
     async fn build_prompt_ranks_proven_skill_first() {
         let pool = test_pool().await;
@@ -652,13 +743,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn build_prompt_marks_proven_skills() {
+        let pool = test_pool().await;
+        let now = now_iso(&pool).await;
+        // proven_skill fires exactly the threshold number of times → marked.
+        let proven = insert_skill(&pool, "proven_skill", &now).await;
+        for _ in 0..PROVEN_EXECUTION_THRESHOLD {
+            add_execution(&pool, &proven).await;
+        }
+        // fledgling_skill fires one short of the threshold → not marked.
+        let fledgling = insert_skill(&pool, "fledgling_skill", &now).await;
+        for _ in 0..(PROVEN_EXECUTION_THRESHOLD - 1) {
+            add_execution(&pool, &fledgling).await;
+        }
+
+        let prompt = build_skills_prompt(&pool).await.unwrap().unwrap();
+        let proven_line = prompt.lines().find(|l| l.contains("proven_skill")).unwrap();
+        assert!(
+            proven_line.contains("[proven]"),
+            "a skill at the graduation threshold must be marked: {proven_line}"
+        );
+        let fledgling_line = prompt
+            .lines()
+            .find(|l| l.contains("fledgling_skill"))
+            .unwrap();
+        assert!(
+            !fledgling_line.contains("[proven]"),
+            "a skill below the threshold must not be marked: {fledgling_line}"
+        );
+    }
+
+    #[tokio::test]
     async fn retirement_archives_only_stale_skills() {
         let pool = test_pool().await;
         let now = now_iso(&pool).await;
 
         let old_unused = insert_skill(&pool, "old_unused", "2020-01-01T00:00:00.000Z").await;
+        // Ancient but has fired five times — the dangerous edge: never retire it.
         let old_used = insert_skill(&pool, "old_used", "2020-01-01T00:00:00.000Z").await;
-        add_execution(&pool, &old_used).await;
+        for _ in 0..5 {
+            add_execution(&pool, &old_used).await;
+        }
         let new_unused = insert_skill(&pool, "new_unused", &now).await;
 
         let retired = retire_stale_skills(&pool, RETIREMENT_GRACE_DAYS)
@@ -672,7 +797,11 @@ mod tests {
         );
         assert_eq!(retired[0].id, old_unused);
         assert_eq!(status_of(&pool, &old_unused).await, "archived");
-        assert_eq!(status_of(&pool, &old_used).await, "active");
+        assert_eq!(
+            status_of(&pool, &old_used).await,
+            "active",
+            "an ancient skill with executions must never be retired"
+        );
         assert_eq!(status_of(&pool, &new_unused).await, "active");
 
         // Idempotent: a second sweep retires nothing (the stale skill is archived).
@@ -680,5 +809,23 @@ mod tests {
             .await
             .unwrap();
         assert!(again.is_empty());
+    }
+
+    #[tokio::test]
+    async fn retirement_respects_grace_window_parameter() {
+        let pool = test_pool().await;
+        let five_days_ago = days_ago(&pool, 5).await;
+        let s = insert_skill(&pool, "five_day_old", &five_days_ago).await;
+
+        // A 10-day grace window: the 5-day-old skill is still inside grace → kept.
+        let none = retire_stale_skills(&pool, 10).await.unwrap();
+        assert!(none.is_empty());
+        assert_eq!(status_of(&pool, &s).await, "active");
+
+        // A 3-day grace window: the 5-day-old skill is now past grace → retired.
+        let retired = retire_stale_skills(&pool, 3).await.unwrap();
+        assert_eq!(retired.len(), 1);
+        assert_eq!(retired[0].id, s);
+        assert_eq!(status_of(&pool, &s).await, "archived");
     }
 }
