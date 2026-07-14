@@ -34,14 +34,37 @@ fn validate_schedule_id(id: &str) -> Result<(), ErrorResponse> {
 pub struct CreateScheduleRequest {
     id: String,
     recipe: Recipe,
+    /// Cron expression (the default kind). Omit when using `at` or
+    /// `every_seconds`. Exactly one schedule kind must be set.
+    #[serde(default)]
     cron: String,
     #[serde(default)]
     worker_persona: Option<String>,
+    /// One-time fire at this instant (RFC3339). Mutually exclusive with cron/every.
+    #[serde(default)]
+    at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Fixed interval in seconds. Mutually exclusive with cron/at.
+    #[serde(default)]
+    every_seconds: Option<u64>,
+    /// IANA/offset timezone for cron/at evaluation (e.g. "UTC", "+05:30").
+    #[serde(default)]
+    tz: Option<String>,
+    /// Max automatic retries per fire (default 0 = no retry).
+    #[serde(default)]
+    max_retries: u32,
 }
 
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
 pub struct UpdateScheduleRequest {
-    cron: String,
+    /// New cron expression. Omit when changing to `at`/`every_seconds`.
+    #[serde(default)]
+    cron: Option<String>,
+    #[serde(default)]
+    at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    every_seconds: Option<u64>,
+    #[serde(default)]
+    tz: Option<String>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -157,10 +180,15 @@ async fn create_schedule(
         current_session_id: None,
         process_start_time: None,
         worker_persona: req.worker_persona,
+        at: req.at,
+        every_seconds: req.every_seconds,
+        tz: req.tz,
+        max_retries: req.max_retries,
         starter_id: None,
         starter_version: None,
         starter_content_hash: None,
         user_customized: None,
+        ..Default::default()
     };
 
     let scheduler = state.scheduler();
@@ -170,6 +198,9 @@ async fn create_schedule(
         .map_err(|e| match e {
             permagent::scheduler::SchedulerError::CronParseError(msg) => {
                 ErrorResponse::bad_request(format!("Invalid cron expression: {}", msg))
+            }
+            permagent::scheduler::SchedulerError::InvalidScheduleSpec(msg) => {
+                ErrorResponse::bad_request(format!("Invalid schedule: {}", msg))
             }
             permagent::scheduler::SchedulerError::RecipeLoadError(msg) => {
                 ErrorResponse::bad_request(format!("Recipe load error: {}", msg))
@@ -491,7 +522,7 @@ async fn update_schedule(
     let scheduler = state.scheduler();
 
     scheduler
-        .update_schedule(&id, req.cron)
+        .update_schedule_spec(&id, req.cron, req.at, req.every_seconds, req.tz)
         .await
         .map_err(|e| match e {
             permagent::scheduler::SchedulerError::JobNotFound(msg) => {
@@ -502,6 +533,9 @@ async fn update_schedule(
             }
             permagent::scheduler::SchedulerError::CronParseError(msg) => {
                 ErrorResponse::bad_request(format!("Invalid cron expression: {}", msg))
+            }
+            permagent::scheduler::SchedulerError::InvalidScheduleSpec(msg) => {
+                ErrorResponse::bad_request(format!("Invalid schedule: {}", msg))
             }
             _ => ErrorResponse::internal(format!("Error updating schedule: {}", e)),
         })?;

@@ -7415,6 +7415,7 @@ dependencies = [
  "candle-transformers",
  "chrono",
  "clap",
+ "croner",
  "ctor",
  "dashmap 6.2.1",
  "dirs 5.0.1",

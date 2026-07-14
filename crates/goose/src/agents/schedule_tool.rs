@@ -164,6 +164,7 @@ impl Agent {
             starter_version: None,
             starter_content_hash: None,
             user_customized: None,
+            ..Default::default()
         };
 
         match scheduler.add_scheduled_job(job, true).await {
