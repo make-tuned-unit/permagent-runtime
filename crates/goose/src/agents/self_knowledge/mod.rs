@@ -158,6 +158,7 @@ pub static SURFACE_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::agents::platform_extensions::project_manager::DEVICES_FEATURE,
     crate::decision_inbox::DECISION_INBOX_FEATURE,
     crate::inbox::INBOX_FEATURE,
+    crate::activity_journal::TIMELINE_FEATURE,
 ];
 
 /// Tool ids that are described under another category and therefore skipped in
@@ -520,6 +521,7 @@ mod tests {
         "devices",
         "decision_inbox",
         "inbox",
+        "timeline",
     ];
     /// The Phase-2-v1 lesson set — each must resolve to a descriptor with steps.
     const V1_LESSON_IDS: &[&str] = &["reader", "brain", "scheduler", "persona"];

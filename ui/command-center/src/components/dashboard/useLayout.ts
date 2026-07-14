@@ -21,6 +21,7 @@ export const DEFAULT_LAYOUT: DashboardLayoutData = {
     { id: 'stats', type: 'stats', position: { x: 0, y: 4 }, size: { w: 5, h: 4 }, visible: true },
     { id: 'in_flight', type: 'in_flight', position: { x: 0, y: 8 }, size: { w: 12, h: 3 }, visible: true },
     { id: 'recent', type: 'recent', position: { x: 0, y: 11 }, size: { w: 12, h: 4 }, visible: true },
+    { id: 'timeline', type: 'timeline', position: { x: 0, y: 15 }, size: { w: 12, h: 6 }, visible: true },
   ],
 };
 

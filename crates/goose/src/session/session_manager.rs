@@ -808,6 +808,12 @@ impl SessionStorage {
                     if version < 26 {
                         spectral_schema::migrate_v25_to_v26(&self.pool).await?;
                     }
+                    // v27: activity_journal table (#619). Purely additive,
+                    // base-independent, always-on. Append-only journal of
+                    // selected event-bus kinds behind the Home timeline.
+                    if version < 27 {
+                        spectral_schema::migrate_v26_to_v27(&self.pool).await?;
+                    }
                     // Version-independent safety net for the cfg-gated v22
                     // recognition columns. The always-on v23 above can stamp
                     // schema_version past the `version < 22` gate on a feature-off

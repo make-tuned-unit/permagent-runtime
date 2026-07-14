@@ -95,6 +95,75 @@ async fn emit_event(
     }))
 }
 
+// ── GET /api/activity — durable activity journal (#619) ────────────────
+
+#[derive(Deserialize)]
+pub struct JournalQuery {
+    /// Exclusive `ts` cursor: return rows strictly older than this timestamp.
+    /// Pass the previous page's `next_before` to paginate.
+    before: Option<String>,
+    limit: Option<i64>,
+    /// Comma-separated journal kinds (validated against `KNOWN_KINDS` server
+    /// side — unknown names match nothing); absent = all kinds.
+    kind: Option<String>,
+    /// Exact actor match ("henry", "watcher", "librarian", …); absent = all.
+    actor: Option<String>,
+}
+
+#[derive(Serialize)]
+struct JournalPage {
+    items: Vec<permagent::activity_journal::JournalItem>,
+    /// Cursor for the next (older) page; absent when this page is the end.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_before: Option<String>,
+}
+
+async fn get_journal(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<JournalQuery>,
+) -> Result<Json<JournalPage>, (StatusCode, Json<ErrorBody>)> {
+    let limit = q.limit.unwrap_or(50).clamp(1, 200);
+    let pool = state.session_manager().pool_clone().await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorBody {
+                error: format!("db unavailable: {}", e),
+            }),
+        )
+    })?;
+    let kinds: Option<Vec<String>> = q.kind.as_deref().map(|s| {
+        s.split(',')
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+            .map(str::to_string)
+            .collect()
+    });
+    let items = permagent::activity_journal::page(
+        &pool,
+        q.before.as_deref(),
+        limit,
+        kinds.as_deref(),
+        q.actor.as_deref(),
+    )
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorBody {
+                error: format!("journal query failed: {}", e),
+            }),
+        )
+    })?;
+    // A full page means there may be older rows; hand back the last ts as the
+    // next exclusive cursor. A short page is the end of the journal.
+    let next_before = if items.len() as i64 == limit {
+        items.last().map(|i| i.ts.clone())
+    } else {
+        None
+    };
+    Ok(Json(JournalPage { items, next_before }))
+}
+
 // ── Rate limiter ───────────────────────────────────────────────────────
 
 struct RateLimiter {
@@ -331,6 +400,7 @@ async fn resume_ingestion(
 
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
+        .route("/api/activity", get(get_journal))
         .route("/activity/recent", get(get_recent))
         .route("/activity/emit", post(emit_event))
         .route("/activity/ingest-status", get(ingest_status))
