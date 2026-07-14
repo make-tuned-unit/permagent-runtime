@@ -287,6 +287,10 @@ fn resolve_cron_timezone(tz: Option<&str>) -> CronTimezone {
 
 /// Parse a `+HH:MM` / `-HH:MM` / `+HHMM` fixed-offset string into a
 /// `FixedOffset`. Returns `None` for any other shape.
+// All slices below are on ASCII char boundaries: `raw[1..]` skips a single
+// `+`/`-` byte, and `digits` is filtered to ASCII digits, so `digits[0..2]` /
+// `[2..4]` are always valid boundaries.
+#[allow(clippy::string_slice)]
 fn parse_fixed_offset(raw: &str) -> Option<FixedOffset> {
     let bytes = raw.as_bytes();
     let sign = match bytes.first()? {
