@@ -18,6 +18,15 @@ import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import type { Project } from '../projects/types';
 
+// Appended to every Grow prompt that DRAFTS user-facing copy (value props,
+// posts, outreach) so the output reads like a sharp human wrote it, not a
+// chatbot. The full voice spec lives in the "humanize" builtin skill; this
+// names it and inlines the top AI tells so the draft is humanized even before
+// the skill loads. Strategy prompts (audience/positioning/channels) deliberately
+// omit it — they produce internal analysis, not copy the user will publish.
+const HUMANIZE_VOICE =
+  ' Write it the way a sharp person actually writes: lead with the point, stay specific and concrete, keep sentences short, and cut every AI tell (no em-dashes, no hype words like "seamless" or "leverage" or "unlock", no throat-clearing openers). Apply your "humanize" skill for the full voice spec before you hand it back.';
+
 // The five GTM pillars (research: target market · value prop · pricing &
 // positioning · channels · integrated marketing) — the strategy spine every
 // launch needs. Each is a Henry-assisted prompt seed.
@@ -32,7 +41,7 @@ const PILLARS: { key: string; label: string; prompt: (p: string) => string; hint
     key: 'value',
     label: 'Value proposition',
     hint: 'The one sentence that makes them care.',
-    prompt: (p) => `Draft 3 one-line value propositions for "${p}" — the sharp promise that makes the target audience stop scrolling. Ground them in the project's actual capabilities.`,
+    prompt: (p) => `Draft 3 one-line value propositions for "${p}" — the sharp promise that makes the target audience stop scrolling. Ground them in the project's actual capabilities.${HUMANIZE_VOICE}`,
   },
   {
     key: 'positioning',
@@ -50,7 +59,7 @@ const PILLARS: { key: string; label: string; prompt: (p: string) => string; hint
     key: 'content',
     label: 'Content & launch',
     hint: 'The hub piece and the posts that orbit it.',
-    prompt: (p) => `For "${p}", outline the launch content: one substantial hub piece (a guide/thread that establishes authority) and a week of social posts that link back to it. Draft the first post so I can schedule it.`,
+    prompt: (p) => `For "${p}", outline the launch content: one substantial hub piece (a guide/thread that establishes authority) and a week of social posts that link back to it. Draft the first post so I can schedule it.${HUMANIZE_VOICE}`,
   },
 ];
 
@@ -267,7 +276,7 @@ export function GrowView() {
               <span style={{ fontSize: 10, color: colors.textDim, background: colors.bgDeeper, padding: '1px 6px', borderRadius: radius.pill, fontVariantNumeric: 'tabular-nums' }}>{posts.length}</span>
               <div style={{ flex: 1 }} />
               <button
-                onClick={() => send(`For "${active.name}", draft a social post I can schedule (pick the best channel from the strategy above), and create it as a social_post card on this project.`)}
+                onClick={() => send(`For "${active.name}", draft a social post I can schedule (pick the best channel from the strategy above), and create it as a social_post card on this project.${HUMANIZE_VOICE}`)}
                 style={{
                   fontSize: 11, fontFamily: font.body, color: colors.text,
                   background: 'transparent', border: `1px solid ${colors.border}`,
