@@ -16,6 +16,7 @@ pub mod events;
 pub mod features;
 pub mod findings;
 pub mod gateway;
+pub mod grow;
 pub mod henry_status;
 pub mod identity;
 pub mod inbox;
@@ -133,6 +134,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(world::routes(state.clone()))
         .merge(projects::routes(state.clone()))
         .merge(cards::routes(state.clone()))
+        .merge(grow::routes(state.clone()))
         .merge(decisions::routes(state.clone()))
         .merge(agents::routes(state.clone()))
         // Voice HTTP endpoints — on-demand model downloader + synth primitive
