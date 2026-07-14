@@ -393,6 +393,66 @@ async fn execute_effect(
             );
             Ok(Some("automation proposal approved".to_string()))
         }
+        // Approved enrichment proposal (#495 slice 4): write each proposed field
+        // to the person's graph entity with Enriched provenance + source URL.
+        // Manual-provenance fields are never overwritten — Spectral's store
+        // enforces the rule and reports a suppressed write as `false`, counted
+        // here as "protected". The allowlist was validated at decision creation;
+        // it is re-checked per field (defense in depth) so a hand-crafted row
+        // can never write a manual-only field name.
+        ("enrichment_proposal", Some("approve")) => {
+            let payload: permagent::decisions::EnrichmentProposalPayload =
+                serde_json::from_value(decision.payload.clone()).map_err(|e| {
+                    GuardError::Invalid(format!("stored enrichment payload unreadable: {}", e))
+                })?;
+            let brain =
+                permagent::agents::platform_extensions::get_global_brain().ok_or_else(|| {
+                    GuardError::Invalid(
+                        "Brain is not available — cannot write enriched fields".to_string(),
+                    )
+                })?;
+            let entity_id: spectral::core::entity_id::EntityId =
+                payload.graph_entity_id.parse().map_err(|e| {
+                    GuardError::Invalid(format!("invalid graph_entity_id in payload: {:?}", e))
+                })?;
+            let (mut applied, mut protected, mut skipped) = (0usize, 0usize, 0usize);
+            for f in &payload.fields {
+                if !permagent::people::ENRICHABLE_FIELD_NAMES.contains(&f.field_name.as_str()) {
+                    skipped += 1;
+                    continue;
+                }
+                let wrote = brain
+                    .set_entity_field(
+                        entity_id,
+                        &f.field_name,
+                        &f.value,
+                        spectral::ingest::FieldSource::Enriched,
+                        Some(&f.source_url),
+                    )
+                    .await
+                    .map_err(|e| {
+                        GuardError::Db(format!("set_entity_field({}): {}", f.field_name, e))
+                    })?;
+                if wrote {
+                    applied += 1;
+                } else {
+                    protected += 1;
+                }
+            }
+            let mut effect = format!(
+                "enrichment applied to \"{}\": {} field(s) written with Enriched provenance, \
+                 {} protected by manual provenance",
+                payload.person_name, applied, protected
+            );
+            if skipped > 0 {
+                effect.push_str(&format!(", {} skipped (not enrichable)", skipped));
+            }
+            Ok(Some(effect))
+        }
+        // Declined enrichment proposal: recorded; nothing touches the profile.
+        ("enrichment_proposal", Some("reject")) => Ok(Some(
+            "enrichment proposal declined; nothing was written".to_string(),
+        )),
         // Remaining shapes route through L3's resume:auto — `choice` answers
         // and `unblock` answered with input on a PARKED goal make it
         // re-dispatch eligible (Triage → Ready through the guard). Everything

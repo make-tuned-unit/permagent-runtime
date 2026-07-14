@@ -88,6 +88,21 @@ pub const PERSON_FIELD_NAMES: [&str; 6] = [
     "last_contact_at",
 ];
 
+/// Fields the Enricher may propose (#495 slice 4, design ruled 2026-06-24).
+/// STRUCTURED, verifiable fields only — lower confabulation. Manual-only
+/// fields (email, phone, birthday, notes, relationship_strength, how_met) are
+/// deliberately absent: an enrichment proposal naming one is rejected as
+/// malformed at decision creation AND skipped at apply time. Independently,
+/// Spectral's store never lets an `Enriched` write overwrite a field whose
+/// stored provenance is `Manual` — three layers, all load-bearing.
+pub const ENRICHABLE_FIELD_NAMES: [&str; 5] = [
+    "linkedin",
+    "job_title",
+    "company",
+    "x_handle",
+    "personal_site",
+];
+
 impl Person {
     /// Null every graph-sourced attribute. The read overlay calls this before
     /// applying graph `entity_fields`, so the response reflects the graph only —

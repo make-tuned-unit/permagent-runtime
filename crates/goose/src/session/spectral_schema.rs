@@ -1561,7 +1561,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS decisions (
             id            TEXT PRIMARY KEY,
             kind          TEXT NOT NULL CHECK (kind IN
-                            ('approve_review','unblock','choice','risk_gate','automation_proposal','malformed')),
+                            ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','malformed')),
             goal_id       TEXT REFERENCES cards(id) ON DELETE SET NULL,
             project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
             tier          INTEGER NOT NULL CHECK (tier IN (0,1,2)),
@@ -1607,19 +1607,22 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
     }
 
     // Widen the `kind` CHECK to admit 'automation_proposal' (Initiative → Decision
-    // Inbox). SQLite cannot ALTER a CHECK, so an older table is rebuilt in place.
-    // FK-safe: nothing references `decisions` via a foreign key (decision_audit
-    // stores a plain TEXT id; the complete-guard trigger resolves by name after
-    // the rename). Gated on the constraint text, so it runs at most once.
+    // Inbox) and 'enrichment_proposal' (the Enricher, #495 slice 4). SQLite cannot
+    // ALTER a CHECK, so an older table is rebuilt in place. FK-safe: nothing
+    // references `decisions` via a foreign key (decision_audit stores a plain TEXT
+    // id; the complete-guard trigger resolves by name after the rename). Gated on
+    // the newest kind in the constraint text, so it runs at most once — a table
+    // missing 'automation_proposal' also misses 'enrichment_proposal' and this one
+    // rebuild widens for both.
     let decisions_ddl: Option<String> =
         sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE type='table' AND name='decisions'")
             .fetch_optional(&mut *tx)
             .await?;
     if decisions_ddl
-        .map(|sql| !sql.contains("automation_proposal"))
+        .map(|sql| !sql.contains("enrichment_proposal"))
         .unwrap_or(false)
     {
-        info!("Widening decisions.kind CHECK for 'automation_proposal' (in-place rebuild)");
+        info!("Widening decisions.kind CHECK for 'enrichment_proposal' (in-place rebuild)");
         // Indexes on the old table are dropped with it; recreated below.
         sqlx::query("DROP INDEX IF EXISTS idx_decisions_open")
             .execute(&mut *tx)
@@ -1631,7 +1634,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
             "CREATE TABLE decisions_new (
                 id            TEXT PRIMARY KEY,
                 kind          TEXT NOT NULL CHECK (kind IN
-                                ('approve_review','unblock','choice','risk_gate','automation_proposal','malformed')),
+                                ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','malformed')),
                 goal_id       TEXT REFERENCES cards(id) ON DELETE SET NULL,
                 project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
                 tier          INTEGER NOT NULL CHECK (tier IN (0,1,2)),
