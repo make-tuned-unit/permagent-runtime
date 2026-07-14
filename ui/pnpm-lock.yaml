@@ -33,8 +33,8 @@ importers:
         version: 4.4.3
     devDependencies:
       '@agentclientprotocol/sdk':
-        specifier: ^0.14.1
-        version: 0.14.1(zod@4.4.3)
+        specifier: ^1.2.1
+        version: 1.2.1(zod@4.4.3)
       '@hey-api/openapi-ts':
         specifier: ^0.99.0
         version: 0.99.0(magicast@0.5.2)(typescript@5.9.3)
@@ -73,8 +73,8 @@ importers:
         specifier: workspace:*
         version: link:../sdk
       '@agentclientprotocol/sdk':
-        specifier: ^0.14.1
-        version: 0.14.1(zod@4.4.3)
+        specifier: ^1.2.1
+        version: 1.2.1(zod@4.4.3)
       '@inkjs/ui':
         specifier: ^2.0.0
         version: 2.0.0(ink@7.1.0(@types/react@19.2.17)(react@19.2.7))
@@ -118,8 +118,8 @@ importers:
 
 packages:
 
-  '@agentclientprotocol/sdk@0.14.1':
-    resolution: {integrity: sha512-b6r3PS3Nly+Wyw9U+0nOr47bV8tfS476EgyEMhoKvJCZLbgqoDFN7DJwkxL88RR0aiOqOYV1ZnESHqb+RmdH8w==}
+  '@agentclientprotocol/sdk@1.2.1':
+    resolution: {integrity: sha512-jwYUdOQR7tc+Zfch53VL4JJyUNK/46q03uUTYb+PjECsmnNl94XFXOfYLJ8RBpMNidXd1rpOAVgb0vqD98xImA==}
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
 
@@ -1235,7 +1235,7 @@ packages:
 
 snapshots:
 
-  '@agentclientprotocol/sdk@0.14.1(zod@4.4.3)':
+  '@agentclientprotocol/sdk@1.2.1(zod@4.4.3)':
     dependencies:
       zod: 4.4.3
 
