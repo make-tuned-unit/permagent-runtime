@@ -30,7 +30,7 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
         display_name: "Librarian",
         category: crate::agents::self_knowledge::FeatureCategory::Worker,
         what_it_does:
-            "A local LLM that writes prose descriptions for new Brain memories during idle windows",
+            "A local LLM that writes prose descriptions for new Brain memories during idle windows, and consolidates recurring cross-session memories into durable entity-keyed atoms",
         why_it_matters:
             "Keeps long-term memory searchable, so later recall surfaces the right context",
         state_source: crate::agents::self_knowledge::StateSource::Queryable,
@@ -1299,6 +1299,8 @@ mod tests {
             description: None,
             description_generated_at: None,
             content_hash: None,
+            signature: None,
+            source_brain_id: None,
         };
         let prompt = build_description_prompt(&memory);
         assert!(prompt.contains("session:2026-05-08:chat"));

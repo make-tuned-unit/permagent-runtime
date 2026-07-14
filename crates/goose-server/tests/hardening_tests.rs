@@ -907,6 +907,8 @@ mod recall_filter {
             episode_id: None,
             declarative_density: None,
             description: None,
+            source_brain_id: None,
+            signature: None,
         }
     }
 

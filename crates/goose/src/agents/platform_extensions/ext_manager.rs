@@ -529,6 +529,20 @@ async fn handle_search_memory(
         }
     };
 
+    // Layered / provenance recall path — gated default-OFF behind the same
+    // LIBRARIAN_ATOMS_ENABLED flag as the write-side. When on, surface each
+    // consolidation atom together with the raw sources it distilled, framed
+    // explicitly as a candidate set to VERIFY (never authoritative). This
+    // hint-not-truth framing is the load-bearing difference from the read-time
+    // pre-pass that regressed −9.2pp. Until the mini eval flips the flag this
+    // branch is never taken, so actor behavior is unchanged.
+    if crate::config::Config::global()
+        .get_param::<bool>("LIBRARIAN_ATOMS_ENABLED")
+        .unwrap_or(false)
+    {
+        return handle_search_memory_layered(&brain, &query).await;
+    }
+
     let ctx = spectral::graph::RecognitionContext::empty()
         .with_persona(crate::config::agent_identity::DEFAULT_PERSONA_KEY);
     match brain.recall_cascade(&query, &ctx).await {
@@ -561,4 +575,80 @@ async fn handle_search_memory(
         }
         Err(e) => Ok(vec![Content::text(format!("Memory search failed: {}", e))]),
     }
+}
+
+/// Layered recall: each hit paired with the raw sources it was distilled from.
+/// Gated behind `LIBRARIAN_ATOMS_ENABLED` (default OFF). The consolidation atoms
+/// are presented as a candidate set to VERIFY against the sources, never as
+/// authoritative — this framing is the load-bearing difference from the
+/// read-time consolidation pre-pass that regressed −9.2pp.
+async fn handle_search_memory_layered(
+    brain: &crate::brain_handle::SafeBrain,
+    query: &str,
+) -> Result<Vec<Content>, ExtensionManagerToolError> {
+    const MAX_SOURCES_PER_HIT: usize = 3;
+
+    let hits = match brain
+        .recall_with_provenance(
+            query.to_string(),
+            spectral::Visibility::Private,
+            MAX_SOURCES_PER_HIT,
+        )
+        .await
+    {
+        Ok(h) => h,
+        Err(e) => return Ok(vec![Content::text(format!("Memory search failed: {}", e))]),
+    };
+
+    crate::events::emit(crate::events::memory_recalled(
+        query,
+        hits.len(),
+        "search_memory",
+    ));
+
+    if hits.is_empty() {
+        return Ok(vec![Content::text(format!(
+            "No memories found matching \"{}\".",
+            query
+        ))]);
+    }
+
+    // Framing FIRST: the atoms are hints to verify, not ground truth. This
+    // instruction is what keeps the strong actor from over-trusting a
+    // consolidated summary — the exact failure the read-time A/B measured.
+    let mut output = format!(
+        "Found {} memories matching \"{}\".\n\n\
+         Some results are CONSOLIDATED atoms (a summary distilled from several raw \
+         sessions, shown with its sources indented beneath it). Treat every atom as a \
+         CANDIDATE SET to VERIFY, not as ground truth: confirm each item against the raw \
+         sessions before counting it, and add any items the atoms missed. When an atom \
+         and its sources disagree, the raw sources win.\n\n",
+        hits.len(),
+        query
+    );
+
+    for (i, layered) in hits.iter().take(5).enumerate() {
+        let hit = &layered.hit;
+        if layered.sources.is_empty() {
+            output.push_str(&format!(
+                "{}. [raw · score {:.2}] {}\n",
+                i + 1,
+                hit.signal_score,
+                hit.content
+            ));
+        } else {
+            output.push_str(&format!(
+                "{}. [ATOM · score {:.2} · verify vs {} source(s) below] {}\n",
+                i + 1,
+                hit.signal_score,
+                layered.sources.len(),
+                hit.content
+            ));
+            for src in &layered.sources {
+                output.push_str(&format!("     - source: {}\n", src.content));
+            }
+        }
+    }
+
+    Ok(vec![Content::text(output)])
 }

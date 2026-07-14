@@ -547,6 +547,91 @@ impl SafeBrain {
             .map_err(|e| anyhow::anyhow!("brain task panicked: list_consolidated: {e}"))?
             .map_err(Into::into)
     }
+
+    // ── Layered-store consolidation atoms (Librarian write-side) ─────
+    // The Brain surfaces recurring clusters deterministically; the Librarian
+    // abstracts each into one durable, strong-model atom stored via
+    // `consolidate_as` (provenance-linked, so the atom is an additive hint the
+    // actor verifies against raw sources — never an authoritative replacement).
+
+    /// Deterministic recurring-cluster candidates worth abstracting into a
+    /// single higher-tier atom (co-retrieval + recognition-recurrence gated;
+    /// `member_keys` always ≥ 2). `$0`, no LLM. Mirrors
+    /// [`spectral::Brain::consolidation_candidates`].
+    pub async fn consolidation_candidates(
+        &self,
+        min_co_count: u64,
+        scan_limit: usize,
+    ) -> anyhow::Result<Vec<spectral::graph::brain::ConsolidationCandidate>> {
+        let brain = self.inner.clone();
+        tokio::task::spawn_blocking(move || {
+            brain.consolidation_candidates(min_co_count, scan_limit)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: consolidation_candidates: {e}"))?
+        .map_err(Into::into)
+    }
+
+    /// Store a **pre-computed** Librarian atom over `source_keys` at
+    /// `target_key`: writes a higher-`tier` memory and links the sources via
+    /// `consolidation_edges` (reachable through
+    /// [`recall_with_provenance`](Self::recall_with_provenance)). Mirrors
+    /// [`spectral::Brain::consolidate_as`].
+    pub async fn consolidate_as(
+        &self,
+        source_keys: Vec<String>,
+        target_key: String,
+        tier: spectral::ingest::CompactionTier,
+        content: String,
+    ) -> anyhow::Result<spectral::RememberResult> {
+        let brain = self.inner.clone();
+        tokio::task::spawn_blocking(move || {
+            brain.consolidate_as(&source_keys, &target_key, tier, &content)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: consolidate_as: {e}"))?
+        .map_err(Into::into)
+    }
+
+    /// Deterministic `$0` extractive consolidation (longest source) — the
+    /// no-LLM fallback so layered recall still exists when no strong-model
+    /// provider resolves. Mirrors [`spectral::Brain::consolidate_extractive`].
+    pub async fn consolidate_extractive(
+        &self,
+        source_keys: Vec<String>,
+        target_key: String,
+        tier: spectral::ingest::CompactionTier,
+    ) -> anyhow::Result<spectral::RememberResult> {
+        let brain = self.inner.clone();
+        tokio::task::spawn_blocking(move || {
+            brain.consolidate_extractive(&source_keys, &target_key, tier)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: consolidate_extractive: {e}"))?
+        .map_err(Into::into)
+    }
+
+    /// Layered / provenance-linked recall: each hit paired with its
+    /// ground-truth source memories (drill-down through `consolidation_edges`),
+    /// so the actor gets the compact atom **plus** the exact raw turns it
+    /// distilled and can verify a count against them. Builds a default
+    /// `RecallTopKConfig` internally, matching the other recall wrappers.
+    /// Mirrors [`spectral::Brain::recall_with_provenance`].
+    pub async fn recall_with_provenance(
+        &self,
+        query: String,
+        visibility: spectral::Visibility,
+        max_sources: usize,
+    ) -> anyhow::Result<Vec<spectral::graph::brain::LayeredHit>> {
+        let brain = self.inner.clone();
+        tokio::task::spawn_blocking(move || {
+            let config = spectral::RecallTopKConfig::default();
+            brain.recall_with_provenance(&query, &config, visibility, max_sources)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: recall_with_provenance: {e}"))?
+        .map_err(Into::into)
+    }
 }
 
 impl std::fmt::Debug for SafeBrain {
