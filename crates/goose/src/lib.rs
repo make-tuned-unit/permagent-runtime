@@ -37,6 +37,7 @@ pub mod initiative;
 pub mod instance_id;
 pub mod logging;
 pub mod mcp_utils;
+pub mod mesh;
 pub mod model;
 pub mod oauth;
 #[cfg(feature = "otel")]

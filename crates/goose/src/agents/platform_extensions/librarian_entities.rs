@@ -890,7 +890,7 @@ pub async fn run_entity_sweep(brain: &SafeBrain, model: &str) -> Result<SweepSum
                 active,
             );
             match call_ollama_streaming(
-                &crate::config::ollama_host(),
+                &crate::mesh::resolve_route(crate::mesh::Workload::Batch).endpoint,
                 ENTITY_SYSTEM_PROMPT,
                 &prompt,
                 model,

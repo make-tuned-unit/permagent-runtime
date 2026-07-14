@@ -425,7 +425,7 @@ pub async fn describe_one(
         }
 
         let raw = call_ollama_streaming(
-            &crate::config::ollama_host(),
+            &crate::mesh::resolve_route(crate::mesh::Workload::Batch).endpoint,
             LIBRARIAN_SYSTEM_PROMPT,
             &prompt,
             model,
