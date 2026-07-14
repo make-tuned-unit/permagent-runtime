@@ -3054,13 +3054,8 @@ fn first_backtick(text: &str) -> Option<&str> {
 /// whitespace-split token, preserving `/` and a leading `.` (so `./x` and
 /// `README.md` survive).
 fn clean_token(tok: &str) -> &str {
-    let t = tok.trim_end_matches(|c: char| matches!(c, ',' | ';' | ':' | '!' | '?' | '.'));
-    t.trim_matches(|c: char| {
-        matches!(
-            c,
-            '`' | '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | '*'
-        )
-    })
+    let t = tok.trim_end_matches([',', ';', ':', '!', '?', '.']);
+    t.trim_matches(['`', '"', '\'', '(', ')', '[', ']', '{', '}', '<', '>', '*'])
 }
 
 const PATH_EXTENSIONS: &[&str] = &[
@@ -4142,12 +4137,7 @@ mod tests {
 
     /// Sorted JSON object keys, for asserting deny_unknown_fields wire parity.
     fn sorted_keys(check: &serde_json::Value) -> Vec<String> {
-        let mut keys: Vec<String> = check
-            .as_object()
-            .unwrap()
-            .keys()
-            .map(String::clone)
-            .collect();
+        let mut keys: Vec<String> = check.as_object().unwrap().keys().cloned().collect();
         keys.sort();
         keys
     }
