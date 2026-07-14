@@ -333,7 +333,7 @@ pub async fn record_execution(
 // ── Evidence-based ranking (graduation) ──────────────────────────────────────
 
 /// A saved skill plus the evidence needed to rank it for prompt injection.
-/// `execution_count` is the number of recorded [`skill_executions`] — the
+/// `execution_count` is the number of recorded `skill_executions` rows — the
 /// proven-usage signal that graduates a skill ahead of never-used ones.
 pub struct RankedSkill {
     pub name: String,
