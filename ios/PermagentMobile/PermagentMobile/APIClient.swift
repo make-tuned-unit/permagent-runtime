@@ -33,6 +33,49 @@ actor APIClient {
         try await request(path, method: "POST", body: body)
     }
 
+    /// Fire-and-refresh command POST for endpoints that answer 204/No Content or
+    /// a body we don't need (schedule run_now / pause / unpause / kill). Sends no
+    /// request body and discards the response; the caller reloads to reflect the
+    /// new state. Using `post(...)` here would throw — it tries to JSON-decode an
+    /// empty 204 body.
+    func send(_ path: String, method: String = "POST") async throws {
+        guard let config else { throw APIError.notPaired }
+        var req = URLRequest(url: config.baseURL.appendingPathComponent(path))
+        req.httpMethod = method
+        req.setValue("Bearer \(config.token)", forHTTPHeaderField: "Authorization")
+        let (_, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse else { throw APIError.badStatus(0) }
+        if http.statusCode == 401 { throw APIError.unauthorized }
+        guard (200..<300).contains(http.statusCode) else { throw APIError.badStatus(http.statusCode) }
+    }
+
+    /// Multipart upload of a recorded clip to the local dictation model
+    /// (POST /api/dictation/transcribe → `{ text }`). The daemon reads the first
+    /// multipart field regardless of name; we send it as `audio`. A 503 surfaces
+    /// as `APIError.badStatus(503)` — "no local dictation model configured" — so
+    /// the Notes composer can explain the setup gap rather than read as a crash.
+    func transcribe(_ audio: Data, filename: String = "dictation.wav", mimeType: String = "audio/wav") async throws -> String {
+        guard let config else { throw APIError.notPaired }
+        let boundary = "PermagentBoundary-\(UUID().uuidString)"
+        var req = URLRequest(url: config.baseURL.appendingPathComponent("/api/dictation/transcribe"))
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(config.token)", forHTTPHeaderField: "Authorization")
+        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        var body = Data()
+        body.appendString("--\(boundary)\r\n")
+        body.appendString("Content-Disposition: form-data; name=\"audio\"; filename=\"\(filename)\"\r\n")
+        body.appendString("Content-Type: \(mimeType)\r\n\r\n")
+        body.append(audio)
+        body.appendString("\r\n--\(boundary)--\r\n")
+        req.httpBody = body
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse else { throw APIError.badStatus(0) }
+        if http.statusCode == 401 { throw APIError.unauthorized }
+        guard (200..<300).contains(http.statusCode) else { throw APIError.badStatus(http.statusCode) }
+        struct TranscribeResponse: Decodable { let text: String }
+        return try JSONDecoder().decode(TranscribeResponse.self, from: data).text
+    }
+
     private func request<T: Decodable, B: Encodable>(
         _ path: String, method: String, body: B?
     ) async throws -> T {
@@ -223,5 +266,12 @@ enum KeychainStore {
         guard SecItemCopyMatching(query as CFDictionary, &out) == errSecSuccess,
               let data = out as? Data else { return nil }
         return try? JSONDecoder().decode(HubConfig.self, from: data)
+    }
+}
+
+// Multipart body assembly helper (for the dictation upload).
+private extension Data {
+    mutating func appendString(_ string: String) {
+        if let data = string.data(using: .utf8) { append(data) }
     }
 }
