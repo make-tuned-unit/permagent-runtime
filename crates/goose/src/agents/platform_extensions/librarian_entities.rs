@@ -529,6 +529,7 @@ struct SelectionCandidate {
 /// - described + (no ledger entry OR fingerprint changed) → Redescribe.
 ///   (No-entry covers v1's name-grounded descriptions: they upgrade to
 ///   evidence-grounded ones over successive sweeps.)
+///
 /// Both buckets are ordered most-mentioned-first (hex tiebreak, deterministic)
 /// and capped independently.
 fn plan_selection(
