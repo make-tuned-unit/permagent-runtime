@@ -46,6 +46,21 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
         ],
     };
 
+/// Self-knowledge descriptor for the "agents at work" run roster — the
+/// run-visibility surface on the Automate tab (served by `/api/runs`). A Surface
+/// (Static) because it is a viewing/control surface, not a queryable worker.
+pub const RUN_ROSTER_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "run_roster",
+        display_name: "Agents at work",
+        category: crate::agents::self_knowledge::FeatureCategory::Surface,
+        what_it_does: "A live roster on the Automate tab of everything running or recently active — background workers, scheduled jobs with their run status, and active agent sessions — each with a status dot, what it is doing, when it last acted, and a one-click stop for anything interruptible",
+        why_it_matters:
+            "Long-running and parallel agent work used to be invisible; this is where the user watches it happen and stops a runaway or stuck run — when they ask what you are doing right now, point them here",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        teaching: &[],
+    };
+
 use crate::agents::AgentEvent;
 use crate::agents::{Agent, SessionConfig};
 use crate::config::paths::Paths;
