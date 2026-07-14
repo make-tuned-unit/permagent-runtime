@@ -174,6 +174,44 @@ pub const BUILD_TAB_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         teaching: &[],
     };
 
+/// Self-knowledge descriptor for the Grow tab — the per-project go-to-market
+/// workspace. Static surface; teaching steps drive onboarding. Closes the
+/// coverage gap where Henry could not describe or guide the user to Grow.
+pub const GROW_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "grow",
+        display_name: "Grow tab",
+        category: crate::agents::self_knowledge::FeatureCategory::Surface,
+        what_it_does: "A per-project go-to-market workspace: strategy pillars (audience, value \
+             proposition, positioning, channels, content) you think through with the user, a \
+             content calendar of drafted posts, and a growth view — with any post or outreach \
+             you draft written in a crisp human voice, never chatbot boilerplate",
+        why_it_matters:
+            "It is where the user takes a project to market with you. When they want to reach an \
+             audience, plan a launch, or draft a post, bring them here and draft it in their \
+             voice — marketing copy the user publishes must not read like AI wrote it",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        teaching: &[
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Open Grow",
+                body: "Show the user the go-to-market workspace for a project — where strategy, \
+                       content, and launch planning live.",
+                open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                    tab: "Grow",
+                    section: None,
+                }),
+                confirm: None,
+            },
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Draft something real",
+                body: "Offer to draft a launch post or outreach message for their project, in a \
+                       sharp human voice, then show them it landed in the content calendar.",
+                open_surface: None,
+                confirm: None,
+            },
+        ],
+    };
+
 /// Self-knowledge descriptor for the Projects tab itself (#471). Each project
 /// opens into a workspace with two lenses: an Overview dashboard (summary, key
 /// facts, links, live task status) and the Kanban board. Static — always-on
