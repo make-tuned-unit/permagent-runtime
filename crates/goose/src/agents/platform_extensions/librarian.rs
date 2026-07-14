@@ -32,7 +32,7 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
         what_it_does:
             "A local LLM that writes prose descriptions for new Brain memories during idle windows",
         why_it_matters:
-            "Keeps long-term memory searchable, so later recall surfaces the right context",
+            "Keeps long-term memory searchable, so later recall surfaces the right context. When its live state shows entities awaiting your context, ask the user about one of them when it fits the conversation — one at a time — and save the answer to memory so the next sweep can describe them truthfully",
         state_source: crate::agents::self_knowledge::StateSource::Queryable,
         teaching: &[],
     };
@@ -77,7 +77,7 @@ CATEGORIES: software development, project management, task execution"#;
 // Ollama configuration
 // ---------------------------------------------------------------------------
 
-const OLLAMA_BASE_URL: &str = "http://localhost:11434";
+pub(crate) const OLLAMA_BASE_URL: &str = "http://localhost:11434";
 /// Default model used when LibrarianSchedule.model is empty or unavailable.
 const DEFAULT_MODEL: &str = "qwen2.5:7b";
 
@@ -425,8 +425,15 @@ pub async fn describe_one(
             );
         }
 
-        let raw = call_ollama_streaming(OLLAMA_BASE_URL, &prompt, model, emit_events, &memory_key)
-            .await?;
+        let raw = call_ollama_streaming(
+            OLLAMA_BASE_URL,
+            LIBRARIAN_SYSTEM_PROMPT,
+            &prompt,
+            model,
+            emit_events,
+            &memory_key,
+        )
+        .await?;
         let raw = raw.trim().to_string();
 
         if let Some(parsed) = parse_structured_description(&raw) {
@@ -563,65 +570,13 @@ pub async fn describe_one(
 /// on the next batch. The re-call to Ollama is a known cost — the description content
 /// may differ slightly but is functionally equivalent. Not worth guarding against
 /// since set_description failures indicate a deeper Spectral issue.
-/// #387 — the entity-summary pass. After the memory describe batch, give every
-/// reachable undescribed graph entity a one-line description so the Brain
-/// view's people/projects/topics read like the memories do. Same warmed model,
-/// same run window. Returns how many entities were described.
-pub async fn describe_entities_batch(
-    brain: &crate::brain_handle::SafeBrain,
-    cap: usize,
-    model: &str,
-) -> Result<usize, String> {
-    // Seed with the persona name — the same neighborhood the graph shows.
-    let seed = crate::config::agent_identity::load_agent_config()
-        .primary
-        .first_name;
-    let entities = brain
-        .undescribed_entities(&seed, cap)
-        .await
-        .map_err(|e| format!("Brain error: {}", e))?;
-    if entities.is_empty() {
-        return Ok(0);
-    }
-
-    let mut described = 0;
-    for (entity_id, entity_type, canonical) in entities {
-        // Ground the summary in the entity's typed fields when it has any.
-        let fields = brain
-            .get_entity_fields(entity_id)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|f| format!("{}: {}", f.field_name, f.value))
-            .collect::<Vec<_>>()
-            .join("; ");
-        let prompt = format!(
-            "You maintain a personal knowledge graph. Write ONE plain sentence (max 25 words) \
-             describing this {entity_type} for a hover card. No preamble, no quotes — just the \
-             sentence.\n\nName: {canonical}\nType: {entity_type}\nKnown fields: {}",
-            if fields.is_empty() { "(none)" } else { &fields }
-        );
-        let raw = call_ollama_streaming(OLLAMA_BASE_URL, &prompt, model, false, &canonical)
-            .await
-            .map_err(|e| format!("Ollama error describing entity '{canonical}': {e}"))?;
-        let description = raw.trim().trim_matches('"').to_string();
-        if description.is_empty() {
-            continue;
-        }
-        brain
-            .set_entity_description(entity_id, &description)
-            .await
-            .map_err(|e| format!("Brain error writing entity description: {e}"))?;
-        tracing::info!(
-            target: "permagentd::librarian",
-            entity = %canonical,
-            "entity description written (#387)"
-        );
-        described += 1;
-    }
-    Ok(described)
-}
-
+///
+/// #387 v2 — the entity-summary pass moved to
+/// [`super::librarian_entities::run_entity_sweep`]: full enumeration (people /
+/// projects / annotated terms + the persona-neighborhood catch-all),
+/// evidence-grounded prompts, and a freshness ledger. The v1
+/// `describe_entities_batch` (persona 2-hop neighborhood only, name+fields
+/// grounding) was removed with it.
 pub async fn run_batch(
     brain: &crate::brain_handle::SafeBrain,
     batch_size: usize,
@@ -719,8 +674,16 @@ pub fn parse_structured_description(raw: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 /// Stream tokens from Ollama's /api/generate endpoint.
-async fn call_ollama_streaming(
+///
+/// `system` is caller-supplied because the two describe passes need different
+/// contracts: memories use [`LIBRARIAN_SYSTEM_PROMPT`] (the three-field
+/// FACTS/TERMS/CATEGORIES format), while the #387-v2 entity pass
+/// (`librarian_entities`) uses an evidence-only contract — the v1 entity pass
+/// silently inherited the three-field system prompt, which fought its own
+/// one-sentence instruction.
+pub(crate) async fn call_ollama_streaming(
     base_url: &str,
+    system: &str,
     prompt: &str,
     model: &str,
     emit_events: bool,
@@ -736,7 +699,7 @@ async fn call_ollama_streaming(
     let body = serde_json::json!({
         "model": model,
         "prompt": prompt,
-        "system": LIBRARIAN_SYSTEM_PROMPT,
+        "system": system,
         "stream": true,
         "options": {
             "temperature": 0.2,
