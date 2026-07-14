@@ -61,6 +61,36 @@ pub struct CascadeHits {
     pub merged_hits: Vec<spectral::ingest::MemoryHit>,
 }
 
+/// A graph entity's identity + live description state, as read from the Kuzu
+/// store. The unit the #387-v2 Librarian entity pass plans work over: `id` is
+/// the content-addressed key `entity_id(entity_type, canonical)` exactly as the
+/// store minted it, and `description` is the current card text (`None` when
+/// unset or empty).
+#[derive(Debug, Clone)]
+pub struct GraphEntitySnapshot {
+    pub id: spectral::core::entity_id::EntityId,
+    pub entity_type: String,
+    pub canonical: String,
+    pub description: Option<String>,
+}
+
+/// Outcome of resolving a free-text name against the ontology + graph store
+/// (see [`SafeBrain::resolve_ontology_entities_exact`]).
+#[derive(Debug, Clone)]
+pub enum OntologyEntityResolution {
+    /// Not an ontology entity — no graph identity exists for this name.
+    NoIdentity,
+    /// The ontology declares it, but the node was never materialized in Kuzu
+    /// (the ontology is not eager-seeded) — describing it would MERGE a
+    /// half-formed node, so callers must skip it.
+    NotInGraph,
+    /// A live graph node, with the ontology's alias list for mention matching.
+    InGraph {
+        snapshot: GraphEntitySnapshot,
+        aliases: Vec<String>,
+    },
+}
+
 /// A thread-safe handle to `spectral::Brain` that enforces all operations
 /// run off the async executor via `spawn_blocking`.
 ///
@@ -427,26 +457,128 @@ impl SafeBrain {
             .map_err(Into::into)
     }
 
-    /// Entities within the recall neighborhood that still lack a description —
-    /// the #387 Librarian entity pass's work queue. Bounded by the same 2-hop
+    /// All entities within the recall neighborhood, with their live description
+    /// state — the #387-v2 entity pass's *catch-all* source (locations etc. that
+    /// no table or annotation enumerates). Bounded by the same 2-hop
     /// neighborhood the Brain graph shows (Spectral has no all-entities
-    /// enumeration yet; disconnected entities are out of reach until it does —
-    /// documented cap, not a bug).
-    pub async fn undescribed_entities(
+    /// enumeration on the pinned rev; `KuzuStore` exposes only `get_entity` /
+    /// `neighborhood`). Unlike the removed `undescribed_entities`, described
+    /// entities are included so the caller can run staleness checks on them.
+    pub async fn neighborhood_entity_snapshots(
         &self,
         seed: &str,
         cap: usize,
-    ) -> anyhow::Result<Vec<(spectral::core::entity_id::EntityId, String, String)>> {
+    ) -> anyhow::Result<Vec<GraphEntitySnapshot>> {
         let result = self.recall(seed, spectral::Visibility::Private).await?;
         Ok(result
             .graph
             .neighborhood
             .entities
             .iter()
-            .filter(|e| e.description.as_deref().is_none_or(str::is_empty))
             .take(cap)
-            .map(|e| (e.id, e.entity_type.clone(), e.canonical.clone()))
+            .map(|e| GraphEntitySnapshot {
+                id: e.id,
+                entity_type: e.entity_type.clone(),
+                canonical: e.canonical.clone(),
+                description: e.description.clone().filter(|d| !d.is_empty()),
+            })
             .collect())
+    }
+
+    /// Batch-load graph entity snapshots by bare 64-hex `EntityId` (the
+    /// `people.graph_entity_id` bridge key). One blocking hop for the whole
+    /// batch. `None` per slot for an unparseable hex or a node absent from the
+    /// store — the #387-v2 pass must *never* describe an id the graph has not
+    /// materialized, because Spectral's `set_entity_description` MERGEs and
+    /// would mint a half-formed node (id + description, no type/canonical).
+    pub async fn entity_snapshots_by_hex(
+        &self,
+        id_hexes: Vec<String>,
+    ) -> anyhow::Result<Vec<Option<GraphEntitySnapshot>>> {
+        let brain = self.inner.clone();
+        tokio::task::spawn_blocking(move || {
+            let store = brain.store();
+            let mut out = Vec::with_capacity(id_hexes.len());
+            for hex_id in &id_hexes {
+                let parsed: Result<spectral::core::entity_id::EntityId, _> = hex_id.parse();
+                let snap = match parsed {
+                    Ok(id) => match store.get_entity(&id) {
+                        Ok(Some(e)) => Some(GraphEntitySnapshot {
+                            id: e.id,
+                            entity_type: e.entity_type,
+                            canonical: e.canonical,
+                            description: e.description.filter(|d| !d.is_empty()),
+                        }),
+                        Ok(None) => None,
+                        Err(e) => return Err(anyhow::anyhow!("get_entity: {e}")),
+                    },
+                    Err(_) => None,
+                };
+                out.push(snap);
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: entity_snapshots_by_hex: {e}"))?
+    }
+
+    /// Resolve free-text names (annotation terms/categories, project names) to
+    /// graph entities via **exact** ontology alias matching — deliberately no
+    /// fuzzy fallback: the #387-v2 pass writes *descriptions*, and a fuzzy
+    /// mis-bind would put a truthful-sounding card on the wrong entity.
+    /// Matching normalizes both sides with
+    /// [`crate::identity::canonical::graph_canonical`] (lowercase, collapsed
+    /// whitespace — the exact form Spectral hashes into `EntityId`s).
+    ///
+    /// Per name: [`OntologyEntityResolution::NoIdentity`] when the ontology has
+    /// no such entity (a SQLite-shadow-only term — no graph card to describe),
+    /// `NotInGraph` when the ontology knows it but the node was never
+    /// materialized (ontology is not eager-seeded), `InGraph` with the live
+    /// snapshot plus the entity's aliases otherwise.
+    pub async fn resolve_ontology_entities_exact(
+        &self,
+        names: Vec<String>,
+    ) -> anyhow::Result<Vec<OntologyEntityResolution>> {
+        use crate::identity::canonical::graph_canonical;
+        let brain = self.inner.clone();
+        tokio::task::spawn_blocking(move || {
+            let ontology = brain.ontology();
+            // alias (normalized) → ontology entity index; first declaration wins.
+            let mut lookup: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
+            for (i, e) in ontology.entities.iter().enumerate() {
+                for alias in std::iter::once(&e.canonical).chain(e.aliases.iter()) {
+                    lookup.entry(graph_canonical(alias)).or_insert(i);
+                }
+            }
+            let store = brain.store();
+            let mut out = Vec::with_capacity(names.len());
+            for name in &names {
+                let normalized = graph_canonical(name);
+                let Some(&idx) = lookup.get(&normalized) else {
+                    out.push(OntologyEntityResolution::NoIdentity);
+                    continue;
+                };
+                let entity = &ontology.entities[idx];
+                let id = ontology.entity_id_for(entity);
+                match store.get_entity(&id) {
+                    Ok(Some(e)) => out.push(OntologyEntityResolution::InGraph {
+                        snapshot: GraphEntitySnapshot {
+                            id: e.id,
+                            entity_type: e.entity_type,
+                            canonical: e.canonical,
+                            description: e.description.filter(|d| !d.is_empty()),
+                        },
+                        aliases: entity.aliases.clone(),
+                    }),
+                    Ok(None) => out.push(OntologyEntityResolution::NotInGraph),
+                    Err(e) => return Err(anyhow::anyhow!("get_entity: {e}")),
+                }
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: resolve_ontology_entities_exact: {e}"))?
     }
 
     pub async fn set_entity_field(
