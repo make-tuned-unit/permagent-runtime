@@ -670,18 +670,38 @@ impl OrchestratorClient {
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .filter(|s| !s.is_empty());
 
-        // #456: author the goal's completion criterion at dispatch. Seeds the
-        // project-default build check (`command_exit_zero`) onto code-flavored
-        // goals — explicit `project.metadata_json.build_command` first, else
-        // stack detection; goals that already declare checks (or are typed
-        // non-code) are left alone. The verifier runs these in the worker's
-        // worktree and clamps the verdict to Fail when the build breaks.
-        let seeded_checks = default_completion_checks(
-            &card.metadata_json,
-            &project.metadata_json,
-            &working_dir,
-            baseline_commit.is_some(),
-        );
+        // Author the goal's completion criterion at dispatch, in precedence
+        // order (all seed the SAME `metadata_json.completion_checks` the #682
+        // verifier runs in the worker's worktree):
+        //   1. user-authored `completion_checks` win — never overwritten;
+        //   2. else the goal's acceptance criteria, COMPILED into enforced
+        //      checks (spec-driven builds, extends #682): unlike spec-kit, which
+        //      only prompts the model, we prove each mechanically-checkable
+        //      criterion — source "spec-acceptance";
+        //   3. else the #456 project-default build check — source
+        //      "project-default".
+        // A failing check clamps the verdict to Fail and blocks auto-approval.
+        let (seeded_checks, checks_source): (Option<serde_json::Value>, &str) =
+            if card.metadata_json.get("completion_checks").is_some() {
+                (None, "")
+            } else if let Some(acc) = checks_from_acceptance(
+                &card.metadata_json,
+                &card.description,
+                &project.metadata_json,
+                &working_dir,
+            ) {
+                (Some(acc), ACCEPTANCE_CHECKS_SOURCE)
+            } else {
+                (
+                    default_completion_checks(
+                        &card.metadata_json,
+                        &project.metadata_json,
+                        &working_dir,
+                        baseline_commit.is_some(),
+                    ),
+                    PROJECT_DEFAULT_CHECKS_SOURCE,
+                )
+            };
 
         // Resolve the engine for this worker and dispatch. The engine owns *how*
         // the goal runs; the card lifecycle around it stays here.
@@ -880,14 +900,15 @@ impl OrchestratorClient {
         if let Some(checks) = seeded_checks {
             tracing::info!(
                 target: "permagentd::brain",
-                "Seeding project-default completion check onto goal '{}': {}",
+                "Seeding {} completion checks onto goal '{}': {}",
+                checks_source,
                 card.title,
                 checks
             );
             patch.insert("completion_checks".to_string(), checks);
             patch.insert(
                 "completion_checks_source".to_string(),
-                serde_json::json!("project-default"),
+                serde_json::json!(checks_source),
             );
         }
 
@@ -2540,6 +2561,49 @@ const NON_CODE_GOAL_TYPES: &[&str] = &["prose", "content", "writing", "docs", "r
 /// Default timeout for the seeded build check (checks.rs clamps to 600s max).
 const DEFAULT_BUILD_CHECK_TIMEOUT_SECS: u64 = 600;
 
+/// `completion_checks_source` marker for checks compiled from a goal's
+/// acceptance criteria (spec-driven builds — extends #682). Distinguishes the
+/// compiled acceptance checks from the #456 project-default build check.
+const ACCEPTANCE_CHECKS_SOURCE: &str = "spec-acceptance";
+/// `completion_checks_source` marker for the #456 project-default build check.
+const PROJECT_DEFAULT_CHECKS_SOURCE: &str = "project-default";
+/// Timeout for a `command_exit_zero` check compiled from an acceptance
+/// criterion (checks.rs clamps to 600s max, so this is the ceiling).
+const ACCEPTANCE_CMD_TIMEOUT_SECS: u64 = 600;
+
+/// Resolve a build command for `working_dir`: explicit
+/// `project.metadata_json.build_command` first (explicit config over hidden
+/// defaults), else conservative stack detection — `npm run build` when
+/// package.json declares a build script, `cargo check` for a Cargo project.
+/// `None` when the stack is unknown; callers never guess a command (a check
+/// `error` clamps the verdict to Fail, so a wrong guess would false-fail).
+fn resolve_build_command(
+    project_meta: &serde_json::Value,
+    working_dir: &std::path::Path,
+) -> Option<String> {
+    let explicit = project_meta
+        .get("build_command")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if let Some(c) = explicit {
+        return Some(c.to_string());
+    }
+
+    let has_npm_build = std::fs::read_to_string(working_dir.join("package.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|pkg| pkg.get("scripts")?.get("build").cloned())
+        .is_some();
+    if has_npm_build {
+        Some("npm run build".to_string())
+    } else if working_dir.join("Cargo.toml").is_file() {
+        Some("cargo check".to_string())
+    } else {
+        None
+    }
+}
+
 /// Default completion checks for a code-flavored goal at dispatch (#456).
 ///
 /// Opt-in with per-goal-type defaults (Jesse's ruling, 2026-06-23). Seeds a
@@ -2574,29 +2638,7 @@ fn default_completion_checks(
         }
     }
 
-    let explicit = project_meta
-        .get("build_command")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-
-    let cmd: String = match explicit {
-        Some(c) => c.to_string(),
-        None => {
-            let has_npm_build = std::fs::read_to_string(working_dir.join("package.json"))
-                .ok()
-                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-                .and_then(|pkg| pkg.get("scripts")?.get("build").cloned())
-                .is_some();
-            if has_npm_build {
-                "npm run build".to_string()
-            } else if working_dir.join("Cargo.toml").is_file() {
-                "cargo check".to_string()
-            } else {
-                return None;
-            }
-        }
-    };
+    let cmd = resolve_build_command(project_meta, working_dir)?;
 
     let timeout_secs = project_meta
         .get("build_timeout_secs")
@@ -2608,6 +2650,486 @@ fn default_completion_checks(
         "cmd": cmd,
         "timeout_secs": timeout_secs,
     }]))
+}
+
+// ── Acceptance criteria → enforced completion checks (spec-driven, extends #682)
+//
+// spec-kit turns a spec's Success Criteria into checks the model is only
+// *prompted* to honor. Permagent already carries `acceptance_criteria` on a
+// goal (decompose/create_roadmap → metadata), but today they only feed the
+// verifier's LLM prompt — the same "prompt the model" weakness. Here we COMPILE
+// each mechanically-checkable criterion into a `CompletionCheck` the #682
+// verifier RUNS in the goal worktree: done-ness is proven, not claimed.
+//
+// The mapping is deterministic and conservative. A criterion becomes a check
+// ONLY when its text mechanically determines one; anything ambiguous is SKIPPED
+// (logged) rather than turned into a guessed check — a wrong check `error`s and
+// clamps the verdict to Fail, so inventing checks would false-fail correct work.
+//
+// Emits raw JSON matching the verification/checks.rs `CompletionCheck` wire
+// schema (deny_unknown_fields): this lives in the `goose` crate, which cannot
+// depend on `goose-server` where the type is defined, so — like
+// `default_completion_checks` — it emits the wire shape directly. Tests assert
+// the emitted fields are exactly what each check kind accepts.
+
+/// Compile a goal's acceptance criteria into completion checks. Reads criteria
+/// from the structured `acceptance_criteria` array and from an
+/// "Acceptance/Success Criteria" list in the description. Returns the JSON array
+/// for `metadata_json.completion_checks`, or `None` when there are no criteria
+/// or none is mechanically checkable.
+fn checks_from_acceptance(
+    card_meta: &serde_json::Value,
+    description: &str,
+    project_meta: &serde_json::Value,
+    working_dir: &std::path::Path,
+) -> Option<serde_json::Value> {
+    let criteria = collect_acceptance_criteria(card_meta, description);
+    if criteria.is_empty() {
+        return None;
+    }
+
+    let mut checks: Vec<serde_json::Value> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    for c in &criteria {
+        match criterion_to_check(c, project_meta, working_dir) {
+            Some(check) => checks.push(check),
+            None => skipped.push(c.clone()),
+        }
+    }
+
+    if !skipped.is_empty() {
+        tracing::info!(
+            target: "permagentd::brain",
+            "Acceptance criteria not mechanically checkable — SKIPPED (no false check seeded): {:?}",
+            skipped
+        );
+    }
+
+    if checks.is_empty() {
+        None
+    } else {
+        Some(serde_json::Value::Array(checks))
+    }
+}
+
+/// Gather acceptance criteria from `metadata_json.acceptance_criteria` and from
+/// an "Acceptance/Success Criteria" list in the goal description. Order-
+/// preserving, deduped, blank entries dropped.
+fn collect_acceptance_criteria(card_meta: &serde_json::Value, description: &str) -> Vec<String> {
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(arr) = card_meta
+        .get("acceptance_criteria")
+        .and_then(|v| v.as_array())
+    {
+        candidates.extend(
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.trim().to_string()),
+        );
+    }
+    candidates.extend(parse_criteria_from_description(description));
+
+    let mut seen: HashSet<String> = HashSet::new();
+    candidates
+        .into_iter()
+        .filter(|s| !s.is_empty() && seen.insert(s.clone()))
+        .collect()
+}
+
+/// Extract criteria from a description ONLY under an explicit
+/// "Acceptance Criteria" / "Success Criteria" heading, reading the list items
+/// that follow. Conservative by design: no heading ⇒ nothing parsed (free prose
+/// is never mined for checks).
+fn parse_criteria_from_description(description: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut in_section = false;
+    for raw in description.lines() {
+        let line = raw.trim();
+        let heading = line
+            .trim_start_matches('#')
+            .trim()
+            .trim_end_matches(':')
+            .trim()
+            .to_ascii_lowercase();
+        if heading == "acceptance criteria"
+            || heading == "success criteria"
+            || heading == "acceptance"
+        {
+            in_section = true;
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        if line.is_empty() {
+            continue; // tolerate blank lines between list items
+        }
+        match strip_list_marker(line) {
+            Some(item) if !item.is_empty() => out.push(item),
+            _ => break, // a non-list line closes the section
+        }
+    }
+    out
+}
+
+/// Strip a leading list marker (`-`, `*`, `+`, optional `[ ]`/`[x]` checkbox, or
+/// `N.`/`N)`), returning the item text. `None` when the line is not a list item.
+fn strip_list_marker(line: &str) -> Option<String> {
+    for m in ['-', '*', '+'] {
+        if let Some(rest) = line.strip_prefix(m) {
+            let rest = rest.trim_start();
+            let rest = rest
+                .strip_prefix("[ ]")
+                .or_else(|| rest.strip_prefix("[x]"))
+                .or_else(|| rest.strip_prefix("[X]"))
+                .unwrap_or(rest);
+            return Some(rest.trim().to_string());
+        }
+    }
+    let digits = line.chars().take_while(|c| c.is_ascii_digit()).count();
+    if digits > 0 && matches!(line.chars().nth(digits), Some('.') | Some(')')) {
+        let rest: String = line.chars().skip(digits + 1).collect();
+        return Some(rest.trim().to_string());
+    }
+    None
+}
+
+/// Map ONE acceptance criterion to a completion check, or `None` if its text
+/// does not mechanically determine one. Most-specific patterns first.
+fn criterion_to_check(
+    criterion: &str,
+    project_meta: &serde_json::Value,
+    working_dir: &std::path::Path,
+) -> Option<serde_json::Value> {
+    let text = criterion.trim();
+    let lower = text.to_ascii_lowercase();
+    try_grep_absent(text, &lower)
+        .or_else(|| try_http_assert(text, &lower))
+        .or_else(|| try_file_exists(text, &lower))
+        .or_else(|| try_command(text, &lower, project_meta, working_dir))
+}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|n| haystack.contains(*n))
+}
+
+/// `command_exit_zero` from a criterion: an explicit backticked command paired
+/// with a success verb, or a generic "builds/compiles" statement mapped to the
+/// detected build command (never guessed — unknown stack ⇒ skip).
+fn try_command(
+    text: &str,
+    lower: &str,
+    project_meta: &serde_json::Value,
+    working_dir: &std::path::Path,
+) -> Option<serde_json::Value> {
+    const SUCCESS_VERBS: &[&str] = &[
+        "passes",
+        "pass",
+        "succeeds",
+        "succeed",
+        "exits 0",
+        "exit 0",
+        "exits zero",
+        "returns 0",
+        "is green",
+        "runs clean",
+        "runs cleanly",
+        "builds",
+        "compiles",
+        "works",
+    ];
+    if contains_any(lower, SUCCESS_VERBS) {
+        if let Some(bt) = first_backtick(text) {
+            let cmd = bt.trim();
+            if is_command_like(cmd) {
+                return Some(command_check(cmd));
+            }
+        }
+    }
+
+    const BUILD_PHRASES: &[&str] = &[
+        "builds",
+        "compiles",
+        "build passes",
+        "build succeeds",
+        "compilation succeeds",
+        "build is green",
+    ];
+    if contains_any(lower, BUILD_PHRASES) {
+        if let Some(cmd) = resolve_build_command(project_meta, working_dir) {
+            return Some(command_check(&cmd));
+        }
+    }
+    None
+}
+
+fn command_check(cmd: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "command_exit_zero",
+        "cmd": cmd,
+        "timeout_secs": ACCEPTANCE_CMD_TIMEOUT_SECS,
+    })
+}
+
+/// True when `s` looks like a runnable command (has arguments, or its sole word
+/// is a recognized build/test tool) — not a bare file path in backticks.
+fn is_command_like(s: &str) -> bool {
+    let mut words = s.split_whitespace();
+    let Some(first) = words.next() else {
+        return false;
+    };
+    if words.next().is_some() {
+        return true; // command + arguments
+    }
+    const COMMAND_WORDS: &[&str] = &[
+        "make", "cargo", "npm", "pnpm", "yarn", "go", "python", "python3", "pytest", "tsc",
+        "eslint", "prettier", "gradle", "mvn", "just", "bun", "deno", "ruff", "black", "rustc",
+        "node", "jest", "vitest", "cmake", "ninja", "bash", "sh", "dotnet", "cabal", "stack",
+    ];
+    COMMAND_WORDS.contains(&first)
+}
+
+/// `http_assert` from a criterion naming a path and an expected status, e.g.
+/// "GET /health returns 200". Loopback-only (base_url defaults to 127.0.0.1 in
+/// checks.rs). Methods the verifier cannot run (PUT/DELETE/PATCH/OPTIONS) ⇒ skip.
+fn try_http_assert(text: &str, lower: &str) -> Option<serde_json::Value> {
+    const HTTP_SIGNALS: &[&str] = &[
+        "endpoint", "route", "http", "url", "respond", "returns", "return ", "status", "api",
+        "get ", "post ", "head ",
+    ];
+    if !contains_any(lower, HTTP_SIGNALS) {
+        return None;
+    }
+    let path = first_http_path(text)?;
+    let status = extract_status_code(text)?;
+    let method = detect_http_method(text)?;
+    Some(serde_json::json!({
+        "type": "http_assert",
+        "method": method,
+        "path": path,
+        "status": status,
+    }))
+}
+
+/// The HTTP method to assert. `None` (skip the check) when the criterion names a
+/// method checks.rs cannot run — a seeded check for it would only ever `error`.
+fn detect_http_method(text: &str) -> Option<&'static str> {
+    for tok in text.split_whitespace() {
+        match clean_token(tok).to_ascii_uppercase().as_str() {
+            "GET" => return Some("GET"),
+            "HEAD" => return Some("HEAD"),
+            "POST" => return Some("POST"),
+            "PUT" | "DELETE" | "PATCH" | "OPTIONS" => return None,
+            _ => {}
+        }
+    }
+    Some("GET")
+}
+
+/// `file_exists` from a criterion asserting a file is present or created.
+fn try_file_exists(text: &str, lower: &str) -> Option<serde_json::Value> {
+    const EXIST_SIGNALS: &[&str] = &[
+        "exist",
+        "is created",
+        "are created",
+        "is generated",
+        "created",
+        "creates",
+        "create ",
+        "generated",
+        "written",
+        "present",
+        "added",
+        "produced",
+    ];
+    if !contains_any(lower, EXIST_SIGNALS) {
+        return None;
+    }
+    let path = first_relative_path(text)?;
+    Some(serde_json::json!({
+        "type": "file_exists",
+        "path": path,
+    }))
+}
+
+/// `grep_absent` from a criterion asserting a token is absent from named
+/// file(s), e.g. "no TODO comments remain in src/lib.rs". Requires BOTH an
+/// absence signal + recognizable token AND at least one concrete named path —
+/// grep_absent reads specific files, so a pathless "no TODO" is skipped (there
+/// is nothing to grep) rather than guessed.
+fn try_grep_absent(text: &str, lower: &str) -> Option<serde_json::Value> {
+    const ABSENCE_SIGNALS: &[&str] = &[
+        "no ",
+        "without",
+        "does not contain",
+        "doesn't contain",
+        "removed",
+        "remaining",
+        "remain",
+        " left",
+        "absent",
+        "zero ",
+        "not present",
+        "eliminated",
+        "stripped",
+    ];
+    if !contains_any(lower, ABSENCE_SIGNALS) {
+        return None;
+    }
+    let token = absence_token(text, lower)?;
+    let paths = path_tokens(text);
+    if paths.is_empty() {
+        return None;
+    }
+    Some(serde_json::json!({
+        "type": "grep_absent",
+        "pattern": regex::escape(&token),
+        "paths": paths,
+    }))
+}
+
+/// The token that must be absent: a backticked literal, else a recognized dev
+/// marker (TODO/FIXME/unwrap(/…). `None` when no concrete token is named.
+fn absence_token(text: &str, lower: &str) -> Option<String> {
+    if let Some(bt) = first_backtick(text) {
+        let bt = bt.trim();
+        if !bt.is_empty() && !looks_like_path(bt) {
+            return Some(bt.to_string());
+        }
+    }
+    const MARKERS: &[&str] = &[
+        "TODO",
+        "FIXME",
+        "XXX",
+        "HACK",
+        "todo!",
+        "unimplemented!",
+        "unwrap(",
+        "panic!",
+        "dbg!",
+        "console.log",
+        "debugger",
+        "println!",
+    ];
+    for m in MARKERS {
+        let needle = m.to_ascii_lowercase();
+        if lower.contains(needle.as_str()) {
+            return Some((*m).to_string());
+        }
+    }
+    None
+}
+
+// ── Token / path / status extraction (pure string ops — no &str slicing, so the
+// `clippy::string_slice` restriction lint stays green under `-D warnings`) ──
+
+/// The content between the first pair of backticks, if any.
+fn first_backtick(text: &str) -> Option<&str> {
+    if text.matches('`').count() < 2 {
+        return None;
+    }
+    let inside = text.split('`').nth(1)?;
+    if inside.trim().is_empty() {
+        None
+    } else {
+        Some(inside)
+    }
+}
+
+/// Strip wrapping quotes/brackets and trailing sentence punctuation from a
+/// whitespace-split token, preserving `/` and a leading `.` (so `./x` and
+/// `README.md` survive).
+fn clean_token(tok: &str) -> &str {
+    let t = tok.trim_end_matches(|c: char| matches!(c, ',' | ';' | ':' | '!' | '?' | '.'));
+    t.trim_matches(|c: char| {
+        matches!(
+            c,
+            '`' | '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | '*'
+        )
+    })
+}
+
+const PATH_EXTENSIONS: &[&str] = &[
+    "rs", "toml", "md", "txt", "json", "yaml", "yml", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py",
+    "go", "sh", "bash", "lock", "html", "htm", "css", "scss", "sql", "rb", "java", "kt", "c", "h",
+    "cpp", "hpp", "cc", "cs", "php", "xml", "ini", "cfg", "conf", "env", "proto", "graphql", "svg",
+    "png", "csv", "tsv", "rst", "adoc", "vue", "svelte",
+];
+
+fn has_path_extension(tok: &str) -> bool {
+    match tok.rsplit_once('.') {
+        Some((base, ext)) => {
+            let ext = ext.to_ascii_lowercase();
+            !base.is_empty() && PATH_EXTENSIONS.contains(&ext.as_str())
+        }
+        None => false,
+    }
+}
+
+/// A relative-path-shaped token (a `/`-joined path or a file with a known
+/// extension). Excludes absolute paths and URLs.
+fn looks_like_path(tok: &str) -> bool {
+    if tok.is_empty() || tok.contains("://") {
+        return false;
+    }
+    (tok.contains('/') && !tok.starts_with('/')) || has_path_extension(tok)
+}
+
+fn path_tokens(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .filter_map(|tok| {
+            let t = clean_token(tok);
+            if looks_like_path(t) {
+                Some(t.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn first_relative_path(text: &str) -> Option<String> {
+    path_tokens(text).into_iter().next()
+}
+
+/// The first server-absolute request path (`/...`, not `//...`) in the text.
+fn first_http_path(text: &str) -> Option<String> {
+    text.split_whitespace().find_map(|tok| {
+        let t = clean_token(tok);
+        if t.starts_with('/') && !t.starts_with("//") {
+            Some(t.to_string())
+        } else {
+            None
+        }
+    })
+}
+
+/// The first standalone 3-digit HTTP status (100–599) in the text. Rejects
+/// digit runs glued to letters (e.g. the `200` in `200ms`).
+fn extract_status_code(text: &str) -> Option<u16> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if !chars[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && chars[i].is_ascii_digit() {
+            i += 1;
+        }
+        let before_ok = start == 0 || !chars[start - 1].is_alphanumeric();
+        let after_ok = i >= chars.len() || !chars[i].is_alphanumeric();
+        if i - start == 3 && before_ok && after_ok {
+            let digits: String = chars[start..i].iter().collect();
+            if let Ok(n) = digits.parse::<u16>() {
+                if (100..=599).contains(&n) {
+                    return Some(n);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// The canned approve_review detail used when no deterministic evidence is
@@ -3600,6 +4122,245 @@ mod tests {
             vec!["cmd", "timeout_secs", "type"],
             "exactly the fields command_exit_zero accepts (deny_unknown_fields)"
         );
+    }
+
+    // ── checks_from_acceptance (spec-driven builds — extends #682) ──────────
+
+    /// Sorted JSON object keys, for asserting deny_unknown_fields wire parity.
+    fn sorted_keys(check: &serde_json::Value) -> Vec<String> {
+        let mut keys: Vec<String> = check
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::clone)
+            .collect();
+        keys.sort();
+        keys
+    }
+
+    fn map_one(criterion: &str) -> Option<serde_json::Value> {
+        // No build detection needed for non-command criteria — bare dir is fine.
+        let dir = tempfile::tempdir().unwrap();
+        criterion_to_check(criterion, &serde_json::json!({}), dir.path())
+    }
+
+    #[test]
+    fn build_criterion_maps_to_detected_command_exit_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\n").unwrap();
+        let check =
+            criterion_to_check("The project builds", &serde_json::json!({}), dir.path()).unwrap();
+        assert_eq!(check["type"], "command_exit_zero");
+        assert_eq!(check["cmd"], "cargo check");
+        assert_eq!(check["timeout_secs"], ACCEPTANCE_CMD_TIMEOUT_SECS);
+        assert_eq!(sorted_keys(&check), vec!["cmd", "timeout_secs", "type"]);
+    }
+
+    #[test]
+    fn build_criterion_honors_explicit_project_build_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let check = criterion_to_check(
+            "It compiles cleanly",
+            &serde_json::json!({"build_command": "just build"}),
+            dir.path(),
+        )
+        .unwrap();
+        assert_eq!(check["cmd"], "just build");
+    }
+
+    #[test]
+    fn build_criterion_skipped_when_stack_unknown() {
+        // "builds" with no explicit command and no detectable stack ⇒ never
+        // guess a command (would false-fail).
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            criterion_to_check("The binary builds", &serde_json::json!({}), dir.path()).is_none()
+        );
+    }
+
+    #[test]
+    fn explicit_backticked_command_with_success_verb_maps() {
+        let check = map_one("`cargo test` passes").unwrap();
+        assert_eq!(check["type"], "command_exit_zero");
+        assert_eq!(check["cmd"], "cargo test");
+
+        let check = map_one("the command `make lint` exits 0").unwrap();
+        assert_eq!(check["cmd"], "make lint");
+    }
+
+    #[test]
+    fn backticked_path_is_not_treated_as_a_command() {
+        // A backticked bare file path + "passes" is ambiguous — not a command.
+        assert!(map_one("`src/main.rs` passes").is_none());
+    }
+
+    #[test]
+    fn endpoint_status_maps_to_http_assert() {
+        let check = map_one("GET /health returns 200").unwrap();
+        assert_eq!(check["type"], "http_assert");
+        assert_eq!(check["method"], "GET");
+        assert_eq!(check["path"], "/health");
+        assert_eq!(check["status"], 200);
+        assert_eq!(
+            sorted_keys(&check),
+            vec!["method", "path", "status", "type"]
+        );
+
+        let check = map_one("the POST /api/tasks endpoint responds with 201").unwrap();
+        assert_eq!(check["method"], "POST");
+        assert_eq!(check["path"], "/api/tasks");
+        assert_eq!(check["status"], 201);
+    }
+
+    #[test]
+    fn http_assert_skips_methods_the_verifier_cannot_run() {
+        // checks.rs run_http_check only allows GET/HEAD/POST.
+        assert!(map_one("DELETE /users/1 returns 204").is_none());
+        assert!(map_one("PUT /config responds 200").is_none());
+    }
+
+    #[test]
+    fn status_extraction_rejects_number_glued_to_letters() {
+        assert_eq!(extract_status_code("returns 200."), Some(200));
+        assert_eq!(extract_status_code("code 404,"), Some(404));
+        assert_eq!(extract_status_code("responds within 200ms"), None);
+        assert_eq!(extract_status_code("HTTP 1200 is not a status"), None);
+        assert_eq!(extract_status_code("no numbers here"), None);
+    }
+
+    #[test]
+    fn file_criterion_maps_to_file_exists() {
+        let check = map_one("The file src/config.rs exists").unwrap();
+        assert_eq!(check["type"], "file_exists");
+        assert_eq!(check["path"], "src/config.rs");
+        assert_eq!(sorted_keys(&check), vec!["path", "type"]);
+
+        // Root-level file with an extension, no slash.
+        let check = map_one("A README.md is created at the repo root").unwrap();
+        assert_eq!(check["path"], "README.md");
+    }
+
+    #[test]
+    fn no_marker_in_named_file_maps_to_grep_absent() {
+        let check = map_one("No TODO comments remain in src/lib.rs").unwrap();
+        assert_eq!(check["type"], "grep_absent");
+        assert_eq!(check["pattern"], "TODO");
+        assert_eq!(check["paths"], serde_json::json!(["src/lib.rs"]));
+        assert_eq!(sorted_keys(&check), vec!["paths", "pattern", "type"]);
+    }
+
+    #[test]
+    fn grep_absent_escapes_regex_metacharacters_in_token() {
+        let check = map_one("no `unwrap(` left in src/engine.rs").unwrap();
+        assert_eq!(check["type"], "grep_absent");
+        // `(` must be escaped so the pattern matches the literal token.
+        assert_eq!(check["pattern"], "unwrap\\(");
+    }
+
+    #[test]
+    fn pathless_absence_criterion_is_skipped() {
+        // "no TODO left" names no file — grep_absent has nothing to read, so we
+        // skip rather than invent a path.
+        assert!(map_one("No TODO comments left anywhere").is_none());
+    }
+
+    #[test]
+    fn unmappable_criterion_is_skipped() {
+        assert!(map_one("The UI feels responsive and looks clean").is_none());
+        assert!(map_one("Users are happy with the result").is_none());
+    }
+
+    #[test]
+    fn checks_from_acceptance_reads_structured_field_and_skips_unmappable() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\n").unwrap();
+        let card_meta = serde_json::json!({
+            "acceptance_criteria": [
+                "The project builds",
+                "GET /health returns 200",
+                "docs/guide.md exists",
+                "The design feels polished",  // unmappable → skipped
+            ]
+        });
+        let checks =
+            checks_from_acceptance(&card_meta, "", &serde_json::json!({}), dir.path()).unwrap();
+        let arr = checks.as_array().unwrap();
+        assert_eq!(arr.len(), 3, "three mappable criteria, one skipped");
+        assert_eq!(arr[0]["type"], "command_exit_zero");
+        assert_eq!(arr[1]["type"], "http_assert");
+        assert_eq!(arr[2]["type"], "file_exists");
+    }
+
+    #[test]
+    fn checks_from_acceptance_none_when_no_criteria_or_none_mappable() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(checks_from_acceptance(
+            &serde_json::json!({}),
+            "",
+            &serde_json::json!({}),
+            dir.path()
+        )
+        .is_none());
+        // Criteria present but none mechanically checkable.
+        let card_meta = serde_json::json!({"acceptance_criteria": ["Looks nice", "Feels fast"]});
+        assert!(
+            checks_from_acceptance(&card_meta, "", &serde_json::json!({}), dir.path()).is_none()
+        );
+    }
+
+    #[test]
+    fn checks_from_acceptance_parses_description_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let description = "Do the work.\n\n\
+             ## Acceptance Criteria\n\
+             - `README.md` exists\n\
+             - No FIXME remains in src/main.rs\n\
+             \n\
+             ## Notes\n\
+             - this line is not a criterion (endpoint /x returns 500)\n";
+        let checks = checks_from_acceptance(
+            &serde_json::json!({}),
+            description,
+            &serde_json::json!({}),
+            dir.path(),
+        )
+        .unwrap();
+        let arr = checks.as_array().unwrap();
+        // The two items under the heading map; the item under "## Notes" is
+        // outside the section and ignored.
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["type"], "file_exists");
+        assert_eq!(arr[0]["path"], "README.md");
+        assert_eq!(arr[1]["type"], "grep_absent");
+        assert_eq!(arr[1]["pattern"], "FIXME");
+    }
+
+    #[test]
+    fn collect_acceptance_dedupes_across_sources() {
+        let card_meta = serde_json::json!({"acceptance_criteria": ["A builds", "A builds"]});
+        let out = collect_acceptance_criteria(&card_meta, "");
+        assert_eq!(out, vec!["A builds".to_string()]);
+    }
+
+    #[test]
+    fn strip_list_marker_handles_bullets_checkboxes_and_numbers() {
+        assert_eq!(strip_list_marker("- foo").as_deref(), Some("foo"));
+        assert_eq!(strip_list_marker("* bar").as_deref(), Some("bar"));
+        assert_eq!(strip_list_marker("- [ ] task").as_deref(), Some("task"));
+        assert_eq!(strip_list_marker("1. first").as_deref(), Some("first"));
+        assert_eq!(strip_list_marker("12) twelfth").as_deref(), Some("twelfth"));
+        assert_eq!(strip_list_marker("not a list item"), None);
+    }
+
+    #[test]
+    fn looks_like_path_excludes_urls_and_absolute_paths() {
+        assert!(looks_like_path("src/main.rs"));
+        assert!(looks_like_path("README.md"));
+        assert!(looks_like_path("http.rs")); // a file that happens to start "http"
+        assert!(!looks_like_path("https://example.com/x"));
+        assert!(!looks_like_path("/health")); // server path, not a repo file
+        assert!(!looks_like_path("e.g.")); // ".g" is not a code extension
+        assert!(!looks_like_path("word"));
     }
 
     async fn test_pool() -> sqlx::Pool<sqlx::Sqlite> {
