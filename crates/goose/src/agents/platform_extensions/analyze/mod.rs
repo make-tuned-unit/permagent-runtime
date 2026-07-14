@@ -205,6 +205,44 @@ impl AnalyzeClient {
     }
 }
 
+/// A persisted **code map**: the rendered directory/symbol overview plus the
+/// count of files that parsed into it — what a caller reports as "indexed N
+/// files".
+pub struct CodeMap {
+    /// Rendered map text — byte-identical to the `analyze` tool's directory
+    /// (structure) mode for the same root and depth.
+    pub text: String,
+    /// Files that parsed into the map (matches the map header's own count).
+    pub files: usize,
+}
+
+/// Build a project **code map** for durable persistence: the same
+/// directory-structure overview the `analyze` tool renders for a directory (a
+/// file tree with per-file LOC / function / class digests), returned as a plain
+/// `String` instead of streamed to a transcript.
+///
+/// Reuses the tool's own collect → parallel-parse → format pipeline (identical
+/// to the private `structure_mode`) so the stored map is byte-identical to what
+/// the agent sees interactively. `max_depth` follows the tool's semantics
+/// (0 = unlimited); [`ignore::WalkBuilder`] honors `.gitignore` / hidden-file
+/// rules, so build artifacts (`node_modules`, `target`, `.git`, …) are excluded
+/// without extra config. The tool's transcript size guard
+/// ([`format::check_size`]) is intentionally *not* applied — a persisted memory
+/// is not a transcript, and the caller owns any truncation policy.
+pub fn build_code_map(root: &Path, max_depth: u32) -> CodeMap {
+    let files = AnalyzeClient::collect_files(root, max_depth);
+    let total_files = files.len();
+    let analyses: Vec<FileAnalysis> = files
+        .par_iter()
+        .filter_map(|f| AnalyzeClient::analyze_file(f))
+        .collect();
+    let text = format::format_structure(&analyses, root, max_depth, total_files);
+    CodeMap {
+        files: analyses.len(),
+        text,
+    }
+}
+
 #[async_trait]
 impl McpClientTrait for AnalyzeClient {
     async fn list_tools(
@@ -437,5 +475,29 @@ fn helper() { validate(0); }
         let big = "x".repeat(60_000);
         assert!(format::check_size(&big, false).is_err());
         assert!(format::check_size(&big, true).is_ok());
+    }
+
+    #[test]
+    fn build_code_map_reuses_structure_pass() {
+        let tmp = tempdir().unwrap();
+        fs::write(
+            tmp.path().join("lib.rs"),
+            "use std::io;\nfn read() {}\nfn write() {}\nstruct Buffer;\n",
+        )
+        .unwrap();
+        fs::write(
+            tmp.path().join("app.py"),
+            "import os\nclass App:\n    pass\ndef main():\n    pass\n",
+        )
+        .unwrap();
+
+        let map = build_code_map(tmp.path(), 0);
+        // Both supported files parsed into the map.
+        assert_eq!(map.files, 2);
+        // The persisted text is the same structure overview the tool renders to
+        // a transcript — so a stored code map reads identically to a live one.
+        assert!(map.text.contains("2 files"));
+        assert!(map.text.contains("lib.rs"));
+        assert!(map.text.contains("app.py"));
     }
 }
