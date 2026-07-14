@@ -520,18 +520,18 @@ mod tests {
     #[test]
     fn signals_from_cards_counts_shipped_active_and_recency() {
         let now = "2026-07-14T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
-        let columns = vec![
+        let columns = [
             col("c_done", "complete"),
             col("c_prog", "in_progress"),
             col("c_triage", "triage"),
         ];
-        let goals = vec![
+        let goals = [
             card("g1", "goal", "c_done", "2026-07-01 00:00:00"),
             card("g2", "goal", "c_done", "2026-07-01 00:00:00"),
             card("g3", "goal", "c_prog", "2026-07-01 00:00:00"),
             card("g4", "goal", "c_triage", "2026-07-01 00:00:00"), // neither
         ];
-        let posts = vec![
+        let posts = [
             card("p1", "social_post", "c_prog", "2026-07-10 00:00:00"), // 4d ago
             card("p2", "social_post", "c_prog", "2026-07-01 00:00:00"), // older
         ];
@@ -546,7 +546,7 @@ mod tests {
     fn signals_from_cards_handles_rfc3339_timestamps() {
         // A post whose created_at was rewritten by the update trigger (RFC3339).
         let now = "2026-07-14T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
-        let posts = vec![card("p1", "social_post", "c", "2026-07-12T09:30:00Z")];
+        let posts = [card("p1", "social_post", "c", "2026-07-12T09:30:00Z")];
         let s = signals_from_cards(&posts, &[], &[], now);
         assert_eq!(s.posts, 1);
         assert_eq!(s.days_since_last_post, Some(1));
