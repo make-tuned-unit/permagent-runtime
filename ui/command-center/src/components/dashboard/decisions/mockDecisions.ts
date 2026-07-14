@@ -113,6 +113,25 @@ const PENDING: Decision[] = [
     payload: { reason: 'stuck' },
     created_at: minutesAgo(48),
   }),
+  // Draft-carrying proposal — exercises "approve with edits" (payload.draft):
+  // revise the text and accept (answer='edit'); the daemon learns the
+  // draft→revision delta (edit-as-training). Fixture keeps `detail` == `draft`
+  // so the edit box shows exactly what the user is revising.
+  openDecision({
+    id: 'dec-004b-draft',
+    kind: 'automation_proposal',
+    project_id: 'proj-permagent',
+    rank: 0.68,
+    headline: 'Automate your morning git sync?',
+    detail: "You've run `git status && git pull` 3 times this week.",
+    payload: {
+      normalized_command: 'git status && git pull',
+      occurrence_count: 3,
+      exemplars: ['git status && git pull'],
+      draft: "You've run `git status && git pull` 3 times this week.",
+    },
+    created_at: minutesAgo(44),
+  }),
   // ── Filler approvals to exercise the 10-item cap + "+M more" ──
   ...[
     ['dec-005', 'Ship the change: clearer error words in the daemon log', 41],
@@ -342,7 +361,11 @@ export const mockDecisionsClient: DecisionsClient = {
     const effect =
       d.kind === 'approve_review' && body.answer === 'approve'
         ? 'goal approved: Review → Complete'
-        : null;
+        : d.kind === 'automation_proposal' && body.answer === 'edit'
+          ? 'automation proposal approved with edits'
+          : d.kind === 'automation_proposal' && body.answer === 'approve'
+            ? 'automation proposal approved'
+            : null;
     return { decision: done, effect, effect_error: null };
   },
 

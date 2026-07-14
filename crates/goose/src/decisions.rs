@@ -24,7 +24,10 @@ pub const ACTOR_HENRY: &str = "henry-policy";
 pub const ACTOR_SYSTEM: &str = "system";
 
 const VALID_ACTORS: &[&str] = &[ACTOR_JESSE, ACTOR_HENRY, ACTOR_SYSTEM];
-const VALID_ANSWERS: &[&str] = &["approve", "reject", "choice", "input"];
+// `edit` = approve-with-edits: an acceptance that ALSO carries a revised draft
+// in `answer_input` (the original lives in `payload.draft`). The delta is
+// captured as Brain training by `decision_inbox::learn` (edit-as-training).
+const VALID_ANSWERS: &[&str] = &["approve", "reject", "choice", "input", "edit"];
 
 // ── Typed payloads (S2) ─────────────────────────────────────────────────────
 
@@ -104,6 +107,12 @@ pub struct AutomationProposalPayload {
     pub occurrence_count: u64,
     #[serde(default)]
     pub exemplars: Vec<String>,
+    /// The agent-drafted proposal text shown to the user, carried so an
+    /// approve-with-edits (`answer='edit'`) can diff it against the user's
+    /// revision (edit-as-training, `decision_inbox::learn`). Optional: the
+    /// anti-nag flywheel and plain approve/reject never read it.
+    #[serde(default)]
+    pub draft: Option<String>,
 }
 
 /// One proposed field in an `enrichment_proposal` (#495 slice 4). The
@@ -723,7 +732,7 @@ pub async fn answer_decision(
     }
     if !VALID_ANSWERS.contains(&answer.answer.as_str()) {
         return Err(AnswerError::Invalid(format!(
-            "answer must be one of approve|reject|choice|input, got '{}'",
+            "answer must be one of approve|reject|choice|input|edit, got '{}'",
             answer.answer
         )));
     }
@@ -784,6 +793,12 @@ pub async fn answer_decision(
             if answer.answer == "input" && answer.input_text.as_deref().unwrap_or("").is_empty() {
                 return Err(AnswerError::Invalid(
                     "answer 'input' requires input_text".to_string(),
+                ));
+            }
+            // approve-with-edits carries the revised draft in input_text.
+            if answer.answer == "edit" && answer.input_text.as_deref().unwrap_or("").is_empty() {
+                return Err(AnswerError::Invalid(
+                    "answer 'edit' requires input_text (the revised draft)".to_string(),
                 ));
             }
         }
@@ -1425,6 +1440,114 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(answered.answer_choice_id.as_deref(), Some("blue"));
+    }
+
+    // ── approve-with-edits (edit-as-training) ──
+
+    fn draft_proposal() -> NewDecision {
+        NewDecision {
+            kind: "automation_proposal".to_string(),
+            project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+            headline: Some("Automate your morning git sync?".to_string()),
+            detail: Some("You've run `git status && git pull` 3 times.".to_string()),
+            payload: serde_json::json!({
+                "normalized_command": "git status && git pull",
+                "occurrence_count": 3,
+                "exemplars": ["git status && git pull"],
+                "draft": "git status && git pull",
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn draft_field_is_accepted_not_coerced_to_malformed() {
+        let pool = test_pool().await;
+        let d = create_decision(&pool, draft_proposal()).await.unwrap();
+        assert_eq!(
+            d.kind, "automation_proposal",
+            "payload.draft must not trip deny_unknown_fields"
+        );
+        assert_eq!(
+            d.payload["draft"],
+            serde_json::json!("git status && git pull")
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_answer_stores_revised_input_and_is_accepted() {
+        let pool = test_pool().await;
+        let d = create_decision(&pool, draft_proposal()).await.unwrap();
+
+        let ans = DecisionAnswer {
+            answer: "edit".to_string(),
+            input_text: Some("git status && git pull --rebase".to_string()),
+            ..Default::default()
+        };
+        let (answered, proof) = answer_decision(&pool, &d.id, &ans, ACTOR_JESSE)
+            .await
+            .unwrap();
+        assert_eq!(answered.status, "answered");
+        assert_eq!(answered.answer.as_deref(), Some("edit"));
+        assert_eq!(
+            answered.answer_input.as_deref(),
+            Some("git status && git pull --rebase"),
+            "the revised draft is stored in answer_input"
+        );
+        // The original draft is untouched in the payload — the delta is diffable.
+        assert_eq!(
+            answered.payload["draft"],
+            serde_json::json!("git status && git pull")
+        );
+        assert_eq!(proof.answer(), "edit");
+    }
+
+    #[tokio::test]
+    async fn edit_answer_requires_input_text() {
+        let pool = test_pool().await;
+        let d = create_decision(&pool, draft_proposal()).await.unwrap();
+        // An edit with no revision has nothing to accept or learn.
+        let ans = DecisionAnswer {
+            answer: "edit".to_string(),
+            ..Default::default()
+        };
+        let err = answer_decision(&pool, &d.id, &ans, ACTOR_JESSE)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AnswerError::Invalid(_)),
+            "edit without input_text must be Invalid: {:?}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_answer_rejected_on_choice_kind() {
+        let pool = test_pool().await;
+        let req = NewDecision {
+            kind: "choice".to_string(),
+            headline: Some("Pick a colour for the new room".to_string()),
+            detail: Some("technical context".to_string()),
+            payload: serde_json::json!({
+                "question": "Which colour?",
+                "options": [
+                    {"id": "red", "label": "Red"},
+                    {"id": "blue", "label": "Blue"}
+                ]
+            }),
+            ..Default::default()
+        };
+        let d = create_decision(&pool, req).await.unwrap();
+        // You pick a choice; you don't edit it.
+        let ans = DecisionAnswer {
+            answer: "edit".to_string(),
+            input_text: Some("purple".to_string()),
+            ..Default::default()
+        };
+        let err = answer_decision(&pool, &d.id, &ans, ACTOR_JESSE)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AnswerError::Invalid(_)));
     }
 
     // ── S3: audit hash chain ──
