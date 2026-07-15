@@ -83,7 +83,8 @@ mod tests {
             .expect("built-in coding recipe should resolve by name");
 
         // Pins the coding toolset explicitly: developer = edit + search + shell
-        // + tree; analyze = the code-structure map.
+        // + tree; analyze = the code-structure map; summon = the subagent seam
+        // for tiered cost-routing (delegate mechanical sub-work to a cheaper tier).
         assert!(
             rf.content.contains("name: developer"),
             "coding harness must enable the developer extension"
@@ -92,9 +93,13 @@ mod tests {
             rf.content.contains("name: analyze"),
             "coding harness must enable the analyze extension"
         );
+        assert!(
+            rf.content.contains("name: summon"),
+            "coding harness must enable the summon extension for tiered subagent routing"
+        );
 
-        // Parses into a valid recipe with a coding system prompt and two pinned
-        // extensions.
+        // Parses into a valid recipe with a coding system prompt and three
+        // pinned extensions.
         let (recipe, _) =
             parse_recipe_content(&rf.content, None).expect("built-in coding recipe should parse");
         assert_eq!(recipe.title, "Permagent Coding Harness");
@@ -104,8 +109,8 @@ mod tests {
         );
         assert_eq!(
             recipe.extensions.map(|e| e.len()).unwrap_or_default(),
-            2,
-            "coding harness pins developer + analyze"
+            3,
+            "coding harness pins developer + analyze + summon"
         );
     }
 }

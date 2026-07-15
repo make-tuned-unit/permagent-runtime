@@ -33,16 +33,21 @@
 pub mod budget;
 pub mod cache;
 pub mod mesh;
+pub mod packs;
 pub mod tier;
 
 pub use budget::{
     budget_verdict, BudgetBand, BudgetCeilings, BudgetConfig, BudgetScope, BudgetVerdict,
 };
 pub use cache::{
-    model_change_breaks_cache, prefix_is_cache_stable, PrefixSegment, CANONICAL_PREFIX,
+    may_swap_main_loop_model, model_change_breaks_cache, prefix_is_cache_stable, PrefixSegment,
+    CANONICAL_PREFIX,
 };
 pub use mesh::{
     gate as mesh_gate, MeshGateInputs, MeshIneligible, MeshRoute, MeshWorkload, PoolHealth,
+};
+pub use packs::{
+    load_packs, packs_from, resolve as resolve_model, role_for_tier, ModelPack, ModelPacks, Role,
 };
 pub use tier::{classify, minimum_tier, next_after, Attempt, Next, TaskClass, TaskSignals, Tier};
 
