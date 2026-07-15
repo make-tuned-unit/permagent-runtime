@@ -413,7 +413,9 @@ fn first_nonblank<'a>(lines: &[&'a str]) -> &'a str {
 }
 
 fn leading_ws(line: &str) -> &str {
-    &line[..line.len() - line.trim_start().len()]
+    // `split_at` (not `&line[..n]`) to satisfy clippy::string_slice; `n` is a valid
+    // char boundary because it is the byte length of the whitespace `trim_start` removed.
+    line.split_at(line.len() - line.trim_start().len()).0
 }
 
 /// Strip a single trailing line ending (`\n`, `\r\n`) from a `split_inclusive('\n')` segment.
@@ -425,9 +427,10 @@ fn strip_eol(seg: &str) -> &str {
 /// Collapse internal runs of whitespace to single spaces and trim trailing
 /// whitespace, but preserve the exact leading indentation.
 fn normalize_ws_keep_indent(line: &str) -> String {
-    let trimmed = line.trim_start();
-    let indent = &line[..line.len() - trimmed.len()];
-    let body = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
+    // `split_at` at the whitespace/rest boundary avoids clippy::string_slice; the
+    // split point is the byte length of the leading whitespace (a valid boundary).
+    let (indent, rest) = line.split_at(line.len() - line.trim_start().len());
+    let body = rest.split_whitespace().collect::<Vec<_>>().join(" ");
     format!("{indent}{body}")
 }
 
