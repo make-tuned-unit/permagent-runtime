@@ -1626,7 +1626,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
             rank          REAL,
             status        TEXT NOT NULL DEFAULT 'open'
                           CHECK (status IN ('open','answered','expired','superseded')),
-            answer        TEXT CHECK (answer IN ('approve','reject','choice','input')),
+            answer        TEXT CHECK (answer IN ('approve','reject','choice','input','edit')),
             answer_note   TEXT,
             answer_choice_id TEXT,
             answer_input  TEXT,
@@ -1662,22 +1662,25 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
     }
 
     // Widen the `kind` CHECK to admit 'automation_proposal' (Initiative → Decision
-    // Inbox) and 'enrichment_proposal' (the Enricher, #495 slice 4). SQLite cannot
-    // ALTER a CHECK, so an older table is rebuilt in place. FK-safe: nothing
+    // Inbox) and 'enrichment_proposal' (the Enricher, #495 slice 4), AND the
+    // `answer` CHECK to admit 'edit' (approve-with-edits / edit-as-training). SQLite
+    // cannot ALTER a CHECK, so an older table is rebuilt in place. FK-safe: nothing
     // references `decisions` via a foreign key (decision_audit stores a plain TEXT
     // id; the complete-guard trigger resolves by name after the rename). Gated on
-    // the newest kind in the constraint text, so it runs at most once — a table
-    // missing 'automation_proposal' also misses 'enrichment_proposal' and this one
-    // rebuild widens for both.
+    // the widened constraints' marker tokens, so it runs at most once per widening:
+    // a table missing 'enrichment_proposal' OR missing the 'edit' answer value is
+    // rebuilt to the current DDL, which widens all of them together (an old-answer
+    // DB only ever holds the four legacy values, all valid under the new CHECK, so
+    // the row copy is lossless).
     let decisions_ddl: Option<String> =
         sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE type='table' AND name='decisions'")
             .fetch_optional(&mut *tx)
             .await?;
     if decisions_ddl
-        .map(|sql| !sql.contains("enrichment_proposal"))
+        .map(|sql| !sql.contains("enrichment_proposal") || !sql.contains("'edit'"))
         .unwrap_or(false)
     {
-        info!("Widening decisions.kind CHECK for 'enrichment_proposal' (in-place rebuild)");
+        info!("Widening decisions kind/answer CHECK constraints (in-place rebuild)");
         // Indexes on the old table are dropped with it; recreated below.
         sqlx::query("DROP INDEX IF EXISTS idx_decisions_open")
             .execute(&mut *tx)
@@ -1699,7 +1702,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
                 rank          REAL,
                 status        TEXT NOT NULL DEFAULT 'open'
                               CHECK (status IN ('open','answered','expired','superseded')),
-                answer        TEXT CHECK (answer IN ('approve','reject','choice','input')),
+                answer        TEXT CHECK (answer IN ('approve','reject','choice','input','edit')),
                 answer_note   TEXT,
                 answer_choice_id TEXT,
                 answer_input  TEXT,
@@ -3061,5 +3064,113 @@ mod inbox_schema_tests {
             .unwrap();
         migrate_v18_to_v19(&fresh).await.unwrap();
         assert_eq!(current_version(&fresh).await, 19);
+    }
+
+    /// approve-with-edits (`answer='edit'`) widening: an existing DB whose
+    /// decisions table predates 'edit' — even one already carrying the widened
+    /// `kind` CHECK — must be rebuilt in place by `apply_decision_inbox_schema`
+    /// so `answer='edit'` is accepted, existing rows copied losslessly, and the
+    /// rebuild idempotent on re-run. This is the migration Phase 0 missed: the
+    /// `answer` column carries a CHECK constraint, so the reused-column design
+    /// still needed a schema widening.
+    #[tokio::test]
+    async fn decisions_answer_check_widens_for_edit_in_place() {
+        let pool = mem_pool().await;
+        init_spectral_db(&pool).await.unwrap();
+
+        // Downgrade decisions to a pre-'edit' shape: the widened `kind` CHECK
+        // (already has enrichment_proposal) but the OLD `answer` CHECK — exactly
+        // the case the broadened rebuild gate must still catch.
+        sqlx::query("DROP TABLE decisions")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE decisions (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL CHECK (kind IN
+                    ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','malformed')),
+                goal_id TEXT REFERENCES cards(id) ON DELETE SET NULL,
+                project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+                tier INTEGER NOT NULL CHECK (tier IN (0,1,2)),
+                headline TEXT NOT NULL CHECK (length(headline) > 0 AND length(headline) <= 80),
+                detail TEXT NOT NULL CHECK (length(detail) > 0),
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                rank REAL,
+                status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','answered','expired','superseded')),
+                answer TEXT CHECK (answer IN ('approve','reject','choice','input')),
+                answer_note TEXT, answer_choice_id TEXT, answer_input TEXT,
+                acted_by TEXT CHECK (acted_by IN ('jesse','henry-policy','system')),
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                resolved_at TEXT,
+                CHECK (status != 'answered'
+                       OR (answer IS NOT NULL AND acted_by IS NOT NULL AND resolved_at IS NOT NULL))
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // A legacy answered row (NULL goal/project → no FK dependency).
+        sqlx::query(
+            "INSERT INTO decisions (id, kind, tier, headline, detail, status, answer, acted_by, resolved_at)
+             VALUES ('d-legacy', 'choice', 2, 'Legacy answered row', 'detail', 'answered',
+                     'choice', 'jesse', '2026-01-01T00:00:00.000Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Precondition: the old CHECK rejects 'edit'.
+        assert!(
+            sqlx::query("UPDATE decisions SET answer='edit' WHERE id='d-legacy'")
+                .execute(&pool)
+                .await
+                .is_err(),
+            "old answer CHECK must reject 'edit' before the widening runs"
+        );
+
+        // The idempotent decision-inbox schema must rebuild to widen `answer`.
+        apply_decision_inbox_schema(&pool).await.unwrap();
+
+        // The constraint now admits 'edit'...
+        let ddl: String = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='decisions'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            ddl.contains("'edit'"),
+            "answer CHECK must be widened to admit 'edit': {ddl}"
+        );
+
+        // ...the legacy row survived the rebuild losslessly...
+        let survived: String =
+            sqlx::query_scalar("SELECT headline FROM decisions WHERE id='d-legacy'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(survived, "Legacy answered row");
+
+        // ...and an edit answer is now accepted by the constraint.
+        sqlx::query(
+            "UPDATE decisions SET answer='edit', answer_input='revised' WHERE id='d-legacy'",
+        )
+        .execute(&pool)
+        .await
+        .expect("widened CHECK must accept answer='edit'");
+
+        // Idempotent: a second run neither errors nor rebuilds away the edit.
+        apply_decision_inbox_schema(&pool).await.unwrap();
+        let still_edit: String =
+            sqlx::query_scalar("SELECT answer FROM decisions WHERE id='d-legacy'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            still_edit, "edit",
+            "the edited row is stable across a re-run"
+        );
     }
 }
