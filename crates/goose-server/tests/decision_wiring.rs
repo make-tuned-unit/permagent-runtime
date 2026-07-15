@@ -26,7 +26,6 @@ use tower::ServiceExt;
 use permagent::cards::{self, CreateCard};
 use permagent::decisions::{self, NewDecision};
 use permagent::projects::PERSONAL_PROJECT_ID;
-use serial_test::serial;
 
 async fn body_json(resp: axum::response::Response) -> serde_json::Value {
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
@@ -48,11 +47,12 @@ fn post_json(uri: &str, body: serde_json::Value) -> Request<Body> {
         .unwrap()
 }
 
-// #[serial]: this test mutates the process-global PERMAGENT_PATH_ROOT env var
-// and shared startup singletons; without serialization it races other AppState
-// tests (flaky assertions from cross-test DB/path bleed).
+// One test per integration binary (own process): PERMAGENT_PATH_ROOT and the
+// startup singletons are per-process, so #[serial] had nothing to serialize
+// against here — it was a no-op (superseding #695). The real flake was a
+// server-side lock-upgrade race in the resume effect
+// (goal_transition::advance_goal_checked), fixed there with BEGIN IMMEDIATE.
 #[tokio::test(flavor = "multi_thread")]
-#[serial]
 async fn integration_wiring_through_router_and_startup() {
     // Throwaway data root for the whole process (single test in this binary).
     let tmp = tempfile::tempdir().unwrap();
