@@ -5,7 +5,7 @@
 //! Subcommands:
 //! - `run`      — execute tasks under the given tier(s) and print/write a report.
 //! - `plan`     — print the exact `permagent run` invocations without executing
-//!                (safe anywhere; no models are called).
+//!   (safe anywhere; no models are called).
 //! - `list`     — list the bundled tasks.
 //! - `validate` — load and validate every task spec.
 
