@@ -128,28 +128,48 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: browser::EXTENSION_NAME,
                 display_name: "Browser",
-                description: "Drive and read the web: open any site in the in-app browser \
-                              (open_website), fetch a public page's readable text without a tab \
-                              (read_webpage), and read the page the user currently has open \
-                              (read_browser_content)",
+                description: "Drive, read, and act on the web: open any site in the in-app \
+                              browser (open_website), fetch a public page's readable text without \
+                              a tab (read_webpage), read the page the user currently has open \
+                              (read_browser_content), list a page's interactive elements as \
+                              stable refs (get_page_snapshot), and click, type, or select on them \
+                              (act_on_page)",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
                 why_it_matters:
                     "When the user says 'go to BBC and read me the homepage', open_website shows \
                      it to them and read_webpage gives you the text to read aloud — no pasting, \
-                     no guessing. read_browser_content covers whatever tab they already have open.",
-                teaching: &[crate::agents::self_knowledge::TeachingStep {
-                    title: "Browse together",
-                    body: "Offer it live: open a site the user cares about with open_website, \
-                           then read_webpage the same URL and give them the highlights out \
-                           loud. Works by voice too — this is the hands-free news flow.",
-                    open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
-                        tab: "Build",
-                        section: Some("browser"),
-                    }),
-                    confirm: None,
-                }],
+                     no guessing. read_browser_content covers whatever tab they already have \
+                     open. And when they need something DONE on a page — fill a form, click a \
+                     button, pick an option — get_page_snapshot lists the interactive elements \
+                     and act_on_page clicks, types, or selects, so you drive the page instead of \
+                     only reading it.",
+                teaching: &[
+                    crate::agents::self_knowledge::TeachingStep {
+                        title: "Browse together",
+                        body: "Offer it live: open a site the user cares about with open_website, \
+                               then read_webpage the same URL and give them the highlights out \
+                               loud. Works by voice too — this is the hands-free news flow.",
+                        open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                            tab: "Build",
+                            section: Some("browser"),
+                        }),
+                        confirm: None,
+                    },
+                    crate::agents::self_knowledge::TeachingStep {
+                        title: "Act on the page, don't just read it",
+                        body: "When a page needs DOING — a search box, a form, a button — call \
+                               get_page_snapshot to see the interactive elements as numbered \
+                               refs, then act_on_page with a ref to click, type, or select. Take \
+                               a fresh snapshot after each act; the page may have changed.",
+                        open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                            tab: "Build",
+                            section: Some("browser"),
+                        }),
+                        confirm: None,
+                    },
+                ],
                 client_factory: |ctx| Box::new(browser::BrowserClient::new(ctx).unwrap()),
             },
         );

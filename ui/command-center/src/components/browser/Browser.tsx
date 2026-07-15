@@ -3,6 +3,7 @@ import { useCommandCenter } from '../../lib/store';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useBrowserContentBridge } from '../../hooks/useBrowserContentBridge';
+import { useBrowserActBridge } from '../../hooks/useBrowserActBridge';
 import {
   FiArrowLeft,
   FiArrowRight,
@@ -125,6 +126,8 @@ export function Browser() {
 
   // Bridge: daemon MCP tool → Tauri webview content extraction → daemon fulfillment
   useBrowserContentBridge(activeTab?.webviewId ?? null);
+  // Bridge: daemon MCP tool → Tauri webview snapshot/act (#649) → daemon fulfillment
+  useBrowserActBridge(activeTab?.webviewId ?? null);
 
   // Initialize Tauri API
   useEffect(() => {

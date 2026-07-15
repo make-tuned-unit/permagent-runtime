@@ -47,6 +47,10 @@ pub struct AppState {
     pub context_builder: Option<Arc<permagent::activity::context_builder::ContextBuilder>>,
     /// Bridge for pending browser content extraction requests.
     pub browser_content_bridge: Arc<crate::routes::browser_content::BrowserContentBridge>,
+    /// Bridge for pending act-on-page snapshot requests (#649).
+    pub browser_snapshot_bridge: Arc<crate::routes::browser_act::SnapshotBridge>,
+    /// Bridge for pending act-on-page act requests (#649).
+    pub browser_act_bridge: Arc<crate::routes::browser_act::ActBridge>,
     /// App catalog — static tab/view descriptions for agent navigation.
     pub app_catalog: Arc<permagent::app_catalog::AppCatalog>,
     /// Voice STT provider (Moonshine via sherpa-onnx in dev, swappable).
@@ -682,6 +686,8 @@ impl AppState {
             browser_content_bridge: Arc::new(
                 crate::routes::browser_content::BrowserContentBridge::new(),
             ),
+            browser_snapshot_bridge: Arc::new(crate::routes::browser_act::SnapshotBridge::new()),
+            browser_act_bridge: Arc::new(crate::routes::browser_act::ActBridge::new()),
             app_catalog,
             voice_stt,
             voice_tts: Arc::new(tokio::sync::RwLock::new(voice_tts)),
