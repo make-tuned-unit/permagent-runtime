@@ -53,6 +53,60 @@ pub use packs::{
 };
 pub use tier::{classify, minimum_tier, next_after, Attempt, Next, TaskClass, TaskSignals, Tier};
 
+/// Self-knowledge descriptor for the **cost optimizer** (#714/#717/#720) — the
+/// tiered router plus the always-on live cost meter that make the coding harness
+/// cost-governed. Co-located with the router core it describes; aggregated by
+/// `crate::agents::self_knowledge::SURFACE_DESCRIPTORS`. Static — the capability
+/// is described without claiming a live spend figure (the meter renders that in
+/// the UI).
+pub const COST_OPTIMIZER_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "cost_optimizer",
+        display_name: "Cost optimizer",
+        category: crate::agents::self_knowledge::FeatureCategory::Surface,
+        what_it_does:
+            "The cost-governance system behind the coding harness: a tiered router picks the \
+             cheapest ADEQUATE model for each unit of work and escalates only when it stumbles. \
+             The interactive main loop stays on one stable model to keep its prompt cache warm, \
+             while mechanical, latency-tolerant sub-work (apply-diff, summarize, grep-triage) is \
+             dispatched to SEPARATE cheaper-tier subagents — Haiku in the cloud or a free \
+             on-device model (Ollama/qwen3, $0) by default, with hard reasoning reserved for a \
+             frontier tier (Opus) and every tier retunable by the operator. A live cost meter is \
+             always on — a cache-aware, single-source running total with a per-call ledger — and \
+             spend caps route any overage to the Decision Inbox for approval",
+        why_it_matters: "It is why running Permagent's own harness is cheaper per outcome than a \
+             subscription, with no surprise bills: you never spend a frontier model on \
+             grep-triage, never trust a free local model with a multi-file refactor, and never \
+             blow past a budget silently. When the user asks what a build will cost or worries \
+             about spend, point them at the live meter and explain that each piece of work is \
+             already routed to the cheapest tier that can do it correctly, escalating only when \
+             needed",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        teaching: &[
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Show the live cost meter",
+                body: "When the user is in or launching the coding harness, point out the live \
+                       cost meter — a running, cache-aware total with a per-call ledger. Reassure \
+                       them there are no hidden bills: they can watch spend accrue in real time \
+                       and it is capped.",
+                open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                    tab: "Build",
+                    section: None,
+                }),
+                confirm: None,
+            },
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Explain the tiers",
+                body: "Explain the cheapest-adequate policy in plain terms: hard reasoning runs \
+                       on a frontier model, the main editing loop on one stable model, and \
+                       mechanical chores on a cheap cloud or a free local model — with every tier \
+                       retunable if they want to trade cost for speed or quality.",
+                open_surface: None,
+                confirm: None,
+            },
+        ],
+    };
+
 /// The full starting-tier decision for one unit of work, honoring BOTH the task
 /// classification (cheapest adequate tier) and the mesh gate (batch, configured,
 /// trusted, and healthy make the pooled tier eligible). This is the single entry

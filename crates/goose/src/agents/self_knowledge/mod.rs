@@ -163,6 +163,8 @@ pub static SURFACE_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::scheduler::RUN_ROSTER_FEATURE,
     crate::agents::platform_extensions::project_manager::GROW_FEATURE,
     crate::agents::platform_extensions::analyze::CODEBASE_INDEX_FEATURE,
+    crate::agents::platform_extensions::project_manager::CODING_HARNESS_FEATURE,
+    crate::cost_router::COST_OPTIMIZER_FEATURE,
 ];
 
 /// Tool ids that are described under another category and therefore skipped in
@@ -529,6 +531,8 @@ mod tests {
         "run_roster",
         "grow",
         "codebase",
+        "coding_harness",
+        "cost_optimizer",
     ];
     /// The Phase-2-v1 lesson set — each must resolve to a descriptor with steps.
     const V1_LESSON_IDS: &[&str] = &["reader", "brain", "scheduler", "persona"];
@@ -773,6 +777,45 @@ mod tests {
         let mut sorted = names.clone();
         sorted.sort();
         assert_eq!(names, sorted);
+    }
+
+    /// The coding harness and its cost optimizer are discoverable in
+    /// self-knowledge: findable by id, rendered into the brief, and carrying
+    /// authored teaching steps so the agent can describe, launch, and GUIDE the
+    /// user through them. This is the capstone of the coding-harness workstream
+    /// (#719/#720) — the agent must KNOW the harness exists and how to use it,
+    /// not just that a Build tab exists.
+    #[test]
+    fn coding_harness_capabilities_are_discoverable_and_teachable() {
+        for (id, display) in [
+            ("coding_harness", "Permagent coding harness"),
+            ("cost_optimizer", "Cost optimizer"),
+        ] {
+            let d = find_descriptor(id)
+                .unwrap_or_else(|| panic!("{id:?} must be discoverable via find_descriptor"));
+            assert_eq!(d.display_name, display);
+            assert_eq!(d.category, FeatureCategory::Surface);
+            assert!(
+                !d.teaching.is_empty(),
+                "{id:?} must carry teaching steps so the agent can guide the user"
+            );
+            let lesson = lesson_for(id).expect("lesson_for must render a known feature");
+            assert!(lesson.contains("Step 1"), "{id:?} lesson must have steps");
+        }
+
+        let brief = SelfKnowledgeBuilder {
+            agent_display_name: "Aria".to_string(),
+            scheduled_job_count: None,
+            dispatchable_workers: Vec::new(),
+        }
+        .build();
+        // The harness + cost optimizer render under Surfaces and self-describe
+        // their headline properties, so the agent can answer "build this with
+        // the Permagent harness" knowing what it is and how to launch it.
+        assert!(brief.contains("**Permagent coding harness**"));
+        assert!(brief.contains("**Cost optimizer**"));
+        assert!(brief.contains("provider-agnostic"));
+        assert!(brief.contains("launched from the Build tab"));
     }
 
     /// **Branding guard (systems fix).** No user-facing capability string may
