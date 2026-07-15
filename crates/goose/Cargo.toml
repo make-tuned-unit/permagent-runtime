@@ -182,6 +182,7 @@ shellexpand = { workspace = true }
 indexmap = "2.14.0"
 ignore = { workspace = true }
 rayon = { workspace = true }
+petgraph = { workspace = true }
 tree-sitter = { workspace = true }
 tree-sitter-go = { workspace = true }
 tree-sitter-java = { workspace = true }
