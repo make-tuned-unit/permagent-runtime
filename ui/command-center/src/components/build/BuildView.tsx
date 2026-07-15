@@ -127,7 +127,11 @@ export function BuildView() {
 
   const handleLaunch = useCallback((project: Project, agent: string) => {
     if (!project.rootPath) return;
-    const label = `${project.slug} · ${agent}`;
+    // `agent` may be a bare CLI name ("claude", "codex") or a full command
+    // (the Permagent harness launches `permagent run --recipe …`). Show only
+    // the program name in the tab label.
+    const display = agent.split(' ')[0] || agent;
+    const label = `${project.slug} · ${display}`;
     terminalRef.current?.createProjectTab(project.rootPath, label, agent);
   }, []);
 
