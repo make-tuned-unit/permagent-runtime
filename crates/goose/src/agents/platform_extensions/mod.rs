@@ -456,7 +456,9 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 unprefixed_tools: true,
                 hidden: false,
                 why_it_matters:
-                    "Turn a repeatable task into a saved automation or schedule the user can rely on.",
+                    "Turn a repeatable task into a saved automation or schedule the user can rely on. \
+                     Saved skills that prove useful are promoted to the front of what you reach for, \
+                     and ones that never fire retire themselves, so the skill library stays honest.",
                 teaching: &[],
                 client_factory: |ctx| {
                     Box::new(recipe_author::RecipeAuthorClient::new(ctx).unwrap())

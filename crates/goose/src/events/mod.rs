@@ -234,6 +234,7 @@ pub enum PermagentEventType {
     SkillProposed,
     SkillSaved,
     SkillTriggered,
+    SkillRetired,
     // Session / Chat
     MessageReceived,
     StreamChunk,
@@ -487,6 +488,18 @@ pub fn skill_triggered(skill_id: &str, execution_id: &str, trigger_type: &str) -
             "skill_id": skill_id,
             "execution_id": execution_id,
             "trigger_type": trigger_type,
+        }),
+    )
+}
+
+/// A saved skill was auto-archived by the retirement sweep for never firing
+/// within the grace window.
+pub fn skill_retired(skill_id: &str, name: &str) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::SkillRetired,
+        serde_json::json!({
+            "skill_id": skill_id,
+            "name": name,
         }),
     )
 }

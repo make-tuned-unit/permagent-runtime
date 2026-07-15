@@ -246,7 +246,7 @@ interface CommandCenterStore {
   setSelectedSkillId: (id: string | null) => void;
   loadSkills: () => Promise<void>;
   deleteSkill: (id: string) => Promise<void>;
-  updateSkill: (id: string, updates: Partial<SkillState>) => Promise<void>;
+  updateSkill: (id: string, updates: Partial<SkillState>) => Promise<boolean>;
 
   // --- Skill proposals ---
   pendingSkillProposal: SkillProposal | null;
@@ -842,8 +842,10 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       set(s => ({
         skills: s.skills.map(sk => sk.id === id ? { ...sk, ...updated } : sk),
       }));
+      return true;
     } catch (e) {
       console.error('Failed to update skill:', e);
+      return false;
     }
   },
 
