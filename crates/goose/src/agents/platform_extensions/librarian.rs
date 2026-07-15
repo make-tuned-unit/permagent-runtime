@@ -77,7 +77,6 @@ CATEGORIES: software development, project management, task execution"#;
 // Ollama configuration
 // ---------------------------------------------------------------------------
 
-pub(crate) const OLLAMA_BASE_URL: &str = "http://localhost:11434";
 /// Default model used when LibrarianSchedule.model is empty or unavailable.
 const DEFAULT_MODEL: &str = "qwen2.5:7b";
 
@@ -426,7 +425,7 @@ pub async fn describe_one(
         }
 
         let raw = call_ollama_streaming(
-            OLLAMA_BASE_URL,
+            &crate::config::ollama_host(),
             LIBRARIAN_SYSTEM_PROMPT,
             &prompt,
             model,

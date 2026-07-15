@@ -78,7 +78,7 @@ const DEFAULT_MIN_CHARS: usize = 16;
 const DEFAULT_MIN_CONFIDENCE: f64 = 0.45;
 
 // ── Local-summary (Ollama) config — mirrors the Librarian's local LLM use ──
-const OLLAMA_BASE_URL: &str = "http://localhost:11434";
+// Endpoint resolved from `crate::config::ollama_host()` (batch-tier configurable).
 const SUMMARY_MODEL: &str = "qwen2.5:7b";
 // The digest is what Henry SAYS to the user, so the summarizer must never
 // state a specific it might get wrong. Exact facts (dates, amounts, IDs, names)
@@ -393,7 +393,7 @@ async fn ollama_summary(text: &str) -> Result<String, String> {
         "options": { "temperature": 0.2, "num_predict": 120 },
     });
     let resp = client
-        .post(format!("{OLLAMA_BASE_URL}/api/generate"))
+        .post(format!("{}/api/generate", crate::config::ollama_host()))
         .json(&body)
         .send()
         .await
