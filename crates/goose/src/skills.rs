@@ -330,6 +330,72 @@ pub async fn record_execution(
     Ok(())
 }
 
+/// Update a skill's editable fields (name and/or description). A `None` field is
+/// left unchanged; `Some` overwrites it. Returns false when no skill matched (an
+/// unknown id or another user's skill) so callers can surface the failure rather
+/// than pretend it saved. Bumps `updated_at`.
+pub async fn update_skill(
+    pool: &Pool<Sqlite>,
+    skill_id: &str,
+    name: Option<&str>,
+    description: Option<&str>,
+) -> Result<bool, String> {
+    let result = sqlx::query(
+        "UPDATE skills
+         SET name = COALESCE(?, name),
+             description = COALESCE(?, description),
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+         WHERE id = ? AND user_id = 'default'",
+    )
+    .bind(name)
+    .bind(description)
+    .bind(skill_id)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(result.rows_affected() > 0)
+}
+
+/// One recorded run of a skill, for the execution-history panel.
+pub struct SkillExecution {
+    pub id: String,
+    pub status: String,
+    pub started_at: String,
+    pub completed_at: Option<String>,
+    pub error_message: Option<String>,
+}
+
+/// List a skill's executions, newest first (capped). Empty when the skill has
+/// never run.
+pub async fn list_skill_executions(
+    pool: &Pool<Sqlite>,
+    skill_id: &str,
+) -> Result<Vec<SkillExecution>, String> {
+    let rows = sqlx::query(
+        "SELECT id, status, started_at, completed_at, error_message
+         FROM skill_executions
+         WHERE skill_id = ? AND user_id = 'default'
+         ORDER BY started_at DESC
+         LIMIT 100",
+    )
+    .bind(skill_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(rows
+        .iter()
+        .map(|r| SkillExecution {
+            id: r.get("id"),
+            status: r.get("status"),
+            started_at: r.get("started_at"),
+            completed_at: r.get("completed_at"),
+            error_message: r.get("error_message"),
+        })
+        .collect())
+}
+
 // ── Evidence-based ranking (graduation) ──────────────────────────────────────
 
 /// A saved skill plus the evidence needed to rank it for prompt injection.
@@ -827,5 +893,82 @@ mod tests {
         assert_eq!(retired.len(), 1);
         assert_eq!(retired[0].id, s);
         assert_eq!(status_of(&pool, &s).await, "archived");
+    }
+
+    #[tokio::test]
+    async fn update_skill_persists_and_reports_missing() {
+        let pool = test_pool().await;
+        let created = create_skill(
+            &pool,
+            CreateSkillParams {
+                name: "orig-name".to_string(),
+                description: Some("orig desc".to_string()),
+                tool_used: "gmail__search".to_string(),
+                argument_shape_hash: "shape-1".to_string(),
+                definition_json: serde_json::json!({}),
+                source_task_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        // Rename + re-describe → persisted (what the editor sees on reopen).
+        assert!(
+            update_skill(&pool, &created.id, Some("new-name"), Some("new desc"))
+                .await
+                .unwrap()
+        );
+        let detail = get_skill(&pool, &created.id).await.unwrap().unwrap();
+        assert_eq!(detail.name, "new-name");
+        assert_eq!(detail.description.as_deref(), Some("new desc"));
+
+        // Partial update (description only) leaves the name intact via COALESCE.
+        assert!(update_skill(&pool, &created.id, None, Some("only desc"))
+            .await
+            .unwrap());
+        let detail = get_skill(&pool, &created.id).await.unwrap().unwrap();
+        assert_eq!(detail.name, "new-name");
+        assert_eq!(detail.description.as_deref(), Some("only desc"));
+
+        // Unknown id → false, so the editor surfaces the failure instead of
+        // closing as if it saved.
+        assert!(!update_skill(&pool, "does-not-exist", Some("x"), None)
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn record_execution_shows_up_in_history() {
+        let pool = test_pool().await;
+        let created = create_skill(
+            &pool,
+            CreateSkillParams {
+                name: "runner".to_string(),
+                description: None,
+                tool_used: "gmail__search".to_string(),
+                argument_shape_hash: "shape-hist".to_string(),
+                definition_json: serde_json::json!({}),
+                source_task_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        // Empty before any run.
+        assert!(list_skill_executions(&pool, &created.id)
+            .await
+            .unwrap()
+            .is_empty());
+
+        // record_execution matches the skill by argument_shape_hash and logs a row.
+        record_execution(&pool, "gmail__search", "shape-hist", None)
+            .await
+            .unwrap();
+
+        let execs = list_skill_executions(&pool, &created.id).await.unwrap();
+        assert_eq!(execs.len(), 1);
+        assert_eq!(execs[0].status, "completed");
+        assert!(execs[0].completed_at.is_some());
+        assert!(!execs[0].started_at.is_empty());
     }
 }
