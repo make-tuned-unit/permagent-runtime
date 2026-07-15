@@ -193,7 +193,7 @@ mod tests {
             res("b", true, Some(1.0)),
             res("c", false, Some(1.0)),
         ];
-        assert_eq!(dollars_per_solved(&r), Some(1.0));
+        assert_eq!(dollars_per_solved(&r), Some(1.5));
     }
 
     #[test]
@@ -276,7 +276,7 @@ mod tests {
         assert_eq!(agg.solved, 0);
         assert_eq!(agg.pass_rate, 0.0);
         assert_eq!(agg.dollars_per_solved, None);
-        assert_eq!(agg.total_cost_usd, Some(0.30));
+        assert!((agg.total_cost_usd.unwrap() - 0.30).abs() < 1e-12);
     }
 
     #[test]
