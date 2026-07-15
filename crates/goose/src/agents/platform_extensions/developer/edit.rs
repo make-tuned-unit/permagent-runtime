@@ -5,7 +5,11 @@ use rmcp::model::{CallToolResult, Content};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use crate::agents::platform_extensions::analyze::parser::{syntax_check, SyntaxStatus};
+
 const NO_MATCH_PREVIEW_LINES: usize = 20;
+/// Cap on how many differing lines the no-match diff renders.
+const MAX_DIFF_LINES: usize = 20;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FileReadParams {
@@ -124,19 +128,47 @@ impl EditTools {
             }
         };
 
-        let new_content = match string_replace(&content, &params.before, &params.after) {
-            Ok(c) => c,
+        let outcome = match flexible_replace(&content, &params.before, &params.after) {
+            Ok(o) => o,
             Err(msg) => {
                 return CallToolResult::error(vec![Content::text(msg).with_priority(0.0)]);
             }
         };
-        match fs::write(&path, &new_content) {
+
+        // Lint-on-edit guardrail: reject an edit that introduces a syntax error the
+        // pre-edit file did not have. Only NET-NEW breakage blocks the write — edits
+        // to already-broken files, and files in unsupported languages, pass through.
+        if let (
+            SyntaxStatus::Clean,
+            SyntaxStatus::Error {
+                line,
+                column,
+                snippet,
+            },
+        ) = (
+            syntax_check(&path, &content),
+            syntax_check(&path, &outcome.new_content),
+        ) {
+            return CallToolResult::error(vec![Content::text(format!(
+                "Edit rejected: applying it would introduce a syntax error the file did not \
+                 have before, so the file was left unchanged.\n\n\
+                 New syntax error at line {line}, column {column}:\n    {snippet}\n\n\
+                 Revise the replacement so the result parses, then try again."
+            ))
+            .with_priority(0.0)]);
+        }
+
+        match fs::write(&path, &outcome.new_content) {
             Ok(()) => {
                 let old_lines = params.before.lines().count();
                 let new_lines = params.after.lines().count();
+                let note = match outcome.tier.label() {
+                    Some(tier) => format!(" (matched via {tier} fuzzy match)"),
+                    None => String::new(),
+                };
                 CallToolResult::success(vec![Content::text(format!(
-                    "Edited {} ({} lines -> {} lines)",
-                    params.path, old_lines, new_lines
+                    "Edited {} ({} lines -> {} lines){}",
+                    params.path, old_lines, new_lines, note
                 ))
                 .with_priority(0.0)])
             }
@@ -155,45 +187,413 @@ impl Default for EditTools {
     }
 }
 
-pub fn string_replace(content: &str, before: &str, after: &str) -> Result<String, String> {
-    let matches: Vec<_> = content.match_indices(before).collect();
+// ── Flexible (fuzzy) matcher ────────────────────────────────────────────
 
-    match matches.len() {
-        0 => {
-            let suggestion = find_similar_context(content, before);
-            let mut msg = "No match found for the specified text.".to_string();
-            if let Some(hint) = suggestion {
-                msg.push_str(&format!("\n\nDid you mean:\n```\n{}\n```", hint));
-            }
-            let preview = build_file_preview(content, NO_MATCH_PREVIEW_LINES);
-            msg.push_str(&format!("\n\nFile preview:\n```\n{}\n```", preview));
-            Err(msg)
-        }
-        1 => Ok(content.replacen(before, after, 1)),
-        n => {
-            let mut msg = format!(
-                "Found {} matches. Please provide more context to identify a unique match:\n",
-                n
-            );
+/// Which normalization tier produced a match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchTier {
+    /// Byte-exact substring match (identical to the legacy behavior).
+    Exact,
+    /// Matched after normalizing internal/trailing whitespace; leading indentation preserved.
+    WhitespaceNormalized,
+    /// Matched after additionally ignoring leading indentation; replacement is re-indented.
+    IndentationNormalized,
+}
 
-            for (i, (pos, _)) in matches.iter().enumerate().take(2) {
-                let line_num = count_lines_before(content, *pos);
-                let context = get_line_context(content, line_num, 1);
-                msg.push_str(&format!(
-                    "\nMatch {} (line {}):\n```\n{}\n```",
-                    i + 1,
-                    line_num,
-                    context
-                ));
-            }
-
-            if n > 2 {
-                msg.push_str(&format!("\n\n...and {} more", n - 2));
-            }
-
-            Err(msg)
+impl MatchTier {
+    /// Human label for the fuzzy tiers; `None` for exact (so the success message
+    /// stays byte-identical to the legacy behavior).
+    fn label(self) -> Option<&'static str> {
+        match self {
+            MatchTier::Exact => None,
+            MatchTier::WhitespaceNormalized => Some("whitespace-normalized"),
+            MatchTier::IndentationNormalized => Some("indentation-normalized"),
         }
     }
+}
+
+/// A successfully computed edit: the new file content and which tier matched.
+#[derive(Debug, Clone)]
+pub struct EditOutcome {
+    pub new_content: String,
+    pub tier: MatchTier,
+}
+
+/// Replace the first UNIQUE occurrence of `before` with `after`, cascading through
+/// increasingly permissive matchers and applying the FIRST tier that yields a
+/// unique match:
+///   1. exact byte-for-byte substring (never regresses the legacy behavior);
+///   2. whitespace-normalized, leading indentation preserved (line-oriented);
+///   3. leading-indentation-normalized, replacement re-indented (line-oriented).
+///
+/// Safety rules (err toward a clean error over a wrong write):
+///   * multiple *exact* matches short-circuit with the classic "add more context"
+///     error and never fall through to fuzzier tiers;
+///   * an ambiguous fuzzy tier (more than one candidate region) never guesses — it
+///     returns an actionable error instead of risking a wrong edit.
+pub fn flexible_replace(content: &str, before: &str, after: &str) -> Result<EditOutcome, String> {
+    if before.is_empty() {
+        return Err(
+            "The search text is empty. Provide the exact text you want to replace.".to_string(),
+        );
+    }
+
+    // ── Tier 1: exact substring ─────────────────────────────────────
+    let exact: Vec<_> = content.match_indices(before).collect();
+    match exact.len() {
+        1 => {
+            return Ok(EditOutcome {
+                new_content: content.replacen(before, after, 1),
+                tier: MatchTier::Exact,
+            });
+        }
+        0 => {} // fall through to the fuzzy tiers
+        n => return Err(multiple_exact_error(content, &exact, n)),
+    }
+
+    let content_segments: Vec<&str> = content.split_inclusive('\n').collect();
+    let content_lines: Vec<&str> = content_segments.iter().map(|&s| strip_eol(s)).collect();
+    let before_lines: Vec<&str> = before.lines().collect();
+
+    // ── Tier 2: whitespace-normalized, indentation preserved ────────
+    match line_match(&content_lines, &before_lines, normalize_ws_keep_indent) {
+        LineMatch::Unique(start) => {
+            let new_content = splice_lines(
+                &content_segments,
+                &content_lines,
+                &before_lines,
+                start,
+                after,
+                false,
+            );
+            return Ok(EditOutcome {
+                new_content,
+                tier: MatchTier::WhitespaceNormalized,
+            });
+        }
+        LineMatch::Ambiguous(starts) => {
+            return Err(ambiguous_line_error(
+                "whitespace-normalized",
+                &content_lines,
+                &starts,
+                before_lines.len(),
+            ));
+        }
+        LineMatch::None => {}
+    }
+
+    // ── Tier 3: leading-indentation-normalized ──────────────────────
+    match line_match(&content_lines, &before_lines, normalize_ignore_indent) {
+        LineMatch::Unique(start) => {
+            let new_content = splice_lines(
+                &content_segments,
+                &content_lines,
+                &before_lines,
+                start,
+                after,
+                true,
+            );
+            return Ok(EditOutcome {
+                new_content,
+                tier: MatchTier::IndentationNormalized,
+            });
+        }
+        LineMatch::Ambiguous(starts) => {
+            return Err(ambiguous_line_error(
+                "indentation-normalized",
+                &content_lines,
+                &starts,
+                before_lines.len(),
+            ));
+        }
+        LineMatch::None => {}
+    }
+
+    Err(no_match_error(content, &content_lines, &before_lines))
+}
+
+enum LineMatch {
+    Unique(usize),
+    Ambiguous(Vec<usize>),
+    None,
+}
+
+/// Slide a window of `before_lines.len()` over `content_lines` and record every
+/// start index whose window equals `before_lines` under `normalize`.
+fn line_match(
+    content_lines: &[&str],
+    before_lines: &[&str],
+    normalize: fn(&str) -> String,
+) -> LineMatch {
+    let n = before_lines.len();
+    if n == 0 || n > content_lines.len() {
+        return LineMatch::None;
+    }
+    let norm_before: Vec<String> = before_lines.iter().map(|&l| normalize(l)).collect();
+    let mut starts = Vec::new();
+    for start in 0..=(content_lines.len() - n) {
+        if (0..n).all(|i| normalize(content_lines[start + i]) == norm_before[i]) {
+            starts.push(start);
+        }
+    }
+    match starts.len() {
+        0 => LineMatch::None,
+        1 => LineMatch::Unique(starts[0]),
+        _ => LineMatch::Ambiguous(starts),
+    }
+}
+
+/// Rebuild the file with the matched line window (`start .. start + before_lines.len()`)
+/// replaced by `after`, preserving the file's original line endings. When `reindent`
+/// is set (tier 3), `after` is rebased from the model's indentation onto the file's.
+fn splice_lines(
+    content_segments: &[&str],
+    content_lines: &[&str],
+    before_lines: &[&str],
+    start: usize,
+    after: &str,
+    reindent: bool,
+) -> String {
+    let end = start + before_lines.len();
+    let prefix: String = content_segments[..start].concat();
+    let suffix: String = content_segments[end..].concat();
+
+    let last_seg = content_segments[end - 1];
+    let region_has_trailing_nl = last_seg.ends_with('\n');
+    let eol = if last_seg.ends_with("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+
+    let after_lines: Vec<String> = if reindent {
+        reindent_after(after, before_lines, &content_lines[start..end])
+    } else {
+        after.lines().map(str::to_string).collect()
+    };
+
+    let mut block = after_lines.join(eol);
+    if region_has_trailing_nl && !block.is_empty() {
+        block.push_str(eol);
+    }
+
+    format!("{prefix}{block}{suffix}")
+}
+
+/// Rebase `after` from the model's base indentation (that of `before_lines`) onto the
+/// file's actual base indentation (that of the matched region), preserving each line's
+/// indentation *relative* to that base. Best-effort: lines that don't share the model's
+/// base prefix (e.g. dedented closers) are left untouched.
+fn reindent_after(after: &str, before_lines: &[&str], matched_lines: &[&str]) -> Vec<String> {
+    let before_base = leading_ws(first_nonblank(before_lines));
+    let file_base = leading_ws(first_nonblank(matched_lines));
+    if before_base == file_base {
+        return after.lines().map(str::to_string).collect();
+    }
+    after
+        .lines()
+        .map(|line| {
+            if line.trim().is_empty() {
+                String::new()
+            } else if let Some(rest) = line.strip_prefix(before_base) {
+                format!("{file_base}{rest}")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect()
+}
+
+fn first_nonblank<'a>(lines: &[&'a str]) -> &'a str {
+    lines
+        .iter()
+        .copied()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+}
+
+fn leading_ws(line: &str) -> &str {
+    &line[..line.len() - line.trim_start().len()]
+}
+
+/// Strip a single trailing line ending (`\n`, `\r\n`) from a `split_inclusive('\n')` segment.
+fn strip_eol(seg: &str) -> &str {
+    let seg = seg.strip_suffix('\n').unwrap_or(seg);
+    seg.strip_suffix('\r').unwrap_or(seg)
+}
+
+/// Collapse internal runs of whitespace to single spaces and trim trailing
+/// whitespace, but preserve the exact leading indentation.
+fn normalize_ws_keep_indent(line: &str) -> String {
+    let trimmed = line.trim_start();
+    let indent = &line[..line.len() - trimmed.len()];
+    let body = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
+    format!("{indent}{body}")
+}
+
+/// Fully whitespace-insensitive: ignore leading indentation and collapse all
+/// internal whitespace.
+fn normalize_ignore_indent(line: &str) -> String {
+    line.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+// ── Error rendering ─────────────────────────────────────────────────────
+
+fn multiple_exact_error(content: &str, matches: &[(usize, &str)], n: usize) -> String {
+    let mut msg = format!(
+        "Found {n} exact matches for the search text. Add more surrounding context so exactly one location matches:\n"
+    );
+    for (i, (pos, _)) in matches.iter().enumerate().take(2) {
+        let line_num = count_lines_before(content, *pos);
+        let context = get_line_context(content, line_num, 1);
+        msg.push_str(&format!(
+            "\nMatch {} (line {}):\n```\n{}\n```",
+            i + 1,
+            line_num,
+            context
+        ));
+    }
+    if n > 2 {
+        msg.push_str(&format!("\n\n...and {} more", n - 2));
+    }
+    msg
+}
+
+fn ambiguous_line_error(
+    tier: &str,
+    content_lines: &[&str],
+    starts: &[usize],
+    len: usize,
+) -> String {
+    let mut msg = format!(
+        "Found {} regions that match under {tier} matching (the exact text was not found). This \
+         fuzzy match is ambiguous, so no edit was made — add more surrounding context so exactly \
+         one region matches:\n",
+        starts.len()
+    );
+    for (i, &start) in starts.iter().enumerate().take(3) {
+        let end = (start + len).min(content_lines.len());
+        msg.push_str(&format!(
+            "\nMatch {} (line {}):\n```\n{}\n```",
+            i + 1,
+            start + 1,
+            render_region(content_lines, start, end)
+        ));
+    }
+    if starts.len() > 3 {
+        msg.push_str(&format!("\n\n...and {} more", starts.len() - 3));
+    }
+    msg
+}
+
+fn no_match_error(content: &str, content_lines: &[&str], before_lines: &[&str]) -> String {
+    let mut msg = String::from(
+        "No match found for the search text.\nTried exact, whitespace-normalized, and \
+         indentation-normalized matching; none produced a unique match.",
+    );
+
+    if let Some((start, len)) = closest_window(content_lines, before_lines) {
+        let end = (start + len).min(content_lines.len());
+        msg.push_str(&format!(
+            "\n\nClosest region (lines {}-{}):\n```\n{}\n```",
+            start + 1,
+            end,
+            render_region(content_lines, start, end)
+        ));
+        let diff = render_diff(before_lines, &content_lines[start..end]);
+        if !diff.is_empty() {
+            msg.push_str(&format!(
+                "\n\nDifferences (- your search text, + file content):\n```\n{diff}\n```"
+            ));
+        }
+    }
+
+    let preview = build_file_preview(content, NO_MATCH_PREVIEW_LINES);
+    msg.push_str(&format!("\n\nFile preview:\n```\n{preview}\n```"));
+    msg
+}
+
+/// Find the content window (of `before_lines.len()` lines) most textually similar
+/// to `before_lines`, so the failure message can point at the closest near-match.
+/// Scored by summed per-line token overlap (not just full-line equality, so a
+/// single differing token still surfaces the right region).
+fn closest_window(content_lines: &[&str], before_lines: &[&str]) -> Option<(usize, usize)> {
+    let n = before_lines.len();
+    if n == 0 || content_lines.is_empty() {
+        return None;
+    }
+    let window = n.min(content_lines.len());
+    let mut best: Option<(usize, usize)> = None; // (start, score)
+    for start in 0..=(content_lines.len() - window) {
+        let score: usize = (0..window)
+            .map(|i| line_similarity(before_lines[i], content_lines[start + i]))
+            .sum();
+        if score > 0 && best.is_none_or(|(_, b)| score > b) {
+            best = Some((start, score));
+        }
+    }
+    best.map(|(start, _)| (start, window))
+}
+
+/// Multiset token-overlap between two lines — a cheap textual similarity used only
+/// to surface the closest near-match region in error messages.
+fn line_similarity(a: &str, b: &str) -> usize {
+    let mut a_tokens: Vec<&str> = a.split_whitespace().collect();
+    let mut score = 0;
+    for tok in b.split_whitespace() {
+        if let Some(pos) = a_tokens.iter().position(|t| *t == tok) {
+            a_tokens.remove(pos);
+            score += 1;
+        }
+    }
+    score
+}
+
+fn render_region(content_lines: &[&str], start: usize, end: usize) -> String {
+    content_lines[start..end]
+        .iter()
+        .enumerate()
+        .map(|(i, l)| format!("{:>4}: {}", start + i + 1, l))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Aligned line diff: lines equal under full normalization are context; the rest
+/// are shown as `-` (search text) / `+` (file), capped at `MAX_DIFF_LINES`.
+fn render_diff(before_lines: &[&str], file_lines: &[&str]) -> String {
+    let mut out = Vec::new();
+    let max = before_lines.len().max(file_lines.len());
+    let mut shown = 0;
+    for i in 0..max {
+        match (before_lines.get(i).copied(), file_lines.get(i).copied()) {
+            (Some(b), Some(f)) => {
+                if normalize_ignore_indent(b) == normalize_ignore_indent(f) {
+                    out.push(format!("  {f}"));
+                } else {
+                    out.push(format!("- {b}"));
+                    out.push(format!("+ {f}"));
+                    shown += 1;
+                }
+            }
+            (Some(b), None) => {
+                out.push(format!("- {b}"));
+                shown += 1;
+            }
+            (None, Some(f)) => {
+                out.push(format!("+ {f}"));
+                shown += 1;
+            }
+            (None, None) => {}
+        }
+        if shown >= MAX_DIFF_LINES {
+            out.push("  ...".to_string());
+            break;
+        }
+    }
+    if shown == 0 {
+        return String::new();
+    }
+    out.join("\n")
 }
 
 fn apply_line_limit(content: &str, line: Option<u32>, limit: Option<u32>) -> String {
@@ -240,21 +640,6 @@ fn get_line_context(content: &str, target_line: usize, context: usize) -> String
     let end = (target_line + context).min(lines.len());
 
     lines[start..end].join("\n")
-}
-
-fn find_similar_context(content: &str, search: &str) -> Option<String> {
-    let first_line = search.lines().next()?.trim();
-    if first_line.is_empty() {
-        return None;
-    }
-
-    for (i, line) in content.lines().enumerate() {
-        if line.contains(first_line) || first_line.contains(line.trim()) {
-            return Some(get_line_context(content, i + 1, 2));
-        }
-    }
-
-    None
 }
 
 fn build_file_preview(content: &str, max_lines: usize) -> String {
@@ -508,6 +893,227 @@ mod tests {
         assert_eq!(
             fs::read_to_string(dir.path().join("relative-edit.txt")).unwrap(),
             "after"
+        );
+    }
+
+    // ── Flexible matcher (pure function) ─────────────────────────────
+
+    #[test]
+    fn flex_exact_hit_uses_exact_tier() {
+        let out =
+            flexible_replace("let x = 1;\nlet y = 2;\n", "let x = 1;", "let x = 42;").unwrap();
+        assert_eq!(out.tier, MatchTier::Exact);
+        assert_eq!(out.new_content, "let x = 42;\nlet y = 2;\n");
+    }
+
+    #[test]
+    fn flex_no_regression_on_working_mid_line_exact_edit() {
+        // A partial (mid-line) exact match must still work exactly as before.
+        let content = "fn foo() {\n    println!(\"hello\");\n}\n";
+        let out =
+            flexible_replace(content, "println!(\"hello\");", "println!(\"world\");").unwrap();
+        assert_eq!(out.tier, MatchTier::Exact);
+        assert_eq!(out.new_content, "fn foo() {\n    println!(\"world\");\n}\n");
+    }
+
+    #[test]
+    fn flex_whitespace_only_difference_resolves() {
+        // File has different *internal* spacing; leading indentation matches.
+        let content = "fn foo() {\n    let  x   =    1;\n}\n";
+        let out = flexible_replace(content, "    let x = 1;", "    let x = 2;").unwrap();
+        assert_eq!(out.tier, MatchTier::WhitespaceNormalized);
+        assert_eq!(out.new_content, "fn foo() {\n    let x = 2;\n}\n");
+    }
+
+    #[test]
+    fn flex_indentation_only_difference_resolves_and_reindents() {
+        // Search block has no leading indent; the file block is indented 4 spaces.
+        // The replacement must be rebased onto the file's indentation.
+        let content = "fn foo() {\n    let x = 1;\n    let y = 2;\n}\n";
+        let out =
+            flexible_replace(content, "let x = 1;\nlet y = 2;", "let x = 1;\nlet z = 3;").unwrap();
+        assert_eq!(out.tier, MatchTier::IndentationNormalized);
+        assert_eq!(
+            out.new_content,
+            "fn foo() {\n    let x = 1;\n    let z = 3;\n}\n"
+        );
+    }
+
+    #[test]
+    fn flex_reindent_preserves_relative_nesting() {
+        // Nested structure whose absolute indent is wrong but relative indent is right.
+        let content = "class A:\n    def run(self):\n        if x:\n            go()\n";
+        let out = flexible_replace(content, "if x:\n    go()", "if x:\n    stop()").unwrap();
+        assert_eq!(out.tier, MatchTier::IndentationNormalized);
+        assert_eq!(
+            out.new_content,
+            "class A:\n    def run(self):\n        if x:\n            stop()\n"
+        );
+    }
+
+    #[test]
+    fn flex_absent_search_is_clean_error_and_no_content() {
+        let err = flexible_replace("alpha\nbeta\ngamma\n", "nonexistent line", "x").unwrap_err();
+        assert!(err.contains("No match found"));
+    }
+
+    #[test]
+    fn flex_ambiguous_exact_prefers_exact_error() {
+        // Two exact matches → classic "add more context" error, never a fuzzy guess.
+        let err = flexible_replace("foo\nbar\nfoo\n", "foo", "qux").unwrap_err();
+        assert!(err.contains("exact matches"));
+        assert!(err.contains("more surrounding context"));
+    }
+
+    #[test]
+    fn flex_ambiguous_fuzzy_is_clear_error_no_guess() {
+        // Same block at two different indentations: no exact match, tier-3 is ambiguous.
+        let content =
+            "fn a() {\n    step()\n    stop()\n}\nfn b() {\n        step()\n        stop()\n}\n";
+        let err = flexible_replace(content, "step()\nstop()", "go()\nhalt()").unwrap_err();
+        assert!(err.contains("ambiguous"));
+        assert!(err.contains("indentation-normalized"));
+        assert!(err.contains("more surrounding context"));
+    }
+
+    #[test]
+    fn flex_error_quality_shows_tiers_tried_near_match_and_diff() {
+        let content = "fn compute() {\n    let total = a + b;\n}\n";
+        let err = flexible_replace(content, "    let total = a - b;", "x").unwrap_err();
+        assert!(err.contains("Tried exact, whitespace-normalized, and indentation-normalized"));
+        assert!(err.contains("Closest region"));
+        assert!(err.contains("Differences"));
+        assert!(err.contains("let total = a + b;"));
+    }
+
+    #[test]
+    fn flex_empty_search_is_error() {
+        let err = flexible_replace("anything", "", "x").unwrap_err();
+        assert!(err.contains("empty"));
+    }
+
+    // ── Lint-on-edit guardrail (integration through file_edit) ────────
+
+    #[test]
+    fn lint_valid_edit_writes() {
+        let dir = setup();
+        let path = dir.path().join("ok.rs");
+        fs::write(&path, "fn main() {\n    let x = 1;\n}\n").unwrap();
+        let tools = EditTools::new();
+
+        let result = tools.file_edit(FileEditParams {
+            path: path.to_string_lossy().to_string(),
+            before: "let x = 1;".to_string(),
+            after: "let x = 2;".to_string(),
+        });
+
+        assert!(!result.is_error.unwrap_or(false));
+        assert!(fs::read_to_string(&path).unwrap().contains("let x = 2;"));
+    }
+
+    #[test]
+    fn lint_rejects_net_new_syntax_error_and_leaves_file_unchanged() {
+        let dir = setup();
+        let path = dir.path().join("break.rs");
+        let original = "fn main() {\n    let x = 1;\n}\n";
+        fs::write(&path, original).unwrap();
+        let tools = EditTools::new();
+
+        // Deleting the closing brace introduces a syntax error the file didn't have.
+        let result = tools.file_edit(FileEditParams {
+            path: path.to_string_lossy().to_string(),
+            before: "    let x = 1;\n}".to_string(),
+            after: "    let x = 1;".to_string(),
+        });
+
+        assert!(result.is_error.unwrap_or(false));
+        let text = extract_text(&result);
+        assert!(text.contains("Edit rejected"));
+        assert!(text.contains("syntax error"));
+        // File must be untouched.
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn lint_does_not_reject_edit_to_already_broken_file() {
+        let dir = setup();
+        let path = dir.path().join("already_broken.rs");
+        // Pre-edit file is already unparseable (missing closing brace).
+        let original = "fn main() {\n    let x = 1;\n";
+        fs::write(&path, original).unwrap();
+        let tools = EditTools::new();
+
+        let result = tools.file_edit(FileEditParams {
+            path: path.to_string_lossy().to_string(),
+            before: "let x = 1;".to_string(),
+            after: "let x = 2;".to_string(),
+        });
+
+        // Still broken after, but NOT spuriously rejected — only net-new breakage blocks.
+        assert!(!result.is_error.unwrap_or(false));
+        assert!(fs::read_to_string(&path).unwrap().contains("let x = 2;"));
+    }
+
+    #[test]
+    fn lint_passes_through_unsupported_language() {
+        let dir = setup();
+        let path = dir.path().join("data.txt");
+        fs::write(&path, "hello (world").unwrap();
+        let tools = EditTools::new();
+
+        // The result is "unbalanced", but .txt has no grammar → no lint, edit applies.
+        let result = tools.file_edit(FileEditParams {
+            path: path.to_string_lossy().to_string(),
+            before: "hello (world".to_string(),
+            after: "hello ((world".to_string(),
+        });
+
+        assert!(!result.is_error.unwrap_or(false));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "hello ((world");
+    }
+
+    #[test]
+    fn lint_allows_edit_that_fixes_a_broken_file() {
+        let dir = setup();
+        let path = dir.path().join("fixup.rs");
+        fs::write(&path, "fn main() {\n    let x = 1;\n").unwrap();
+        let tools = EditTools::new();
+
+        // Add the missing brace: broken → clean is always allowed.
+        let result = tools.file_edit(FileEditParams {
+            path: path.to_string_lossy().to_string(),
+            before: "    let x = 1;\n".to_string(),
+            after: "    let x = 1;\n}\n".to_string(),
+        });
+
+        assert!(!result.is_error.unwrap_or(false));
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "fn main() {\n    let x = 1;\n}\n"
+        );
+    }
+
+    #[test]
+    fn fuzzy_edit_writes_through_file_edit_with_tier_note() {
+        let dir = setup();
+        let path = dir.path().join("fuzzy.rs");
+        // Statement uses odd internal spacing; model supplies the tidy form.
+        fs::write(&path, "fn main() {\n    let  y   =   9;\n}\n").unwrap();
+        let tools = EditTools::new();
+
+        let result = tools.file_edit(FileEditParams {
+            path: path.to_string_lossy().to_string(),
+            before: "    let y = 9;".to_string(),
+            after: "    let y = 10;".to_string(),
+        });
+
+        assert!(!result.is_error.unwrap_or(false));
+        let text = extract_text(&result);
+        assert!(text.contains("whitespace-normalized"));
+        assert!(text.contains("fuzzy match"));
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "fn main() {\n    let y = 10;\n}\n"
         );
     }
 }
