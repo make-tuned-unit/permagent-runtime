@@ -404,6 +404,24 @@ fn load_fixed_providers() -> Result<Vec<DeclarativeProviderConfig>> {
     Ok(res)
 }
 
+/// Enumerate ALL declarative provider configs — the bundled fixed providers plus
+/// any operator-defined custom providers — WITHOUT registering or instantiating
+/// them.
+///
+/// This is the data-driven surface the cost-router's cheap ladder walks to
+/// discover configured, priced cheap-cloud providers (see
+/// [`crate::cost_router::cheap`]): each config carries the provider id
+/// ([`DeclarativeProviderConfig::name`]), the `api_key_env` that activates it,
+/// and the [`DeclarativeProviderConfig::models`] it serves. Adding a new priced
+/// provider is a matter of dropping a JSON here — it then auto-appears to the
+/// router, no code change. Best-effort: a missing custom dir or an unreadable
+/// file yields fewer entries, never an error.
+pub fn all_declarative_provider_configs() -> Vec<DeclarativeProviderConfig> {
+    let mut out = load_fixed_providers().unwrap_or_default();
+    out.extend(load_custom_providers(&custom_providers_dir()).unwrap_or_default());
+    out
+}
+
 pub fn register_declarative_providers(
     registry: &mut crate::providers::provider_registry::ProviderRegistry,
 ) -> Result<()> {

@@ -44,7 +44,10 @@ pub use cache::{
     may_swap_main_loop_model, model_change_breaks_cache, prefix_is_cache_stable, PrefixSegment,
     CANONICAL_PREFIX,
 };
-pub use cheap::{is_key_configured, ladder_from, load_ladder, CheapCandidate, CheapLadder};
+pub use cheap::{
+    build_ladder, default_anchor, discover_priced_candidates, is_key_configured, load_ladder,
+    reference_cost_for, CheapCandidate, CheapLadder, PricedCandidate,
+};
 pub use mesh::{
     gate as mesh_gate, MeshGateInputs, MeshIneligible, MeshRoute, MeshWorkload, PoolHealth,
 };
@@ -130,14 +133,15 @@ pub fn route(signals: &TaskSignals, mesh_inputs: MeshGateInputs) -> Tier {
 ///
 /// Identical to [`ModelPacks::pack_for_tier`] for every tier EXCEPT
 /// [`Tier::CheapCloud`], which is resolved through the [`cheap`] ladder: the
-/// cheapest cheap-cloud provider the operator has keyed (MiniMax, then Kimi),
-/// else the Haiku anchor. This is the seam that puts Kimi + MiniMax on the
-/// router's cheapest-adequate ladder — because `route` starts mechanical work at
-/// `LocalFree` and only reaches `CheapCloud` on escalation
+/// cheapest configured + priced cheap-cloud provider — DERIVED from the pricing
+/// table over the operator's configured providers, not a fixed list — else the
+/// Haiku anchor. This is the seam that makes ANY cheaper configured+priced
+/// provider the preferred cheap tier automatically. Because `route` starts
+/// mechanical work at `LocalFree` and only reaches `CheapCloud` on escalation
 /// (`next_after(LocalFree, …) → CheapCloud`), the cheap-cloud provider choice
 /// lives here rather than in the starting decision. With no cheap key set this
 /// returns the Haiku anchor, which is byte-identical to the mechanical pack, so
-/// behavior is unchanged until a key arrives.
+/// behavior is unchanged until a cheaper priced provider is keyed.
 ///
 /// `is_key_set` is the availability predicate — pass
 /// `|k| cheap::is_key_configured(k)` in production, a pure set in tests. Returns
@@ -270,22 +274,53 @@ mod tests {
         assert_eq!(next_after(t2, Attempt::Failed), Next::GiveUp);
     }
 
-    // ── Ladder-aware tier → concrete pack (the Kimi/MiniMax wiring) ──────────
+    // ── Ladder-aware tier → concrete pack (the generic cheapest-path wiring) ─
 
     fn keyed(set: &[&str]) -> impl Fn(&str) -> bool {
         let owned: Vec<String> = set.iter().map(|s| s.to_string()).collect();
         move |k| owned.iter().any(|s| s == k)
     }
 
+    /// A ladder derived from the REAL canonical costs of two shipped cheap
+    /// providers (MiniMax, Kimi) plus the default Haiku anchor — the same shape
+    /// `load_ladder` produces when both keys are configured, built here without
+    /// touching env/config so the wiring test stays pure.
+    fn derived_two_provider_ladder() -> CheapLadder {
+        let anchor = default_anchor();
+        let anchor_cost = reference_cost_for(&anchor.provider, &anchor.model);
+        let priced = vec![
+            PricedCandidate::new(
+                "moonshot",
+                "kimi-k2.5",
+                "MOONSHOT_API_KEY",
+                reference_cost_for("moonshot", "kimi-k2.5").unwrap(),
+            ),
+            PricedCandidate::new(
+                "minimax",
+                "MiniMax-M2.5",
+                "MINIMAX_API_KEY",
+                reference_cost_for("minimax", "MiniMax-M2.5").unwrap(),
+            ),
+        ];
+        build_ladder(priced, anchor, anchor_cost)
+    }
+
     #[test]
     fn no_cheap_keys_keeps_cheap_cloud_on_the_haiku_mechanical_pack() {
         // Regression guard: with no cheap key set, the CheapCloud tier resolves
-        // to EXACTLY today's mechanical pack (Haiku) — Kimi/MiniMax change nothing
-        // until a key arrives.
+        // to EXACTLY today's mechanical pack (Haiku) — a derived cheap ladder
+        // changes nothing until a key arrives. Even the default (anchor-only)
+        // ladder must resolve to Haiku.
         let packs = ModelPacks::default();
         let ladder = CheapLadder::default();
         let pack = concrete_pack_for_tier(Tier::CheapCloud, &packs, &ladder, |_| false);
         assert_eq!(&pack, packs.pack_for(Role::Mechanical));
+        assert_eq!(pack.provider, "anthropic");
+        assert_eq!(pack.model, "claude-haiku-4-5-20251001");
+
+        // A ladder that HAS cheap rungs but with no keys set also stays on Haiku.
+        let full = derived_two_provider_ladder();
+        let pack = concrete_pack_for_tier(Tier::CheapCloud, &packs, &full, |_| false);
         assert_eq!(pack.provider, "anthropic");
         assert_eq!(pack.model, "claude-haiku-4-5-20251001");
     }
@@ -294,11 +329,12 @@ mod tests {
     fn escalated_cheap_cloud_prefers_the_cheapest_configured_provider() {
         // This is the point of the feature: once a cheap key is set, mechanical
         // cloud work (reached via LocalFree → CheapCloud escalation) routes to the
-        // cheapest configured cheap-cloud model instead of always Haiku.
+        // cheapest configured cheap-cloud model instead of always Haiku — chosen
+        // by DERIVED canonical cost, not a hardcoded ladder.
         let packs = ModelPacks::default();
-        let ladder = CheapLadder::default();
+        let ladder = derived_two_provider_ladder();
 
-        // MiniMax keyed → MiniMax (cheapest).
+        // MiniMax keyed → MiniMax (cheapest by real pricing: 1.50 < Kimi 3.60).
         let p = concrete_pack_for_tier(
             Tier::CheapCloud,
             &packs,
@@ -308,7 +344,7 @@ mod tests {
         assert_eq!(p.provider, "minimax");
         assert_eq!(p.model, "MiniMax-M2.5");
 
-        // Only Kimi keyed → Kimi.
+        // Only Kimi keyed → Kimi (the cheapest AVAILABLE).
         let p = concrete_pack_for_tier(
             Tier::CheapCloud,
             &packs,
