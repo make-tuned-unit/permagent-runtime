@@ -39,6 +39,10 @@ use tracing::{info, warn};
 /// duplicates. `migrate_v13_to_v14` deletes the redundant EMPTY manual columns
 /// (never one holding cards). Idempotent and base-independent.
 ///
+/// v28 = per-call cost ledger (`cost_ledger`) + O(1) cost-rollup columns on
+/// `sessions` (cost-transparency workstream). New table + PRAGMA-guarded ADD
+/// COLUMNs, additive and base-independent. `migrate_v27_to_v28` applies it.
+///
 /// NOTE on the version drift: this constant intentionally stays at 14 even though
 /// the migration chain now runs to v19 (`migrate_v14_to_v15` … `migrate_v18_to_v19`).
 /// It is the stamp `init_spectral_db` applies to a *fresh* DB — those later steps
@@ -115,6 +119,11 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
             accumulated_total_tokens  INTEGER,
             accumulated_input_tokens  INTEGER,
             accumulated_output_tokens INTEGER,
+            cost_usd                       REAL,
+            accumulated_cost_usd           REAL,
+            accumulated_cache_read_tokens  INTEGER,
+            accumulated_cache_write_tokens INTEGER,
+            accumulated_cache_savings_usd  REAL,
             schedule_id       TEXT,
             recipe_json       TEXT,
             user_recipe_values_json TEXT,
@@ -688,6 +697,12 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // migrate_v26_to_v27. Purely additive, base-independent.
     apply_activity_journal_schema(pool).await?;
 
+    // Per-call cost ledger + session cost-rollup columns (schema v28). Idempotent;
+    // shared with migrate_v27_to_v28. The ADD COLUMNs below are PRAGMA-guarded, so
+    // they no-op here (fresh installs already got the columns from the sessions
+    // CREATE above) and only fire on existing DBs.
+    apply_cost_ledger_schema(pool).await?;
+
     info!(
         "Spectral schema v{} initialized successfully",
         SPECTRAL_SCHEMA_VERSION
@@ -1050,6 +1065,120 @@ pub async fn migrate_v26_to_v27(pool: &Pool<Sqlite>) -> Result<()> {
         .execute(pool)
         .await?;
     info!("Spectral schema migrated to v27 (activity journal)");
+
+    Ok(())
+}
+
+/// Apply the per-call cost-ledger schema (v28, cost-transparency workstream):
+/// `cost_ledger` — one append-only row per provider response — plus the O(1)
+/// cost-rollup columns on `sessions`.
+///
+/// `cost_ledger` is high-frequency numeric telemetry (SUM / GROUP BY over
+/// session, task, provider) and deliberately lives here in the session DB rather
+/// than the activity journal, which is a low-frequency semantic-enrichment log.
+/// Every money column is the output of the single canonical
+/// [`crate::providers::canonical::cost_of`] function, so the ledger, the live
+/// meter, and the verification digest can never disagree. `cost_tier` is a plain
+/// TEXT (no `CHECK` constraint — validated in Rust via `CostTier`) to avoid the
+/// widen-the-constraint-in-two-places footgun.
+///
+/// The `sessions` cost columns are an O(1) running rollup updated inside the
+/// same transaction as each ledger append: `accumulated_cost_usd` (= Σ
+/// `cost_usd`), `cost_usd` (the most recent turn), the cache-read/write token
+/// accumulators, and `accumulated_cache_savings_usd` (the visible "cache saved"
+/// trust signal). The `ALTER`s are PRAGMA-guarded so this is a no-op on fresh
+/// installs (which get the columns from the `sessions` CREATE) and fills them in
+/// on existing DBs. Fully idempotent — safe on every boot and on fresh installs.
+pub async fn apply_cost_ledger_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool.begin().await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS cost_ledger (
+            call_id            TEXT PRIMARY KEY,
+            ts                 TEXT NOT NULL,
+            session_id         TEXT NOT NULL,
+            parent_session_id  TEXT,
+            task_id            TEXT,
+            goal_id            TEXT,
+            subagent_id        TEXT,
+            turn_index         INTEGER,
+            provider           TEXT,
+            model              TEXT,
+            cost_tier          TEXT NOT NULL DEFAULT 'paid_api',
+            is_chargeable      INTEGER NOT NULL DEFAULT 1,
+            is_headless        INTEGER NOT NULL DEFAULT 0,
+            input_tokens       INTEGER NOT NULL DEFAULT 0,
+            output_tokens      INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
+            cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+            input_cost         REAL NOT NULL DEFAULT 0,
+            output_cost        REAL NOT NULL DEFAULT 0,
+            cache_read_cost    REAL NOT NULL DEFAULT 0,
+            cache_write_cost   REAL NOT NULL DEFAULT 0,
+            cost_usd           REAL NOT NULL DEFAULT 0,
+            is_estimated       INTEGER NOT NULL DEFAULT 0
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_cost_ledger_session ON cost_ledger(session_id, ts)",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_cost_ledger_task ON cost_ledger(task_id, ts)")
+        .execute(&mut *tx)
+        .await?;
+
+    // PRAGMA-guarded rollup columns on `sessions` (idempotent ADD COLUMN).
+    for (col, ddl) in [
+        ("cost_usd", "ALTER TABLE sessions ADD COLUMN cost_usd REAL"),
+        (
+            "accumulated_cost_usd",
+            "ALTER TABLE sessions ADD COLUMN accumulated_cost_usd REAL",
+        ),
+        (
+            "accumulated_cache_read_tokens",
+            "ALTER TABLE sessions ADD COLUMN accumulated_cache_read_tokens INTEGER",
+        ),
+        (
+            "accumulated_cache_write_tokens",
+            "ALTER TABLE sessions ADD COLUMN accumulated_cache_write_tokens INTEGER",
+        ),
+        (
+            "accumulated_cache_savings_usd",
+            "ALTER TABLE sessions ADD COLUMN accumulated_cache_savings_usd REAL",
+        ),
+    ] {
+        let has_column: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = ?")
+                .bind(col)
+                .fetch_one(&mut *tx)
+                .await?;
+        if has_column == 0 {
+            sqlx::query(ddl).execute(&mut *tx).await?;
+        }
+    }
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Migrate an existing database to the cost-ledger schema (schema v28).
+///
+/// Additive (CREATE TABLE / INDEX IF NOT EXISTS + PRAGMA-guarded ADD COLUMN) and
+/// base-version independent, so it applies cleanly over any earlier base. Records
+/// v28 in `schema_version`.
+pub async fn migrate_v27_to_v28(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v27 -> v28 (per-call cost ledger)");
+
+    apply_cost_ledger_schema(pool).await?;
+
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (28)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v28 (per-call cost ledger)");
 
     Ok(())
 }

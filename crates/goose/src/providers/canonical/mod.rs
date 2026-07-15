@@ -1,7 +1,9 @@
+mod cost;
 mod model;
 mod name_builder;
 mod registry;
 
+pub use cost::{cache_savings_of, cost_breakdown, cost_of, CostBreakdown};
 pub use model::{CanonicalModel, Limit, Modalities, Modality, Pricing};
 pub use name_builder::{
     canonical_name, map_provider_name, map_to_canonical_model, strip_version_suffix,

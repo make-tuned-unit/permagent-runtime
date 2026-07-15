@@ -984,6 +984,25 @@ pub struct TokenState {
     pub accumulated_input_tokens: i32,
     pub accumulated_output_tokens: i32,
     pub accumulated_total_tokens: i32,
+    // ── Cost (cost-transparency): rides every MessageEvent SSE frame so the
+    // Build UI has live, single-sourced $ with no extra endpoint. All figures
+    // trace back to the canonical `cost_of` via the per-call cost ledger. ──
+    /// Cost of the most recent provider turn (USD).
+    #[serde(default)]
+    pub cost_usd: f64,
+    /// Running session cost (USD) — the ONE authoritative number shown.
+    #[serde(default)]
+    pub accumulated_cost_usd: f64,
+    /// Running dollars saved by cache reads — the "cache saved $X" trust signal.
+    #[serde(default)]
+    pub cache_savings_usd: f64,
+    /// Percent of the model's context window in use (`None` when the limit is
+    /// unknown), so the meter never shows a fabricated denominator.
+    #[serde(default)]
+    pub context_percent: Option<f64>,
+    /// Active model name (for the meter's trailing `· <model>` segment).
+    #[serde(default)]
+    pub model: String,
 }
 
 #[cfg(test)]
