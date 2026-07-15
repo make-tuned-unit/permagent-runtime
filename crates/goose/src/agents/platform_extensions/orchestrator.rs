@@ -3095,6 +3095,139 @@ pub async fn handle_goal_blocked(
     Ok(())
 }
 
+/// Map a running worker session to the goal it is executing (its current
+/// attempt), if any. A runaway worker's goal is `in_progress`, so we scan those
+/// and match `worker_session_id`. Interactive (non-goal) sessions → `None`.
+async fn goal_for_worker_session(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    session_id: &str,
+) -> Result<Option<(String, String, String)>, String> {
+    let rows = sqlx::query_as::<_, (String, String, String, String)>(
+        "SELECT c.id, c.project_id, c.title, c.metadata_json FROM cards c
+         JOIN board_columns bc ON c.column_id = bc.id
+         WHERE c.card_type = 'goal'
+           AND bc.state_binding = 'in_progress'
+           AND c.archived_at IS NULL",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    for (id, project_id, title, meta_str) in rows {
+        if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&meta_str) {
+            if meta.get("worker_session_id").and_then(|v| v.as_str()) == Some(session_id) {
+                return Ok(Some((id, project_id, title)));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// L3 escalation for an in-session runaway loop detected by the ProgressMonitor
+/// (non-negotiable B). Maps the worker session to its goal; if it maps to one
+/// still in progress, raises a DEDUPLICATED `unblock`/`Stuck` decision carrying
+/// the loop signal + recent-actions evidence, parks the goal (WORK-PRESERVING —
+/// park moves to Triage, never a terminal cancel, so the worktree is never
+/// reaped), and stops the worker via the kill registry (L4).
+///
+/// Order matters and mirrors [`cancel_goal`]: park runs FIRST so the worker's
+/// completion tracker (which guards on `in_progress`) no-ops when the kill
+/// fires — the diff is preserved, nothing is thrown away. For an in-process
+/// worker the kill cancels its [`CancellationToken`]; for an external worker it
+/// kills the process group.
+///
+/// Best-effort and idempotent: a second escalation for the same goal dedupes
+/// onto the existing open decision (never a duplicate) and re-parks harmlessly.
+/// Interactive sessions with no goal are a no-op (L1 already blocked the call).
+/// Returns the open decision id when one exists for the goal, else `None`.
+pub async fn escalate_session_loop(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    session_id: &str,
+    signal: &str,
+    evidence: &str,
+) -> Result<Option<String>, String> {
+    let Some((card_id, project_id, title)) = goal_for_worker_session(pool, session_id).await?
+    else {
+        return Ok(None);
+    };
+
+    // Dedup: one open unblock decision per goal (the durable dedup guarantee —
+    // a second trigger for the same goal never stacks a duplicate).
+    let decision_id = if let Some(existing) =
+        decisions::find_open_decision_for_goal(pool, &card_id, "unblock").await?
+    {
+        existing.id
+    } else {
+        let headline = format!(
+            "\"{}\" looks stuck in a loop and needs your direction",
+            title
+        );
+        let headline = if headline.chars().count() > decisions::MAX_HEADLINE_CHARS {
+            let cut: String = headline
+                .chars()
+                .take(decisions::MAX_HEADLINE_CHARS - 1)
+                .collect();
+            format!("{}…", cut)
+        } else {
+            headline
+        };
+        let detail = format!(
+            "The runaway-loop guard stopped this goal's worker: {}.\n\nRecent actions:\n{}\n\n\
+             Keep going (re-dispatch a fresh attempt — its work is preserved), give direction, \
+             or stop and keep the changes made so far.",
+            signal, evidence
+        );
+        let payload = serde_json::to_value(decisions::UnblockPayload {
+            reason: decisions::UnblockReason::Stuck,
+            spent: None,
+            cap: None,
+        })
+        .map_err(|e| e.to_string())?;
+        decisions::create_decision(
+            pool,
+            decisions::NewDecision {
+                kind: "unblock".to_string(),
+                goal_id: Some(card_id.clone()),
+                project_id: Some(project_id.clone()),
+                headline: Some(headline),
+                detail: Some(detail),
+                payload,
+                ..Default::default()
+            },
+        )
+        .await?
+        .id
+    };
+
+    // Park FIRST (work-preserving: Triage + needs_human_attention, never a
+    // terminal cancel → the worktree is never reaped).
+    goal_transition::park_goal(
+        pool,
+        &card_id,
+        decisions::ACTOR_SYSTEM,
+        &format!("runaway-loop guard: {}", signal),
+    )
+    .await
+    .map_err(String::from)?;
+
+    // L4: stop the worker now that the goal is parked. The completion tracker
+    // guards on `in_progress`, so this cancel/kill leaves the preserved worktree
+    // untouched.
+    if let Some(kill) = take_goal_worker(&card_id) {
+        kill.kill();
+    }
+
+    tracing::warn!(
+        target: "permagentd::brain",
+        "Goal '{}' escalated by runaway-loop guard ({}) — parked (work preserved), decision {}",
+        title,
+        signal,
+        decision_id
+    );
+
+    Ok(Some(decision_id))
+}
+
 /// Process-global identifier for the current daemon lifecycle, minted once on
 /// first access. Stamped on a goal card at dispatch (`dispatched_lifecycle`) so
 /// restart-recovery can distinguish a goal dispatched in THIS running process —
@@ -3654,6 +3787,134 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    /// Stamp a goal card with the running worker's session id (what dispatch
+    /// records), so the runaway-loop escalation can map session → goal.
+    async fn stamp_worker_session(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        card_id: &str,
+        session_id: &str,
+    ) {
+        let card = cards::get_card(pool, card_id).await.unwrap().unwrap();
+        let mut meta = card.metadata_json.as_object().cloned().unwrap();
+        meta.insert(
+            "worker_session_id".to_string(),
+            serde_json::json!(session_id),
+        );
+        let meta_str = serde_json::to_string(&serde_json::Value::Object(meta)).unwrap();
+        sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+            .bind(&meta_str)
+            .bind(card_id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    async fn open_unblock_count(pool: &sqlx::Pool<sqlx::Sqlite>, goal_id: &str) -> i64 {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM decisions WHERE goal_id = ? AND kind = 'unblock'",
+        )
+        .bind(goal_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn runaway_escalation_raises_stuck_and_parks_preserving_work() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_worker_session(&pool, &card.id, "sess-loop").await;
+
+        let decision_id = escalate_session_loop(
+            &pool,
+            "sess-loop",
+            "same action failing the same way",
+            "- developer__shell → error\n- developer__shell → error",
+        )
+        .await
+        .unwrap()
+        .expect("a goal-mapped session must raise a decision");
+
+        // Parked, not cancelled → the worktree is never reaped (work preserved).
+        let after = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &after.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("triage"),
+            "L3/L4 must park (work-preserving), never terminal-cancel"
+        );
+        assert_eq!(
+            after.metadata_json.get("needs_human_attention"),
+            Some(&serde_json::Value::Bool(true))
+        );
+
+        // An open unblock/Stuck decision surfaces the loop.
+        let dec = decisions::get_decision(&pool, &decision_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(dec.kind, "unblock");
+        assert_eq!(dec.status, "open");
+        assert_eq!(dec.goal_id.as_deref(), Some(card.id.as_str()));
+        let payload: decisions::UnblockPayload =
+            serde_json::from_value(dec.payload.clone()).unwrap();
+        assert_eq!(payload.reason, decisions::UnblockReason::Stuck);
+    }
+
+    #[tokio::test]
+    async fn runaway_escalation_dedupes_onto_existing_open_decision() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_worker_session(&pool, &card.id, "sess-loop").await;
+
+        // An open unblock decision already exists for this goal.
+        let existing = decisions::create_decision(
+            &pool,
+            decisions::NewDecision {
+                kind: "unblock".to_string(),
+                goal_id: Some(card.id.clone()),
+                project_id: Some(card.project_id.clone()),
+                headline: Some("Existing unblock for the test goal is already open".to_string()),
+                detail: Some("prior escalation".to_string()),
+                payload: serde_json::to_value(decisions::UnblockPayload {
+                    reason: decisions::UnblockReason::Stuck,
+                    spent: None,
+                    cap: None,
+                })
+                .unwrap(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let got = escalate_session_loop(&pool, "sess-loop", "repeated identical call", "evidence")
+            .await
+            .unwrap()
+            .expect("still returns the open decision id");
+
+        assert_eq!(got, existing.id, "must dedupe onto the existing decision");
+        assert_eq!(
+            open_unblock_count(&pool, &card.id).await,
+            1,
+            "a second trigger must not stack a duplicate decision"
+        );
+    }
+
+    #[tokio::test]
+    async fn runaway_escalation_noop_for_unknown_session() {
+        let pool = test_pool().await;
+        let _card = setup_goal_in_state(&pool, "in_progress", 1).await;
+
+        let got = escalate_session_loop(&pool, "no-such-session", "repeated identical call", "e")
+            .await
+            .unwrap();
+        assert!(got.is_none(), "an interactive/non-goal session is a no-op");
     }
 
     #[tokio::test]
