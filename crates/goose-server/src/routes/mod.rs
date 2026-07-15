@@ -5,6 +5,7 @@ pub mod agents;
 pub mod attachments;
 pub mod backup;
 pub mod brain;
+pub mod browser_act;
 pub mod browser_content;
 pub mod cards;
 pub mod config_management;
@@ -16,6 +17,7 @@ pub mod events;
 pub mod features;
 pub mod findings;
 pub mod gateway;
+pub mod grow;
 pub mod henry_status;
 pub mod identity;
 pub mod inbox;
@@ -67,6 +69,8 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         // Browser content bridge: unauthenticated, localhost-only.
         // Called by the in-process MCP tool (no access to daemon token).
         .merge(browser_content::routes(state.clone()))
+        // Act-on-page bridge (#649): snapshot + click/type/select. Same rail.
+        .merge(browser_act::routes(state.clone()))
         // Voice WebSocket: does its own token validation via query param
         // (WebSocket upgrade can't use the Bearer middleware).
         .merge(voice::routes(state.clone()));
@@ -133,6 +137,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(world::routes(state.clone()))
         .merge(projects::routes(state.clone()))
         .merge(cards::routes(state.clone()))
+        .merge(grow::routes(state.clone()))
         .merge(decisions::routes(state.clone()))
         .merge(agents::routes(state.clone()))
         // Voice HTTP endpoints — on-demand model downloader + synth primitive

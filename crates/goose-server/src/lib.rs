@@ -10,7 +10,6 @@ pub mod auth;
 pub mod automation;
 pub mod backup;
 pub mod brain_ops;
-pub mod brain_sync;
 pub mod configuration;
 pub mod error;
 pub mod middleware;

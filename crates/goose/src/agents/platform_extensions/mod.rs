@@ -128,28 +128,48 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: browser::EXTENSION_NAME,
                 display_name: "Browser",
-                description: "Drive and read the web: open any site in the in-app browser \
-                              (open_website), fetch a public page's readable text without a tab \
-                              (read_webpage), and read the page the user currently has open \
-                              (read_browser_content)",
+                description: "Drive, read, and act on the web: open any site in the in-app \
+                              browser (open_website), fetch a public page's readable text without \
+                              a tab (read_webpage), read the page the user currently has open \
+                              (read_browser_content), list a page's interactive elements as \
+                              stable refs (get_page_snapshot), and click, type, or select on them \
+                              (act_on_page)",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
                 why_it_matters:
                     "When the user says 'go to BBC and read me the homepage', open_website shows \
                      it to them and read_webpage gives you the text to read aloud — no pasting, \
-                     no guessing. read_browser_content covers whatever tab they already have open.",
-                teaching: &[crate::agents::self_knowledge::TeachingStep {
-                    title: "Browse together",
-                    body: "Offer it live: open a site the user cares about with open_website, \
-                           then read_webpage the same URL and give them the highlights out \
-                           loud. Works by voice too — this is the hands-free news flow.",
-                    open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
-                        tab: "Build",
-                        section: Some("browser"),
-                    }),
-                    confirm: None,
-                }],
+                     no guessing. read_browser_content covers whatever tab they already have \
+                     open. And when they need something DONE on a page — fill a form, click a \
+                     button, pick an option — get_page_snapshot lists the interactive elements \
+                     and act_on_page clicks, types, or selects, so you drive the page instead of \
+                     only reading it.",
+                teaching: &[
+                    crate::agents::self_knowledge::TeachingStep {
+                        title: "Browse together",
+                        body: "Offer it live: open a site the user cares about with open_website, \
+                               then read_webpage the same URL and give them the highlights out \
+                               loud. Works by voice too — this is the hands-free news flow.",
+                        open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                            tab: "Build",
+                            section: Some("browser"),
+                        }),
+                        confirm: None,
+                    },
+                    crate::agents::self_knowledge::TeachingStep {
+                        title: "Act on the page, don't just read it",
+                        body: "When a page needs DOING — a search box, a form, a button — call \
+                               get_page_snapshot to see the interactive elements as numbered \
+                               refs, then act_on_page with a ref to click, type, or select. Take \
+                               a fresh snapshot after each act; the page may have changed.",
+                        open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                            tab: "Build",
+                            section: Some("browser"),
+                        }),
+                        confirm: None,
+                    },
+                ],
                 client_factory: |ctx| Box::new(browser::BrowserClient::new(ctx).unwrap()),
             },
         );
@@ -372,7 +392,29 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 why_it_matters:
                     "Run multi-agent work — dispatch goals, track roadmaps, and steer other sessions when one agent is not enough — escalating decisions to the user for approval rather than acting unsupervised.",
-                teaching: &[],
+                teaching: &[
+                    crate::agents::self_knowledge::TeachingStep {
+                        title: "Give me acceptance criteria",
+                        body: "Tell the user that when they hand you a goal's acceptance \
+                               criteria — 'the project builds', 'GET /health returns 200', \
+                               'docs/guide.md exists', 'no TODO remains in src/lib.rs' — you \
+                               compile the mechanically-checkable ones into checks the daemon \
+                               runs in the goal's worktree before it can be approved. Ask for \
+                               criteria in that measurable, verifiable shape.",
+                        open_surface: None,
+                        confirm: None,
+                    },
+                    crate::agents::self_knowledge::TeachingStep {
+                        title: "Proof, not a claim",
+                        body: "Make the point out loud: with acceptance criteria you verify a \
+                               goal is actually done — the goal cannot pass review until its \
+                               checks pass — rather than just relaying that a worker reported \
+                               success. Offer to add a checkable criterion to a real goal so \
+                               they see it enforced.",
+                        open_surface: None,
+                        confirm: None,
+                    },
+                ],
                 client_factory: |ctx| Box::new(orchestrator::OrchestratorClient::new(ctx).unwrap()),
             },
         );
@@ -456,7 +498,9 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 unprefixed_tools: true,
                 hidden: false,
                 why_it_matters:
-                    "Turn a repeatable task into a saved automation or schedule the user can rely on.",
+                    "Turn a repeatable task into a saved automation or schedule the user can rely on. \
+                     Saved skills that prove useful are promoted to the front of what you reach for, \
+                     and ones that never fire retire themselves, so the skill library stays honest.",
                 teaching: &[],
                 client_factory: |ctx| {
                     Box::new(recipe_author::RecipeAuthorClient::new(ctx).unwrap())

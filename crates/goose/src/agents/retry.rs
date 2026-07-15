@@ -15,7 +15,7 @@ use crate::agents::types::{
 use crate::config::Config;
 use crate::conversation::message::Message;
 use crate::conversation::Conversation;
-use crate::tool_monitor::RepetitionInspector;
+use crate::tool_monitor::ProgressMonitor;
 
 /// Result of a retry logic evaluation
 #[derive(Debug, Clone, PartialEq)]
@@ -42,7 +42,7 @@ pub struct RetryManager {
     /// Current number of retry attempts
     attempts: Arc<Mutex<u32>>,
     /// Optional repetition inspector for reset operations
-    repetition_inspector: Option<Arc<Mutex<Option<RepetitionInspector>>>>,
+    repetition_inspector: Option<Arc<Mutex<Option<ProgressMonitor>>>>,
 }
 
 impl Default for RetryManager {
@@ -62,7 +62,7 @@ impl RetryManager {
 
     /// Create a new retry manager with repetition inspector
     pub fn with_repetition_inspector(
-        repetition_inspector: Arc<Mutex<Option<RepetitionInspector>>>,
+        repetition_inspector: Arc<Mutex<Option<ProgressMonitor>>>,
     ) -> Self {
         Self {
             attempts: Arc::new(Mutex::new(0)),

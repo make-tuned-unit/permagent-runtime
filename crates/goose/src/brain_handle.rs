@@ -288,7 +288,7 @@ impl SafeBrain {
         let brain = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             use spectral::core::entity_id::entity_id;
-            use spectral::graph::kuzu_store::Entity;
+            use spectral::graph::graph_store::Entity;
 
             let id = entity_id("person", &canonical);
             let store = brain.store();
@@ -367,7 +367,7 @@ impl SafeBrain {
         let project_name = project_name.to_string();
         tokio::task::spawn_blocking(move || {
             use spectral::graph::canonicalize::Canonicalizer;
-            use spectral::graph::kuzu_store::{Entity, Triple};
+            use spectral::graph::graph_store::{Entity, Triple};
 
             let person_id: spectral::core::entity_id::EntityId = person_id_hex
                 .parse()

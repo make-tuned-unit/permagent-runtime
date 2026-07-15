@@ -11,6 +11,7 @@ import { TerminalManager } from '../terminal/TerminalManager';
 import type { TerminalManagerHandle } from '../terminal/TerminalManager';
 import { Browser } from '../browser';
 import { ProjectChip } from './ProjectChip';
+import { CostStatusline } from './CostStatusline';
 import type { Project } from './useProjects';
 
 // Ensure a project site_url has a scheme so the in-app browser navigates
@@ -252,6 +253,9 @@ export function BuildView() {
           )}
         </Group>
       </div>
+
+      {/* Always-on cost meter: live, single-sourced session $ from the SSE ledger. */}
+      <CostStatusline />
     </div>
   );
 }

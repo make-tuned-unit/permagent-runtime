@@ -159,13 +159,30 @@ export interface SSEPingEvent {
 
 export type SSEEvent = SSEMessageEvent | SSEErrorEvent | SSEFinishEvent | SSEPingEvent | { type: string; [key: string]: unknown };
 
+/**
+ * Live per-frame token + cost state. Rides every SSE MessageEvent frame
+ * (`token_state`). NOTE: the daemon serializes this struct `rename_all =
+ * "camelCase"`, so the fields are camelCase here (the enclosing `token_state`
+ * key itself stays snake_case). Every cost figure is single-sourced from the
+ * per-call cost ledger via the canonical `cost_of`.
+ */
 export interface TokenState {
-  input_tokens: number;
-  output_tokens: number;
-  total_tokens: number;
-  accumulated_input_tokens: number;
-  accumulated_output_tokens: number;
-  accumulated_total_tokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  accumulatedInputTokens: number;
+  accumulatedOutputTokens: number;
+  accumulatedTotalTokens: number;
+  /** Cost of the most recent provider turn (USD). */
+  costUsd: number;
+  /** Running session cost (USD) — the one authoritative number. */
+  accumulatedCostUsd: number;
+  /** Running dollars saved by cache reads — the "cache saved $X" signal. */
+  cacheSavingsUsd: number;
+  /** Percent of the context window in use, or null when the limit is unknown. */
+  contextPercent: number | null;
+  /** Active model name. */
+  model: string;
 }
 
 export interface Skill {
@@ -445,6 +462,20 @@ export interface ExtensionQuery {
     timeout?: number;
     [key: string]: unknown;
   };
+}
+
+/** One file in the Downloads inbox (metadata row; bytes live on disk).
+ *  Mirrors `permagent::inbox::InboxFile` — serde serializes `Option<T>` as null. */
+export interface InboxFile {
+  id: string;
+  filename: string;
+  original_url: string | null;
+  content_type: string | null;
+  size_bytes: number | null;
+  disk_path: string;
+  status: string;
+  project_id: string | null;
+  created_at: string;
 }
 
 export const api = {
@@ -871,13 +902,10 @@ export const api = {
     return resp.json() as Promise<{ text: string }>;
   },
 
-  // State snapshot (stubbed until daemon implements)
-  getStateSnapshot: () => Promise.resolve({
-    tasks: [] as Array<{ id: string; title: string | null; status: string; automation_id: string | null; created_at: string | null; updated_at: string }>,
-    service_health: [] as Array<{ service: string; status: string; last_check: string; latency_ms: number }>,
-    receipts: [] as Array<{ id: string; run_id: string; step_id: string | null; model: string; input_tokens: number; output_tokens: number; cost_usd: number; recorded_at: string }>,
-    spend: { today_usd: 0, month_usd: 0 },
-  }),
+  // Downloads inbox (#392/#393) — files that landed in ~/.permagent/inbox via the
+  // in-app browser download flow. Lists metadata rows newest-first. Recording a
+  // row (POST) is driven by the desktop download bridge, not the UI.
+  getInbox: () => apiFetch<InboxFile[]>('/api/inbox'),
 
   /** Fetch with daemon Bearer token auth (for /activity/* endpoints). */
   fetchAuthed: async (endpoint: string, options?: RequestInit): Promise<Response> => {

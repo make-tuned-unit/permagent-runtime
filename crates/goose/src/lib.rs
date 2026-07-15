@@ -17,6 +17,7 @@ pub mod cards;
 pub mod config;
 pub mod context_mgmt;
 pub mod conversation;
+pub mod cost_router;
 pub mod decision_inbox;
 pub mod decisions;
 pub mod dictation;

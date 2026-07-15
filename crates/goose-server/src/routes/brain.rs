@@ -292,7 +292,7 @@ struct GraphResponse {
 /// Duplicate triples can legitimately exist in the store (re-asserts append);
 /// display needs each connection once.
 fn collect_entity_edges(
-    triples: &[spectral::graph::kuzu_store::Triple],
+    triples: &[spectral::graph::graph_store::Triple],
     picked_ids: &std::collections::HashSet<String>,
 ) -> Vec<GraphEdge> {
     let mut seen = std::collections::HashSet::new();
@@ -918,7 +918,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
 mod tests {
     use super::*;
     use spectral::core::entity_id::entity_id;
-    use spectral::graph::kuzu_store::Triple;
+    use spectral::graph::graph_store::Triple;
 
     fn triple(from_canonical: &str, to_canonical: &str, predicate: &str) -> Triple {
         Triple {

@@ -51,6 +51,70 @@ pub enum SessionType {
 static SESSION_STORAGE: LazyLock<Arc<SessionStorage>> =
     LazyLock::new(|| Arc::new(SessionStorage::new_spectral()));
 
+/// Billing tier of a provider call. Stored as TEXT in `cost_ledger.cost_tier`
+/// (no SQLite `CHECK` — validated here in Rust to avoid the widen-in-two-places
+/// footgun). `LocalFree` (Ollama et al.) and in-quota `Subscription` calls are
+/// not chargeable and record `cost_usd = 0`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CostTier {
+    /// Runs on local hardware — no marginal dollar cost (e.g. Ollama).
+    LocalFree,
+    /// Covered by a flat subscription / quota — no per-call charge.
+    Subscription,
+    /// Metered pay-per-token API — the call costs real money.
+    PaidApi,
+}
+
+impl CostTier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CostTier::LocalFree => "local_free",
+            CostTier::Subscription => "subscription",
+            CostTier::PaidApi => "paid_api",
+        }
+    }
+
+    /// Whether a call in this tier incurs a real marginal dollar cost.
+    pub fn is_chargeable(self) -> bool {
+        matches!(self, CostTier::PaidApi)
+    }
+}
+
+/// One append-only per-call cost row. Every money field is the output of the
+/// single canonical [`crate::providers::canonical::cost_of`] function, so the
+/// ledger can never disagree with the live meter or the verification digest.
+/// `turn_index` is assigned atomically at append time (the count of prior rows
+/// for the session), so it is not a field here.
+#[derive(Debug, Clone)]
+pub struct CostLedgerRow {
+    pub call_id: String,
+    pub ts: String,
+    pub session_id: String,
+    pub parent_session_id: Option<String>,
+    pub task_id: Option<String>,
+    pub goal_id: Option<String>,
+    pub subagent_id: Option<String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub cost_tier: CostTier,
+    pub is_headless: bool,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
+    pub input_cost: f64,
+    pub output_cost: f64,
+    pub cache_read_cost: f64,
+    pub cache_write_cost: f64,
+    pub cost_usd: f64,
+    /// Dollars saved by cache reads this call — rolled into the session's
+    /// `accumulated_cache_savings_usd` (not itself a ledger column).
+    pub cache_savings_usd: f64,
+    /// True when tokens were estimated (no exact provider usage) rather than
+    /// reported.
+    pub is_estimated: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Session {
     pub id: String,
@@ -71,6 +135,21 @@ pub struct Session {
     pub accumulated_total_tokens: Option<i32>,
     pub accumulated_input_tokens: Option<i32>,
     pub accumulated_output_tokens: Option<i32>,
+    /// Cost of the most recent provider turn (USD). Rolled up on each cost-ledger
+    /// append; the live meter's "this turn" figure.
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
+    /// Running session cost (USD) = SUM(cost_ledger.cost_usd). O(1) rollup.
+    #[serde(default)]
+    pub accumulated_cost_usd: Option<f64>,
+    #[serde(default)]
+    pub accumulated_cache_read_tokens: Option<i64>,
+    #[serde(default)]
+    pub accumulated_cache_write_tokens: Option<i64>,
+    /// Running dollars saved by cache reads vs. full input rate — the visible
+    /// "cache saved $X" trust signal.
+    #[serde(default)]
+    pub accumulated_cache_savings_usd: Option<f64>,
     pub schedule_id: Option<String>,
     pub recipe: Option<Recipe>,
     pub user_recipe_values: Option<HashMap<String, String>>,
@@ -301,6 +380,13 @@ impl SessionManager {
         self.storage.apply_update(builder).await
     }
 
+    /// Append one per-call cost row and advance the session's O(1) cost rollup
+    /// (`cost_usd`, `accumulated_cost_usd`, cache accumulators) in a single
+    /// transaction. See [`CostLedgerRow`].
+    pub async fn append_cost_ledger(&self, row: &CostLedgerRow) -> Result<()> {
+        self.storage.append_cost_ledger(row).await
+    }
+
     pub async fn add_message(&self, id: &str, message: &Message) -> Result<()> {
         self.storage.add_message(id, message).await
     }
@@ -480,6 +566,11 @@ impl Default for Session {
             accumulated_total_tokens: None,
             accumulated_input_tokens: None,
             accumulated_output_tokens: None,
+            cost_usd: None,
+            accumulated_cost_usd: None,
+            accumulated_cache_read_tokens: None,
+            accumulated_cache_write_tokens: None,
+            accumulated_cache_savings_usd: None,
             schedule_id: None,
             recipe: None,
             user_recipe_values: None,
@@ -546,6 +637,22 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Session {
             accumulated_total_tokens: row.try_get("accumulated_total_tokens")?,
             accumulated_input_tokens: row.try_get("accumulated_input_tokens")?,
             accumulated_output_tokens: row.try_get("accumulated_output_tokens")?,
+            // Robust to absence (older rows / lean projections): default to None
+            // rather than erroring, mirroring provider_name / thread_id below.
+            cost_usd: row.try_get("cost_usd").ok().flatten(),
+            accumulated_cost_usd: row.try_get("accumulated_cost_usd").ok().flatten(),
+            accumulated_cache_read_tokens: row
+                .try_get("accumulated_cache_read_tokens")
+                .ok()
+                .flatten(),
+            accumulated_cache_write_tokens: row
+                .try_get("accumulated_cache_write_tokens")
+                .ok()
+                .flatten(),
+            accumulated_cache_savings_usd: row
+                .try_get("accumulated_cache_savings_usd")
+                .ok()
+                .flatten(),
             schedule_id: row.try_get("schedule_id")?,
             recipe,
             user_recipe_values,
@@ -814,6 +921,13 @@ impl SessionStorage {
                     if version < 27 {
                         spectral_schema::migrate_v26_to_v27(&self.pool).await?;
                     }
+                    // v28: per-call cost_ledger table + O(1) cost-rollup columns
+                    // on sessions (cost-transparency workstream). Purely additive
+                    // (CREATE TABLE IF NOT EXISTS + PRAGMA-guarded ADD COLUMN),
+                    // base-independent, always-on.
+                    if version < 28 {
+                        spectral_schema::migrate_v27_to_v28(&self.pool).await?;
+                    }
                     // Version-independent safety net for the cfg-gated v22
                     // recognition columns. The always-on v23 above can stamp
                     // schema_version past the `version < 22` gate on a feature-off
@@ -895,6 +1009,8 @@ impl SessionStorage {
         SELECT id, working_dir, name, description, user_set_name, session_type, created_at, updated_at, extension_data,
                total_tokens, input_tokens, output_tokens,
                accumulated_total_tokens, accumulated_input_tokens, accumulated_output_tokens,
+               cost_usd, accumulated_cost_usd, accumulated_cache_read_tokens,
+               accumulated_cache_write_tokens, accumulated_cache_savings_usd,
                schedule_id, recipe_json, user_recipe_values_json,
                provider_name, model_config_json, goose_mode, thread_id
         FROM sessions
@@ -1037,6 +1153,78 @@ impl SessionStorage {
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
         q = q.bind(&builder.session_id);
         q.execute(&mut *tx).await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Insert one cost-ledger row and advance the session's O(1) cost rollup in a
+    /// single `BEGIN IMMEDIATE` transaction. `turn_index` is computed atomically
+    /// as the count of prior rows for the session (0-based).
+    async fn append_cost_ledger(&self, row: &CostLedgerRow) -> Result<()> {
+        let pool = self.pool().await?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+
+        sqlx::query(
+            "INSERT INTO cost_ledger (
+                call_id, ts, session_id, parent_session_id, task_id, goal_id,
+                subagent_id, turn_index, provider, model, cost_tier, is_chargeable,
+                is_headless, input_tokens, output_tokens, cache_read_tokens,
+                cache_write_tokens, input_cost, output_cost, cache_read_cost,
+                cache_write_cost, cost_usd, is_estimated
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?,
+                ?, (SELECT COUNT(*) FROM cost_ledger WHERE session_id = ?), ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?
+            )",
+        )
+        .bind(&row.call_id)
+        .bind(&row.ts)
+        .bind(&row.session_id)
+        .bind(&row.parent_session_id)
+        .bind(&row.task_id)
+        .bind(&row.goal_id)
+        .bind(&row.subagent_id)
+        .bind(&row.session_id) // turn_index subquery
+        .bind(&row.provider)
+        .bind(&row.model)
+        .bind(row.cost_tier.as_str())
+        .bind(row.cost_tier.is_chargeable())
+        .bind(row.is_headless)
+        .bind(row.input_tokens)
+        .bind(row.output_tokens)
+        .bind(row.cache_read_tokens)
+        .bind(row.cache_write_tokens)
+        .bind(row.input_cost)
+        .bind(row.output_cost)
+        .bind(row.cache_read_cost)
+        .bind(row.cache_write_cost)
+        .bind(row.cost_usd)
+        .bind(row.is_estimated)
+        .execute(&mut *tx)
+        .await?;
+
+        // O(1) rollup: last-turn cost + running accumulators. COALESCE handles the
+        // first append (columns start NULL on existing DBs).
+        sqlx::query(
+            "UPDATE sessions SET
+                cost_usd = ?,
+                accumulated_cost_usd = COALESCE(accumulated_cost_usd, 0) + ?,
+                accumulated_cache_read_tokens = COALESCE(accumulated_cache_read_tokens, 0) + ?,
+                accumulated_cache_write_tokens = COALESCE(accumulated_cache_write_tokens, 0) + ?,
+                accumulated_cache_savings_usd = COALESCE(accumulated_cache_savings_usd, 0) + ?
+             WHERE id = ?",
+        )
+        .bind(row.cost_usd)
+        .bind(row.cost_usd)
+        .bind(row.cache_read_tokens)
+        .bind(row.cache_write_tokens)
+        .bind(row.cache_savings_usd)
+        .bind(&row.session_id)
+        .execute(&mut *tx)
+        .await?;
 
         tx.commit().await?;
         Ok(())
@@ -2190,6 +2378,7 @@ mod tests {
         // separate brain/memory.db) and are no longer created by init_spectral_db
         // (dropped by migrate_v18_to_v19).
         let expected = vec![
+            "cost_ledger",
             "integrations",
             "messages",
             "provider_inventory_entries",
@@ -2220,5 +2409,126 @@ mod tests {
                 .unwrap();
         assert_eq!(user.0, "default");
         assert_eq!(user.1, "Default User");
+    }
+
+    #[tokio::test]
+    async fn test_cost_ledger_append_and_rollup() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "cost".to_string(),
+                SessionType::User,
+                GooseMode::default(),
+            )
+            .await
+            .unwrap();
+        let sid = session.id.clone();
+
+        // A chargeable (paid_api) call: cost_usd is the folded four-component total.
+        let chargeable = CostLedgerRow {
+            call_id: "call-1".to_string(),
+            ts: "2026-07-14T00:00:00Z".to_string(),
+            session_id: sid.clone(),
+            parent_session_id: None,
+            task_id: Some("task-1".to_string()),
+            goal_id: None,
+            subagent_id: None,
+            provider: Some("anthropic".to_string()),
+            model: Some("claude-3.5-sonnet".to_string()),
+            cost_tier: CostTier::PaidApi,
+            is_headless: false,
+            input_tokens: 1000,
+            output_tokens: 500,
+            cache_read_tokens: 200,
+            cache_write_tokens: 300,
+            input_cost: 0.0015,
+            output_cost: 0.0075,
+            cache_read_cost: 0.000_06,
+            cache_write_cost: 0.001_125,
+            cost_usd: 0.010_185,
+            cache_savings_usd: 0.000_54,
+            is_estimated: false,
+        };
+        sm.append_cost_ledger(&chargeable).await.unwrap();
+
+        // A non-chargeable (local_free) call: cost_usd MUST be 0.
+        let local = CostLedgerRow {
+            call_id: "call-2".to_string(),
+            ts: "2026-07-14T00:00:01Z".to_string(),
+            session_id: sid.clone(),
+            parent_session_id: None,
+            task_id: None,
+            goal_id: None,
+            subagent_id: None,
+            provider: Some("ollama".to_string()),
+            model: Some("llama3".to_string()),
+            cost_tier: CostTier::LocalFree,
+            is_headless: true,
+            input_tokens: 400,
+            output_tokens: 200,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            input_cost: 0.0,
+            output_cost: 0.0,
+            cache_read_cost: 0.0,
+            cache_write_cost: 0.0,
+            cost_usd: 0.0,
+            cache_savings_usd: 0.0,
+            is_estimated: false,
+        };
+        sm.append_cost_ledger(&local).await.unwrap();
+
+        let pool = sm.pool_clone().await.unwrap();
+
+        // Row 1 persisted with attribution keys + chargeable flag; turn_index=0.
+        let (tier, chargeable_flag, task, turn, cost): (String, i64, Option<String>, i64, f64) =
+            sqlx::query_as(
+                "SELECT cost_tier, is_chargeable, task_id, turn_index, cost_usd \
+                 FROM cost_ledger WHERE call_id = ?",
+            )
+            .bind("call-1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(tier, "paid_api");
+        assert_eq!(chargeable_flag, 1);
+        assert_eq!(task.as_deref(), Some("task-1"));
+        assert_eq!(turn, 0, "first row for the session is turn 0");
+        assert!((cost - 0.010_185).abs() < 1e-12);
+
+        // Local row: not chargeable, cost 0, turn_index=1.
+        let (tier2, chargeable2, cost2, turn2): (String, i64, f64, i64) = sqlx::query_as(
+            "SELECT cost_tier, is_chargeable, cost_usd, turn_index \
+             FROM cost_ledger WHERE call_id = ?",
+        )
+        .bind("call-2")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(tier2, "local_free");
+        assert_eq!(chargeable2, 0);
+        assert_eq!(cost2, 0.0);
+        assert_eq!(turn2, 1);
+
+        // Rollup invariant: session.accumulated_cost_usd == SUM(cost_ledger.cost_usd).
+        let sum: f64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM cost_ledger WHERE session_id = ?",
+        )
+        .bind(&sid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let reread = sm.get_session(&sid, false).await.unwrap();
+        let acc = reread.accumulated_cost_usd.expect("rollup populated");
+        assert!((acc - sum).abs() < 1e-12, "rollup {acc} != SUM {sum}");
+        assert!((acc - 0.010_185).abs() < 1e-12);
+        // Last-turn cost tracks the most recent append (the local $0 call).
+        assert_eq!(reread.cost_usd, Some(0.0));
+        // Cache token accumulators + the visible savings accumulator.
+        assert_eq!(reread.accumulated_cache_read_tokens, Some(200));
+        assert_eq!(reread.accumulated_cache_write_tokens, Some(300));
+        assert!((reread.accumulated_cache_savings_usd.unwrap() - 0.000_54).abs() < 1e-12);
     }
 }

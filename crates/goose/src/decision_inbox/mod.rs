@@ -24,22 +24,38 @@ pub const DECISION_INBOX_FEATURE: crate::agents::self_knowledge::FeatureDescript
         what_it_does:
             "The supervised-approval queue on the Home dashboard where decisions land for the \
              user: goal reviews with evidence, unblock requests when budgets exhaust, risk \
-             gates, and initiative proposals — each approved or declined with one click",
+             gates, and initiative proposals — each approved, declined, or accepted-with-edits \
+             in one click",
         why_it_matters:
             "It is the human-judgment seam of the whole system — nothing destructive or \
              irreversible proceeds without passing through it. When you park a goal or propose \
              an initiative, this is where it surfaces; when the user wonders why something is \
-             waiting, this is where to look",
+             waiting, this is where to look. And when the user revises a draft before accepting \
+             it, I learn the correction — so my next draft moves toward how they would write it",
         state_source: crate::agents::self_knowledge::StateSource::Static,
-        teaching: &[crate::agents::self_knowledge::TeachingStep {
-            title: "Where decisions wait for you",
-            body: "Open the Home dashboard's Decision Inbox. Anything the system needs the \
-                   user's judgment on — goal approvals, unblocks, proposals — queues here \
-                   with its evidence attached. Nothing risky happens without their say-so.",
-            open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
-                tab: "Home",
-                section: Some("decisions"),
-            }),
-            confirm: None,
-        }],
+        teaching: &[
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Where decisions wait for you",
+                body: "Open the Home dashboard's Decision Inbox. Anything the system needs the \
+                       user's judgment on — goal approvals, unblocks, proposals — queues here \
+                       with its evidence attached. Nothing risky happens without their say-so.",
+                open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                    tab: "Dashboard",
+                    section: Some("decisions"),
+                }),
+                confirm: None,
+            },
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Approve with edits — teach me by revising",
+                body: "When a proposal or draft is not quite right, do not just approve or \
+                       decline it — revise the text first, then accept. I keep what the user \
+                       accepted AND learn the change itself, so the next time I draft something \
+                       similar it starts closer to how they would write it.",
+                open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                    tab: "Dashboard",
+                    section: Some("decisions"),
+                }),
+                confirm: None,
+            },
+        ],
     };

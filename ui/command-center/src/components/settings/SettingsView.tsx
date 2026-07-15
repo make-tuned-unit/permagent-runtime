@@ -11,6 +11,7 @@ import {
 import { ProvidersSection } from './ProvidersSection';
 import { SearchToolsSection } from './SearchToolsSection';
 import { usePersona } from './useSettings';
+import { resolveSettingsSection } from './sections';
 import { VoicePicker } from '../voice/VoicePicker';
 import { H1, Section, Row, TextInput, Chip, Toggle, Slider, Kbd, SaveButton } from './atoms';
 
@@ -868,7 +869,18 @@ function DevicesPanel() {
 
 export function SettingsView() {
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
-  const [section, setSection] = useState('agent');
+  const pendingSettingsSection = useCommandCenter(s => s.pendingSettingsSection);
+  const setPendingSettingsSection = useCommandCenter(s => s.setPendingSettingsSection);
+  const [section, setSection] = useState<string>(() => resolveSettingsSection(pendingSettingsSection));
+
+  // Honor an agent/voice deep-link (Settings → <pane>): when the store carries a
+  // pending section, jump to that pane and consume it so it only fires once.
+  useEffect(() => {
+    if (pendingSettingsSection) {
+      setSection(resolveSettingsSection(pendingSettingsSection));
+      setPendingSettingsSection(null);
+    }
+  }, [pendingSettingsSection, setPendingSettingsSection]);
 
   const dismiss = useCallback(() => setActivePanel('chat'), [setActivePanel]);
   useEffect(() => {

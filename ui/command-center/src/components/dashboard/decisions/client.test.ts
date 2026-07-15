@@ -15,7 +15,7 @@ vi.mock('../../../lib/api', () => ({
 }));
 
 import { realDecisionsClient } from './client';
-import { DecisionConflictError, choiceOptions, recommendedChoiceId, resolutionText } from './types';
+import { DecisionConflictError, choiceOptions, draftText, recommendedChoiceId, resolutionText } from './types';
 import type { Decision } from './types';
 
 const wireDecision = {
@@ -124,6 +124,32 @@ describe('realDecisionsClient.answer', () => {
     expect(res.effect_error).toBeNull();
   });
 
+  it('sends approve-with-edits as answer=edit + inputText to the mounted endpoint', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      decision: {
+        ...wireDecision, kind: 'automation_proposal',
+        status: 'answered', answer: 'edit', answer_input: 'git status && git pull --rebase',
+      },
+      effect: 'automation proposal approved with edits',
+      effectError: null,
+    }));
+
+    const res = await realDecisionsClient.answer('d-1', {
+      answer: 'edit',
+      input_text: 'git status && git pull --rebase',
+    });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://daemon.test/api/decisions/d-1/answer');
+    expect(init.method).toBe('POST');
+    const body = JSON.parse(init.body as string);
+    // The revised draft rides in inputText (AnswerRequest camelCase); the daemon
+    // stores answer='edit' and learns the correction.
+    expect(body).toEqual({ answer: 'edit', inputText: 'git status && git pull --rebase' });
+    expect(res.decision.answer).toBe('edit');
+    expect(res.effect).toBe('automation proposal approved with edits');
+  });
+
   it('surfaces the gated effect and maps effectError → effect_error', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({
       decision: { ...wireDecision, status: 'answered', answer: 'approve' },
@@ -228,5 +254,19 @@ describe('payload helpers', () => {
       .toBe('Approved by Aria');
     expect(resolutionText({ ...wireDecision, answer: 'reject', acted_by: 'jesse', answer_note: 'not yet' } as Decision))
       .toBe('Rejected — note: not yet');
+    expect(resolutionText({ ...wireDecision, answer: 'edit', acted_by: 'jesse' } as Decision))
+      .toBe('Accepted with edits');
+  });
+
+  it('draftText reads payload.draft only when it is a non-empty string', () => {
+    const withDraft: Decision = {
+      ...wireDecision, kind: 'automation_proposal',
+      payload: { normalized_command: 'ls', draft: 'ls -la' },
+    };
+    expect(draftText(withDraft)).toBe('ls -la');
+    // Absent, empty, or non-string drafts read as null (no edit affordance).
+    expect(draftText({ ...wireDecision } as Decision)).toBeNull();
+    expect(draftText({ ...withDraft, payload: { draft: '   ' } } as Decision)).toBeNull();
+    expect(draftText({ ...withDraft, payload: { draft: 42 } } as Decision)).toBeNull();
   });
 });

@@ -2,6 +2,7 @@ pub mod format;
 pub mod graph;
 pub mod languages;
 pub mod parser;
+pub mod repo_map;
 
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};

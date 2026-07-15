@@ -71,6 +71,91 @@ impl Parser {
     }
 }
 
+// ── Syntax checking (lint-on-edit) ─────────────────────────────────────
+
+/// Result of a tree-sitter syntax check on a source string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyntaxStatus {
+    /// The file extension maps to no compiled grammar — cannot lint, pass through.
+    Unsupported,
+    /// Parsed with no ERROR or MISSING nodes.
+    Clean,
+    /// Parsed, but the tree contains at least one syntax error.
+    Error {
+        /// 1-based line of the first error node.
+        line: usize,
+        /// 1-based column of the first error node.
+        column: usize,
+        /// Trimmed text of the offending source line (capped).
+        snippet: String,
+    },
+}
+
+/// Parse `source` (language inferred from `path`'s extension) with tree-sitter and
+/// report whether it contains syntax errors.
+///
+/// Returns [`SyntaxStatus::Unsupported`] for any extension without a compiled
+/// grammar so callers can pass such files through untouched. This is the primitive
+/// behind the edit tool's lint-on-edit guardrail: only NET-NEW breakage
+/// (`Clean` before, `Error` after) should ever block a write.
+pub fn syntax_check(path: &Path, source: &str) -> SyntaxStatus {
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        return SyntaxStatus::Unsupported;
+    };
+    let Some(info) = lang_for_ext(ext) else {
+        return SyntaxStatus::Unsupported;
+    };
+    let lang = (info.language)();
+    let mut parser = TsParser::new();
+    if parser.set_language(&lang).is_err() {
+        return SyntaxStatus::Unsupported;
+    }
+    let Some(tree) = parser.parse(source, None) else {
+        // Grammar exists but tree-sitter could not produce a tree — don't block.
+        return SyntaxStatus::Unsupported;
+    };
+    let root = tree.root_node();
+    if !root.has_error() {
+        return SyntaxStatus::Clean;
+    }
+    let err = first_error_node(root).unwrap_or(root);
+    let pos = err.start_position();
+    let snippet: String = source
+        .lines()
+        .nth(pos.row)
+        .unwrap_or("")
+        .trim()
+        .chars()
+        .take(200)
+        .collect();
+    SyntaxStatus::Error {
+        line: pos.row + 1,
+        column: pos.column + 1,
+        snippet,
+    }
+}
+
+/// Depth-first search for the first ERROR or MISSING node in the tree.
+/// Uses `has_error()` to prune clean subtrees.
+fn first_error_node<'tree>(node: tree_sitter::Node<'tree>) -> Option<tree_sitter::Node<'tree>> {
+    if node.is_error() || node.is_missing() {
+        return Some(node);
+    }
+    if !node.has_error() {
+        return None;
+    }
+    for i in 0..node.child_count() as u32 {
+        let Some(child) = node.child(i) else {
+            continue;
+        };
+        if let Some(found) = first_error_node(child) {
+            return Some(found);
+        }
+    }
+    // has_error() is true but no descendant flagged individually — report this node.
+    Some(node)
+}
+
 // ── Query Runners ──────────────────────────────────────────────────────
 
 fn extract_functions(
@@ -755,4 +840,51 @@ fn truncate(s: &str, max: usize) -> String {
 
 fn node_text<'a>(source: &'a str, node: &tree_sitter::Node) -> &'a str {
     source.get(node.byte_range()).unwrap_or("")
+}
+
+#[cfg(test)]
+mod syntax_check_tests {
+    use super::{syntax_check, SyntaxStatus};
+    use std::path::Path;
+
+    #[test]
+    fn clean_rust_is_clean() {
+        let status = syntax_check(Path::new("a.rs"), "fn main() {\n    let x = 1;\n}\n");
+        assert_eq!(status, SyntaxStatus::Clean);
+    }
+
+    #[test]
+    fn broken_rust_is_error_with_location() {
+        // Missing closing brace.
+        let status = syntax_check(Path::new("a.rs"), "fn main() {\n    let x = 1;\n");
+        match status {
+            SyntaxStatus::Error { line, .. } => assert!(line >= 1),
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn broken_python_is_error() {
+        // `def` with no body / colon.
+        let status = syntax_check(Path::new("a.py"), "def foo(\n");
+        assert!(matches!(status, SyntaxStatus::Error { .. }));
+    }
+
+    #[test]
+    fn clean_python_is_clean() {
+        let status = syntax_check(Path::new("a.py"), "def foo():\n    return 1\n");
+        assert_eq!(status, SyntaxStatus::Clean);
+    }
+
+    #[test]
+    fn unknown_extension_is_unsupported() {
+        let status = syntax_check(Path::new("a.txt"), "this is (((not code");
+        assert_eq!(status, SyntaxStatus::Unsupported);
+    }
+
+    #[test]
+    fn no_extension_is_unsupported() {
+        let status = syntax_check(Path::new("Makefile"), "all:\n\techo hi\n");
+        assert_eq!(status, SyntaxStatus::Unsupported);
+    }
 }

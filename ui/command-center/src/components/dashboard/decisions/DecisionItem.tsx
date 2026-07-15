@@ -27,7 +27,7 @@ import type { ReactNode } from 'react';
 import { font, radius, ease } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import type { AnswerBody, Decision } from './types';
-import { choiceOptions, recommendedChoiceId } from './types';
+import { choiceOptions, recommendedChoiceId, draftText } from './types';
 import type { AnswerResult } from './useDecisions';
 import { EvidenceDigest } from './EvidenceDigest';
 import { formatAge } from './format';
@@ -96,6 +96,8 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
   const [note, setNote] = useState('');
   const [inputOpen, setInputOpen] = useState(false);
   const [inputText, setInputText] = useState('');
+  const [editOpen, setEditOpen] = useState(false);
+  const [editText, setEditText] = useState('');
   const [evidenceOpen, setEvidenceOpen] = useState(false);
   const [cancelErr, setCancelErr] = useState<string | null>(null);
   const conflictTimer = useRef<ReturnType<typeof setTimeout>>();
@@ -125,7 +127,10 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
   const isChoice = d.kind === 'choice';
   const isApprovalLike =
     d.kind === 'approve_review' || d.kind === 'risk_gate' || d.kind === 'malformed' ||
-    d.kind === 'enrichment_proposal';
+    d.kind === 'enrichment_proposal' || d.kind === 'automation_proposal';
+  // The agent's original draft, when this decision carries one (payload.draft):
+  // enables "approve with edits" — revise the text, then accept (answer='edit').
+  const draft = draftText(d);
   const options = choiceOptions(d);
   const recommendedId = recommendedChoiceId(d);
   const recommended = options.find(o => o.id === recommendedId) ?? null;
@@ -262,6 +267,43 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
             <Btn onClick={() => setInputOpen(false)}>Cancel</Btn>
           </div>
         </div>
+      ) : editOpen ? (
+        /* Approve-with-edits — revise the agent's draft, then accept. Travels as
+           answer='edit': the daemon keeps the revision AND learns the
+           draft→revision delta (edit-as-training, decision_inbox/learn.rs). */
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 6 }}>
+            Revise the draft, then accept — your version becomes the answer and {agentName} learns the change.
+          </div>
+          <textarea
+            value={editText}
+            onChange={e => setEditText(e.target.value)}
+            rows={4}
+            style={{
+              width: '100%', boxSizing: 'border-box', resize: 'vertical',
+              borderRadius: radius.md, border: `1px solid ${colors.border}`,
+              background: colors.inputBg, color: colors.text,
+              fontFamily: font.body, fontSize: 12, padding: '8px 10px', outline: 'none',
+            }}
+          />
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <Btn
+              variant="primary"
+              disabled={!editText.trim()}
+              onClick={() => {
+                setEditOpen(false);
+                setPending({
+                  body: { answer: 'edit', input_text: editText.trim() },
+                  confirmLabel: 'Confirm accept',
+                  effectText: `Confirm accept — ${agentName} will use your edited version and learn from the change.`,
+                });
+              }}
+            >
+              Accept edited
+            </Btn>
+            <Btn onClick={() => setEditOpen(false)}>Cancel</Btn>
+          </div>
+        </div>
       ) : (
         /* Action row per kind (A4): binary approvals get Approve/Reject/Add note
            only; option chips appear only on choice-kind decisions. */
@@ -289,6 +331,14 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
                 Reject
               </Btn>
             </>
+          )}
+
+          {/* Approve-with-edits — only when the decision carries an editable
+              draft (payload.draft). Revise, then accept as answer='edit'. */}
+          {draft && (
+            <Btn onClick={() => { setEditText(draft); setEditOpen(true); }}>
+              Edit &amp; accept
+            </Btn>
           )}
 
           {isChoice && options.map(opt => (
