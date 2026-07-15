@@ -255,3 +255,158 @@ async fn decision_inbox_end_to_end_trace() {
         .await
         .unwrap();
 }
+
+/// Edit-as-training end-to-end: a draft-carrying decision → approve-with-edits
+/// (answer='edit') → BOTH acceptance and correction ingested → the correction
+/// recalls at draft time, isolated by key prefix from the acceptance memory.
+///
+/// Same throwaway-root safety and zero-cloud-token guarantees as the trace
+/// above (no provider is ever constructed).
+#[tokio::test]
+#[ignore = "end-to-end edit-as-training trace against a throwaway DI_TRACE_ROOT; run explicitly"]
+async fn edit_as_training_end_to_end_trace() {
+    // ── Safety: throwaway root only ──
+    let root = std::env::var("DI_TRACE_ROOT").unwrap_or_else(|_| "/tmp/di-trace-root".to_string());
+    let live = dirs::home_dir().unwrap_or_default().join(".permagent");
+    assert_ne!(
+        std::path::Path::new(&root),
+        live.as_path(),
+        "refusing to run against the live data root"
+    );
+    std::env::set_var("PERMAGENT_PATH_ROOT", &root);
+    println!("Data root (throwaway): {}", root);
+
+    // ── Open the spectral DB + ensure schema ──
+    let db_path = permagent::config::paths::Paths::spectral_db();
+    std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+    let pool = permagent::sqlx::sqlite::SqlitePoolOptions::new()
+        .connect(&format!("sqlite:{}?mode=rwc", db_path.display()))
+        .await
+        .unwrap();
+    permagent::session::spectral_schema::init_spectral_db(&pool)
+        .await
+        .unwrap();
+
+    // ── Mount the Brain (fresh stores in the throwaway root) ──
+    let brain_dir = permagent::config::paths::Paths::brain_dir();
+    let ontology = permagent::config::paths::Paths::brain_ontology();
+    assert!(
+        ontology.exists(),
+        "brain/ontology.toml missing in throwaway root (copy it from the live root)"
+    );
+    let brain = tokio::task::spawn_blocking(move || {
+        spectral::Brain::builder()
+            .data_dir(&brain_dir)
+            .ontology_path(&ontology)
+            .device_id(spectral::DeviceId::from_descriptor("di-edit-trace"))
+            .build()
+            .map(permagent::brain_handle::SafeBrain::new)
+    })
+    .await
+    .unwrap()
+    .expect("brain failed to mount");
+    println!("Brain mounted");
+
+    // ── 1. A draft-carrying proposal lands on the inbox (payload.draft) ──
+    banner("1. draft-carrying automation_proposal");
+    let original_draft = "Save `git status && git pull` as a recipe you can run on demand.";
+    let d = decisions::create_decision(
+        &pool,
+        decisions::NewDecision {
+            kind: "automation_proposal".to_string(),
+            // project_id None → slug resolves deterministically to "personal".
+            headline: Some("Automate your morning git sync?".to_string()),
+            detail: Some(original_draft.to_string()),
+            payload: serde_json::json!({
+                "normalized_command": "git status && git pull",
+                "occurrence_count": 3,
+                "exemplars": ["git status && git pull"],
+                "draft": original_draft,
+            }),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        d.kind, "automation_proposal",
+        "draft must not malform the row"
+    );
+    assert_eq!(d.payload["draft"].as_str(), Some(original_draft));
+
+    // ── 2. Jesse revises the draft, then accepts (answer='edit') ──
+    banner("2. approve-with-edits (answer='edit')");
+    let revised = "Save `git status && git pull --rebase` as a recipe; I always rebase.";
+    let (answered, _proof) = decisions::answer_decision(
+        &pool,
+        &d.id,
+        &DecisionAnswer {
+            answer: "edit".to_string(),
+            input_text: Some(revised.to_string()),
+            ..Default::default()
+        },
+        decisions::ACTOR_JESSE,
+    )
+    .await
+    .unwrap();
+    assert_eq!(answered.answer.as_deref(), Some("edit"));
+    assert_eq!(answered.answer_input.as_deref(), Some(revised));
+
+    // ── 3. Learn: an edit is BOTH an acceptance AND a correction ──
+    banner("3. ingest acceptance + correction");
+    let accept = learn::ingest_answered_decision(&pool, &brain, &answered)
+        .await
+        .unwrap();
+    assert!(accept.is_some(), "an edit is also an acceptance");
+    let correction = learn::ingest_edited_decision(&pool, &brain, &answered)
+        .await
+        .unwrap();
+    assert!(
+        correction.is_some(),
+        "the draft→revision delta becomes a correction memory"
+    );
+
+    // ── 4. Recall corrections at draft time; prove prefix isolation ──
+    banner("4. recall_corrections (correction: prefix)");
+    let corr_hits = learn::recall_corrections(&brain, "automate git pull recipe", "personal")
+        .await
+        .unwrap();
+    for h in &corr_hits {
+        println!("[corr {:.3}] {} -> {}", h.signal_score, h.key, h.content);
+    }
+    assert!(!corr_hits.is_empty(), "correction memory was NOT recalled");
+    let corr_key = learn::correction_memory_key("personal", &d.id);
+    let dec_key = learn::decision_memory_key("personal", &d.id);
+    assert!(
+        corr_hits.iter().any(|h| h.key == corr_key),
+        "expected correction key {} in hits",
+        corr_key
+    );
+    assert!(
+        corr_hits.iter().all(|h| h.key != dec_key),
+        "decision: memory leaked into correction recall"
+    );
+
+    // ── 5. The reverse isolation: decision recall excludes the correction ──
+    banner("5. recall_decisions excludes corrections");
+    let dec_hits = learn::recall_decisions(&brain, "automate git pull recipe", "personal")
+        .await
+        .unwrap();
+    assert!(
+        dec_hits.iter().all(|h| h.key != corr_key),
+        "correction: memory leaked into decision recall"
+    );
+
+    // ── 6. The injected draft-time block quotes the revision (data, not cmd) ──
+    let block = learn::format_correction_context_block(&corr_hits).unwrap_or_default();
+    println!("\ncorrection context block:\n{}", block);
+    assert!(block.contains("Jesse revised it to:"));
+
+    let report = decisions::verify_audit_chain(&pool).await.unwrap();
+    assert!(report.intact, "audit chain broken: {}", report.detail);
+
+    banner("edit-as-training trace complete — zero cloud tokens (no provider constructed)");
+    tokio::task::spawn_blocking(move || drop(brain))
+        .await
+        .unwrap();
+}
