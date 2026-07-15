@@ -1,0 +1,34 @@
+[package]
+name = "permagent-eval"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Lightweight eval harness for the Permagent coding harness: pass-rate + $/solved across model tiers"
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "permagent-eval"
+path = "src/main.rs"
+
+[lib]
+name = "permagent_eval"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+# Same declaration as `permagent` and `permagent-daemon` so the already-locked,
+# already-compiled crate is reused (no new packages, guaranteed to link).
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

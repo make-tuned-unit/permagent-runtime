@@ -7580,6 +7580,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "permagent-eval"
+version = "1.31.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+]
+
+[[package]]
 name = "permagent-mcp"
 version = "1.31.0"
 dependencies = [

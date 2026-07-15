@@ -1,0 +1,33 @@
+id: tic-tac-toe
+title: Tic-Tac-Toe (playable HTML + testable logic)
+category: game-ui
+max_turns: 40
+test: [node, check.mjs]
+prompt: |
+  Build a working, playable Tic-Tac-Toe game in this directory using vanilla
+  HTML/CSS/JavaScript (no frameworks, no external libraries, no network).
+
+  Create exactly two files:
+
+  1. `ttt.mjs` — an ES module that exports the PURE win-detection function:
+
+         export function checkWinner(board) { ... }
+
+     `board` is a 9-element array indexed 0..8 (row-major: index 0 is top-left,
+     index 8 is bottom-right). Each entry is 'X', 'O', or '' (empty).
+     Return value:
+       - 'X' or 'O'  if that player has three in a row (any row, column, or
+                     either diagonal),
+       - 'draw'      if the board is completely full with no winner,
+       - null        if the game is still in progress (empty cells remain and
+                     nobody has won yet).
+     This function must be pure: it only reads `board` and returns; it must not
+     touch the DOM.
+
+  2. `index.html` — a self-contained page that imports the game logic with
+     `<script type="module">` from `./ttt.mjs` and renders a playable 3x3 board:
+     two human players alternate placing X and O by clicking empty cells; when
+     `checkWinner` reports a winner or a draw, announce it; provide a reset
+     button that clears the board.
+
+  Keep it simple and correct.
