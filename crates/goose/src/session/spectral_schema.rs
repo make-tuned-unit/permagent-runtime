@@ -1817,6 +1817,18 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
         sqlx::query("DROP INDEX IF EXISTS idx_decisions_goal")
             .execute(&mut *tx)
             .await?;
+        // Drop the goal-complete guard trigger before the rename. It references
+        // `decisions` in its WHEN subquery, and modern SQLite (bundled via
+        // rusqlite since #713) re-parses every trigger during
+        // `ALTER TABLE decisions_new RENAME TO decisions`; while `decisions` is
+        // transiently dropped that parse fails with "no such table: decisions"
+        // and aborts the widening. It is recreated (CREATE TRIGGER IF NOT EXISTS)
+        // below, inside this same transaction. Existing DBs already carry this
+        // trigger (co-shipped with the enrichment_proposal widening), so the
+        // 'edit' widening MUST clear it first or it cannot upgrade them.
+        sqlx::query("DROP TRIGGER IF EXISTS trg_goal_complete_guard")
+            .execute(&mut *tx)
+            .await?;
         sqlx::query(
             "CREATE TABLE decisions_new (
                 id            TEXT PRIMARY KEY,
