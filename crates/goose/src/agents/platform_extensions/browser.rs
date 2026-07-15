@@ -99,7 +99,7 @@ fn is_private_ip(ip: IpAddr) -> bool {
 /// the verified addresses into the client (`resolve_to_addrs`) is the hardening
 /// follow-on; this already closes the string-only bypass, which is the class the
 /// audit flagged.
-fn guard_public_host(url: &str) -> Result<(), String> {
+pub(crate) fn guard_public_host(url: &str) -> Result<(), String> {
     let host = host_of(url);
     if host.is_empty() {
         return Err("URL has no host".to_string());

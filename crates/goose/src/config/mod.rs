@@ -32,3 +32,49 @@ pub use extensions::DEFAULT_DISPLAY_NAME;
 pub use extensions::DEFAULT_EXTENSION;
 pub use extensions::DEFAULT_EXTENSION_DESCRIPTION;
 pub use extensions::DEFAULT_EXTENSION_TIMEOUT;
+
+/// The Ollama endpoint the local **batch** workers (Librarian describe/annotate/
+/// entity passes, Reader summarize) talk to. Defaults to a local Ollama; set
+/// `PERMAGENT_OLLAMA_HOST` to offload this heavy, latency-tolerant LLM work to a
+/// bigger or pooled machine — the first, verified increment of the batch tier of
+/// the mesh-inference epic (#306). Fully reversible: unset ⇒ localhost, i.e.
+/// today's behavior exactly. A trailing slash is trimmed so callers can append
+/// `/api/generate` uniformly.
+pub fn ollama_host() -> String {
+    resolve_ollama_host(std::env::var("PERMAGENT_OLLAMA_HOST").ok())
+}
+
+/// Pure core of [`ollama_host`], split out so it is unit-testable without
+/// touching the process-global environment (env-mutating tests flake under
+/// parallel `cargo test`).
+fn resolve_ollama_host(raw: Option<String>) -> String {
+    raw.map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "http://localhost:11434".to_string())
+}
+
+#[cfg(test)]
+mod ollama_host_tests {
+    use super::resolve_ollama_host;
+
+    #[test]
+    fn defaults_to_localhost_when_unset_or_blank() {
+        assert_eq!(resolve_ollama_host(None), "http://localhost:11434");
+        assert_eq!(
+            resolve_ollama_host(Some("   ".to_string())),
+            "http://localhost:11434"
+        );
+    }
+
+    #[test]
+    fn uses_configured_host_and_trims() {
+        assert_eq!(
+            resolve_ollama_host(Some("http://mini.local:11434/".to_string())),
+            "http://mini.local:11434"
+        );
+        assert_eq!(
+            resolve_ollama_host(Some("  http://box:11434 ".to_string())),
+            "http://box:11434"
+        );
+    }
+}
