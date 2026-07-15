@@ -8,10 +8,10 @@
 //! mutable `canonical_id` (deriving it would mis-join — see
 //! [`crate::identity::canonical::graph_canonical`]).
 //!
-//! The ontology is the authoritative person set: the live graph is seeded from it
-//! and `brain_sync` prunes anything not in it, so ontology persons == graph
-//! persons. Reading the ids here (rather than querying Kuzu) avoids opening a
-//! second connection while the Brain holds the graph open.
+//! The ontology is the authoritative person set: the live graph is seeded from it,
+//! so its person ids correspond to graph nodes. Reading the ids here (rather than
+//! querying the graph store) avoids opening a second connection while the Brain
+//! holds the graph open.
 
 use std::path::Path;
 

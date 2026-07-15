@@ -47,6 +47,10 @@ pub struct AppState {
     pub context_builder: Option<Arc<permagent::activity::context_builder::ContextBuilder>>,
     /// Bridge for pending browser content extraction requests.
     pub browser_content_bridge: Arc<crate::routes::browser_content::BrowserContentBridge>,
+    /// Bridge for pending act-on-page snapshot requests (#649).
+    pub browser_snapshot_bridge: Arc<crate::routes::browser_act::SnapshotBridge>,
+    /// Bridge for pending act-on-page act requests (#649).
+    pub browser_act_bridge: Arc<crate::routes::browser_act::ActBridge>,
     /// App catalog — static tab/view descriptions for agent navigation.
     pub app_catalog: Arc<permagent::app_catalog::AppCatalog>,
     /// Voice STT provider (Moonshine via sherpa-onnx in dev, swappable).
@@ -145,15 +149,6 @@ impl AppState {
         // Brain::builder().build() creates its own tokio runtime internally,
         // so we must run it off the async executor via spawn_blocking.
         // What leaves this block is a SafeBrain.
-        //
-        // Provenance-protected entity ids (people-in-graph v1 #583): loaded here in
-        // the async context (the reconciler runs inside spawn_blocking and has no
-        // pool). The reconciler must never prune these runtime/extracted persons.
-        // Tolerant — an empty set on any error reproduces prune-all-not-in-ontology.
-        let protected_ids = match agent_manager.session_manager().pool_clone().await {
-            Ok(pool) => permagent::people_provenance::protected_entity_ids(&pool).await,
-            Err(_) => std::collections::HashSet::new(),
-        };
         let brain: Option<permagent::brain_handle::SafeBrain> =
             tokio::task::spawn_blocking(move || {
                 let brain_dir = permagent::config::paths::Paths::brain_dir();
@@ -170,8 +165,7 @@ impl AppState {
 
                 // ── Pre-migration backup: brain/memory.db ──
                 // Must run before Brain::builder().build() which triggers Spectral
-                // auto-migration. Also before sync_graph_with_ontology which mutates
-                // graph.kz (separate store, but keeps backup timing unambiguous).
+                // auto-migration.
                 {
                     let source = brain_dir.join("memory.db");
                     let backup_root = permagent::config::paths::Paths::data_dir().join("backups");
@@ -187,15 +181,6 @@ impl AppState {
                         );
                     }
                 }
-
-                // Reconcile Kuzu graph with ontology before Brain opens.
-                // This removes entities that were pruned from ontology.toml —
-                // except provenance-protected runtime/extracted persons (#583).
-                crate::brain_sync::sync_graph_with_ontology(
-                    &brain_dir,
-                    &ontology_path,
-                    &protected_ids,
-                );
 
                 let device_id_str =
                     std::env::var("HOSTNAME").unwrap_or_else(|_| "permagent-host".into());
@@ -682,6 +667,8 @@ impl AppState {
             browser_content_bridge: Arc::new(
                 crate::routes::browser_content::BrowserContentBridge::new(),
             ),
+            browser_snapshot_bridge: Arc::new(crate::routes::browser_act::SnapshotBridge::new()),
+            browser_act_bridge: Arc::new(crate::routes::browser_act::ActBridge::new()),
             app_catalog,
             voice_stt,
             voice_tts: Arc::new(tokio::sync::RwLock::new(voice_tts)),
