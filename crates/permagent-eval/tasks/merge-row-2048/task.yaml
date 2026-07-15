@@ -1,0 +1,36 @@
+id: merge-row-2048
+title: 2048 row-merge (game logic + HTML)
+category: game-ui
+max_turns: 40
+test: [node, check.mjs]
+prompt: |
+  Implement the core row-merge mechanic of the game 2048, in this directory,
+  using vanilla JavaScript and HTML (no frameworks or libraries).
+
+  Create exactly two files:
+
+  1. `merge.mjs` — an ES module exporting the PURE function:
+
+         export function mergeRow(row) { ... }
+
+     `row` is an array of exactly 4 non-negative integers, where 0 means an empty
+     tile. Return the new 4-element row after a "slide + merge to the LEFT":
+       - Slide all non-zero tiles to the left (removing gaps).
+       - Then merge equal adjacent tiles into a single tile of their sum, scanning
+         left to right. Each tile may take part in at most ONE merge per call.
+       - Pad the result back to length 4 with trailing zeros.
+     Do not mutate the input array; return a new array.
+
+     Examples:
+       [2,2,0,0] -> [4,0,0,0]
+       [2,0,2,0] -> [4,0,0,0]
+       [2,2,2,0] -> [4,2,0,0]
+       [2,2,2,2] -> [4,4,0,0]
+       [8,0,4,4] -> [8,8,0,0]
+       [0,0,0,0] -> [0,0,0,0]
+
+  2. `index.html` — a self-contained page that imports `./merge.mjs` with a
+     `<script type="module">`, displays a single row of 4 tiles, and has a
+     "Merge left" button that applies `mergeRow` and re-renders the tiles.
+
+  Keep it simple and correct.

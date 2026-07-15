@@ -1,0 +1,16 @@
+id: fix-median
+title: Fix the median bug
+category: bug-fix
+max_turns: 30
+test: [python3, test_stats.py]
+prompt: |
+  This directory has `stats.py` with a `median(nums)` function and a runnable test
+  `test_stats.py`. The tests currently FAIL: there is a bug in `median`.
+
+  Fix `median` in `stats.py` so that `python3 test_stats.py` passes (exits 0):
+    - For a list with an odd number of elements, return the middle value.
+    - For a list with an even number of elements, return the average of the two
+      middle values (e.g. median([1, 2, 3, 4]) == 2.5).
+    - For an empty list, raise a ValueError.
+
+  Only edit `stats.py`; do not modify the test file.
