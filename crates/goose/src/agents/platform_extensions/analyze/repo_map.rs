@@ -680,6 +680,38 @@ fn file_mtime(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
+// ── Coding-harness context injection ────────────────────────────────────
+
+/// Build the coding harness's repo-map context block for the tree rooted at
+/// `root`, token-budgeted to `max_map_tokens`. Returns `None` when the tree has
+/// no analyzable source, so the caller injects nothing rather than an empty
+/// block.
+///
+/// The map is built with no focus set (a whole-repo orientation view at session
+/// start) and wrapped in a labelled `<repo_map>` element. It belongs in the
+/// cache-stable prefix at `PrefixSegment::RepoMap` (tools → system → repo-map →
+/// read-only files) — see `crate::cost_router::cache`. `.gitignore` / hidden
+/// files are excluded by `AnalyzeClient::collect_files`, and the map shows
+/// signatures, not bodies, so a whole repo fits a small token budget.
+pub fn coding_context_block(root: &Path, max_map_tokens: usize) -> Option<String> {
+    let config = RepoMapConfig {
+        max_map_tokens,
+        ..RepoMapConfig::default()
+    };
+    let map = RepoMap::with_config(config).map(root, &[], &[]);
+    if map.trim().is_empty() {
+        return None;
+    }
+    Some(format!(
+        "<repo_map>\n\
+         A ranked-tags map of this repository's structure — its most important \
+         symbols and their signatures (not file bodies), ranked by how connected \
+         they are. Use it to orient before reading files. It is a hint, not \
+         authoritative; read a file before editing it.\n\n\
+         {map}</repo_map>"
+    ))
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1024,6 +1056,63 @@ struct Config;
         assert!(
             !map.contains("x > 0"),
             "map must show signatures, not bodies"
+        );
+    }
+
+    // ---- Coding-harness context block ----
+
+    #[test]
+    fn coding_context_block_wraps_the_ranked_tags_map() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("core.rs"),
+            "fn run() { validate(1); }\nfn validate(x: i32) -> bool { x > 0 }\n",
+        )
+        .unwrap();
+
+        let block = coding_context_block(dir.path(), 1024).expect("non-empty repo yields a block");
+        // Labelled, cache-stable element…
+        assert!(block.starts_with("<repo_map>"));
+        assert!(block.trim_end().ends_with("</repo_map>"));
+        // …carrying the token-budgeted signature map (not bodies).
+        assert!(block.contains("core.rs:"));
+        assert!(block.contains("validate(x: i32)->bool"));
+        assert!(!block.contains("x > 0"), "must show signatures, not bodies");
+    }
+
+    #[test]
+    fn coding_context_block_is_none_for_an_empty_tree() {
+        let dir = tempdir().unwrap();
+        // No analyzable source → inject nothing, not an empty block.
+        assert!(coding_context_block(dir.path(), 1024).is_none());
+    }
+
+    #[test]
+    fn coding_context_block_respects_the_token_budget() {
+        let dir = tempdir().unwrap();
+        // Many symbols, so a tiny budget must drop most of them.
+        let mut src = String::new();
+        for i in 0..200 {
+            src.push_str(&format!(
+                "fn symbol_{i:03}(a: i32, b: i32) -> Result<(), ()> {{ Ok(()) }}\n"
+            ));
+        }
+        fs::write(dir.path().join("big.rs"), src).unwrap();
+
+        let tight = coding_context_block(dir.path(), 40).expect("has source");
+        let generous = coding_context_block(dir.path(), 100_000).expect("has source");
+
+        // A tighter budget surfaces strictly fewer symbols than a generous one —
+        // proving the budget constrains the injected map.
+        let tight_syms = tight.matches("symbol_").count();
+        let generous_syms = generous.matches("symbol_").count();
+        assert!(
+            tight_syms >= 1,
+            "even a tight budget surfaces at least one symbol"
+        );
+        assert!(
+            tight_syms < generous_syms,
+            "tight budget ({tight_syms} symbols) should surface fewer than generous ({generous_syms})"
         );
     }
 }
