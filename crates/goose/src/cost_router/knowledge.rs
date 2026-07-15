@@ -36,9 +36,11 @@
 //!
 //! - `edit_format_reliability` ← the aider polyglot "percent using correct edit
 //!   format" / pass-rate leaderboard (aider.chat/docs/leaderboards). Diff-format
-//!   reliability is exactly what that benchmark measures.
+//!   reliability is exactly what that benchmark measures. Leaderboard snapshot
+//!   read 2026-07-15.
 //! - `orchestration_strength` ← SWE-bench Verified resolved-rate and comparable
-//!   agentic/tool-use benchmarks (swebench.com), normalized to 0..1.
+//!   agentic/tool-use benchmarks (swebench.com / vals.ai), normalized to 0..1.
+//!   Snapshot read 2026-07-15.
 //! - pricing ← each vendor's published price list. Anthropic rows follow the
 //!   Claude platform price table; MiniMax/Kimi rows agree with the canonical
 //!   pricing table `super::cheap` ranks against (MiniMax-M2.5 0.30+1.20,
@@ -47,7 +49,9 @@
 //! NO family preference is baked into the numbers or the logic: locals are
 //! cheaper but weaker, frontier models are stronger but dearer, and the strong
 //! edit-format / strong orchestration rows are spread across vendors — exactly as
-//! the public leaderboards show.
+//! the public leaderboards show (2026-07-15 snapshot: Google/Gemini 3 Pro tops
+//! the aider edit-format column, Anthropic/Fable 5 tops SWE-bench Verified —
+//! different vendors lead different metrics, so no single family is best at all).
 
 /// One model's objective attributes. `&'static str` fields so the seed
 /// [`KNOWN_MODELS`] table is a `const` and test rows are cheap literals; every
@@ -106,9 +110,10 @@ pub static KNOWN_MODELS: &[ModelKnowledge] = &[
         model: "claude-opus-4-8",
         display_name: "Claude Opus 4.8",
         family: "anthropic",
-        // aider polyglot edit-format ~0.975; SWE-bench Verified top-tier ~0.82.
+        // edit: aider well-formed-edit ~0.973–0.987 (Opus-4 proxy, LB 2026-07-15).
+        // orch: SWE-bench Verified 88.6% (vals.ai LB 2026-07-15).
         edit_format_reliability: 0.975,
-        orchestration_strength: 0.82,
+        orchestration_strength: 0.886,
         input_usd_per_mtok: 5.00,
         output_usd_per_mtok: 25.00,
         cache_support: true,
@@ -120,9 +125,11 @@ pub static KNOWN_MODELS: &[ModelKnowledge] = &[
         model: "claude-sonnet-5",
         display_name: "Claude Sonnet 5",
         family: "anthropic",
-        // Strong diff-format reliability ~0.98; agentic ~0.77.
+        // edit: aider well-formed-edit ~0.973–0.982 (Sonnet-4 proxy, LB 2026-07-15).
+        // orch ~0.80: no single SWE-bench Verified row; sources span 0.727 (Anthropic
+        // launch) to 0.821 (scaffolded), placed just below Opus 4.8.
         edit_format_reliability: 0.980,
-        orchestration_strength: 0.77,
+        orchestration_strength: 0.80,
         input_usd_per_mtok: 3.00,
         output_usd_per_mtok: 15.00,
         cache_support: true,
@@ -134,6 +141,8 @@ pub static KNOWN_MODELS: &[ModelKnowledge] = &[
         model: "claude-haiku-4-5-20251001",
         display_name: "Claude Haiku 4.5",
         family: "anthropic",
+        // edit ~0.905 (Haiku-3.5 proxy 0.911, aider LB 2026-07-15).
+        // orch 0.63: no public SWE-bench Verified row for Haiku 4.5 — small-model estimate.
         edit_format_reliability: 0.905,
         orchestration_strength: 0.63,
         input_usd_per_mtok: 1.00,
@@ -147,8 +156,10 @@ pub static KNOWN_MODELS: &[ModelKnowledge] = &[
         model: "claude-fable-5",
         display_name: "Claude Fable 5",
         family: "anthropic",
+        // edit ~0.985 (Opus-4 no-thinking proxy 0.987, aider LB 2026-07-15).
+        // orch: SWE-bench Verified 95.0% — current LB leader (vals.ai 2026-07-15).
         edit_format_reliability: 0.985,
-        orchestration_strength: 0.86,
+        orchestration_strength: 0.95,
         input_usd_per_mtok: 10.00,
         output_usd_per_mtok: 50.00,
         cache_support: true,
@@ -161,10 +172,15 @@ pub static KNOWN_MODELS: &[ModelKnowledge] = &[
         model: "gpt-5.6",
         display_name: "GPT-5.6",
         family: "openai",
-        edit_format_reliability: 0.965,
-        orchestration_strength: 0.80,
-        input_usd_per_mtok: 1.25,
-        output_usd_per_mtok: 10.00,
+        // pricing: GPT-5.6 flagship "Sol" tier, GA 2026-07-09 ($5/$30; family also
+        // Terra $2.50/$15, Luna $1/$6).
+        // edit 0.950: no aider row yet; GPT-5 proxy 0.884–0.916 (LB 2026-07-15) plus a
+        // new-version delta — GPT-5 lineage trails the Claude/Gemini/o3 edit cluster.
+        // orch 0.83: GPT-5.6 unpublished on SWE-bench; proxied to GPT-5.5 82.6% (vals.ai 2026-07-15).
+        edit_format_reliability: 0.950,
+        orchestration_strength: 0.83,
+        input_usd_per_mtok: 5.00,
+        output_usd_per_mtok: 30.00,
         cache_support: true,
         context_window: 400_000,
         is_local: false,
@@ -174,10 +190,14 @@ pub static KNOWN_MODELS: &[ModelKnowledge] = &[
         model: "gpt-5.6-mini",
         display_name: "GPT-5.6 mini",
         family: "openai",
+        // pricing: GPT-5.6 budget "Luna" tier ($1/$6), OpenAI's cheapest published
+        // GPT-5.6 (GA 2026-07-09).
+        // edit 0.885 (GPT-5-low proxy 0.867, aider LB 2026-07-15).
+        // orch 0.60: no public SWE-bench row — budget-tier estimate.
         edit_format_reliability: 0.885,
         orchestration_strength: 0.60,
-        input_usd_per_mtok: 0.25,
-        output_usd_per_mtok: 2.00,
+        input_usd_per_mtok: 1.00,
+        output_usd_per_mtok: 6.00,
         cache_support: true,
         context_window: 400_000,
         is_local: false,
@@ -188,10 +208,13 @@ pub static KNOWN_MODELS: &[ModelKnowledge] = &[
         model: "grok-4.5",
         display_name: "Grok 4.5",
         family: "xai",
-        edit_format_reliability: 0.950,
-        orchestration_strength: 0.75,
-        input_usd_per_mtok: 3.00,
-        output_usd_per_mtok: 15.00,
+        // pricing: xAI list $2/$6 (≤200K ctx; higher tier >200K), 2026-07-15.
+        // edit 0.970 (Grok-4 proxy 0.973, aider LB 2026-07-15).
+        // orch: SWE-bench Verified 86.6% (vals.ai LB 2026-07-15).
+        edit_format_reliability: 0.970,
+        orchestration_strength: 0.866,
+        input_usd_per_mtok: 2.00,
+        output_usd_per_mtok: 6.00,
         cache_support: false,
         context_window: 256_000,
         is_local: false,
@@ -202,10 +225,15 @@ pub static KNOWN_MODELS: &[ModelKnowledge] = &[
         model: "gemini-3-pro",
         display_name: "Gemini 3 Pro",
         family: "google",
-        edit_format_reliability: 0.955,
-        orchestration_strength: 0.78,
-        input_usd_per_mtok: 1.25,
-        output_usd_per_mtok: 10.00,
+        // pricing: Google list $2/$12 (≤200K ctx; $4/$18 >200K), 2026-07-15.
+        // edit 0.990: Gemini 2.5 Pro tops the aider well-formed-edit column at
+        // 0.996–1.000 (LB 2026-07-15) — Gemini leads edit-format, at/above Claude;
+        // corrected UP from 0.955 (removes the artificial Anthropic-on-top ordering).
+        // orch ~0.80: SWE-bench Verified (Gemini 3.1 Pro 80.6%, vals.ai/llm-stats 2026-07-15).
+        edit_format_reliability: 0.990,
+        orchestration_strength: 0.80,
+        input_usd_per_mtok: 2.00,
+        output_usd_per_mtok: 12.00,
         cache_support: true,
         context_window: 1_000_000,
         is_local: false,
@@ -216,8 +244,11 @@ pub static KNOWN_MODELS: &[ModelKnowledge] = &[
         model: "kimi-k2.5",
         display_name: "Kimi K2.5",
         family: "moonshot",
+        // edit 0.930 (Kimi-K2 proxy 0.929, aider LB 2026-07-15).
+        // orch: SWE-bench Verified 76.8% (llm-stats LB 2026-07-15).
+        // price 0.60/3.00 = Moonshot list price, matches canonical super::cheap table.
         edit_format_reliability: 0.930,
-        orchestration_strength: 0.70,
+        orchestration_strength: 0.77,
         input_usd_per_mtok: 0.60,
         output_usd_per_mtok: 3.00,
         cache_support: false,
@@ -230,8 +261,11 @@ pub static KNOWN_MODELS: &[ModelKnowledge] = &[
         model: "MiniMax-M2.5",
         display_name: "MiniMax M2.5",
         family: "minimax",
+        // edit 0.910: no aider row; mid open-weight proxy.
+        // orch: SWE-bench Verified 80.2% (llm-stats LB 2026-07-15) — corrected up from 0.66.
+        // price 0.30/1.20 = MiniMax list price, matches canonical super::cheap table.
         edit_format_reliability: 0.910,
-        orchestration_strength: 0.66,
+        orchestration_strength: 0.80,
         input_usd_per_mtok: 0.30,
         output_usd_per_mtok: 1.20,
         cache_support: false,
@@ -244,6 +278,8 @@ pub static KNOWN_MODELS: &[ModelKnowledge] = &[
         model: "qwen3-coder",
         display_name: "Qwen3-Coder (local)",
         family: "ollama",
+        // edit 0.860 (aider LB 2026-07-15: Qwen3-235B 0.929 / 32B 0.836; local-coder
+        // estimate between). orch 0.55: local-variant estimate, no public SWE-bench row.
         edit_format_reliability: 0.860,
         orchestration_strength: 0.55,
         input_usd_per_mtok: 0.0,
@@ -257,6 +293,8 @@ pub static KNOWN_MODELS: &[ModelKnowledge] = &[
         model: "qwen3",
         display_name: "Qwen3 (local)",
         family: "ollama",
+        // edit 0.760: small local Qwen3 (Qwen3-32B aider 0.836 is the upper bound,
+        // LB 2026-07-15). orch 0.48: small-local estimate, no public SWE-bench row.
         edit_format_reliability: 0.760,
         orchestration_strength: 0.48,
         input_usd_per_mtok: 0.0,
