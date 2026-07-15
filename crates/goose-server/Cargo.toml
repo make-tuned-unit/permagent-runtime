@@ -93,7 +93,6 @@ ort = { version = "2.0.0-rc.12", features = ["download-binaries"] }
 misaki-rs = { version = "0.3", default-features = false }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 strsim = "0.11"
-kuzu = { workspace = true }
 sqlx = { version = "0.8", default-features = false, features = [
     "sqlite",
     "chrono",

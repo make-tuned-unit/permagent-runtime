@@ -182,7 +182,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -193,7 +193,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -236,7 +236,7 @@ dependencies = [
  "objc2-foundation",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
  "x11rb",
 ]
 
@@ -2156,16 +2156,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codespan-reporting"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3538270d33cc669650c4b093848450d380def10c331d38c768e34cac80576e6e"
-dependencies = [
- "termcolor",
- "unicode-width 0.1.14",
-]
-
-[[package]]
 name = "color_quant"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2673,65 +2663,6 @@ checksum = "f46882e17999c6cc590af592290432be3bce0428cb0d5f8b6715e4dc7b383eb3"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "cxx"
-version = "1.0.138"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3956d60afa98653c5a57f60d7056edd513bfe0307ef6fb06f6167400c3884459"
-dependencies = [
- "cc",
- "cxxbridge-cmd",
- "cxxbridge-flags",
- "cxxbridge-macro",
- "foldhash 0.1.5",
- "link-cplusplus",
-]
-
-[[package]]
-name = "cxx-build"
-version = "1.0.138"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a4b7522f539fe056f1d6fc8577d8ab731451f6f33a89b1e5912e22b76c553e7"
-dependencies = [
- "cc",
- "codespan-reporting",
- "proc-macro2",
- "quote",
- "scratch",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "cxxbridge-cmd"
-version = "1.0.138"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f01e92ab4ce9fd4d16e3bb11b158d98cbdcca803c1417aa43130a6526fbf208"
-dependencies = [
- "clap",
- "codespan-reporting",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "cxxbridge-flags"
-version = "1.0.138"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c41cbfab344869e70998b388923f7d1266588f56c8ca284abf259b1c1ffc695"
-
-[[package]]
-name = "cxxbridge-macro"
-version = "1.0.138"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88d82a2f759f0ad3eae43b96604efd42b1d4729a35a6f2dc7bdb797ae25d9284"
-dependencies = [
- "proc-macro2",
- "quote",
- "rustversion",
  "syn 2.0.117",
 ]
 
@@ -3497,7 +3428,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3827,7 +3758,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5159,7 +5090,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.56.0",
 ]
 
 [[package]]
@@ -5598,7 +5529,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5821,21 +5752,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kuzu"
-version = "0.11.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06952b00b1a2eabf4caf1426672395f9b1def04207d984af204693dec3da287a"
-dependencies = [
- "cmake",
- "cxx",
- "cxx-build",
- "rust_decimal",
- "rustversion",
- "time",
- "uuid",
-]
-
-[[package]]
 name = "language-tokenizer"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5968,15 +5884,6 @@ dependencies = [
  "cc",
  "pkg-config",
  "vcpkg",
-]
-
-[[package]]
-name = "link-cplusplus"
-version = "1.0.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f78c730aaa7d0b9336a299029ea49f9ee53b0ed06e9202e8cb7db9bae7b8c82"
-dependencies = [
- "cc",
 ]
 
 [[package]]
@@ -6537,7 +6444,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -7617,7 +7524,6 @@ dependencies = [
  "hex",
  "hound",
  "http 1.4.2",
- "kuzu",
  "libc",
  "misaki-rs",
  "objc2",
@@ -8269,7 +8175,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -8901,16 +8807,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rust_decimal"
-version = "1.41.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ce901f9a19d251159075a4c37af514c3b8ef99c22e02dd8c19161cf397ee94a"
-dependencies = [
- "arrayvec",
- "num-traits",
-]
-
-[[package]]
 name = "rustc-demangle"
 version = "0.1.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8983,7 +8879,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -9042,7 +8938,7 @@ dependencies = [
  "security-framework 3.7.0",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -9237,12 +9133,6 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
-
-[[package]]
-name = "scratch"
-version = "1.0.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d68f2ec51b097e4c1a75b681a8bec621909b5e91f15bb7b840c4f2f7b01148b2"
 
 [[package]]
 name = "sec1"
@@ -9922,7 +9812,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -9957,7 +9847,7 @@ dependencies = [
 [[package]]
 name = "spectral"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=bd68467b13f5b423337741e5c7d3966976b33c40#bd68467b13f5b423337741e5c7d3966976b33c40"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=874f89fff9efa94f6799862997bf2b417695d6e7#874f89fff9efa94f6799862997bf2b417695d6e7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -9976,7 +9866,7 @@ dependencies = [
 [[package]]
 name = "spectral-cascade"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=bd68467b13f5b423337741e5c7d3966976b33c40#bd68467b13f5b423337741e5c7d3966976b33c40"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=874f89fff9efa94f6799862997bf2b417695d6e7#874f89fff9efa94f6799862997bf2b417695d6e7"
 dependencies = [
  "chrono",
  "spectral-ingest",
@@ -9985,7 +9875,7 @@ dependencies = [
 [[package]]
 name = "spectral-core"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=bd68467b13f5b423337741e5c7d3966976b33c40#bd68467b13f5b423337741e5c7d3966976b33c40"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=874f89fff9efa94f6799862997bf2b417695d6e7#874f89fff9efa94f6799862997bf2b417695d6e7"
 dependencies = [
  "blake3",
  "ed25519-dalek",
@@ -9997,13 +9887,13 @@ dependencies = [
 [[package]]
 name = "spectral-graph"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=bd68467b13f5b423337741e5c7d3966976b33c40#bd68467b13f5b423337741e5c7d3966976b33c40"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=874f89fff9efa94f6799862997bf2b417695d6e7#874f89fff9efa94f6799862997bf2b417695d6e7"
 dependencies = [
  "blake3",
  "chrono",
  "hostname",
- "kuzu",
  "regex",
+ "rusqlite",
  "serde",
  "serde_json",
  "spectral-cascade",
@@ -10022,7 +9912,7 @@ dependencies = [
 [[package]]
 name = "spectral-ingest"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=bd68467b13f5b423337741e5c7d3966976b33c40#bd68467b13f5b423337741e5c7d3966976b33c40"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=874f89fff9efa94f6799862997bf2b417695d6e7#874f89fff9efa94f6799862997bf2b417695d6e7"
 dependencies = [
  "anyhow",
  "blake3",
@@ -10041,7 +9931,7 @@ dependencies = [
 [[package]]
 name = "spectral-recognition"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=bd68467b13f5b423337741e5c7d3966976b33c40#bd68467b13f5b423337741e5c7d3966976b33c40"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=874f89fff9efa94f6799862997bf2b417695d6e7#874f89fff9efa94f6799862997bf2b417695d6e7"
 dependencies = [
  "anyhow",
  "reqwest 0.12.28",
@@ -10054,7 +9944,7 @@ dependencies = [
 [[package]]
 name = "spectral-spectrogram"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=bd68467b13f5b423337741e5c7d3966976b33c40#bd68467b13f5b423337741e5c7d3966976b33c40"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=874f89fff9efa94f6799862997bf2b417695d6e7#874f89fff9efa94f6799862997bf2b417695d6e7"
 dependencies = [
  "chrono",
  "regex",
@@ -10069,7 +9959,7 @@ dependencies = [
 [[package]]
 name = "spectral-tact"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=bd68467b13f5b423337741e5c7d3966976b33c40#bd68467b13f5b423337741e5c7d3966976b33c40"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=874f89fff9efa94f6799862997bf2b417695d6e7#874f89fff9efa94f6799862997bf2b417695d6e7"
 dependencies = [
  "anyhow",
  "regex",
@@ -11205,7 +11095,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -13010,7 +12900,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
