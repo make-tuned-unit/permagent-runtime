@@ -963,7 +963,13 @@ pub async fn record_effect_outcome(
     decision: &Decision,
     outcome: &str,
 ) -> Result<(), String> {
-    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    // BEGIN IMMEDIATE: append_audit_tx reads the audit-chain head before its
+    // INSERT, so this write-back would hit an un-retryable BUSY lock-upgrade if a
+    // concurrent writer commits in between; take the write lock up front.
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| e.to_string())?;
     append_audit_tx(
         &mut tx,
         &decision.id,
