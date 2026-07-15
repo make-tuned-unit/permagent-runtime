@@ -433,7 +433,10 @@ pub async fn park_goal(
     actor: &str,
     reason: &str,
 ) -> Result<(), GuardError> {
-    let mut tx = pool.begin().await.map_err(db_err)?;
+    // BEGIN IMMEDIATE: this guard reads the goal row / audit-chain head before
+    // upgrading to a write; taking the write lock up front avoids the un-retryable
+    // BUSY lock-upgrade a concurrent writer would trigger (see advance_goal_checked).
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(db_err)?;
 
     let goal = read_goal_tx(&mut tx, card_id).await?;
     if goal.card_type != "goal" {
@@ -496,7 +499,10 @@ pub async fn requeue_goal(
     new_attempt_count: u64,
     reason: &str,
 ) -> Result<(), GuardError> {
-    let mut tx = pool.begin().await.map_err(db_err)?;
+    // BEGIN IMMEDIATE: this guard reads the goal row / audit-chain head before
+    // upgrading to a write; taking the write lock up front avoids the un-retryable
+    // BUSY lock-upgrade a concurrent writer would trigger (see advance_goal_checked).
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(db_err)?;
 
     let goal = read_goal_tx(&mut tx, card_id).await?;
     if goal.card_type != "goal" {
@@ -566,7 +572,10 @@ pub async fn record_goal_failure(
     card_id: &str,
     error: &str,
 ) -> Result<(), GuardError> {
-    let mut tx = pool.begin().await.map_err(db_err)?;
+    // BEGIN IMMEDIATE: this guard reads the goal row / audit-chain head before
+    // upgrading to a write; taking the write lock up front avoids the un-retryable
+    // BUSY lock-upgrade a concurrent writer would trigger (see advance_goal_checked).
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(db_err)?;
     let goal = read_goal_tx(&mut tx, card_id).await?;
     let mut meta = goal.metadata;
     meta.insert(
@@ -631,7 +640,10 @@ pub async fn delete_goal_checked(
         )));
     }
 
-    let mut tx = pool.begin().await.map_err(db_err)?;
+    // BEGIN IMMEDIATE: this guard reads the goal row / audit-chain head before
+    // upgrading to a write; taking the write lock up front avoids the un-retryable
+    // BUSY lock-upgrade a concurrent writer would trigger (see advance_goal_checked).
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(db_err)?;
     decisions::append_audit_tx(
         &mut tx,
         proof.decision_id(),
