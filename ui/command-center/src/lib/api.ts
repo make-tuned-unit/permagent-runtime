@@ -159,13 +159,30 @@ export interface SSEPingEvent {
 
 export type SSEEvent = SSEMessageEvent | SSEErrorEvent | SSEFinishEvent | SSEPingEvent | { type: string; [key: string]: unknown };
 
+/**
+ * Live per-frame token + cost state. Rides every SSE MessageEvent frame
+ * (`token_state`). NOTE: the daemon serializes this struct `rename_all =
+ * "camelCase"`, so the fields are camelCase here (the enclosing `token_state`
+ * key itself stays snake_case). Every cost figure is single-sourced from the
+ * per-call cost ledger via the canonical `cost_of`.
+ */
 export interface TokenState {
-  input_tokens: number;
-  output_tokens: number;
-  total_tokens: number;
-  accumulated_input_tokens: number;
-  accumulated_output_tokens: number;
-  accumulated_total_tokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  accumulatedInputTokens: number;
+  accumulatedOutputTokens: number;
+  accumulatedTotalTokens: number;
+  /** Cost of the most recent provider turn (USD). */
+  costUsd: number;
+  /** Running session cost (USD) — the one authoritative number. */
+  accumulatedCostUsd: number;
+  /** Running dollars saved by cache reads — the "cache saved $X" signal. */
+  cacheSavingsUsd: number;
+  /** Percent of the context window in use, or null when the limit is unknown. */
+  contextPercent: number | null;
+  /** Active model name. */
+  model: string;
 }
 
 export interface Skill {

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { api, apiFetch, extractText, extractThinking, fileToBase64, readerIngest } from './api';
-import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload } from './api';
+import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload, TokenState } from './api';
+import { costFromFrame } from './costMeter';
 import { startEventPruning } from './eventBus';
 import type { ProjectPerson } from '../components/projects/types';
 
@@ -194,6 +195,12 @@ interface CommandCenterStore {
 
   // --- SSE streaming ---
   isStreaming: boolean;
+  /**
+   * Latest token + cost state from the SSE stream — updated on every Message /
+   * Finish frame (each carries `token_state`). The always-on Build meter reads
+   * this; it is the live, single-sourced $ with no extra endpoint.
+   */
+  liveTokens: TokenState | null;
   sendMessage: (text: string, files?: File[]) => Promise<void>;
   /**
    * Decision Inbox deep-link (#303): open a fresh chat session seeded with a
@@ -579,6 +586,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
   // Streaming
   isStreaming: false,
+  liveTokens: null,
 
   /**
    * Ensure a session exists. Creates one via POST /api/sessions if needed.
@@ -976,6 +984,12 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
   /** Handle a per-session SSE event (Message, Error, Finish from reply stream) */
   handleSessionEvent: (data: SSEEvent) => {
+    // Every Message/Finish frame carries live token + cost state. Capture it so
+    // the Build meter reflects real spend the instant a frame lands. Uses the
+    // same extractor the meter test drives, so the SSE→meter path is proven.
+    const ts = costFromFrame(data);
+    if (ts) set({ liveTokens: ts });
+
     switch (data.type) {
       case 'Message': {
         const msg = (data as { type: string; message: DaemonMessage }).message;

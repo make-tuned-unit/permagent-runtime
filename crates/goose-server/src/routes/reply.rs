@@ -176,16 +176,48 @@ pub struct RecalledMemoryRef {
 }
 
 pub async fn get_token_state(session_manager: &SessionManager, session_id: &str) -> TokenState {
+    use permagent::providers::canonical::maybe_get_canonical_model;
     session_manager
         .get_session(session_id, false)
         .await
-        .map(|session| TokenState {
-            input_tokens: session.input_tokens.unwrap_or(0),
-            output_tokens: session.output_tokens.unwrap_or(0),
-            total_tokens: session.total_tokens.unwrap_or(0),
-            accumulated_input_tokens: session.accumulated_input_tokens.unwrap_or(0),
-            accumulated_output_tokens: session.accumulated_output_tokens.unwrap_or(0),
-            accumulated_total_tokens: session.accumulated_total_tokens.unwrap_or(0),
+        .map(|session| {
+            // Model name + context window for the meter's ctx% / model segments.
+            // The window comes from the session's own ModelConfig, else the
+            // canonical registry; a percent is emitted ONLY when a real limit is
+            // known (never a fabricated denominator).
+            let model = session
+                .model_config
+                .as_ref()
+                .map(|m| m.model_name.clone())
+                .unwrap_or_default();
+            let context_limit = session
+                .model_config
+                .as_ref()
+                .and_then(|m| m.context_limit)
+                .or_else(|| {
+                    session
+                        .provider_name
+                        .as_deref()
+                        .and_then(|p| maybe_get_canonical_model(p, &model))
+                        .map(|cm| cm.limit.context)
+                })
+                .filter(|c| *c > 0);
+            let total = session.total_tokens.unwrap_or(0);
+            let context_percent = context_limit.map(|c| (total as f64 / c as f64) * 100.0);
+            TokenState {
+                input_tokens: session.input_tokens.unwrap_or(0),
+                output_tokens: session.output_tokens.unwrap_or(0),
+                total_tokens: session.total_tokens.unwrap_or(0),
+                accumulated_input_tokens: session.accumulated_input_tokens.unwrap_or(0),
+                accumulated_output_tokens: session.accumulated_output_tokens.unwrap_or(0),
+                accumulated_total_tokens: session.accumulated_total_tokens.unwrap_or(0),
+                // Single-sourced from the per-call cost ledger rollup.
+                cost_usd: session.cost_usd.unwrap_or(0.0),
+                accumulated_cost_usd: session.accumulated_cost_usd.unwrap_or(0.0),
+                cache_savings_usd: session.accumulated_cache_savings_usd.unwrap_or(0.0),
+                context_percent,
+                model,
+            }
         })
         .inspect_err(|e| {
             tracing::warn!(
