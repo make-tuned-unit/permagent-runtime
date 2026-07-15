@@ -212,7 +212,10 @@ fn check_for_updates(handle: tauri::AppHandle) {
                 );
                 // Download + install; Tauri verifies the signature against the
                 // pubkey in tauri.conf before applying. Relaunch on success.
-                match update.download_and_install(|_chunk, _total| {}, || {}).await {
+                match update
+                    .download_and_install(|_chunk, _total| {}, || {})
+                    .await
+                {
                     Ok(()) => {
                         eprintln!("[updater] installed {}, relaunching", update.version);
                         handle.restart();
@@ -250,6 +253,8 @@ fn main() {
             browser::close_browser,
             browser::zoom_browser,
             browser::get_page_content,
+            browser::get_page_snapshot,
+            browser::act_on_ref,
             files::read_dropped_file,
             daemon::get_daemon_token,
             activity::emit_activity,

@@ -10,16 +10,18 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex};
 
-/// Shared bridge for pending browser content requests.
+/// Shared bridge for pending browser round-trip requests.
 ///
-/// Each request gets its own UUID-keyed oneshot channel, so concurrent
-/// `read_browser_content` calls are fully independent — they don't share
-/// a single slot or interfere with each other's timeouts.
-pub struct BrowserContentBridge {
-    pending: Mutex<HashMap<String, oneshot::Sender<PageContent>>>,
+/// Each request gets its own UUID-keyed oneshot channel, so concurrent calls are
+/// fully independent — they don't share a slot or interfere with each other's
+/// timeouts. Generic over the payload `T` so the read path (`PageContent`) and
+/// the act-on-page paths (snapshot / act results, see `browser_act.rs`) reuse the
+/// same correlation machinery.
+pub struct PendingBridge<T> {
+    pending: Mutex<HashMap<String, oneshot::Sender<T>>>,
 }
 
-impl Default for BrowserContentBridge {
+impl<T> Default for PendingBridge<T> {
     fn default() -> Self {
         Self {
             pending: Mutex::new(HashMap::new()),
@@ -27,25 +29,45 @@ impl Default for BrowserContentBridge {
     }
 }
 
-impl BrowserContentBridge {
+impl<T> PendingBridge<T> {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub async fn request(&self) -> (String, oneshot::Receiver<PageContent>) {
+    /// Register a pending request; returns its id and the receiver to await.
+    pub async fn request(&self) -> (String, oneshot::Receiver<T>) {
         let id = uuid::Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id.clone(), tx);
         (id, rx)
     }
 
-    pub async fn fulfill(&self, request_id: &str, content: PageContent) -> bool {
+    /// Deliver a result to the awaiting request. Returns false when the id is
+    /// unknown (already fulfilled, or the request timed out and was cancelled).
+    pub async fn fulfill(&self, request_id: &str, value: T) -> bool {
         if let Some(tx) = self.pending.lock().await.remove(request_id) {
-            tx.send(content).is_ok()
+            tx.send(value).is_ok()
         } else {
             false
         }
     }
+
+    /// Drop a pending request (e.g. after a timeout) so the slot doesn't leak.
+    pub async fn cancel(&self, request_id: &str) {
+        self.pending.lock().await.remove(request_id);
+    }
+}
+
+/// The read-page bridge (#612): correlates `read_browser_content` round-trips.
+pub type BrowserContentBridge = PendingBridge<PageContent>;
+
+/// The web-scheme rail shared by every agent → webview entry point: only http(s)
+/// may be driven into the in-app browser — never `file://` or a custom scheme.
+/// The act/snapshot paths enforce the same rail in-page (`__permagentIsWebScheme`
+/// in `browser_grounding.js`); this is its canonical, unit-tested expression.
+pub fn is_allowed_web_url(url: &str) -> bool {
+    let url = url.trim();
+    url.starts_with("https://") || url.starts_with("http://")
 }
 
 /// Status distinguishes three failure modes for agent reasoning:
@@ -102,12 +124,7 @@ async fn read_content(State(state): State<Arc<AppState>>) -> Result<Json<PageCon
         }
         Ok(Err(_)) => Err(StatusCode::INTERNAL_SERVER_ERROR),
         Err(_) => {
-            state
-                .browser_content_bridge
-                .pending
-                .lock()
-                .await
-                .remove(&request_id);
+            state.browser_content_bridge.cancel(&request_id).await;
             Err(StatusCode::GATEWAY_TIMEOUT)
         }
     }
@@ -141,7 +158,7 @@ struct NavigateRequest {
 /// agent must not be able to drive file:// or custom schemes into the webview.
 async fn navigate(Json(req): Json<NavigateRequest>) -> StatusCode {
     let url = req.url.trim();
-    if !(url.starts_with("https://") || url.starts_with("http://")) {
+    if !is_allowed_web_url(url) {
         return StatusCode::UNPROCESSABLE_ENTITY;
     }
     tracing::info!(target: "permagentd::browser", %url, "agent navigate request");
@@ -164,4 +181,45 @@ pub fn routes(state: Arc<AppState>) -> Router {
             crate::middleware::loopback::require_loopback,
         ))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn web_scheme_guard_allows_only_http_s() {
+        assert!(is_allowed_web_url("https://example.com"));
+        assert!(is_allowed_web_url("http://example.com/path?q=1"));
+        assert!(is_allowed_web_url("  https://trimmed.example  "));
+        // The class the guard exists to reject: no local files, no custom schemes.
+        assert!(!is_allowed_web_url("file:///etc/passwd"));
+        assert!(!is_allowed_web_url("about:blank"));
+        assert!(!is_allowed_web_url("javascript:alert(1)"));
+        assert!(!is_allowed_web_url("data:text/html,<h1>x"));
+        assert!(!is_allowed_web_url("permagent://build"));
+        assert!(!is_allowed_web_url("ftp://example.com"));
+        assert!(!is_allowed_web_url(""));
+        assert!(!is_allowed_web_url("example.com"));
+    }
+
+    #[tokio::test]
+    async fn bridge_fulfills_the_matching_request() {
+        let bridge: PendingBridge<u32> = PendingBridge::new();
+        let (id, rx) = bridge.request().await;
+        assert!(bridge.fulfill(&id, 42).await, "known id must fulfill");
+        assert_eq!(rx.await.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn bridge_reports_unknown_and_cancelled_ids() {
+        let bridge: PendingBridge<u32> = PendingBridge::new();
+        assert!(!bridge.fulfill("nope", 1).await, "unknown id must be false");
+
+        let (id, rx) = bridge.request().await;
+        bridge.cancel(&id).await;
+        // After cancel the slot is gone: fulfill is a no-op and the receiver drops.
+        assert!(!bridge.fulfill(&id, 7).await, "cancelled id must be false");
+        assert!(rx.await.is_err(), "sender dropped -> receiver errors");
+    }
 }

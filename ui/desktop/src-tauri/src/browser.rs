@@ -432,3 +432,137 @@ pub async fn get_page_content(app: AppHandle, webview_id: String) -> Result<Page
 
     Ok(page)
 }
+
+// ── Act-on-page: a11y-ref snapshot + click/type/select (#649 / #622) ─────────
+//
+// Extends the read-page seam (`get_page_content`) with two capabilities the
+// agent grounds actions on: snapshot the page's INTERACTIVE elements as stable
+// `data-permagent-ref` handles, then act on a ref. The grounding logic lives in
+// `browser_grounding.js` (the single source of truth, also exercised by the
+// vitest+jsdom suite); here we only inject it and parse the JSON it returns.
+
+/// Injected verbatim into the page; defines `__permagentSnapshot` / `__permagentAct`.
+const GROUNDING_JS: &str = include_str!("browser_grounding.js");
+
+/// Cap on interactive elements per snapshot — bounds the token cost the same way
+/// `MAX_CONTENT_CHARS` bounds read_browser_content. JS flags `truncated` when hit.
+const MAX_SNAPSHOT_ELEMENTS: usize = 150;
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SnapshotElement {
+    #[serde(rename = "ref")]
+    pub ref_id: u32,
+    pub role: String,
+    pub name: String,
+    pub tag: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct PageSnapshot {
+    pub url: String,
+    pub elements: Vec<SnapshotElement>,
+    #[serde(default)]
+    pub truncated: bool,
+    /// "ok", "refused_scheme" (non-http(s) page), or "error".
+    #[serde(default = "default_status")]
+    pub status: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ActResult {
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// A FRESH snapshot taken after a successful act, so the caller never grounds
+    /// on a stale ref (Playwright-MCP discipline).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<PageSnapshot>,
+}
+
+/// Args handed to `__permagentAct` — serialized to a JSON object literal and
+/// injected. serde_json emits valid, escaped JSON, so the agent-supplied `value`
+/// cannot break out of the string (injection-safe).
+#[derive(Serialize)]
+struct ActArgs<'a> {
+    #[serde(rename = "ref")]
+    ref_id: u32,
+    action: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    value: Option<&'a str>,
+}
+
+fn snapshot_js(cap: usize) -> String {
+    format!(
+        "(function(){{\n{GROUNDING_JS}\nreturn JSON.stringify(__permagentSnapshot({cap}));\n}})()"
+    )
+}
+
+fn act_js(args_json: &str, cap: usize) -> String {
+    format!(
+        "(function(){{\n{GROUNDING_JS}\nreturn JSON.stringify(__permagentAct({args_json}, {cap}));\n}})()"
+    )
+}
+
+/// Inject `js` (which must evaluate to a JSON string) and parse it as `T`.
+/// Mirrors `get_page_content`'s eval_with_callback + double-decode: the eval
+/// bridge JSON-serializes the JS return value, so the callback receives a
+/// double-encoded string — unwrap one layer, then parse.
+fn eval_returning_json<R: tauri::Runtime, T: serde::de::DeserializeOwned>(
+    webview: &tauri::Webview<R>,
+    js: &str,
+    timeout: std::time::Duration,
+) -> Result<T, String> {
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    webview
+        .eval_with_callback(js, move |result| {
+            let _ = tx.send(result);
+        })
+        .map_err(|e| format!("eval failed: {e}"))?;
+    let raw = rx
+        .recv_timeout(timeout)
+        .map_err(|_| "Timed out waiting for the page to respond".to_string())?;
+    let json_str: String = serde_json::from_str(&raw).unwrap_or_else(|_| raw.clone());
+    serde_json::from_str(&json_str).map_err(|e| format!("Parse failed: {e}"))
+}
+
+/// List the page's interactive elements as stable refs (#649). Injects the same
+/// grounding script the read path uses, capped at `MAX_SNAPSHOT_ELEMENTS`.
+#[tauri::command]
+pub async fn get_page_snapshot(app: AppHandle, webview_id: String) -> Result<PageSnapshot, String> {
+    let webview = app
+        .get_webview(&webview_id)
+        .ok_or_else(|| "Webview not found".to_string())?;
+    let js = snapshot_js(MAX_SNAPSHOT_ELEMENTS);
+    eval_returning_json(&webview, &js, std::time::Duration::from_secs(5))
+}
+
+/// Act on a ref from `get_page_snapshot`: click / type / select (#649). Returns
+/// success plus a fresh snapshot. The action set is validated here (defense in
+/// depth — the daemon route validates too). The in-page scheme guard in
+/// `__permagentAct` refuses non-http(s) pages.
+#[tauri::command]
+pub async fn act_on_ref(
+    app: AppHandle,
+    webview_id: String,
+    ref_id: u32,
+    action: String,
+    value: Option<String>,
+) -> Result<ActResult, String> {
+    if !matches!(action.as_str(), "click" | "type" | "select") {
+        return Err(format!("Unsupported action: {action}"));
+    }
+    let webview = app
+        .get_webview(&webview_id)
+        .ok_or_else(|| "Webview not found".to_string())?;
+    let args = ActArgs {
+        ref_id,
+        action: &action,
+        value: value.as_deref(),
+    };
+    let args_json =
+        serde_json::to_string(&args).map_err(|e| format!("Serialize args failed: {e}"))?;
+    let js = act_js(&args_json, MAX_SNAPSHOT_ELEMENTS);
+    eval_returning_json(&webview, &js, std::time::Duration::from_secs(8))
+}

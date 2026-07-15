@@ -253,6 +253,14 @@ pub enum PermagentEventType {
     /// The agent asked the in-app browser to open a URL (#567). The frontend
     /// bridge listens and routes it to the Build tab's browser.
     BrowserNavigateRequested,
+    /// The agent asked for a snapshot of the open page's interactive elements
+    /// (#649). The frontend bridge injects the grounding script and POSTs the
+    /// stamped a11y refs back.
+    BrowserSnapshotRequested,
+    /// The agent asked to act on a ref — click / type / select (#649). Payload
+    /// carries the ref, action and value; the frontend performs it and POSTs a
+    /// fresh snapshot back.
+    BrowserActRequested,
     // App navigation (chat agent → frontend)
     AppNavigate,
     // App action — act WITHIN a surface, not just navigate to it (chat agent →
