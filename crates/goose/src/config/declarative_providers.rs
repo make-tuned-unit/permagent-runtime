@@ -590,6 +590,61 @@ mod tests {
     }
 
     #[test]
+    fn test_moonshot_kimi_json_resolves_endpoint_model_and_key_env() {
+        // Kimi (Moonshot) cheap-cloud provider: OpenAI-compatible chat-completions,
+        // activates on MOONSHOT_API_KEY. Verifies the declarative config the
+        // operator relies on resolves — endpoint + model + key-env.
+        use crate::cost_router::cheap;
+        let json = include_str!("../providers/declarative/moonshot.json");
+        let config: DeclarativeProviderConfig =
+            serde_json::from_str(json).expect("moonshot.json should parse");
+        assert_eq!(config.name, cheap::PROVIDER_MOONSHOT);
+        assert_eq!(config.display_name, "Moonshot");
+        assert!(matches!(config.engine, ProviderEngine::OpenAI));
+        assert_eq!(
+            config.base_url,
+            "https://api.moonshot.ai/v1/chat/completions"
+        );
+        assert_eq!(config.supports_streaming, Some(true));
+        // The env var the operator sets to activate Kimi must match the one the
+        // cost-router's cheap ladder checks for availability.
+        assert_eq!(config.api_key_env, cheap::DEFAULT_KIMI_KEY_ENV);
+        // The router's default cheap Kimi model must be one this provider serves.
+        assert!(
+            config
+                .models
+                .iter()
+                .any(|m| m.name == cheap::DEFAULT_KIMI_MODEL),
+            "moonshot.json must serve {} (the cost-router's default cheap Kimi model)",
+            cheap::DEFAULT_KIMI_MODEL
+        );
+    }
+
+    #[test]
+    fn test_minimax_json_resolves_endpoint_model_and_key_env() {
+        // MiniMax cheap-cloud provider: Anthropic-compatible endpoint, activates
+        // on MINIMAX_API_KEY. Endpoint + model + key-env all resolve.
+        use crate::cost_router::cheap;
+        let json = include_str!("../providers/declarative/minimax.json");
+        let config: DeclarativeProviderConfig =
+            serde_json::from_str(json).expect("minimax.json should parse");
+        assert_eq!(config.name, cheap::PROVIDER_MINIMAX);
+        assert_eq!(config.display_name, "MiniMax");
+        assert!(matches!(config.engine, ProviderEngine::Anthropic));
+        assert_eq!(config.base_url, "https://api.minimax.io/anthropic");
+        assert_eq!(config.supports_streaming, Some(true));
+        assert_eq!(config.api_key_env, cheap::DEFAULT_MINIMAX_KEY_ENV);
+        assert!(
+            config
+                .models
+                .iter()
+                .any(|m| m.name == cheap::DEFAULT_MINIMAX_MODEL),
+            "minimax.json must serve {} (the cost-router's default cheap MiniMax model)",
+            cheap::DEFAULT_MINIMAX_MODEL
+        );
+    }
+
+    #[test]
     fn test_expand_env_vars_replaces_placeholder() {
         let _guard = env_lock::lock_env([("TEST_EXPAND_HOST", Some("https://example.com/api"))]);
 

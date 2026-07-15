@@ -32,6 +32,7 @@
 
 pub mod budget;
 pub mod cache;
+pub mod cheap;
 pub mod mesh;
 pub mod packs;
 pub mod tier;
@@ -43,6 +44,7 @@ pub use cache::{
     may_swap_main_loop_model, model_change_breaks_cache, prefix_is_cache_stable, PrefixSegment,
     CANONICAL_PREFIX,
 };
+pub use cheap::{is_key_configured, ladder_from, load_ladder, CheapCandidate, CheapLadder};
 pub use mesh::{
     gate as mesh_gate, MeshGateInputs, MeshIneligible, MeshRoute, MeshWorkload, PoolHealth,
 };
@@ -67,6 +69,57 @@ pub fn route(signals: &TaskSignals, mesh_inputs: MeshGateInputs) -> Tier {
         return Tier::MeshFree;
     }
     base
+}
+
+/// Resolve a [`Tier`] — a starting tier from [`route`] or an escalated one from
+/// [`tier::next_after`] — to the concrete provider+model that runs it.
+///
+/// Identical to [`ModelPacks::pack_for_tier`] for every tier EXCEPT
+/// [`Tier::CheapCloud`], which is resolved through the [`cheap`] ladder: the
+/// cheapest cheap-cloud provider the operator has keyed (MiniMax, then Kimi),
+/// else the Haiku anchor. This is the seam that puts Kimi + MiniMax on the
+/// router's cheapest-adequate ladder — because `route` starts mechanical work at
+/// `LocalFree` and only reaches `CheapCloud` on escalation
+/// (`next_after(LocalFree, …) → CheapCloud`), the cheap-cloud provider choice
+/// lives here rather than in the starting decision. With no cheap key set this
+/// returns the Haiku anchor, which is byte-identical to the mechanical pack, so
+/// behavior is unchanged until a key arrives.
+///
+/// `is_key_set` is the availability predicate — pass
+/// `|k| cheap::is_key_configured(k)` in production, a pure set in tests. Returns
+/// an owned [`ModelPack`] because the cheap-cloud pick is computed, not borrowed.
+pub fn concrete_pack_for_tier(
+    tier: Tier,
+    packs: &ModelPacks,
+    ladder: &CheapLadder,
+    is_key_set: impl Fn(&str) -> bool,
+) -> ModelPack {
+    if tier == Tier::CheapCloud {
+        let c = ladder.select(&is_key_set);
+        ModelPack {
+            provider: c.provider.clone(),
+            model: c.model.clone(),
+        }
+    } else {
+        packs.pack_for_tier(tier).clone()
+    }
+}
+
+/// The full concrete starting decision for one routed sub-task: [`route`] to a
+/// [`Tier`], then [`concrete_pack_for_tier`] to a provider+model (ladder-aware
+/// for the cheap-cloud tier). Escalation after the returned pack fails is driven
+/// by [`cheap::CheapLadder::escalate_after`] within the cheap tier and
+/// [`tier::next_after`] across tiers — the existing #249/#720 policy, unchanged.
+pub fn route_pack(
+    signals: &TaskSignals,
+    mesh_inputs: MeshGateInputs,
+    packs: &ModelPacks,
+    ladder: &CheapLadder,
+    is_key_set: impl Fn(&str) -> bool,
+) -> (Tier, ModelPack) {
+    let tier = route(signals, mesh_inputs);
+    let pack = concrete_pack_for_tier(tier, packs, ladder, is_key_set);
+    (tier, pack)
 }
 
 #[cfg(test)]
@@ -161,5 +214,102 @@ mod tests {
         assert_eq!(t2, Tier::Frontier);
 
         assert_eq!(next_after(t2, Attempt::Failed), Next::GiveUp);
+    }
+
+    // ── Ladder-aware tier → concrete pack (the Kimi/MiniMax wiring) ──────────
+
+    fn keyed(set: &[&str]) -> impl Fn(&str) -> bool {
+        let owned: Vec<String> = set.iter().map(|s| s.to_string()).collect();
+        move |k| owned.iter().any(|s| s == k)
+    }
+
+    #[test]
+    fn no_cheap_keys_keeps_cheap_cloud_on_the_haiku_mechanical_pack() {
+        // Regression guard: with no cheap key set, the CheapCloud tier resolves
+        // to EXACTLY today's mechanical pack (Haiku) — Kimi/MiniMax change nothing
+        // until a key arrives.
+        let packs = ModelPacks::default();
+        let ladder = CheapLadder::default();
+        let pack = concrete_pack_for_tier(Tier::CheapCloud, &packs, &ladder, |_| false);
+        assert_eq!(&pack, packs.pack_for(Role::Mechanical));
+        assert_eq!(pack.provider, "anthropic");
+        assert_eq!(pack.model, "claude-haiku-4-5-20251001");
+    }
+
+    #[test]
+    fn escalated_cheap_cloud_prefers_the_cheapest_configured_provider() {
+        // This is the point of the feature: once a cheap key is set, mechanical
+        // cloud work (reached via LocalFree → CheapCloud escalation) routes to the
+        // cheapest configured cheap-cloud model instead of always Haiku.
+        let packs = ModelPacks::default();
+        let ladder = CheapLadder::default();
+
+        // MiniMax keyed → MiniMax (cheapest).
+        let p = concrete_pack_for_tier(
+            Tier::CheapCloud,
+            &packs,
+            &ladder,
+            keyed(&["MINIMAX_API_KEY"]),
+        );
+        assert_eq!(p.provider, "minimax");
+        assert_eq!(p.model, "MiniMax-M2.5");
+
+        // Only Kimi keyed → Kimi.
+        let p = concrete_pack_for_tier(
+            Tier::CheapCloud,
+            &packs,
+            &ladder,
+            keyed(&["MOONSHOT_API_KEY"]),
+        );
+        assert_eq!(p.provider, "moonshot");
+        assert_eq!(p.model, "kimi-k2.5");
+    }
+
+    #[test]
+    fn non_cheap_tiers_resolve_from_packs_unchanged() {
+        // Only the CheapCloud tier consults the ladder; every other tier keeps
+        // resolving from the tiered packs exactly as before.
+        let packs = ModelPacks::default();
+        let ladder = CheapLadder::default();
+        // A fresh owned "both cheap keys set" predicate per call.
+        let cheap = || keyed(&["MINIMAX_API_KEY", "MOONSHOT_API_KEY"]);
+
+        // Frontier → the hard (Opus) pack, regardless of cheap keys.
+        let f = concrete_pack_for_tier(Tier::Frontier, &packs, &ladder, cheap());
+        assert_eq!(&f, packs.pack_for(Role::Hard));
+        assert_eq!(f.model, "claude-opus-4-8");
+
+        // Local + Mesh → the local (Ollama) pack.
+        let l = concrete_pack_for_tier(Tier::LocalFree, &packs, &ladder, cheap());
+        assert_eq!(l.provider, "ollama");
+        assert_eq!(l.model, "qwen3");
+        let m = concrete_pack_for_tier(Tier::MeshFree, &packs, &ladder, cheap());
+        assert_eq!(&m, packs.pack_for(Role::Local));
+    }
+
+    #[test]
+    fn route_pack_composes_route_and_the_ladder_aware_resolution() {
+        let packs = ModelPacks::default();
+        let ladder = CheapLadder::default();
+
+        // Mechanical, no pool → starts LocalFree on Ollama (cheap keys irrelevant
+        // to the STARTING tier — the ladder only concretizes the escalated
+        // CheapCloud rung).
+        let s = TaskSignals {
+            mechanical: true,
+            ..Default::default()
+        };
+        let (tier, pack) = route_pack(&s, no_pool(), &packs, &ladder, keyed(&["MINIMAX_API_KEY"]));
+        assert_eq!(tier, Tier::LocalFree);
+        assert_eq!(pack.model, "qwen3");
+
+        // Reasoning → Frontier on Opus.
+        let s = TaskSignals {
+            multi_file: true,
+            ..Default::default()
+        };
+        let (tier, pack) = route_pack(&s, no_pool(), &packs, &ladder, |_| false);
+        assert_eq!(tier, Tier::Frontier);
+        assert_eq!(pack.model, "claude-opus-4-8");
     }
 }
