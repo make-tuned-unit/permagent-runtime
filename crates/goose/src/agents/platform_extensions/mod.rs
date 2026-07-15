@@ -392,7 +392,29 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 why_it_matters:
                     "Run multi-agent work — dispatch goals, track roadmaps, and steer other sessions when one agent is not enough — escalating decisions to the user for approval rather than acting unsupervised.",
-                teaching: &[],
+                teaching: &[
+                    crate::agents::self_knowledge::TeachingStep {
+                        title: "Give me acceptance criteria",
+                        body: "Tell the user that when they hand you a goal's acceptance \
+                               criteria — 'the project builds', 'GET /health returns 200', \
+                               'docs/guide.md exists', 'no TODO remains in src/lib.rs' — you \
+                               compile the mechanically-checkable ones into checks the daemon \
+                               runs in the goal's worktree before it can be approved. Ask for \
+                               criteria in that measurable, verifiable shape.",
+                        open_surface: None,
+                        confirm: None,
+                    },
+                    crate::agents::self_knowledge::TeachingStep {
+                        title: "Proof, not a claim",
+                        body: "Make the point out loud: with acceptance criteria you verify a \
+                               goal is actually done — the goal cannot pass review until its \
+                               checks pass — rather than just relaying that a worker reported \
+                               success. Offer to add a checkable criterion to a real goal so \
+                               they see it enforced.",
+                        open_surface: None,
+                        confirm: None,
+                    },
+                ],
                 client_factory: |ctx| Box::new(orchestrator::OrchestratorClient::new(ctx).unwrap()),
             },
         );
