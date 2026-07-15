@@ -7,7 +7,8 @@ use permagent::conversation::message::{
     ActionRequiredData, Message, MessageContent, SystemNotificationContent, SystemNotificationType,
     ToolRequest, ToolResponse,
 };
-use permagent::providers::canonical::maybe_get_canonical_model;
+use permagent::providers::base::Usage;
+use permagent::providers::canonical::{cost_of, maybe_get_canonical_model};
 #[cfg(target_os = "windows")]
 use permagent::subprocess::SubprocessExt;
 use permagent::utils::safe_truncate;
@@ -1422,12 +1423,17 @@ fn estimate_cost_usd(
 ) -> Option<f64> {
     let canonical_model = maybe_get_canonical_model(provider, model)?;
 
-    let input_cost_per_token = canonical_model.cost.input? / 1_000_000.0;
-    let output_cost_per_token = canonical_model.cost.output? / 1_000_000.0;
-
-    let input_cost = input_cost_per_token * input_tokens as f64;
-    let output_cost = output_cost_per_token * output_tokens as f64;
-    Some(input_cost + output_cost)
+    // Route through the ONE canonical cost function (single source of truth) so
+    // this figure can never drift from the daemon ledger / verification digest.
+    // The CLI session metadata surfaces only input/output tokens here; the
+    // cache-aware path (cache_read / cache_write folding) is exercised where
+    // those counts are in hand — the per-call ledger in the agent loop.
+    let usage = Usage::new(
+        Some(input_tokens.min(i32::MAX as usize) as i32),
+        Some(output_tokens.min(i32::MAX as usize) as i32),
+        None,
+    );
+    cost_of(&usage, &canonical_model.cost)
 }
 
 /// Display cost information, if price data is available.

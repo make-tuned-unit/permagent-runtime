@@ -3,6 +3,7 @@ import { useCommandCenter } from './lib/store';
 import { useTheme } from './styles/useTheme';
 import { Sidebar } from './components/sidebar/Sidebar';
 import { SettingsView } from './components/settings/SettingsView';
+import { InboxPanel } from './components/inbox/InboxPanel';
 import { WorkspaceRenderer } from './components/workspaces/WorkspaceRenderer';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { WizardShell } from './components/wizard/WizardShell';
@@ -29,6 +30,7 @@ function MainContent() {
   const workspacesLoaded = useCommandCenter(s => s.workspacesLoaded);
 
   const showSettings = activePanel === 'settings';
+  const showInbox = activePanel === 'inbox';
 
   if (!workspacesLoaded) {
     return (
@@ -38,7 +40,7 @@ function MainContent() {
     );
   }
 
-  if (!activeWorkspaceId && !showSettings) {
+  if (!activeWorkspaceId && !showSettings && !showInbox) {
     return (
       <div className="flex h-full items-center justify-center text-dark-muted text-xs font-mono">
         No workspaces available
@@ -56,11 +58,16 @@ function MainContent() {
           <SettingsView />
         </div>
       )}
+      {showInbox && (
+        <div className="absolute inset-0 z-10">
+          <InboxPanel />
+        </div>
+      )}
       {workspaces.map(ws => (
         <div
           key={ws.id}
           className="absolute inset-0"
-          style={{ display: (!showSettings && ws.id === activeWorkspaceId) ? 'block' : 'none' }}
+          style={{ display: (!showSettings && !showInbox && ws.id === activeWorkspaceId) ? 'block' : 'none' }}
         >
           <ErrorBoundary surface="the workspace">
             <WorkspaceRenderer workspaceId={ws.id} />
