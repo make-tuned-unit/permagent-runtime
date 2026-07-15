@@ -145,15 +145,6 @@ impl AppState {
         // Brain::builder().build() creates its own tokio runtime internally,
         // so we must run it off the async executor via spawn_blocking.
         // What leaves this block is a SafeBrain.
-        //
-        // Provenance-protected entity ids (people-in-graph v1 #583): loaded here in
-        // the async context (the reconciler runs inside spawn_blocking and has no
-        // pool). The reconciler must never prune these runtime/extracted persons.
-        // Tolerant — an empty set on any error reproduces prune-all-not-in-ontology.
-        let protected_ids = match agent_manager.session_manager().pool_clone().await {
-            Ok(pool) => permagent::people_provenance::protected_entity_ids(&pool).await,
-            Err(_) => std::collections::HashSet::new(),
-        };
         let brain: Option<permagent::brain_handle::SafeBrain> =
             tokio::task::spawn_blocking(move || {
                 let brain_dir = permagent::config::paths::Paths::brain_dir();
@@ -170,8 +161,7 @@ impl AppState {
 
                 // ── Pre-migration backup: brain/memory.db ──
                 // Must run before Brain::builder().build() which triggers Spectral
-                // auto-migration. Also before sync_graph_with_ontology which mutates
-                // graph.kz (separate store, but keeps backup timing unambiguous).
+                // auto-migration.
                 {
                     let source = brain_dir.join("memory.db");
                     let backup_root = permagent::config::paths::Paths::data_dir().join("backups");
@@ -187,15 +177,6 @@ impl AppState {
                         );
                     }
                 }
-
-                // Reconcile Kuzu graph with ontology before Brain opens.
-                // This removes entities that were pruned from ontology.toml —
-                // except provenance-protected runtime/extracted persons (#583).
-                crate::brain_sync::sync_graph_with_ontology(
-                    &brain_dir,
-                    &ontology_path,
-                    &protected_ids,
-                );
 
                 let device_id_str =
                     std::env::var("HOSTNAME").unwrap_or_else(|_| "permagent-host".into());
