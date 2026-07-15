@@ -44,7 +44,7 @@ function dispatchAppAction(
 }
 
 const VALID_TOOL_TYPES = new Set<string>([
-  'chat', 'skills', 'trace', 'world', 'terminal', 'browser', 'memory', 'dashboard', 'build', 'automate', 'projects',
+  'chat', 'skills', 'trace', 'world', 'terminal', 'browser', 'memory', 'dashboard', 'build', 'automate', 'projects', 'grow',
 ]);
 
 /**
@@ -56,6 +56,7 @@ export function useAppNavigate() {
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
   const workspaces = useCommandCenter(s => s.workspaces);
   const setPendingProjectNavigation = useCommandCenter(s => s.setPendingProjectNavigation);
+  const setPendingSettingsSection = useCommandCenter(s => s.setPendingSettingsSection);
   const setPendingTerminalLaunch = useCommandCenter(s => s.setPendingTerminalLaunch);
   const { theme } = useTheme();
 
@@ -70,6 +71,8 @@ export function useAppNavigate() {
   setActivePanelRef.current = setActivePanel;
   const setPendingProjectNavigationRef = useRef(setPendingProjectNavigation);
   setPendingProjectNavigationRef.current = setPendingProjectNavigation;
+  const setPendingSettingsSectionRef = useRef(setPendingSettingsSection);
+  setPendingSettingsSectionRef.current = setPendingSettingsSection;
   const setPendingTerminalLaunchRef = useRef(setPendingTerminalLaunch);
   setPendingTerminalLaunchRef.current = setPendingTerminalLaunch;
 
@@ -78,13 +81,18 @@ export function useAppNavigate() {
   const navigate = (payload: {
     tool_type?: string;
     panel_type?: string;
+    section?: string;
     state?: { project_id?: string };
     reason?: string;
   }) => {
-    const { tool_type, panel_type, state, reason } = payload ?? {};
+    const { tool_type, panel_type, section, state, reason } = payload ?? {};
     if (!tool_type) return;
 
     if (panel_type === 'overlay') {
+      // Deep-link into a sub-section (e.g. Settings → Devices). The target
+      // overlay reads pendingSettingsSection on mount. Without this the daemon-
+      // forwarded `section` was dropped and every deep-link fell to the default.
+      if (section) setPendingSettingsSectionRef.current(section);
       setActivePanelRef.current(tool_type as ActivePanel);
     } else if (VALID_TOOL_TYPES.has(tool_type)) {
       // Find workspace containing this tool type
@@ -194,6 +202,7 @@ export function useAppNavigate() {
         const stop = await listen<{
           tool_type?: string;
           panel_type?: string;
+          section?: string;
           state?: { project_id?: string };
           reason?: string;
         }>(

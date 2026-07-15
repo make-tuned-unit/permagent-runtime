@@ -447,6 +447,20 @@ export interface ExtensionQuery {
   };
 }
 
+/** One file in the Downloads inbox (metadata row; bytes live on disk).
+ *  Mirrors `permagent::inbox::InboxFile` — serde serializes `Option<T>` as null. */
+export interface InboxFile {
+  id: string;
+  filename: string;
+  original_url: string | null;
+  content_type: string | null;
+  size_bytes: number | null;
+  disk_path: string;
+  status: string;
+  project_id: string | null;
+  created_at: string;
+}
+
 export const api = {
   // Health
   getHealth: () => apiFetch<{ status: string }>('/status'),
@@ -849,13 +863,10 @@ export const api = {
     return resp.json() as Promise<{ text: string }>;
   },
 
-  // State snapshot (stubbed until daemon implements)
-  getStateSnapshot: () => Promise.resolve({
-    tasks: [] as Array<{ id: string; title: string | null; status: string; automation_id: string | null; created_at: string | null; updated_at: string }>,
-    service_health: [] as Array<{ service: string; status: string; last_check: string; latency_ms: number }>,
-    receipts: [] as Array<{ id: string; run_id: string; step_id: string | null; model: string; input_tokens: number; output_tokens: number; cost_usd: number; recorded_at: string }>,
-    spend: { today_usd: 0, month_usd: 0 },
-  }),
+  // Downloads inbox (#392/#393) — files that landed in ~/.permagent/inbox via the
+  // in-app browser download flow. Lists metadata rows newest-first. Recording a
+  // row (POST) is driven by the desktop download bridge, not the UI.
+  getInbox: () => apiFetch<InboxFile[]>('/api/inbox'),
 
   /** Fetch with daemon Bearer token auth (for /activity/* endpoints). */
   fetchAuthed: async (endpoint: string, options?: RequestInit): Promise<Response> => {

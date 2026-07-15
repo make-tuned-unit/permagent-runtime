@@ -6,33 +6,6 @@ import type { ProjectPerson } from '../components/projects/types';
 
 // --- Types ---
 
-export interface TaskState {
-  id: string;
-  title: string | null;
-  status: string;
-  automation_id: string | null;
-  created_at: string | null;
-  updated_at: string;
-}
-
-export interface ServiceHealthState {
-  service: string;
-  status: string;
-  last_check: string;
-  latency_ms: number;
-}
-
-export interface ReceiptState {
-  id: string;
-  run_id: string;
-  step_id: string | null;
-  model: string;
-  input_tokens: number;
-  output_tokens: number;
-  cost_usd: number;
-  recorded_at: string;
-}
-
 export interface EventRecord {
   id: string;
   timestamp: string;
@@ -129,7 +102,7 @@ export type PermagentEventType =
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 
-export type ActivePanel = 'chat' | 'skills' | 'events' | 'settings' | 'sessions' | 'terminal' | 'browser';
+export type ActivePanel = 'chat' | 'skills' | 'events' | 'settings' | 'sessions' | 'terminal' | 'browser' | 'inbox';
 
 // ── Workspace types ──
 
@@ -206,12 +179,7 @@ interface CommandCenterStore {
   setDefaultProvider: (name: string, model: string) => Promise<void>;
 
   // --- Operational state ---
-  tasks: TaskState[];
-  serviceHealth: ServiceHealthState[];
-  receipts: ReceiptState[];
   events: EventRecord[];
-  spendToday: number;
-  spendMonth: number;
 
   // --- Agent identity ---
   agentName: string;
@@ -292,7 +260,6 @@ interface CommandCenterStore {
 
   // --- Actions ---
   loadEvents: (params?: { type?: string; limit?: number }) => Promise<void>;
-  loadSnapshot: () => Promise<void>;
   loadSessionMessages: (sessionId: string) => Promise<void>;
   handleSessionEvent: (data: SSEEvent) => void;
   clearEvents: () => void;
@@ -300,6 +267,10 @@ interface CommandCenterStore {
   // --- Project navigation (from agent/voice) ---
   pendingProjectNavigation: string | null;
   setPendingProjectNavigation: (id: string | null) => void;
+
+  // --- Settings deep-link (from agent/voice: "Settings → <pane>") ---
+  pendingSettingsSection: string | null;
+  setPendingSettingsSection: (section: string | null) => void;
 
   // --- Project terminal launch (from agent: project_launch event) ---
   pendingTerminalLaunch: { rootPath: string; label: string; command?: string } | null;
@@ -584,12 +555,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   },
 
   // State
-  tasks: [],
-  serviceHealth: [],
-  receipts: [],
   events: [],
-  spendToday: 0,
-  spendMonth: 0,
 
   // Chat
   chatMessages: [],
@@ -1008,28 +974,6 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     // Events come through per-session SSE; no separate REST endpoint
   },
 
-  loadSnapshot: async () => {
-    try {
-      const snapshot = await api.getStateSnapshot();
-      const spendToday = snapshot.spend?.today_usd ?? 0;
-      const spendMonth = snapshot.spend?.month_usd ?? 0;
-      const serviceHealth = (snapshot.service_health || []).map(h => ({ ...h }));
-
-      set({
-        tasks: (snapshot.tasks || []).map(t => ({ ...t, title: t.title || null })),
-        serviceHealth,
-        receipts: (snapshot.receipts || []).map(r => ({ ...r })),
-        spendToday,
-        spendMonth,
-      });
-    } catch {
-      set({
-        tasks: [], serviceHealth: [], receipts: [],
-        spendToday: 0, spendMonth: 0,
-      });
-    }
-  },
-
   /** Handle a per-session SSE event (Message, Error, Finish from reply stream) */
   handleSessionEvent: (data: SSEEvent) => {
     switch (data.type) {
@@ -1130,6 +1074,9 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   pendingProjectNavigation: null,
   setPendingProjectNavigation: (id) => set({ pendingProjectNavigation: id }),
 
+  pendingSettingsSection: null,
+  setPendingSettingsSection: (section) => set({ pendingSettingsSection: section }),
+
   pendingTerminalLaunch: null,
   setPendingTerminalLaunch: (launch) => set({ pendingTerminalLaunch: launch }),
 
@@ -1200,7 +1147,6 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
     es.onopen = () => {
       set({ connectionStatus: 'connected', _reconnectAttempts: 0 });
-      get().loadSnapshot();
       get().loadSkills();
       get().loadProposals();
       get().loadWorkspaces();
