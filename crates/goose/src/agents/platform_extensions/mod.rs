@@ -144,7 +144,9 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                      open. And when they need something DONE on a page — fill a form, click a \
                      button, pick an option — get_page_snapshot lists the interactive elements \
                      and act_on_page clicks, types, or selects, so you drive the page instead of \
-                     only reading it.",
+                     only reading it. open_website also opens a LOCAL dev server \
+                     (http://localhost:PORT) in the browser, so after you build or scaffold an \
+                     app you can show the user the running result — the coding last mile.",
                 teaching: &[
                     crate::agents::self_knowledge::TeachingStep {
                         title: "Browse together",

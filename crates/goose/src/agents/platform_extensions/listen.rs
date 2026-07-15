@@ -130,11 +130,11 @@ impl ListenClient {
             match backend {
                 Backend::Rss { url, label } => {
                     // SSRF-guard the (possibly user-supplied) feed host before we
-                    // fetch, reusing the Browser extension's audited public-host
+                    // fetch, reusing the Browser extension's audited fetch-host
                     // check. DNS resolution blocks, so run it off the async worker.
                     let guard_url = url.clone();
                     let guarded = tokio::task::spawn_blocking(move || {
-                        super::browser::guard_public_host(&guard_url)
+                        super::browser::guard_fetch_host(&guard_url)
                     })
                     .await;
                     match guarded {

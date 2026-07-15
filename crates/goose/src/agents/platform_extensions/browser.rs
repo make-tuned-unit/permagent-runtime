@@ -190,18 +190,25 @@ fn is_private_ip(ip: IpAddr) -> bool {
     }
 }
 
-/// SSRF guard. Unlike a naive string check, this RESOLVES a DNS name and checks
-/// the resolved IP(s), so a public name that resolves to 127.0.0.1 /
-/// 169.254.169.254 / a LAN address is refused (DNS-rebinding / metadata SSRF).
-/// Blocking (DNS): the initial check runs via spawn_blocking; the redirect hook
-/// runs it on reqwest's connection thread.
+/// SSRF guard for the SERVER-SIDE FETCH path (`read_webpage`, `listen`) — where
+/// the DAEMON itself fetches the URL. Unlike a naive string check, this RESOLVES
+/// a DNS name and checks the resolved IP(s), so a public name that resolves to
+/// 127.0.0.1 / 169.254.169.254 / a LAN address is refused (DNS-rebinding /
+/// metadata SSRF). Blocking (DNS): the initial check runs via spawn_blocking; the
+/// redirect hook runs it on reqwest's connection thread.
+///
+/// This is NOT the guard for opening a URL in the in-app webview. That path is
+/// the user viewing their OWN browser (including a `localhost` dev server), not a
+/// server-side fetch, so it uses `guard_webview_url` instead — which ALLOWS
+/// loopback/private hosts but still blocks non-http(s) schemes. Keeping the two
+/// apart is deliberate: loosening this one would re-open the SSRF hole.
 ///
 /// NOTE: a residual TOCTOU window remains — reqwest re-resolves at connect, so a
 /// rebinding attacker could flip the record between check and connect. Pinning
 /// the verified addresses into the client (`resolve_to_addrs`) is the hardening
 /// follow-on; this already closes the string-only bypass, which is the class the
 /// audit flagged.
-pub(crate) fn guard_public_host(url: &str) -> Result<(), String> {
+pub(crate) fn guard_fetch_host(url: &str) -> Result<(), String> {
     let host = host_of(url);
     if host.is_empty() {
         return Err("URL has no host".to_string());
@@ -239,6 +246,65 @@ pub(crate) fn guard_public_host(url: &str) -> Result<(), String> {
         return Err(format!("Host {host} did not resolve to any address"));
     }
     Ok(())
+}
+
+/// Hosts that are the user's *own* machine: `localhost`, `*.localhost`, and any
+/// loopback / private / link-local IP literal. Allowed on the webview-open path
+/// (a local dev-server preview) and used to default a bare host to `http`. The
+/// fetch guard blocks every one of these — this predicate is the webview side.
+fn is_local_host(host: &str) -> bool {
+    host == "localhost"
+        || host.ends_with(".localhost")
+        || host.parse::<IpAddr>().is_ok_and(is_private_ip)
+}
+
+/// Webview-open rail — the coding-harness "last mile": preview a local dev server
+/// in the built-in browser. UNLIKE `guard_fetch_host`, this is NOT an SSRF guard:
+/// the URL is handed to the frontend to render in the user's OWN in-app browser
+/// (a client-side navigation), not fetched server-side by the daemon. So
+/// `localhost`, `127.0.0.1`, `[::1]`, `*.localhost`, and other private/loopback
+/// dev-server URLs are ALLOWED — this is the user viewing their own `npm run dev`
+/// output. The one rail is the scheme: http(s) only, so the agent can never drive
+/// `file://`, `javascript:`, `data:`, or a custom scheme into the webview.
+/// Returns the normalized URL to open (scheme always present).
+fn guard_webview_url(input: &str) -> Result<String, String> {
+    let url = input.trim();
+    if url.is_empty() {
+        return Err("No URL given".to_string());
+    }
+    // An explicit http(s) URL opens as-is — preserving `http` so a dev server
+    // isn't forced onto https it won't answer.
+    if url.starts_with("http://") || url.starts_with("https://") {
+        return Ok(url.to_string());
+    }
+    // Any other explicit scheme carrying `//` (file://, ftp://, custom://) is refused.
+    if url.contains("://") {
+        return Err(format!(
+            "Only http(s) URLs can be opened in the browser, got: {url}"
+        ));
+    }
+    // A bare `scheme:...` with no `//` (javascript:, data:, mailto:) is refused
+    // too. A leading `token:` is a scheme UNLESS what follows the colon is a port
+    // (all digits) — `localhost:5173` is host:port, not a scheme. IPv6 literals
+    // (`[::1]:8080`) start with `[` and skip this check.
+    let bare_scheme = !url.starts_with('[')
+        && url.split_once(':').is_some_and(|(_scheme, rest)| {
+            let seg = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+            seg.is_empty() || !seg.bytes().all(|b| b.is_ascii_digit())
+        });
+    if bare_scheme {
+        return Err(format!(
+            "Only http(s) URLs can be opened in the browser, got: {url}"
+        ));
+    }
+    // A bare host ("bbc.com", "localhost:5173", "[::1]:8080"): default the scheme
+    // by locality — local dev servers speak http, public sites https.
+    let host = host_of(&format!("http://{url}"));
+    if is_local_host(&host) {
+        Ok(format!("http://{url}"))
+    } else {
+        Ok(format!("https://{url}"))
+    }
 }
 
 /// `<title>` of an HTML document, entity-light.
@@ -429,7 +495,7 @@ impl BrowserClient {
     /// daemon route, which validates the scheme and emits the navigate event
     /// the frontend bridge listens for.
     async fn handle_open_website(&self, url: &str) -> Result<Vec<Content>, String> {
-        let url = normalize_web_url(url)?;
+        let url = guard_webview_url(url)?;
         let client = reqwest::Client::new();
         let resp = client
             .post("http://127.0.0.1:3001/api/browser/navigate")
@@ -441,9 +507,16 @@ impl BrowserClient {
         if !resp.status().is_success() {
             return Err(format!("Browser navigate rejected: {}", resp.status()));
         }
+        // read_webpage is a public-web reader that refuses loopback, so only point
+        // the model at it for a public URL — for a local dev server the preview is
+        // simply now visible in the Build tab.
+        let hint = if is_local_host(&host_of(&url)) {
+            "Your local dev-server preview is now visible there."
+        } else {
+            "Use read_webpage to read its content."
+        };
         Ok(vec![Content::text(format!(
-            "Opened {url} in the Permagent browser (Build tab). Use read_webpage to read its \
-             content."
+            "Opened {url} in the Permagent browser (Build tab). {hint}"
         ))])
     }
 
@@ -460,7 +533,7 @@ impl BrowserClient {
         // async worker. (The redirect hook below runs it on reqwest's thread.)
         {
             let guard_url = url.clone();
-            tokio::task::spawn_blocking(move || guard_public_host(&guard_url))
+            tokio::task::spawn_blocking(move || guard_fetch_host(&guard_url))
                 .await
                 .map_err(|e| format!("SSRF guard task panicked: {e}"))??;
         }
@@ -471,7 +544,7 @@ impl BrowserClient {
                 if attempt.previous().len() > 4 {
                     return attempt.error("too many redirects");
                 }
-                match guard_public_host(attempt.url().as_str()) {
+                match guard_fetch_host(attempt.url().as_str()) {
                     Ok(()) => attempt.follow(),
                     Err(_) => attempt.error("redirect to a non-public host refused"),
                 }
@@ -648,8 +721,10 @@ impl BrowserClient {
             Tool::new(
                 "open_website".to_string(),
                 "Open a website in the Permagent browser (the Build tab) so the user can see \
-                 it. Use when the user says things like 'go to BBC' or 'open cbc.ca'. Pair \
-                 with read_webpage when they also want it read to them."
+                 it — a public site ('go to BBC', 'open cbc.ca') OR a local dev server you \
+                 just started (e.g. http://localhost:5173) to preview an app or game you \
+                 built. Pair with read_webpage to read a public page aloud (read_webpage is \
+                 public-web only and will not read a localhost URL)."
                     .to_string(),
                 url_schema.clone(),
             ),
@@ -771,8 +846,8 @@ impl McpClientTrait for BrowserClient {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_snapshot, guard_public_host, host_of, is_private_ip, validate_act_args,
-        PageSnapshot, SnapshotElement,
+        format_snapshot, guard_fetch_host, guard_webview_url, host_of, is_private_ip,
+        validate_act_args, PageSnapshot, SnapshotElement,
     };
     use std::net::IpAddr;
 
@@ -812,15 +887,73 @@ mod tests {
     }
 
     #[test]
-    fn guard_rejects_private_literals_and_localhost_without_dns() {
-        assert!(guard_public_host("http://127.0.0.1/x").is_err());
-        assert!(guard_public_host("http://169.254.169.254/latest/meta-data/").is_err());
-        assert!(guard_public_host("http://10.0.0.5:8080").is_err());
-        assert!(guard_public_host("http://localhost:3001").is_err());
-        assert!(guard_public_host("http://foo.local/").is_err());
-        assert!(guard_public_host("http://[::1]/").is_err());
+    fn guard_fetch_host_rejects_private_literals_and_localhost_without_dns() {
+        // SSRF guard for the server-side fetch path — must stay strict.
+        assert!(guard_fetch_host("http://127.0.0.1/x").is_err());
+        assert!(guard_fetch_host("http://169.254.169.254/latest/meta-data/").is_err());
+        assert!(guard_fetch_host("http://10.0.0.5:8080").is_err());
+        assert!(guard_fetch_host("http://localhost:3001").is_err());
+        assert!(guard_fetch_host("http://foo.local/").is_err());
+        assert!(guard_fetch_host("http://[::1]/").is_err());
         // A public IP literal passes without any DNS lookup.
-        assert!(guard_public_host("https://8.8.8.8/").is_ok());
+        assert!(guard_fetch_host("https://8.8.8.8/").is_ok());
+    }
+
+    #[test]
+    fn guard_webview_url_allows_localhost_dev_servers() {
+        // The coding-harness last mile: the user's OWN dev server, opened in
+        // their OWN webview — allowed (this is NOT the SSRF fetch path). Explicit
+        // http(s) URLs open verbatim (http preserved for the dev server).
+        for u in [
+            "http://localhost:5173",
+            "http://127.0.0.1:3000",
+            "http://[::1]:8080",
+            "https://localhost",
+            "http://app.localhost:5173",
+        ] {
+            assert_eq!(
+                guard_webview_url(u).as_deref(),
+                Ok(u),
+                "{u} must open as-is"
+            );
+        }
+        // A bare local host defaults to http (a dev server won't answer https).
+        assert_eq!(
+            guard_webview_url("localhost:5173").as_deref(),
+            Ok("http://localhost:5173")
+        );
+        // A bare public host still defaults to https.
+        assert_eq!(
+            guard_webview_url("bbc.com").as_deref(),
+            Ok("https://bbc.com")
+        );
+    }
+
+    #[test]
+    fn guard_webview_url_blocks_file_and_non_http_schemes() {
+        // file://, custom schemes, and bare javascript:/data: URIs can never be
+        // driven into the webview — the one rail on the open path.
+        for bad in [
+            "file:///etc/passwd",
+            "ftp://example.com/x",
+            "javascript:alert(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "",
+            "   ",
+        ] {
+            assert!(
+                guard_webview_url(bad).is_err(),
+                "{bad:?} must be refused on the webview path"
+            );
+        }
+    }
+
+    #[test]
+    fn fetch_and_webview_guards_diverge_on_localhost() {
+        // The whole point of the split: the SAME localhost dev-server URL is
+        // REFUSED by the SSRF fetch guard but ALLOWED by the webview-open rail.
+        assert!(guard_fetch_host("http://localhost:5173").is_err());
+        assert!(guard_webview_url("http://localhost:5173").is_ok());
     }
 
     #[test]
