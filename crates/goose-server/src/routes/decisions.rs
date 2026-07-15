@@ -150,17 +150,25 @@ async fn answer_decision_handler(
         }
     };
 
-    // Learn (L3): jesse-answered decisions become Brain memories. This
-    // handler attributes all HTTP answers to 'jesse' (S5), and
-    // `ingest_answered_decision` re-checks status/acted_by itself.
-    // Failure-tolerant — never breaks the answer path.
+    // Learn (L3): jesse-answered decisions become Brain memories. This handler
+    // attributes all HTTP answers to 'jesse' (S5); the ingest fns re-check
+    // status/acted_by themselves. Failure-tolerant — never breaks the answer
+    // path. An `edit` (approve-with-edits) is BOTH an acceptance
+    // (ingest_answered_decision, storing what was accepted) AND a correction
+    // (ingest_edited_decision, storing the draft→revision delta as training),
+    // so both run; each is a no-op when it does not apply.
     if let Some(brain) = permagent::agents::platform_extensions::get_global_brain() {
-        if let Err(e) =
-            permagent::decision_inbox::learn::ingest_answered_decision(&pool, &brain, &decision)
-                .await
-        {
+        use permagent::decision_inbox::learn;
+        if let Err(e) = learn::ingest_answered_decision(&pool, &brain, &decision).await {
             tracing::warn!(
-                "Decision {} learn ingestion failed (non-fatal): {}",
+                "Decision {} answer ingestion failed (non-fatal): {}",
+                decision.id,
+                e
+            );
+        }
+        if let Err(e) = learn::ingest_edited_decision(&pool, &brain, &decision).await {
+            tracing::warn!(
+                "Decision {} correction ingestion failed (non-fatal): {}",
                 decision.id,
                 e
             );
@@ -381,17 +389,25 @@ async fn execute_effect(
                 "automation proposal declined; will not re-pitch".to_string(),
             ))
         }
-        // Approved automation proposal: recorded now; building the saved recipe
-        // is the orchestrator's job (not yet enabled), so there is no effect to
-        // run yet — parity with today's Triage card, which is likewise unconsumed
-        // until the orchestrator turns on.
-        ("automation_proposal", Some("approve")) => {
+        // Approved automation proposal (with or without edits): recorded now;
+        // building the saved recipe is the orchestrator's job (not yet enabled),
+        // so there is no effect to run yet — parity with today's Triage card,
+        // which is likewise unconsumed until the orchestrator turns on. An
+        // `edit` accepts the user's revised command (in answer_input); the
+        // draft→revision delta is learned via the Learn ingestion in the handler.
+        ("automation_proposal", Some("approve")) | ("automation_proposal", Some("edit")) => {
+            let with_edits = decision.answer.as_deref() == Some("edit");
             tracing::info!(
                 target: "initiative",
                 decision_id = %decision.id,
+                with_edits,
                 "automation proposal approved on Decision Inbox"
             );
-            Ok(Some("automation proposal approved".to_string()))
+            Ok(Some(if with_edits {
+                "automation proposal approved with edits".to_string()
+            } else {
+                "automation proposal approved".to_string()
+            }))
         }
         // Approved enrichment proposal (#495 slice 4): write each proposed field
         // to the person's graph entity with Enriched provenance + source URL.

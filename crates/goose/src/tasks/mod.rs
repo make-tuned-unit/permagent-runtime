@@ -180,6 +180,21 @@ impl TaskLogger {
             return None;
         }
 
+        // Retirement sweep — the counterpart to evidence-based graduation: archive
+        // saved skills that never fired within the grace window, so unused skills
+        // don't accumulate or crowd the injected-skills prompt. Runs on the same
+        // auto-skills tick as detection; cheap, idempotent, one SkillRetired event
+        // per skill.
+        match crate::skills::retire_stale_skills(&self.pool, crate::skills::RETIREMENT_GRACE_DAYS)
+            .await
+        {
+            Ok(retired) if !retired.is_empty() => {
+                info!("Retired {} unused skill(s)", retired.len());
+            }
+            Ok(_) => {}
+            Err(e) => warn!("Skill retirement sweep failed: {}", e),
+        }
+
         // Cap at 10: beyond that, it's generic tool usage, not a task pattern
         let max_threshold: i64 = 10;
 

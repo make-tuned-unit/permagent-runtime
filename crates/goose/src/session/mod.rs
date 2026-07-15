@@ -12,6 +12,7 @@ pub use diagnostics::{
 };
 pub use extension_data::{EnabledExtensionsState, ExtensionData, ExtensionState, TodoState};
 pub use session_manager::{
-    Session, SessionInsights, SessionManager, SessionSummary, SessionType, SessionUpdateBuilder,
+    CostLedgerRow, CostTier, Session, SessionInsights, SessionManager, SessionSummary, SessionType,
+    SessionUpdateBuilder,
 };
 pub use thread_manager::{Thread, ThreadManager, ThreadMetadata};

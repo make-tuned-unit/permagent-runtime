@@ -49,7 +49,7 @@ pub const PERSONA_PICKER_FEATURE: crate::agents::self_knowledge::FeatureDescript
                 body: "Open the identity settings so they can give you a name, choose a voice, and hear it audition out loud. Invite them to make it personal.",
                 open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
                     tab: "Settings",
-                    section: Some("identity"),
+                    section: Some("agent"),
                 }),
                 confirm: None,
             },

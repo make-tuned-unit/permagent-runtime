@@ -23,6 +23,108 @@ struct PageContent {
     truncated: bool,
 }
 
+// ── Act-on-page (#649 / #622): a11y-ref snapshot + click/type/select ─────────
+// These mirror the daemon's `browser_act.rs` shapes; the tool POSTs to the same
+// loopback bridge the read path uses and formats the JSON for the model.
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SnapshotElement {
+    #[serde(rename = "ref")]
+    ref_id: u32,
+    role: String,
+    name: String,
+    #[serde(default)]
+    tag: String,
+    #[serde(default)]
+    value: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PageSnapshot {
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    elements: Vec<SnapshotElement>,
+    #[serde(default)]
+    truncated: bool,
+    #[serde(default)]
+    status: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ActResult {
+    ok: bool,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    snapshot: Option<PageSnapshot>,
+}
+
+/// Client-side mirror of the daemon's `validate_act`: fail-closed on the action
+/// set so the model gets a clear error without a round-trip.
+fn validate_act_args(action: &str, value: Option<&str>) -> Result<(), String> {
+    match action {
+        "click" => Ok(()),
+        "type" => value
+            .map(|_| ())
+            .ok_or_else(|| "The 'type' action needs a `value` (the text to type).".to_string()),
+        "select" => match value {
+            Some(v) if !v.is_empty() => Ok(()),
+            _ => Err(
+                "The 'select' action needs a non-empty `value` (the option to choose).".to_string(),
+            ),
+        },
+        other => Err(format!(
+            "Unknown action '{other}'. Use 'click', 'type', or 'select'."
+        )),
+    }
+}
+
+/// Render a snapshot as a compact, groundable list the model can read and act on.
+fn format_snapshot(snap: &PageSnapshot) -> String {
+    match snap.status.as_str() {
+        "no_tab" => {
+            return "No browser tab is currently open in Permagent. The user needs a page open \
+                    in the browser for this to work."
+                .to_string()
+        }
+        "refused_scheme" => {
+            return "This isn't a web page (file:// or a custom scheme), so it can't be acted on. \
+                    Only http(s) pages are supported."
+                .to_string()
+        }
+        "error" => {
+            return "The page could not be read for interactive elements (blank or still loading)."
+                .to_string()
+        }
+        _ => {}
+    }
+    if snap.elements.is_empty() {
+        return format!("No interactive elements were found on {}.", snap.url);
+    }
+    let mut out = format!(
+        "Page: {}\nInteractive elements ({}):\n",
+        snap.url,
+        snap.elements.len()
+    );
+    for el in &snap.elements {
+        out.push_str(&format!("[{}] {} \"{}\"", el.ref_id, el.role, el.name));
+        if let Some(v) = &el.value {
+            if !v.is_empty() {
+                out.push_str(&format!(" = \"{v}\""));
+            }
+        }
+        out.push('\n');
+    }
+    if snap.truncated {
+        out.push_str(
+            "\n(Only the first elements are shown — the page has more than the snapshot cap.)\n",
+        );
+    }
+    out.push_str("\nUse act_on_page with a ref to click, type, or select.");
+    out
+}
+
 pub struct BrowserClient {
     info: InitializeResult,
 }
@@ -414,6 +516,85 @@ impl BrowserClient {
         Ok(vec![Content::text(out)])
     }
 
+    /// #649: snapshot the interactive elements of the open page as stable refs.
+    /// Round-trips through the same loopback bridge as read_browser_content.
+    async fn handle_get_page_snapshot(&self) -> Result<Vec<Content>, String> {
+        let client = reqwest::Client::new();
+        let resp = client
+            .post("http://127.0.0.1:3001/api/browser/snapshot/read")
+            .timeout(std::time::Duration::from_secs(15))
+            .send()
+            .await
+            .map_err(|e| format!("Failed to request page snapshot: {e}"))?;
+
+        if resp.status() == reqwest::StatusCode::GATEWAY_TIMEOUT {
+            return Ok(vec![Content::text(
+                "No browser tab is open, or the page didn't respond. Make sure a page is loaded \
+                 in the Permagent browser.",
+            )]);
+        }
+        if !resp.status().is_success() {
+            return Err(format!("Snapshot failed with status {}", resp.status()));
+        }
+        let snap: PageSnapshot = resp
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse snapshot: {e}"))?;
+        Ok(vec![Content::text(format_snapshot(&snap))])
+    }
+
+    /// #649: act on a ref from get_page_snapshot — click / type / select. Returns
+    /// a fresh snapshot so the model re-grounds instead of reusing a stale ref.
+    async fn handle_act_on_page(
+        &self,
+        ref_id: u32,
+        action: &str,
+        value: Option<&str>,
+    ) -> Result<Vec<Content>, String> {
+        validate_act_args(action, value)?;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post("http://127.0.0.1:3001/api/browser/act")
+            .timeout(std::time::Duration::from_secs(20))
+            .json(&serde_json::json!({ "ref": ref_id, "action": action, "value": value }))
+            .send()
+            .await
+            .map_err(|e| format!("Failed to reach the browser bridge: {e}"))?;
+
+        if resp.status() == reqwest::StatusCode::GATEWAY_TIMEOUT {
+            return Ok(vec![Content::text(
+                "No browser tab is open, or the page didn't respond. Make sure a page is loaded \
+                 in the Permagent browser.",
+            )]);
+        }
+        if resp.status() == reqwest::StatusCode::UNPROCESSABLE_ENTITY {
+            return Err(format!(
+                "That act was rejected: action '{action}' with value {value:?}."
+            ));
+        }
+        if !resp.status().is_success() {
+            return Err(format!("Act failed with status {}", resp.status()));
+        }
+
+        let result: ActResult = resp
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse act result: {e}"))?;
+
+        let mut out = if result.ok {
+            format!("Done: {action} on ref {ref_id}.")
+        } else {
+            let err = result.error.unwrap_or_else(|| "unknown error".to_string());
+            format!("Couldn't {action} on ref {ref_id}: {err}")
+        };
+        if let Some(snap) = &result.snapshot {
+            out.push_str("\n\n");
+            out.push_str(&format_snapshot(snap));
+        }
+        Ok(vec![Content::text(out)])
+    }
+
     fn get_tools() -> Vec<Tool> {
         let schema: JsonObject = serde_json::from_value(serde_json::json!({
             "type": "object",
@@ -434,6 +615,27 @@ impl BrowserClient {
         }))
         .expect("static schema");
 
+        let act_schema: JsonObject = serde_json::from_value(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "integer",
+                    "description": "The element ref from get_page_snapshot (the number in [brackets])."
+                },
+                "action": {
+                    "type": "string",
+                    "enum": ["click", "type", "select"],
+                    "description": "'click' a link/button, 'type' into an input/textarea, or 'select' an option."
+                },
+                "value": {
+                    "type": "string",
+                    "description": "For 'type': the text to enter. For 'select': the option's label or value. Omit for 'click'."
+                }
+            },
+            "required": ["ref", "action"]
+        }))
+        .expect("static schema");
+
         vec![
             Tool::new(
                 "read_browser_content".to_string(),
@@ -441,7 +643,7 @@ impl BrowserClient {
                  browser. Returns the page title, URL, and extracted text. Use this when the \
                  user asks about what they're looking at or references their open tab."
                     .to_string(),
-                schema,
+                schema.clone(),
             ),
             Tool::new(
                 "open_website".to_string(),
@@ -458,6 +660,24 @@ impl BrowserClient {
                  browser tab open. Public http(s) sites only."
                     .to_string(),
                 url_schema,
+            ),
+            Tool::new(
+                "get_page_snapshot".to_string(),
+                "List the interactive elements (links, buttons, inputs, selects) on the page \
+                 currently open in the Permagent browser. Each element gets a stable `ref` you \
+                 pass to act_on_page. Call this first to act on a page — and after any action, \
+                 use the fresh snapshot it returns rather than an old ref."
+                    .to_string(),
+                schema,
+            ),
+            Tool::new(
+                "act_on_page".to_string(),
+                "Act on an element in the Permagent browser page — click it, type text into it, \
+                 or select an option — identified by a `ref` from get_page_snapshot. Returns a \
+                 fresh snapshot. This is how you fill forms, click buttons and links, and drive \
+                 a page, not just read it."
+                    .to_string(),
+                act_schema,
             ),
         ]
     }
@@ -508,6 +728,35 @@ impl McpClientTrait for BrowserClient {
                     "Error: {error}"
                 ))])),
             },
+            "get_page_snapshot" => match self.handle_get_page_snapshot().await {
+                Ok(content) => Ok(CallToolResult::success(content)),
+                Err(error) => Ok(CallToolResult::error(vec![Content::text(error)])),
+            },
+            "act_on_page" => {
+                let args = arguments.as_ref();
+                let ref_id = args
+                    .and_then(|a| a.get("ref"))
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as u32);
+                let action = args
+                    .and_then(|a| a.get("action"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let value = args
+                    .and_then(|a| a.get("value"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                match ref_id {
+                    None => Ok(CallToolResult::error(vec![Content::text(
+                        "act_on_page needs an integer `ref` from get_page_snapshot.".to_string(),
+                    )])),
+                    Some(r) => match self.handle_act_on_page(r, &action, value.as_deref()).await {
+                        Ok(content) => Ok(CallToolResult::success(content)),
+                        Err(error) => Ok(CallToolResult::error(vec![Content::text(error)])),
+                    },
+                }
+            }
             _ => Ok(CallToolResult::error(vec![Content::text(format!(
                 "Unknown tool: {name}"
             ))])),
@@ -521,7 +770,10 @@ impl McpClientTrait for BrowserClient {
 
 #[cfg(test)]
 mod tests {
-    use super::{guard_public_host, host_of, is_private_ip};
+    use super::{
+        format_snapshot, guard_public_host, host_of, is_private_ip, validate_act_args,
+        PageSnapshot, SnapshotElement,
+    };
     use std::net::IpAddr;
 
     #[test]
@@ -578,5 +830,55 @@ mod tests {
             "example.com"
         );
         assert_eq!(host_of("http://[2606:4700::1111]:80/x"), "2606:4700::1111");
+    }
+
+    #[test]
+    fn validate_act_args_matches_the_action_contract() {
+        assert!(validate_act_args("click", None).is_ok());
+        assert!(validate_act_args("type", Some("hello")).is_ok());
+        assert!(validate_act_args("type", Some("")).is_ok()); // clearing a field
+        assert!(validate_act_args("type", None).is_err());
+        assert!(validate_act_args("select", Some("Option A")).is_ok());
+        assert!(validate_act_args("select", Some("")).is_err());
+        assert!(validate_act_args("select", None).is_err());
+        assert!(validate_act_args("submit", None).is_err());
+    }
+
+    #[test]
+    fn format_snapshot_lists_refs_and_flags_status() {
+        let snap = PageSnapshot {
+            url: "https://example.com".into(),
+            elements: vec![
+                SnapshotElement {
+                    ref_id: 0,
+                    role: "link".into(),
+                    name: "Home".into(),
+                    tag: "a".into(),
+                    value: None,
+                },
+                SnapshotElement {
+                    ref_id: 1,
+                    role: "textbox".into(),
+                    name: "Email".into(),
+                    tag: "input".into(),
+                    value: Some("me@x.com".into()),
+                },
+            ],
+            truncated: false,
+            status: "ok".into(),
+        };
+        let out = format_snapshot(&snap);
+        assert!(out.contains("[0] link \"Home\""));
+        assert!(out.contains("[1] textbox \"Email\" = \"me@x.com\""));
+        assert!(out.contains("act_on_page"));
+
+        // A non-web page is reported, not listed.
+        let refused = PageSnapshot {
+            url: "file:///x".into(),
+            elements: vec![],
+            truncated: false,
+            status: "refused_scheme".into(),
+        };
+        assert!(format_snapshot(&refused).contains("http(s)"));
     }
 }

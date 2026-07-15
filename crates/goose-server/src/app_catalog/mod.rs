@@ -32,3 +32,30 @@ async fn get_catalog(State(state): State<Arc<AppState>>) -> Json<AppCatalog> {
     let catalog = state.app_catalog.as_ref().clone();
     Json(catalog)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The embedded catalog must parse and expose the tabs the UI seeds so
+    /// `navigate_app("<Tab>")` resolves. Guards the wiring-audit regression (#6)
+    /// where "Grow" was a seeded sidebar tab but absent from the catalog, so
+    /// navigate_app("Grow") was rejected. Also covers the Downloads inbox (#4),
+    /// reachable as an overlay.
+    #[test]
+    fn catalog_parses_and_grow_and_inbox_are_navigable() {
+        let catalog: AppCatalog =
+            serde_yaml::from_str(CATALOG_YAML).expect("catalog.yaml must parse");
+
+        let grow = catalog
+            .find_by_name("Grow")
+            .expect("Grow must be in the navigate_app catalog");
+        assert_eq!(grow.tool_type, "grow");
+
+        let inbox = catalog
+            .find_by_name("Inbox")
+            .expect("Inbox must be in the navigate_app catalog");
+        assert_eq!(inbox.tool_type, "inbox");
+        assert_eq!(inbox.panel_type, "overlay");
+    }
+}

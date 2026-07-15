@@ -1,37 +1,11 @@
 import { create } from 'zustand';
 import { api, apiFetch, extractText, extractThinking, fileToBase64, readerIngest } from './api';
-import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload } from './api';
+import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload, TokenState } from './api';
+import { costFromFrame } from './costMeter';
 import { startEventPruning } from './eventBus';
 import type { ProjectPerson } from '../components/projects/types';
 
 // --- Types ---
-
-export interface TaskState {
-  id: string;
-  title: string | null;
-  status: string;
-  automation_id: string | null;
-  created_at: string | null;
-  updated_at: string;
-}
-
-export interface ServiceHealthState {
-  service: string;
-  status: string;
-  last_check: string;
-  latency_ms: number;
-}
-
-export interface ReceiptState {
-  id: string;
-  run_id: string;
-  step_id: string | null;
-  model: string;
-  input_tokens: number;
-  output_tokens: number;
-  cost_usd: number;
-  recorded_at: string;
-}
 
 export interface EventRecord {
   id: string;
@@ -129,7 +103,7 @@ export type PermagentEventType =
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 
-export type ActivePanel = 'chat' | 'skills' | 'events' | 'settings' | 'sessions' | 'terminal' | 'browser';
+export type ActivePanel = 'chat' | 'skills' | 'events' | 'settings' | 'sessions' | 'terminal' | 'browser' | 'inbox';
 
 // ── Workspace types ──
 
@@ -206,12 +180,7 @@ interface CommandCenterStore {
   setDefaultProvider: (name: string, model: string) => Promise<void>;
 
   // --- Operational state ---
-  tasks: TaskState[];
-  serviceHealth: ServiceHealthState[];
-  receipts: ReceiptState[];
   events: EventRecord[];
-  spendToday: number;
-  spendMonth: number;
 
   // --- Agent identity ---
   agentName: string;
@@ -226,6 +195,12 @@ interface CommandCenterStore {
 
   // --- SSE streaming ---
   isStreaming: boolean;
+  /**
+   * Latest token + cost state from the SSE stream — updated on every Message /
+   * Finish frame (each carries `token_state`). The always-on Build meter reads
+   * this; it is the live, single-sourced $ with no extra endpoint.
+   */
+  liveTokens: TokenState | null;
   sendMessage: (text: string, files?: File[]) => Promise<void>;
   /**
    * Decision Inbox deep-link (#303): open a fresh chat session seeded with a
@@ -271,7 +246,7 @@ interface CommandCenterStore {
   setSelectedSkillId: (id: string | null) => void;
   loadSkills: () => Promise<void>;
   deleteSkill: (id: string) => Promise<void>;
-  updateSkill: (id: string, updates: Partial<SkillState>) => Promise<void>;
+  updateSkill: (id: string, updates: Partial<SkillState>) => Promise<boolean>;
 
   // --- Skill proposals ---
   pendingSkillProposal: SkillProposal | null;
@@ -292,7 +267,6 @@ interface CommandCenterStore {
 
   // --- Actions ---
   loadEvents: (params?: { type?: string; limit?: number }) => Promise<void>;
-  loadSnapshot: () => Promise<void>;
   loadSessionMessages: (sessionId: string) => Promise<void>;
   handleSessionEvent: (data: SSEEvent) => void;
   clearEvents: () => void;
@@ -300,6 +274,10 @@ interface CommandCenterStore {
   // --- Project navigation (from agent/voice) ---
   pendingProjectNavigation: string | null;
   setPendingProjectNavigation: (id: string | null) => void;
+
+  // --- Settings deep-link (from agent/voice: "Settings → <pane>") ---
+  pendingSettingsSection: string | null;
+  setPendingSettingsSection: (section: string | null) => void;
 
   // --- Project terminal launch (from agent: project_launch event) ---
   pendingTerminalLaunch: { rootPath: string; label: string; command?: string } | null;
@@ -584,12 +562,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   },
 
   // State
-  tasks: [],
-  serviceHealth: [],
-  receipts: [],
   events: [],
-  spendToday: 0,
-  spendMonth: 0,
 
   // Chat
   chatMessages: [],
@@ -613,6 +586,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
   // Streaming
   isStreaming: false,
+  liveTokens: null,
 
   /**
    * Ensure a session exists. Creates one via POST /api/sessions if needed.
@@ -868,8 +842,10 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       set(s => ({
         skills: s.skills.map(sk => sk.id === id ? { ...sk, ...updated } : sk),
       }));
+      return true;
     } catch (e) {
       console.error('Failed to update skill:', e);
+      return false;
     }
   },
 
@@ -1008,30 +984,14 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     // Events come through per-session SSE; no separate REST endpoint
   },
 
-  loadSnapshot: async () => {
-    try {
-      const snapshot = await api.getStateSnapshot();
-      const spendToday = snapshot.spend?.today_usd ?? 0;
-      const spendMonth = snapshot.spend?.month_usd ?? 0;
-      const serviceHealth = (snapshot.service_health || []).map(h => ({ ...h }));
-
-      set({
-        tasks: (snapshot.tasks || []).map(t => ({ ...t, title: t.title || null })),
-        serviceHealth,
-        receipts: (snapshot.receipts || []).map(r => ({ ...r })),
-        spendToday,
-        spendMonth,
-      });
-    } catch {
-      set({
-        tasks: [], serviceHealth: [], receipts: [],
-        spendToday: 0, spendMonth: 0,
-      });
-    }
-  },
-
   /** Handle a per-session SSE event (Message, Error, Finish from reply stream) */
   handleSessionEvent: (data: SSEEvent) => {
+    // Every Message/Finish frame carries live token + cost state. Capture it so
+    // the Build meter reflects real spend the instant a frame lands. Uses the
+    // same extractor the meter test drives, so the SSE→meter path is proven.
+    const ts = costFromFrame(data);
+    if (ts) set({ liveTokens: ts });
+
     switch (data.type) {
       case 'Message': {
         const msg = (data as { type: string; message: DaemonMessage }).message;
@@ -1130,6 +1090,9 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   pendingProjectNavigation: null,
   setPendingProjectNavigation: (id) => set({ pendingProjectNavigation: id }),
 
+  pendingSettingsSection: null,
+  setPendingSettingsSection: (section) => set({ pendingSettingsSection: section }),
+
   pendingTerminalLaunch: null,
   setPendingTerminalLaunch: (launch) => set({ pendingTerminalLaunch: launch }),
 
@@ -1200,7 +1163,6 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
     es.onopen = () => {
       set({ connectionStatus: 'connected', _reconnectAttempts: 0 });
-      get().loadSnapshot();
       get().loadSkills();
       get().loadProposals();
       get().loadWorkspaces();

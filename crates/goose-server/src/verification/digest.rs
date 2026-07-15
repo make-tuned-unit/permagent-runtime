@@ -165,24 +165,40 @@ pub fn verifier_one_line(
     }
 }
 
-/// Build the costs block, leading with dollars when a rate exists.
+/// Build the costs block, leading with dollars.
+///
+/// Cost is single-sourced: `ledger_cost_usd` is the worker session's
+/// `accumulated_cost_usd` — the sum of the per-call `cost_ledger`, every entry of
+/// which was folded by the one canonical `cost_of` (cache-aware). When present it
+/// IS the cost, verbatim. The legacy blended `$/1k-token` estimate is only a
+/// fallback for sessions that predate the ledger (or a model with no registry
+/// price), and is labelled as an estimate so the two are never confused.
 pub fn build_costs(
+    ledger_cost_usd: Option<f64>,
     tokens: Option<i64>,
     usd_per_1k_tokens: Option<f64>,
     worker_session_id: Option<String>,
     attempt_count: u64,
 ) -> Costs {
-    let cost_usd = match (tokens, usd_per_1k_tokens) {
-        (Some(t), Some(rate)) if t >= 0 => Some((t as f64 / 1000.0) * rate),
-        _ => None,
-    };
-    let note = if cost_usd.is_none() {
-        Some(match tokens {
-            Some(_) => "no token rate configured — showing raw token count".to_string(),
-            None => "worker token usage unavailable".to_string(),
-        })
-    } else {
-        None
+    let (cost_usd, note) = match ledger_cost_usd {
+        // Authoritative: the per-call ledger total. No note — this is THE number.
+        Some(c) => (Some(c), None),
+        None => {
+            let blended = match (tokens, usd_per_1k_tokens) {
+                (Some(t), Some(rate)) if t >= 0 => Some((t as f64 / 1000.0) * rate),
+                _ => None,
+            };
+            let note = match blended {
+                Some(_) => Some(
+                    "estimated from a blended token rate (no per-call ledger cost)".to_string(),
+                ),
+                None => Some(match tokens {
+                    Some(_) => "no ledger cost or token rate — showing raw token count".to_string(),
+                    None => "worker cost and token usage unavailable".to_string(),
+                }),
+            };
+            (blended, note)
+        }
     };
     Costs {
         cost_usd,
@@ -430,19 +446,39 @@ mod tests {
     }
 
     #[test]
-    fn costs_dollars_first_when_rate_exists() {
-        let c = build_costs(Some(120_000), Some(0.01), Some("s-1".to_string()), 2);
-        assert!((c.cost_usd.unwrap() - 1.2).abs() < 1e-9);
+    fn costs_prefers_ledger_over_blended_estimate() {
+        // Ledger cost present → it IS the number (verbatim), no note, even when a
+        // blended rate would compute something different.
+        let c = build_costs(
+            Some(2.5),
+            Some(120_000),
+            Some(0.01),
+            Some("s-1".to_string()),
+            2,
+        );
+        assert!((c.cost_usd.unwrap() - 2.5).abs() < 1e-9);
         assert!(c.note.is_none());
         assert_eq!(c.accumulated_total_tokens, Some(120_000));
     }
 
     #[test]
-    fn costs_null_with_note_when_no_rate() {
-        let c = build_costs(Some(120_000), None, None, 1);
+    fn costs_falls_back_to_blended_estimate_when_no_ledger() {
+        // No ledger cost → blended $/1k estimate, clearly labelled as an estimate.
+        let c = build_costs(None, Some(120_000), Some(0.01), None, 2);
+        assert!((c.cost_usd.unwrap() - 1.2).abs() < 1e-9);
+        assert!(c.note.as_deref().unwrap().contains("estimated"));
+    }
+
+    #[test]
+    fn costs_null_with_note_when_no_ledger_and_no_rate() {
+        let c = build_costs(None, Some(120_000), None, None, 1);
         assert_eq!(c.cost_usd, None);
-        assert!(c.note.as_deref().unwrap().contains("no token rate"));
-        let c2 = build_costs(None, Some(0.01), None, 1);
+        assert!(c
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("no ledger cost or token rate"));
+        let c2 = build_costs(None, None, Some(0.01), None, 1);
         assert_eq!(c2.cost_usd, None);
         assert!(c2.note.as_deref().unwrap().contains("unavailable"));
     }
@@ -459,7 +495,7 @@ mod tests {
             vec![],
             VerdictStatus::Pass,
             &run_with_grades(),
-            build_costs(None, None, None, 1),
+            build_costs(None, None, None, None, 1),
             "2026-06-11T00:00:00Z",
             "2026-06-11T00:00:10Z",
         );
@@ -510,7 +546,7 @@ mod tests {
             (0..100).map(|i| format!("out/of/path/{}.rs", i)).collect(),
             VerdictStatus::Pass,
             &run_with_grades(),
-            build_costs(None, None, None, 1),
+            build_costs(None, None, None, None, 1),
             "2026-06-11T00:00:00Z",
             "2026-06-11T00:00:10Z",
         );
@@ -542,7 +578,7 @@ mod tests {
             vec![],
             VerdictStatus::Pass,
             &run_with_grades(),
-            build_costs(None, None, None, 1),
+            build_costs(None, None, None, None, 1),
             "t0",
             "t1",
         );

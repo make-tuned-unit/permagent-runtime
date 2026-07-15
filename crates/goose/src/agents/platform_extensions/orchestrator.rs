@@ -1689,17 +1689,15 @@ impl OrchestratorClient {
             objective, project.name, root_path
         );
 
-        // L3 Learn recall: inject Jesse's past decisions for this project as
-        // a quoted data-not-instructions block. Local-only (SQLite + local
-        // embeddings) — zero cloud tokens; failures are non-fatal.
+        // L3 Learn recall: inject Jesse's past decisions AND how he has revised
+        // past drafts (edit-as-training) for this project, each as a quoted
+        // data-not-instructions block. Local-only (SQLite + local embeddings) —
+        // zero cloud tokens; failures are non-fatal.
         if let Some(brain) = super::get_global_brain() {
-            match crate::decision_inbox::learn::recall_decisions(&brain, &objective, &project.slug)
-                .await
-            {
+            use crate::decision_inbox::learn;
+            match learn::recall_decisions(&brain, &objective, &project.slug).await {
                 Ok(hits) => {
-                    if let Some(block) =
-                        crate::decision_inbox::learn::format_decision_context_block(&hits)
-                    {
+                    if let Some(block) = learn::format_decision_context_block(&hits) {
                         user_text.push_str("\n\n");
                         user_text.push_str(&block);
                     }
@@ -1708,6 +1706,23 @@ impl OrchestratorClient {
                     tracing::debug!(
                         target: "permagentd::brain",
                         "Skipping past-decision recall for decompose: {}",
+                        e
+                    );
+                }
+            }
+            // Corrections: how Jesse has revised similar drafts before, surfaced
+            // at draft time so the decomposition moves toward how he'd write it.
+            match learn::recall_corrections(&brain, &objective, &project.slug).await {
+                Ok(hits) => {
+                    if let Some(block) = learn::format_correction_context_block(&hits) {
+                        user_text.push_str("\n\n");
+                        user_text.push_str(&block);
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        target: "permagentd::brain",
+                        "Skipping past-correction recall for decompose: {}",
                         e
                     );
                 }

@@ -108,7 +108,7 @@ impl DeveloperClient {
             )),
             Tool::new(
                 "edit".to_string(),
-                "Edit a file by finding and replacing text. The before text must match exactly and uniquely. Use empty after text to delete.".to_string(),
+                "Edit a file by replacing `before` with `after` (use an empty `after` to delete). Matching tries exact text first, then falls back to whitespace- and indentation-insensitive matching, applying the first unique match; ambiguous or absent matches return an actionable error instead of guessing. For supported languages, an edit that would introduce a new syntax error is rejected and the file left unchanged.".to_string(),
                 Self::schema::<FileEditParams>(),
             )
             .annotate(ToolAnnotations::from_raw(

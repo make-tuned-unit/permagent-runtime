@@ -15,11 +15,13 @@ use crate::conversation::Conversation;
 #[cfg(test)]
 use crate::providers::base::stream_from_single_message;
 use crate::providers::base::{MessageStream, Provider, ProviderUsage};
+use crate::providers::canonical::{cache_savings_of, cost_breakdown, maybe_get_canonical_model};
 use crate::providers::errors::ProviderError;
 use crate::providers::toolshim::{
     augment_message_with_tool_calls, convert_tool_messages_to_text,
     modify_system_prompt_for_tool_json, OllamaInterpreter,
 };
+use crate::session::{CostLedgerRow, CostTier, SessionType};
 use rmcp::model::Tool;
 
 async fn enhance_model_error(error: ProviderError, provider: &Arc<dyn Provider>) -> ProviderError {
@@ -560,6 +562,101 @@ impl Agent {
             .accumulated_output_tokens(accumulated_output)
             .apply()
             .await?;
+
+        // ── Per-call cost ledger (single source of truth for spend/attribution) ─
+        // One row per provider response. Every money field is folded by the ONE
+        // canonical `cost_of` (via `cost_breakdown`), so the ledger, the live
+        // meter, and the verification digest can never disagree. Best-effort: a
+        // ledger failure must never abort the agent turn — log and move on.
+        let provider = session.provider_name.clone();
+        let model = usage.model.clone();
+        let pricing = provider
+            .as_deref()
+            .and_then(|p| maybe_get_canonical_model(p, &model))
+            .map(|m| m.cost);
+        let breakdown = pricing
+            .as_ref()
+            .and_then(|p| cost_breakdown(&usage.usage, p));
+
+        // Ollama et al. run locally — not chargeable. Subscription/quota detection
+        // is not yet wired (no per-provider plan signal here), so a priced remote
+        // provider records as `paid_api`.
+        let is_local = provider
+            .as_deref()
+            .map(|p| p.to_ascii_lowercase().contains("ollama"))
+            .unwrap_or(false);
+        let cost_tier = if is_local {
+            CostTier::LocalFree
+        } else {
+            CostTier::PaidApi
+        };
+
+        // Not chargeable → cost 0 (never bill local/in-quota). Chargeable with a
+        // known price → the folded `cost_of` total. Chargeable but unpriced → 0,
+        // flagged `is_estimated` so it is never mistaken for a real $0.
+        let (cost_usd, input_cost, output_cost, cache_read_cost, cache_write_cost, is_estimated) =
+            match (cost_tier.is_chargeable(), &breakdown) {
+                (false, _) => (0.0, 0.0, 0.0, 0.0, 0.0, false),
+                (true, Some(b)) => (
+                    b.total_cost,
+                    b.input_cost,
+                    b.output_cost,
+                    b.cache_read_cost,
+                    b.cache_write_cost,
+                    false,
+                ),
+                (true, None) => (0.0, 0.0, 0.0, 0.0, 0.0, true),
+            };
+        let cache_savings_usd = if cost_tier.is_chargeable() {
+            pricing
+                .as_ref()
+                .map(|p| cache_savings_of(&usage.usage, p))
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        };
+
+        // Interactive surfaces are User/Terminal; everything else (SubAgent,
+        // Scheduled, Hidden, Gateway, Acp) is background/headless.
+        let is_headless = !matches!(
+            session.session_type,
+            SessionType::User | SessionType::Terminal
+        );
+
+        let tok = |t: Option<i32>| t.unwrap_or(0).max(0) as i64;
+        let row = CostLedgerRow {
+            call_id: uuid::Uuid::new_v4().to_string(),
+            ts: chrono::Utc::now().to_rfc3339(),
+            session_id: session_id.to_string(),
+            // Deeper attribution keys are columns awaiting their wiring seam
+            // (goal/task association lives in card metadata, not threaded here).
+            parent_session_id: None,
+            task_id: None,
+            goal_id: None,
+            subagent_id: None,
+            provider,
+            model: Some(model),
+            cost_tier,
+            is_headless,
+            input_tokens: tok(usage.usage.input_tokens),
+            output_tokens: tok(usage.usage.output_tokens),
+            cache_read_tokens: tok(usage.usage.cache_read_input_tokens),
+            cache_write_tokens: tok(usage.usage.cache_write_input_tokens),
+            input_cost,
+            output_cost,
+            cache_read_cost,
+            cache_write_cost,
+            cost_usd,
+            cache_savings_usd,
+            is_estimated,
+        };
+        if let Err(e) = manager.append_cost_ledger(&row).await {
+            tracing::warn!(
+                "cost_ledger append failed for session {}: {}",
+                session_id,
+                e
+            );
+        }
 
         Ok(())
     }
