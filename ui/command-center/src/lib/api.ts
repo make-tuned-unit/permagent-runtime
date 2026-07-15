@@ -844,6 +844,28 @@ export const api = {
       { method: 'DELETE', headers: authHeaders() },
     ),
 
+  // ── Project code index (parse a codebase into the Brain, #471) ─────────────
+
+  /** Index a project's codebase into the Brain: the backend parses the code at
+   *  the project's root_path into a durable, project-scoped code map memory (the
+   *  "code understanding" keystone). Returns a small summary. On failure the
+   *  backend answers with a plain-text reason (no root_path, unreadable path,
+   *  Brain unavailable) — surfaced here as the thrown error message. */
+  indexProjectCode: async (
+    projectId: string,
+  ): Promise<{ indexed: boolean; files: number; memoryKey: string }> => {
+    if (!_daemonToken) await loadDaemonToken();
+    const response = await fetch(
+      `${API_BASE_URL}/api/projects/${encodeURIComponent(projectId)}/index-code`,
+      { method: 'POST', headers: authHeaders() },
+    );
+    if (!response.ok) {
+      const msg = await response.text().catch(() => '');
+      throw new Error(msg || `HTTP ${response.status}`);
+    }
+    return response.json();
+  },
+
   /** Install the bundled dictation model on first run: the daemon copies the
    *  bundled Whisper model into the data dir (once) and points
    *  LOCAL_WHISPER_MODEL at it. Idempotent. `status` is "ready" once dictation

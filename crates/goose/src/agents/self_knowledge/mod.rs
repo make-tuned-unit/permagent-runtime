@@ -162,6 +162,7 @@ pub static SURFACE_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::activity_journal::TIMELINE_FEATURE,
     crate::scheduler::RUN_ROSTER_FEATURE,
     crate::agents::platform_extensions::project_manager::GROW_FEATURE,
+    crate::agents::platform_extensions::analyze::CODEBASE_INDEX_FEATURE,
 ];
 
 /// Tool ids that are described under another category and therefore skipped in
@@ -527,6 +528,7 @@ mod tests {
         "timeline",
         "run_roster",
         "grow",
+        "codebase",
     ];
     /// The Phase-2-v1 lesson set — each must resolve to a descriptor with steps.
     const V1_LESSON_IDS: &[&str] = &["reader", "brain", "scheduler", "persona"];

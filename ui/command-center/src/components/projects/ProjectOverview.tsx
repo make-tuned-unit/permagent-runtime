@@ -9,6 +9,7 @@ import { Panel } from './Panel';
 import { PeoplePanel } from './PeoplePanel';
 import { DocumentsPanel } from './DocumentsPanel';
 import { NotesPanel } from './NotesPanel';
+import { CodeIndexPanel } from './CodeIndexPanel';
 import type { Project, BoardColumn, Card } from './types';
 
 // ── Project Overview ────────────────────────────────────────────────────────
@@ -61,6 +62,7 @@ export function ProjectOverview({ project }: { project: Project }) {
           {/* Memories panel slots here (association layer). */}
           <DocumentsPanel project={project} />
           <NotesPanel project={project} />
+          <CodeIndexPanel project={project} />
         </div>
 
         {/* RIGHT — people + action */}

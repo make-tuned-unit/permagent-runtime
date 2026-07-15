@@ -19,6 +19,7 @@
 //!   GET    /api/projects/:id/notes               — List a project's notes
 //!   POST   /api/projects/:id/notes               — Create a note ({title?, body}), indexed into the Brain
 //!   DELETE /api/projects/:id/notes/:note_id      — Delete a note
+//!   POST   /api/projects/:id/index-code          — Parse the project's codebase into a Brain code map
 
 use crate::state::AppState;
 use axum::{
@@ -29,6 +30,7 @@ use axum::{
     routing::{delete, get, patch, post},
     Json, Router,
 };
+use permagent::agents::platform_extensions::analyze;
 use permagent::project_association::{self, ProjectPerson};
 use permagent::project_documents::{self, ProjectDocument};
 use permagent::project_notes::{self, ProjectNote};
@@ -992,6 +994,143 @@ async fn delete_project_note_handler(
     Ok(StatusCode::OK)
 }
 
+// ── Project code index: parse a project's codebase into the Brain (#471) ─────
+
+/// `source` tag on the code-map memory. Like project notes, deliberately NOT
+/// `permagent.activity` (which pruning/consolidation reap) so the map is
+/// durable, and the memory is written description-less so the Librarian claims +
+/// enriches it exactly as it does ingested documents and notes.
+const CODE_MAP_SOURCE: &str = "permagent.code";
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IndexCodeResponse {
+    indexed: bool,
+    files: usize,
+    memory_key: String,
+}
+
+/// POST /api/projects/{id}/index-code — parse the project's codebase into a
+/// durable, project-scoped **code map** memory in the Brain.
+///
+/// The keystone of the "code understanding" thread (#471). The `analyze`
+/// extension's tree-sitter structure pass was 100% ephemeral — a text blob
+/// streamed to a transcript, persisting nothing; code was the one artifact class
+/// that never landed durably. This runs that same pass over the project's
+/// `root_path` and stores the rendered map in the Brain (Private, a distinct
+/// `permagent.code` source, and — the load-bearing rule — NO description) under
+/// a deterministic key, then associates it with the project. Re-indexing
+/// overwrites the same key (idempotent). Because the map is written
+/// description-less, the Librarian claims and enriches it just as it does
+/// documents and notes — so a codebase becomes recallable + described like every
+/// other artifact class, not parsed once and forgotten.
+///
+/// Observable, not silent: a missing/unreadable `root_path` is a 400, an absent
+/// Brain a 503, and a Brain-write failure a 500 with a message — never a bare
+/// status. The project↔memory association is best-effort (logged, not fatal):
+/// the map is already durable in the Brain once written; association only scopes
+/// it to the project.
+async fn index_project_code_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<IndexCodeResponse>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let project = projects::get_project_by_id_or_slug(&pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+
+    let root_path = project
+        .root_path
+        .clone()
+        .filter(|p| !p.trim().is_empty())
+        .ok_or((
+            StatusCode::BAD_REQUEST,
+            "Project has no root_path to index".to_string(),
+        ))?;
+    let root = std::path::Path::new(&root_path).to_path_buf();
+    if !root.is_dir() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("root_path is not a readable directory: {root_path}"),
+        ));
+    }
+
+    // The whole point of this route is durable code in the Brain — unlike the
+    // document/note handlers there is no other record, so an absent Brain is a
+    // 503, not a silent skip.
+    let brain = state.brain.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Brain is not available".to_string(),
+    ))?;
+
+    // Tree-sitter parsing is CPU-bound (rayon) — never run it on the async
+    // executor. Build the map off-thread. `max_depth = 0` = the whole tree
+    // (WalkBuilder still skips .gitignore'd artifacts like node_modules/target).
+    let map = tokio::task::spawn_blocking(move || analyze::build_code_map(&root, 0))
+        .await
+        .map_err(|e| {
+            tracing::error!(project = %project.id, error = %e, "code index parse task panicked");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("code parse task panicked: {e}"),
+            )
+        })?;
+
+    if map.files == 0 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "No source files could be parsed under root_path".to_string(),
+        ));
+    }
+
+    let memory_key = format!("code:{}:map", project.id);
+    let opts = spectral::RememberOpts {
+        source: Some(CODE_MAP_SOURCE.to_string()),
+        visibility: spectral::Visibility::Private,
+        ..Default::default()
+    };
+    brain
+        .remember_with(&memory_key, &map.text, opts)
+        .await
+        .map_err(|e| {
+            tracing::error!(project = %project.id, error = %e, "code map brain write failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("brain write failed: {e}"),
+            )
+        })?;
+
+    // Resolve the just-written memory's id and scope it to the project.
+    // Best-effort (logged, not fatal): the map is already durable in the Brain.
+    match brain.get_memory_by_key(&memory_key).await {
+        Ok(Some(mem)) => {
+            if let Err(e) = project_association::associate_memory(&pool, &project.id, &mem.id).await
+            {
+                tracing::warn!(project = %project.id, error = %e, "code map project association failed");
+            } else {
+                tracing::info!(project = %project.id, memory = %mem.id, files = map.files, "project code indexed into brain");
+            }
+        }
+        Ok(None) => {
+            tracing::warn!(project = %project.id, key = %memory_key, "code map written but its memory was not found for association")
+        }
+        Err(e) => {
+            tracing::warn!(project = %project.id, error = %e, "code map memory lookup failed")
+        }
+    }
+
+    Ok(Json(IndexCodeResponse {
+        indexed: true,
+        files: map.files,
+        memory_key,
+    }))
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/projects", get(list_projects_handler))
@@ -1040,6 +1179,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route(
             "/api/projects/{id}/notes/{note_id}",
             delete(delete_project_note_handler),
+        )
+        .route(
+            "/api/projects/{id}/index-code",
+            post(index_project_code_handler),
         )
         .with_state(state)
 }
