@@ -42,7 +42,7 @@ pub use budget::{
 };
 pub use cache::{
     may_swap_main_loop_model, model_change_breaks_cache, prefix_is_cache_stable, PrefixSegment,
-    CANONICAL_PREFIX,
+    CANONICAL_PREFIX, HARNESS_PREFIX,
 };
 pub use cheap::{
     build_ladder, default_anchor, discover_priced_candidates, is_key_configured, load_ladder,

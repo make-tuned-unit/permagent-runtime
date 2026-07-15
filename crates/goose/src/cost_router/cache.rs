@@ -39,6 +39,22 @@ pub const CANONICAL_PREFIX: [PrefixSegment; 4] = [
     PrefixSegment::ReadOnlyFiles,
 ];
 
+/// The cacheable-prefix segments the coding harness actually emits to the
+/// provider today, in order. The Anthropic request builder anchors its
+/// `cache_control` breakpoints on exactly these — the tool list (marked on the
+/// last tool spec, so all tool defs cache as one block) and the system block,
+/// which carries the repo-map (#720) as a system extra — ahead of the mutable
+/// `messages` tail. It is the runtime realization of [`CANONICAL_PREFIX`], minus
+/// the [`PrefixSegment::ReadOnlyFiles`] slot the harness does not yet pin. The
+/// guard in `crate::providers::formats::anthropic` asserts the emitted payload
+/// matches this, so a reorder or mid-prefix insertion fails CI rather than
+/// silently discarding a warm cache.
+pub const HARNESS_PREFIX: [PrefixSegment; 3] = [
+    PrefixSegment::Tools,
+    PrefixSegment::System,
+    PrefixSegment::RepoMap,
+];
+
 /// Policy: a conversation's main-loop model MUST stay stable for its lifetime.
 /// Cheaper-tier work routes through subagents instead of swapping the model.
 pub const KEEP_MAIN_LOOP_MODEL_STABLE: bool = true;
@@ -135,5 +151,30 @@ mod tests {
             PrefixSegment::Tools,
             PrefixSegment::Tools,
         ]));
+    }
+
+    // ── The harness's real emitted prefix realizes the canonical policy ────
+
+    #[test]
+    fn harness_prefix_is_canonical_and_cache_stable() {
+        // What the coding harness actually emits is itself cache-stable…
+        assert!(prefix_is_cache_stable(&HARNESS_PREFIX));
+        // …every emitted segment is a canonical segment, in canonical order…
+        assert!(HARNESS_PREFIX.iter().all(|s| CANONICAL_PREFIX.contains(s)));
+        assert!(HARNESS_PREFIX.windows(2).all(|w| {
+            let pos = |seg| CANONICAL_PREFIX.iter().position(|s| s == seg);
+            pos(&w[0]) < pos(&w[1])
+        }));
+        // …and the repo-map rides *after* the system prompt, inside the cached
+        // prefix — the #720 placement invariant, never before it.
+        let sys = HARNESS_PREFIX
+            .iter()
+            .position(|s| *s == PrefixSegment::System)
+            .unwrap();
+        let map = HARNESS_PREFIX
+            .iter()
+            .position(|s| *s == PrefixSegment::RepoMap)
+            .unwrap();
+        assert!(sys < map);
     }
 }
