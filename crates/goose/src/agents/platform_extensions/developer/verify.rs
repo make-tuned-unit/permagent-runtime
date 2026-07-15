@@ -1,0 +1,907 @@
+//! The `verify` tool — close the coding loop by running the project's checks.
+//!
+//! The coding harness's robustness bar is *verify-then-fix*: after editing,
+//! RUN the project's tests/build/lint, feed the FULL errors back, fix, and
+//! repeat — bounded, then escalate. The agent could already do this ad hoc
+//! through the generic `shell` tool; what was missing is making it RELIABLE:
+//!
+//! - **Deterministic detection.** A pure `detect_checks` maps a directory's
+//!   marker files (`Cargo.toml`, `package.json` + its scripts, `go.mod`,
+//!   `pyproject.toml`/…, a `Makefile` with a `test`/`check` target) to the
+//!   right ordered check command(s). No per-task guessing.
+//! - **Full error capture.** Error-guided fixing needs the *real* errors, so a
+//!   failing check returns its combined stdout+stderr intact (not the generic
+//!   shell tool's blind 50-line tail). When output is genuinely huge it is
+//!   bounded head-AND-tail so the first compiler errors and the final summary
+//!   both survive.
+//! - **Structured pass/fail.** Success is a clean `CallToolResult::success`;
+//!   failure is a `CallToolResult::error` (so `is_error` is set) carrying the
+//!   failing command, its exit code, and the captured errors.
+//!
+//! ## Bounding is REUSED, not reinvented
+//!
+//! There is deliberately **no repair-round counter here**. The run-loop bound
+//! is the existing [`crate::tool_monitor`] `ProgressMonitor` (loop-safety
+//! #715): a verify call that keeps failing *identically* is its S2 "same
+//! failure" signal — nudged at 2, escalated to the Decision Inbox at 3. For
+//! that floor to bind, the *same* failure must render *identically*, so
+//! `normalize` neutralizes the only thing that varies between identical
+//! re-runs on one machine — reported durations. A failure whose errors change
+//! hashes differently and is treated as progress (the monitor's state-change
+//! discriminator), which is correct: real fixing must pass through. The
+//! prompt-level "stop after two or three attempts" bound handles the
+//! productive-looking-but-stuck case the monitor intentionally lets through.
+
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::LazyLock;
+use std::time::Duration;
+
+use regex::Regex;
+use rmcp::model::{CallToolResult, Content};
+use schemars::JsonSchema;
+use serde::Deserialize;
+
+/// Per-check timeout when the caller does not specify one. Generous enough for
+/// real builds/test suites, but bounded so a hung command can't wedge the
+/// agent. A `timeout_secs` of 0 disables the timeout.
+const DEFAULT_TIMEOUT_SECS: u64 = 600;
+
+/// Failure output is returned in full up to this many lines; beyond it we keep
+/// the head and the tail (below) with an elision in between. Large, because
+/// error-guided fixing needs the real errors — but still bounded.
+const MAX_OUTPUT_LINES: usize = 400;
+/// Lines kept from the top when clamping (compiler errors lead the output).
+const HEAD_LINES: usize = 250;
+/// Lines kept from the bottom when clamping (the final summary trails it).
+const TAIL_LINES: usize = 120;
+
+/// Directory markers that identify a Python project.
+const PYTHON_MARKERS: &[&str] = &[
+    "pyproject.toml",
+    "setup.py",
+    "setup.cfg",
+    "requirements.txt",
+    "tox.ini",
+];
+
+/// Reported durations are the only thing that varies between two *identical*
+/// failing re-runs on the same machine, so neutralizing them is what lets the
+/// loop guard's same-failure cap bind to a verify loop. Longest unit first so
+/// the alternation prefers "seconds" over a bare "s".
+static DURATION_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\d+\.\d+\s*(seconds|secs|ms|s)\b").unwrap());
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct VerifyParams {
+    /// Explicit command to run instead of auto-detecting the project's checks,
+    /// e.g. "cargo clippy -- -D warnings" or "npm run typecheck". When omitted,
+    /// verify detects the project type and runs its build/test checks.
+    pub command: Option<String>,
+    /// Directory to verify. Relative paths resolve against the working
+    /// directory; defaults to the working directory.
+    pub path: Option<String>,
+    /// Per-check timeout in seconds (default 600; 0 disables the timeout).
+    pub timeout_secs: Option<u64>,
+}
+
+/// How a check is executed: either a resolved program + args run directly (no
+/// shell, no quoting — mirrors how the search tool runs ripgrep), or a raw
+/// command string run through the platform shell (the explicit-`command` path).
+#[derive(Debug, Clone, PartialEq)]
+enum Exec {
+    Direct { program: String, args: Vec<String> },
+    Shell(String),
+}
+
+/// One check command to run: a human label plus how to execute it.
+#[derive(Debug, Clone, PartialEq)]
+struct Check {
+    label: String,
+    exec: Exec,
+}
+
+impl Check {
+    /// A check run directly as `program arg arg …` (no shell).
+    fn direct(program: &str, args: &[&str]) -> Self {
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let label = if args.is_empty() {
+            program.to_string()
+        } else {
+            format!("{program} {}", args.join(" "))
+        };
+        Self {
+            label,
+            exec: Exec::Direct {
+                program: program.to_string(),
+                args,
+            },
+        }
+    }
+
+    /// A check run through the platform shell (used for an explicit `command`).
+    fn shell(command: &str) -> Self {
+        Self {
+            label: command.to_string(),
+            exec: Exec::Shell(command.to_string()),
+        }
+    }
+
+    /// The program whose absence would make this check unrunnable.
+    fn program_name(&self) -> String {
+        match &self.exec {
+            Exec::Direct { program, .. } => program.clone(),
+            Exec::Shell(_) => "shell".to_string(),
+        }
+    }
+}
+
+/// The outcome of running one check.
+enum CheckOutcome {
+    Passed,
+    Failed {
+        exit_code: Option<i32>,
+        output: String,
+    },
+    TimedOut,
+    ToolMissing,
+    SpawnError(String),
+}
+
+pub struct VerifyTool;
+
+impl VerifyTool {
+    pub fn new() -> Self {
+        Self
+    }
+
+    pub async fn verify_with_cwd(
+        &self,
+        params: VerifyParams,
+        working_dir: Option<&Path>,
+    ) -> CallToolResult {
+        let base_dir = resolve_dir(working_dir, params.path.as_deref());
+
+        // An explicit command overrides detection; otherwise detect the checks.
+        let checks = match params.command.as_deref().map(str::trim) {
+            Some("") => {
+                return error_result(
+                    "`command` cannot be empty — omit it to auto-detect the project's checks.",
+                )
+            }
+            Some(command) => vec![Check::shell(command)],
+            None => match detect_checks(&base_dir) {
+                Ok(checks) => checks,
+                Err(message) => return error_result(&message),
+            },
+        };
+
+        let timeout_secs = params.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
+
+        // Fail-fast: run checks in order, returning the first failure with its
+        // full errors (you can't meaningfully test what won't build).
+        for check in &checks {
+            match run_check(check, &base_dir, timeout_secs).await {
+                CheckOutcome::Passed => continue,
+                CheckOutcome::Failed { exit_code, output } => {
+                    return fail_result(check, exit_code, &output);
+                }
+                CheckOutcome::TimedOut => {
+                    return error_result(&format!(
+                        "TIMEOUT - `{}` did not finish within {timeout_secs}s and was stopped. \
+                         Re-run with a larger `timeout_secs`, or run a narrower check.",
+                        check.label
+                    ));
+                }
+                CheckOutcome::ToolMissing => {
+                    return error_result(&format!(
+                        "`{}` was not found on PATH, so `{}` could not run. Install it, or pass \
+                         an explicit `command` that uses tools you have.",
+                        check.program_name(),
+                        check.label
+                    ));
+                }
+                CheckOutcome::SpawnError(error) => {
+                    return error_result(&format!("Could not run `{}`: {error}", check.label));
+                }
+            }
+        }
+
+        pass_result(&checks)
+    }
+}
+
+impl Default for VerifyTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Resolve the directory to verify: an absolute `path` as-is, a relative `path`
+/// against the working dir, or the working dir itself.
+fn resolve_dir(working_dir: Option<&Path>, path: Option<&str>) -> PathBuf {
+    let base = working_dir
+        .map(Path::to_path_buf)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."));
+    match path {
+        Some(path) => {
+            let candidate = Path::new(path);
+            if candidate.is_absolute() {
+                candidate.to_path_buf()
+            } else {
+                base.join(candidate)
+            }
+        }
+        None => base,
+    }
+}
+
+// --- detection (pure over the directory's marker files) ---------------------
+
+/// Detect the ordered check command(s) for the project rooted at `dir`.
+/// Precedence is language-native first (unambiguous), then a Makefile fallback.
+/// Returns an actionable `Err` when nothing runnable is found so the caller can
+/// surface it instead of silently doing nothing.
+fn detect_checks(dir: &Path) -> Result<Vec<Check>, String> {
+    if dir.join("Cargo.toml").exists() {
+        // `cargo test` compiles first, so it catches build errors and test
+        // failures in one command.
+        return Ok(vec![Check::direct("cargo", &["test"])]);
+    }
+    if dir.join("go.mod").exists() {
+        return Ok(vec![
+            Check::direct("go", &["build", "./..."]),
+            Check::direct("go", &["test", "./..."]),
+        ]);
+    }
+    if dir.join("package.json").exists() {
+        return node_checks(dir);
+    }
+    if PYTHON_MARKERS
+        .iter()
+        .any(|marker| dir.join(marker).exists())
+    {
+        return Ok(vec![Check::direct("pytest", &[])]);
+    }
+    if let Some(target) = makefile_check_target(dir) {
+        return Ok(vec![Check::direct("make", &[target.as_str()])]);
+    }
+    Err(
+        "Could not detect the project type (looked for Cargo.toml, go.mod, \
+         package.json, a Python project marker, or a Makefile with a test/check \
+         target). Pass an explicit `command` to run this project's checks."
+            .to_string(),
+    )
+}
+
+/// Node checks: run whichever of `build` then `test` scripts exist, via the
+/// package manager the lockfile implies.
+fn node_checks(dir: &Path) -> Result<Vec<Check>, String> {
+    let pm = detect_node_package_manager(dir);
+    let scripts = read_package_scripts(dir);
+    let mut checks = Vec::new();
+    if scripts.contains("build") {
+        checks.push(Check::direct(pm, &["run", "build"]));
+    }
+    if scripts.contains("test") {
+        checks.push(Check::direct(pm, &["run", "test"]));
+    }
+    if checks.is_empty() {
+        return Err(format!(
+            "package.json defines no `build` or `test` script for {pm}. Pass an explicit \
+             `command` (e.g. \"{pm} run <script>\")."
+        ));
+    }
+    Ok(checks)
+}
+
+/// Package manager implied by the lockfile present (npm is the default).
+fn detect_node_package_manager(dir: &Path) -> &'static str {
+    if dir.join("pnpm-lock.yaml").exists() {
+        "pnpm"
+    } else if dir.join("yarn.lock").exists() {
+        "yarn"
+    } else if dir.join("bun.lockb").exists() {
+        "bun"
+    } else {
+        "npm"
+    }
+}
+
+/// Script names declared in `package.json`'s `scripts` object. Tolerant: a
+/// missing or malformed file yields an empty set rather than an error.
+fn read_package_scripts(dir: &Path) -> HashSet<String> {
+    let Ok(text) = std::fs::read_to_string(dir.join("package.json")) else {
+        return HashSet::new();
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return HashSet::new();
+    };
+    json.get("scripts")
+        .and_then(|scripts| scripts.as_object())
+        .map(|scripts| scripts.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// The Makefile target to run, preferring `test` over `check`. `None` when
+/// there is no Makefile or it exposes neither target.
+fn makefile_check_target(dir: &Path) -> Option<String> {
+    let path = ["Makefile", "makefile", "GNUmakefile"]
+        .iter()
+        .map(|name| dir.join(name))
+        .find(|candidate| candidate.exists())?;
+    let text = std::fs::read_to_string(&path).ok()?;
+    let has_target = |name: &str| {
+        let colon = format!("{name}:");
+        let assign = format!("{name}:=");
+        let spaced = format!("{name} :");
+        text.lines().any(|line| {
+            (line.starts_with(&colon) && !line.starts_with(&assign)) || line.starts_with(&spaced)
+        })
+    };
+    if has_target("test") {
+        Some("test".to_string())
+    } else if has_target("check") {
+        Some("check".to_string())
+    } else {
+        None
+    }
+}
+
+// --- execution --------------------------------------------------------------
+
+async fn run_check(check: &Check, dir: &Path, timeout_secs: u64) -> CheckOutcome {
+    let mut command = match &check.exec {
+        Exec::Direct { program, args } => {
+            let mut command = tokio::process::Command::new(program);
+            command.args(args);
+            command
+        }
+        Exec::Shell(command_line) => shell_command(command_line),
+    };
+    command
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        // If the timeout drops the wait future, the child is killed with it, so
+        // a timed-out build can't linger.
+        .kill_on_drop(true);
+
+    let child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return CheckOutcome::ToolMissing;
+        }
+        Err(error) => return CheckOutcome::SpawnError(error.to_string()),
+    };
+
+    // `wait_with_output` drains stdout and stderr concurrently, so a check that
+    // writes more than a pipe buffer can't deadlock.
+    let output = if timeout_secs > 0 {
+        match tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait_with_output())
+            .await
+        {
+            Ok(Ok(output)) => output,
+            Ok(Err(error)) => return CheckOutcome::SpawnError(error.to_string()),
+            Err(_) => return CheckOutcome::TimedOut,
+        }
+    } else {
+        match child.wait_with_output().await {
+            Ok(output) => output,
+            Err(error) => return CheckOutcome::SpawnError(error.to_string()),
+        }
+    };
+
+    if output.status.success() {
+        CheckOutcome::Passed
+    } else {
+        CheckOutcome::Failed {
+            exit_code: output.status.code(),
+            output: combine_streams(&output.stdout, &output.stderr),
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn shell_command(command_line: &str) -> tokio::process::Command {
+    let shell = if which::which("bash").is_ok() {
+        "bash"
+    } else {
+        "sh"
+    };
+    let mut command = tokio::process::Command::new(shell);
+    command.arg("-c").arg(command_line);
+    command
+}
+
+#[cfg(windows)]
+fn shell_command(command_line: &str) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new("cmd");
+    command.arg("/C").arg(command_line);
+    command
+}
+
+// --- rendering (pure) -------------------------------------------------------
+
+/// Combine captured streams in a deterministic order (stdout then stderr) so
+/// that an identical failure renders identically. Decoded lossily; empties are
+/// skipped; wholly-empty output is labelled rather than blank.
+fn combine_streams(stdout: &[u8], stderr: &[u8]) -> String {
+    let out = String::from_utf8_lossy(stdout);
+    let err = String::from_utf8_lossy(stderr);
+    let out = out.trim();
+    let err = err.trim();
+    match (out.is_empty(), err.is_empty()) {
+        (true, true) => "(no output)".to_string(),
+        (false, true) => out.to_string(),
+        (true, false) => err.to_string(),
+        (false, false) => format!("{out}\n{err}"),
+    }
+}
+
+/// Neutralize reported durations so the same failure hashes identically across
+/// re-runs (see the module docs). Conservative: only decimal durations, which
+/// in build/test output are virtually always timings.
+fn normalize(output: &str) -> String {
+    DURATION_RE.replace_all(output, "<t>${1}").into_owned()
+}
+
+/// Bound failure output to `MAX_OUTPUT_LINES`, keeping the head and the tail
+/// when it is exceeded so both the leading errors and the trailing summary
+/// survive — never a blind tail.
+fn clamp_output(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() <= MAX_OUTPUT_LINES {
+        return text.trim_end().to_string();
+    }
+    let head = lines[..HEAD_LINES].join("\n");
+    let tail = lines[lines.len() - TAIL_LINES..].join("\n");
+    let omitted = lines.len() - HEAD_LINES - TAIL_LINES;
+    format!("{head}\n... [{omitted} lines omitted] ...\n{tail}")
+}
+
+/// A clean success: no error dump, just which checks passed.
+fn pass_result(checks: &[Check]) -> CallToolResult {
+    let labels: Vec<&str> = checks.iter().map(|check| check.label.as_str()).collect();
+    let message = format!("PASS - all checks passed: {}.", labels.join(", "));
+    CallToolResult::success(vec![Content::text(message).with_priority(0.0)])
+}
+
+/// A structured failure: the failing command, its exit code, the (normalized,
+/// bounded) errors, and the self-governed bound. `CallToolResult::error` sets
+/// `is_error`, which is what the loop guard reads to classify a same-failure
+/// loop.
+fn fail_result(check: &Check, exit_code: Option<i32>, output: &str) -> CallToolResult {
+    let code = match exit_code {
+        Some(code) => code.to_string(),
+        None => "killed".to_string(),
+    };
+    let body = clamp_output(&normalize(output));
+    let message = format!(
+        "FAIL - `{label}` failed (exit {code}).\n\n{body}\n\n\
+         Fix what these errors point to, then run verify again. If the same failure \
+         persists after two or three focused attempts, stop and hand it to the user \
+         with these errors rather than repeating - identical retries make no progress \
+         and are blocked by the runaway-loop guard.",
+        label = check.label,
+    );
+    error_result(&message)
+}
+
+fn error_result(message: &str) -> CallToolResult {
+    CallToolResult::error(vec![Content::text(message.to_string()).with_priority(0.0)])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rmcp::model::RawContent;
+    use serde_json::json;
+
+    fn text_of(result: &CallToolResult) -> &str {
+        match &result.content[0].raw {
+            RawContent::Text(text) => &text.text,
+            _ => panic!("expected text content"),
+        }
+    }
+
+    // ── Detection → the correct check command ──
+
+    #[test]
+    fn detects_rust() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"x\"").unwrap();
+        assert_eq!(
+            detect_checks(dir.path()).unwrap(),
+            vec![Check::direct("cargo", &["test"])]
+        );
+    }
+
+    #[test]
+    fn detects_go_build_then_test() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module x").unwrap();
+        assert_eq!(
+            detect_checks(dir.path()).unwrap(),
+            vec![
+                Check::direct("go", &["build", "./..."]),
+                Check::direct("go", &["test", "./..."]),
+            ]
+        );
+    }
+
+    #[test]
+    fn detects_node_npm_build_then_test_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts":{"test":"jest","build":"tsc"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            detect_checks(dir.path()).unwrap(),
+            vec![
+                Check::direct("npm", &["run", "build"]),
+                Check::direct("npm", &["run", "test"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn detects_node_package_manager_from_lockfile() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts":{"test":"vitest"}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("pnpm-lock.yaml"), "").unwrap();
+        assert_eq!(
+            detect_checks(dir.path()).unwrap(),
+            vec![Check::direct("pnpm", &["run", "test"])]
+        );
+    }
+
+    #[test]
+    fn node_without_build_or_test_script_is_actionable_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), r#"{"name":"x"}"#).unwrap();
+        let error = detect_checks(dir.path()).unwrap_err();
+        assert!(
+            error.contains("no `build` or `test` script"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn detects_python_pytest_from_any_marker() {
+        for marker in ["pyproject.toml", "setup.py", "requirements.txt", "tox.ini"] {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join(marker), "").unwrap();
+            assert_eq!(
+                detect_checks(dir.path()).unwrap(),
+                vec![Check::direct("pytest", &[])],
+                "marker {marker} should map to pytest"
+            );
+        }
+    }
+
+    #[test]
+    fn detects_make_test_target() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Makefile"),
+            ".PHONY: test\ntest:\n\tcargo test\n",
+        )
+        .unwrap();
+        assert_eq!(
+            detect_checks(dir.path()).unwrap(),
+            vec![Check::direct("make", &["test"])]
+        );
+    }
+
+    #[test]
+    fn detects_make_check_when_no_test_target() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Makefile"), "check:\n\truff check .\n").unwrap();
+        assert_eq!(
+            detect_checks(dir.path()).unwrap(),
+            vec![Check::direct("make", &["check"])]
+        );
+    }
+
+    #[test]
+    fn makefile_without_test_or_check_is_not_detected() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Makefile"), "build:\n\tgo build\n").unwrap();
+        assert!(detect_checks(dir.path()).is_err());
+    }
+
+    #[test]
+    fn language_marker_takes_precedence_over_makefile() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
+        std::fs::write(dir.path().join("Makefile"), "test:\n\techo hi\n").unwrap();
+        assert_eq!(
+            detect_checks(dir.path()).unwrap(),
+            vec![Check::direct("cargo", &["test"])]
+        );
+    }
+
+    #[test]
+    fn rust_takes_precedence_over_node() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts":{"test":"x"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            detect_checks(dir.path()).unwrap(),
+            vec![Check::direct("cargo", &["test"])]
+        );
+    }
+
+    #[test]
+    fn unknown_project_returns_actionable_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = detect_checks(dir.path()).unwrap_err();
+        assert!(error.contains("Could not detect"), "got: {error}");
+        assert!(error.contains("command"), "should point at the override");
+    }
+
+    // ── Full error capture (not truncated) ──
+
+    #[test]
+    fn clamp_returns_full_output_when_under_limit() {
+        assert_eq!(clamp_output("a\nb\nc"), "a\nb\nc");
+    }
+
+    #[test]
+    fn clamp_keeps_head_and_tail_when_over_limit() {
+        let lines: Vec<String> = (0..(MAX_OUTPUT_LINES + 200))
+            .map(|i| format!("line{i}"))
+            .collect();
+        let clamped = clamp_output(&lines.join("\n"));
+        // An early line survives — this is not a blind tail.
+        assert!(clamped.contains("line0"), "head must be kept");
+        assert!(clamped.contains("line5"), "early context must survive");
+        // The final summary line survives.
+        assert!(
+            clamped.contains(&format!("line{}", MAX_OUTPUT_LINES + 199)),
+            "tail must be kept"
+        );
+        assert!(clamped.contains("lines omitted"), "elision marker present");
+    }
+
+    #[test]
+    fn fail_result_carries_the_real_errors() {
+        let check = Check::direct("cargo", &["test"]);
+        let result = fail_result(&check, Some(101), "error[E0425]: cannot find value `x`");
+        assert_eq!(result.is_error, Some(true));
+        let text = text_of(&result);
+        assert!(text.starts_with("FAIL"));
+        assert!(text.contains("cargo test"), "the failing command is named");
+        assert!(text.contains("exit 101"), "the exit code is shown");
+        assert!(text.contains("E0425"), "the real compiler error survives");
+    }
+
+    #[test]
+    fn combine_streams_is_deterministic_stdout_then_stderr() {
+        assert_eq!(combine_streams(b"out", b"err"), "out\nerr");
+        assert_eq!(combine_streams(b"", b"err"), "err");
+        assert_eq!(combine_streams(b"out", b""), "out");
+        assert_eq!(combine_streams(b"", b""), "(no output)");
+    }
+
+    // ── Clean exit on pass ──
+
+    #[test]
+    fn pass_result_is_a_clean_success() {
+        let result = pass_result(&[
+            Check::direct("go", &["build", "./..."]),
+            Check::direct("go", &["test", "./..."]),
+        ]);
+        assert_eq!(result.is_error, Some(false));
+        let text = text_of(&result);
+        assert!(text.starts_with("PASS"));
+        assert!(text.contains("go build ./..."));
+        assert!(text.contains("go test ./..."));
+    }
+
+    // ── The bounded-repair contract: REUSE the ProgressMonitor cap ──
+
+    #[test]
+    fn identical_failures_render_identically_so_the_loop_guard_can_bind() {
+        // The same underlying failure, differing only in reported durations,
+        // must render to identical tool output — otherwise the loop guard's
+        // same-failure cap (which compares result hashes) could never bind to a
+        // verify loop.
+        let check = Check::direct("cargo", &["test"]);
+        let run_1 = fail_result(
+            &check,
+            Some(101),
+            "error[E0425]: cannot find `x`\ntest result: FAILED. finished in 3.24s",
+        );
+        let run_2 = fail_result(
+            &check,
+            Some(101),
+            "error[E0425]: cannot find `x`\ntest result: FAILED. finished in 9.90s",
+        );
+        assert_eq!(
+            text_of(&run_1),
+            text_of(&run_2),
+            "identical failures must render identically"
+        );
+
+        // A genuinely different failure must render differently — progress is
+        // visible to the guard, which then lets real fixing through.
+        let run_3 = fail_result(
+            &check,
+            Some(101),
+            "error[E0433]: failed to resolve\ntest result: FAILED. finished in 3.24s",
+        );
+        assert_ne!(
+            text_of(&run_1),
+            text_of(&run_3),
+            "a different error must render differently"
+        );
+    }
+
+    #[test]
+    fn repeated_identical_verify_failure_is_bounded_and_escalates() {
+        // The bound is REUSED, not reinvented: a verify call that keeps failing
+        // identically is the existing ProgressMonitor's S2 "same failure" — it
+        // escalates to the Decision Inbox at the third identical failure rather
+        // than looping forever.
+        use crate::tool_monitor::{assess_tool_call, is_mutating, LoopAction, Signal, ToolEvent};
+
+        let name = "developer__verify";
+        let args = json!({});
+        let failure = |result_hash: u64| ToolEvent {
+            name: name.to_string(),
+            args: args.clone(),
+            result_hash,
+            is_error: true,
+            is_mutating: is_mutating(name),
+        };
+
+        // Two prior identical failures (same normalized output → same hash),
+        // then the third identical failing verify.
+        let same_failure = vec![failure(0xF00D), failure(0xF00D)];
+        assert_eq!(
+            assess_tool_call(&same_failure, name, &args),
+            LoopAction::Escalate(Signal::SameFailure),
+            "a 3rd identical verify failure must escalate via the loop guard"
+        );
+
+        // A changing failure (each attempt hashes differently) is progress and
+        // must NOT be escalated as a same-failure loop.
+        let changing = vec![failure(1), failure(2)];
+        assert_ne!(
+            assess_tool_call(&changing, name, &args),
+            LoopAction::Escalate(Signal::SameFailure),
+            "changing failure output is progress and must not escalate"
+        );
+    }
+
+    // ── normalize ──
+
+    #[test]
+    fn normalize_neutralizes_durations_only() {
+        assert_eq!(normalize("finished in 3.24s"), "finished in <t>s");
+        assert_eq!(normalize("took 0.03 seconds"), "took <t>seconds");
+        assert_eq!(normalize("Time: 2.5 s"), "Time: <t>s");
+        assert_eq!(normalize("ran in 125.0ms"), "ran in <t>ms");
+        // Same failure, different timing → equal after normalize.
+        assert_eq!(normalize("FAILED in 1.11s"), normalize("FAILED in 8.88s"));
+        // Different errors → still different.
+        assert_ne!(normalize("error A in 1.0s"), normalize("error B in 1.0s"));
+        // No duration and version-like numbers are left untouched.
+        assert_eq!(normalize("plain error"), "plain error");
+        assert_eq!(normalize("Compiling foo v0.1.0"), "Compiling foo v0.1.0");
+    }
+
+    // ── params ──
+
+    #[test]
+    fn params_parse_with_defaults_and_overrides() {
+        let empty: VerifyParams = serde_json::from_value(json!({})).unwrap();
+        assert!(empty.command.is_none());
+        assert!(empty.path.is_none());
+        assert!(empty.timeout_secs.is_none());
+
+        let full: VerifyParams = serde_json::from_value(
+            json!({"command":"cargo clippy","path":"crates/x","timeout_secs":30}),
+        )
+        .unwrap();
+        assert_eq!(full.command.as_deref(), Some("cargo clippy"));
+        assert_eq!(full.path.as_deref(), Some("crates/x"));
+        assert_eq!(full.timeout_secs, Some(30));
+    }
+
+    #[tokio::test]
+    async fn empty_command_is_rejected_with_guidance() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = VerifyTool::new();
+        let result = tool
+            .verify_with_cwd(
+                VerifyParams {
+                    command: Some("   ".to_string()),
+                    path: None,
+                    timeout_secs: None,
+                },
+                Some(dir.path()),
+            )
+            .await;
+        assert_eq!(result.is_error, Some(true));
+        assert!(text_of(&result).contains("auto-detect"));
+    }
+
+    #[tokio::test]
+    async fn undetected_project_reports_actionably() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = VerifyTool::new();
+        let result = tool
+            .verify_with_cwd(
+                VerifyParams {
+                    command: None,
+                    path: None,
+                    timeout_secs: None,
+                },
+                Some(dir.path()),
+            )
+            .await;
+        assert_eq!(result.is_error, Some(true));
+        assert!(text_of(&result).contains("Could not detect"));
+    }
+
+    // ── Integration smoke: actually run a command (shell path). Skipped where
+    // no POSIX shell is available so the pure suite above stays the gate. ──
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn verify_passes_on_a_zero_exit_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = VerifyTool::new();
+        let result = tool
+            .verify_with_cwd(
+                VerifyParams {
+                    command: Some("exit 0".to_string()),
+                    path: None,
+                    timeout_secs: Some(30),
+                },
+                Some(dir.path()),
+            )
+            .await;
+        assert_eq!(result.is_error, Some(false));
+        assert!(text_of(&result).starts_with("PASS"));
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn verify_fails_and_captures_both_streams() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = VerifyTool::new();
+        let result = tool
+            .verify_with_cwd(
+                VerifyParams {
+                    command: Some("echo EARLY_MARKER; echo LATE_MARKER 1>&2; exit 1".to_string()),
+                    path: None,
+                    timeout_secs: Some(30),
+                },
+                Some(dir.path()),
+            )
+            .await;
+        assert_eq!(result.is_error, Some(true));
+        let text = text_of(&result);
+        assert!(text.starts_with("FAIL"));
+        assert!(text.contains("exit 1"));
+        assert!(text.contains("EARLY_MARKER"), "stdout captured");
+        assert!(text.contains("LATE_MARKER"), "stderr captured");
+    }
+}
