@@ -25,6 +25,7 @@ use crate::state::AppState;
 use chrono::{DateTime, Local, Timelike, Utc};
 use permagent::conversation::message::Message;
 use permagent::providers::base::Provider;
+use permagent::rss;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -377,12 +378,9 @@ async fn compute_news(last_link: Option<&str>) -> Option<Nudge> {
         .timeout(Duration::from_secs(12))
         .build()
         .ok()?;
-    // Build the URL by hand — this reqwest is configured without the `query`
-    // helper (default-features = false), same as browser.rs.
-    let url = format!(
-        "https://news.google.com/rss/search?q={}&hl=en-US&gl=US&ceid=US:en",
-        percent_encode(&name)
-    );
+    // The URL is built by hand in crate::rss — this reqwest is configured
+    // without the `query` helper (default-features = false), same as browser.rs.
+    let url = rss::google_news_search_url(&name);
     let resp = client.get(&url).send().await.ok()?;
     if !resp.status().is_success() {
         return None;
@@ -390,7 +388,7 @@ async fn compute_news(last_link: Option<&str>) -> Option<Nudge> {
     let body = resp.text().await.ok()?;
     let item = first_rss_item(&body)?;
 
-    let pub_ms = parse_rfc2822_ms(&item.pub_date)?;
+    let pub_ms = rss::parse_rfc2822_ms(&item.pub_date)?;
     if (now - pub_ms) / DAY_MS > NEWS_FRESH_DAYS {
         return None;
     }
@@ -412,76 +410,12 @@ async fn compute_news(last_link: Option<&str>) -> Option<Nudge> {
     })
 }
 
-struct RssItem {
-    title: String,
-    link: String,
-    pub_date: String,
-}
-
-fn first_rss_item(xml: &str) -> Option<RssItem> {
-    let item = between(xml, "<item>", "</item>")?;
-    let title = between(item, "<title>", "</title>")
-        .map(clean_xml)
-        .unwrap_or_default();
-    let link = between(item, "<link>", "</link>")
-        .map(clean_xml)
-        .unwrap_or_default();
-    let pub_date = between(item, "<pubDate>", "</pubDate>")
-        .map(clean_xml)
-        .unwrap_or_default();
-    if title.is_empty() || pub_date.is_empty() {
-        return None;
-    }
-    Some(RssItem {
-        title,
-        link,
-        pub_date,
-    })
-}
-
-// Safe slicing: `str::find` returns byte offsets on char boundaries, and
-// `start.len()` advances past a matched ASCII tag — so both slices are valid.
-#[allow(clippy::string_slice)]
-fn between<'a>(s: &'a str, start: &str, end: &str) -> Option<&'a str> {
-    let i = s.find(start)? + start.len();
-    let rest = &s[i..];
-    let j = rest.find(end)?;
-    Some(&rest[..j])
-}
-
-fn clean_xml(s: &str) -> String {
-    let t = s.trim();
-    let t = t
-        .strip_prefix("<![CDATA[")
-        .and_then(|x| x.strip_suffix("]]>"))
-        .unwrap_or(t);
-    t.replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .trim()
-        .to_string()
-}
-
-fn parse_rfc2822_ms(s: &str) -> Option<i64> {
-    DateTime::parse_from_rfc2822(s.trim())
-        .ok()
-        .map(|d| d.timestamp_millis())
-}
-
-/// Percent-encode a query value (this reqwest build lacks the `query` helper).
-fn percent_encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{:02X}", b)),
-        }
-    }
-    out
+/// The freshest feed item, requiring a `pub_date` (the news freshness gate needs
+/// one). Parsing itself lives in `permagent::rss`, shared with the Grow
+/// audience-listening tool so the two feed readers can't drift.
+fn first_rss_item(xml: &str) -> Option<rss::Item> {
+    let item = rss::first_item(xml)?;
+    (!item.pub_date.is_empty()).then_some(item)
 }
 
 // ── Source: dormant thread ───────────────────────────────────────────────────
@@ -610,7 +544,7 @@ mod tests {
         let item = first_rss_item(xml).expect("an item");
         assert_eq!(item.title, "Acme raises $50M & hires");
         assert_eq!(item.link, "https://news.example/a");
-        assert!(parse_rfc2822_ms(&item.pub_date).is_some());
+        assert!(rss::parse_rfc2822_ms(&item.pub_date).is_some());
     }
 
     #[test]
