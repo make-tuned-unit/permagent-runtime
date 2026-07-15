@@ -2,6 +2,7 @@ pub mod edit;
 pub mod search;
 pub mod shell;
 pub mod tree;
+pub mod verify;
 
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
@@ -21,6 +22,7 @@ use shell::{shell_display_name, ShellOutput, ShellParams, ShellTool};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tree::{TreeParams, TreeTool};
+use verify::{VerifyParams, VerifyTool};
 
 pub static EXTENSION_NAME: &str = "developer";
 
@@ -30,6 +32,7 @@ pub struct DeveloperClient {
     edit_tools: Arc<EditTools>,
     tree_tool: Arc<TreeTool>,
     search_tool: Arc<SearchTool>,
+    verify_tool: Arc<VerifyTool>,
 }
 
 fn developer_instructions() -> &'static str {
@@ -78,6 +81,7 @@ impl DeveloperClient {
             edit_tools: Arc::new(EditTools::new()),
             tree_tool: Arc::new(TreeTool::new()),
             search_tool: Arc::new(SearchTool::new()),
+            verify_tool: Arc::new(VerifyTool::new()),
         })
     }
 
@@ -168,6 +172,18 @@ impl DeveloperClient {
                 Some(true),
                 Some(false),
             )),
+            Tool::new(
+                "verify".to_string(),
+                "Run this project's checks (build/test) and get a structured PASS/FAIL. Auto-detects the project type from its marker files - Cargo.toml -> `cargo test`; go.mod -> `go build`/`go test`; package.json -> the package manager's build/test scripts; a Python marker -> `pytest`; a Makefile with a test/check target -> `make test` - and runs them fail-fast. On failure it returns the failing command, its exit code, and the FULL captured errors (not a truncated tail) so you can fix them, then re-verify. Use this to verify your work before declaring a task done. Params: command (optional - an explicit check command to run instead of auto-detecting, e.g. \"cargo clippy -- -D warnings\"); path (dir to verify, default working dir); timeout_secs (per-check, default 600; 0 disables). There is no built-in retry counter: repeated identical failures are bounded by the runaway-loop guard, so if a couple of focused fixes don't clear it, stop and ask the user.".to_string(),
+                Self::schema::<VerifyParams>(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Verify".to_string()),
+                Some(false),
+                Some(true),
+                Some(false),
+                Some(true),
+            )),
         ]
     }
 }
@@ -228,6 +244,13 @@ impl McpClientTrait for DeveloperClient {
                 ))
                 .with_priority(0.0)])),
             },
+            "verify" => match Self::parse_args::<VerifyParams>(arguments) {
+                Ok(params) => Ok(self.verify_tool.verify_with_cwd(params, working_dir).await),
+                Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Error: {error}"
+                ))
+                .with_priority(0.0)])),
+            },
             _ => Ok(CallToolResult::error(vec![Content::text(format!(
                 "Error: Unknown tool: {name}"
             ))
@@ -255,7 +278,10 @@ mod tests {
             .map(|t| t.name.to_string())
             .collect();
 
-        assert_eq!(names, vec!["write", "edit", "shell", "tree", "search"]);
+        assert_eq!(
+            names,
+            vec!["write", "edit", "shell", "tree", "search", "verify"]
+        );
     }
 
     fn test_context(data_dir: std::path::PathBuf) -> PlatformExtensionContext {
@@ -343,5 +369,29 @@ mod tests {
         let observed = std::fs::canonicalize(first_text(&result)).unwrap();
         let expected = std::fs::canonicalize(&cwd).unwrap();
         assert_eq!(observed, expected);
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn developer_client_dispatches_verify_with_working_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let client = DeveloperClient::new(test_context(temp.path().join("sessions"))).unwrap();
+        let cwd = temp.path().join("workspace");
+        fs::create_dir_all(&cwd).unwrap();
+
+        let ctx = ToolCallContext::new("session".to_owned(), Some(cwd.clone()), None);
+        // An explicit command exercises the dispatch + execution path without
+        // needing a real toolchain installed.
+        let result = client
+            .call_tool(
+                &ctx,
+                "verify",
+                Some(object!({ "command": "exit 0" })),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false));
+        assert!(first_text(&result).starts_with("PASS"));
     }
 }
