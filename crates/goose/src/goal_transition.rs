@@ -274,7 +274,18 @@ pub async fn advance_goal_checked(
     proof: Option<DecisionProof>,
     effects: TransitionEffects,
 ) -> Result<GoalState, GuardError> {
-    let mut tx = pool.begin().await.map_err(db_err)?;
+    // BEGIN IMMEDIATE, not the default BEGIN DEFERRED. This transaction reads the
+    // goal + its column binding + the risk tier, THEN upgrades to a write
+    // (UPDATE cards + audit INSERT). Under DEFERRED the read acquires only a
+    // snapshot; if a concurrent writer commits between that snapshot and the
+    // UPDATE — e.g. the activity-journal consumer reacting to the very
+    // decision_resolved / goal_state_changed events this answer→effect path emits
+    // — SQLite raises a BUSY lock-upgrade (stale-snapshot) conflict that
+    // `busy_timeout` does NOT retry, surfacing as a spurious effect failure (the
+    // Decision Inbox router-integration flake). Taking the write lock up front
+    // lets `busy_timeout` serialize instead of erroring. Same idiom as
+    // workspaces::seed_presets_if_empty and people::upsert_person.
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(db_err)?;
 
     let goal = read_goal_tx(&mut tx, card_id).await?;
     if goal.card_type != "goal" {
