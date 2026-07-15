@@ -12,6 +12,7 @@ pub mod librarian;
 pub mod librarian_atoms;
 pub mod librarian_entities;
 pub mod librarian_state;
+pub mod listen;
 pub mod orchestrator;
 pub mod people;
 pub mod project_manager;
@@ -150,6 +151,42 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                     confirm: None,
                 }],
                 client_factory: |ctx| Box::new(browser::BrowserClient::new(ctx).unwrap()),
+            },
+        );
+
+        map.insert(
+            listen::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: listen::EXTENSION_NAME,
+                display_name: "Audience Listening",
+                description:
+                    "Listen to what an audience is saying about a topic or on a channel (listen_to_audience) — RSS-first and zero-config: a topic reads live news chatter, or point it at a feed URL (a subreddit, blog, or podcast) for a specific channel; it health-probes each source and returns only real recent items (title, snippet, date, link)",
+                default_enabled: true,
+                unprefixed_tools: true,
+                hidden: false,
+                why_it_matters:
+                    "Ground a project's Grow strategy — its Audience and Channels — in what people are really saying, not guesses. When the user wants to understand or reach an audience, listen first: it tries RSS then web_search in order, reports which backend answered, and never fabricates chatter",
+                teaching: &[
+                    crate::agents::self_knowledge::TeachingStep {
+                        title: "Open Grow",
+                        body: "Bring the user to the project's go-to-market workspace, where \
+                               audience and channel strategy live.",
+                        open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                            tab: "Grow",
+                            section: None,
+                        }),
+                        confirm: None,
+                    },
+                    crate::agents::self_knowledge::TeachingStep {
+                        title: "Listen to their audience",
+                        body: "Offer to listen on a topic or channel the user cares about — call \
+                               listen_to_audience and read back the real, recent items — then use \
+                               what you heard to sharpen the Audience and Channels pillars together.",
+                        open_surface: None,
+                        confirm: None,
+                    },
+                ],
+                client_factory: |ctx| Box::new(listen::ListenClient::new(ctx).unwrap()),
             },
         );
 

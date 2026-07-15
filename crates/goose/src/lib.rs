@@ -60,6 +60,7 @@ pub mod recognition;
 pub mod recognition_consent;
 #[cfg(feature = "spectral-recognition")]
 pub mod recognition_sink;
+pub mod rss;
 pub mod scheduler;
 pub mod scheduler_trait;
 pub mod security;
