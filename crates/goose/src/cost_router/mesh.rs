@@ -3,9 +3,11 @@
 //! Per the mesh research, a trusted pooled/mesh endpoint is conceptually the
 //! cheapest tier — but content-bearing work only ever routes to it under FOUR
 //! conjunctive conditions, and it is NEVER on the interactive critical path.
-//! This module is the pure gate + fallback LOGIC, wired to the `resolve_route`
-//! seam of the (unmerged) mesh scaffold (PR #702) so it activates the moment
-//! #702 lands — without depending on that branch to compile or be tested.
+//! This module is the pure gate + fallback LOGIC behind the `resolve_route`
+//! seam (#702, merged). The **live inputs provider** is the mesh pool engine:
+//! `crate::mesh::pool::live_gate_inputs` (or `PoolEngine::gate_inputs`) builds
+//! [`MeshGateInputs`] from real peer health/trust state, and the engine's
+//! dispatch consults [`gate`] before every pool rung.
 //!
 //! ## The four gate conditions (all required)
 //! 1. the work is BATCH / mechanical (latency-tolerant) — never Interactive;
@@ -20,18 +22,13 @@
 //! See `super::tier::next_after`, which routes a `MeshFree` failure to
 //! `fallback_tier()`.
 //!
-//! ## Wiring to #702
-//! This module deliberately does NOT import `crate::mesh` (unmerged). It mirrors
-//! that scaffold's concepts (`Workload::Batch` vs `Interactive`, the trusted-pool
-//! opt-in) as plain inputs so the gate is testable today. When #702 lands, a
-//! caller bridges the two in a few lines:
-//!
-//! ```ignore
-//! if matches!(mesh_gate::gate(inputs), MeshRoute::UseMesh) {
-//!     let route = crate::mesh::resolve_route(crate::mesh::Workload::Batch);
-//!     // dispatch the batch inference to route.endpoint …
-//! }
-//! ```
+//! ## Wiring to #702 (merged) and the pool engine
+//! This module deliberately does NOT import `crate::mesh` — it mirrors the
+//! seam's concepts (`Workload::Batch` vs `Interactive`, the trusted-pool
+//! opt-in) as plain inputs so the gate stays a pure function. The bridge now
+//! exists in production: `crate::mesh::pool` supplies live inputs and runs
+//! this gate inside its dispatch ladder (pool → local → the
+//! [`fallback_tier`] escalation below).
 //!
 //! Pure so it is unit-testable without env or network (env-mutating tests flake
 //! under parallel `cargo test`, per the mesh scaffold's own note).

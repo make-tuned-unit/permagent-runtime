@@ -37,6 +37,8 @@
 //!   Layer 1). Today an env allowlist / env role; tomorrow SBT-verified
 //!   membership and reputation on Base L2, and hardware-derived roles.
 
+pub mod pool;
+
 /// This device's role in a compute pool. Determines what it *contributes*, not
 /// what it can *access* (the vision's core inversion). Default [`Self::Client`].
 ///
@@ -145,14 +147,16 @@ pub enum InferencePayload {
 }
 
 /// Runtime guard for the HARD INVARIANT: only inference computation may route to
-/// a peer, never the user's Brain/documents/memories. Today this is a
-/// documentation-and-type guard — [`InferencePayload`] already makes a Brain
-/// store unrepresentable — so this is a no-op. It exists as the single, stable
-/// call site a future wire-transport (TEE/FHE) adds a real assertion / audit-log
-/// to, without callers changing.
+/// a peer, never the user's Brain/documents/memories. [`InferencePayload`] makes
+/// a Brain store unrepresentable at the type level, and since the pool engine
+/// landed this seam is **invoked in production**: every wire body leaves through
+/// [`pool::InferenceBody`]'s constructors, each of which calls this guard. It
+/// remains the single, stable call site a future wire-transport (TEE/FHE) adds a
+/// real assertion / audit-log to, without callers changing.
 pub fn assert_inference_only(_payload: &InferencePayload) {
-    // Intentionally a no-op: the invariant holds by construction today (see the
-    // `InferencePayload` doc). This is the enforcement seam, not dead code.
+    // Intentionally a no-op body: the invariant holds by construction (see the
+    // `InferencePayload` and `pool::InferenceBody` docs). This is the
+    // enforcement seam every outbound body is built through.
 }
 
 /// This machine's local Ollama endpoint. Mirrors the default that
@@ -167,12 +171,42 @@ const LOCAL_ENDPOINT: &str = "http://localhost:11434";
 /// Today's routing table:
 /// - `Interactive` → always local ([`PrivacyApproach::LocalOnly`]). Interactive
 ///   work never leaves the device yet.
-/// - `Batch` → a [`PrivacyApproach::TrustedPool`] route **iff** a pool endpoint
-///   is configured *and* [`trusted_pool_enabled`] is true; otherwise local.
+/// - `Batch` → with the multi-peer engine on (`PERMAGENT_MESH_ENGINE`, default
+///   off), the healthiest eligible trusted peer per [`pool`]'s scheduler
+///   (health-gated, capacity-gated); otherwise the #702 single-endpoint table:
+///   a [`PrivacyApproach::TrustedPool`] route **iff** a pool endpoint is
+///   configured *and* [`trusted_pool_enabled`] is true; otherwise local.
 ///   This is the HARD INVARIANT in code: content-bearing batch work only leaves
 ///   the machine when the user has explicitly marked a pool trusted.
 pub fn resolve_route(workload: Workload) -> InferenceRoute {
-    resolve_route_inner(workload, trusted_pool_enabled(), configured_pool_endpoint())
+    if let Some(engine) = pool::engine() {
+        return engine.resolve_route_sync(workload);
+    }
+    let trusted = trusted_pool_enabled();
+    let pool_endpoint = configured_pool_endpoint();
+    if workload == Workload::Batch && !trusted {
+        if let Some(endpoint) = &pool_endpoint {
+            warn_pool_untrusted_once(endpoint);
+        }
+    }
+    resolve_route_inner(workload, trusted, pool_endpoint)
+}
+
+/// Once-per-boot observability for the silent-revocation case: a pool is
+/// configured but not trusted, so batch work is (correctly, fail-closed)
+/// staying local — which a #698-era `PERMAGENT_OLLAMA_HOST` deployment that
+/// predates the trust gate will not expect. Warn loudly, name the fix.
+pub(crate) fn warn_pool_untrusted_once(detail: &str) {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    tracing::warn!(
+        pool = %detail,
+        "A batch inference pool is configured but NOT marked trusted, so batch work stays on \
+         this device (fail-closed). If you trust that machine, set PERMAGENT_MESH_TRUSTED=1 \
+         (and `trusted: true` on config-file peers) to use it."
+    );
 }
 
 /// Pure core of [`resolve_route`] — the routing table, unit-testable without

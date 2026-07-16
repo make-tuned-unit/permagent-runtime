@@ -2,7 +2,6 @@
 //! status endpoint, and the "run now" manual trigger.
 
 use crate::routes::errors::ErrorResponse;
-use crate::routes::ollama::OLLAMA_BASE;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
@@ -284,40 +283,39 @@ async fn warm_and_run(schedule: &LibrarianSchedule, keep_alive_secs: u64) -> Res
     let (total, described) = query_memory_counts()?;
     librarian_state::set_warming(total, described);
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
-        .map_err(|e| {
-            librarian_state::set_error(&format!("HTTP client error: {}", e));
-            format!("HTTP client error: {}", e)
-        })?;
-
-    let body = serde_json::json!({
-        "model": schedule.model,
-        "prompt": "ok",
-        "stream": false,
-        "keep_alive": format!("{}s", keep_alive_secs),
-        "options": { "num_predict": 1 }
-    });
-
-    let resp = client
-        .post(format!("{}/api/generate", OLLAMA_BASE))
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| {
-            librarian_state::set_error(&format!("Ollama unreachable: {}", e));
-            format!("Ollama unreachable: {}", e)
-        })?;
-
-    if !resp.status().is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        let msg = format!("Warm-load failed: {}", text);
+    // Warm-load through the mesh pool ladder so the warm follows EXACTLY the
+    // routing the batch itself will follow: with the pool engine on, this
+    // warms the trusted healthy peer the scheduler would pick (falling back
+    // to local); with it off, it warms `resolve_route(Batch)` — the
+    // configured pool or localhost. The old hardcoded-localhost warm aborted
+    // every scheduled pass whenever localhost had no Ollama even though a
+    // trusted pool was up (and warmed the wrong host when both ran). Now a
+    // warm failure means every rung the batch could use is down — the only
+    // case where aborting is correct.
+    let warm = permagent::mesh::pool::generate(permagent::mesh::pool::GenerateRequest {
+        model: schedule.model.clone(),
+        prompt: "ok".to_string(),
+        system: None,
+        options: Some(serde_json::json!({ "num_predict": 1 })),
+        keep_alive: Some(format!("{}s", keep_alive_secs)),
+        // A cold load of a large model legitimately exceeds the engine's 60s
+        // rung budget — keep the 120s this warm has always had.
+        timeout: Some(std::time::Duration::from_secs(120)),
+        workload: permagent::mesh::Workload::Batch,
+    })
+    .await
+    .map_err(|e| {
+        let msg = format!("Warm-load failed on every batch endpoint: {}", e.message);
         librarian_state::set_error(&msg);
-        return Err(msg);
-    }
+        msg
+    })?;
 
-    tracing::info!(model = %schedule.model, keep_alive = keep_alive_secs, "Librarian model warm-loaded");
+    tracing::info!(
+        model = %schedule.model,
+        keep_alive = keep_alive_secs,
+        served_by = ?warm.served_by,
+        "Librarian model warm-loaded on the batch route"
+    );
 
     // Annotation backfill runs at daemon startup (state.rs), not here.
 
