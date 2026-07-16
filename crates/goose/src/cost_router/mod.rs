@@ -67,7 +67,10 @@ pub use role_map::{
     cache_guard_should_warn, clear_role_model, configured as configured_role_models, derive_role,
     mappings_to_persist, resolve_role_model, role_model, set_role_model, RoleModel,
 };
-pub use tier::{classify, minimum_tier, next_after, Attempt, Next, TaskClass, TaskSignals, Tier};
+pub use tier::{
+    classify, minimum_tier, next_after, Attempt, Next, TaskClass, TaskSignals, Tier,
+    VerifyEscalation, VerifyEscalationAction, VERIFY_ESCALATE_AT,
+};
 
 /// Self-knowledge descriptor for the **cost optimizer** (#714/#717/#720) — the
 /// tiered router plus the always-on live cost meter that make the coding harness

@@ -138,6 +138,14 @@ pub enum Attempt {
     /// No response within the latency budget (the Reader's 60s Ollama timeout,
     /// generalized). For the mesh tier this triggers the cloud fallback.
     TimedOut,
+    /// The model produced output and the call itself succeeded, but the project's
+    /// OWN checks (the `verify` tool) still fail the SAME way after a bounded run
+    /// of self-fix rounds — "the model can't fix it here," not "the call broke."
+    /// Kept distinct from [`Attempt::Failed`] so telemetry can tell a capability
+    /// gap from a transport failure; both escalate one tier. This is the signal a
+    /// verifier-driven loop reports to climb to a stronger model — see
+    /// [`VerifyEscalation`].
+    VerifyFailed,
 }
 
 /// What to do after an attempt at `current` yields an outcome.
@@ -163,7 +171,7 @@ pub enum Next {
 pub fn next_after(current: Tier, outcome: Attempt) -> Next {
     match outcome {
         Attempt::Ok => Next::Accept,
-        Attempt::Failed | Attempt::Unparseable | Attempt::TimedOut => {
+        Attempt::Failed | Attempt::Unparseable | Attempt::TimedOut | Attempt::VerifyFailed => {
             if current == Tier::MeshFree {
                 // The reliability wall: skip local, degrade straight to cloud.
                 return Next::Escalate(super::mesh::fallback_tier());
@@ -172,6 +180,105 @@ pub fn next_after(current: Tier, outcome: Attempt) -> Next {
                 Some(next) => Next::Escalate(next),
                 None => Next::GiveUp,
             }
+        }
+    }
+}
+
+/// The number of CONSECUTIVE same-normalized `verify` failures for one goal at
+/// which a stronger model is warranted. Mirrors the runaway-loop guard's S6
+/// verify-loop escalate threshold (`tool_monitor::S6_ESCALATE_AT`) so the two
+/// halves of the loop — "stop this identical retry" and "climb to a stronger
+/// model" — fire on the same evidence.
+pub const VERIFY_ESCALATE_AT: u32 = 3;
+
+/// What a verifier-driven fix loop should do next, given the observed run of
+/// identical `verify` failures for one goal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerifyEscalationAction {
+    /// Below the same-failure threshold — keep letting the current model fix it.
+    KeepFixing,
+    /// The Nth identical failure — re-attempt the fix on this stronger tier.
+    Escalate(Tier),
+    /// The tier ceiling or the per-goal escalation budget is spent — stop and
+    /// hand the goal to the human (never climb forever).
+    Exhausted,
+}
+
+/// The verifier-driven escalation controller (#1): owns ONE goal's current tier
+/// and a bounded escalation budget so a stuck `verify` loop climbs to a stronger
+/// model ONCE PER OBSERVED SAME-FAILURE and no further.
+///
+/// It is the decision half of the closed verify loop: the runaway-loop guard's
+/// S6 signal counts CONSECUTIVE identical `verify` failures across the edits
+/// between them (`tool_monitor`), and this controller turns the Nth such failure
+/// into a concrete stronger tier via [`next_after`]`(_, `[`Attempt::VerifyFailed`]`)`.
+///
+/// Two guardrails from the model-cascade literature are structural here, not
+/// advisory — they prevent the documented "silently escalate everything to the
+/// frontier" failure:
+/// 1. **Consecutive-same-failure only.** Callers report [`Self::on_same_failure`]
+///    with the run length of IDENTICAL failures; a changed/transient failure
+///    resets that count upstream, so escalation never fires on varying output.
+/// 2. **Bounded budget.** At most `max_escalations` climbs per goal regardless of
+///    how many tiers remain, so a pathological goal cannot walk the whole ladder
+///    to the frontier on repeated (but genuine) failures.
+///
+/// Pure and owns no I/O — the live re-dispatch that acts on an `Escalate` (swap
+/// the goal worker's model and re-run the fix) is wired by the caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VerifyEscalation {
+    current: Tier,
+    escalations_used: u8,
+    max_escalations: u8,
+}
+
+impl VerifyEscalation {
+    /// Start a goal on `start` (the tier its worker was dispatched at) with a
+    /// per-goal budget of `max_escalations` climbs.
+    pub fn new(start: Tier, max_escalations: u8) -> Self {
+        Self {
+            current: start,
+            escalations_used: 0,
+            max_escalations,
+        }
+    }
+
+    /// The tier the goal is currently attempting on.
+    pub fn current(&self) -> Tier {
+        self.current
+    }
+
+    /// Escalation climbs spent so far on this goal.
+    pub fn escalations_used(&self) -> u8 {
+        self.escalations_used
+    }
+
+    /// Report that `verify` has now failed identically `consecutive` times in a
+    /// row for this goal (the runaway-loop guard's S6 count). Below the threshold
+    /// this is [`VerifyEscalationAction::KeepFixing`]; at or above it, the tier
+    /// advances one rung (recorded as the new `current`) until the budget or the
+    /// ladder ceiling is reached, after which it is
+    /// [`VerifyEscalationAction::Exhausted`].
+    ///
+    /// Idempotent within a threshold band is NOT assumed: the caller reports the
+    /// running consecutive count, and this mutates only when it decides to climb,
+    /// so calling it repeatedly at the same count past a climb yields `Exhausted`
+    /// once the budget is spent rather than re-climbing.
+    pub fn on_same_failure(&mut self, consecutive: u32) -> VerifyEscalationAction {
+        if consecutive < VERIFY_ESCALATE_AT {
+            return VerifyEscalationAction::KeepFixing;
+        }
+        if self.escalations_used >= self.max_escalations {
+            return VerifyEscalationAction::Exhausted;
+        }
+        match next_after(self.current, Attempt::VerifyFailed) {
+            Next::Escalate(next) => {
+                self.current = next;
+                self.escalations_used += 1;
+                VerifyEscalationAction::Escalate(next)
+            }
+            // At the ceiling there is no stronger tier — stop, don't loop.
+            Next::Accept | Next::GiveUp => VerifyEscalationAction::Exhausted,
         }
     }
 }
@@ -311,5 +418,100 @@ mod tests {
                 Next::Escalate(Tier::CheapCloud)
             );
         }
+    }
+
+    // ── Verifier-driven escalation (#1): the decision core ─────────────────
+
+    #[test]
+    fn verify_failed_escalates_one_tier_like_a_failure() {
+        // A verify failure is a capability signal, routed exactly like a plain
+        // failure: climb one rung, and give up (never loop) at the ceiling.
+        assert_eq!(
+            next_after(Tier::LocalFree, Attempt::VerifyFailed),
+            Next::Escalate(Tier::CheapCloud)
+        );
+        assert_eq!(
+            next_after(Tier::CheapCloud, Attempt::VerifyFailed),
+            Next::Escalate(Tier::Frontier)
+        );
+        assert_eq!(
+            next_after(Tier::Frontier, Attempt::VerifyFailed),
+            Next::GiveUp
+        );
+        // Mesh degrades straight to cheap cloud on a verify failure too.
+        assert_eq!(
+            next_after(Tier::MeshFree, Attempt::VerifyFailed),
+            Next::Escalate(Tier::CheapCloud)
+        );
+    }
+
+    #[test]
+    fn verify_escalation_keeps_fixing_below_the_threshold() {
+        // Transient/varying failures never reach the consecutive-same threshold,
+        // so the controller must NOT climb — it lets the current model keep
+        // trying. This is the "don't escalate everything to frontier" guardrail.
+        let mut esc = VerifyEscalation::new(Tier::LocalFree, 2);
+        for n in 0..VERIFY_ESCALATE_AT {
+            assert_eq!(
+                esc.on_same_failure(n),
+                VerifyEscalationAction::KeepFixing,
+                "consecutive={n} is below threshold and must not escalate"
+            );
+        }
+        assert_eq!(esc.current(), Tier::LocalFree, "no climb below threshold");
+        assert_eq!(esc.escalations_used(), 0);
+    }
+
+    #[test]
+    fn verify_escalation_selects_next_after_on_the_nth_same_failure() {
+        // The Nth identical verify failure climbs exactly one rung — the tier the
+        // fix is re-attempted on is `next_after(current, VerifyFailed)`.
+        let mut esc = VerifyEscalation::new(Tier::LocalFree, 3);
+        assert_eq!(
+            esc.on_same_failure(VERIFY_ESCALATE_AT),
+            VerifyEscalationAction::Escalate(Tier::CheapCloud)
+        );
+        assert_eq!(esc.current(), Tier::CheapCloud, "current advanced one rung");
+        assert_eq!(esc.escalations_used(), 1);
+    }
+
+    #[test]
+    fn verify_escalation_stops_at_the_max_escalations_budget() {
+        // Budget = 1: the first same-failure climbs LocalFree → CheapCloud, but
+        // the second is refused even though Frontier is still available — the
+        // per-goal cap, not the ladder ceiling, stops it.
+        let mut esc = VerifyEscalation::new(Tier::LocalFree, 1);
+        assert_eq!(
+            esc.on_same_failure(VERIFY_ESCALATE_AT),
+            VerifyEscalationAction::Escalate(Tier::CheapCloud)
+        );
+        assert_eq!(
+            esc.on_same_failure(VERIFY_ESCALATE_AT + 1),
+            VerifyEscalationAction::Exhausted,
+            "budget spent → stop, do NOT climb to the frontier"
+        );
+        assert_eq!(
+            esc.current(),
+            Tier::CheapCloud,
+            "current must not advance past the budgeted stop"
+        );
+        assert_eq!(esc.escalations_used(), 1);
+    }
+
+    #[test]
+    fn verify_escalation_stops_at_the_tier_ceiling() {
+        // A generous budget still cannot climb past Frontier — the ladder ceiling
+        // is the hard stop (there is no stronger model to escalate to).
+        let mut esc = VerifyEscalation::new(Tier::CheapCloud, 9);
+        assert_eq!(
+            esc.on_same_failure(VERIFY_ESCALATE_AT),
+            VerifyEscalationAction::Escalate(Tier::Frontier)
+        );
+        assert_eq!(
+            esc.on_same_failure(VERIFY_ESCALATE_AT),
+            VerifyEscalationAction::Exhausted,
+            "at the frontier there is no stronger tier → stop, never loop"
+        );
+        assert_eq!(esc.current(), Tier::Frontier);
     }
 }
