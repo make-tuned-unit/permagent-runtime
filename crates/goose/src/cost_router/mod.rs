@@ -33,6 +33,7 @@
 pub mod budget;
 pub mod cache;
 pub mod cheap;
+pub mod escalation;
 pub mod knowledge;
 pub mod mesh;
 pub mod packs;
@@ -50,6 +51,11 @@ pub use cache::{
 pub use cheap::{
     build_ladder, default_anchor, discover_priced_candidates, is_key_configured, load_ladder,
     reference_cost_for, CheapCandidate, CheapLadder, PricedCandidate,
+};
+pub use escalation::{
+    build_handoff, decide_escalation, load_max_escalations, max_escalations_from,
+    tier_for_workflow_role, workflow_role_for_tier, EscalationOutcome, GoalEscalationState,
+    ParkReason, ESCALATION_METADATA_KEY, MAX_ESCALATIONS_DEFAULT,
 };
 pub use knowledge::{lookup as lookup_model_knowledge, ModelKnowledge, KNOWN_MODELS};
 pub use mesh::{
