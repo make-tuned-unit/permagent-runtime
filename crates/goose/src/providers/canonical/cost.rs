@@ -124,6 +124,29 @@ pub fn cache_savings_of(usage: &Usage, pricing: &Pricing) -> f64 {
     rate_cost(cache_read, saving_per_million)
 }
 
+/// Prompt-cache **hit rate** for one response: the fraction of *cacheable* input
+/// tokens that were served from cache (reads) rather than freshly written
+/// (creation) — `reads / (reads + creation)`. It measures whether the warm
+/// prefix is actually being reused: 1.0 = every cacheable token was a cheap read,
+/// 0.0 = every cacheable token was a fresh write. Fresh (never-cacheable) input
+/// is deliberately excluded so the figure reflects cache effectiveness, not
+/// prompt shape.
+///
+/// Returns `None` when nothing went through the cache this call (no reads and no
+/// writes) — the rate is undefined, not zero. Computable only because [`Usage`]
+/// now carries the read/creation split (populated by
+/// `formats/anthropic.rs::get_usage`); this is the day-one measurable surface for
+/// the prompt-cache discipline (#717/#727).
+pub fn cache_hit_rate_of(usage: &Usage) -> Option<f64> {
+    let reads = non_negative(usage.cache_read_input_tokens);
+    let writes = non_negative(usage.cache_write_input_tokens);
+    let cacheable = reads + writes;
+    if cacheable == 0 {
+        return None;
+    }
+    Some(reads as f64 / cacheable as f64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,5 +296,32 @@ mod tests {
             cache_write: None,
         };
         approx(cache_savings_of(&u, &no_cr), 0.0);
+    }
+
+    #[test]
+    fn cache_hit_rate_is_reads_over_reads_plus_writes() {
+        // Warm prefix fully reused: all cacheable tokens were reads → 1.0.
+        approx(cache_hit_rate_of(&usage(1000, 0, 500, 0)).unwrap(), 1.0);
+        // Cold prefix: all cacheable tokens were fresh writes → 0.0.
+        approx(cache_hit_rate_of(&usage(1000, 0, 0, 500)).unwrap(), 0.0);
+        // Mixed (the realistic long-session case): 5000 read of 15000 cacheable.
+        approx(
+            cache_hit_rate_of(&usage(20000, 0, 5000, 10000)).unwrap(),
+            5000.0 / 15000.0,
+        );
+        // Fresh input alone is excluded from the denominator — the rate reflects
+        // cache effectiveness, not prompt shape.
+        approx(cache_hit_rate_of(&usage(9999, 0, 3, 1)).unwrap(), 0.75);
+    }
+
+    #[test]
+    fn cache_hit_rate_is_none_without_cache_activity() {
+        // Nothing went through the cache this call → undefined, not zero.
+        assert_eq!(cache_hit_rate_of(&usage(1000, 50, 0, 0)), None);
+        // A Usage with no cache fields populated at all → None (never a divide-by-zero).
+        assert_eq!(
+            cache_hit_rate_of(&Usage::new(Some(1000), Some(50), None)),
+            None
+        );
     }
 }

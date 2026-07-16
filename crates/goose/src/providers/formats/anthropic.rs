@@ -1,4 +1,5 @@
 use crate::conversation::message::{Message, MessageContent};
+use crate::cost_router::cache::CacheTtl;
 use crate::mcp_utils::extract_text_from_resource;
 use crate::model::ModelConfig;
 use crate::providers::base::Usage;
@@ -316,13 +317,134 @@ pub fn format_tools(tools: &[Tool]) -> Vec<Value> {
     tool_specs
 }
 
-/// Convert system message to Anthropic's API system specification
+const EPHEMERAL: &str = "ephemeral";
+const TTL_FIELD: &str = "ttl";
+
+/// The XML-ish wrapper that delimits pinned read-only context inside the cached
+/// system block — the analogue of `<repo_map>` for the [`PrefixSegment::ReadOnlyFiles`]
+/// slot. The cache guards key on this marker to prove the segment lands inside
+/// the cached prefix (after the repo-map) and never leaks into the volatile tail.
+const READ_ONLY_FILES_OPEN: &str = "<read_only_files>";
+const READ_ONLY_FILES_CLOSE: &str = "</read_only_files>";
+
+/// A read-only context file pinned into the cached system prefix for the session.
+///
+/// Explicitly-referenced read-only context — pinned files, CLAUDE.md-type project
+/// context — is stable across turns, so it belongs *inside* the cached system
+/// block (billed once at the cache write, then ~0.1× on every read) rather than
+/// re-sent in the volatile `messages` tail every turn. Its content must never be
+/// reordered or mutated turn-to-turn, or the byte-exact cached prefix breaks and
+/// every turn pays a fresh write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadOnlyFile {
+    pub path: String,
+    pub content: String,
+}
+
+impl ReadOnlyFile {
+    pub fn new(path: impl Into<String>, content: impl Into<String>) -> Self {
+        ReadOnlyFile {
+            path: path.into(),
+            content: content.into(),
+        }
+    }
+}
+
+/// The `cache_control` value for a breakpoint at the given TTL. 5-minute is the
+/// bare `ephemeral` marker; 1-hour adds the extended `"ttl": "1h"`. TTL policy —
+/// including the honest 1-hour break-even — lives in [`CacheTtl`].
+fn cache_control(ttl: CacheTtl) -> Value {
+    match ttl.extended_ttl_str() {
+        Some(ttl_str) => json!({ TYPE_FIELD: EPHEMERAL, TTL_FIELD: ttl_str }),
+        None => json!({ TYPE_FIELD: EPHEMERAL }),
+    }
+}
+
+/// Render pinned read-only files into a single canonical, byte-stable block for
+/// the cached system prefix, or `None` when there is nothing to pin (so the
+/// system block is byte-identical to the no-read-only case). Files are emitted in
+/// the order supplied — the caller owns a stable order so the cached prefix hits.
+fn format_read_only_files(read_only_files: &[ReadOnlyFile]) -> Option<String> {
+    if read_only_files.is_empty() {
+        return None;
+    }
+    let mut out = String::from(READ_ONLY_FILES_OPEN);
+    for file in read_only_files {
+        out.push_str("\n<file path=\"");
+        out.push_str(&file.path);
+        out.push_str("\">\n");
+        out.push_str(&file.content);
+        out.push_str("\n</file>");
+    }
+    out.push('\n');
+    out.push_str(READ_ONLY_FILES_CLOSE);
+    Some(out)
+}
+
+/// Convert system message to Anthropic's API system specification (no pinned
+/// read-only context, default 5-minute cache TTL).
 pub fn format_system(system: &str) -> Value {
+    format_system_with_read_only(system, &[])
+}
+
+/// Convert the system message to Anthropic's system spec with pinned read-only
+/// context folded into the SAME cached block, after the base system (which
+/// already carries the repo-map). This fills the reserved
+/// [`PrefixSegment::ReadOnlyFiles`] slot without adding a fifth breakpoint: the
+/// single system text block still carries exactly one `cache_control` marker. The
+/// breakpoint always lands on the last block, so `format_tools` → `format_system`
+/// stays canonical order. TTL is applied to every breakpoint later, in
+/// [`apply_cache_ttl`].
+pub fn format_system_with_read_only(system: &str, read_only_files: &[ReadOnlyFile]) -> Value {
+    let text = match format_read_only_files(read_only_files) {
+        Some(block) if system.is_empty() => block,
+        Some(block) => format!("{system}\n\n{block}"),
+        None => system.to_string(),
+    };
     json!([{
         TYPE_FIELD: TEXT_TYPE,
-        TEXT_TYPE: system,
-        CACHE_CONTROL_FIELD: { TYPE_FIELD: "ephemeral" }
+        TEXT_TYPE: text,
+        CACHE_CONTROL_FIELD: cache_control(CacheTtl::FiveMinute)
     }])
+}
+
+/// Upgrade every `cache_control` breakpoint already present in `payload` to the
+/// requested TTL. This NEVER adds or removes a breakpoint — it only re-annotates
+/// the `ephemeral` markers the formatters emitted — so the Anthropic 4-breakpoint
+/// cap is preserved regardless of TTL. The 5-minute TTL is exactly the marker the
+/// formatters already produce, so this is a no-op for it; the 1-hour TTL adds
+/// `"ttl": "1h"` to each existing marker (tools, system, and the rolling
+/// user-message reads alike, so the whole warm prefix shares one lifetime).
+fn apply_cache_ttl(payload: &mut Value, ttl: CacheTtl) {
+    if !ttl.is_extended() {
+        return; // formatters already emit the 5-minute `ephemeral` marker
+    }
+    fn walk(value: &mut Value, replacement: &Value) {
+        match value {
+            Value::Object(map) => {
+                if let Some(cc) = map.get_mut(CACHE_CONTROL_FIELD) {
+                    // Only upgrade the bare 5-minute marker the formatters emit;
+                    // leave anything else untouched.
+                    if cc.get(TYPE_FIELD).and_then(|t| t.as_str()) == Some(EPHEMERAL)
+                        && cc.get(TTL_FIELD).is_none()
+                    {
+                        *cc = replacement.clone();
+                    }
+                }
+                for v in map.values_mut() {
+                    walk(v, replacement);
+                }
+            }
+            Value::Array(arr) => {
+                for v in arr.iter_mut() {
+                    walk(v, replacement);
+                }
+            }
+            _ => {}
+        }
+    }
+    let replacement = cache_control(ttl);
+    walk(payload, &replacement);
 }
 
 /// Convert Anthropic's API response to internal Message format
@@ -420,10 +542,18 @@ pub fn get_usage(data: &Value) -> Result<Usage> {
         let total_tokens_i32 =
             (total_input_i32 as i64 + output_tokens_i32 as i64).min(i32::MAX as i64) as i32;
 
+        // Carry the cache read/creation split onto the ledger. `input_tokens` above
+        // is the cache-INCLUSIVE surface (fresh + creation + read); the ledger
+        // (`canonical::cost`) carves these two categories back out for correct
+        // pricing, and it is what makes cache hit-rate measurable day one.
         Ok(Usage::new(
             Some(total_input_i32),
             Some(output_tokens_i32),
             Some(total_tokens_i32),
+        )
+        .with_cache_tokens(
+            Some(cache_read_tokens.min(i32::MAX as u64) as i32),
+            Some(cache_creation_tokens.min(i32::MAX as u64) as i32),
         ))
     } else if data.as_object().is_some() {
         // Check if the data itself is the usage object (for message_delta events that might have usage at top level)
@@ -460,13 +590,19 @@ pub fn get_usage(data: &Value) -> Result<Usage> {
             let total_tokens_i32 =
                 (total_input_i32 as i64 + output_tokens_i32 as i64).min(i32::MAX as i64) as i32;
 
-            tracing::debug!("🔍 Anthropic ACTUAL token counts from direct object: input={}, output={}, total={}", 
+            tracing::debug!("🔍 Anthropic ACTUAL token counts from direct object: input={}, output={}, total={}",
                     total_input_i32, output_tokens_i32, total_tokens_i32);
 
+            // Same cache read/creation split as the nested-usage branch above, so
+            // streamed `message_delta` usage also feeds the ledger's hit-rate.
             Ok(Usage::new(
                 Some(total_input_i32),
                 Some(output_tokens_i32),
                 Some(total_tokens_i32),
+            )
+            .with_cache_tokens(
+                Some(cache_read_tokens.min(i32::MAX as u64) as i32),
+                Some(cache_creation_tokens.min(i32::MAX as u64) as i32),
             ))
         } else {
             tracing::debug!("🔍 Anthropic no token data found in object");
@@ -489,6 +625,25 @@ pub fn thinking_effort(model_config: &ModelConfig) -> ThinkingEffort {
             ThinkingEffort::High
         }),
         None => ThinkingEffort::High,
+    }
+}
+
+/// Select the prompt-cache TTL for this request. Defaults to the cheap 5-minute
+/// `ephemeral` TTL everywhere; opt into the 1-hour extended TTL via the
+/// `cache_ttl` config key or the `CLAUDE_CACHE_TTL` env var
+/// (`"1h"` / `"hour"` / `"extended"`), for long interactive / recipe-driven
+/// coding sessions whose think-gaps routinely exceed 5 minutes and let the
+/// 5-minute cache go cold. The 1-hour write costs 2× vs the 5-minute 1.25×, so it
+/// only pays off above ~1.6× prefix reuse within the hour — see [`CacheTtl`] for
+/// the honest break-even. Anything unrecognized keeps the 5-minute default.
+pub fn cache_ttl(model_config: &ModelConfig) -> CacheTtl {
+    match model_config
+        .get_config_param::<String>("cache_ttl", "CLAUDE_CACHE_TTL")
+        .map(|s| s.trim().to_lowercase())
+        .as_deref()
+    {
+        Some("1h" | "1hr" | "1hour" | "hour" | "extended" | "long") => CacheTtl::OneHour,
+        _ => CacheTtl::FiveMinute,
     }
 }
 
@@ -519,16 +674,43 @@ fn apply_thinking_config(payload: &mut Value, model_config: &ModelConfig, max_to
     }
 }
 
-/// Create a complete request payload for Anthropic's API
+/// Build an Anthropic `/v1/messages` payload with the default cache discipline:
+/// no pinned read-only context and the 5-minute cache TTL. The cache-tuned
+/// entrypoint — used to pin read-only context or select the 1-hour TTL — is
+/// [`create_request_cached`]; this delegates to it and is byte-identical to the
+/// pre-cache-last-mile builder.
 pub fn create_request(
     model_config: &ModelConfig,
     system: &str,
     messages: &[Message],
     tools: &[Tool],
 ) -> Result<Value> {
+    create_request_cached(
+        model_config,
+        system,
+        messages,
+        tools,
+        &[],
+        CacheTtl::FiveMinute,
+    )
+}
+
+/// Build an Anthropic `/v1/messages` payload, pinning `read_only_files` into the
+/// cached system block (after the repo-map, inside the existing system
+/// breakpoint) and writing every cache breakpoint at `ttl`. Passing an empty
+/// `read_only_files` with [`CacheTtl::FiveMinute`] reproduces [`create_request`]
+/// byte-for-byte.
+pub fn create_request_cached(
+    model_config: &ModelConfig,
+    system: &str,
+    messages: &[Message],
+    tools: &[Tool],
+    read_only_files: &[ReadOnlyFile],
+    ttl: CacheTtl,
+) -> Result<Value> {
     let anthropic_messages = format_messages(messages);
     let tool_specs = format_tools(tools);
-    let system_spec = format_system(system);
+    let system_spec = format_system_with_read_only(system, read_only_files);
 
     if anthropic_messages.is_empty() {
         return Err(anyhow!("No valid messages to send to Anthropic API"));
@@ -541,7 +723,9 @@ pub fn create_request(
         "max_tokens": max_tokens,
     });
 
-    if !system.is_empty() {
+    // Emit the system block whenever there is either a base prompt or pinned
+    // read-only context — read-only context alone must still be sent (and cached).
+    if !system.is_empty() || !read_only_files.is_empty() {
         payload
             .as_object_mut()
             .unwrap()
@@ -563,6 +747,10 @@ pub fn create_request(
     }
 
     apply_thinking_config(&mut payload, model_config, max_tokens);
+    // Stamp the selected TTL onto every breakpoint the formatters emitted. This
+    // only re-annotates existing `ephemeral` markers — it never adds one — so the
+    // ≤4-breakpoint cap holds for both TTLs.
+    apply_cache_ttl(&mut payload, ttl);
 
     Ok(payload)
 }
@@ -1029,6 +1217,12 @@ mod tests {
         assert_eq!(usage.output_tokens, Some(50));
         assert_eq!(usage.total_tokens, Some(15057)); // 15007 + 50
 
+        // The cache read/creation split is now carried onto the ledger (it used
+        // to be folded away), so hit-rate and cache savings are measurable. read
+        // = cache_read_input_tokens, write = cache_creation_input_tokens.
+        assert_eq!(usage.cache_read_input_tokens, Some(5000));
+        assert_eq!(usage.cache_write_input_tokens, Some(10000));
+
         Ok(())
     }
 
@@ -1445,7 +1639,7 @@ mod tests {
     // by moving a breakpoint, reordering the prefix, or leaking volatile context
     // (the repo-map) into the conversation tail.
     use crate::cost_router::cache::{
-        prefix_is_cache_stable, PrefixSegment, CANONICAL_PREFIX, HARNESS_PREFIX,
+        harness_prefix, prefix_is_cache_stable, PrefixSegment, CANONICAL_PREFIX, HARNESS_PREFIX,
     };
 
     const REPO_MAP_MARKER: &str = "<repo_map>";
@@ -1585,22 +1779,21 @@ mod tests {
         );
     }
 
-    #[test]
-    fn real_prefix_realizes_the_canonical_cache_policy() {
-        let _env = no_thinking_env();
-        // Discover, from the emitted payload, which prefix segments actually
-        // carry a cache breakpoint and in what order, then check that against the
-        // #717 policy in `crate::cost_router::cache`.
-        let config = cfg("claude-opus-4-8");
-        let payload = create_request(
-            &config,
-            &cache_guard_system(),
-            &[Message::user().with_text("go")],
-            &cache_guard_tools(),
-        )
-        .unwrap();
+    // Read-only context, exactly as a session would pin it: CLAUDE.md-type
+    // project context plus a pinned source file. Stable order (never mutated),
+    // so the cached prefix keeps hitting.
+    fn cache_guard_read_only_files() -> Vec<ReadOnlyFile> {
+        vec![
+            ReadOnlyFile::new("CLAUDE.md", "Project rules: run cargo fmt before pushing."),
+            ReadOnlyFile::new("src/lib.rs", "pub fn public_api() {}"),
+        ]
+    }
 
-        let mut observed: Vec<PrefixSegment> = Vec::new();
+    // Discover, from the emitted payload, which prefix segments actually carry a
+    // cache breakpoint and in what order — the runtime realization checked
+    // against the #717 policy in `crate::cost_router::cache`.
+    fn observe_prefix_segments(payload: &Value) -> Vec<PrefixSegment> {
+        let mut observed = Vec::new();
         if payload["tools"]
             .as_array()
             .and_then(|t| t.last())
@@ -1616,20 +1809,279 @@ mod tests {
             .is_some()
         {
             observed.push(PrefixSegment::System);
-            // The repo-map rides *inside* the System segment's cached block.
-            if payload["system"][0]["text"]
-                .as_str()
-                .unwrap_or_default()
-                .contains(REPO_MAP_MARKER)
-            {
+            let sys_text = payload["system"][0]["text"].as_str().unwrap_or_default();
+            // Repo-map, then read-only files, both *inside* the System block.
+            if sys_text.contains(REPO_MAP_MARKER) {
                 observed.push(PrefixSegment::RepoMap);
             }
+            if sys_text.contains(READ_ONLY_FILES_OPEN) {
+                observed.push(PrefixSegment::ReadOnlyFiles);
+            }
         }
+        observed
+    }
 
-        // The real emission is exactly the harness prefix, is cache-stable, and
-        // every segment sits in canonical order.
+    // Every `cache_control` marker anywhere in the payload — one per breakpoint.
+    fn collect_cache_controls(payload: &Value) -> Vec<Value> {
+        fn walk(value: &Value, out: &mut Vec<Value>) {
+            match value {
+                Value::Object(map) => {
+                    if let Some(cc) = map.get("cache_control") {
+                        out.push(cc.clone());
+                    }
+                    for v in map.values() {
+                        walk(v, out);
+                    }
+                }
+                Value::Array(arr) => {
+                    for v in arr {
+                        walk(v, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        walk(payload, &mut out);
+        out
+    }
+
+    #[test]
+    fn real_prefix_realizes_the_canonical_cache_policy() {
+        let _env = no_thinking_env();
+        let config = cfg("claude-opus-4-8");
+        let payload = create_request(
+            &config,
+            &cache_guard_system(),
+            &[Message::user().with_text("go")],
+            &cache_guard_tools(),
+        )
+        .unwrap();
+
+        // With no pinned read-only context the real emission is exactly the base
+        // harness prefix, is cache-stable, and every segment is canonical.
+        let observed = observe_prefix_segments(&payload);
         assert_eq!(observed, HARNESS_PREFIX.to_vec());
+        assert_eq!(observed, harness_prefix(false).to_vec());
         assert!(prefix_is_cache_stable(&observed));
         assert!(observed.iter().all(|s| CANONICAL_PREFIX.contains(s)));
+    }
+
+    #[test]
+    fn read_only_context_fills_the_slot_and_realizes_the_full_canonical_prefix() {
+        let _env = no_thinking_env();
+        let config = cfg("claude-opus-4-8");
+        let payload = create_request_cached(
+            &config,
+            &cache_guard_system(),
+            &[Message::user().with_text("go")],
+            &cache_guard_tools(),
+            &cache_guard_read_only_files(),
+            CacheTtl::FiveMinute,
+        )
+        .unwrap();
+
+        // Pinning read-only context fills the reserved ReadOnlyFiles slot: the
+        // realized prefix is now the FULL canonical prefix, still in canonical
+        // order and cache-stable — the #717 policy for the read-only-present state.
+        let observed = observe_prefix_segments(&payload);
+        assert_eq!(observed, harness_prefix(true).to_vec());
+        assert_eq!(observed, CANONICAL_PREFIX.to_vec());
+        assert!(prefix_is_cache_stable(&observed));
+
+        // The read-only slot rides *after* the repo-map, inside the system block.
+        let sys_text = payload["system"][0]["text"].as_str().unwrap();
+        let map_at = sys_text.find(REPO_MAP_MARKER).unwrap();
+        let ro_at = sys_text.find(READ_ONLY_FILES_OPEN).unwrap();
+        assert!(
+            map_at < ro_at,
+            "read-only context must sit after the repo-map"
+        );
+    }
+
+    #[test]
+    fn read_only_context_lands_in_the_cached_block_not_the_tail() {
+        // Folds into the single cached system block…
+        let system =
+            format_system_with_read_only(&cache_guard_system(), &cache_guard_read_only_files());
+        let blocks = system.as_array().unwrap();
+        assert_eq!(
+            blocks.len(),
+            1,
+            "read-only must not add a second system block"
+        );
+        let block = &blocks[0];
+        let text = block["text"].as_str().unwrap();
+        assert!(text.contains(READ_ONLY_FILES_OPEN));
+        assert!(text.contains("Project rules"));
+        assert!(
+            block.get("cache_control").is_some(),
+            "the read-only-bearing system block must anchor a cache breakpoint"
+        );
+
+        // …and is NOT duplicated into the volatile message tail (which sits after
+        // the cache breakpoint — the anti-pattern the pinning is meant to fix).
+        let messages = vec![
+            Message::user().with_text("Add a test"),
+            Message::assistant().with_text("On it."),
+            Message::user().with_text("Now run verify"),
+        ];
+        let tail = serde_json::to_string(&format_messages(&messages)).unwrap();
+        assert!(
+            !tail.contains(READ_ONLY_FILES_OPEN),
+            "read-only marker leaked into the volatile message tail"
+        );
+        assert!(
+            !tail.contains("Project rules"),
+            "read-only content leaked into the volatile message tail"
+        );
+    }
+
+    #[test]
+    fn cacheable_prefix_with_read_only_is_byte_stable_across_turns() {
+        let _env = no_thinking_env();
+        let config = cfg("claude-opus-4-8");
+        let system = cache_guard_system();
+        let tools = cache_guard_tools();
+        let read_only = cache_guard_read_only_files();
+
+        // Turn 1: one user message.
+        let turn1 = create_request_cached(
+            &config,
+            &system,
+            &[Message::user().with_text("start")],
+            &tools,
+            &read_only,
+            CacheTtl::FiveMinute,
+        )
+        .unwrap();
+        // Turn 2: same session, the conversation has grown by a round-trip.
+        let turn2 = create_request_cached(
+            &config,
+            &system,
+            &[
+                Message::user().with_text("start"),
+                Message::assistant().with_text("working on it"),
+                Message::user().with_text("continue"),
+            ],
+            &tools,
+            &read_only,
+            CacheTtl::FiveMinute,
+        )
+        .unwrap();
+
+        // The cached prefix (tools + system, repo-map AND read-only files included)
+        // is byte-identical across turns — pinning read-only context must never
+        // rewrite the warm prefix as the conversation grows.
+        assert_eq!(
+            turn1["system"], turn2["system"],
+            "system prefix drifted with read-only pinned"
+        );
+        assert_eq!(turn1["tools"], turn2["tools"], "tools prefix drifted");
+        // …and the read-only content is actually present in that stable prefix.
+        assert!(turn1["system"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains(READ_ONLY_FILES_OPEN));
+    }
+
+    #[test]
+    fn one_hour_ttl_is_set_when_configured_and_five_minute_otherwise() {
+        let _env = no_thinking_env();
+        let config = cfg("claude-opus-4-8");
+        let messages = [Message::user().with_text("go")];
+        let tools = cache_guard_tools();
+        let system = cache_guard_system();
+
+        // Default (5-minute): every breakpoint is the bare `ephemeral` marker,
+        // no `ttl` field.
+        let five = create_request_cached(
+            &config,
+            &system,
+            &messages,
+            &tools,
+            &[],
+            CacheTtl::FiveMinute,
+        )
+        .unwrap();
+        let five_markers = collect_cache_controls(&five);
+        assert!(!five_markers.is_empty());
+        for cc in &five_markers {
+            assert_eq!(cc["type"], "ephemeral");
+            assert!(
+                cc.get("ttl").is_none(),
+                "the 5-minute TTL must not carry a ttl field"
+            );
+        }
+
+        // 1-hour: every breakpoint carries `"ttl":"1h"`, and the breakpoint COUNT
+        // is unchanged (only re-annotated, never added).
+        let hour =
+            create_request_cached(&config, &system, &messages, &tools, &[], CacheTtl::OneHour)
+                .unwrap();
+        let hour_markers = collect_cache_controls(&hour);
+        assert_eq!(
+            hour_markers.len(),
+            five_markers.len(),
+            "the 1-hour TTL must not change the breakpoint count"
+        );
+        for cc in &hour_markers {
+            assert_eq!(cc["type"], "ephemeral");
+            assert_eq!(cc["ttl"], "1h", "the 1-hour TTL must set ttl=1h everywhere");
+        }
+    }
+
+    #[test]
+    fn breakpoint_count_never_exceeds_the_anthropic_cap() {
+        let _env = no_thinking_env();
+        let config = cfg("claude-opus-4-8");
+        // Two user turns => the two rolling read breakpoints, plus tools + system.
+        let messages = [
+            Message::user().with_text("first"),
+            Message::assistant().with_text("reply"),
+            Message::user().with_text("second"),
+        ];
+        let tools = cache_guard_tools();
+        let system = cache_guard_system();
+
+        // Across both TTLs and with/without read-only pinned, the payload never
+        // exceeds Anthropic's 4-breakpoint cap — read-only folds into the system
+        // breakpoint and the TTL only re-annotates existing markers.
+        for ttl in [CacheTtl::FiveMinute, CacheTtl::OneHour] {
+            for read_only in [Vec::new(), cache_guard_read_only_files()] {
+                let payload =
+                    create_request_cached(&config, &system, &messages, &tools, &read_only, ttl)
+                        .unwrap();
+                let n = collect_cache_controls(&payload).len();
+                assert!(
+                    n <= 4,
+                    "breakpoint count {n} exceeds Anthropic's 4-cap (ttl={ttl:?}, read_only={})",
+                    read_only.len()
+                );
+                // Exactly the four canonical breakpoints: last tool, the system
+                // block, and the two rolling user-message reads.
+                assert_eq!(n, 4, "expected exactly 4 canonical breakpoints, got {n}");
+            }
+        }
+    }
+
+    #[test]
+    fn cache_ttl_opts_into_one_hour_only_when_configured() {
+        let config = cfg("claude-opus-4-8");
+        // Default: 5-minute everywhere.
+        {
+            let _g = env_lock::lock_env([("CLAUDE_CACHE_TTL", None::<&str>)]);
+            assert_eq!(cache_ttl(&config), CacheTtl::FiveMinute);
+        }
+        // Explicit 1-hour opt-in (a few accepted spellings).
+        for value in ["1h", "hour", "extended"] {
+            let _g = env_lock::lock_env([("CLAUDE_CACHE_TTL", Some(value))]);
+            assert_eq!(cache_ttl(&config), CacheTtl::OneHour, "value={value}");
+        }
+        // Anything unrecognized keeps the safe 5-minute default.
+        {
+            let _g = env_lock::lock_env([("CLAUDE_CACHE_TTL", Some("nonsense"))]);
+            assert_eq!(cache_ttl(&config), CacheTtl::FiveMinute);
+        }
     }
 }

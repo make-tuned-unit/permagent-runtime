@@ -12,7 +12,7 @@ use super::api_client::{ApiClient, AuthMethod};
 use super::base::{ConfigKey, MessageStream, ModelInfo, Provider, ProviderDef, ProviderMetadata};
 use super::errors::ProviderError;
 use super::formats::anthropic::{
-    create_request, response_to_streaming_message, thinking_type, ThinkingType,
+    cache_ttl, create_request_cached, response_to_streaming_message, thinking_type, ThinkingType,
 };
 use super::inventory::{config_secret_value, serialize_string_map, InventoryIdentityInput};
 use super::openai_compatible::handle_status_openai_compat;
@@ -306,7 +306,14 @@ impl Provider for AnthropicProvider {
         messages: &[Message],
         tools: &[Tool],
     ) -> Result<MessageStream, ProviderError> {
-        let mut payload = create_request(model_config, system, messages, tools)?;
+        // Select the prompt-cache TTL from config (default 5-minute; opt into
+        // 1-hour for long interactive sessions — see `cache_ttl`). Read-only
+        // context is not pinned here yet: the pinning machinery, placement, and
+        // cache guards are complete (`create_request_cached` + #727 guards), but
+        // the producer that decides WHICH files a session pins is a separate
+        // follow-up, so the slice is empty and behavior is unchanged until then.
+        let ttl = cache_ttl(model_config);
+        let mut payload = create_request_cached(model_config, system, messages, tools, &[], ttl)?;
         payload
             .as_object_mut()
             .unwrap()
