@@ -165,6 +165,7 @@ pub static SURFACE_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::agents::platform_extensions::analyze::CODEBASE_INDEX_FEATURE,
     crate::agents::platform_extensions::project_manager::CODING_HARNESS_FEATURE,
     crate::cost_router::COST_OPTIMIZER_FEATURE,
+    crate::mesh::MESH_FEATURE,
 ];
 
 /// Tool ids that are described under another category and therefore skipped in
@@ -533,6 +534,7 @@ mod tests {
         "codebase",
         "coding_harness",
         "cost_optimizer",
+        "mesh",
     ];
     /// The Phase-2-v1 lesson set — each must resolve to a descriptor with steps.
     const V1_LESSON_IDS: &[&str] = &["reader", "brain", "scheduler", "persona"];

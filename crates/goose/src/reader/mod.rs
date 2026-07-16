@@ -78,7 +78,8 @@ const DEFAULT_MIN_CHARS: usize = 16;
 const DEFAULT_MIN_CONFIDENCE: f64 = 0.45;
 
 // ── Local-summary (Ollama) config — mirrors the Librarian's local LLM use ──
-// Endpoint resolved from `crate::config::ollama_host()` (batch-tier configurable).
+// Endpoint resolved via `crate::mesh::resolve_route(Workload::Batch)` — centralized
+// mesh routing (config::ollama_host() is the local/default endpoint under the hood).
 const SUMMARY_MODEL: &str = "qwen2.5:7b";
 // The digest is what Henry SAYS to the user, so the summarizer must never
 // state a specific it might get wrong. Exact facts (dates, amounts, IDs, names)
@@ -393,7 +394,10 @@ async fn ollama_summary(text: &str) -> Result<String, String> {
         "options": { "temperature": 0.2, "num_predict": 120 },
     });
     let resp = client
-        .post(format!("{}/api/generate", crate::config::ollama_host()))
+        .post(format!(
+            "{}/api/generate",
+            crate::mesh::resolve_route(crate::mesh::Workload::Batch).endpoint
+        ))
         .json(&body)
         .send()
         .await
