@@ -152,6 +152,14 @@ impl HistoryManager {
     }
 }
 
+/// Decide whether to render the CLI cost line. An explicit `GOOSE_CLI_SHOW_COST`
+/// (true/false) always wins; absent it, the line defaults ON for recipe-driven
+/// runs (the coding harness ships with a cost-visibility contract) and OFF for a
+/// bare interactive shell.
+fn should_show_cost(explicit_override: Option<bool>, session_has_recipe: bool) -> bool {
+    explicit_override.unwrap_or(session_has_recipe)
+}
+
 pub struct CliSession {
     agent: Agent,
     messages: Conversation,
@@ -1398,13 +1406,10 @@ impl CliSession {
         let context_limit = model_config.context_limit();
 
         let config = Config::global();
-        let show_cost = config
-            .get_param::<bool>("GOOSE_CLI_SHOW_COST")
-            .unwrap_or(false);
-
-        let provider_name = config
-            .get_goose_provider()
-            .unwrap_or_else(|_| "unknown".to_string());
+        // An explicit GOOSE_CLI_SHOW_COST wins; absent it, the cost line defaults
+        // ON for recipe-driven runs (the coding harness's cost-visibility contract)
+        // and OFF for a bare interactive shell.
+        let cost_override = config.get_param::<bool>("GOOSE_CLI_SHOW_COST").ok();
 
         match self.get_session().await {
             Ok(metadata) => {
@@ -1412,14 +1417,14 @@ impl CliSession {
 
                 output::display_context_usage(total_tokens, context_limit);
 
-                if show_cost {
-                    let input_tokens = metadata.input_tokens.unwrap_or(0) as usize;
-                    let output_tokens = metadata.output_tokens.unwrap_or(0) as usize;
-                    output::display_cost_usage(
-                        &provider_name,
-                        &model_config.model_name,
-                        input_tokens,
-                        output_tokens,
+                if should_show_cost(cost_override, metadata.recipe.is_some()) {
+                    // Read the canonical cost-ledger rollups (#714): the running
+                    // session total plus the latest-turn figure — cache-aware, not
+                    // a cache-blind re-estimate from token counts.
+                    output::display_session_cost(
+                        metadata.cost_usd,
+                        metadata.accumulated_cost_usd,
+                        metadata.accumulated_total_tokens.unwrap_or(0) as i64,
                     );
                 }
             }
@@ -2013,6 +2018,29 @@ mod tests {
     use permagent::config::ExtensionConfig;
     use std::time::Duration;
     use test_case::test_case;
+
+    // ── F4.4: the cost line defaults on for recipe runs; env is an off-switch ──
+
+    #[test]
+    fn cost_line_defaults_on_for_recipe_runs_off_for_bare_shell() {
+        // No explicit override: recipe-driven runs (the coding harness) show cost;
+        // a bare interactive shell does not.
+        assert!(should_show_cost(None, true), "recipe run defaults ON");
+        assert!(!should_show_cost(None, false), "bare shell defaults OFF");
+    }
+
+    #[test]
+    fn cost_line_env_override_wins_in_both_directions() {
+        // The env var is an explicit off-switch (and on-switch) that always wins.
+        assert!(
+            !should_show_cost(Some(false), true),
+            "explicit false hides the line even for a recipe run"
+        );
+        assert!(
+            should_show_cost(Some(true), false),
+            "explicit true shows the line even for a bare shell"
+        );
+    }
 
     #[test]
     fn test_format_elapsed_time_under_60_seconds() {

@@ -424,8 +424,9 @@ fn block_message(signal: Signal, name: &str, action: LoopAction) -> String {
         ),
         (_, LoopAction::Escalate(_)) => format!(
             "BLOCKED by the runaway-loop guard: `{bare}` with these exact arguments has already \
-             run several times with no change in result. This has been escalated to the user's \
-             Decision Inbox. Stop repeating it and try a genuinely different approach."
+             run several times with no change in result. This loop has been stopped and your \
+             work so far is preserved. Do not repeat it — take a genuinely different approach, \
+             or stop and explain what is blocking you."
         ),
         _ => format!(
             "BLOCKED by the runaway-loop guard: `{bare}` with these exact arguments just ran and \
@@ -457,8 +458,9 @@ pub struct ProgressMonitor {
     /// and in non-daemon contexts → detection + L1 still work, escalation no-ops.
     session_manager: Option<Arc<SessionManager>>,
     /// Sessions already escalated this run — avoids re-spawning the escalation
-    /// every turn (the durable dedup is the open decision itself).
-    escalated: Mutex<HashSet<String>>,
+    /// every turn (the durable dedup is the open decision itself). `Arc` so the
+    /// detached escalation task can release the reservation if the attempt fails.
+    escalated: Arc<Mutex<HashSet<String>>>,
 }
 
 impl std::fmt::Debug for ProgressMonitor {
@@ -475,7 +477,7 @@ impl ProgressMonitor {
     pub fn new(session_manager: Option<Arc<SessionManager>>) -> Self {
         Self {
             session_manager,
-            escalated: Mutex::new(HashSet::new()),
+            escalated: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -494,21 +496,40 @@ impl ProgressMonitor {
         let Some(session_manager) = self.session_manager.clone() else {
             return;
         };
+        // Reserve this session so concurrent turns don't spawn a duplicate
+        // escalation while one is in flight. The reservation is RELEASED again if
+        // the attempt fails (F3.3), so a transient error — the pool momentarily
+        // unavailable, or a failed park — is retried on a later turn instead of
+        // being lost forever. The durable dedup is the open decision itself,
+        // enforced inside `escalate_session_loop`.
         {
             let mut set = match self.escalated.lock() {
                 Ok(s) => s,
                 Err(_) => return,
             };
             if !set.insert(session_id.to_string()) {
-                return; // already escalated this session
+                return; // already escalated (or in flight) this run
             }
         }
+        let escalated = Arc::clone(&self.escalated);
         let session_id = session_id.to_string();
         let label = signal.label().to_string();
         tokio::spawn(async move {
             let pool = match session_manager.pool_clone().await {
                 Ok(p) => p,
-                Err(_) => return,
+                Err(e) => {
+                    if let Ok(mut set) = escalated.lock() {
+                        set.remove(&session_id);
+                    }
+                    tracing::warn!(
+                        target: "permagent::progress_monitor",
+                        session_id = %session_id,
+                        error = %e,
+                        "runaway-loop escalation could not reach the pool; released the \
+                         reservation so a later turn retries",
+                    );
+                    return;
+                }
             };
             if let Err(e) = crate::agents::platform_extensions::orchestrator::escalate_session_loop(
                 &pool,
@@ -518,11 +539,15 @@ impl ProgressMonitor {
             )
             .await
             {
+                if let Ok(mut set) = escalated.lock() {
+                    set.remove(&session_id);
+                }
                 tracing::warn!(
                     target: "permagent::progress_monitor",
                     session_id = %session_id,
                     error = %e,
-                    "runaway-loop escalation failed",
+                    "runaway-loop escalation failed; released the reservation so a later \
+                     turn retries",
                 );
             }
         });
@@ -966,5 +991,46 @@ mod tests {
             .await
             .unwrap();
         assert!(results.is_empty(), "a novel call must not be flagged");
+    }
+
+    // ── F3.2: the deny text makes no false Decision-Inbox claim ──
+
+    #[test]
+    fn escalate_deny_text_claims_no_inbox_escalation() {
+        // Escalation to the Decision Inbox only genuinely fires for goal-worker
+        // sessions; in an interactive (terminal harness) session it does not. The
+        // generic deny text the model sees must therefore not assert it.
+        let msg = block_message(
+            Signal::RepeatedCall,
+            "developer__shell",
+            LoopAction::Escalate(Signal::RepeatedCall),
+        );
+        assert!(
+            !msg.to_lowercase().contains("inbox"),
+            "escalate deny text must not claim Decision-Inbox escalation, got: {msg}"
+        );
+        assert!(msg.contains("runaway-loop guard"));
+        assert!(
+            msg.contains("stopped") && msg.contains("preserved"),
+            "it should honestly say the loop was stopped and work preserved, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn no_deny_variant_claims_the_inbox() {
+        // None of the block messages (nudge, same-failure, escalate) may claim the
+        // Inbox — the claim was false for the common non-goal session.
+        for action in [
+            LoopAction::Nudge(Signal::RepeatedCall),
+            LoopAction::Escalate(Signal::RepeatedCall),
+            LoopAction::Escalate(Signal::SameFailure),
+        ] {
+            let signal = action.signal().expect("blocking action carries a signal");
+            let msg = block_message(signal, "t", action);
+            assert!(
+                !msg.to_lowercase().contains("inbox"),
+                "no deny text may claim the Inbox, got: {msg}"
+            );
+        }
     }
 }
