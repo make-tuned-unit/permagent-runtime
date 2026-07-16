@@ -694,8 +694,14 @@ fn file_mtime(path: &Path) -> Option<SystemTime> {
 /// files are excluded by `AnalyzeClient::collect_files`, and the map shows
 /// signatures, not bodies, so a whole repo fits a small token budget.
 pub fn coding_context_block(root: &Path, max_map_tokens: usize) -> Option<String> {
+    // This entry point always maps with NO focus (a whole-repo orientation view),
+    // so the ×N no-focus multiplier would silently inflate the injected map to N×
+    // the operator's configured budget (F6.1) — on a small-context local model the
+    // difference between ~1k and ~8k tokens of map. Neutralize it here so
+    // `max_map_tokens` is the ACTUAL cap.
     let config = RepoMapConfig {
         max_map_tokens,
+        no_focus_multiplier: 1,
         ..RepoMapConfig::default()
     };
     let map = RepoMap::with_config(config).map(root, &[], &[]);
@@ -1113,6 +1119,38 @@ struct Config;
         assert!(
             tight_syms < generous_syms,
             "tight budget ({tight_syms} symbols) should surface fewer than generous ({generous_syms})"
+        );
+    }
+
+    #[test]
+    fn coding_context_block_no_focus_honors_budget_as_absolute_cap() {
+        // Regression for F6.1: with no focus set, the ×8 no-focus multiplier used
+        // to inflate the injected map to ~8× the configured budget. The budget must
+        // now be the ACTUAL cap. The tight<generous test above cannot catch this —
+        // this is the absolute bound.
+        let dir = tempdir().unwrap();
+        let mut src = String::new();
+        for i in 0..400 {
+            src.push_str(&format!(
+                "fn symbol_{i:04}(a: i32, b: i32) -> Result<(), ()> {{ Ok(()) }}\n"
+            ));
+        }
+        fs::write(dir.path().join("big.rs"), src).unwrap();
+
+        let n = 256;
+        let block = coding_context_block(dir.path(), n).expect("has source");
+        // Extract just the ranked-tags map the budget governs (prose wrapper out).
+        let map = block
+            .split_once("\n\n")
+            .expect("wrapper prose precedes the map")
+            .1
+            .strip_suffix("</repo_map>")
+            .expect("closing tag");
+        let cpt = RepoMapConfig::default().chars_per_token;
+        assert!(
+            estimate_tokens(map, cpt) <= n,
+            "no-focus coding map must honor N={n} as the actual cap, got {} tokens",
+            estimate_tokens(map, cpt)
         );
     }
 }

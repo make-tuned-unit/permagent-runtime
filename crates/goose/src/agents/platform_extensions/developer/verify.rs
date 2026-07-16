@@ -32,7 +32,7 @@
 //! prompt-level "stop after two or three attempts" bound handles the
 //! productive-looking-but-stuck case the monitor intentionally lets through.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::LazyLock;
@@ -137,6 +137,16 @@ impl Check {
     }
 }
 
+/// The result of detecting a project's checks: either the ordered checks to run,
+/// or a recognized project that simply has nothing runnable to verify yet (a
+/// fresh scaffold). "No checks configured" is NOT a failure — surfacing it as one
+/// would make a weak model chase a phantom failure on a brand-new project.
+#[derive(Debug, Clone, PartialEq)]
+enum DetectOutcome {
+    Checks(Vec<Check>),
+    NoChecksConfigured(String),
+}
+
 /// The outcome of running one check.
 enum CheckOutcome {
     Passed,
@@ -172,7 +182,9 @@ impl VerifyTool {
             }
             Some(command) => vec![Check::shell(command)],
             None => match detect_checks(&base_dir) {
-                Ok(checks) => checks,
+                Ok(DetectOutcome::Checks(checks)) => checks,
+                // A recognized project with nothing to verify yet is not a failure.
+                Ok(DetectOutcome::NoChecksConfigured(note)) => return no_checks_result(&note),
                 Err(message) => return error_result(&message),
             },
         };
@@ -185,6 +197,16 @@ impl VerifyTool {
             match run_check(check, &base_dir, timeout_secs).await {
                 CheckOutcome::Passed => continue,
                 CheckOutcome::Failed { exit_code, output } => {
+                    // pytest exits 5 when it collected no tests — a fresh scaffold
+                    // with no tests yet, not a real failure. Treat as no-checks so
+                    // the model doesn't chase a phantom failure.
+                    if is_no_tests_collected(check, exit_code) {
+                        return no_checks_result(&format!(
+                            "`{}` collected no tests (pytest exit 5) — there are no tests \
+                             to run yet.",
+                            check.label
+                        ));
+                    }
                     return fail_result(check, exit_code, &output);
                 }
                 CheckOutcome::TimedOut => {
@@ -244,17 +266,20 @@ fn resolve_dir(working_dir: Option<&Path>, path: Option<&str>) -> PathBuf {
 /// Precedence is language-native first (unambiguous), then a Makefile fallback.
 /// Returns an actionable `Err` when nothing runnable is found so the caller can
 /// surface it instead of silently doing nothing.
-fn detect_checks(dir: &Path) -> Result<Vec<Check>, String> {
+fn detect_checks(dir: &Path) -> Result<DetectOutcome, String> {
     if dir.join("Cargo.toml").exists() {
         // `cargo test` compiles first, so it catches build errors and test
         // failures in one command.
-        return Ok(vec![Check::direct("cargo", &["test"])]);
+        return Ok(DetectOutcome::Checks(vec![Check::direct(
+            "cargo",
+            &["test"],
+        )]));
     }
     if dir.join("go.mod").exists() {
-        return Ok(vec![
+        return Ok(DetectOutcome::Checks(vec![
             Check::direct("go", &["build", "./..."]),
             Check::direct("go", &["test", "./..."]),
-        ]);
+        ]));
     }
     if dir.join("package.json").exists() {
         return node_checks(dir);
@@ -263,10 +288,13 @@ fn detect_checks(dir: &Path) -> Result<Vec<Check>, String> {
         .iter()
         .any(|marker| dir.join(marker).exists())
     {
-        return Ok(vec![Check::direct("pytest", &[])]);
+        return Ok(DetectOutcome::Checks(vec![Check::direct("pytest", &[])]));
     }
     if let Some(target) = makefile_check_target(dir) {
-        return Ok(vec![Check::direct("make", &[target.as_str()])]);
+        return Ok(DetectOutcome::Checks(vec![Check::direct(
+            "make",
+            &[target.as_str()],
+        )]));
     }
     Err(
         "Could not detect the project type (looked for Cargo.toml, go.mod, \
@@ -277,24 +305,55 @@ fn detect_checks(dir: &Path) -> Result<Vec<Check>, String> {
 }
 
 /// Node checks: run whichever of `build` then `test` scripts exist, via the
-/// package manager the lockfile implies.
-fn node_checks(dir: &Path) -> Result<Vec<Check>, String> {
+/// package manager the lockfile implies. The `npm init` placeholder test script
+/// is NOT a real check (see [`is_placeholder_test`]).
+fn node_checks(dir: &Path) -> Result<DetectOutcome, String> {
     let pm = detect_node_package_manager(dir);
     let scripts = read_package_scripts(dir);
     let mut checks = Vec::new();
-    if scripts.contains("build") {
+    if scripts.contains_key("build") {
         checks.push(Check::direct(pm, &["run", "build"]));
     }
-    if scripts.contains("test") {
+    // A real `test` script is a check; the `npm init` placeholder ("no test
+    // specified" && exit 1) is not — running it always FAILs, which on a fresh
+    // scaffold would trap the loop chasing a phantom failure.
+    let placeholder_test = scripts
+        .get("test")
+        .is_some_and(|cmd| is_placeholder_test(cmd));
+    if scripts.contains_key("test") && !placeholder_test {
         checks.push(Check::direct(pm, &["run", "test"]));
     }
-    if checks.is_empty() {
-        return Err(format!(
-            "package.json defines no `build` or `test` script for {pm}. Pass an explicit \
-             `command` (e.g. \"{pm} run <script>\")."
+    if !checks.is_empty() {
+        return Ok(DetectOutcome::Checks(checks));
+    }
+    if placeholder_test {
+        return Ok(DetectOutcome::NoChecksConfigured(
+            "package.json has only the default `npm init` placeholder test script \
+             (\"Error: no test specified\") and no build script — there are no real \
+             checks to run yet."
+                .to_string(),
         ));
     }
-    Ok(checks)
+    Err(format!(
+        "package.json defines no `build` or `test` script for {pm}. Pass an explicit \
+         `command` (e.g. \"{pm} run <script>\")."
+    ))
+}
+
+/// The `npm init` default test script — `echo "Error: no test specified" && exit 1`.
+/// It is a placeholder, not a real check. Matched loosely on its two invariant
+/// fragments so whitespace/quoting variations still classify.
+fn is_placeholder_test(script: &str) -> bool {
+    let s = script.to_ascii_lowercase();
+    s.contains("no test specified") && s.contains("exit 1")
+}
+
+/// pytest exits 5 when it collected no tests — a fresh scaffold with no tests
+/// yet, not a real failure. Exit 5 is pytest-specific, so this is gated to the
+/// pytest check; another tool's exit 5 stays a genuine failure.
+fn is_no_tests_collected(check: &Check, exit_code: Option<i32>) -> bool {
+    exit_code == Some(5)
+        && matches!(&check.exec, Exec::Direct { program, .. } if program.as_str() == "pytest")
 }
 
 /// Package manager implied by the lockfile present (npm is the default).
@@ -310,18 +369,25 @@ fn detect_node_package_manager(dir: &Path) -> &'static str {
     }
 }
 
-/// Script names declared in `package.json`'s `scripts` object. Tolerant: a
-/// missing or malformed file yields an empty set rather than an error.
-fn read_package_scripts(dir: &Path) -> HashSet<String> {
+/// Script name → command from `package.json`'s `scripts` object. Tolerant: a
+/// missing or malformed file yields an empty map rather than an error. The
+/// command text is needed to tell a real `test` script from the `npm init`
+/// placeholder.
+fn read_package_scripts(dir: &Path) -> HashMap<String, String> {
     let Ok(text) = std::fs::read_to_string(dir.join("package.json")) else {
-        return HashSet::new();
+        return HashMap::new();
     };
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return HashSet::new();
+        return HashMap::new();
     };
     json.get("scripts")
         .and_then(|scripts| scripts.as_object())
-        .map(|scripts| scripts.keys().cloned().collect())
+        .map(|scripts| {
+            scripts
+                .iter()
+                .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -495,6 +561,18 @@ fn error_result(message: &str) -> CallToolResult {
     CallToolResult::error(vec![Content::text(message.to_string()).with_priority(0.0)])
 }
 
+/// A "no checks configured" outcome: the project type was recognized but has
+/// nothing runnable to verify yet (a fresh scaffold, a placeholder-only test, or
+/// pytest collecting nothing). This is NOT a failure — it is a clean success, so
+/// neither the loop guard nor the model treats it as a phantom failure to chase.
+fn no_checks_result(reason: &str) -> CallToolResult {
+    let message = format!(
+        "NO CHECKS - {reason} Nothing to verify yet. Add tests or a build/test script and run \
+         verify again, or pass an explicit `command` to run a specific check."
+    );
+    CallToolResult::success(vec![Content::text(message).with_priority(0.0)])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -508,6 +586,14 @@ mod tests {
         }
     }
 
+    /// Unwrap a detection that must have produced runnable checks.
+    fn checks_of(dir: &Path) -> Vec<Check> {
+        match detect_checks(dir) {
+            Ok(DetectOutcome::Checks(checks)) => checks,
+            other => panic!("expected runnable checks, got {other:?}"),
+        }
+    }
+
     // ── Detection → the correct check command ──
 
     #[test]
@@ -515,7 +601,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"x\"").unwrap();
         assert_eq!(
-            detect_checks(dir.path()).unwrap(),
+            checks_of(dir.path()),
             vec![Check::direct("cargo", &["test"])]
         );
     }
@@ -525,7 +611,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("go.mod"), "module x").unwrap();
         assert_eq!(
-            detect_checks(dir.path()).unwrap(),
+            checks_of(dir.path()),
             vec![
                 Check::direct("go", &["build", "./..."]),
                 Check::direct("go", &["test", "./..."]),
@@ -542,7 +628,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            detect_checks(dir.path()).unwrap(),
+            checks_of(dir.path()),
             vec![
                 Check::direct("npm", &["run", "build"]),
                 Check::direct("npm", &["run", "test"]),
@@ -560,7 +646,7 @@ mod tests {
         .unwrap();
         std::fs::write(dir.path().join("pnpm-lock.yaml"), "").unwrap();
         assert_eq!(
-            detect_checks(dir.path()).unwrap(),
+            checks_of(dir.path()),
             vec![Check::direct("pnpm", &["run", "test"])]
         );
     }
@@ -582,7 +668,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join(marker), "").unwrap();
             assert_eq!(
-                detect_checks(dir.path()).unwrap(),
+                checks_of(dir.path()),
                 vec![Check::direct("pytest", &[])],
                 "marker {marker} should map to pytest"
             );
@@ -598,7 +684,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            detect_checks(dir.path()).unwrap(),
+            checks_of(dir.path()),
             vec![Check::direct("make", &["test"])]
         );
     }
@@ -608,7 +694,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("Makefile"), "check:\n\truff check .\n").unwrap();
         assert_eq!(
-            detect_checks(dir.path()).unwrap(),
+            checks_of(dir.path()),
             vec![Check::direct("make", &["check"])]
         );
     }
@@ -626,7 +712,7 @@ mod tests {
         std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
         std::fs::write(dir.path().join("Makefile"), "test:\n\techo hi\n").unwrap();
         assert_eq!(
-            detect_checks(dir.path()).unwrap(),
+            checks_of(dir.path()),
             vec![Check::direct("cargo", &["test"])]
         );
     }
@@ -641,7 +727,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            detect_checks(dir.path()).unwrap(),
+            checks_of(dir.path()),
             vec![Check::direct("cargo", &["test"])]
         );
     }
@@ -652,6 +738,98 @@ mod tests {
         let error = detect_checks(dir.path()).unwrap_err();
         assert!(error.contains("Could not detect"), "got: {error}");
         assert!(error.contains("command"), "should point at the override");
+    }
+
+    // ── F2.5: fresh-scaffold "no checks" is not a failure (regression guard) ──
+
+    #[test]
+    fn npm_init_placeholder_test_is_no_checks_not_a_check() {
+        // A brand-new `npm init` scaffold: only the placeholder test, no build.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts":{"test":"echo \"Error: no test specified\" && exit 1"}}"#,
+        )
+        .unwrap();
+        match detect_checks(dir.path()) {
+            Ok(DetectOutcome::NoChecksConfigured(note)) => {
+                assert!(note.contains("placeholder"), "got: {note}")
+            }
+            other => panic!("placeholder scaffold must be no-checks, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn npm_placeholder_test_with_a_real_build_runs_only_build() {
+        // A real build script IS a check; the placeholder test is skipped.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts":{"build":"tsc","test":"echo \"Error: no test specified\" && exit 1"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            checks_of(dir.path()),
+            vec![Check::direct("npm", &["run", "build"])],
+            "placeholder test must be dropped, real build kept"
+        );
+    }
+
+    #[test]
+    fn is_placeholder_test_matches_npm_init_default_only() {
+        assert!(is_placeholder_test(
+            "echo \"Error: no test specified\" && exit 1"
+        ));
+        // Quoting/whitespace variations still classify.
+        assert!(is_placeholder_test("echo 'no test specified' && exit 1"));
+        // A real test script must NOT be misclassified.
+        assert!(!is_placeholder_test("jest"));
+        assert!(!is_placeholder_test("vitest run"));
+    }
+
+    #[test]
+    fn pytest_exit_5_is_no_tests_collected_but_only_for_pytest() {
+        assert!(is_no_tests_collected(
+            &Check::direct("pytest", &[]),
+            Some(5)
+        ));
+        // A real pytest failure (exit 1) is still a failure.
+        assert!(!is_no_tests_collected(
+            &Check::direct("pytest", &[]),
+            Some(1)
+        ));
+        // Exit 5 from a different tool is left as a genuine failure.
+        assert!(!is_no_tests_collected(
+            &Check::direct("cargo", &["test"]),
+            Some(5)
+        ));
+        // An explicit shell check is never reclassified.
+        assert!(!is_no_tests_collected(&Check::shell("pytest"), Some(5)));
+    }
+
+    #[tokio::test]
+    async fn verify_on_a_placeholder_scaffold_is_a_clean_non_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts":{"test":"echo \"Error: no test specified\" && exit 1"}}"#,
+        )
+        .unwrap();
+        let tool = VerifyTool::new();
+        let result = tool
+            .verify_with_cwd(
+                VerifyParams {
+                    command: None,
+                    path: None,
+                    timeout_secs: None,
+                },
+                Some(dir.path()),
+            )
+            .await;
+        // NOT a failure — is_error must be unset/false so the loop guard and the
+        // model don't chase a phantom failure on a fresh scaffold.
+        assert_eq!(result.is_error, Some(false));
+        assert!(text_of(&result).starts_with("NO CHECKS"));
     }
 
     // ── Full error capture (not truncated) ──

@@ -11,6 +11,16 @@ const NO_MATCH_PREVIEW_LINES: usize = 20;
 /// Cap on how many differing lines the no-match diff renders.
 const MAX_DIFF_LINES: usize = 20;
 
+/// Default cap on an UNPAGED `file_read` (no `line`/`limit` given): return at
+/// most this many lines. Mirrors the shell tool's 2000-line clamp — a single
+/// unpaged read of a huge file (a lockfile, a bundle) would otherwise blow a
+/// small local model's context in one shot. Explicit `line`/`limit` args page
+/// through anything and bypass this cap.
+const DEFAULT_READ_MAX_LINES: usize = 2000;
+/// Companion byte cap for an unpaged read — binds first for a file that is few
+/// lines but enormous (e.g. a minified one-line bundle).
+const DEFAULT_READ_MAX_BYTES: usize = 100_000;
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FileReadParams {
     /// Absolute path to the file to read.
@@ -51,8 +61,15 @@ impl EditTools {
 
         match fs::read_to_string(&path) {
             Ok(content) => {
-                let content = apply_line_limit(&content, params.line, params.limit);
-                CallToolResult::success(vec![Content::text(content).with_priority(0.0)])
+                // Explicit line/limit paginates through anything; an unpaged read
+                // is capped (with a paging notice) so one huge file can't flood
+                // the model's context.
+                let body = if params.line.is_none() && params.limit.is_none() {
+                    cap_unpaged(&content)
+                } else {
+                    apply_line_limit(&content, params.line, params.limit)
+                };
+                CallToolResult::success(vec![Content::text(body).with_priority(0.0)])
             }
             Err(error) => CallToolResult::error(vec![Content::text(format!(
                 "Failed to read {}: {}",
@@ -599,6 +616,50 @@ fn render_diff(before_lines: &[&str], file_lines: &[&str]) -> String {
     out.join("\n")
 }
 
+/// Cap an UNPAGED read (no `line`/`limit`) at `DEFAULT_READ_MAX_LINES` lines or
+/// `DEFAULT_READ_MAX_BYTES` bytes, whichever binds first, appending a notice that
+/// tells the model to page the rest with `line`/`limit`. A file already within
+/// both limits is returned byte-for-byte with no notice, so small reads are
+/// unchanged.
+fn cap_unpaged(content: &str) -> String {
+    let total_lines = content.split_inclusive('\n').count();
+    if content.len() <= DEFAULT_READ_MAX_BYTES && total_lines <= DEFAULT_READ_MAX_LINES {
+        return content.to_string();
+    }
+
+    // Accumulate whole lines until either cap would be exceeded.
+    let mut body = String::new();
+    let mut kept = 0usize;
+    for seg in content.split_inclusive('\n') {
+        if kept >= DEFAULT_READ_MAX_LINES || body.len() + seg.len() > DEFAULT_READ_MAX_BYTES {
+            break;
+        }
+        body.push_str(seg);
+        kept += 1;
+    }
+
+    // Degenerate case: the first line alone exceeds the byte cap (a minified file
+    // on one line). Take whole chars up to the byte cap — boundary-safe by
+    // construction (never a mid-char cut), avoiding a raw string slice
+    // (`clippy::string_slice` is denied workspace-wide).
+    if body.is_empty() {
+        body = content
+            .char_indices()
+            .take_while(|(i, ch)| i + ch.len_utf8() <= DEFAULT_READ_MAX_BYTES)
+            .map(|(_, ch)| ch)
+            .collect();
+    }
+
+    let next = kept + 1;
+    format!(
+        "{body}\n\n[truncated: showing {shown} of {total_bytes} bytes / {kept} of {total_lines} \
+         lines. This file is large — read the rest in pages with the `line` and `limit` \
+         arguments, e.g. line={next}, limit={DEFAULT_READ_MAX_LINES}.]",
+        shown = body.len(),
+        total_bytes = content.len(),
+    )
+}
+
 fn apply_line_limit(content: &str, line: Option<u32>, limit: Option<u32>) -> String {
     if line.is_none() && limit.is_none() {
         return content.to_string();
@@ -735,6 +796,164 @@ mod tests {
 
         assert!(!result.is_error.unwrap_or(false));
         assert_eq!(extract_text(&result), "line2\n");
+    }
+
+    // ── F1.4: unpaged file_read is capped (regression guard) ─────────
+
+    #[test]
+    fn unpaged_read_of_a_big_file_is_clamped_with_a_paging_notice() {
+        let dir = setup();
+        let path = dir.path().join("big.txt");
+        // Well beyond the 2000-line cap.
+        let content: String = (0..5000).map(|i| format!("line{i}\n")).collect();
+        fs::write(&path, &content).unwrap();
+        let tools = EditTools::new();
+
+        let result = tools.file_read_with_cwd(
+            FileReadParams {
+                path: path.to_string_lossy().to_string(),
+                line: None,
+                limit: None,
+            },
+            None,
+        );
+
+        assert!(!result.is_error.unwrap_or(false));
+        let text = extract_text(&result);
+        // The body is clamped to at most the line cap …
+        assert!(
+            text.lines().count() <= DEFAULT_READ_MAX_LINES + 4,
+            "unpaged read must be clamped, got {} lines",
+            text.lines().count()
+        );
+        // … and the model is told how to page the rest.
+        assert!(
+            text.contains("[truncated"),
+            "a truncation notice must be present"
+        );
+        assert!(text.contains("line="), "the notice must show how to page");
+        assert!(!text.contains("line4999"), "the tail must be dropped");
+    }
+
+    #[test]
+    fn unpaged_read_is_clamped_by_bytes_for_a_few_huge_lines() {
+        let dir = setup();
+        let path = dir.path().join("huge_lines.txt");
+        // Only ~60 lines, but each is 4 KB → ~240 KB, over the byte cap.
+        let content: String = (0..60).map(|_| format!("{}\n", "x".repeat(4096))).collect();
+        fs::write(&path, &content).unwrap();
+        let tools = EditTools::new();
+
+        let result = tools.file_read_with_cwd(
+            FileReadParams {
+                path: path.to_string_lossy().to_string(),
+                line: None,
+                limit: None,
+            },
+            None,
+        );
+
+        let text = extract_text(&result);
+        assert!(
+            text.contains("[truncated"),
+            "byte-capped read must carry a notice"
+        );
+        // Body (before the notice) must respect the byte cap.
+        let body = text.split("\n\n[truncated").next().unwrap();
+        assert!(
+            body.len() <= DEFAULT_READ_MAX_BYTES,
+            "byte cap must bind, body was {} bytes",
+            body.len()
+        );
+    }
+
+    #[test]
+    fn unpaged_read_hard_caps_a_single_giant_line_at_a_char_boundary() {
+        let dir = setup();
+        let path = dir.path().join("minified.txt");
+        // One line of 3-byte chars, no newline, well over the byte cap. The byte
+        // cap (100_000) is NOT a char boundary for 3-byte chars, so a naive byte
+        // slice would panic — the cap must land on a boundary, never mid-char.
+        let content = "→".repeat(40_000); // 120_000 bytes, a single line
+        fs::write(&path, &content).unwrap();
+        let tools = EditTools::new();
+
+        let result = tools.file_read_with_cwd(
+            FileReadParams {
+                path: path.to_string_lossy().to_string(),
+                line: None,
+                limit: None,
+            },
+            None,
+        );
+
+        let text = extract_text(&result);
+        assert!(
+            text.contains("[truncated"),
+            "a giant single line must be capped"
+        );
+        let body = text.split("\n\n[truncated").next().unwrap();
+        assert!(
+            body.len() <= DEFAULT_READ_MAX_BYTES,
+            "byte cap must bind, body was {} bytes",
+            body.len()
+        );
+        // Landed on a char boundary — the body is whole chars, nothing split.
+        assert!(
+            body.chars().all(|c| c == '→'),
+            "the cap must not split a char"
+        );
+    }
+
+    #[test]
+    fn unpaged_read_of_a_small_file_is_byte_identical_and_unnotified() {
+        let dir = setup();
+        let path = dir.path().join("small.txt");
+        fs::write(&path, "alpha\nbeta\ngamma").unwrap();
+        let tools = EditTools::new();
+
+        let result = tools.file_read_with_cwd(
+            FileReadParams {
+                path: path.to_string_lossy().to_string(),
+                line: None,
+                limit: None,
+            },
+            None,
+        );
+
+        let text = extract_text(&result);
+        assert_eq!(
+            text, "alpha\nbeta\ngamma",
+            "small files pass through verbatim"
+        );
+        assert!(!text.contains("[truncated"), "no notice for a small file");
+    }
+
+    #[test]
+    fn explicit_range_read_bypasses_the_unpaged_cap() {
+        let dir = setup();
+        let path = dir.path().join("big.txt");
+        let content: String = (0..5000).map(|i| format!("line{i}\n")).collect();
+        fs::write(&path, &content).unwrap();
+        let tools = EditTools::new();
+
+        // Page deep past the 2000-line cap: explicit args must not be clamped or
+        // annotated — they page through anything.
+        let result = tools.file_read_with_cwd(
+            FileReadParams {
+                path: path.to_string_lossy().to_string(),
+                line: Some(4900),
+                limit: Some(3),
+            },
+            None,
+        );
+
+        let text = extract_text(&result);
+        assert_eq!(text, "line4899\nline4900\nline4901\n");
+        assert!(
+            !text.contains("[truncated"),
+            "explicit-range reads are never capped"
+        );
     }
 
     #[test]
