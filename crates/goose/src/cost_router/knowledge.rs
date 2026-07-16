@@ -269,7 +269,9 @@ pub static KNOWN_MODELS: &[ModelKnowledge] = &[
         input_usd_per_mtok: 0.30,
         output_usd_per_mtok: 1.20,
         cache_support: false,
-        context_window: 1_000_000,
+        // 204_800 = the canonical MiniMax-M2.5 window (providers/declarative/minimax.json);
+        // corrected from an earlier 1_000_000 that contradicted the shipped provider data.
+        context_window: 204_800,
         is_local: false,
     },
     // ── Ollama local ($0, private) ───────────────────────────────────────────
@@ -305,10 +307,28 @@ pub static KNOWN_MODELS: &[ModelKnowledge] = &[
     },
 ];
 
+/// Strip a trailing `-YYYYMMDD` 8-digit date suffix from a model id — e.g. the
+/// dated Anthropic form `claude-haiku-4-5-20251001` → `claude-haiku-4-5`. Returns
+/// `s` unchanged when there is no such suffix. Used only for the alias fallback in
+/// [`lookup`], so a row keyed by the canonical dated id and a query using the
+/// undated alias (the id the runtime actually surfaces via
+/// `ANTHROPIC_DEFAULT_FAST_MODEL`) resolve to the same row.
+fn strip_date_suffix(s: &str) -> &str {
+    if let Some((base, tail)) = s.rsplit_once('-') {
+        if tail.len() == 8 && tail.bytes().all(|b| b.is_ascii_digit()) {
+            return base;
+        }
+    }
+    s
+}
+
 /// Look up a `provider`/`model` in the knowledge base. Provider match is exact;
 /// model match is exact first, then a case-insensitive fallback so a configured
-/// id that differs only in case still resolves. `None` = not in the KB (the
-/// caller reports it as "unknown — add it to be objectively recommended").
+/// id that differs only in case still resolves, then a dated/undated-alias
+/// fallback ([`strip_date_suffix`]) so an id configured as `claude-haiku-4-5`
+/// resolves to the row keyed by the canonical `claude-haiku-4-5-20251001` (and
+/// vice-versa) instead of falling into `unknown_models`. `None` = not in the KB
+/// (the caller reports it as "unknown — add it to be objectively recommended").
 pub fn lookup(provider: &str, model: &str) -> Option<&'static ModelKnowledge> {
     KNOWN_MODELS
         .iter()
@@ -316,6 +336,15 @@ pub fn lookup(provider: &str, model: &str) -> Option<&'static ModelKnowledge> {
         .or_else(|| {
             KNOWN_MODELS.iter().find(|m| {
                 m.provider.eq_ignore_ascii_case(provider) && m.model.eq_ignore_ascii_case(model)
+            })
+        })
+        .or_else(|| {
+            // Alias fallback: compare with any trailing date suffix removed on both
+            // sides, provider-scoped so it can never collide across vendors.
+            let q = strip_date_suffix(model);
+            KNOWN_MODELS.iter().find(|m| {
+                m.provider.eq_ignore_ascii_case(provider)
+                    && strip_date_suffix(m.model).eq_ignore_ascii_case(q)
             })
         })
 }
@@ -344,33 +373,74 @@ mod tests {
 
     #[test]
     fn no_vendor_monopolizes_the_leaderboards() {
-        // Objectivity guard: the top edit-format model and the top orchestration
-        // model are not both from the same family by construction — the KB
-        // reflects a spread across vendors, so the recommender has a real,
-        // vendor-neutral choice to make. (If a future edit truly makes one
+        // Objectivity guard. The STATED property, now actually asserted (F4): the
+        // edit-format leader and the orchestration leader are NOT the same family,
+        // so no single vendor tops both leaderboards and the recommender has a
+        // real, vendor-neutral choice to make. (If a future edit truly makes one
         // vendor best at everything, that's the data — but it should be a
-        // deliberate, reviewed change, which this test surfaces.)
-        let best_edit = KNOWN_MODELS
+        // deliberate, reviewed change, which this failing test surfaces.)
+        let non_local: Vec<&ModelKnowledge> = KNOWN_MODELS.iter().filter(|m| !m.is_local).collect();
+        let top_edit = non_local
             .iter()
-            .filter(|m| !m.is_local)
             .max_by(|a, b| {
                 a.edit_format_reliability
                     .total_cmp(&b.edit_format_reliability)
             })
             .unwrap();
-        // Distinct non-Anthropic strong contenders exist for EDIT (proves the
-        // recommender isn't structurally forced to Anthropic).
-        let non_anthropic_edit_ceiling = KNOWN_MODELS
+        let top_orch = non_local
             .iter()
-            .filter(|m| m.family != "anthropic" && !m.is_local)
+            .max_by(|a, b| {
+                a.orchestration_strength
+                    .total_cmp(&b.orchestration_strength)
+            })
+            .unwrap();
+        assert_ne!(
+            top_edit.family, top_orch.family,
+            "one family ({}) tops BOTH edit-format ({}/{}) and orchestration ({}/{}) — the KB \
+             must reflect the real cross-vendor spread the module doc claims",
+            top_edit.family, top_edit.provider, top_edit.model, top_orch.provider, top_orch.model
+        );
+        // And each metric has a genuine non-Anthropic contender — proves the
+        // recommender is not structurally forced to Anthropic on either axis.
+        let non_anthropic_edit_ceiling = non_local
+            .iter()
+            .filter(|m| m.family != "anthropic")
             .map(|m| m.edit_format_reliability)
+            .fold(0.0_f64, f64::max);
+        let non_anthropic_orch_ceiling = non_local
+            .iter()
+            .filter(|m| m.family != "anthropic")
+            .map(|m| m.orchestration_strength)
             .fold(0.0_f64, f64::max);
         assert!(
             non_anthropic_edit_ceiling >= 0.95,
             "a non-Anthropic model must be a genuine EDIT contender (got {non_anthropic_edit_ceiling})"
         );
-        // Sanity: the best edit model is a real, priced row.
-        assert!(best_edit.edit_format_reliability > 0.9);
+        assert!(
+            non_anthropic_orch_ceiling >= 0.80,
+            "a non-Anthropic model must be a genuine ORCHESTRATE/REVIEW contender (got {non_anthropic_orch_ceiling})"
+        );
+    }
+
+    /// F6: an alias-configured Haiku (`claude-haiku-4-5`, the id the runtime
+    /// surfaces) resolves to the same row as the canonical dated id
+    /// (`claude-haiku-4-5-20251001`, keyed to match the pricing/pack tables) — so
+    /// it is objectively recommended, not dropped into `unknown_models`.
+    #[test]
+    fn haiku_resolves_by_dated_id_and_undated_alias() {
+        let dated = lookup("anthropic", "claude-haiku-4-5-20251001")
+            .expect("the canonical dated Haiku id must resolve");
+        let alias = lookup("anthropic", "claude-haiku-4-5")
+            .expect("the undated Haiku alias must resolve, not fall into unknown_models");
+        assert_eq!(
+            (dated.provider, dated.model),
+            (alias.provider, alias.model),
+            "both ids must resolve to the same Haiku row"
+        );
+        assert_eq!(alias.display_name, "Claude Haiku 4.5");
+        // The alias fallback is provider-scoped and only strips an 8-digit date —
+        // an unrelated id still misses.
+        assert!(lookup("anthropic", "claude-haiku-4-5-notadate").is_none());
     }
 
     #[test]
