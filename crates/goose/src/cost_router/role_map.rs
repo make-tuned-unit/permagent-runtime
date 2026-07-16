@@ -227,14 +227,14 @@ mod tests {
             ("PERMAGENT_ROLE_EDIT_MODEL", "gpt-5.6"),
         ]);
         assert_eq!(
-            resolve_role_model(WorkflowRole::Edit, &read),
+            resolve_role_model(WorkflowRole::Edit, read),
             Some(RoleModel {
                 provider: "openai".into(),
                 model: "gpt-5.6".into(),
             })
         );
         // A DIFFERENT role stays unset — mappings are per-role, no bleed.
-        assert_eq!(resolve_role_model(WorkflowRole::Mechanical, &read), None);
+        assert_eq!(resolve_role_model(WorkflowRole::Mechanical, read), None);
     }
 
     #[test]
@@ -374,18 +374,18 @@ mod tests {
         // Read back through the pure resolver over this config.
         let read = |k: &str| config.get_param::<String>(k).ok();
         assert_eq!(
-            resolve_role_model(WorkflowRole::Edit, &read),
+            resolve_role_model(WorkflowRole::Edit, read),
             Some(RoleModel {
                 provider: "openai".into(),
                 model: "gpt-5.6".into(),
             }),
         );
         // An unset role stays single-model.
-        assert_eq!(resolve_role_model(WorkflowRole::Review, &read), None);
+        assert_eq!(resolve_role_model(WorkflowRole::Review, read), None);
 
         // Clearing one key half-configures the role → treated as unset.
         config.delete(&model_key(WorkflowRole::Edit)).unwrap();
-        assert_eq!(resolve_role_model(WorkflowRole::Edit, &read), None);
+        assert_eq!(resolve_role_model(WorkflowRole::Edit, read), None);
     }
 
     // ── apply: which mappings a recommendation persists ──────────────────────
