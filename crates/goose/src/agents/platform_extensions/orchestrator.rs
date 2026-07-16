@@ -815,11 +815,6 @@ impl OrchestratorClient {
         let tracker_card_id = card_id.to_string();
         let tracker_project_id = card.project_id.clone();
         let tracker_pool = pool.clone();
-        // Cloned so the tracker can re-dispatch an escalated goal on a stronger
-        // model (R4: the swap needs a dispatch-capable context, which the
-        // context-less runaway-loop monitor lacks; the tracker fires exactly when
-        // the killed worker exits).
-        let tracker_context = self.context.clone();
         tokio::spawn(async move {
             let outcome = match join.await {
                 Ok(o) => o,
@@ -828,14 +823,6 @@ impl OrchestratorClient {
             // The worker has exited — drop its kill handle from the registry.
             // (A cancel may already have taken it; remove is then a no-op.)
             take_goal_worker(&tracker_card_id);
-            // Verify-loop escalation takes precedence over completion: if the
-            // monitor decided a swap (redispatch_pending), re-dispatch the fix on
-            // the stronger model here and skip normal completion handling.
-            if redispatch_escalated_if_pending(&tracker_pool, &tracker_card_id, &tracker_context)
-                .await
-            {
-                return;
-            }
             let result = match outcome {
                 goal_engine::GoalOutcome::Success(evidence) => {
                     // Layer 1: persist deterministic proof-of-work to the goal
@@ -3442,25 +3429,6 @@ pub async fn handle_goal_completion(
         }
     }
 
-    // A verify-loop escalation is pending re-dispatch on a stronger model (the
-    // dispatch_goal tracker performs the swap). Never complete such a goal here —
-    // this only guards edge completion paths (e.g. a restart-resumed poller) that
-    // don't run the escalation re-dispatch; leave the goal in_progress for it.
-    if card
-        .metadata_json
-        .as_object()
-        .and_then(crate::cost_router::GoalEscalationState::from_metadata)
-        .map(|s| s.redispatch_pending)
-        .unwrap_or(false)
-    {
-        tracing::info!(
-            target: "permagentd::brain",
-            "Goal '{}' completion handler: verify-loop escalation pending — leaving for re-dispatch",
-            card.title
-        );
-        return Ok(());
-    }
-
     match result {
         Ok(()) => {
             // Success: InProgress → Review through the guard (tier 0), with
@@ -3947,9 +3915,15 @@ async fn capture_worktree_diff(working_dir: &std::path::Path) -> String {
 ///
 /// - **Swap** ([`crate::cost_router::EscalationOutcome::Swap`]): persist the
 ///   climbed per-goal tier + a diff/failure handoff (R2), emit an AMBIENT,
-///   non-blocking cost-transparency note (R3), then kill the current worker — its
-///   completion tracker re-dispatches on the stronger model (R4: the swap runs
-///   where a dispatch-capable context exists, not from this context-less task).
+///   non-blocking cost-transparency note (R3), then — park-first-then-kill (R4) —
+///   requeue the goal to Ready WITHOUT incrementing its attempt count (R1) and
+///   kill the worker. The orchestrator's next dispatch pass re-dispatches the
+///   Ready goal, and [`OrchestratorClient::dispatch_goal`] reads the escalated
+///   state to route it to the stronger model. This is deliberately the SAME
+///   Send-safe path a human-answered "keep going" unblock takes: `dispatch_goal`
+///   is `!Send` and can only run in the orchestrator's own context, never from
+///   this spawned monitor task — so the swap requeues rather than dispatching
+///   inline.
 /// - **Park**: no configured stronger tier (single-model / unmapped — the
 ///   no-default rule), the per-goal `max_escalations` cap, the tier ceiling, or
 ///   the spend cap → the EXISTING work-preserving, human-gated park
@@ -4032,8 +4006,8 @@ pub async fn escalate_verify_fix_loop(
                 &diff,
             );
 
-            // Persist the climbed state (marks redispatch_pending) BEFORE killing
-            // the worker, so the completion tracker sees it.
+            // Persist the climbed state (tier + count + handoff) BEFORE the
+            // requeue, so the re-dispatch reads it and routes to the stronger model.
             let new_state = crate::cost_router::GoalEscalationState::escalated_to(
                 to_tier,
                 new_escalations_used,
@@ -4060,10 +4034,28 @@ pub async fn escalate_verify_fix_loop(
                 "verify-loop escalation: auto-retrying the fix on a stronger configured model",
             );
 
-            // R4: kill the current worker; its tracker re-dispatches on the
-            // stronger model (park-first-style — the goal is left in_progress so
-            // the tracker owns the transition, and handle_goal_completion no-ops
-            // on a redispatch_pending goal).
+            // R4 park-first-then-kill: move the goal out of in_progress to Ready
+            // (NON-incrementing — R1: escalation must not consume a normal attempt)
+            // FIRST, so the dying worker's completion tracker no-ops on it (the
+            // existing `in_progress` guard), then kill. Work is preserved (Ready is
+            // never reaped). The orchestrator's next dispatch pass re-dispatches the
+            // Ready goal — `dispatch_goal` reads the escalated state and routes it to
+            // the stronger model — exactly the Send-safe path a human-answered
+            // "keep going" unblock takes (dispatch_goal is `!Send`, so it can only
+            // run in the orchestrator's own context, never from this spawned task).
+            let attempt = current_attempt_count(&card.metadata_json);
+            goal_transition::requeue_goal(
+                pool,
+                &card_id,
+                decisions::ACTOR_SYSTEM,
+                attempt,
+                &format!(
+                    "verify-loop escalation: retry on a stronger model ({})",
+                    to_tier.as_str()
+                ),
+            )
+            .await
+            .map_err(|e| format!("verify-loop escalation requeue failed: {e}"))?;
             if let Some(kill) = take_goal_worker(&card_id) {
                 kill.kill();
             }
@@ -4077,92 +4069,6 @@ pub async fn escalate_verify_fix_loop(
             Ok(())
         }
     }
-}
-
-/// If a goal carries a pending verify-loop escalation (its worker was just killed
-/// for a swap), re-dispatch the fix on the stronger model and return `true` so the
-/// completion tracker SKIPS normal completion. Runs where a dispatch-capable
-/// `context` exists (the tracker), which the context-less monitor task lacks.
-///
-/// Consumes the pending flag (once-only), moves the goal in_progress → Ready
-/// WITHOUT incrementing the attempt count (R1), then re-dispatches — `dispatch_goal`
-/// reads the escalated state and routes it to the climbed tier's model. Any failure
-/// leaves the goal in Ready (a later dispatch still routes it to the stronger
-/// model), so `true` is returned whenever an escalation was pending.
-async fn redispatch_escalated_if_pending(
-    pool: &sqlx::Pool<sqlx::Sqlite>,
-    card_id: &str,
-    context: &PlatformExtensionContext,
-) -> bool {
-    let Some(card) = cards::get_card(pool, card_id).await.ok().flatten() else {
-        return false;
-    };
-    let Some(state) = card
-        .metadata_json
-        .as_object()
-        .and_then(crate::cost_router::GoalEscalationState::from_metadata)
-    else {
-        return false;
-    };
-    if !state.redispatch_pending {
-        return false;
-    }
-    // Consume the flag so the swap fires exactly once.
-    let consumed = crate::cost_router::GoalEscalationState {
-        redispatch_pending: false,
-        ..state
-    };
-    if let Err(e) = persist_escalation_state(pool, card_id, &consumed).await {
-        tracing::warn!(
-            target: "permagentd::brain",
-            card_id,
-            error = %e,
-            "verify-loop escalation: could not clear pending flag — skipping re-dispatch",
-        );
-        return false;
-    }
-    // R1: NON-incrementing requeue (pass the CURRENT attempt count unchanged).
-    let attempt = current_attempt_count(&card.metadata_json);
-    if let Err(e) = goal_transition::requeue_goal(
-        pool,
-        card_id,
-        decisions::ACTOR_SYSTEM,
-        attempt,
-        "verify-loop escalation: retry on a stronger model",
-    )
-    .await
-    {
-        tracing::warn!(
-            target: "permagentd::brain",
-            card_id,
-            error = %e,
-            "verify-loop escalation: requeue failed — goal left for normal handling",
-        );
-        return false;
-    }
-    match OrchestratorClient::new(context.clone()) {
-        Ok(orch) => match orch.dispatch_goal(card_id).await {
-            Ok(session_id) => tracing::info!(
-                target: "permagentd::brain",
-                card_id,
-                %session_id,
-                "verify-loop escalation: re-dispatched the fix on a stronger model",
-            ),
-            Err(e) => tracing::warn!(
-                target: "permagentd::brain",
-                card_id,
-                error = %e,
-                "verify-loop escalation: re-dispatch failed — goal left in Ready for later dispatch",
-            ),
-        },
-        Err(e) => tracing::warn!(
-            target: "permagentd::brain",
-            card_id,
-            error = %e,
-            "verify-loop escalation: could not build orchestrator — goal left in Ready",
-        ),
-    }
-    true
 }
 
 /// Process-global identifier for the current daemon lifecycle, minted once on
@@ -5173,7 +5079,9 @@ mod tests {
     #[tokio::test]
     async fn escalation_state_round_trips_on_the_goal_card() {
         // The per-goal climb + carry-forward handoff persist on the card so the
-        // state survives the kill-and-re-dispatch a swap performs.
+        // state survives the requeue-and-re-dispatch a swap performs (a new
+        // worker/session is minted, so in-memory state would be lost). The
+        // dispatch path keys off `is_escalated()` to route to the climbed tier.
         let pool = test_pool().await;
         let card = setup_goal_in_state(&pool, "in_progress", 1).await;
 
@@ -5194,45 +5102,13 @@ mod tests {
         assert_eq!(read, state);
         assert!(
             read.is_escalated(),
-            "escalated goal runs the stronger model"
+            "escalated goal runs the climbed tier's model"
         );
-        assert!(
-            read.redispatch_pending,
-            "a fresh swap is pending re-dispatch"
-        );
-    }
-
-    #[tokio::test]
-    async fn completion_handler_leaves_a_redispatch_pending_goal_in_progress() {
-        // handle_goal_completion must NOT complete a goal whose swap is pending
-        // re-dispatch — it leaves it in_progress for the escalation path.
-        let pool = test_pool().await;
-        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
-        let state = crate::cost_router::GoalEscalationState::escalated_to(
-            crate::cost_router::Tier::Frontier,
-            1,
-            "handoff".to_string(),
-        );
-        persist_escalation_state(&pool, &card.id, &state)
-            .await
-            .unwrap();
-
-        // A "success" completion would normally move the goal to Review; the
-        // pending-escalation guard must intercept it.
-        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
-            .await
-            .unwrap();
-
-        let after = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
-        let col = cards::get_column(&pool, &after.column_id)
-            .await
-            .unwrap()
-            .unwrap();
         assert_eq!(
-            col.state_binding.as_deref(),
-            Some("in_progress"),
-            "a redispatch-pending goal is never completed here"
+            read.current_tier,
+            Some(crate::cost_router::Tier::CheapCloud)
         );
+        assert_eq!(read.handoff.as_deref(), Some("prior diff + verify failure"));
     }
 
     #[tokio::test]

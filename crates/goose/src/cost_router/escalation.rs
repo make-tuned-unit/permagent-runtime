@@ -218,12 +218,6 @@ pub struct GoalEscalationState {
     /// diff + the verify failure — a human-style "here's what was tried, here's
     /// why it failed" handoff so the stronger model never restarts cold (R2).
     pub handoff: Option<String>,
-    /// Set the moment an escalation is DECIDED (the current worker is being
-    /// killed), consumed by the goal's completion tracker — which holds the
-    /// orchestrator context — to re-dispatch the fix on the stronger model
-    /// (R4: the swap runs where a dispatch-capable context exists, not from the
-    /// context-less monitor task). Cleared as it is consumed so it fires once.
-    pub redispatch_pending: bool,
 }
 
 /// Wire form persisted in metadata_json (tier as its stable string label).
@@ -235,8 +229,6 @@ struct StateWire {
     escalations_used: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     handoff: Option<String>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    redispatch_pending: bool,
 }
 
 /// Parse a [`Tier`] from its [`Tier::as_str`] label (the persisted form).
@@ -258,19 +250,18 @@ impl GoalEscalationState {
             current_tier,
             escalations_used: 0,
             handoff: None,
-            redispatch_pending: false,
         }
     }
 
     /// The state to persist when a [`EscalationOutcome::Swap`] is acted on: the
-    /// climbed tier + count, the carry-forward handoff, and `redispatch_pending`
-    /// so the completion tracker re-dispatches on the stronger model.
+    /// climbed tier + count + the carry-forward handoff. `escalations_used >= 1`
+    /// is what the dispatch path keys on to route the re-dispatch to the climbed
+    /// tier's configured model (see [`Self::is_escalated`]).
     pub fn escalated_to(to_tier: Tier, new_escalations_used: u8, handoff: String) -> Self {
         Self {
             current_tier: Some(to_tier),
             escalations_used: new_escalations_used,
             handoff: Some(handoff),
-            redispatch_pending: true,
         }
     }
 
@@ -291,7 +282,6 @@ impl GoalEscalationState {
             current_tier: wire.tier.as_deref().and_then(tier_from_label),
             escalations_used: wire.escalations_used,
             handoff: wire.handoff,
-            redispatch_pending: wire.redispatch_pending,
         })
     }
 
@@ -301,7 +291,6 @@ impl GoalEscalationState {
             tier: self.current_tier.map(|t| t.as_str().to_string()),
             escalations_used: self.escalations_used,
             handoff: self.handoff.clone(),
-            redispatch_pending: self.redispatch_pending,
         };
         serde_json::to_value(wire).unwrap_or(serde_json::Value::Null)
     }
@@ -648,13 +637,11 @@ mod tests {
 
     #[test]
     fn state_round_trips_through_metadata() {
-        // `escalated_to` is exactly what the orchestrator persists on a swap.
+        // `escalated_to` is exactly what the orchestrator persists on a swap; the
+        // climbed tier + handoff must survive the requeue-and-re-dispatch (a new
+        // worker/session is minted, so in-memory state would be lost).
         let state =
             GoalEscalationState::escalated_to(Tier::CheapCloud, 1, "prior diff + failure".into());
-        assert!(
-            state.redispatch_pending,
-            "a fresh swap is pending re-dispatch"
-        );
         let mut meta = serde_json::Map::new();
         meta.insert(
             ESCALATION_METADATA_KEY.to_string(),
@@ -663,29 +650,12 @@ mod tests {
 
         let read = GoalEscalationState::from_metadata(&meta).expect("state present");
         assert_eq!(read, state);
-        assert!(read.is_escalated());
+        assert!(
+            read.is_escalated(),
+            "escalated goal runs the climbed tier's model"
+        );
         assert_eq!(read.current_tier, Some(Tier::CheapCloud));
-        assert!(read.redispatch_pending);
-
-        // The tracker consumes the flag (clears it) so re-dispatch fires once.
-        let consumed = GoalEscalationState {
-            redispatch_pending: false,
-            ..read.clone()
-        };
-        let mut meta2 = serde_json::Map::new();
-        meta2.insert(
-            ESCALATION_METADATA_KEY.to_string(),
-            consumed.to_metadata_value(),
-        );
-        let reread = GoalEscalationState::from_metadata(&meta2).unwrap();
-        assert!(
-            !reread.redispatch_pending,
-            "pending cleared after consumption"
-        );
-        assert!(
-            reread.is_escalated(),
-            "still escalated → still runs the stronger model"
-        );
+        assert_eq!(read.handoff.as_deref(), Some("prior diff + failure"));
     }
 
     #[test]
