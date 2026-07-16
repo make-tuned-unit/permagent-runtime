@@ -13,10 +13,10 @@
 //!   caller. See `agents::platform_extensions::orchestrator`.
 //! - The **tier ladder** extends `goal_state::cost_tier_rank`
 //!   (`local_free` < `subscription` < `paid_api`) with a pooled tier below local.
-//! - The **mesh cheap tier** wires to the `resolve_route` seam of the (unmerged)
-//!   mesh scaffold (PR #702): batch-only, trust-gated, health-gated, with an
-//!   auto-fallback to cheap cloud — the Reader's 60s-timeout-then-degrade
-//!   (`reader::ollama_summary`), promoted into the router. See `mesh`.
+//! - The **mesh cheap tier** wires to the `resolve_route` seam (#702, merged)
+//!   and is fed live by the mesh pool engine (`crate::mesh::pool`): batch-only,
+//!   trust-gated, health-gated, with an auto-fallback to cheap cloud — the
+//!   Reader's 60s-timeout-then-degrade, promoted into the router. See `mesh`.
 //! - The **spend caps** check the per-call cost ledger (#714,
 //!   `providers::canonical::cost`) and gate through the Decision Inbox
 //!   (`decisions`). See `budget`.

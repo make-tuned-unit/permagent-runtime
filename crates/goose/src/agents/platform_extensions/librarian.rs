@@ -424,8 +424,7 @@ pub async fn describe_one(
             );
         }
 
-        let raw = call_ollama_streaming(
-            &crate::mesh::resolve_route(crate::mesh::Workload::Batch).endpoint,
+        let raw = call_ollama_streaming_pooled(
             LIBRARIAN_SYSTEM_PROMPT,
             &prompt,
             model,
@@ -672,6 +671,42 @@ pub fn parse_structured_description(raw: &str) -> Option<String> {
 // Ollama integration (streaming NDJSON parser)
 // ---------------------------------------------------------------------------
 
+/// Pool-aware wrapper around [`call_ollama_streaming`]: leases a batch
+/// endpoint from the mesh pool engine (a trusted, healthy peer when one is
+/// eligible, else this machine) and, on a pool-peer failure, marks the peer
+/// unhealthy and transparently retries once against the local endpoint — a
+/// dead peer must never poison a describe pass. With the engine off
+/// (`PERMAGENT_MESH_ENGINE` unset) the lease is exactly
+/// `resolve_route(Batch).endpoint` and there is no retry: legacy behavior,
+/// unchanged.
+pub(crate) async fn call_ollama_streaming_pooled(
+    system: &str,
+    prompt: &str,
+    model: &str,
+    emit_events: bool,
+    memory_key: &str,
+) -> Result<String, String> {
+    let lease = crate::mesh::pool::lease_batch(Some(model));
+    let endpoint = lease.endpoint().to_string();
+    match call_ollama_streaming(&endpoint, system, prompt, model, emit_events, memory_key).await {
+        Ok(text) => {
+            lease.succeed();
+            Ok(text)
+        }
+        Err(err) => match lease.fail_over_local() {
+            Some(local) => {
+                tracing::warn!(
+                    endpoint = %endpoint,
+                    error = %err,
+                    "pool peer failed during a streaming pass; retrying on the local endpoint"
+                );
+                call_ollama_streaming(&local, system, prompt, model, emit_events, memory_key).await
+            }
+            None => Err(err),
+        },
+    }
+}
+
 /// Stream tokens from Ollama's /api/generate endpoint.
 ///
 /// `system` is caller-supplied because the two describe passes need different
@@ -695,17 +730,19 @@ pub(crate) async fn call_ollama_streaming(
         .build()
         .map_err(|e| format!("HTTP client error: {}", e))?;
 
-    let body = serde_json::json!({
-        "model": model,
-        "prompt": prompt,
-        "system": system,
-        "stream": true,
-        "options": {
+    // Wire bytes leave only through the mesh inference-only choke-point
+    // (`InferenceBody`), so this streaming path enforces the same HARD
+    // INVARIANT as the pool engine's own dispatch.
+    let body = crate::mesh::pool::InferenceBody::for_stream(
+        model,
+        prompt,
+        system,
+        serde_json::json!({
             "temperature": 0.2,
             "top_p": 0.9,
             "num_predict": 150,
-        }
-    });
+        }),
+    );
 
     let resp = client
         .post(format!("{}/api/generate", base_url))
