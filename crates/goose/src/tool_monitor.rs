@@ -249,7 +249,8 @@ pub fn is_verify(name: &str) -> bool {
 /// `#[cfg(test)]` block), which path classification cannot see.
 pub fn is_test_path(path: &str) -> bool {
     let p = path.replace('\\', "/").to_ascii_lowercase();
-    let file = p.rsplit('/').next().unwrap_or(p.as_str());
+    // `rsplit` always yields at least one element, so the default is unreachable.
+    let file = p.rsplit('/').next().unwrap_or("");
     // A test directory anywhere in the path.
     if p.contains("/tests/")
         || p.contains("/test/")
