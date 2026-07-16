@@ -159,6 +159,7 @@ pub(super) fn build_context_params(
 
 pub(super) fn build_sampler(
     settings: &crate::providers::local_inference::local_model_registry::ModelSettings,
+    grammar: Option<LlamaSampler>,
 ) -> LlamaSampler {
     use crate::providers::local_inference::local_model_registry::SamplingConfig;
 
@@ -167,6 +168,16 @@ pub(super) fn build_sampler(
         || settings.presence_penalty != 0.0;
 
     let mut samplers: Vec<LlamaSampler> = Vec::new();
+
+    // Grammar sampler goes FIRST: it masks tokens that would break the tool-call
+    // envelope before top-k/top-p/min-p/temp pick among what survives. If it ran
+    // last, top-k/top-p could discard every grammar-valid token and leave the
+    // grammar with nothing to accept. `accept` on the resulting chain propagates
+    // to this sampler, so the lazy grammar still sees the generated tokens and
+    // fires its trigger.
+    if let Some(grammar) = grammar {
+        samplers.push(grammar);
+    }
 
     if has_penalties {
         samplers.push(LlamaSampler::penalties(
@@ -363,9 +374,10 @@ pub(super) fn generation_loop(
     settings: &crate::providers::local_inference::local_model_registry::ModelSettings,
     prompt_token_count: usize,
     effective_ctx: usize,
+    grammar_sampler: Option<LlamaSampler>,
     mut on_piece: impl FnMut(&str) -> Result<TokenAction, ProviderError>,
 ) -> Result<i32, ProviderError> {
-    let mut sampler = build_sampler(settings);
+    let mut sampler = build_sampler(settings, grammar_sampler);
     let context_headroom = effective_ctx.saturating_sub(prompt_token_count);
     let max_output = if let Some(max) = settings.max_output_tokens {
         context_headroom.min(max)

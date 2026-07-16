@@ -4,6 +4,7 @@
 - Include user requests, your responses, all technical content, and as much of the original context as possible
 - This will be used to let the user continue the working session
 - Use framing and tone knowing the content will be read an agent (you) on a next exchange to allow for continuation of the session
+- Source code, file contents, and diffs from the file tools are preserved VERBATIM outside this summary — do NOT reproduce code or diffs here (a summary is lossy and would corrupt them). Reference files by path and describe changes in prose; the exact code is already retained separately.
 
 **Conversation History:**
 {{ messages }}

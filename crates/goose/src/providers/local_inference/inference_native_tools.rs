@@ -143,12 +143,20 @@ pub(super) fn generate_with_native_tools(
     // streaming path does). Streaming chunks are still sent for UI display.
     let mut accumulated_thinking = String::new();
 
+    // Grammar-constrained decoding: constrain ONLY the tool-call envelope, using
+    // the model/template-aware grammar llama.cpp derived from the tool schemas.
+    // It is lazy (reason-then-format), so any reasoning the model emits before a
+    // tool call stays unconstrained. `None` when disabled or not applicable.
+    let grammar_sampler =
+        super::grammar::build_tool_grammar_sampler(&ctx.loaded.model, &template_result);
+
     let output_token_count = generation_loop(
         &ctx.loaded.model,
         &mut llama_ctx,
         ctx.settings,
         prompt_token_count,
         effective_ctx,
+        grammar_sampler,
         |piece| {
             generated_text.push_str(piece);
 

@@ -22,15 +22,20 @@
 //!
 //! There is deliberately **no repair-round counter here**. The run-loop bound
 //! is the existing [`crate::tool_monitor`] `ProgressMonitor` (loop-safety
-//! #715): a verify call that keeps failing *identically* is its S2 "same
-//! failure" signal — nudged at 2, escalated to the Decision Inbox at 3. For
-//! that floor to bind, the *same* failure must render *identically*, so
-//! `normalize` neutralizes the only thing that varies between identical
-//! re-runs on one machine — reported durations. A failure whose errors change
-//! hashes differently and is treated as progress (the monitor's state-change
-//! discriminator), which is correct: real fixing must pass through. The
-//! prompt-level "stop after two or three attempts" bound handles the
-//! productive-looking-but-stuck case the monitor intentionally lets through.
+//! #715): its **verify-loop signal (S6)** counts CONSECUTIVE identical `verify`
+//! failures for a goal *across the edits between them* — the real fix-loop shape
+//! (`verify` → `edit` → `verify` → …), which the plain S1/S2 identical-call run
+//! misses because each interleaved edit breaks that run. S6 nudges at 2 and
+//! escalates at 3. For that floor to bind, the *same* failure must render
+//! *identically*, so [`normalize`] neutralizes the spans that vary between two
+//! otherwise-identical re-runs on one machine — tempdir paths, ephemeral
+//! `host:port` binds, pids, heap addresses, UUIDs, ISO-8601 timestamps, and
+//! reported durations. A failure whose errors GENUINELY change hashes
+//! differently and is treated as progress (the monitor's state-change
+//! discriminator), which is correct: real fixing must pass through. On the Nth
+//! identical failure the verifier-driven escalation controller
+//! ([`crate::cost_router::VerifyEscalation`]) climbs the fix to a stronger
+//! model.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -66,10 +71,48 @@ const PYTHON_MARKERS: &[&str] = &[
     "tox.ini",
 ];
 
-/// Reported durations are the only thing that varies between two *identical*
-/// failing re-runs on the same machine, so neutralizing them is what lets the
-/// loop guard's same-failure cap bind to a verify loop. Longest unit first so
-/// the alternation prefers "seconds" over a bare "s".
+// Volatile spans that differ between two OTHERWISE-identical failing re-runs on
+// the same machine. Neutralizing them is what lets the loop guard's same-failure
+// cap bind to a genuinely-repeated verify failure (see the module docs). Every
+// pattern is deliberately NARROW: it collapses only its volatile token, never
+// stable text — so two DIFFERENT failures still hash differently instead of
+// colliding into a false "same failure" that would escalate real progress.
+//
+// [`normalize`] applies these in declaration order. UUIDs and timestamps run
+// before the coarser address/port patterns so their internal `-`/`:`/`.` are not
+// half-consumed.
+
+/// A UUID (any version), e.g. `550e8400-e29b-41d4-a716-446655440000`.
+static UUID_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b").unwrap()
+});
+/// ISO-8601 / RFC-3339 timestamps, e.g. `2026-07-16T12:34:56.789Z` or
+/// `2026-07-16 12:34:56+01:00`.
+static TIMESTAMP_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?").unwrap()
+});
+/// macOS per-process temp root `/var/folders/<xx>/<hash>` — collapse the two
+/// random components while keeping any stable `/T/…` suffix, so distinct files
+/// under it still differ.
+static VAR_FOLDERS_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"/var/folders/[^/\s]+/[^/\s]+").unwrap());
+/// The `tempfile` crate's random component (`.tmpXXXXXX`) — used under `/tmp/…`
+/// and elsewhere. Collapsing just this token preserves any stable path suffix.
+static TMP_SUFFIX_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\.tmp[A-Za-z0-9]{4,}").unwrap());
+/// An ephemeral `host:port` bind — an IPv4 dotted-quad followed by a port.
+/// Anchored on the four octets so it can never touch a `file.rs:12` line number.
+static IPV4_PORT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}:\d{1,5}\b").unwrap());
+/// A `localhost:<port>` bind (the port is the volatile half).
+static LOCALHOST_PORT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\blocalhost:\d{1,5}\b").unwrap());
+/// A pid, written `pid=1234`, `pid: 1234`, or `pid 1234`.
+static PID_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\bpid[=:\s]\s*\d+").unwrap());
+/// A heap/pointer address, e.g. `0x7ffee3b2a1c0`.
+static HEX_ADDR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b0x[0-9a-fA-F]+\b").unwrap());
+/// Reported durations — the residual timing that varies even when nothing else
+/// does. Longest unit first so the alternation prefers "seconds" over a bare "s".
 static DURATION_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\d+\.\d+\s*(seconds|secs|ms|s)\b").unwrap());
 
@@ -508,11 +551,22 @@ fn combine_streams(stdout: &[u8], stderr: &[u8]) -> String {
     }
 }
 
-/// Neutralize reported durations so the same failure hashes identically across
-/// re-runs (see the module docs). Conservative: only decimal durations, which
-/// in build/test output are virtually always timings.
+/// Neutralize the volatile spans that differ between two identical failing
+/// re-runs (tempdir paths, `host:port`, pids, addresses, UUIDs, timestamps, and
+/// durations) so the same failure hashes identically and the loop guard's
+/// same-failure cap can bind. Conservative by construction: each pattern only
+/// collapses its own volatile token, so two genuinely-different failures still
+/// hash differently and real fixing stays visible as progress.
 fn normalize(output: &str) -> String {
-    DURATION_RE.replace_all(output, "<t>${1}").into_owned()
+    let s = UUID_RE.replace_all(output, "<uuid>");
+    let s = TIMESTAMP_RE.replace_all(&s, "<ts>");
+    let s = VAR_FOLDERS_RE.replace_all(&s, "/var/folders/<tmp>");
+    let s = TMP_SUFFIX_RE.replace_all(&s, ".tmp<rand>");
+    let s = IPV4_PORT_RE.replace_all(&s, "<host:port>");
+    let s = LOCALHOST_PORT_RE.replace_all(&s, "localhost:<port>");
+    let s = PID_RE.replace_all(&s, "pid=<pid>");
+    let s = HEX_ADDR_RE.replace_all(&s, "0x<addr>");
+    DURATION_RE.replace_all(&s, "<t>${1}").into_owned()
 }
 
 /// Bound failure output to `MAX_OUTPUT_LINES`, keeping the head and the tail
@@ -982,6 +1036,49 @@ mod tests {
         // No duration and version-like numbers are left untouched.
         assert_eq!(normalize("plain error"), "plain error");
         assert_eq!(normalize("Compiling foo v0.1.0"), "Compiling foo v0.1.0");
+    }
+
+    #[test]
+    fn normalize_stabilizes_volatile_spans_so_repeats_hash_equal() {
+        // Two runs of the SAME underlying failure differing only in the volatile
+        // spans the loop guard must see through: a tempdir path, a host:port
+        // bind, a pid, a heap address, a UUID, and an ISO-8601 timestamp. After
+        // normalization they must be byte-identical (→ equal result hash → the
+        // same-failure cap binds).
+        let run_a = "thread 'main' panicked at src/x.rs: assertion failed\n\
+             temp=/var/folders/ab/9x8y7z/T/.tmpAA11BB bound 127.0.0.1:54321 \
+             pid=1234 ptr=0x7ffee3b2a1c0 id=550e8400-e29b-41d4-a716-446655440000 \
+             at 2026-07-16T12:34:56.789Z";
+        let run_b = "thread 'main' panicked at src/x.rs: assertion failed\n\
+             temp=/var/folders/qp/1a2b3c/T/.tmpZZ99QQ bound 127.0.0.1:12345 \
+             pid=9876 ptr=0x00abcdef1234 id=11112222-3333-4444-5555-666677778888 \
+             at 2026-07-15T01:02:03.000Z";
+        assert_eq!(
+            normalize(run_a),
+            normalize(run_b),
+            "a repeated failure differing only in volatile spans must normalize equal"
+        );
+        // localhost:<port> is stabilized too.
+        assert_eq!(
+            normalize("connect localhost:8080"),
+            normalize("connect localhost:9090")
+        );
+
+        // Guardrail: over-collapsing would make DIFFERENT failures falsely equal.
+        // A different error under the same tempdir must still differ …
+        assert_ne!(
+            normalize("error[E0425] at /var/folders/ab/9x8y7z/T/a.rs"),
+            normalize("error[E0433] at /var/folders/ab/9x8y7z/T/a.rs"),
+            "distinct errors must not collide"
+        );
+        // … and a distinct file under the same tempdir stays distinct (only the
+        // random root collapses; the stable suffix is preserved).
+        assert_ne!(
+            normalize("fail at /var/folders/ab/9x/T/alpha.rs"),
+            normalize("fail at /var/folders/ab/9x/T/beta.rs")
+        );
+        // A source line number (file.rs:NN) is NOT a port and must survive.
+        assert_eq!(normalize("src/main.rs:42: oops"), "src/main.rs:42: oops");
     }
 
     // ── params ──

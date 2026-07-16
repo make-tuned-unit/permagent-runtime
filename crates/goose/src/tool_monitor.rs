@@ -27,6 +27,19 @@
 //! - **S5 monologue** — **3** consecutive assistant turns with 0 tool calls and
 //!   no new conclusion → L1 nudge. (Assessed in the agent loop; the pure helper
 //!   [`assess_monologue`] lives here.)
+//! - **S6 verify fix-loop** — a `verify` call that keeps failing the SAME way
+//!   *across the edits between re-runs* (the real fix-loop shape
+//!   `verify → edit → verify → …`, which S1/S2 miss because each edit breaks
+//!   their identical-call run). Counts OBSERVED identical `verify` failures,
+//!   skipping the interleaved calls: **2** → L1 nudge, **3** → L3 escalate. The
+//!   normal second verify after one failure, and any *changing* failure, are
+//!   progress and pass untouched. This is the escalation TRIGGER the
+//!   verifier-driven controller ([`crate::cost_router::VerifyEscalation`]) acts
+//!   on to climb to a stronger model.
+//! - **Anti-gaming flag** — a `verify` PASS earned by editing ONLY the test
+//!   files it runs (weakening/deleting one's own tests) is blocked, not banked.
+//!   Reuses the edit stream + [`is_test_path`]; precise by design (a co-edited
+//!   source file clears it, so legitimate TDD is not flagged).
 //! - **wait/poll/watch tools are EXEMPT from S1–S3** — a legit long-poll must
 //!   not be killed (a known real-world false-positive).
 //!
@@ -82,6 +95,13 @@ pub const S3_ESCALATE_AT: usize = 4;
 pub const S4_ESCALATE_CYCLES: usize = 6;
 /// S5: 3 consecutive no-tool, no-new-conclusion turns nudge.
 pub const S5_MONOLOGUE_AT: u32 = 3;
+/// S6: 2 OBSERVED identical `verify` failures (counted across the edits between
+/// them) nudge — the fix edits are not changing the error.
+pub const S6_VERIFY_NUDGE_AT: usize = 2;
+/// S6: 3 OBSERVED identical `verify` failures escalate — the fix loop is stuck.
+/// Mirrors [`crate::cost_router::VERIFY_ESCALATE_AT`] so the loop bound and the
+/// model-escalation trigger fire on the same evidence.
+pub const S6_VERIFY_ESCALATE_AT: usize = 3;
 
 /// Rolling per-session window bound — only the most recent N completed tool
 /// calls are considered.
@@ -97,9 +117,11 @@ pub const SELF_KNOWLEDGE_FEATURE: FeatureDescriptor = FeatureDescriptor {
     what_it_does:
         "A deterministic monitor watches your tool calls over a rolling window and detects when \
          you are stuck — the same call producing the same result, the same failure retried, a \
-         no-progress read cycle, or two actions oscillating. It first blocks the offending call \
-         and tells you to try a different approach; if you keep looping it escalates to the \
-         Decision Inbox and stops the run, always leaving your work in place",
+         verify check failing the same way across your edits, a no-progress read cycle, or two \
+         actions oscillating. It first blocks the offending call and tells you to try a different \
+         approach; if you keep looping it escalates to the Decision Inbox and stops the run, \
+         always leaving your work in place. It also refuses a reward-hack: a verify made to pass \
+         by editing only the tests it runs is blocked, not accepted as proof of work",
     why_it_matters:
         "It is the safety floor that guarantees you never get trapped in a loop the user can't \
          get out of: identical-and-unchanging work is stopped and handed to the user for \
@@ -138,6 +160,8 @@ pub enum Signal {
     Oscillation,
     /// S5 — consecutive monologue turns.
     Monologue,
+    /// S6 — `verify` failing the same way across the edits between re-runs.
+    VerifyLoop,
 }
 
 impl Signal {
@@ -149,6 +173,7 @@ impl Signal {
             Signal::NoProgress => "no-progress cycle",
             Signal::Oscillation => "oscillating between two actions",
             Signal::Monologue => "repeating itself without acting",
+            Signal::VerifyLoop => "verify failing the same way after edits",
         }
     }
 
@@ -160,6 +185,7 @@ impl Signal {
             Signal::NoProgress => "LOOP-S3",
             Signal::Oscillation => "LOOP-S4",
             Signal::Monologue => "LOOP-S5",
+            Signal::VerifyLoop => "LOOP-S6",
         }
     }
 }
@@ -212,6 +238,113 @@ pub fn is_mutating(name: &str) -> bool {
 /// Strip an `extension__tool` prefix so heuristics match the bare tool name.
 fn base_tool_name(name: &str) -> &str {
     name.rsplit("__").next().unwrap_or(name)
+}
+
+/// The project-checks tool (`developer__verify`). Its fix loop has its own bound
+/// (S6): the real loop interleaves `edit` calls between `verify` re-runs, and the
+/// generic identical-call run (S1/S2) cannot see across those edits.
+pub fn is_verify(name: &str) -> bool {
+    base_tool_name(name) == "verify"
+}
+
+/// Whether an edited path looks like a TEST file — the files `verify` runs.
+/// Used by the anti-gaming flag: a `verify` pass earned by editing only these is
+/// not a real pass. Multi-language and conservative — it matches separate test
+/// files and test directories, NOT inline unit-test modules (a same-file
+/// `#[cfg(test)]` block), which path classification cannot see.
+pub fn is_test_path(path: &str) -> bool {
+    let p = path.replace('\\', "/").to_ascii_lowercase();
+    // `rsplit` always yields at least one element, so the default is unreachable.
+    let file = p.rsplit('/').next().unwrap_or("");
+    // A test directory anywhere in the path.
+    if p.contains("/tests/")
+        || p.contains("/test/")
+        || p.contains("/__tests__/")
+        || p.contains("/spec/")
+        || p.starts_with("tests/")
+        || p.starts_with("test/")
+    {
+        return true;
+    }
+    // A test-named file (Rust / Python / Go / JS-TS / Ruby / Java conventions).
+    file.starts_with("test_")
+        || file.ends_with("_test.rs")
+        || file.ends_with("_test.py")
+        || file.ends_with("_test.go")
+        || file.ends_with("_test.rb")
+        || file.ends_with("_spec.rb")
+        || file.ends_with(".test.ts")
+        || file.ends_with(".test.tsx")
+        || file.ends_with(".test.js")
+        || file.ends_with(".test.jsx")
+        || file.ends_with(".spec.ts")
+        || file.ends_with(".spec.tsx")
+        || file.ends_with(".spec.js")
+        || file.ends_with(".spec.jsx")
+        || file.ends_with("test.java")
+}
+
+/// Best-effort extraction of the file path an edit/write call targeted, from the
+/// argument keys the edit tools use. A mutating call with no recognizable path
+/// (e.g. a `shell` command) yields `None`.
+fn edited_path(args: &Value) -> Option<&str> {
+    ["path", "file_path", "file", "filename"]
+        .iter()
+        .find_map(|key| args.get(*key).and_then(Value::as_str))
+}
+
+/// Finding id for the anti-gaming flag (its own namespace — it is not a stall
+/// signal).
+pub const VERIFY_GAMING_FINDING: &str = "VERIFY-GAMING";
+
+/// Detect the test-gaming reward-hack: the most recent `verify` PASSED, and every
+/// file edited since the previous `verify` was a TEST file — the pass was earned
+/// by changing the tests `verify` runs, not by fixing the code. Returns the
+/// offending test paths (chronological).
+///
+/// Precise on purpose, to keep false-positives low (legitimate TDD edits a test
+/// AND the code under test): if ANY non-test source file was edited in that span
+/// the pass is treated as a real fix and NOT flagged; and a pass with no edits at
+/// all is never flagged. It cannot see edits to inline `#[cfg(test)]` modules
+/// (same file as the source) — a known limitation of path-based classification.
+fn detect_test_gaming(window: &[ToolEvent]) -> Option<Vec<String>> {
+    let last_verify = window.iter().rposition(|e| is_verify(&e.name))?;
+    if window[last_verify].is_error {
+        return None; // only a PASS can be gamed
+    }
+    let mut test_paths = Vec::new();
+    for e in window[..last_verify].iter().rev() {
+        if is_verify(&e.name) {
+            break; // stop at the previous verify — only this fix round counts
+        }
+        if !e.is_mutating {
+            continue;
+        }
+        match edited_path(&e.args) {
+            Some(p) if is_test_path(p) => test_paths.push(p.to_string()),
+            // A non-test source edit → plausibly a real fix; do not flag.
+            Some(_) => return None,
+            // A mutating call with no path (e.g. a shell command) → cannot
+            // classify; ignore it rather than clear or trip the flag.
+            None => {}
+        }
+    }
+    if test_paths.is_empty() {
+        return None;
+    }
+    test_paths.reverse();
+    Some(test_paths)
+}
+
+/// The actionable block message for the anti-gaming flag.
+fn test_gaming_message(test_paths: &[String]) -> String {
+    format!(
+        "BLOCKED by the runaway-loop guard: `verify` passed, but the only files you edited \
+         to get there are its TESTS ({}). A check made to pass by changing the tests it runs \
+         is not a real pass — restore those tests and make the CODE pass them, or explain why \
+         the test itself was wrong. This pass will not be accepted as proof of work.",
+        test_paths.join(", ")
+    )
 }
 
 /// Hash any string to the `u64` result-hash space.
@@ -325,6 +458,39 @@ pub fn assess_tool_call(window: &[ToolEvent], name: &str, args: &Value) -> LoopA
         }
     }
 
+    // ── S6: verify fix-loop (identical verify failures ACROSS edits) ─────────
+    // The real fix loop is `verify → edit → verify → …`; each interleaved edit
+    // breaks the S1/S2 identical-call run above, so that bound never binds here.
+    // S6 walks the window counting the trailing run of THIS verify target's
+    // OBSERVED identical failures, skipping the non-verify calls (edits/reads)
+    // between them. A different verify target, a PASS, or a changed failure hash
+    // breaks the run — that is progress, and the normal second verify after a
+    // single failure (run == 1) passes untouched.
+    if is_verify(name) {
+        let mut run = 0usize;
+        let mut common_hash: Option<u64> = None;
+        for e in win.iter().rev() {
+            if !is_verify(&e.name) {
+                continue; // skip the edits/reads interleaved between verifies
+            }
+            if e.name != name || &e.args != args || !e.is_error {
+                break; // a different verify target, or a pass → progress
+            }
+            match common_hash {
+                None => common_hash = Some(e.result_hash),
+                Some(h) if h == e.result_hash => {}
+                Some(_) => break, // a different failure → progress
+            }
+            run += 1;
+        }
+        if run >= S6_VERIFY_ESCALATE_AT {
+            return LoopAction::Escalate(Signal::VerifyLoop);
+        }
+        if run >= S6_VERIFY_NUDGE_AT {
+            return LoopAction::Nudge(Signal::VerifyLoop);
+        }
+    }
+
     // ── S4: oscillation between two distinct actions ────────────────────────
     if let Some(cycles) = trailing_oscillation_cycles(win, name, args) {
         if cycles >= S4_ESCALATE_CYCLES {
@@ -421,6 +587,13 @@ fn block_message(signal: Signal, name: &str, action: LoopAction) -> String {
              repeatedly. Retrying it identically will not help. Stop and either try a \
              fundamentally different approach, fix the underlying cause, or explain what is \
              blocking you."
+        ),
+        (Signal::VerifyLoop, _) => format!(
+            "BLOCKED by the runaway-loop guard: `{bare}` keeps failing the SAME way across \
+             your edits — the fixes are not changing the error. Stop the edit-and-re-verify \
+             cycle: re-read the FULL error and fix its actual cause, or hand it back with the \
+             error rather than re-running the same failing check. When a cheap model keeps \
+             failing the same check, a stronger one is warranted."
         ),
         (_, LoopAction::Escalate(_)) => format!(
             "BLOCKED by the runaway-loop guard: `{bare}` with these exact arguments has already \
@@ -574,6 +747,13 @@ impl ToolInspector for ProgressMonitor {
         let window = reconstruct_window(messages);
         let mut results = Vec::new();
 
+        // Anti-gaming (#3): a `verify` PASS earned by editing ONLY the tests it
+        // runs is a reward-hack, not a real pass. Detected over the completed
+        // window and surfaced as a block on the model's next action so it cannot
+        // bank the gamed pass. Non-terminal — restoring the tests clears it.
+        let gaming_paths = detect_test_gaming(&window);
+        let mut gaming_flagged = false;
+
         for req in tool_requests {
             let Ok(call) = &req.tool_call else {
                 continue;
@@ -586,6 +766,27 @@ impl ToolInspector for ProgressMonitor {
 
             let action = assess_tool_call(&window, call.name.as_ref(), &args);
             let Some(signal) = action.signal() else {
+                // No stall signal on this call — attach the anti-gaming flag here
+                // if one is pending (once per turn, on the first un-flagged call).
+                if !gaming_flagged {
+                    if let Some(paths) = &gaming_paths {
+                        gaming_flagged = true;
+                        tracing::warn!(
+                            target: "permagent::progress_monitor",
+                            session_id = %session_id,
+                            tool = %call.name,
+                            "anti-gaming: verify pass earned by editing only its test files",
+                        );
+                        results.push(InspectionResult {
+                            tool_request_id: req.id.clone(),
+                            action: InspectionAction::Deny,
+                            reason: test_gaming_message(paths),
+                            confidence: 1.0,
+                            inspector_name: PROGRESS_MONITOR_NAME.to_string(),
+                            finding_id: Some(VERIFY_GAMING_FINDING.to_string()),
+                        });
+                    }
+                }
                 continue;
             };
 
@@ -893,6 +1094,215 @@ mod tests {
             assess_monologue(3),
             LoopAction::Nudge(Signal::Monologue),
             "3 consecutive no-progress monologue turns must nudge"
+        );
+    }
+
+    // ── S6: verify fix-loop across interleaved edits ──
+
+    /// A failing `verify` with the given normalized-result hash.
+    fn verr(hash: u64) -> ToolEvent {
+        ev("developer__verify", json!({}), hash, true)
+    }
+    /// A passing `verify`.
+    fn vok(hash: u64) -> ToolEvent {
+        ev("developer__verify", json!({}), hash, false)
+    }
+    /// An edit to `path` (a mutating call, per the name classifier).
+    fn edit(path: &str) -> ToolEvent {
+        ev("developer__text_editor", json!({ "path": path }), 0, false)
+    }
+
+    #[test]
+    fn s6_normal_fix_loop_is_not_blocked() {
+        // One failure then an edit: the SECOND verify is the normal loop and must
+        // pass (one observed failure → below the nudge threshold).
+        let win = vec![verr(0xF), edit("src/a.rs")];
+        assert_eq!(
+            assess_tool_call(&win, "developer__verify", &json!({})),
+            LoopAction::Pass,
+            "the normal second verify after one failure must not be blocked"
+        );
+    }
+
+    #[test]
+    fn s6_nudges_at_two_identical_failures_across_edits() {
+        // verify(FAIL H) → edit → verify(FAIL H) → edit; incoming verify. Two
+        // OBSERVED identical failures whose edits didn't change the error → nudge.
+        let win = vec![verr(0xF), edit("src/a.rs"), verr(0xF), edit("src/a.rs")];
+        assert_eq!(
+            assess_tool_call(&win, "developer__verify", &json!({})),
+            LoopAction::Nudge(Signal::VerifyLoop)
+        );
+    }
+
+    #[test]
+    fn s6_escalates_at_three_identical_failures_across_edits() {
+        let win = vec![
+            verr(0xF),
+            edit("src/a.rs"),
+            verr(0xF),
+            edit("src/a.rs"),
+            verr(0xF),
+            edit("src/a.rs"),
+        ];
+        assert_eq!(
+            assess_tool_call(&win, "developer__verify", &json!({})),
+            LoopAction::Escalate(Signal::VerifyLoop),
+            "3 identical verify failures across edits must escalate"
+        );
+    }
+
+    #[test]
+    fn s6_changing_failures_are_progress_not_a_loop() {
+        // Each verify fails DIFFERENTLY across edits — real progress. Must not
+        // block or escalate as a same-failure loop.
+        let win = vec![
+            verr(1),
+            edit("src/a.rs"),
+            verr(2),
+            edit("src/a.rs"),
+            verr(3),
+            edit("src/a.rs"),
+        ];
+        assert_eq!(
+            assess_tool_call(&win, "developer__verify", &json!({})),
+            LoopAction::Pass,
+            "changing verify failures are progress"
+        );
+    }
+
+    #[test]
+    fn s6_a_pass_in_the_middle_breaks_the_failure_run() {
+        // FAIL, edit, PASS, edit, FAIL, edit: the pass proves the error was fixed
+        // once, so the trailing fail-run is length 1 → not escalated.
+        let win = vec![
+            verr(0xF),
+            edit("src/a.rs"),
+            vok(0xA),
+            edit("src/a.rs"),
+            verr(0xF),
+            edit("src/a.rs"),
+        ];
+        assert_ne!(
+            assess_tool_call(&win, "developer__verify", &json!({})),
+            LoopAction::Escalate(Signal::VerifyLoop),
+            "a passing verify in between breaks the failure run"
+        );
+    }
+
+    // ── Anti-gaming: verify pass earned by editing only tests ──
+
+    #[test]
+    fn test_path_classifier() {
+        assert!(is_test_path("src/foo/tests/bar.rs"));
+        assert!(is_test_path("tests/integration.rs"));
+        assert!(is_test_path("pkg/__tests__/thing.tsx"));
+        assert!(is_test_path("test_math.py"));
+        assert!(is_test_path("math_test.go"));
+        assert!(is_test_path("Button.test.tsx"));
+        assert!(is_test_path("api.spec.js"));
+        assert!(is_test_path("FooTest.java"));
+        // Source files are not tests.
+        assert!(!is_test_path("src/main.rs"));
+        assert!(!is_test_path("lib/math.py"));
+        assert!(!is_test_path("src/latest_news.rs"));
+    }
+
+    #[test]
+    fn gaming_flagged_when_pass_follows_only_test_edits() {
+        // FAIL, edit(test), PASS — the pass was earned by editing only a test.
+        let win = vec![verr(0xF), edit("tests/math_tests.rs"), vok(0xA)];
+        let flagged = detect_test_gaming(&win).expect("gaming must be flagged");
+        assert_eq!(flagged, vec!["tests/math_tests.rs".to_string()]);
+    }
+
+    #[test]
+    fn no_gaming_when_source_also_edited() {
+        // A co-edited SOURCE file → plausibly a real fix (legit TDD) → not flagged.
+        let win = vec![
+            verr(0xF),
+            edit("tests/math_tests.rs"),
+            edit("src/math.rs"),
+            vok(0xA),
+        ];
+        assert!(
+            detect_test_gaming(&win).is_none(),
+            "a co-edited source file must clear the flag"
+        );
+    }
+
+    #[test]
+    fn no_gaming_on_a_clean_pass_or_a_failure() {
+        // A pass with no edits at all is never gaming.
+        assert!(detect_test_gaming(&[vok(0xA)]).is_none());
+        // A FAILING verify is never gaming (only a pass can be gamed).
+        let win = vec![edit("tests/x.rs"), verr(0xF)];
+        assert!(detect_test_gaming(&win).is_none());
+    }
+
+    #[test]
+    fn gaming_scoped_to_edits_since_the_previous_verify() {
+        // Only edits since the PREVIOUS verify count. A source edit belonging to
+        // an EARLIER round must not clear a later test-only gamed pass.
+        let win = vec![
+            edit("src/math.rs"), // earlier round, before the previous verify
+            verr(0xF),
+            edit("tests/x_tests.rs"),
+            vok(0xA),
+        ];
+        let flagged = detect_test_gaming(&win).expect("must flag the latest round only");
+        assert_eq!(flagged, vec!["tests/x_tests.rs".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn inspector_flags_a_test_gaming_pass() {
+        use rmcp::model::{CallToolResult, Content};
+        let monitor = ProgressMonitor::new(None);
+
+        // Conversation: verify FAILS → edit a TEST file → verify PASSES.
+        let mut messages = Vec::new();
+        let vc = CallToolRequestParams::new("developer__verify").with_arguments(rmcp::object!({}));
+        messages.push(Message::assistant().with_tool_request("v1", Ok(vc)));
+        messages.push(
+            Message::user()
+                .with_tool_response("v1", Ok(CallToolResult::error(vec![Content::text("FAIL")]))),
+        );
+        let ec = CallToolRequestParams::new("developer__text_editor")
+            .with_arguments(rmcp::object!({"path": "tests/math_tests.rs"}));
+        messages.push(Message::assistant().with_tool_request("e1", Ok(ec)));
+        messages.push(
+            Message::user()
+                .with_tool_response("e1", Ok(CallToolResult::success(vec![Content::text("ok")]))),
+        );
+        let vc2 = CallToolRequestParams::new("developer__verify").with_arguments(rmcp::object!({}));
+        messages.push(Message::assistant().with_tool_request("v2", Ok(vc2)));
+        messages.push(Message::user().with_tool_response(
+            "v2",
+            Ok(CallToolResult::success(vec![Content::text("PASS")])),
+        ));
+
+        // Incoming: the model tries to commit, banking the gamed pass.
+        let incoming = ToolRequest {
+            id: "c1".to_string(),
+            tool_call: Ok(CallToolRequestParams::new("developer__shell")
+                .with_arguments(rmcp::object!({"command": "git commit -am done"}))),
+            metadata: None,
+            tool_meta: None,
+        };
+        let results = monitor
+            .inspect("sess-1", &[incoming], &messages, GooseMode::Auto)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1, "the gamed pass must be flagged");
+        assert_eq!(results[0].action, InspectionAction::Deny);
+        assert_eq!(
+            results[0].finding_id.as_deref(),
+            Some(VERIFY_GAMING_FINDING)
+        );
+        assert!(
+            results[0].reason.contains("tests/math_tests.rs"),
+            "reason must name the gamed test file, got: {}",
+            results[0].reason
         );
     }
 

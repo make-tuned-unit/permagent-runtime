@@ -1,3 +1,4 @@
+mod grammar;
 pub mod hf_models;
 mod inference_emulated_tools;
 mod inference_engine;

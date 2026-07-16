@@ -409,6 +409,10 @@ pub(super) fn generate_with_emulated_tools(
         ctx.settings,
         prompt_token_count,
         effective_ctx,
+        // No native tool grammar on the emulated path: it passes no tools to the
+        // chat template (so llama.cpp produces no tool grammar) and extracts tool
+        // calls with its own text protocol parser instead.
+        None,
         |piece| {
             let actions = emulator_parser.process_chunk(piece);
             for action in actions {
