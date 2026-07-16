@@ -15,7 +15,9 @@ use crate::conversation::Conversation;
 #[cfg(test)]
 use crate::providers::base::stream_from_single_message;
 use crate::providers::base::{MessageStream, Provider, ProviderUsage};
-use crate::providers::canonical::{cache_savings_of, cost_breakdown, maybe_get_canonical_model};
+use crate::providers::canonical::{
+    cache_hit_rate_of, cache_savings_of, cost_breakdown, maybe_get_canonical_model,
+};
 use crate::providers::errors::ProviderError;
 use crate::providers::toolshim::{
     augment_message_with_tool_calls, convert_tool_messages_to_text,
@@ -616,6 +618,21 @@ impl Agent {
             0.0
         };
 
+        // Surface the prompt-cache hit rate for this response — reads /
+        // (reads + creation), the day-one measurable signal for the cache
+        // discipline (#717/#727). Emitted per call alongside the ledger's cost so
+        // it is observable without a schema change; `None` (no log) when nothing
+        // went through the cache this call.
+        if let Some(cache_hit_rate) = cache_hit_rate_of(&usage.usage) {
+            tracing::debug!(
+                cache_hit_rate,
+                cache_savings_usd,
+                cost_usd,
+                model = %model,
+                "prompt-cache hit rate for provider response"
+            );
+        }
+
         // Interactive surfaces are User/Terminal; everything else (SubAgent,
         // Scheduled, Hidden, Gateway, Acp) is background/headless.
         let is_headless = !matches!(
@@ -743,6 +760,22 @@ mod tests {
             let usage = ProviderUsage::new("mock".to_string(), Usage::default());
             Ok(stream_from_single_message(message, usage))
         }
+    }
+
+    #[test]
+    fn cache_hit_rate_is_surfaced_from_the_canonical_cost_reexport() {
+        // The per-call cost path (`update_session_metrics`) surfaces the
+        // prompt-cache hit rate via `crate::providers::canonical::cache_hit_rate_of`,
+        // re-exported from the canonical cost ledger. Exercise that exact surface.
+        // 3 of 4 cacheable tokens served from cache reads → 0.75 hit rate.
+        let usage = Usage::default().with_cache_tokens(Some(3), Some(1));
+        assert_eq!(cache_hit_rate_of(&usage), Some(0.75));
+        // A fully warm prefix → 1.0; no cache activity → None (the log is skipped).
+        assert_eq!(
+            cache_hit_rate_of(&Usage::default().with_cache_tokens(Some(4), Some(0))),
+            Some(1.0)
+        );
+        assert_eq!(cache_hit_rate_of(&Usage::default()), None);
     }
 
     #[tokio::test]
