@@ -37,6 +37,7 @@ pub mod knowledge;
 pub mod mesh;
 pub mod packs;
 pub mod recommend;
+pub mod role_map;
 pub mod tier;
 
 pub use budget::{
@@ -62,6 +63,10 @@ pub use recommend::{
     recommend_from_available, resolve_known, AvailableModel, ProviderModels, Recommendation,
     RoleRecommendation, WorkflowRole, EDIT_RELIABILITY_FLOOR,
 };
+pub use role_map::{
+    cache_guard_should_warn, clear_role_model, configured as configured_role_models, derive_role,
+    mappings_to_persist, resolve_role_model, role_model, set_role_model, RoleModel,
+};
 pub use tier::{classify, minimum_tier, next_after, Attempt, Next, TaskClass, TaskSignals, Tier};
 
 /// Self-knowledge descriptor for the **cost optimizer** (#714/#717/#720) — the
@@ -76,22 +81,26 @@ pub const COST_OPTIMIZER_FEATURE: crate::agents::self_knowledge::FeatureDescript
         display_name: "Cost optimizer",
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
         what_it_does:
-            "The cost-governance system behind the coding harness: a tiered router picks the \
-             cheapest ADEQUATE model for each unit of work and escalates only when it stumbles. \
-             The interactive main loop stays on one stable model to keep its prompt cache warm, \
-             while mechanical, latency-tolerant sub-work (apply-diff, summarize, grep-triage) is \
-             dispatched to SEPARATE cheaper-tier subagents — Haiku in the cloud or a free \
-             on-device model (Ollama/qwen3, $0) by default, with hard reasoning reserved for a \
-             frontier tier (Opus) and every tier retunable by the operator. A live cost meter is \
-             always on — a cache-aware, single-source running total with a per-call ledger — and \
-             spend caps route any overage to the Decision Inbox for approval",
+            "The cost-governance system behind the coding harness: it routes each workflow role \
+             — planning/orchestration, editing, mechanical search-and-summarize, and review — to \
+             the model YOU configured for it, chosen by an objective, vendor-neutral recommender \
+             from measured diff-format reliability, orchestration strength, and price. There is \
+             no baked-in vendor default: configure a per-role mapping and each role runs on your \
+             chosen model; configure none and the harness stays on your single session model — it \
+             never silently falls back to a built-in Opus/Sonnet/Haiku pack. The interactive main \
+             loop stays on one stable model to keep its prompt cache warm, mechanical \
+             latency-tolerant sub-work is dispatched to SEPARATE cheaper-tier subagents, and a \
+             cache-heavy role routed to a non-caching provider is flagged at dispatch. A live \
+             cost meter is always on — a cache-aware, single-source running total with a per-call \
+             ledger — and spend caps route any overage to the Decision Inbox for approval",
         why_it_matters: "It is why running Permagent's own harness is cheaper per outcome than a \
-             subscription, with no surprise bills: you never spend a frontier model on \
-             grep-triage, never trust a free local model with a multi-file refactor, and never \
-             blow past a budget silently. When the user asks what a build will cost or worries \
-             about spend, point them at the live meter and explain that each piece of work is \
-             already routed to the cheapest tier that can do it correctly, escalating only when \
-             needed",
+             subscription, with no surprise bills and no vendor lock-in: each piece of work runs \
+             on the cheapest model that can do it correctly, the recommender carries no bias \
+             toward the vendor whose runtime this is, and nothing routes to a model the user did \
+             not choose. When the user asks what a build will cost, worries about spend, or asks \
+             which models to use where, point them at the live meter and the objective per-role \
+             recommendation (`permagent packs recommend`), and explain that setting no mapping \
+             keeps everything on their one model",
         state_source: crate::agents::self_knowledge::StateSource::Static,
         teaching: &[
             crate::agents::self_knowledge::TeachingStep {
@@ -107,11 +116,14 @@ pub const COST_OPTIMIZER_FEATURE: crate::agents::self_knowledge::FeatureDescript
                 confirm: None,
             },
             crate::agents::self_knowledge::TeachingStep {
-                title: "Explain the tiers",
-                body: "Explain the cheapest-adequate policy in plain terms: hard reasoning runs \
-                       on a frontier model, the main editing loop on one stable model, and \
-                       mechanical chores on a cheap cloud or a free local model — with every tier \
-                       retunable if they want to trade cost for speed or quality.",
+                title: "Explain per-role routing (no vendor default)",
+                body: "Explain the per-role routing in plain terms: each workflow role runs on \
+                       the model they configured for it — or, with nothing configured, on their \
+                       single session model, never a built-in vendor default — picked by an \
+                       objective recommender from measured reliability and price, not vendor \
+                       preference. Point them at `permagent packs recommend` to see the \
+                       best-fit-per-role suggestion for the models they already have, and \
+                       `permagent packs apply` to route each role to it.",
                 open_surface: None,
                 confirm: None,
             },

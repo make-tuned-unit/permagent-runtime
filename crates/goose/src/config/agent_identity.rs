@@ -248,6 +248,15 @@ pub struct WorkerPersona {
     /// What this worker can do: code_edit, shell, web_search, memory_ops, etc.
     #[serde(default)]
     pub tool_kinds: Vec<String>,
+    /// Optional explicit workflow-role tag for cost routing — one of
+    /// `orchestrate`/`hard` (frontier reasoning), `edit`, `mechanical`, `review`,
+    /// `local`. When set, it overrides the role derived from [`Self::tool_kinds`]
+    /// (see `cost_router::role_map::derive_role`), so the operator can pin which
+    /// configured per-role model a worker's goals route to. Absent → role is
+    /// derived from the tool kinds; if neither yields a role, dispatch stays on
+    /// the single session model (no baked default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_role: Option<String>,
     /// How to check if this worker is available on this machine.
     /// "bin_exists:<name>" | "api_credential:<env_var>" | "model_loaded:<model>" | "always"
     #[serde(default = "default_availability")]
@@ -276,6 +285,7 @@ impl Default for WorkerPersona {
             traits: Vec::new(),
             tone: String::new(),
             tool_kinds: Vec::new(),
+            workflow_role: None,
             availability_check: default_availability(),
             cost_tier: default_cost_tier(),
             engine: WorkerEngineKind::default(),
@@ -291,6 +301,15 @@ impl WorkerPersona {
             self.last_name.as_deref(),
             self.nickname.as_deref(),
         )
+    }
+
+    /// The cost-routing workflow role this worker's work plays — from its explicit
+    /// [`Self::workflow_role`] tag if set, else derived from [`Self::tool_kinds`].
+    /// `None` when neither yields a role, so dispatch stays on the single session
+    /// model. Both dispatch paths (summon's `resolve_provider` and the goal engine)
+    /// route by this. See `cost_router::role_map::derive_role`.
+    pub fn routing_role(&self) -> Option<crate::cost_router::WorkflowRole> {
+        crate::cost_router::derive_role(&self.tool_kinds, self.workflow_role.as_deref())
     }
 
     /// Build the worker persona block for the system prompt.
@@ -604,6 +623,38 @@ workers:
             "Must not contain hardcoded 'Henry': {}",
             block
         );
+    }
+
+    #[test]
+    fn routing_role_derives_from_tool_kinds_and_tag() {
+        use crate::cost_router::WorkflowRole;
+        let roster = default_roster();
+        // The coding workers (code_edit) route to the EDIT role's configured model.
+        assert_eq!(
+            roster["claude_code"].routing_role(),
+            Some(WorkflowRole::Edit)
+        );
+        assert_eq!(roster["codex"].routing_role(), Some(WorkflowRole::Edit));
+        // The Librarian (memory_ops, read-only) routes to MECHANICAL.
+        assert_eq!(
+            roster["librarian"].routing_role(),
+            Some(WorkflowRole::Mechanical)
+        );
+
+        // An explicit workflow_role tag overrides the tool-kind derivation.
+        let tagged = WorkerPersona {
+            tool_kinds: vec!["code_edit".to_string()],
+            workflow_role: Some("review".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(tagged.routing_role(), Some(WorkflowRole::Review));
+
+        // A worker with no role signal → None (dispatch stays single-model).
+        let bare = WorkerPersona {
+            first_name: "Nobody".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(bare.routing_role(), None);
     }
 
     #[test]
