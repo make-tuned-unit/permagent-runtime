@@ -801,19 +801,55 @@ pub(crate) fn acr_spread_config() -> spectral::graph::spreading::AssocSpreadConf
     resolve_acr_spread(std::env::var("PERMAGENT_ACR_MODE").ok().as_deref())
 }
 
+/// The recognized shapes of `PERMAGENT_ACR_MODE`. `Unrecognized` carries the
+/// offending (trimmed, lowercased) value so the resolver can name it in a warning.
+#[derive(Debug, PartialEq, Eq)]
+enum AcrMode {
+    Off,
+    Precision,
+    Completeness,
+    Unrecognized(String),
+}
+
+/// Classify a raw `PERMAGENT_ACR_MODE` value (trimmed, case-insensitive). Pure and
+/// unit-testable without touching process-global env. Unset, empty/whitespace, and
+/// `off` are [`AcrMode::Off`]; a non-empty value that matches none of the accepted
+/// keywords is [`AcrMode::Unrecognized`] — a likely typo in an A/B arm.
+fn classify_acr_mode(raw: Option<&str>) -> AcrMode {
+    match raw.map(|s| s.trim().to_ascii_lowercase()) {
+        None => AcrMode::Off,
+        Some(v) => match v.as_str() {
+            "" | "off" => AcrMode::Off,
+            "precision" => AcrMode::Precision,
+            "completeness" => AcrMode::Completeness,
+            _ => AcrMode::Unrecognized(v),
+        },
+    }
+}
+
 /// Pure env-value → [`spectral::graph::spreading::AssocSpreadConfig`] mapping.
 ///
 /// Split out from [`acr_spread_config`] so resolution is unit-testable without
 /// mutating process-global env (which would race under parallel `cargo test`).
 /// Unrecognized/empty values fall through to `Off` (fail-safe) rather than
-/// panicking, so a typo in the A/B toggle can never silently alter retrieval.
+/// panicking, so a typo in the A/B toggle can never silently alter retrieval — but
+/// an unrecognized NON-empty value now emits a `warn!` naming the accepted values,
+/// so a misspelled A/B arm can't silently masquerade as "ACR has no effect".
 fn resolve_acr_spread(raw: Option<&str>) -> spectral::graph::spreading::AssocSpreadConfig {
     use spectral::graph::spreading::AssocSpreadConfig;
-    match raw.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
-        Some("precision") => AssocSpreadConfig::precision(),
-        Some("completeness") => AssocSpreadConfig::completeness(),
-        // None (unset), "off", "", or anything unrecognized → Off (no-op).
-        _ => AssocSpreadConfig::default(),
+    match classify_acr_mode(raw) {
+        AcrMode::Precision => AssocSpreadConfig::precision(),
+        AcrMode::Completeness => AssocSpreadConfig::completeness(),
+        AcrMode::Off => AssocSpreadConfig::default(),
+        AcrMode::Unrecognized(value) => {
+            tracing::warn!(
+                target: "permagentd::brain",
+                "PERMAGENT_ACR_MODE='{}' is not a recognized value — expected one of \
+                 off / precision / completeness; associative recall stays OFF (no effect)",
+                value
+            );
+            AssocSpreadConfig::default()
+        }
     }
 }
 
@@ -853,6 +889,35 @@ mod tests {
                 "raw {raw:?} must resolve to Off (fail-safe)"
             );
         }
+    }
+
+    /// The warn-path classifier: an unrecognized NON-empty value (a typo'd A/B
+    /// arm) is flagged as `Unrecognized` — which drives the `warn!` — while unset,
+    /// empty/whitespace, explicit `off`, and the two presets are NOT flagged.
+    /// Unrecognized still resolves to the Off config (fail-safe behavior kept).
+    #[test]
+    fn acr_classify_flags_unrecognized_but_not_off_or_presets() {
+        // Flagged: likely typos, carrying the trimmed+lowercased offending value.
+        assert_eq!(
+            classify_acr_mode(Some("presicion")),
+            AcrMode::Unrecognized("presicion".to_string())
+        );
+        assert_eq!(
+            classify_acr_mode(Some("  GARBAGE ")),
+            AcrMode::Unrecognized("garbage".to_string())
+        );
+        // NOT flagged: the fail-safe / valid inputs.
+        assert_eq!(classify_acr_mode(None), AcrMode::Off);
+        assert_eq!(classify_acr_mode(Some("")), AcrMode::Off);
+        assert_eq!(classify_acr_mode(Some("   ")), AcrMode::Off);
+        assert_eq!(classify_acr_mode(Some("OFF")), AcrMode::Off);
+        assert_eq!(classify_acr_mode(Some("precision")), AcrMode::Precision);
+        assert_eq!(
+            classify_acr_mode(Some("completeness")),
+            AcrMode::Completeness
+        );
+        // An unrecognized value still resolves to Off (behavior unchanged).
+        assert_eq!(resolve_acr_spread(Some("presicion")).mode, SpreadMode::Off);
     }
 
     #[test]

@@ -28,22 +28,43 @@ pub async fn handle_packs_command(command: PacksCommand) -> Result<()> {
     }
 }
 
-/// Resolve a recommendation from either declared `--models` or auto-detection.
-fn resolve_recommendation(models: Option<String>) -> Recommendation {
-    match models {
-        Some(spec) => {
-            let declared: Vec<AvailableModel> = spec
-                .split(',')
-                .filter_map(|s| {
-                    let s = s.trim();
-                    s.split_once('/')
-                        .map(|(p, m)| AvailableModel::new(p.trim(), m.trim()))
-                })
-                .filter(|a| !a.provider.is_empty() && !a.model.is_empty())
-                .collect();
-            recommend_from_available(&declared)
+/// Parse a `--models provider/model,provider/model` spec into declared models.
+/// A malformed segment (no `/`, or an empty provider/model side) is a hard error
+/// naming the offending segment — previously it was silently dropped, so a user
+/// who passed `--models` could still get "no models detected, pass --models" (F7).
+/// Blank segments (a trailing or doubled comma) are tolerated.
+fn parse_declared_models(spec: &str) -> Result<Vec<AvailableModel>> {
+    let mut out = Vec::new();
+    for raw in spec.split(',') {
+        let seg = raw.trim();
+        if seg.is_empty() {
+            continue;
         }
-        None => recommend_configured(),
+        let (provider, model) = seg.split_once('/').ok_or_else(|| {
+            anyhow::anyhow!(
+                "invalid --models segment '{}': expected 'provider/model' \
+                 (e.g. anthropic/claude-sonnet-5)",
+                seg
+            )
+        })?;
+        let (provider, model) = (provider.trim(), model.trim());
+        if provider.is_empty() || model.is_empty() {
+            anyhow::bail!(
+                "invalid --models segment '{}': both provider and model must be non-empty \
+                 (expected 'provider/model')",
+                seg
+            );
+        }
+        out.push(AvailableModel::new(provider, model));
+    }
+    Ok(out)
+}
+
+/// Resolve a recommendation from either declared `--models` or auto-detection.
+fn resolve_recommendation(models: Option<String>) -> Result<Recommendation> {
+    match models {
+        Some(spec) => Ok(recommend_from_available(&parse_declared_models(&spec)?)),
+        None => Ok(recommend_configured()),
     }
 }
 
@@ -59,7 +80,7 @@ fn parse_role(tag: &str) -> Result<WorkflowRole> {
 }
 
 fn recommend_cmd(json: bool, models: Option<String>) -> Result<()> {
-    let result = resolve_recommendation(models);
+    let result = resolve_recommendation(models)?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);
@@ -117,7 +138,7 @@ fn recommend_cmd(json: bool, models: Option<String>) -> Result<()> {
 }
 
 fn apply_cmd(models: Option<String>, dry_run: bool) -> Result<()> {
-    let result = resolve_recommendation(models);
+    let result = resolve_recommendation(models)?;
     let to_persist = mappings_to_persist(&result.recommendations);
 
     if to_persist.is_empty() {
@@ -293,4 +314,54 @@ pub enum PacksCommand {
         #[arg(long)]
         role: Option<String>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_declared_models_parses_and_trims_valid_pairs() {
+        let out = parse_declared_models(" anthropic/claude-sonnet-5 , ollama/qwen3-coder ")
+            .expect("valid spec must parse");
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0], AvailableModel::new("anthropic", "claude-sonnet-5"));
+        assert_eq!(out[1], AvailableModel::new("ollama", "qwen3-coder"));
+    }
+
+    #[test]
+    fn parse_declared_models_tolerates_blank_segments() {
+        // Trailing / doubled commas are ignored, not errors.
+        let out =
+            parse_declared_models("anthropic/claude-sonnet-5,,").expect("blanks are tolerated");
+        assert_eq!(out.len(), 1);
+    }
+
+    /// F7: a segment with no `/` is a hard error naming it — NOT silently dropped
+    /// (which previously produced a misleading "no models detected" for a user who
+    /// clearly passed `--models`).
+    #[test]
+    fn parse_declared_models_errors_on_missing_slash_naming_the_segment() {
+        let err = parse_declared_models("anthropic/claude-sonnet-5,gpt-5.6")
+            .expect_err("a segment without '/' must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("gpt-5.6"),
+            "error must name the bad segment: {msg}"
+        );
+        assert!(
+            msg.contains("provider/model"),
+            "error must state the format: {msg}"
+        );
+    }
+
+    /// F7: an empty provider or model side is a hard error naming the segment.
+    #[test]
+    fn parse_declared_models_errors_on_empty_side() {
+        let err = parse_declared_models("/claude-sonnet-5").expect_err("empty provider must error");
+        assert!(err.to_string().contains("/claude-sonnet-5"));
+
+        let err = parse_declared_models("anthropic/").expect_err("empty model must error");
+        assert!(err.to_string().contains("anthropic/"));
+    }
 }

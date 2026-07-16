@@ -59,9 +59,9 @@ pub use packs::{
     load_packs, packs_from, resolve as resolve_model, role_for_tier, ModelPack, ModelPacks, Role,
 };
 pub use recommend::{
-    available_from, discover_available_models, recommend, recommend_configured,
-    recommend_from_available, resolve_known, AvailableModel, ProviderModels, Recommendation,
-    RoleRecommendation, WorkflowRole, EDIT_RELIABILITY_FLOOR,
+    available_from, discover_available_models, is_provider_configured, provider_key_env, recommend,
+    recommend_configured, recommend_from_available, resolve_known, AvailableModel, ProviderModels,
+    Recommendation, RoleRecommendation, WorkflowRole, EDIT_RELIABILITY_FLOOR,
 };
 pub use role_map::{
     cache_guard_should_warn, clear_role_model, configured as configured_role_models, derive_role,

@@ -45,6 +45,13 @@ use super::knowledge::{lookup, ModelKnowledge};
 /// the best available but flags it.
 pub const EDIT_RELIABILITY_FLOOR: f64 = 0.97;
 
+/// How much orchestration strength REVIEW may trade away for family diversity. A
+/// different-family model earns the "cross-family reviewer" preference only when
+/// its orchestration strength is within this gap of the strongest available
+/// orchestrator; a materially-weaker different-family model (e.g. a small local)
+/// does NOT displace a much stronger same-family verifier just for diversity (F2).
+pub const REVIEW_DIVERSITY_MAX_STRENGTH_GAP: f64 = 0.10;
+
 /// A workflow role in the coding harness. The recommender maps each to a model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -201,11 +208,22 @@ fn orchestrate_rank(a: &ModelKnowledge, b: &ModelKnowledge) -> Ordering {
         .then(id_order(a, b))
 }
 
-/// MECHANICAL: cheapest, preferring local on a cost tie, then stable id.
+/// MECHANICAL: cheapest, preferring local on a cost tie, then — at still-equal
+/// cost — the MORE CAPABLE model (F3: agentic then edit-format), and only then a
+/// stable id. Without the capability tiebreak two $0 locals fell to alphabetical
+/// order, picking e.g. `qwen3` over the stronger `qwen3-coder`.
 fn mechanical_rank(a: &ModelKnowledge, b: &ModelKnowledge) -> Ordering {
     a.blended_cost_per_mtok()
         .total_cmp(&b.blended_cost_per_mtok())
         .then(b.is_local.cmp(&a.is_local)) // local (true) ranks before non-local
+        .then(
+            b.orchestration_strength
+                .total_cmp(&a.orchestration_strength),
+        )
+        .then(
+            b.edit_format_reliability
+                .total_cmp(&a.edit_format_reliability),
+        )
         .then(id_order(a, b))
 }
 
@@ -220,13 +238,21 @@ fn local_rank(a: &ModelKnowledge, b: &ModelKnowledge) -> Ordering {
         .then(id_order(a, b))
 }
 
-/// REVIEW: prefer a family different from EDIT's, then strongest orchestration,
-/// then lowest cost, then stable id.
-fn review_rank(a: &ModelKnowledge, b: &ModelKnowledge, edit_family: &str) -> Ordering {
-    let a_diff = a.family != edit_family;
-    let b_diff = b.family != edit_family;
-    b_diff
-        .cmp(&a_diff) // different-family (true) ranks before same-family
+/// REVIEW: prefer a family different from EDIT's — but ONLY when that model is a
+/// genuinely capable verifier (orchestration strength at or above `diversity_floor`,
+/// i.e. within [`REVIEW_DIVERSITY_MAX_STRENGTH_GAP`] of the strongest available).
+/// A materially-weaker different-family model does not earn the preference (F2);
+/// then strongest orchestration, then lowest cost, then stable id.
+fn review_rank(
+    a: &ModelKnowledge,
+    b: &ModelKnowledge,
+    edit_family: &str,
+    diversity_floor: f64,
+) -> Ordering {
+    let a_diverse = a.family != edit_family && a.orchestration_strength >= diversity_floor;
+    let b_diverse = b.family != edit_family && b.orchestration_strength >= diversity_floor;
+    b_diverse
+        .cmp(&a_diverse) // capable different-family (true) ranks before the rest
         .then(
             b.orchestration_strength
                 .total_cmp(&a.orchestration_strength),
@@ -330,11 +356,20 @@ pub fn recommend(available: &[ModelKnowledge]) -> Vec<RoleRecommendation> {
         },
     ));
 
-    // REVIEW — strong, prefer a different family than EDIT.
+    // REVIEW — strong, prefer a different family than EDIT, but never trade away
+    // material capability for diversity (F2). A different-family model must be
+    // within REVIEW_DIVERSITY_MAX_STRENGTH_GAP of the strongest available
+    // orchestrator to earn the cross-family preference.
+    let best_orch = available
+        .iter()
+        .map(|m| m.orchestration_strength)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let diversity_floor = best_orch - REVIEW_DIVERSITY_MAX_STRENGTH_GAP;
     let review = available
         .iter()
-        .min_by(|a, b| review_rank(a, b, edit_family))
+        .min_by(|a, b| review_rank(a, b, edit_family, diversity_floor))
         .unwrap();
+    let has_other_family = available.iter().any(|m| m.family != edit_family);
     let mut review_rec = base_rec(
         WorkflowRole::Review,
         review,
@@ -352,11 +387,23 @@ pub fn recommend(available: &[ModelKnowledge]) -> Vec<RoleRecommendation> {
         },
     );
     if review.family == edit_family {
-        review_rec.warnings.push(
-            "only one model family available — REVIEW shares EDIT's family, so there is no \
-             cross-family diversity; add a model from another vendor for independent review"
-                .to_string(),
-        );
+        if has_other_family {
+            // A different family exists but is too weak to review well — we kept
+            // the stronger same-family model rather than downgrade for diversity.
+            review_rec.warnings.push(format!(
+                "the only different-family model(s) are materially weaker verifiers (>{:.0}% \
+                 agentic-score gap) — REVIEW stays with the stronger {} model for capability; \
+                 add a stronger different-vendor model for independent cross-family review",
+                REVIEW_DIVERSITY_MAX_STRENGTH_GAP * 100.0,
+                review.family
+            ));
+        } else {
+            review_rec.warnings.push(
+                "only one model family available — REVIEW shares EDIT's family, so there is no \
+                 cross-family diversity; add a model from another vendor for independent review"
+                    .to_string(),
+            );
+        }
     }
     out.push(review_rec);
 
@@ -418,6 +465,89 @@ pub struct ProviderModels {
     pub models: Vec<String>,
 }
 
+/// The BUILTIN providers — those served by `providers/*.rs`, NOT by a declarative
+/// `providers/declarative/*.json` — paired with the env var that activates each.
+/// `all_declarative_provider_configs` does not enumerate these, so discovery must
+/// add them explicitly or the canonical setup (an Anthropic key + a local Ollama)
+/// discovers almost nothing (F1). Ollama is keyless (empty env) and is discovered
+/// via [`discover_ollama_models`] rather than by enumerating the KB, since its
+/// models are "available" only when actually pulled locally.
+pub const BUILTIN_PROVIDERS: &[(&str, &str)] = &[
+    ("anthropic", "ANTHROPIC_API_KEY"),
+    ("openai", "OPENAI_API_KEY"),
+    ("google", "GOOGLE_API_KEY"),
+    ("xai", "XAI_API_KEY"),
+    ("ollama", ""), // keyless local; models come from discovery, not the KB
+];
+
+/// The keyed builtin providers as [`ProviderModels`], their model lists sourced
+/// from the objective knowledge base ([`super::knowledge::KNOWN_MODELS`]) so there
+/// is a single source of truth for which builtin models exist. Pure. Ollama is
+/// excluded (keyless, handled by [`discover_ollama_models`]).
+fn builtin_provider_models() -> Vec<ProviderModels> {
+    BUILTIN_PROVIDERS
+        .iter()
+        .filter(|(_, env)| !env.is_empty())
+        .map(|(provider, env)| ProviderModels {
+            provider: provider.to_string(),
+            api_key_env: env.to_string(),
+            models: super::knowledge::KNOWN_MODELS
+                .iter()
+                .filter(|m| m.provider == *provider && !m.is_local)
+                .map(|m| m.model.to_string())
+                .collect(),
+        })
+        .filter(|p| !p.models.is_empty())
+        .collect()
+}
+
+/// Pure assembly of the full discoverable provider surface: the declarative
+/// providers + the keyed builtins ([`builtin_provider_models`]) + a keyless local
+/// Ollama entry when models were detected. Split from [`discover_available_models`]
+/// so the builtin/ollama discovery logic is unit-testable without config or a
+/// network probe.
+fn discoverable_providers(
+    mut declarative: Vec<ProviderModels>,
+    ollama_models: Vec<String>,
+) -> Vec<ProviderModels> {
+    declarative.extend(builtin_provider_models());
+    if !ollama_models.is_empty() {
+        declarative.push(ProviderModels {
+            provider: "ollama".to_string(),
+            api_key_env: String::new(), // keyless — available_from includes it unconditionally
+            models: ollama_models,
+        });
+    }
+    declarative
+}
+
+/// The env var that activates a provider — builtin table first, then the
+/// declarative configs. `Some("")` for a keyless provider (e.g. Ollama). `None`
+/// for a provider not found in either surface (an unknown/custom id). Thin IO
+/// wrapper (reads the declarative configs).
+pub fn provider_key_env(provider: &str) -> Option<String> {
+    if let Some((_, env)) = BUILTIN_PROVIDERS.iter().find(|(p, _)| *p == provider) {
+        return Some((*env).to_string());
+    }
+    crate::config::declarative_providers::all_declarative_provider_configs()
+        .into_iter()
+        .find(|c| c.name == provider)
+        .map(|c| c.api_key_env)
+}
+
+/// Whether a provider can be dispatched to right now. Keyless providers (empty
+/// key env, e.g. Ollama) are always available; keyed providers need their key
+/// configured ([`super::cheap::is_key_configured`]). An unknown/custom provider is
+/// assumed available (don't block a setup we can't see). Used by the summon
+/// consistency guard to avoid dispatching to a keyless-but-unconfigured provider.
+pub fn is_provider_configured(provider: &str) -> bool {
+    match provider_key_env(provider) {
+        Some(env) if env.trim().is_empty() => true,
+        Some(env) => super::cheap::is_key_configured(&env),
+        None => true,
+    }
+}
+
 /// Enumerate the user's AVAILABLE models — pure over the configured provider
 /// surface. A provider counts as available when its `api_key_env` is set
 /// (`is_key_set`); a keyless provider (empty `api_key_env`, e.g. a local one) is
@@ -458,13 +588,37 @@ pub fn available_from(
     out
 }
 
-/// Discover the user's available models from the live configured-provider
-/// surface + the `GOOSE_PROVIDER`/`GOOSE_MODEL` default. Thin IO wrapper over
-/// [`available_from`].
+/// Detect locally-available Ollama models. Best-effort and SYNCHRONOUS with no
+/// network call: it surfaces the configured `GOOSE_MODEL` when the default
+/// provider is Ollama. A live `/api/tags` probe is intentionally omitted here
+/// because `discover_available_models` runs on the sync path of an async CLI
+/// command, where a blocking HTTP client would panic inside the Tokio runtime —
+/// this covers the "at least the configured GOOSE model when it's ollama" floor
+/// the recommender needs; a richer probe can slot into the same seam later.
+fn discover_ollama_models() -> Vec<String> {
+    let cfg = crate::config::Config::global();
+    let mut models = Vec::new();
+    if let Ok(p) = cfg.get_param::<String>("GOOSE_PROVIDER") {
+        if p.eq_ignore_ascii_case("ollama") {
+            if let Ok(m) = cfg.get_param::<String>("GOOSE_MODEL") {
+                if !m.trim().is_empty() {
+                    models.push(m);
+                }
+            }
+        }
+    }
+    models
+}
+
+/// Discover the user's available models from the live configured-provider surface
+/// — declarative providers + the builtin `providers/*.rs` providers (Anthropic /
+/// OpenAI / Google / xAI, keyed; Ollama, local) — plus the
+/// `GOOSE_PROVIDER`/`GOOSE_MODEL` default. Thin IO wrapper over the pure
+/// [`discoverable_providers`] + [`available_from`].
 pub fn discover_available_models() -> Vec<AvailableModel> {
     use crate::config::declarative_providers::all_declarative_provider_configs;
 
-    let providers: Vec<ProviderModels> = all_declarative_provider_configs()
+    let declarative: Vec<ProviderModels> = all_declarative_provider_configs()
         .into_iter()
         .map(|c| ProviderModels {
             provider: c.name,
@@ -472,6 +626,8 @@ pub fn discover_available_models() -> Vec<AvailableModel> {
             models: c.models.into_iter().map(|m| m.name).collect(),
         })
         .collect();
+
+    let providers = discoverable_providers(declarative, discover_ollama_models());
 
     let is_key_set = |k: &str| super::cheap::is_key_configured(k);
 
@@ -703,6 +859,35 @@ mod tests {
         assert_eq!(rec_for(&recs, WorkflowRole::Mechanical).model, "m2.5");
     }
 
+    /// F3: two $0 local models — the equal-cost tiebreak must pick the more
+    /// CAPABLE one, not the alphabetically-first id. Alphabetically `qwen3` sorts
+    /// before `qwen3-coder`, so an id-only tiebreak wrongly picked the weaker one.
+    #[test]
+    fn mechanical_equal_cost_tiebreaks_on_capability_not_alphabetical() {
+        let models = [
+            m(
+                "ollama", "qwen3", "ollama", 0.76, 0.48, 0.0, 0.0, false, true,
+            ),
+            m(
+                "ollama",
+                "qwen3-coder",
+                "ollama",
+                0.86,
+                0.55,
+                0.0,
+                0.0,
+                false,
+                true,
+            ),
+        ];
+        let recs = recommend(&models);
+        assert_eq!(
+            rec_for(&recs, WorkflowRole::Mechanical).model,
+            "qwen3-coder",
+            "at equal $0 cost MECHANICAL must tiebreak on capability, not alphabetical id"
+        );
+    }
+
     #[test]
     fn review_prefers_a_different_family_than_edit() {
         let models = [
@@ -769,6 +954,98 @@ mod tests {
                 .any(|w| w.contains("one model family")),
             "single-family review must be flagged"
         );
+    }
+
+    /// F2: REVIEW must NOT be handed to a materially-weaker different-family model
+    /// purely for diversity. Given {Opus, Sonnet, local qwen3-coder}, the only
+    /// different family (ollama, orch 0.55) is far below the best orchestrator
+    /// (Opus 0.886) — REVIEW must stay with the stronger Anthropic model, not the
+    /// weak local, and must NOT claim a "different family" verifier.
+    #[test]
+    fn review_does_not_pick_a_materially_weaker_different_family_model() {
+        let models = [
+            m(
+                "anthropic",
+                "claude-opus-4-8",
+                "anthropic",
+                0.975,
+                0.886,
+                5.0,
+                25.0,
+                true,
+                false,
+            ),
+            m(
+                "anthropic",
+                "claude-sonnet-5",
+                "anthropic",
+                0.980,
+                0.80,
+                3.0,
+                15.0,
+                true,
+                false,
+            ),
+            m(
+                "ollama",
+                "qwen3-coder",
+                "ollama",
+                0.860,
+                0.55,
+                0.0,
+                0.0,
+                false,
+                true,
+            ),
+        ];
+        let recs = recommend(&models);
+        let review = rec_for(&recs, WorkflowRole::Review);
+        assert_ne!(
+            review.provider, "ollama",
+            "REVIEW must not be the weak local model just because it is a different family"
+        );
+        assert_eq!(review.family, "anthropic");
+        assert!(
+            !review.reason.contains("DIFFERENT family"),
+            "the reason must not falsely claim a different-family verifier"
+        );
+        // Honest warning: a different family exists but is too weak to review.
+        assert!(
+            review
+                .warnings
+                .iter()
+                .any(|w| w.contains("materially weaker")),
+            "must flag that the only different-family option was too weak"
+        );
+    }
+
+    /// F2 guard: a genuinely capable different-family model IS still preferred —
+    /// the strength floor only blocks materially-weaker ones. Grok (orch 0.866) is
+    /// within the gap of Fable (0.90) and a different family, so it wins REVIEW.
+    #[test]
+    fn review_still_prefers_a_capable_different_family_model() {
+        let models = [
+            m(
+                "anthropic",
+                "fable",
+                "anthropic",
+                0.985,
+                0.90,
+                10.0,
+                50.0,
+                true,
+                false,
+            ),
+            m("xai", "grok", "xai", 0.970, 0.866, 2.0, 6.0, false, false),
+        ];
+        let recs = recommend(&models);
+        assert_eq!(rec_for(&recs, WorkflowRole::Edit).family, "anthropic");
+        let review = rec_for(&recs, WorkflowRole::Review);
+        assert_eq!(
+            review.family, "xai",
+            "a capable different-family model must still win REVIEW"
+        );
+        assert!(review.warnings.is_empty());
     }
 
     /// The cache guard fires when a cache-heavy role (ORCHESTRATE/EDIT) is routed
@@ -949,6 +1226,69 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    /// F1: the canonical setup — an Anthropic key set + a local Ollama model
+    /// present — must discover BOTH a builtin Anthropic entry AND the local Ollama
+    /// entry. Before the fix, discovery enumerated only declarative providers and
+    /// so missed the builtin `providers/*.rs` families entirely (finding just ~1
+    /// model, then wrongly advising "install ollama").
+    #[test]
+    fn discovery_includes_keyed_builtins_and_a_detected_local_ollama() {
+        // No declarative providers configured; a local ollama model was detected.
+        let providers = discoverable_providers(Vec::new(), vec!["qwen3-coder".to_string()]);
+        // Only the Anthropic key is set.
+        let available = available_from(&providers, &keyed(&["ANTHROPIC_API_KEY"]), None);
+        let labels: Vec<String> = available.iter().map(|a| a.label()).collect();
+
+        assert!(
+            labels.iter().any(|l| l.starts_with("anthropic/")),
+            "a builtin Anthropic model must be discovered when ANTHROPIC_API_KEY is set: {labels:?}"
+        );
+        assert!(
+            labels.contains(&"ollama/qwen3-coder".to_string()),
+            "the detected local Ollama model must be discovered (keyless): {labels:?}"
+        );
+        // A builtin whose key is NOT set stays out.
+        assert!(
+            !labels.iter().any(|l| l.starts_with("openai/")),
+            "OpenAI must not be discovered without OPENAI_API_KEY: {labels:?}"
+        );
+    }
+
+    /// F1: the keyed builtin table sources its model ids from the knowledge base
+    /// (single source of truth) and excludes keyless Ollama (discovered instead).
+    #[test]
+    fn builtin_provider_models_are_keyed_and_kb_sourced() {
+        let builtins = builtin_provider_models();
+        // Anthropic is present, keyed, and carries KB model ids.
+        let anthropic = builtins
+            .iter()
+            .find(|p| p.provider == "anthropic")
+            .expect("anthropic must be a keyed builtin");
+        assert_eq!(anthropic.api_key_env, "ANTHROPIC_API_KEY");
+        assert!(anthropic.models.iter().any(|m| m == "claude-sonnet-5"));
+        // Ollama is keyless → not enumerated from the KB here.
+        assert!(
+            !builtins.iter().any(|p| p.provider == "ollama"),
+            "keyless ollama must not be enumerated as a keyed builtin"
+        );
+    }
+
+    /// F1 support: provider availability powers the summon consistency guard —
+    /// keyless providers are always available, keyed ones need their key.
+    #[test]
+    fn is_provider_configured_handles_keyless_keyed_and_unknown() {
+        // Ollama is keyless → always available regardless of env.
+        assert!(is_provider_configured("ollama"));
+        // An unknown/custom provider is assumed available (we can't see its setup).
+        assert!(is_provider_configured("some-custom-provider-xyz"));
+        // A keyed builtin resolves to its activation env var.
+        assert_eq!(
+            provider_key_env("anthropic").as_deref(),
+            Some("ANTHROPIC_API_KEY")
+        );
+        assert_eq!(provider_key_env("ollama").as_deref(), Some(""));
     }
 
     #[test]
