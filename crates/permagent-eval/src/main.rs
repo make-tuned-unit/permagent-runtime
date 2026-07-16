@@ -75,10 +75,17 @@ struct TierSelection {
 }
 
 impl TierSelection {
-    /// Resolve the requested tiers, applying the pack-pinning choice.
+    /// Resolve the requested tiers, applying the pack-pinning choice. Repeated
+    /// `--tier NAME` values are de-duplicated (first occurrence wins, preserving
+    /// order) with a warning, so a tier is never accidentally run twice.
     fn resolve(&self) -> Result<Vec<Tier>> {
         let mut tiers: Vec<Tier> = Vec::new();
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for name in &self.tiers {
+            if !seen.insert(name.as_str()) {
+                eprintln!("warning: tier {name:?} requested more than once; running it once");
+                continue;
+            }
             let tier = Tier::builtin(name).with_context(|| {
                 format!(
                     "unknown tier {name:?}; built-in tiers are: {}",
@@ -144,6 +151,13 @@ struct RunArgs {
     /// Proceed even if a tier's API-key environment variable is absent.
     #[arg(long)]
     allow_missing_keys: bool,
+
+    /// Exit non-zero unless at least one tier reaches this pass-rate percentage
+    /// (0-100). Omit to always exit 0 regardless of outcome (the default, so
+    /// existing behavior is unchanged). E.g. `--fail-under 80` fails CI when even
+    /// the best tier solves under 80% of tasks.
+    #[arg(long, value_name = "PERCENT")]
+    fail_under: Option<f64>,
 }
 
 #[derive(Args, Debug)]
@@ -297,16 +311,59 @@ fn cmd_run(args: RunArgs) -> Result<()> {
             .with_context(|| format!("writing report to {}", path.display()))?;
         eprintln!("report written to {}", path.display());
     }
+
+    // Gate the exit code on the pass-rate threshold, if one was given. The report
+    // is already printed/written above, so a failure here still leaves the full
+    // results for inspection.
+    if let Some(threshold) = args.fail_under {
+        if let Some((best_pct, want_pct)) = fail_under_violation(&reports, threshold)? {
+            bail!("best tier pass-rate {best_pct:.1}% is below --fail-under {want_pct:.1}%");
+        }
+    }
     Ok(())
 }
 
+/// Decide whether a `--fail-under PERCENT` threshold is violated. Returns
+/// `Ok(Some((best_pct, threshold_pct)))` when the best tier's pass-rate is below
+/// the threshold (the caller should fail), `Ok(None)` when the bar is met, and
+/// `Err` when the threshold is out of the `[0, 100]` range. Pure over the
+/// reports so it is unit-tested without running anything.
+fn fail_under_violation(reports: &[TierReport], threshold_pct: f64) -> Result<Option<(f64, f64)>> {
+    if !(0.0..=100.0).contains(&threshold_pct) {
+        bail!("--fail-under must be a percentage in [0, 100], got {threshold_pct}");
+    }
+    let best_pct = reports
+        .iter()
+        .map(|r| r.aggregate().pass_rate * 100.0)
+        .fold(0.0_f64, f64::max);
+    if best_pct + f64::EPSILON < threshold_pct {
+        Ok(Some((best_pct, threshold_pct)))
+    } else {
+        Ok(None)
+    }
+}
+
 /// Error (unless allowed) when a selected tier needs an API key that is not set.
+/// A set-but-empty (or whitespace-only) value counts as missing — it would only
+/// send an empty credential and fail deeper in the harness.
 fn preflight_keys(tiers: &[Tier], allow_missing: bool) -> Result<()> {
+    preflight_keys_with(tiers, allow_missing, |k| std::env::var(k).ok())
+}
+
+/// Testable core of [`preflight_keys`]: `lookup` supplies each env var's value so
+/// the empty-key policy can be exercised without mutating the process
+/// environment.
+fn preflight_keys_with(
+    tiers: &[Tier],
+    allow_missing: bool,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<()> {
     for tier in tiers {
         let Some(key) = &tier.required_key_env else {
             continue;
         };
-        if std::env::var(key).is_ok() {
+        let present = lookup(key).is_some_and(|v| !v.trim().is_empty());
+        if present {
             continue;
         }
         if allow_missing {
@@ -336,4 +393,111 @@ fn binary_resolves(bin: &str) -> bool {
         return false;
     };
     std::env::split_paths(&paths).any(|dir| dir.join(bin).exists())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use permagent_eval::cost::CostReading;
+    use permagent_eval::metrics::TaskResult;
+    use permagent_eval::oracle::OracleOutcome;
+
+    fn tier_report(name: &str, solved: usize, total: usize) -> TierReport {
+        let results = (0..total)
+            .map(|i| {
+                let o = if i < solved {
+                    OracleOutcome::Pass
+                } else {
+                    OracleOutcome::Fail
+                };
+                TaskResult::new(
+                    format!("t{i}"),
+                    "classic",
+                    o,
+                    CostReading::known(0.0, false, 1),
+                )
+            })
+            .collect();
+        TierReport {
+            tier: name.to_string(),
+            provider: "p".to_string(),
+            model: "m".to_string(),
+            pinned_packs: true,
+            results,
+        }
+    }
+
+    // --- Nit 1: preflight rejects a set-but-empty key -----------------------
+
+    #[test]
+    fn preflight_treats_empty_key_as_missing() {
+        let tiers = vec![Tier::builtin("frontier").unwrap()]; // needs ANTHROPIC_API_KEY
+                                                              // Set-but-empty must be rejected (the bug: `var(key).is_ok()` accepted it).
+        assert!(preflight_keys_with(&tiers, false, |_| Some(String::new())).is_err());
+        // Whitespace-only likewise.
+        assert!(preflight_keys_with(&tiers, false, |_| Some("   ".to_string())).is_err());
+        // A real value passes.
+        assert!(preflight_keys_with(&tiers, false, |_| Some("sk-abc".to_string())).is_ok());
+        // Absent + allow_missing => a warning, not an error.
+        assert!(preflight_keys_with(&tiers, true, |_| None).is_ok());
+    }
+
+    #[test]
+    fn preflight_skips_keyless_tiers() {
+        let tiers = vec![Tier::builtin("local").unwrap()]; // no required key
+        assert!(preflight_keys_with(&tiers, false, |_| None).is_ok());
+    }
+
+    // --- Nit 2: --fail-under gates the exit code ----------------------------
+
+    #[test]
+    fn fail_under_uses_the_best_tier_and_respects_the_threshold() {
+        let reports = vec![tier_report("local", 2, 4), tier_report("frontier", 3, 4)];
+        // Best is 75%. A bar of 80% is violated…
+        let v = fail_under_violation(&reports, 80.0).unwrap().unwrap();
+        assert!((v.0 - 75.0).abs() < 1e-9 && (v.1 - 80.0).abs() < 1e-9);
+        // …a bar of 75% is met exactly (no violation)…
+        assert!(fail_under_violation(&reports, 75.0).unwrap().is_none());
+        // …and a bar of 50% is comfortably met.
+        assert!(fail_under_violation(&reports, 50.0).unwrap().is_none());
+    }
+
+    #[test]
+    fn fail_under_rejects_out_of_range_thresholds() {
+        let reports = vec![tier_report("local", 1, 1)];
+        assert!(fail_under_violation(&reports, -1.0).is_err());
+        assert!(fail_under_violation(&reports, 101.0).is_err());
+        assert!(fail_under_violation(&reports, 100.0).unwrap().is_none());
+    }
+
+    // --- Nit 3: duplicate --tier is de-duplicated ---------------------------
+
+    #[test]
+    fn resolve_dedupes_repeated_tiers_preserving_order() {
+        let sel = TierSelection {
+            tiers: vec![
+                "frontier".to_string(),
+                "local".to_string(),
+                "frontier".to_string(),
+            ],
+            provider: None,
+            model: None,
+            native_routing: false,
+        };
+        let resolved = sel.resolve().unwrap();
+        let names: Vec<&str> = resolved.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["frontier", "local"]);
+    }
+
+    #[test]
+    fn resolve_applies_native_routing_to_all_tiers() {
+        let sel = TierSelection {
+            tiers: vec!["local".to_string(), "frontier".to_string()],
+            provider: None,
+            model: None,
+            native_routing: true,
+        };
+        let resolved = sel.resolve().unwrap();
+        assert!(resolved.iter().all(|t| !t.pin_packs));
+    }
 }

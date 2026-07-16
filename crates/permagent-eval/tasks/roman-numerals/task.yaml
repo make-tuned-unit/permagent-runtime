@@ -3,6 +3,9 @@ title: Integer to Roman numerals
 category: classic
 max_turns: 30
 test: [python3, check.py]
+# The deliverable module is `roman` (differs from the task id) — declaring it is
+# exactly why the import-discipline allowlist is explicit, not inferred.
+deliverables: [roman]
 prompt: |
   In this directory, create a file `roman.py` that defines a function:
 

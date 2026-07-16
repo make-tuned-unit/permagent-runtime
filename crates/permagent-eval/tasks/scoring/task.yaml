@@ -3,6 +3,8 @@ title: Implement a scoring function to pass the provided test
 category: add-function
 max_turns: 30
 test: [python3, test_scoring.py]
+# Declares the workspace module the oracle imports (import-discipline guard).
+deliverables: [scoring]
 prompt: |
   This directory contains `scoring.py` (with an unimplemented `total_score`
   function) and `test_scoring.py` (a runnable test). Implement `total_score` in

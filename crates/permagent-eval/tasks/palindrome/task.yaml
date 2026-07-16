@@ -3,6 +3,8 @@ title: Valid palindrome (alphanumeric, case-insensitive)
 category: classic
 max_turns: 25
 test: [python3, check.py]
+# Declares the workspace module the oracle imports (import-discipline guard).
+deliverables: [palindrome]
 prompt: |
   In this directory, create a file `palindrome.py` that defines a function:
 
