@@ -12,6 +12,7 @@ import { AgentStateSources } from './stateSources';
 import { useAgentBehavior } from './behavior';
 import { advanceMotion } from './motion';
 import { AgentCharacterV2 } from './AgentCharacterV2';
+import { HenryToolSigil } from './HenryToolSigil';
 
 interface WorldAgentsProps {
   hoveredAgent: string | null;
@@ -38,6 +39,8 @@ export function WorldAgents({ hoveredAgent, onHoverAgent, onSelectAgent }: World
   return (
     <group>
       <AgentStateSources />
+      {/* The REAL in-flight tool name over Henry while he works (#84). */}
+      <HenryToolSigil />
       {ROSTER.map((identity) => {
         const resolved =
           identity.isHenry && orchestratorName

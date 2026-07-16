@@ -129,6 +129,43 @@ export const lightAmberTick = new THREE.MeshStandardMaterial({
   metalness: 0,
 });
 
+/**
+ * Additive Light-tier singletons (environment-truth pass, same additive
+ * precedent as lightTending/lightAmberWork above). Each animated instance is
+ * owned by exactly one component so a pulse never leaks across props:
+ *
+ *   lightErrorTick — HUD-red status tier for props that report a REAL failed
+ *     state (a schedule that errored/missed on the Horologium; a failed task's
+ *     dying ember on the benches). Same §2 error hex as the agents' channel.
+ *   lightIdleTick — gray idle tier: a real-but-dormant unit (an idle or paused
+ *     schedule). Reads as "present, not claiming work".
+ *   lightLantern — the colonnade lantern cores; intensity is owned by
+ *     ColonnadeLanterns, driven by the (real-clock) time of day.
+ */
+export const lightErrorTick = new THREE.MeshStandardMaterial({
+  color: ENV.deepVoid,
+  emissive: STATE.error,
+  emissiveIntensity: 1.3,
+  roughness: 0.4,
+  metalness: 0,
+});
+
+export const lightIdleTick = new THREE.MeshStandardMaterial({
+  color: ENV.deepVoid,
+  emissive: STATE.idle,
+  emissiveIntensity: 0.55,
+  roughness: 0.5,
+  metalness: 0,
+});
+
+export const lightLantern = new THREE.MeshStandardMaterial({
+  color: ENV.deepVoid,
+  emissive: ENV.neonAmber,
+  emissiveIntensity: 1.2,
+  roughness: 0.5,
+  metalness: 0,
+});
+
 // Holo surfaces — the sanctioned transparency use (§1 corollaries).
 
 export const holoCyan = new THREE.MeshBasicMaterial({

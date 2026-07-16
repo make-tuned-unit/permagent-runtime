@@ -13,8 +13,9 @@ import {
 } from '../shared/anchors';
 import { STATIONS } from '../constants';
 import { ROSTER, MEZZ_RADIUS, MEZZ_Y, getIdentity, type AgentIdentity } from './roster';
-import { ensureMotion, getMotion, setEngaged, setPath, stopAgent, type Waypoint } from './motion';
+import { ensureMotion, getAgentPosition, getMotion, setEngaged, setPath, stopAgent, type Waypoint } from './motion';
 import { ensurePlaceholderAnchors } from './placeholderAnchors';
+import { getNudge } from './watcherNudge';
 import { STAIR, stairPointAt } from '../areas/hall/MezzanineLibrary';
 
 const WANDER_MIN_MS = 15000;
@@ -130,6 +131,7 @@ export function useAgentBehavior(states: AgentRuntimeState[]): void {
   const prevRef = useRef(new Map<string, string>());
   const wanderAtRef = useRef(new Map<string, number>());
   const henryStrollAtRef = useRef(Date.now() + 30000);
+  const nudgeSeqRef = useRef(0);
 
   // Spawn motion records + placeholder seat anchors once. Construction build anchors are
   // published by W2's props on area mount — W3 only consumes them (no registration here).
@@ -172,6 +174,42 @@ export function useAgentBehavior(states: AgentRuntimeState[]): void {
   useEffect(() => {
     const tick = setInterval(() => {
       const now = Date.now();
+
+      // ── The Watcher delivers a REAL nudge (§4-honest choreography) ──
+      // A live proactive_nudge arrived: the Watcher carries it to the sovereign —
+      // walks to just short of wherever Henry stands right now, presents for a
+      // few seconds facing him, then returns to its vigil. Walking claims no
+      // HUD state (locomotion is ambient); the plaque + beacon flare that carry
+      // the CONTENT read the same real event from watcherNudge.
+      const nudge = getNudge();
+      if (nudge.seq > 0 && nudge.seq !== nudgeSeqRef.current) {
+        nudgeSeqRef.current = nudge.seq;
+        const watcher = getMotion('watcher');
+        const henry = getAgentPosition('henry');
+        const identity = getIdentity('watcher');
+        const hud = hudRef.current.get('watcher') ?? 'idle';
+        if (watcher && henry && identity && watcher.engaged === 'none' && hud !== 'error') {
+          // Approach point ~1.8u from Henry, on the Watcher's side of him.
+          const dx = watcher.x - henry.x;
+          const dz = watcher.z - henry.z;
+          const d = Math.sqrt(dx * dx + dz * dz) || 1;
+          const ax = henry.x + (dx / d) * 1.8;
+          const az = henry.z + (dz / d) * 1.8;
+          wanderAtRef.current.set('watcher', now + 30000);
+          setPath('watcher', [
+            {
+              x: ax,
+              y: 0,
+              z: az,
+              // Face Henry while presenting (motion heading convention: atan2(dx, dz)).
+              facing: Math.atan2(henry.x - ax, henry.z - az),
+              pauseMs: 8000,
+            },
+            { x: identity.home.x, y: 0, z: identity.home.z },
+          ]);
+        }
+      }
+
       for (const agent of ROSTER) {
         const m = getMotion(agent.id);
         if (!m) continue;
