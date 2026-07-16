@@ -328,7 +328,8 @@ mod tests {
     #[test]
     fn derive_none_when_no_signal() {
         // Empty / unrecognized tool kinds and no tag → no role → single-model.
-        assert_eq!(derive_role::<&str>(&[], None), None);
+        let no_kinds: &[&str] = &[];
+        assert_eq!(derive_role(no_kinds, None), None);
         assert_eq!(derive_role(&["telepathy"], None), None);
     }
 
@@ -341,8 +342,9 @@ mod tests {
             Some(WorkflowRole::Mechanical)
         );
         // "hard" is an accepted alias for the orchestrate role.
+        let no_kinds: &[&str] = &[];
         assert_eq!(
-            derive_role::<&str>(&[], Some("hard")),
+            derive_role(no_kinds, Some("hard")),
             Some(WorkflowRole::Orchestrate)
         );
         // An unknown tag is ignored, falling back to tool-kind derivation.
