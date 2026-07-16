@@ -1303,43 +1303,67 @@ impl SummonClient {
         Ok(task_config)
     }
 
+    /// The workflow role a delegate's worker persona plays, for cost routing.
+    /// `None` when there is no persona or it yields no role signal — dispatch then
+    /// stays single-model. See `cost_router::role_map::derive_role`.
+    fn role_for_persona(worker_persona: Option<&str>) -> Option<crate::cost_router::WorkflowRole> {
+        let key = worker_persona?;
+        let config = crate::config::agent_identity::load_agent_config();
+        config.workers.get(key).and_then(|w| w.routing_role())
+    }
+
     async fn resolve_provider(
         &self,
         params: &DelegateParams,
         recipe: &Recipe,
         session: &crate::session::Session,
     ) -> Result<Arc<dyn crate::providers::base::Provider>, anyhow::Error> {
-        let provider_name = params
-            .provider
-            .clone()
-            .or_else(|| {
-                recipe
-                    .settings
-                    .as_ref()
-                    .and_then(|s| s.goose_provider.clone())
-            })
-            .or_else(|| {
-                Config::global()
-                    .get_param::<String>("GOOSE_SUBAGENT_PROVIDER")
-                    .ok()
-            })
-            .or_else(|| session.provider_name.clone())
-            .ok_or_else(|| anyhow::anyhow!("No provider configured"))?;
+        // The objective role→model layer (#730 wiring). If the delegate carries a
+        // worker persona whose workflow role has a CONFIGURED model, route to it —
+        // slotted after an explicit param / recipe setting, before the
+        // GOOSE_SUBAGENT_* fallback. Unset ⇒ `None` ⇒ fall through to the current
+        // single-model behaviour (parent/session model). It is NEVER a baked-in
+        // vendor default: the tier-pack Opus/Sonnet/Haiku is not reachable from
+        // here — nothing configured means nothing changes.
+        let role = Self::role_for_persona(params.worker_persona.as_deref());
+        let role_model = role.and_then(crate::cost_router::role_model);
+
+        let recipe_provider = recipe
+            .settings
+            .as_ref()
+            .and_then(|s| s.goose_provider.clone());
+        // The role's provider is applied only when neither an explicit param nor a
+        // recipe setting named one — the precise insertion point (and the gate for
+        // the cache guard below).
+        let role_provider_applied =
+            params.provider.is_none() && recipe_provider.is_none() && role_model.is_some();
+
+        let provider_name = resolve_subagent_provider(
+            params.provider.clone(),
+            recipe_provider,
+            role_model.as_ref().map(|rm| rm.provider.clone()),
+            Config::global()
+                .get_param::<String>("GOOSE_SUBAGENT_PROVIDER")
+                .ok(),
+            session.provider_name.clone(),
+        )
+        .ok_or_else(|| anyhow::anyhow!("No provider configured"))?;
 
         let mut model_config = session.model_config.clone().map(Ok).unwrap_or_else(|| {
             crate::model::ModelConfig::new("default")
                 .map(|c| c.with_canonical_limits(&provider_name))
         })?;
 
-        if let Some(model) = &params.model {
-            model_config.model_name = model.clone();
-        } else if let Some(model) = recipe
-            .settings
-            .as_ref()
-            .and_then(|s| s.goose_model.as_ref())
-        {
-            model_config.model_name = model.clone();
-        } else if let Ok(model) = Config::global().get_param::<String>("GOOSE_SUBAGENT_MODEL") {
+        // Model precedence with the role layer slotted after recipe.settings and
+        // before GOOSE_SUBAGENT_MODEL. `None` ⇒ keep the inherited session model.
+        if let Some(model) = resolve_subagent_model(
+            params.model.clone(),
+            recipe.settings.as_ref().and_then(|s| s.goose_model.clone()),
+            role_model.as_ref().map(|rm| rm.model.clone()),
+            Config::global()
+                .get_param::<String>("GOOSE_SUBAGENT_MODEL")
+                .ok(),
+        ) {
             model_config.model_name = model;
         }
 
@@ -1349,7 +1373,33 @@ impl SummonClient {
             model_config = model_config.with_temperature(Some(temp));
         }
 
-        providers::create(&provider_name, model_config, Vec::new()).await
+        let provider = providers::create(&provider_name, model_config, Vec::new()).await?;
+
+        // Live cache guard (#730): a cache-heavy role (orchestrate/edit) routed by
+        // the role map to a provider without prompt caching forfeits the
+        // warm-prefix saving that makes the loop cheap. Warn — only when the role
+        // map is what selected this provider (an explicit param/recipe override is
+        // the operator's deliberate call, not something to second-guess).
+        if let Some(role) = role {
+            let supports_cache = provider.supports_cache_control().await;
+            if crate::cost_router::cache_guard_should_warn(
+                role,
+                role_provider_applied,
+                supports_cache,
+            ) {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    "cost-router cache guard: cache-heavy role '{}' routed to provider '{}' \
+                     which has no prompt caching — this loop can't keep a warm cache; prefer a \
+                     caching provider for the {} role",
+                    role.as_str(),
+                    provider_name,
+                    role.as_str()
+                );
+            }
+        }
+
+        Ok(provider)
     }
 
     fn resolve_max_turns(&self, session: &crate::session::Session) -> usize {
@@ -1698,6 +1748,33 @@ impl McpClientTrait for SummonClient {
     }
 }
 
+/// Pure subagent PROVIDER precedence: explicit param → recipe setting → role map
+/// → `GOOSE_SUBAGENT_PROVIDER` → inherited session provider. The objective role
+/// layer (#730) slots after the recipe setting and before the env fallback; first
+/// present wins. Extracted from `resolve_provider` so the precedence is
+/// unit-testable without building a live session.
+fn resolve_subagent_provider(
+    param: Option<String>,
+    recipe: Option<String>,
+    role: Option<String>,
+    subagent_env: Option<String>,
+    session: Option<String>,
+) -> Option<String> {
+    param.or(recipe).or(role).or(subagent_env).or(session)
+}
+
+/// Pure subagent MODEL precedence: explicit param → recipe setting → role map →
+/// `GOOSE_SUBAGENT_MODEL`. `None` ⇒ keep the inherited session model — the
+/// single-model fallback, NEVER a baked-in vendor default. First present wins.
+fn resolve_subagent_model(
+    param: Option<String>,
+    recipe: Option<String>,
+    role: Option<String>,
+    subagent_env: Option<String>,
+) -> Option<String> {
+    param.or(recipe).or(role).or(subagent_env)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1713,6 +1790,87 @@ mod tests {
             session_manager: Arc::new(crate::session::SessionManager::instance()),
             session: None,
         }
+    }
+
+    // ── Role-router precedence (#730 wiring) ─────────────────────────────────
+    // These exercise the pure precedence the role layer slots into, without a
+    // live session. `s` is a terse Option<String> helper.
+    fn s(v: &str) -> Option<String> {
+        Some(v.to_string())
+    }
+
+    #[test]
+    fn role_model_applies_when_no_param_or_recipe_names_one() {
+        // Nothing explicit, a role mapping present → the role's model/provider win.
+        assert_eq!(
+            resolve_subagent_model(None, None, s("gpt-5.6"), s("subagent-fallback")),
+            s("gpt-5.6"),
+            "the role model must be used when no param/recipe overrides it"
+        );
+        assert_eq!(
+            resolve_subagent_provider(None, None, s("openai"), s("anthropic"), s("session")),
+            s("openai"),
+        );
+    }
+
+    #[test]
+    fn explicit_param_and_recipe_outrank_the_role_layer() {
+        // An explicit delegate param wins over the role map…
+        assert_eq!(
+            resolve_subagent_model(s("param-model"), None, s("role-model"), None),
+            s("param-model"),
+        );
+        // …and a recipe setting wins over the role map when no param is given.
+        assert_eq!(
+            resolve_subagent_model(None, s("recipe-model"), s("role-model"), None),
+            s("recipe-model"),
+        );
+        assert_eq!(
+            resolve_subagent_provider(None, s("recipe-prov"), s("role-prov"), s("env"), s("sess")),
+            s("recipe-prov"),
+        );
+    }
+
+    #[test]
+    fn role_layer_outranks_the_env_subagent_fallback() {
+        // The role map is a HIGHER precedence than GOOSE_SUBAGENT_* — the whole
+        // point: a configured role routes even when a subagent env default exists.
+        assert_eq!(
+            resolve_subagent_model(None, None, s("role-model"), s("GOOSE_SUBAGENT_MODEL")),
+            s("role-model"),
+        );
+    }
+
+    #[test]
+    fn unset_role_falls_through_to_single_model_not_a_baked_default() {
+        // THE load-bearing guarantee at the dispatch precedence: with NO role
+        // mapping (role = None), model resolution falls through to the env/session
+        // fallback — and when that too is absent, `None` means "keep the inherited
+        // session model". At no point does a tier-pack default (Opus/Sonnet/Haiku)
+        // enter: it is not in the precedence chain at all.
+        //
+        // No role, no env → None ⇒ caller keeps the session model.
+        assert_eq!(resolve_subagent_model(None, None, None, None), None);
+        // No role, but an env subagent default → that env value (still the user's
+        // choice), never a vendor pack.
+        assert_eq!(
+            resolve_subagent_model(None, None, None, s("user-env-default")),
+            s("user-env-default"),
+        );
+        // Provider likewise falls through to the inherited session provider.
+        assert_eq!(
+            resolve_subagent_provider(None, None, None, None, s("session-provider")),
+            s("session-provider"),
+        );
+        // Prove the negative directly: the pack default model is NEVER produced by
+        // the precedence when nothing configures the role.
+        let pack_default = crate::cost_router::packs::ModelPacks::default().hard.model;
+        assert_eq!(pack_default.as_str(), "claude-opus-4-8"); // the baked pack exists…
+        assert_ne!(
+            resolve_subagent_model(None, None, None, s("user-env-default")),
+            Some(pack_default),
+            "unset role must not route to the tier-pack default"
+        );
     }
 
     #[test]

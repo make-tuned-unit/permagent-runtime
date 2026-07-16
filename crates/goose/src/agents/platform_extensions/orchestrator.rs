@@ -735,11 +735,18 @@ impl OrchestratorClient {
             _ => {
                 let provider = self.get_provider().await?;
                 let extensions = self.parent_extensions();
+                // Resolve the worker's workflow role → its CONFIGURED model (#730
+                // wiring). Unset ⇒ None ⇒ the engine clones the parent session
+                // model (single-model fallback; never a baked-in vendor default).
+                let role = worker_cfg.and_then(|w| w.routing_role());
+                let model_override = role.and_then(crate::cost_router::role_model);
                 Box::new(goal_engine::InternalSubagentEngine {
                     session_manager: self.context.session_manager.clone(),
                     provider,
                     extensions,
                     persona_override,
+                    role,
+                    model_override,
                 })
             }
         };

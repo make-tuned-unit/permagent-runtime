@@ -46,7 +46,7 @@ use super::knowledge::{lookup, ModelKnowledge};
 pub const EDIT_RELIABILITY_FLOOR: f64 = 0.97;
 
 /// A workflow role in the coding harness. The recommender maps each to a model.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowRole {
     /// The judgment-dense main loop.
@@ -84,6 +84,22 @@ impl WorkflowRole {
         }
     }
 
+    /// Parse a role from an operator-supplied tag / config value, case-insensitively
+    /// and accepting the common alias `hard` for [`WorkflowRole::Orchestrate`] (the
+    /// frontier-reasoning role's name in the tier ladder, [`super::packs::Role::Hard`]).
+    /// `None` for an unrecognized tag. Used by `WorkerPersona::workflow_role`
+    /// overrides and `permagent packs set --role`.
+    pub fn from_tag(tag: &str) -> Option<WorkflowRole> {
+        match tag.trim().to_ascii_lowercase().as_str() {
+            "orchestrate" | "hard" | "plan" | "planning" => Some(WorkflowRole::Orchestrate),
+            "edit" | "code_edit" => Some(WorkflowRole::Edit),
+            "mechanical" | "read_only" => Some(WorkflowRole::Mechanical),
+            "review" | "verify" => Some(WorkflowRole::Review),
+            "local" => Some(WorkflowRole::Local),
+            _ => None,
+        }
+    }
+
     /// One-line description of what the role is for.
     pub fn description(&self) -> &'static str {
         match self {
@@ -97,8 +113,10 @@ impl WorkflowRole {
 
     /// Whether this role runs a cache-heavy loop (so a non-caching provider is
     /// a warning). ORCHESTRATE and EDIT hold long, warm prefixes; MECHANICAL /
-    /// REVIEW / LOCAL are short, isolated sub-work.
-    fn is_cache_heavy(&self) -> bool {
+    /// REVIEW / LOCAL are short, isolated sub-work. Public so the live dispatch
+    /// cache guard (`summon` / goal engine) fires on the same rule the recommender
+    /// warns on.
+    pub fn is_cache_heavy(&self) -> bool {
         matches!(self, WorkflowRole::Orchestrate | WorkflowRole::Edit)
     }
 }
@@ -821,6 +839,31 @@ mod tests {
     #[test]
     fn empty_available_yields_no_recommendations() {
         assert!(recommend(&[]).is_empty());
+    }
+
+    #[test]
+    fn from_tag_parses_roles_and_the_hard_alias() {
+        assert_eq!(WorkflowRole::from_tag("edit"), Some(WorkflowRole::Edit));
+        assert_eq!(
+            WorkflowRole::from_tag("MECHANICAL"),
+            Some(WorkflowRole::Mechanical)
+        );
+        assert_eq!(WorkflowRole::from_tag("review"), Some(WorkflowRole::Review));
+        assert_eq!(WorkflowRole::from_tag("local"), Some(WorkflowRole::Local));
+        // `hard` is the frontier-reasoning alias for orchestrate.
+        assert_eq!(
+            WorkflowRole::from_tag(" hard "),
+            Some(WorkflowRole::Orchestrate)
+        );
+        assert_eq!(
+            WorkflowRole::from_tag("orchestrate"),
+            Some(WorkflowRole::Orchestrate)
+        );
+        // Round-trips with as_str for every role (config key stability).
+        for role in WorkflowRole::all() {
+            assert_eq!(WorkflowRole::from_tag(role.as_str()), Some(role));
+        }
+        assert_eq!(WorkflowRole::from_tag("nonsense"), None);
     }
 
     #[test]
