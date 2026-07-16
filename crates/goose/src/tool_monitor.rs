@@ -235,6 +235,11 @@ pub fn is_mutating(name: &str) -> bool {
     .any(|kw| n.contains(kw))
 }
 
+/// Strip an `extension__tool` prefix so heuristics match the bare tool name.
+fn base_tool_name(name: &str) -> &str {
+    name.rsplit("__").next().unwrap_or(name)
+}
+
 /// The project-checks tool (`developer__verify`). Its fix loop has its own bound
 /// (S6): the real loop interleaves `edit` calls between `verify` re-runs, and the
 /// generic identical-call run (S1/S2) cannot see across those edits.
