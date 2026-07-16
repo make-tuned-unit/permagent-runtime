@@ -8,6 +8,7 @@
 //! glue exercised for real on the machine that runs the eval.
 
 use anyhow::{Context, Result};
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -15,7 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::cost::{CostReader, CostReading};
-use crate::invocation::{build_invocation, Invocation};
+use crate::invocation::{build_invocation, is_scrubbed_env, Invocation};
 use crate::metrics::TaskResult;
 use crate::oracle::{outcome_from_exit, OracleOutcome};
 use crate::task::Task;
@@ -67,11 +68,33 @@ pub struct RunConfig {
     pub keep: bool,
 }
 
+/// Removes a run's scratch directory when dropped — on success AND on every
+/// error path (failed seeding, spawn errors, oracle errors) — unless the run
+/// asked to keep it (`--keep`). Errors are best-effort ignored: cleanup must
+/// never mask the real failure.
+struct ScratchGuard {
+    dir: PathBuf,
+    keep: bool,
+}
+
+impl Drop for ScratchGuard {
+    fn drop(&mut self) {
+        if !self.keep {
+            let _ = fs::remove_dir_all(&self.dir);
+        }
+    }
+}
+
 /// Run a single task under a tier and return its [`TaskResult`].
 pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> Result<TaskResult> {
     let run_dir = cfg
         .runs_root
         .join(format!("{}-{}-{}", tier.name, task.spec.id, unique_stamp()));
+    // Guard the scratch dir from here on: every `?` below must clean up too.
+    let _scratch = ScratchGuard {
+        dir: run_dir.clone(),
+        keep: cfg.keep,
+    };
     let workdir = run_dir.join("workspace");
     let data_root = run_dir.join("data");
     let logs = run_dir.join("logs");
@@ -123,9 +146,7 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
         result.note = Some("harness run hit its wall-clock ceiling".to_string());
     }
 
-    if !cfg.keep {
-        let _ = fs::remove_dir_all(&run_dir);
-    }
+    // `_scratch` cleans up the run dir here (and on every early return above).
     Ok(result)
 }
 
@@ -203,6 +224,33 @@ fn capture_to(log_path: &Path) -> Result<(Stdio, Stdio)> {
     Ok((Stdio::from(file), Stdio::from(err)))
 }
 
+/// Apply an invocation's environment policy to a command:
+///
+/// 1. REMOVE every inherited router-family variable (`PERMAGENT_PACK_*`,
+///    `PERMAGENT_CHEAP_*`, `PERMAGENT_BUDGET_*` — see
+///    [`crate::invocation::SCRUBBED_ENV_PREFIXES`]) so an operator's shell pins
+///    can never contaminate a run. This is what makes `--native-routing`
+///    actually native.
+/// 2. SET the invocation's own variables on top — a pack-pinning tier re-sets
+///    exactly its own pins; everything else (API keys, PATH, …) is inherited.
+///
+/// `ambient_keys` is the inherited environment's variable names, injected so
+/// the policy is unit-testable without mutating the test process environment.
+fn apply_env_policy(
+    cmd: &mut Command,
+    inv: &Invocation,
+    ambient_keys: impl IntoIterator<Item = OsString>,
+) {
+    for key in ambient_keys {
+        if is_scrubbed_env(&key.to_string_lossy()) {
+            cmd.env_remove(&key);
+        }
+    }
+    for (k, v) in &inv.envs {
+        cmd.env(k, v);
+    }
+}
+
 /// The production harness runner: shells out to the `permagent` binary.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SubprocessHarnessRunner;
@@ -217,9 +265,7 @@ impl HarnessRunner for SubprocessHarnessRunner {
             .stdin(Stdio::null())
             .stdout(out)
             .stderr(err);
-        for (k, v) in &inv.envs {
-            cmd.env(k, v);
-        }
+        apply_env_policy(&mut cmd, inv, std::env::vars_os().map(|(k, _)| k));
         let mut child = cmd
             .spawn()
             .with_context(|| format!("spawning harness `{}`", inv.program))?;
@@ -308,6 +354,36 @@ mod tests {
         }
     }
 
+    /// A harness whose spawn always hard-errors (after the run dir exists).
+    struct BoomHarness;
+    impl HarnessRunner for BoomHarness {
+        fn run(&self, _i: &Invocation, _t: Duration, _l: &Path) -> Result<HarnessRun> {
+            anyhow::bail!("boom")
+        }
+    }
+
+    struct NeverOracle;
+    impl OracleRunner for NeverOracle {
+        fn run(&self, _w: &Path, _a: &[String], _t: Duration, _l: &Path) -> Result<Option<i32>> {
+            Ok(Some(0))
+        }
+    }
+
+    struct UnknownCost;
+    impl CostReader for UnknownCost {
+        fn read_total(&self, _d: &Path) -> Result<CostReading> {
+            Ok(CostReading::unknown())
+        }
+    }
+
+    /// Assert the runs root holds no leftover per-run scratch directories.
+    fn assert_no_leftover_run_dirs(runs_root: &Path) {
+        let leftover: Vec<PathBuf> = fs::read_dir(runs_root)
+            .map(|it| it.filter_map(|e| e.ok()).map(|e| e.path()).collect())
+            .unwrap_or_default();
+        assert!(leftover.is_empty(), "leftover run dirs: {leftover:?}");
+    }
+
     fn make_task(dir: &Path, workspace: &[(&str, &str)], oracle: &[(&str, &str)]) -> Task {
         fs::create_dir_all(dir).unwrap();
         fs::write(
@@ -381,6 +457,8 @@ mod tests {
         assert_eq!(r.cost.usd, Some(0.42));
         assert!((r.duration_secs - 1.5).abs() < 1e-9);
         assert_eq!(r.harness_exit, Some(0));
+        // Without --keep, the successful run leaves no scratch dir behind.
+        assert_no_leftover_run_dirs(&cfg.runs_root);
     }
 
     #[test]
@@ -421,30 +499,6 @@ mod tests {
 
     #[test]
     fn run_tier_turns_hard_errors_into_errored_results() {
-        struct BoomCost;
-        impl CostReader for BoomCost {
-            fn read_total(&self, _d: &Path) -> Result<CostReading> {
-                Ok(CostReading::unknown())
-            }
-        }
-        struct BoomHarness;
-        impl HarnessRunner for BoomHarness {
-            fn run(&self, _i: &Invocation, _t: Duration, _l: &Path) -> Result<HarnessRun> {
-                anyhow::bail!("boom")
-            }
-        }
-        struct NeverOracle;
-        impl OracleRunner for NeverOracle {
-            fn run(
-                &self,
-                _w: &Path,
-                _a: &[String],
-                _t: Duration,
-                _l: &Path,
-            ) -> Result<Option<i32>> {
-                Ok(Some(0))
-            }
-        }
         let tmp = tempfile::tempdir().unwrap();
         let task = make_task(&tmp.path().join("demo"), &[], &[]);
         let cfg = RunConfig {
@@ -455,7 +509,7 @@ mod tests {
         let deps = Deps {
             harness: &BoomHarness,
             oracle: &NeverOracle,
-            cost: &BoomCost,
+            cost: &UnknownCost,
         };
         let results = run_tier(
             std::slice::from_ref(&task),
@@ -467,5 +521,190 @@ mod tests {
         assert!(!results[0].solved);
         assert_eq!(results[0].oracle, OracleOutcome::Errored);
         assert!(results[0].note.as_deref().unwrap().contains("boom"));
+        // The errored-run conversion must not leak the scratch dir either.
+        assert_no_leftover_run_dirs(&cfg.runs_root);
+    }
+
+    #[test]
+    fn scratch_dir_removed_when_the_harness_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let task = make_task(&tmp.path().join("demo"), &[("seed.txt", "s")], &[]);
+        let cfg = RunConfig {
+            permagent_bin: "permagent".to_string(),
+            runs_root: tmp.path().join("runs"),
+            keep: false,
+        };
+        let deps = Deps {
+            harness: &BoomHarness,
+            oracle: &NeverOracle,
+            cost: &UnknownCost,
+        };
+        let err = run_task(&task, &Tier::builtin("local").unwrap(), &cfg, &deps).unwrap_err();
+        assert!(format!("{err:#}").contains("boom"));
+        assert_no_leftover_run_dirs(&cfg.runs_root);
+    }
+
+    #[test]
+    fn scratch_dir_kept_on_error_when_keep_is_set() {
+        let tmp = tempfile::tempdir().unwrap();
+        let task = make_task(&tmp.path().join("demo"), &[], &[]);
+        let cfg = RunConfig {
+            permagent_bin: "permagent".to_string(),
+            runs_root: tmp.path().join("runs"),
+            keep: true,
+        };
+        let deps = Deps {
+            harness: &BoomHarness,
+            oracle: &NeverOracle,
+            cost: &UnknownCost,
+        };
+        run_task(&task, &Tier::builtin("local").unwrap(), &cfg, &deps).unwrap_err();
+        let kept = fs::read_dir(&cfg.runs_root).unwrap().count();
+        assert_eq!(
+            kept, 1,
+            "--keep must preserve the scratch dir on errors too"
+        );
+    }
+
+    /// The F10 regression from the #726 review: a task whose seed cannot be
+    /// copied errors AFTER the run dir was created — that dir must not leak.
+    #[cfg(unix)]
+    #[test]
+    fn scratch_dir_removed_when_seeding_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let task = make_task(&tmp.path().join("demo"), &[("seed.txt", "s")], &[]);
+        // Replace the seed with a dangling symlink: `fs::copy` of it fails, so
+        // workspace seeding errors after `run_dir` exists.
+        let seed = task.dir.join("workspace").join("seed.txt");
+        fs::remove_file(&seed).unwrap();
+        std::os::unix::fs::symlink("/nonexistent/permagent-eval-target", &seed).unwrap();
+        let cfg = RunConfig {
+            permagent_bin: "permagent".to_string(),
+            runs_root: tmp.path().join("runs"),
+            keep: false,
+        };
+        let deps = Deps {
+            harness: &BoomHarness,
+            oracle: &NeverOracle,
+            cost: &UnknownCost,
+        };
+        let err = run_task(&task, &Tier::builtin("local").unwrap(), &cfg, &deps).unwrap_err();
+        assert!(format!("{err:#}").contains("seeding task workspace"));
+        assert_no_leftover_run_dirs(&cfg.runs_root);
+    }
+
+    fn demo_spec() -> crate::task::TaskSpec {
+        crate::task::TaskSpec::from_yaml("id: demo\ntitle: D\nprompt: p\ntest: ['true']\n").unwrap()
+    }
+
+    fn env_map(cmd: &Command) -> std::collections::BTreeMap<OsString, Option<OsString>> {
+        cmd.get_envs()
+            .map(|(k, v)| (k.to_os_string(), v.map(|v| v.to_os_string())))
+            .collect()
+    }
+
+    /// The F9 regression from the #726 review: a tier that sets no packs
+    /// (`--native-routing`) must produce a command that REMOVES the operator's
+    /// pre-existing router env instead of inheriting it.
+    #[test]
+    fn env_policy_scrubs_operator_router_env_for_a_native_routing_tier() {
+        let tier = Tier::builtin("local").unwrap().with_pin_packs(false);
+        let inv = build_invocation(
+            &demo_spec(),
+            &tier,
+            Path::new("/w"),
+            Path::new("/d"),
+            "permagent",
+        );
+        let mut cmd = Command::new(&inv.program);
+        let ambient = [
+            "PERMAGENT_PACK_EDIT_PROVIDER",
+            "PERMAGENT_PACK_HARD_MODEL",
+            "PERMAGENT_CHEAP_PIN_PROVIDER",
+            "PERMAGENT_CHEAP_PIN_MODEL",
+            "PERMAGENT_CHEAP_ANCHOR_MODEL",
+            "PERMAGENT_BUDGET_TASK_HARD_USD",
+            "ANTHROPIC_API_KEY",
+            "PATH",
+        ]
+        .map(OsString::from);
+        apply_env_policy(&mut cmd, &inv, ambient);
+
+        let envs = env_map(&cmd);
+        // Every pre-existing router-family var is explicitly removed…
+        for name in [
+            "PERMAGENT_PACK_EDIT_PROVIDER",
+            "PERMAGENT_PACK_HARD_MODEL",
+            "PERMAGENT_CHEAP_PIN_PROVIDER",
+            "PERMAGENT_CHEAP_PIN_MODEL",
+            "PERMAGENT_CHEAP_ANCHOR_MODEL",
+            "PERMAGENT_BUDGET_TASK_HARD_USD",
+        ] {
+            assert_eq!(
+                envs.get(std::ffi::OsStr::new(name)),
+                Some(&None),
+                "{name} must be removed from the child env"
+            );
+        }
+        // …no pack env is SET at all (native routing means native)…
+        assert!(
+            envs.iter()
+                .all(|(k, v)| v.is_none() || !k.to_string_lossy().starts_with("PERMAGENT_PACK_")),
+            "a native-routing run must not set any pack env"
+        );
+        // …API keys and PATH are untouched (inherited, not removed)…
+        assert!(!envs.contains_key(std::ffi::OsStr::new("ANTHROPIC_API_KEY")));
+        assert!(!envs.contains_key(std::ffi::OsStr::new("PATH")));
+        // …and the run isolation env is still set.
+        assert_eq!(
+            envs.get(std::ffi::OsStr::new("PERMAGENT_PATH_ROOT")),
+            Some(&Some(OsString::from("/d")))
+        );
+    }
+
+    #[test]
+    fn env_policy_pinned_tier_sets_exactly_its_own_pack_env() {
+        let tier = Tier::builtin("local").unwrap();
+        let inv = build_invocation(
+            &demo_spec(),
+            &tier,
+            Path::new("/w"),
+            Path::new("/d"),
+            "permagent",
+        );
+        let mut cmd = Command::new(&inv.program);
+        let ambient = [
+            "PERMAGENT_PACK_EDIT_PROVIDER",
+            "PERMAGENT_PACK_EDIT_MODEL",
+            "PERMAGENT_CHEAP_PIN_MODEL",
+        ]
+        .map(OsString::from);
+        apply_env_policy(&mut cmd, &inv, ambient);
+
+        let envs = env_map(&cmd);
+        // The tier's own pins win over the scrub of the operator's stale values…
+        assert_eq!(
+            envs.get(std::ffi::OsStr::new("PERMAGENT_PACK_EDIT_PROVIDER")),
+            Some(&Some(OsString::from("ollama")))
+        );
+        // …the SET pack env is exactly the tier's own (all 8 role vars)…
+        let set_packs: Vec<String> = envs
+            .iter()
+            .filter(|(k, v)| v.is_some() && k.to_string_lossy().starts_with("PERMAGENT_PACK_"))
+            .map(|(k, _)| k.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(set_packs.len(), tier.pack_env().len());
+        for (k, v) in tier.pack_env() {
+            assert_eq!(
+                envs.get(std::ffi::OsStr::new(&k)),
+                Some(&Some(OsString::from(v.as_str()))),
+                "{k} must be pinned to the tier's own value"
+            );
+        }
+        // …and the operator's cheap-tier pin is still removed.
+        assert_eq!(
+            envs.get(std::ffi::OsStr::new("PERMAGENT_CHEAP_PIN_MODEL")),
+            Some(&None)
+        );
     }
 }

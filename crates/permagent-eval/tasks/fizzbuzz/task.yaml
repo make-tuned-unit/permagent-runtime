@@ -3,6 +3,9 @@ title: FizzBuzz function
 category: classic
 max_turns: 25
 test: [python3, check.py]
+# The oracle imports the agent's deliverable module; declare it so the
+# import-discipline validation allows it (see crates/permagent-eval/README.md).
+deliverables: [fizzbuzz]
 prompt: |
   In this directory, create a file `fizzbuzz.py` that defines a function:
 

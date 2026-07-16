@@ -8,7 +8,7 @@ $/task** — runnable under different model tiers so you can compare a cheap/loc
 model against a frontier one.
 
 This is deliberately *not* the full 225-problem Aider-polyglot Docker
-orchestration. It is a small curated set (currently 6 tasks) that answers one
+orchestration. It is a small curated set (currently 7 tasks) that answers one
 question: **how well, and at what cost, does the coding harness do real work on a
 cheaper model?**
 
@@ -85,9 +85,12 @@ cargo run -p permagent-eval -- run \
 
 `run` prints a live PASS/FAIL line per task to stderr and the full report to
 stdout (and to `--out`). Pass multiple `--tier` flags to get a side-by-side
-comparison table. Use `--task <id>` to run a subset, `--keep` to keep the scratch
-dirs for debugging, and `--native-routing` to measure the shipped cost-optimizer
-instead of a pinned single model.
+comparison table (a repeated tier is de-duplicated with a warning). Use
+`--task <id>` to run a subset, `--keep` to keep the scratch dirs for debugging,
+and `--native-routing` to measure the shipped cost-optimizer instead of a pinned
+single model. Add `--fail-under <percent>` to make the process exit non-zero
+unless at least one tier reaches that pass-rate (for CI gating); without it the
+exit code is always 0.
 
 ### Reading the report
 
@@ -115,6 +118,34 @@ grading. Current tasks:
 
 Oracles need `node` and `python3` on PATH (both present on the mini). Adding a task
 is just a new directory following the same layout.
+
+### Oracle import discipline (tamper-proofing)
+
+The oracle overlay only re-installs files that share a name with a pristine
+oracle file. But an oracle runs **inside the finished workspace**, and for
+`python3 <script>` the interpreter puts the script's own directory (the
+workspace) first on `sys.path` (Node resolves bare specifiers there too). So any
+module an oracle imports that the agent could have written is a shadowing hole: a
+hostile solution can drop a `json.py` (or `statistics.py`, …) that feeds the
+grader rigged data and flips a real FAIL into a PASS.
+
+To make this a rule rather than a matter of authorship luck, `validate` (and
+every task load) enforces:
+
+- **Python oracles** may import only `sys` (a built-in — compiled into the
+  interpreter, so unshadowable) plus the task's declared **`deliverables`** — the
+  workspace modules the agent is meant to produce (e.g. `deliverables: [stats]`
+  for a `from stats import median` grader; note the module name can differ from
+  the task id, e.g. `roman` for `roman-numerals`). Any other bare
+  `import X` / `from X import …` is rejected.
+- **Node oracles** may use only `node:`-prefixed specifiers in static
+  `import … from "…"`, `require("…")` or `import("…")`. Load a deliverable by an
+  absolute `file://` URL —
+  `import(pathToFileURL(process.cwd() + "/merge.mjs").href)` — which is not a
+  shadowable bare specifier.
+
+A task whose oracle imports an undeclared, workspace-shadowable module fails
+`validate` (and never runs), so the grade can't be rigged by a planted module.
 
 ## Tests
 

@@ -44,6 +44,28 @@ fn solved_mark(solved: bool) -> &'static str {
     }
 }
 
+/// Footnote marker appended to a tier's dollar figures when they carry caveats:
+/// `†` when some task costs are unknown (all dollar figures are a lower bound),
+/// `‡` when some are estimated (a further under-count). Empty when every cost
+/// is known exactly — the markers must never silently vanish from a report
+/// whose numbers are not what they look like.
+fn cost_caveat_marker(agg: &Aggregate) -> String {
+    let mut mark = String::new();
+    if agg.any_cost_unknown {
+        mark.push('†');
+    }
+    if agg.any_estimated {
+        mark.push('‡');
+    }
+    mark
+}
+
+/// The Markdown footnote explaining `†`.
+const MD_UNKNOWN_NOTE: &str = "† some task costs are unknown — dollar figures are a lower bound";
+
+/// The Markdown footnote explaining `‡`.
+const MD_ESTIMATED_NOTE: &str = "‡ some task costs are estimated — dollar figures may under-count";
+
 /// A compact one-line-per-tier plaintext summary.
 pub fn render_text(reports: &[TierReport]) -> String {
     let mut out = String::new();
@@ -113,8 +135,9 @@ pub fn render_markdown(reports: &[TierReport]) -> String {
                 "native routing"
             }
         ));
+        let mark = cost_caveat_marker(&agg);
         out.push_str(&format!(
-            "- **{}/{} solved** ({}) · **$/solved {}** · median $/task {} · total {}\n\n",
+            "- **{}/{} solved** ({}) · **$/solved {}{mark}** · median $/task {}{mark} · total {}{mark}\n",
             agg.solved,
             agg.total,
             fmt_pct(agg.pass_rate),
@@ -122,6 +145,13 @@ pub fn render_markdown(reports: &[TierReport]) -> String {
             fmt_usd(agg.median_cost_per_task),
             fmt_usd(agg.total_cost_usd),
         ));
+        if agg.any_cost_unknown {
+            out.push_str(&format!("- {MD_UNKNOWN_NOTE}\n"));
+        }
+        if agg.any_estimated {
+            out.push_str(&format!("- {MD_ESTIMATED_NOTE}\n"));
+        }
+        out.push('\n');
         out.push_str("| task | category | result | cost | seconds |\n");
         out.push_str("|------|----------|--------|------|---------|\n");
         for r in &tr.results {
@@ -141,10 +171,15 @@ pub fn render_markdown(reports: &[TierReport]) -> String {
         out.push_str("## Tier comparison\n\n");
         out.push_str("| tier | pass-rate | solved | $/solved | median $/task | total $ |\n");
         out.push_str("|------|-----------|--------|----------|---------------|---------|\n");
+        let mut any_unknown = false;
+        let mut any_estimated = false;
         for tr in reports {
             let agg = tr.aggregate();
+            let mark = cost_caveat_marker(&agg);
+            any_unknown |= agg.any_cost_unknown;
+            any_estimated |= agg.any_estimated;
             out.push_str(&format!(
-                "| {} | {} | {}/{} | {} | {} | {} |\n",
+                "| {} | {} | {}/{} | {}{mark} | {}{mark} | {}{mark} |\n",
                 tr.tier,
                 fmt_pct(agg.pass_rate),
                 agg.solved,
@@ -155,6 +190,14 @@ pub fn render_markdown(reports: &[TierReport]) -> String {
             ));
         }
         out.push('\n');
+        // Footnotes for any marker that appears in the comparison table, so a
+        // reader who pastes just this table still sees the caveats.
+        if any_unknown {
+            out.push_str(&format!("{MD_UNKNOWN_NOTE}\n\n"));
+        }
+        if any_estimated {
+            out.push_str(&format!("{MD_ESTIMATED_NOTE}\n\n"));
+        }
     }
     out
 }
@@ -266,6 +309,111 @@ mod tests {
         let md = render_markdown(&[a, b]);
         assert!(md.contains("## Tier comparison"));
         assert!(md.contains("| frontier |"));
+    }
+
+    /// A tier with one known-but-estimated cost and one unknown cost, so both
+    /// caveat flags are set.
+    fn caveated_sample() -> TierReport {
+        let mut solved_est = TaskResult::new(
+            "alpha",
+            "classic",
+            OracleOutcome::Pass,
+            CostReading::known(0.5, true, 2),
+        );
+        solved_est.duration_secs = 3.0;
+        let mut solved_unknown = TaskResult::new(
+            "bravo",
+            "classic",
+            OracleOutcome::Pass,
+            CostReading::unknown(),
+        );
+        solved_unknown.duration_secs = 4.0;
+        TierReport {
+            tier: "kimi".to_string(),
+            provider: "moonshot".to_string(),
+            model: "kimi-k2.5".to_string(),
+            pinned_packs: true,
+            results: vec![solved_est, solved_unknown],
+        }
+    }
+
+    #[test]
+    fn text_report_renders_both_cost_caveats() {
+        let text = render_text(&[caveated_sample()]);
+        assert!(
+            text.contains("[some costs unknown]"),
+            "text must flag unknown costs: {text}"
+        );
+        assert!(
+            text.contains("[some costs estimated]"),
+            "text must flag estimated costs: {text}"
+        );
+    }
+
+    #[test]
+    fn text_report_omits_caveats_when_all_costs_known_exactly() {
+        // sample() has two exactly-known ($0.00) costs — no caveats.
+        let text = render_text(&[sample()]);
+        assert!(!text.contains("some costs unknown"));
+        assert!(!text.contains("some costs estimated"));
+    }
+
+    #[test]
+    fn markdown_renders_cost_caveats_in_summary() {
+        let md = render_markdown(&[caveated_sample()]);
+        // The affected headline numbers carry BOTH footnote markers directly
+        // (one known+estimated cost of $0.50 over 2 solves => $/solved $0.2500).
+        assert!(
+            md.contains("$/solved $0.2500†‡"),
+            "markdown $/solved must carry the caveat markers: {md}"
+        );
+        assert!(
+            md.contains("median $/task $0.5000†‡"),
+            "markdown median must carry the caveat markers: {md}"
+        );
+        // …and both footnote note-lines are present so a pasted report is honest.
+        assert!(
+            md.contains(MD_UNKNOWN_NOTE),
+            "markdown must render the unknown-cost note: {md}"
+        );
+        assert!(
+            md.contains(MD_ESTIMATED_NOTE),
+            "markdown must render the estimated-cost note: {md}"
+        );
+    }
+
+    #[test]
+    fn markdown_marks_caveats_in_the_tier_comparison_table() {
+        let mut a = caveated_sample();
+        a.tier = "kimi".to_string();
+        let mut b = sample();
+        b.tier = "frontier".to_string();
+        let md = render_markdown(&[a, b]);
+        assert!(md.contains("## Tier comparison"));
+        // The comparison section must carry the marker + the footnote, so a
+        // reader pasting only the table still sees the lower-bound caveat.
+        let comparison = md.split("## Tier comparison").nth(1).unwrap();
+        assert!(
+            comparison.contains('†'),
+            "comparison table must mark the caveated tier: {comparison}"
+        );
+        assert!(
+            comparison.contains(MD_UNKNOWN_NOTE),
+            "comparison must footnote the unknown-cost caveat: {comparison}"
+        );
+        assert!(
+            comparison.contains(MD_ESTIMATED_NOTE),
+            "comparison must footnote the estimated-cost caveat: {comparison}"
+        );
+    }
+
+    #[test]
+    fn markdown_omits_caveats_when_all_costs_known_exactly() {
+        let md = render_markdown(&[sample()]);
+        assert!(!md.contains(MD_UNKNOWN_NOTE));
+        assert!(!md.contains(MD_ESTIMATED_NOTE));
+        assert!(!md.contains('†'));
+        assert!(!md.contains('‡'));
     }
 
     #[test]

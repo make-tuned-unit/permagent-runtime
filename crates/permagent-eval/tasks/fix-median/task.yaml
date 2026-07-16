@@ -3,6 +3,9 @@ title: Fix the median bug
 category: bug-fix
 max_turns: 30
 test: [python3, test_stats.py]
+# The oracle grades via `from stats import median`; declare the `stats` module
+# so the import-discipline validation allows it.
+deliverables: [stats]
 prompt: |
   This directory has `stats.py` with a `median(nums)` function and a runnable test
   `test_stats.py`. The tests currently FAIL: there is a bug in `median`.

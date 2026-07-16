@@ -23,10 +23,44 @@
 //!
 //! Provider API keys are intentionally NOT set here — they flow through from the
 //! ambient environment the operator configured on the machine that runs the eval.
+//!
+//! The rest of the inherited environment flows through too, EXCEPT the
+//! router-family variables ([`SCRUBBED_ENV_PREFIXES`]): pack pins, cheap-tier
+//! pins/anchors and budget gates set in the operator's shell would otherwise
+//! leak into every child run and contaminate the measurement — most insidiously
+//! under `--native-routing`, whose whole point is that the tier sets *no* pack
+//! env. The scrub is applied at spawn time by the
+//! [`runner`](crate::runner)'s subprocess glue; when a tier pins packs, its own
+//! pins in [`Invocation::envs`] are re-set on top of the scrub.
 
 use crate::task::TaskSpec;
 use crate::tier::Tier;
 use std::path::{Path, PathBuf};
+
+/// Env-var name prefixes scrubbed from the *inherited* environment before a
+/// child run is spawned. These are the cost-router family knobs an operator may
+/// have exported in their own shell; inheriting them would contaminate the run
+/// under measurement:
+///
+/// - `PERMAGENT_PACK_*` — cost-router pack pins (#720). A tier that pins packs
+///   sets exactly its own via [`Invocation::envs`]; a `--native-routing` tier
+///   sets none, and must genuinely see none.
+/// - `PERMAGENT_CHEAP_*` — cheap-tier pin/anchor overrides (incl. the PIN),
+///   which would silently redirect "native" routing to the operator's model.
+/// - `PERMAGENT_BUDGET_*` — session/task budget gates, which could abort or
+///   degrade an eval run mid-task and skew pass-rate.
+///
+/// Everything else (notably provider API keys) is inherited on purpose.
+pub const SCRUBBED_ENV_PREFIXES: [&str; 3] =
+    ["PERMAGENT_PACK_", "PERMAGENT_CHEAP_", "PERMAGENT_BUDGET_"];
+
+/// True when `name` is a router-family variable that must not leak from the
+/// operator's environment into a child run (see [`SCRUBBED_ENV_PREFIXES`]).
+pub fn is_scrubbed_env(name: &str) -> bool {
+    SCRUBBED_ENV_PREFIXES
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+}
 
 /// A fully-resolved, ready-to-spawn command: program, args, extra environment and
 /// working directory.
@@ -233,6 +267,36 @@ mod tests {
             "/opt/permagent/bin/permagent",
         );
         assert_eq!(inv.program, "/opt/permagent/bin/permagent");
+    }
+
+    #[test]
+    fn scrubbed_env_covers_the_router_family_and_nothing_else() {
+        // The whole pack / cheap / budget families are scrubbed…
+        for name in [
+            "PERMAGENT_PACK_EDIT_PROVIDER",
+            "PERMAGENT_PACK_LOCAL_MODEL",
+            "PERMAGENT_CHEAP_PIN_PROVIDER",
+            "PERMAGENT_CHEAP_PIN_MODEL",
+            "PERMAGENT_CHEAP_PIN_KEY_ENV",
+            "PERMAGENT_CHEAP_ANCHOR_MODEL",
+            "PERMAGENT_BUDGET_TASK_HARD_USD",
+            "PERMAGENT_BUDGET_SESSION_SOFT_USD",
+        ] {
+            assert!(is_scrubbed_env(name), "{name} should be scrubbed");
+        }
+        // …while API keys and the harness's own isolation env are inherited/kept.
+        for name in [
+            "ANTHROPIC_API_KEY",
+            "MOONSHOT_API_KEY",
+            "MINIMAX_API_KEY",
+            "PATH",
+            "HOME",
+            "PERMAGENT_PATH_ROOT",
+            "PERMAGENT_DISABLE_KEYRING",
+            "GOOSE_MODE",
+        ] {
+            assert!(!is_scrubbed_env(name), "{name} should NOT be scrubbed");
+        }
     }
 
     #[test]
