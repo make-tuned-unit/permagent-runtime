@@ -322,6 +322,24 @@ function StationIcon({ type }: { type: string }) {
           <meshBasicMaterial color={color} transparent opacity={0.8} />
         </mesh>
       );
+    case 'rings':
+      // Horologium: concentric clock rings + a single tick at 12.
+      return (
+        <group>
+          <mesh>
+            <torusGeometry args={[0.42, 0.05, 8, 28]} />
+            <meshBasicMaterial color={color} transparent opacity={0.8} />
+          </mesh>
+          <mesh>
+            <torusGeometry args={[0.24, 0.04, 8, 20]} />
+            <meshBasicMaterial color={color} transparent opacity={0.6} />
+          </mesh>
+          <mesh position={[0, 0.34, 0]}>
+            <boxGeometry args={[0.05, 0.14, 0.05]} />
+            <meshBasicMaterial color={color} transparent opacity={0.9} />
+          </mesh>
+        </group>
+      );
     default:
       return null;
   }

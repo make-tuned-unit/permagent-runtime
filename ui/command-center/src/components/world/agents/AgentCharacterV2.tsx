@@ -16,10 +16,11 @@ import {
   BONE_NAMES,
   POSES,
   STATE_VISUALS,
-  TENDING_VISUAL,
   TRANSITION_S,
   ERROR_FLICKER_HZ,
   ERROR_FLICKER_S,
+  resolvePose,
+  resolveVisual,
   type PoseKey,
 } from './poses';
 import { publishHenryPosition } from './henryPresence';
@@ -138,24 +139,13 @@ export function AgentCharacterV2({
     g.rotation.y = m.heading;
 
     // ── Resolve target pose ──
-    // Tending is a THIRD register (bible §4): driven by engagement, not HUD state. An
-    // idle agent that has walked to a construction tend anchor displays tending (gray-warm),
-    // never amber. HUD working/error still win — real work for the user takes the body.
-    const tending = m.engaged === 'tending' && hud !== 'working' && hud !== 'error';
-    let pose: PoseKey;
-    if (tending) pose = 'tending';
-    else if (hud === 'working') {
-      pose =
-        m.engaged === 'seated' ? 'seatedWork' : m.engaged === 'standing' ? 'standWork' : 'available';
-    } else if (hud === 'error') pose = 'error';
-    else if (hud === 'available') pose = 'available';
-    else pose = 'idle';
-
-    // The visual register: tending overrides the HUD color channel with its warm-gray
-    // (its own ambient register — bible §4/§8). Otherwise the HUD state drives color.
-    const visual = tending ? TENDING_VISUAL : STATE_VISUALS[hud];
-    // A change in tending-ness must also retrigger the color tween below.
-    const colorKey = tending ? 'tending' : hud;
+    // The pure state→body mapping (poses.resolvePose, unit-tested): tending is a
+    // THIRD register driven by engagement, never shown over real working/error;
+    // the visual register lets tending override the HUD color with its warm-gray
+    // (bible §4/§8). A change in tending-ness must also retrigger the color tween.
+    const pose = resolvePose(hud, m.engaged);
+    const visual = resolveVisual(hud, pose);
+    const colorKey = pose === 'tending' ? 'tending' : hud;
 
     // ── Start transitions on discrete change (0.8s tween — no snapping) ──
     if (pose !== tr.pose || !tr.initialized) {
