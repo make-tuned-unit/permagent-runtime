@@ -33,8 +33,10 @@
 pub mod budget;
 pub mod cache;
 pub mod cheap;
+pub mod knowledge;
 pub mod mesh;
 pub mod packs;
+pub mod recommend;
 pub mod tier;
 
 pub use budget::{
@@ -42,17 +44,23 @@ pub use budget::{
 };
 pub use cache::{
     may_swap_main_loop_model, model_change_breaks_cache, prefix_is_cache_stable, PrefixSegment,
-    CANONICAL_PREFIX,
+    CANONICAL_PREFIX, HARNESS_PREFIX,
 };
 pub use cheap::{
     build_ladder, default_anchor, discover_priced_candidates, is_key_configured, load_ladder,
     reference_cost_for, CheapCandidate, CheapLadder, PricedCandidate,
 };
+pub use knowledge::{lookup as lookup_model_knowledge, ModelKnowledge, KNOWN_MODELS};
 pub use mesh::{
     gate as mesh_gate, MeshGateInputs, MeshIneligible, MeshRoute, MeshWorkload, PoolHealth,
 };
 pub use packs::{
     load_packs, packs_from, resolve as resolve_model, role_for_tier, ModelPack, ModelPacks, Role,
+};
+pub use recommend::{
+    available_from, discover_available_models, recommend, recommend_configured,
+    recommend_from_available, resolve_known, AvailableModel, ProviderModels, Recommendation,
+    RoleRecommendation, WorkflowRole, EDIT_RELIABILITY_FLOOR,
 };
 pub use tier::{classify, minimum_tier, next_after, Attempt, Next, TaskClass, TaskSignals, Tier};
 

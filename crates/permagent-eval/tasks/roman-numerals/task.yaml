@@ -1,0 +1,19 @@
+id: roman-numerals
+title: Integer to Roman numerals
+category: classic
+max_turns: 30
+test: [python3, check.py]
+prompt: |
+  In this directory, create a file `roman.py` that defines a function:
+
+      def to_roman(n: int) -> str
+
+  Convert an integer n in the range 1..3999 (inclusive) to its Roman-numeral
+  string, using the standard subtractive forms (IV, IX, XL, XC, CD, CM).
+
+  Examples:
+    to_roman(4)    == "IV"
+    to_roman(9)    == "IX"
+    to_roman(58)   == "LVIII"
+    to_roman(1994) == "MCMXCIV"
+    to_roman(2024) == "MMXXIV"

@@ -1434,4 +1434,202 @@ mod tests {
         assert_eq!(parts.text, vec!["Let me search for that."]);
         assert_eq!(parts.tool_calls, vec!["search"]);
     }
+
+    // ── Prompt-cache prefix guards (#717 cache discipline; a cost lever) ─────
+    //
+    // Provider prompt caches are model-scoped and prefix-exact: a hit needs the
+    // same model AND a byte-identical leading prefix, and a cached read bills at
+    // ~10% of fresh input. These lock in the four cache-preserving invariants of
+    // the Anthropic request builder against the canonical prefix policy in
+    // `crate::cost_router::cache`, so a later edit can't silently bust the cache
+    // by moving a breakpoint, reordering the prefix, or leaking volatile context
+    // (the repo-map) into the conversation tail.
+    use crate::cost_router::cache::{
+        prefix_is_cache_stable, PrefixSegment, CANONICAL_PREFIX, HARNESS_PREFIX,
+    };
+
+    const REPO_MAP_MARKER: &str = "<repo_map>";
+
+    fn cache_guard_tools() -> Vec<Tool> {
+        vec![
+            Tool::new("alpha_read", "Read a file", object!({ "type": "object" })),
+            Tool::new("bravo_edit", "Edit a file", object!({ "type": "object" })),
+        ]
+    }
+
+    // The system prompt with the repo-map (#720) appended as a system extra,
+    // exactly as the session builder assembles it: base prompt, then an
+    // "Additional Instructions" section carrying the <repo_map> block.
+    fn cache_guard_system() -> String {
+        format!(
+            "You are the Permagent coding harness.\n\n\
+             # Additional Instructions:\n\n\
+             {REPO_MAP_MARKER}\nA ranked-tags map of this repo's symbols…</repo_map>"
+        )
+    }
+
+    // Hold the env lock (thinking config reads process env) so create_request is
+    // deterministic and race-free alongside the thinking tests above. Cleared to
+    // no thinking; the prefix assertions are independent of the thinking config.
+    fn no_thinking_env() -> env_lock::EnvGuard<'static> {
+        env_lock::lock_env([
+            ("CLAUDE_THINKING_TYPE", None::<&str>),
+            ("CLAUDE_THINKING_ENABLED", None::<&str>),
+            ("CLAUDE_THINKING_EFFORT", None::<&str>),
+        ])
+    }
+
+    #[test]
+    fn cache_control_breakpoints_land_on_the_stable_prefix() {
+        // Tools prefix: the breakpoint is on the LAST tool only, so all tool
+        // definitions cache as one block — no per-tool volatility.
+        let tools = format_tools(&cache_guard_tools());
+        assert!(tools.last().unwrap().get("cache_control").is_some());
+        for earlier in &tools[..tools.len() - 1] {
+            assert!(
+                earlier.get("cache_control").is_none(),
+                "only the last tool spec anchors the tools prefix"
+            );
+        }
+
+        // System prefix: the system block carries a breakpoint.
+        let system = format_system(&cache_guard_system());
+        let blocks = system.as_array().unwrap();
+        assert!(
+            blocks.last().unwrap().get("cache_control").is_some(),
+            "the system block must anchor a cache breakpoint"
+        );
+
+        // The volatile tail: user messages carry the incremental-cache markers,
+        // but the assistant turn between them (mutable, mid-conversation) must
+        // NOT — a breakpoint there would move as the turn grows and bust reads.
+        let messages = vec![
+            Message::user().with_text("first"),
+            Message::assistant().with_text("reply"),
+            Message::user().with_text("second"),
+        ];
+        let formatted = format_messages(&messages);
+        for msg in &formatted {
+            if msg["role"] == json!("assistant") {
+                let has_cc = msg["content"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|c| c.get("cache_control").is_some());
+                assert!(!has_cc, "assistant tail turns must not carry a breakpoint");
+            }
+        }
+    }
+
+    #[test]
+    fn repo_map_lives_in_the_cached_prefix_not_the_conversation() {
+        // The repo-map rides inside the cached system block…
+        let system = format_system(&cache_guard_system());
+        let first = &system.as_array().unwrap()[0];
+        assert!(first["text"].as_str().unwrap().contains(REPO_MAP_MARKER));
+        assert!(first.get("cache_control").is_some());
+
+        // …and is NOT duplicated into any conversation message (which would put
+        // it after the cache breakpoint, in the volatile tail — the anti-pattern
+        // the #720 placement is designed to avoid).
+        let messages = vec![
+            Message::user().with_text("Add a unit test"),
+            Message::assistant().with_text("On it."),
+            Message::user().with_text("Now run verify"),
+        ];
+        let tail = serde_json::to_string(&format_messages(&messages)).unwrap();
+        assert!(
+            !tail.contains(REPO_MAP_MARKER),
+            "repo-map leaked into the volatile message tail"
+        );
+    }
+
+    #[test]
+    fn cacheable_prefix_does_not_mutate_across_turns() {
+        let _env = no_thinking_env();
+        let config = cfg("claude-opus-4-8");
+        let system = cache_guard_system();
+        let tools = cache_guard_tools();
+
+        // Turn 1: one user message.
+        let turn1 = create_request(
+            &config,
+            &system,
+            &[Message::user().with_text("start")],
+            &tools,
+        )
+        .unwrap();
+        // Turn 2: same session, the conversation has grown by a round-trip.
+        let turn2 = create_request(
+            &config,
+            &system,
+            &[
+                Message::user().with_text("start"),
+                Message::assistant().with_text("working on it"),
+                Message::user().with_text("continue"),
+            ],
+            &tools,
+        )
+        .unwrap();
+
+        // The cached prefix (tools + system, repo-map included) is byte-identical
+        // across turns — growing the conversation must never rewrite the prefix,
+        // or every turn pays a fresh cache write instead of a cheap read.
+        assert_eq!(
+            turn1["system"], turn2["system"],
+            "system prefix drifted across turns"
+        );
+        assert_eq!(
+            turn1["tools"], turn2["tools"],
+            "tools prefix drifted across turns"
+        );
+    }
+
+    #[test]
+    fn real_prefix_realizes_the_canonical_cache_policy() {
+        let _env = no_thinking_env();
+        // Discover, from the emitted payload, which prefix segments actually
+        // carry a cache breakpoint and in what order, then check that against the
+        // #717 policy in `crate::cost_router::cache`.
+        let config = cfg("claude-opus-4-8");
+        let payload = create_request(
+            &config,
+            &cache_guard_system(),
+            &[Message::user().with_text("go")],
+            &cache_guard_tools(),
+        )
+        .unwrap();
+
+        let mut observed: Vec<PrefixSegment> = Vec::new();
+        if payload["tools"]
+            .as_array()
+            .and_then(|t| t.last())
+            .and_then(|t| t.get("cache_control"))
+            .is_some()
+        {
+            observed.push(PrefixSegment::Tools);
+        }
+        if payload["system"]
+            .as_array()
+            .and_then(|s| s.last())
+            .and_then(|b| b.get("cache_control"))
+            .is_some()
+        {
+            observed.push(PrefixSegment::System);
+            // The repo-map rides *inside* the System segment's cached block.
+            if payload["system"][0]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(REPO_MAP_MARKER)
+            {
+                observed.push(PrefixSegment::RepoMap);
+            }
+        }
+
+        // The real emission is exactly the harness prefix, is cache-stable, and
+        // every segment sits in canonical order.
+        assert_eq!(observed, HARNESS_PREFIX.to_vec());
+        assert!(prefix_is_cache_stable(&observed));
+        assert!(observed.iter().all(|s| CANONICAL_PREFIX.contains(s)));
+    }
 }

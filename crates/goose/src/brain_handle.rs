@@ -157,10 +157,13 @@ impl SafeBrain {
             .map_err(Into::into)
     }
 
-    /// Recall via the integrated cascade pipeline with default config.
+    /// Recall via the integrated cascade pipeline.
     ///
-    /// All existing callers pass `Default::default()` for the cascade config,
-    /// so this wrapper hardcodes it. Returns merged hits with signal scores.
+    /// Uses `CascadePipelineConfig::default()` for every layer except `spread`
+    /// (associative recall), which is resolved from the `PERMAGENT_ACR_MODE`
+    /// toggle via [`acr_spread_config`]. ACR is experimental and **OFF by
+    /// default**, so unless the A/B toggle is set this behaves exactly as before.
+    /// Returns merged hits with signal scores.
     pub async fn recall_cascade(
         &self,
         query: &str,
@@ -169,12 +172,15 @@ impl SafeBrain {
         let brain = self.inner.clone();
         let query = query.to_string();
         let context = context.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            brain.recall_cascade(&query, &context, &Default::default())
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("brain task panicked: recall_cascade: {e}"))?
-        .map_err(anyhow::Error::from)?;
+        let config = spectral::graph::cascade_layers::CascadePipelineConfig {
+            spread: acr_spread_config(),
+            ..Default::default()
+        };
+        let result =
+            tokio::task::spawn_blocking(move || brain.recall_cascade(&query, &context, &config))
+                .await
+                .map_err(|e| anyhow::anyhow!("brain task panicked: recall_cascade: {e}"))?
+                .map_err(anyhow::Error::from)?;
         Ok(CascadeHits {
             merged_hits: result.merged_hits,
         })
@@ -772,9 +778,49 @@ impl std::fmt::Debug for SafeBrain {
     }
 }
 
+// ── Associative recall (ACR) toggle ──────────────────────────────────────────
+//
+// ACR = local, embedding-free associative recall in Spectral's cascade: FTS
+// finds seeds, then spreading activation over co-occurrence links reaches
+// memories that share no words with the query. It is experimental and its
+// accuracy is unvalidated, so it ships OFF by default (a pure no-op) and is
+// flipped only for an A/B via the `PERMAGENT_ACR_MODE` env toggle — no recompile.
+// The single resolver below is applied at EVERY cascade-construction site so all
+// recall paths honor the toggle consistently.
+
+/// Resolve the ACR spreading config from the `PERMAGENT_ACR_MODE` env toggle.
+///
+/// | `PERMAGENT_ACR_MODE`             | result                                        |
+/// |----------------------------------|-----------------------------------------------|
+/// | unset / `off` / empty / unknown  | `AssocSpreadConfig::default()` — `SpreadMode::Off` (no-op) |
+/// | `precision`                      | `AssocSpreadConfig::precision()` — `Rerank`, session-safe, ~constant context |
+/// | `completeness`                   | `AssocSpreadConfig::completeness()` — `Combined` |
+///
+/// OFF by default: with the toggle unset the cascade behaves exactly as before.
+pub(crate) fn acr_spread_config() -> spectral::graph::spreading::AssocSpreadConfig {
+    resolve_acr_spread(std::env::var("PERMAGENT_ACR_MODE").ok().as_deref())
+}
+
+/// Pure env-value → [`spectral::graph::spreading::AssocSpreadConfig`] mapping.
+///
+/// Split out from [`acr_spread_config`] so resolution is unit-testable without
+/// mutating process-global env (which would race under parallel `cargo test`).
+/// Unrecognized/empty values fall through to `Off` (fail-safe) rather than
+/// panicking, so a typo in the A/B toggle can never silently alter retrieval.
+fn resolve_acr_spread(raw: Option<&str>) -> spectral::graph::spreading::AssocSpreadConfig {
+    use spectral::graph::spreading::AssocSpreadConfig;
+    match raw.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        Some("precision") => AssocSpreadConfig::precision(),
+        Some("completeness") => AssocSpreadConfig::completeness(),
+        // None (unset), "off", "", or anything unrecognized → Off (no-op).
+        _ => AssocSpreadConfig::default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use spectral::graph::spreading::SpreadMode;
 
     /// Verify that Clone shares the same underlying Arc (cheap clone).
     #[test]
@@ -784,5 +830,71 @@ mod tests {
         // is Clone. The actual sharing is guaranteed by Arc semantics.
         fn assert_clone<T: Clone>() {}
         assert_clone::<SafeBrain>();
+    }
+
+    // ── Associative recall (ACR) env-toggle resolution ───────────────────────
+    // Exercises the pure resolver with string inputs (no process-env mutation,
+    // so no #[serial] / no races). Covers the off-by-default no-op contract and
+    // both opt-in presets.
+
+    #[test]
+    fn acr_unset_off_empty_and_garbage_resolve_to_off() {
+        for raw in [
+            None,
+            Some("off"),
+            Some(""),
+            Some("   "),
+            Some("nonsense"),
+            Some("OFF"),
+        ] {
+            assert_eq!(
+                resolve_acr_spread(raw).mode,
+                SpreadMode::Off,
+                "raw {raw:?} must resolve to Off (fail-safe)"
+            );
+        }
+    }
+
+    #[test]
+    fn acr_precision_resolves_to_rerank_preset() {
+        assert_eq!(
+            resolve_acr_spread(Some("precision")).mode,
+            SpreadMode::Rerank
+        );
+        // whitespace/case tolerant, still fail-safe
+        assert_eq!(
+            resolve_acr_spread(Some("  Precision ")).mode,
+            SpreadMode::Rerank
+        );
+    }
+
+    #[test]
+    fn acr_completeness_resolves_to_combined_preset() {
+        assert_eq!(
+            resolve_acr_spread(Some("completeness")).mode,
+            SpreadMode::Combined
+        );
+        assert_eq!(
+            resolve_acr_spread(Some("COMPLETENESS")).mode,
+            SpreadMode::Combined
+        );
+    }
+
+    #[test]
+    fn default_pipeline_config_carries_off_spread() {
+        // The cascade config built with the toggle unset carries Off — the
+        // wiring is a pure no-op by default (identical to pre-ACR behavior).
+        let cfg = spectral::graph::cascade_layers::CascadePipelineConfig {
+            spread: resolve_acr_spread(None),
+            ..Default::default()
+        };
+        assert_eq!(cfg.spread.mode, SpreadMode::Off);
+        // Guard against an upstream default flip silently enabling ACR under us.
+        assert_eq!(
+            spectral::graph::cascade_layers::CascadePipelineConfig::default()
+                .spread
+                .mode,
+            SpreadMode::Off
+        );
     }
 }
