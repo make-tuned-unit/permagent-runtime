@@ -149,7 +149,7 @@ fn middle_out_order(tool_indices: &[usize]) -> Vec<usize> {
     let mut ordered = Vec::with_capacity(len);
     let mut i = 0usize;
     while ordered.len() < len {
-        if i % 2 == 0 {
+        if i.is_multiple_of(2) {
             if let Some(m) = middle.checked_sub(i / 2 + 1) {
                 ordered.push(tool_indices[m]);
             }
