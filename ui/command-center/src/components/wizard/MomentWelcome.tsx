@@ -30,9 +30,25 @@ export function MomentWelcome({ onAdvance }: Props) {
   const [validating, setValidating] = useState(false);
   const [error, setError] = useState('');
   const [showHelp, setShowHelp] = useState(false);
+  // Read-back (2026-07 wiring audit): if the wizard re-opens after an
+  // interrupted run, a provider key may already be stored — show that instead
+  // of a blank field that implies nothing was saved.
+  const [configured, setConfigured] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    api.getProviders()
+      .then(ps => {
+        const names = ps.filter(p => p.is_configured).map(p => p.name);
+        if (names.length === 0) return;
+        setConfigured(new Set(names));
+        const def = ps.find(p => p.is_configured && p.is_default) ?? ps.find(p => p.is_configured);
+        if (def && PROVIDERS.some(o => o.value === def.name)) setProvider(def.name);
+      })
+      .catch(() => { /* fresh install or daemon still starting — nothing to read back */ });
+  }, []);
 
   const isLocal = provider === 'ollama';
-  const canContinue = isLocal || key.trim().length > 8;
+  const alreadyConfigured = configured.has(provider);
+  const canContinue = isLocal || alreadyConfigured || key.trim().length > 8;
 
   const handleSubmit = async () => {
     if (!canContinue) return;
@@ -75,7 +91,17 @@ export function MomentWelcome({ onAdvance }: Props) {
       <div style={{ width: 360, display: 'flex', flexDirection: 'column', gap: 14 }}>
         <Select value={provider} onChange={setProvider} options={PROVIDERS} />
         {!isLocal && (
-          <Input value={key} onChange={setKey} placeholder="Paste your API key" type="password" />
+          <Input
+            value={key}
+            onChange={setKey}
+            placeholder={alreadyConfigured ? 'Key saved — enter a new one to replace' : 'Paste your API key'}
+            type="password"
+          />
+        )}
+        {!isLocal && alreadyConfigured && (
+          <p style={{ fontFamily: font.body, fontSize: 12, color: colors.success, margin: 0 }}>
+            ✓ This provider is already connected — continue, or paste a new key to replace it.
+          </p>
         )}
         {error && <p style={{ fontFamily: font.body, fontSize: 12, color: colors.danger, margin: 0 }}>{error}</p>}
         <PrimaryButton onClick={handleSubmit} disabled={!canContinue || validating} full>

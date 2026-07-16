@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import { PrimaryButton, GhostLink, Input, Glass, Particles } from './atoms';
+import { api } from '../../lib/api';
 import { SEARCH_PROVIDERS, saveAndEnableSearchProvider, type SearchProvider } from '../../lib/searchProviders';
 
 interface Props {
@@ -22,6 +23,22 @@ export function MomentWebSearch({ personaName, onAdvance, onBack }: Props) {
   );
   const patch = (id: string, p: Partial<RowState>) =>
     setRows(prev => ({ ...prev, [id]: { ...prev[id], ...p } }));
+
+  // Read-back (2026-07 wiring audit): a key saved before an interrupted wizard
+  // run is in the keychain — on re-entry, show it as connected instead of
+  // pretending nothing was saved. Mirrors SearchToolsSection.refresh.
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      await Promise.all(SEARCH_PROVIDERS.map(async p => {
+        try {
+          const r = await api.readConfig(p.keyName, true);
+          if (alive && (r.masked_value || r.value)) patch(p.id, { saved: true });
+        } catch { /* key not set */ }
+      }));
+    })();
+    return () => { alive = false; };
+  }, []);
 
   const anySaved = Object.values(rows).some(r => r.saved);
 

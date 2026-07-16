@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { apiFetch } from '../../lib/api';
+import { toast } from '../../lib/notifications';
 import { useGoalEvents } from '../../lib/useGoalEvents';
 import { useCommandCenter } from '../../lib/store';
 import { ProjectWorkspace } from './ProjectWorkspace';
@@ -101,8 +102,10 @@ export function ProjectsView() {
         body: JSON.stringify({ status: newStatus }),
       });
       loadProjects();
-    } catch {
-      // silently fail
+    } catch (err) {
+      // Surfaced (2026-07 wiring audit): a swallowed failure left the card
+      // visually snapped back with no explanation.
+      toast('Couldn\'t move project', err instanceof Error ? err.message : String(err));
     }
   }, [loadProjects]);
 
@@ -531,7 +534,9 @@ export function ProjectKanban({ project }: { project: Project }) {
               body: JSON.stringify({ columnId: targetCol }),
             });
             loadBoard();
-          } catch { /* silently fail */ }
+          } catch (err) {
+            toast('Couldn\'t move card', err instanceof Error ? err.message : String(err));
+          }
         }
       }
     };
@@ -562,8 +567,8 @@ export function ProjectKanban({ project }: { project: Project }) {
       setNewCardTitle('');
       setAddingCardCol(null);
       loadBoard();
-    } catch {
-      // silently fail
+    } catch (err) {
+      toast('Couldn\'t add card', err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -571,8 +576,8 @@ export function ProjectKanban({ project }: { project: Project }) {
     try {
       await apiFetch(`/api/projects/${project.id}/cards/${cardId}`, { method: 'DELETE' });
       loadBoard();
-    } catch {
-      // silently fail
+    } catch (err) {
+      toast('Couldn\'t delete card', err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -582,8 +587,8 @@ export function ProjectKanban({ project }: { project: Project }) {
     try {
       await apiFetch(`/api/projects/${project.id}/cards/${cardId}/cancel`, { method: 'POST' });
       loadBoard();
-    } catch {
-      // silently fail
+    } catch (err) {
+      toast('Couldn\'t cancel goal', err instanceof Error ? err.message : String(err));
     }
   };
 

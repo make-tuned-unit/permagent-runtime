@@ -37,7 +37,8 @@ export function MomentIntent({ intent, setIntent, onAdvance }: Props) {
         What will you build together?
       </h1>
       <p style={{ fontFamily: font.body, fontSize: 14, color: colors.textMuted, marginBottom: 28, textAlign: 'center', maxWidth: 380 }}>
-        Tell your agent what you're working on. This helps it prepare context for your first conversation.
+        Tell your agent what you're working on. It'll be waiting as your first
+        chat message — edit it or send it as-is.
       </p>
 
       <div style={{ width: 400, marginBottom: 24 }}>

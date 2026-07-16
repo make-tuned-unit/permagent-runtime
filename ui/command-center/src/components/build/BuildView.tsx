@@ -12,6 +12,7 @@ import type { TerminalManagerHandle } from '../terminal/TerminalManager';
 import { Browser } from '../browser';
 import { ProjectChip } from './ProjectChip';
 import { CostStatusline } from './CostStatusline';
+import { progressRailStep } from '../../lib/buildProgress';
 import type { Project } from './useProjects';
 
 // Ensure a project site_url has a scheme so the in-app browser navigates
@@ -87,14 +88,6 @@ function ToggleChip({
 export function BuildView() {
   const { gradient, colors, reduceMotion } = useTheme();
 
-  const ghostBtn: React.CSSProperties = {
-    height: 30, padding: '0 12px', borderRadius: 8,
-    background: 'transparent', border: `1px solid ${colors.border}`,
-    fontFamily: font.body, fontSize: 12, fontWeight: 500,
-    color: colors.text, cursor: 'pointer',
-    display: 'inline-flex', alignItems: 'center', gap: 6,
-  };
-
   const primaryBtn: React.CSSProperties = {
     height: 30, padding: '0 14px', borderRadius: 8,
     background: colors.cyan, color: colors.bg, border: 'none',
@@ -113,6 +106,8 @@ export function BuildView() {
   const toggleBuildTerminal = useCommandCenter(s => s.toggleBuildTerminal);
   const toggleBuildBrowser = useCommandCenter(s => s.toggleBuildBrowser);
   const setPendingTerminalLaunch = useCommandCenter(s => s.setPendingTerminalLaunch);
+  const switchToSession = useCommandCenter(s => s.switchToSession);
+  const openChatDock = useCommandCenter(s => s.openChatDock);
   useEffect(() => {
     if (!pendingTerminalLaunch) return;
     const { rootPath, label, command } = pendingTerminalLaunch;
@@ -124,6 +119,15 @@ export function BuildView() {
   const hasActive = (data?.in_flight.length ?? 0) > 0;
   const activeTask = hasActive ? data!.in_flight[0] : null;
   const mobiusState = hasActive ? 'thinking' : 'idle';
+
+  // Take over: open the in-flight session in the chat dock so the user can
+  // steer (or stop) the run directly. `in_flight[i].id` IS a session id — the
+  // dashboard builds it from active sessions.
+  const handleTakeOver = useCallback(() => {
+    if (!activeTask) return;
+    switchToSession(activeTask.id).catch(err => console.error('[build] take-over failed:', err));
+    openChatDock();
+  }, [activeTask, switchToSession, openChatDock]);
 
   const handleLaunch = useCallback((project: Project, agent: string) => {
     if (!project.rootPath) return;
@@ -170,10 +174,12 @@ export function BuildView() {
         <ProjectChip onLaunch={handleLaunch} onVisitSite={handleVisitSite} />
         <div style={{ flex: 1 }} />
 
-        {/* Progress rail */}
-        <div style={{ display: 'flex', gap: 6 }}>
+        {/* Progress rail — driven by the daemon's per-task progress estimate
+            (dashboard in_flight[].progress, 0..0.95). Previously hardcoded to
+            step 3 whenever anything ran (2026-07 wiring audit). */}
+        <div style={{ display: 'flex', gap: 6 }} aria-hidden={!hasActive}>
           {[1, 2, 3, 4, 5].map(n => {
-            const step = hasActive ? 3 : 0;
+            const step = progressRailStep(activeTask?.progress);
             return (
               <div key={n} style={{
                 width: 26, height: 4, borderRadius: 2,
@@ -212,15 +218,16 @@ export function BuildView() {
           Browser
         </ToggleChip>
 
+        {/* Pause removed (2026-07 wiring audit): it had no handler and the
+            daemon has no pause verb for an in-flight run — an action-styled
+            button that does nothing is worse than no button. Take over is
+            real: it opens the running session in the chat dock. */}
         {hasActive && (
-          <>
-            <button style={ghostBtn}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
-                <rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></svg>
-              Pause
-            </button>
-            <button style={primaryBtn}>Take over</button>
-          </>
+          <button
+            style={primaryBtn}
+            onClick={handleTakeOver}
+            title="Open this run's session in the chat dock to steer or stop it"
+          >Take over</button>
         )}
       </div>
 

@@ -33,6 +33,7 @@ import { EvidenceDigest } from './EvidenceDigest';
 import { formatAge } from './format';
 import { usePersona } from '../../settings/useSettings';
 import { useCommandCenter } from '../../../lib/store';
+import { toast } from '../../../lib/notifications';
 
 interface Props {
   decision: Decision;
@@ -100,12 +101,14 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
   const [editText, setEditText] = useState('');
   const [evidenceOpen, setEvidenceOpen] = useState(false);
   const [cancelErr, setCancelErr] = useState<string | null>(null);
+  const [answerErr, setAnswerErr] = useState<string | null>(null);
   const conflictTimer = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => () => clearTimeout(conflictTimer.current), []);
 
   const submit = async (p: PendingAnswer) => {
     setSubmitting(true);
+    setAnswerErr(null);
     try {
       const body: AnswerBody = { ...p.body, note: note.trim() ? note.trim() : undefined };
       const result = await onAnswer(d.id, body);
@@ -113,10 +116,18 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
         setConflict(true);
         setPending(null);
         conflictTimer.current = setTimeout(onConflictSettled, 1600);
+      } else if (result.effect_error) {
+        // Partial failure: the answer committed but the gated effect didn't
+        // apply. The item leaves the list on refresh, so surface via toast
+        // (2026-07 wiring audit — this used to vanish silently).
+        toast('Answer recorded — but the follow-through failed', result.effect_error);
       }
       // On success the refreshed list drops this item; nothing else to do.
-    } catch {
-      setSubmitting(false); // network error: return to confirm state, stale data stays
+    } catch (e) {
+      // Network / server error: stay on the confirm row and SAY so — the old
+      // silent revert was indistinguishable from a dead button.
+      setAnswerErr(e instanceof Error ? e.message : 'The answer didn\'t send — try again.');
+      setSubmitting(false);
       return;
     }
     setSubmitting(false);
@@ -232,7 +243,12 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
           <Btn variant="primary" disabled={submitting} onClick={() => submit(pending)}>
             {submitting ? 'Sending…' : pending.confirmLabel}
           </Btn>
-          <Btn disabled={submitting} onClick={() => setPending(null)}>Cancel</Btn>
+          <Btn disabled={submitting} onClick={() => { setPending(null); setAnswerErr(null); }}>Cancel</Btn>
+          {answerErr && (
+            <span role="alert" style={{ fontSize: 11, color: colors.danger, flexBasis: '100%' }}>
+              Couldn't send: {answerErr}
+            </span>
+          )}
         </div>
       ) : inputOpen ? (
         /* Freeform answer (unblock) — travels as answer='input' */

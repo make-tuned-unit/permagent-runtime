@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useImperativeHandle, forwardRef } from 'react';
 import { FiSend, FiLoader, FiPaperclip } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
+import { takeWizardIntent } from '../../lib/wizardIntent';
 import { font, ease } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { AttachmentChip } from './AttachmentChip';
@@ -29,6 +30,15 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
     el.style.height = '36px';
     el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
   }, [input]);
+
+  // First-conversation hand-off: the wizard's intent step pre-fills the
+  // composer (one-shot) so the user can edit or send it as-is — this is the
+  // "prepare context for your first conversation" the wizard promises.
+  useEffect(() => {
+    const seed = takeWizardIntent();
+    if (seed) setInput(prev => (prev ? prev : seed));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const addFiles = useCallback((files: File[]) => {
     const valid = files.filter(f => f.size <= MAX_FILE_SIZE);
