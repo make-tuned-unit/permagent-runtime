@@ -286,6 +286,7 @@ function AutonomyPanel() {
   // Trust level is REAL (2026-07-10 audit): it reads/writes the daemon's
   // GOOSE_MODE, which gates tool-call approval in the agent loop.
   const [trust, setTrust] = useState<string | null>(null);
+  const [trustError, setTrustError] = useState<string | null>(null);
   useEffect(() => {
     api.getConfig().then(cfg => {
       const mode = (cfg.config as Record<string, unknown>)?.GOOSE_MODE;
@@ -293,8 +294,15 @@ function AutonomyPanel() {
     }).catch(() => setTrust('smart_approve'));
   }, []);
   const saveTrust = (mode: string) => {
+    const prev = trust;
     setTrust(mode);
-    api.upsertConfig('GOOSE_MODE', mode).catch(() => {});
+    setTrustError(null);
+    // Revert + surface on failure (2026-07 wiring audit): the old swallowed
+    // catch left the UI showing a trust level the daemon never accepted.
+    api.upsertConfig('GOOSE_MODE', mode).catch(err => {
+      setTrust(prev);
+      setTrustError(`Couldn't save trust level: ${err instanceof Error ? err.message : String(err)}`);
+    });
   };
   const [confirms, setConfirms] = useState([true, true, true, true, false]);
   const [perSession, setPerSession] = useState(5);
@@ -310,6 +318,9 @@ function AutonomyPanel() {
     <div>
       <H1 sub="How much your agent can do without checking in. Higher autonomy = faster, but more rope."><>Autonomy &amp; guardrails<PreviewBadge /></></H1>
       <Section title="Default autonomy" sub="Live — this writes the daemon's tool-approval mode (GOOSE_MODE) and applies to new turns.">
+        {trustError && (
+          <div style={{ fontSize: 12, color: colors.danger, padding: '4px 0 8px' }}>{trustError}</div>
+        )}
         <Row label="Trust level" hint="How tool calls are approved.">
           <div style={{ display: 'flex', gap: 6 }}>
             {trustLevels.map(opt => (
@@ -432,6 +443,7 @@ function ModelsPanel({ goto }: PanelProps) {
   const [schedule, setSchedule] = useState<LibSchedule | null>(null);
   const [saving, setSaving] = useState(false);
   const [runningNow, setRunningNow] = useState(false);
+  const [libError, setLibError] = useState<string | null>(null);
 
   // Poll Ollama status while panel is visible
   useEffect(() => {
@@ -454,16 +466,30 @@ function ModelsPanel({ goto }: PanelProps) {
 
   const handleScheduleChange = async (patch: Partial<LibSchedule>) => {
     if (!schedule) return;
+    const prev = schedule;
     const next = { ...schedule, ...patch };
     setSchedule(next);
     setSaving(true);
-    try { await api.setLibrarianSchedule(next); } catch { /* */ }
+    setLibError(null);
+    try {
+      await api.setLibrarianSchedule(next);
+    } catch (err) {
+      // Revert + surface (2026-07 wiring audit): the swallowed catch left the
+      // panel showing a schedule the daemon never persisted.
+      setSchedule(prev);
+      setLibError(`Couldn't save the Librarian schedule: ${err instanceof Error ? err.message : String(err)}`);
+    }
     setSaving(false);
   };
 
   const handleRunNow = async () => {
     setRunningNow(true);
-    try { await api.runLibrarianNow(); } catch { /* */ }
+    setLibError(null);
+    try {
+      await api.runLibrarianNow();
+    } catch (err) {
+      setLibError(`Couldn't start the Librarian: ${err instanceof Error ? err.message : String(err)}`);
+    }
     setRunningNow(false);
     // Refresh status to show model as loaded
     api.getOllamaStatus().then(setOllama).catch(() => {});
@@ -520,6 +546,9 @@ function ModelsPanel({ goto }: PanelProps) {
       {/* ── Librarian Schedule ───────────────────────────────────── */}
       {schedule && (
         <Section title="Librarian schedule">
+          {libError && (
+            <div style={{ fontSize: 12, color: colors.danger, padding: '4px 0 8px' }}>{libError}</div>
+          )}
           <Row label="Enabled" hint="Run the Librarian on a daily schedule to describe memories.">
             <Toggle on={schedule.enabled} onChange={v => handleScheduleChange({ enabled: v })} />
           </Row>
@@ -675,22 +704,49 @@ function AppearancePanel() {
   );
 }
 
+/** The REAL keyboard map (2026-07 wiring audit). The old list was fictional —
+ *  it showed a command palette on ⌘K, G-key navigation, ⌘P pause and more,
+ *  none of which exist. Every binding below is implemented; keep this in sync
+ *  with the keydown handlers it cites. */
+export const SHORTCUT_GROUPS: Array<{ g: string; items: Array<[string, string[]]> }> = [
+  { g: 'Global', items: [
+    ['Open or close Settings', ['⌘', ',']],
+    ['Close Settings', ['Esc']],
+    ['Switch workspace 1–5', ['⌘', '1–5']],
+  ]},
+  { g: 'Chat', items: [
+    ['Send message', ['↵']],
+    ['New line', ['⇧', '↵']],
+  ]},
+  { g: 'Terminal', items: [
+    ['New terminal tab', ['⌘', 'T']],
+    ['Close terminal tab', ['⌘', 'W']],
+    ['Clear terminal', ['⌘', 'K']],
+  ]},
+  { g: 'Browser', items: [
+    ['New browser tab', ['⌘', 'T']],
+    ['Close browser tab', ['⌘', 'W']],
+    ['Focus address bar', ['⌘', 'L']],
+    ['Reload page', ['⌘', 'R']],
+    ['Zoom in / out', ['⌘', '+ / −']],
+    ['Reset zoom', ['⌘', '0']],
+  ]},
+  { g: 'Projects', items: [
+    ['Save note', ['⌘', '↵']],
+  ]},
+];
+
 function ShortcutsPanel() {
   const { colors } = useThemeHook();
-  const groups = [
-    { g: 'Global', items: [['Open command palette', ['⌘', 'K']], ['Quick task', ['⌘', 'N']], ['Toggle sidebar', ['⌘', 'B']], ['Search everything', ['⌘', '/']]] },
-    { g: 'Navigation', items: [['Go to Home', ['G', 'H']], ['Go to Automate', ['G', 'W']], ['Go to Build', ['G', 'B']], ['Go to Brain', ['G', 'M']]] },
-    { g: 'Build', items: [['Send message', ['⌘', '↵']], ['Insert tool', ['⌘', 'T']], ['Pause agent', ['⌘', 'P']], ['Take over', ['⌘', '.']]] },
-  ];
   return (
     <div>
-      <H1 sub="The current keyboard map. Rebinding is coming — these are reference-only today."><>Shortcuts<PreviewBadge /></></H1>
-      {groups.map(grp => (
+      <H1 sub="The current keyboard map — every binding listed here works today. Rebinding is coming later.">Shortcuts</H1>
+      {SHORTCUT_GROUPS.map(grp => (
         <Section key={grp.g} title={grp.g}>
           {grp.items.map(([l, keys]) => (
-            <div key={l as string} style={{ display: 'flex', alignItems: 'center', padding: '12px 0', borderTop: `1px solid ${colors.border}` }}>
-              <span style={{ fontSize: 13, flex: 1 }}>{l as string}</span>
-              <div style={{ display: 'flex', gap: 4 }}>{(keys as string[]).map((k, i) => <Kbd key={i}>{k}</Kbd>)}</div>
+            <div key={l} style={{ display: 'flex', alignItems: 'center', padding: '12px 0', borderTop: `1px solid ${colors.border}` }}>
+              <span style={{ fontSize: 13, flex: 1 }}>{l}</span>
+              <div style={{ display: 'flex', gap: 4 }}>{keys.map((k, i) => <Kbd key={i}>{k}</Kbd>)}</div>
             </div>
           ))}
         </Section>

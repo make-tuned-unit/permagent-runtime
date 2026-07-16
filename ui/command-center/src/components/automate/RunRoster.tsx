@@ -56,13 +56,19 @@ export function RunRoster() {
     return () => clearInterval(t);
   }, [load]);
 
+  const [stopError, setStopError] = useState<string | null>(null);
   const interrupt = useCallback(async (r: RunItem) => {
     if (r.kind !== 'schedule') return;
     try {
       await apiFetch(`/schedule/${encodeURIComponent(r.id)}/kill`, { method: 'POST' });
+      setStopError(null);
       load();
-    } catch {
-      // The next poll reflects reality; no optimistic mutation to unwind.
+    } catch (err) {
+      // Surface the failure — a silent no-op Stop reads as a dead button
+      // (2026-07 wiring audit). The next poll still reflects reality.
+      const msg = err instanceof Error ? err.message : String(err);
+      setStopError(`Couldn't stop "${r.name}": ${msg}`);
+      setTimeout(() => setStopError(null), 8000);
     }
   }, [load]);
 
@@ -101,6 +107,12 @@ export function RunRoster() {
 
       {status === 'loading' && (
         <div style={{ fontSize: 12, color: colors.textDim, fontFamily: font.body }}>Loading…</div>
+      )}
+
+      {stopError && (
+        <div style={{ fontSize: 11, color: colors.danger, fontFamily: font.body, marginBottom: 8 }}>
+          {stopError}
+        </div>
       )}
 
       {status === 'error' && (
@@ -163,7 +175,10 @@ export function RunRoster() {
                   {relativeTimeAgo(r.last_activity)}
                 </span>
               )}
-              {r.interruptible && (
+              {/* Only schedules have a kill verb today — showing Stop on
+                  worker/session rows made a button that did nothing
+                  (interrupt() early-returns for those kinds). */}
+              {r.interruptible && r.kind === 'schedule' && (
                 <button
                   onClick={() => interrupt(r)}
                   title="Stop this run"

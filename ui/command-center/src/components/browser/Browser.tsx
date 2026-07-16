@@ -5,8 +5,6 @@ import { useTheme } from '../../styles/useTheme';
 import { useBrowserContentBridge } from '../../hooks/useBrowserContentBridge';
 import { useBrowserActBridge } from '../../hooks/useBrowserActBridge';
 import {
-  FiArrowLeft,
-  FiArrowRight,
   FiRefreshCw,
   FiLock,
   FiAlertTriangle,
@@ -659,28 +657,11 @@ export function Browser() {
 
       {/* URL bar */}
       <div className="flex items-center gap-2 px-3 py-2" style={{ backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}` }}>
-        {/* Nav buttons */}
+        {/* Nav buttons. Back/Forward removed (2026-07 wiring audit): they were
+            permanently disabled with no handler and tooltips promising Cmd+[ /
+            Cmd+] shortcuts that never existed — the webview layer keeps no
+            history stack yet. They return when real history lands. */}
         <div className="flex items-center gap-1">
-          <button
-            className="p-1.5 rounded hover:bg-white/5 transition-colors"
-            style={{ color: colors.textMuted }}
-            onMouseEnter={e => { e.currentTarget.style.color = colors.text; }}
-            onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
-            title="Back (Cmd+[)"
-            disabled
-          >
-            <FiArrowLeft size={14} />
-          </button>
-          <button
-            className="p-1.5 rounded hover:bg-white/5 transition-colors"
-            style={{ color: colors.textMuted }}
-            onMouseEnter={e => { e.currentTarget.style.color = colors.text; }}
-            onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
-            title="Forward (Cmd+])"
-            disabled
-          >
-            <FiArrowRight size={14} />
-          </button>
           <button
             onClick={handleReload}
             className="p-1.5 rounded hover:bg-white/5 transition-colors"

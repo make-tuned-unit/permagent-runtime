@@ -332,26 +332,43 @@ export function AutomateView() {
       fetchJobs();
     }
   };
+  // Shared failure surface for the schedule mutations (2026-07 wiring audit):
+  // the old bare `catch {}` made every failed POST look like success — Btn's
+  // resolve path flashed "✓ Paused/Deleted/…" even on a 4xx/5xx. Show the
+  // failure on the same banner Run Now uses, and RE-THROW so Btn reverts to
+  // idle instead of faking success.
+  const failAction = (id: string, verb: string, err: unknown): never => {
+    const name = jobNameMap.get(id) || id;
+    const msg = err instanceof Error ? err.message : String(err);
+    setRunError(`Couldn't ${verb} "${name}": ${msg}`);
+    setTimeout(() => setRunError(null), 8000);
+    throw err;
+  };
   const handlePause = async (id: string) => {
     setActionState(`${id}:pause`, 'loading');
-    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/pause`, { method: 'POST' }); } catch {}
+    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/pause`, { method: 'POST' }); }
+    catch (err) { failAction(id, 'pause', err); }
   };
   const handleUnpause = async (id: string) => {
     setActionState(`${id}:unpause`, 'loading');
-    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/unpause`, { method: 'POST' }); } catch {}
+    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/unpause`, { method: 'POST' }); }
+    catch (err) { failAction(id, 'resume', err); }
   };
   const handleDelete = async (id: string) => {
     const name = jobNameMap.get(id) || id;
     if (!confirm(`Delete "${name}"? This can't be undone.`)) return;
     setActionState(`${id}:delete`, 'loading');
-    try { await apiFetch<unknown>(`/schedule/delete/${encodeURIComponent(id)}`, { method: 'DELETE' }); } catch {}
+    try { await apiFetch<unknown>(`/schedule/delete/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
+    catch (err) { failAction(id, 'delete', err); }
   };
   const handleKill = async (id: string) => {
-    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/kill`, { method: 'POST' }); fetchJobs(); } catch {}
+    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/kill`, { method: 'POST' }); fetchJobs(); }
+    catch (err) { failAction(id, 'stop', err); }
   };
   const handleResetToDefault = async (id: string) => {
     setActionState(`${id}:reset`, 'loading');
-    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/reset_to_default`, { method: 'POST' }); } catch {}
+    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/reset_to_default`, { method: 'POST' }); }
+    catch (err) { failAction(id, 'reset', err); }
   };
 
   // Callback for Btn to signal animation complete — clears mount guard + refreshes data

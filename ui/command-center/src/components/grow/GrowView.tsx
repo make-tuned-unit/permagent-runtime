@@ -128,17 +128,32 @@ export function GrowView() {
 
   // Content calendar = social_post cards on this project (reserved card type
   // already exists; empty until Henry/the user create them).
-  const loadPosts = useCallback((id: string) => {
-    setPostsState('loading');
+  const loadPosts = useCallback((id: string, opts?: { silent?: boolean }) => {
+    // Background refreshes keep the current list on screen (no loading flash);
+    // only user-visible (re)loads show the loading state.
+    if (!opts?.silent) setPostsState('loading');
     apiFetch<SocialCard[]>(`/api/projects/${encodeURIComponent(id)}/cards?card_type=social_post`)
       .then((p) => { setPosts(p); setPostsState('ready'); })
-      .catch(() => { setPosts([]); setPostsState('error'); });
+      .catch(() => {
+        if (!opts?.silent) { setPosts([]); setPostsState('error'); }
+      });
   }, []);
 
   useEffect(() => {
     if (!activeId) return;
     loadPosts(activeId);
   }, [activeId, loadPosts]);
+
+  // Keep the Content calendar live while it's on screen: "+ Draft a post with
+  // Henry" hands off to chat, and before this poll the drafted social_post
+  // card never appeared until the user switched projects and back (2026-07
+  // wiring audit — persist-but-no-readback). Same 15s stale-while-revalidate
+  // cadence the dashboard uses.
+  useEffect(() => {
+    if (!activeId || lens !== 'calendar') return;
+    const t = setInterval(() => loadPosts(activeId, { silent: true }), 15_000);
+    return () => clearInterval(t);
+  }, [activeId, lens, loadPosts]);
 
   const active = projects.find((p) => p.id === activeId) ?? null;
 
@@ -160,6 +175,9 @@ export function GrowView() {
         apiFetch<{ card_type: string }[]>(`/api/projects/${encodeURIComponent(activeId)}/cards`).catch(() => []),
       ]);
       if (!alive) return;
+      // Count of goal cards in ANY state — labeled "goals", not "shipped"
+      // (2026-07 wiring audit: the old "N shipped" label counted in-progress
+      // and triage cards as shipped work).
       const goals = cards.filter((c) => c.card_type === 'goal').length;
       setCtx({ people: people.length, goals });
     })();
@@ -190,7 +208,7 @@ export function GrowView() {
               <a href={active.repoUrl} target="_blank" rel="noreferrer" style={{ color: colors.cyan, textDecoration: 'none' }}>repo ↗</a>
             )}
             {ctx && (
-              <span style={{ color: colors.textDim }}>{ctx.goals} shipped · {ctx.people} {ctx.people === 1 ? 'person' : 'people'}</span>
+              <span style={{ color: colors.textDim }}>{ctx.goals} {ctx.goals === 1 ? 'goal' : 'goals'} · {ctx.people} {ctx.people === 1 ? 'person' : 'people'}</span>
             )}
           </div>
         </div>

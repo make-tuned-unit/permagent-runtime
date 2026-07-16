@@ -1,43 +1,36 @@
 import type { ChatMessage } from '../../lib/store';
 import { MarkdownContent } from './MarkdownContent';
 import { ImageMessage } from './ImageMessage';
-import { AudioMessage } from './AudioMessage';
 import { ReasoningBlock } from './ReasoningBlock';
 import { ToolResult } from '../tool-results/ToolResult';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
-interface Attachment {
-  id: string;
-  filename: string;
-  mime_type: string;
-  url: string;
-}
-
 interface MessageRendererProps {
   message: ChatMessage;
-  attachments?: Attachment[];
-  allImages?: string[];
 }
 
-export function MessageRenderer({ message, attachments, allImages }: MessageRendererProps) {
+export function MessageRenderer({ message }: MessageRendererProps) {
   const { colors } = useTheme();
   const isUser = message.role === 'user';
 
-  const imageAttachments = attachments?.filter(a => a.mime_type.startsWith('image/')) || [];
-  const audioAttachments = attachments?.filter(a => a.mime_type.startsWith('audio/')) || [];
+  // Inline images ride on the message as base64 (message.images). Render each
+  // through ImageMessage so it is click-to-zoom via the shared Lightbox, with
+  // gallery nav across every image in the message. 2026-07 wiring audit: this
+  // was a bare <img> and ImageMessage/Lightbox were orphaned behind an
+  // `attachments` prop the sole caller (MessageBubble) never passed.
+  const inlineImages = (message.images ?? []).map(img => `data:${img.mimeType};base64,${img.data}`);
 
   return (
     <>
-      {message.images && message.images.length > 0 && (
+      {inlineImages.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-2">
-          {message.images.map((img, i) => (
-            <img
+          {inlineImages.map((src, i) => (
+            <ImageMessage
               key={`${message.id}-img-${i}`}
-              src={`data:${img.mimeType};base64,${img.data}`}
+              src={src}
               alt="Attached image"
-              className="rounded-lg shadow-sm object-contain"
-              style={{ maxWidth: 300, maxHeight: 300, border: `1px solid ${colors.border}` }}
+              allImages={inlineImages}
             />
           ))}
         </div>
@@ -64,14 +57,6 @@ export function MessageRenderer({ message, attachments, allImages }: MessageRend
           </div>
         )
       )}
-
-      {imageAttachments.map(a => (
-        <ImageMessage key={a.id} src={a.url} alt={a.filename} allImages={allImages} />
-      ))}
-
-      {audioAttachments.map(a => (
-        <AudioMessage key={a.id} src={a.url} filename={a.filename} />
-      ))}
 
       {message.tool_calls && message.tool_calls.length > 0 && (
         <div className="mt-2 space-y-1">

@@ -74,6 +74,9 @@ interface PageState {
   total: number;
   hasMore: boolean;
   loading: boolean;
+  /** Last page fetch failed — render as an error, never as "No memories yet"
+   *  (2026-07 wiring audit: a dead daemon looked identical to an empty brain). */
+  error: boolean;
   // Browse cursor
   lastTimestamp: string | null;
   lastId: string | null;
@@ -93,7 +96,7 @@ export function BrainList({ onSelect, selectedId, timeValue, searchQuery, entiti
   const showEntities = !filters || filteredEntities.length > 0;
   const showMemories = !filters || filters.memory;
   const [state, setState] = useState<PageState>({
-    memories: [], total: 0, hasMore: false, loading: true,
+    memories: [], total: 0, hasMore: false, loading: true, error: false,
     lastTimestamp: null, lastId: null, searchOffset: 0,
   });
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -102,7 +105,7 @@ export function BrainList({ onSelect, selectedId, timeValue, searchQuery, entiti
 
   // Reset and load first page when query or time changes
   useEffect(() => {
-    setState({ memories: [], total: 0, hasMore: false, loading: true, lastTimestamp: null, lastId: null, searchOffset: 0 });
+    setState({ memories: [], total: 0, hasMore: false, loading: true, error: false, lastTimestamp: null, lastId: null, searchOffset: 0 });
     loadPage(true);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchQuery, timeValue]);
@@ -113,7 +116,7 @@ export function BrainList({ onSelect, selectedId, timeValue, searchQuery, entiti
 
     try {
       const currentState = reset ? {
-        memories: [] as GraphMemory[], total: 0, hasMore: false, loading: true,
+        memories: [] as GraphMemory[], total: 0, hasMore: false, loading: true, error: false,
         lastTimestamp: null as string | null, lastId: null as string | null, searchOffset: 0,
       } : state;
 
@@ -145,13 +148,14 @@ export function BrainList({ onSelect, selectedId, timeValue, searchQuery, entiti
           total: res.total,
           hasMore: res.has_more,
           loading: false,
+          error: false,
           lastTimestamp: last?.timestamp ?? null,
           lastId: last?.id ?? null,
           searchOffset: (reset ? 0 : prev.searchOffset) + res.memories.length,
         };
       });
     } catch {
-      setState(prev => ({ ...prev, loading: false }));
+      setState(prev => ({ ...prev, loading: false, error: true }));
     } finally {
       loadingMore.current = false;
     }
@@ -253,7 +257,23 @@ export function BrainList({ onSelect, selectedId, timeValue, searchQuery, entiti
           </div>
         )}
 
-        {showMemories && !state.loading && filtered.length === 0 && (
+        {showMemories && !state.loading && state.error && filtered.length === 0 && (
+          <div style={{ padding: 40, textAlign: 'center', fontFamily: font.body, fontSize: 13 }}>
+            <div style={{ color: colors.textMuted, marginBottom: 10 }}>Couldn't load memories.</div>
+            <button
+              onClick={() => loadPage(true)}
+              style={{
+                fontSize: 12, fontFamily: font.body, fontWeight: 600, color: colors.cyan,
+                background: 'none', border: `1px solid ${colors.borderHi}`, borderRadius: 8,
+                padding: '5px 14px', cursor: 'pointer',
+              }}
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
+        {showMemories && !state.loading && !state.error && filtered.length === 0 && (
           <div style={{ padding: 40, textAlign: 'center', fontFamily: font.body, fontSize: 13, color: colors.textMuted }}>
             {isSearch ? 'No memories match your search.' : 'No memories yet.'}
           </div>

@@ -565,11 +565,13 @@ export function BrainView() {
                       </div>
                     )}
                   </div>
-                  {/* Pinned stats footer */}
-                  <div style={{ flexShrink: 0, display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, borderTop: `1px solid ${colors.borderHi}`, paddingTop: 12 }}>
+                  {/* Pinned stats footer. "last recalled" removed (2026-07
+                      wiring audit): it fabricated concrete recall dates
+                      ("3 days ago") from the same age bucket recency already
+                      shows — the backend tracks no recall timestamp. */}
+                  <div style={{ flexShrink: 0, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, borderTop: `1px solid ${colors.borderHi}`, paddingTop: 12 }}>
                     <Stat label="reinforcement" value={`${Math.round(mem.weight * 100)}%`} />
                     <Stat label="recency" value={recencyLabel(mem.age)} />
-                    <Stat label="last recalled" value={mem.age < 0.1 ? 'today' : mem.age < 0.3 ? '3 days ago' : '2 weeks ago'} />
                   </div>
                 </div>
               );
