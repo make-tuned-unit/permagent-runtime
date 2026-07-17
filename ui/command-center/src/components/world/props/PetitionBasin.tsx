@@ -21,6 +21,7 @@ import { Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { ENV } from '../shared/palette';
 import { getReduceMotion } from '../../../styles/tokens';
+import { navigateToTool } from '../../../lib/store';
 import { stoneDark, stoneMarble, metalBronze, lightCyan } from './materials';
 import {
   ASCEND_MS,
@@ -118,7 +119,16 @@ export function PetitionBasin() {
   const open = petitions.filter((p) => !p.resolvedAt).length;
 
   return (
-    <group position={BASIN_POS}>
+    // Click the basin to open the Decision Inbox (the dashboard tab hosts it).
+    // The individual scrolls carry their decision id but there is no per-row
+    // inbox-focus seam yet (only discussDecision, which opens a chat) — so the
+    // whole basin routes to the inbox. See PHASE-0 report.
+    <group
+      position={BASIN_POS}
+      onClick={(e) => { e.stopPropagation(); navigateToTool('dashboard'); }}
+      onPointerOver={(e) => { e.stopPropagation(); document.body.style.cursor = 'pointer'; }}
+      onPointerOut={(e) => { e.stopPropagation(); document.body.style.cursor = 'auto'; }}
+    >
       {/* Basin: stepped bowl */}
       <mesh position-y={0.12} material={stoneMarble} castShadow>
         <cylinderGeometry args={[1.05, 1.2, 0.24, 10]} />
