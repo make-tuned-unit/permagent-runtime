@@ -50,8 +50,8 @@ pub const TRIVIAL_MAX_LINES: usize = 3;
 
 /// The READ-ONLY extension scope the reviewer is summoned with: it may READ and
 /// ANALYZE the repository for whole-repo reach (developer's search/tree/repo-map
-/// + the analyze code-structure tool) but its mandate — enforced by
-/// [`REVIEW_SYSTEM_PROMPT`] — forbids any edit, write, or mutating shell command.
+/// plus the analyze code-structure tool) but its mandate, enforced by
+/// [`REVIEW_SYSTEM_PROMPT`], forbids any edit, write, or mutating shell command.
 /// The reviewer's only output is a verdict; it never changes the tree it judges.
 pub const REVIEWER_EXTENSIONS: &[&str] = &["developer", "analyze"];
 
