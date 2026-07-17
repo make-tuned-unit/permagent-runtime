@@ -299,7 +299,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: ext_manager::EXTENSION_NAME,
                 display_name: "Extension Manager",
                 description:
-                    "Enable extension management tools for discovering, enabling, and disabling extensions",
+                    "Search your long-term Brain memory to recall facts and context (search_memory), discover other extensions you can turn on (search_available_extensions), enable or disable them (manage_extensions), and list or read the resources an extension exposes (list_resources, read_resource)",
                 default_enabled: true,
                 unprefixed_tools: false,
                 hidden: false,
@@ -372,7 +372,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: developer::EXTENSION_NAME,
                 display_name: "Developer",
-                description: "Write and edit files, and execute shell commands",
+                description: "Write and edit files (write, edit), execute shell commands (shell), list a directory tree with line counts (tree), search file contents for a summarized, token-efficient view of matches (search), and run the project's build/test checks for a structured PASS/FAIL (verify)",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
@@ -572,7 +572,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: project_manager::EXTENSION_NAME,
                 display_name: "Project Manager",
                 description:
-                    "Create, list, update, and delete projects — named workspaces with paths, URLs, and metadata",
+                    "Manage projects — named workspaces with paths, URLs, and metadata — including create, update, delete, list, and fuzzy-resolve (project_create, project_update, project_delete, project_list, project_resolve); run a project's Kanban board by creating, moving, deleting, and listing cards (card_create, card_move, card_delete, card_list) and adding or removing columns (column_create, column_delete); summarize the board across projects (board_summary); and open a project-rooted terminal in the Build tab (project_launch)",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,

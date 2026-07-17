@@ -70,6 +70,29 @@ pub const MANAGE_EXTENSIONS_TOOL_NAME: &str = "manage_extensions";
 pub const MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE: &str = "extensionmanager__manage_extensions";
 pub const SEARCH_MEMORY_TOOL_NAME: &str = "search_memory";
 
+/// The full inventory of tool names this extension can expose. Unlike the
+/// Developer/Project Manager extensions — whose static `get_tools()` is the
+/// source of truth for the self-knowledge completeness test — this extension's
+/// `get_tools()` is `async` and *dynamic* (`list_resources`/`read_resource`
+/// appear only when the extension manager supports resources, `search_memory`
+/// only when the Brain is loaded), so it cannot be enumerated statically. This
+/// hand-maintained list is that source of truth instead: every entry is checked
+/// against the registry description by
+/// `self_knowledge::tests::tool_descriptions_name_every_callable_tool`. Add a
+/// tool to `get_tools()` → add it here and name it in the blurb, or CI fails.
+///
+/// Test-only: the completeness test is its sole consumer, so `#[cfg(test)]`
+/// keeps it out of the non-test build (where it would be a dead const) while
+/// still enforcing coverage under `cargo test`.
+#[cfg(test)]
+pub(crate) const TOOL_NAMES: &[&str] = &[
+    SEARCH_MEMORY_TOOL_NAME,
+    SEARCH_AVAILABLE_EXTENSIONS_TOOL_NAME,
+    MANAGE_EXTENSIONS_TOOL_NAME,
+    LIST_RESOURCES_TOOL_NAME,
+    READ_RESOURCE_TOOL_NAME,
+];
+
 pub struct ExtensionManagerClient {
     info: InitializeResult,
     #[allow(dead_code)]

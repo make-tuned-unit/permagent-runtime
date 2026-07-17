@@ -32,7 +32,7 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
         what_it_does:
             "A local LLM that writes prose descriptions for new Brain memories during idle windows, and consolidates recurring cross-session memories into durable entity-keyed atoms",
         why_it_matters:
-            "Keeps long-term memory searchable, so later recall surfaces the right context. When its live state shows entities awaiting your context, ask the user about one of them when it fits the conversation — one at a time — and save the answer to memory so the next sweep can describe them truthfully",
+            "Keeps long-term memory searchable, so later recall surfaces the right context. When its live state shows entities awaiting your context, ask the user about one of them when it fits the conversation — one at a time — their answer is captured to memory automatically (your conversations are ingested; there is no save-to-memory tool to call), so the next sweep can describe them truthfully",
         state_source: crate::agents::self_knowledge::StateSource::Queryable,
         teaching: &[],
     };

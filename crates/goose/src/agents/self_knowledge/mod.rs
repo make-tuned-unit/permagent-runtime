@@ -927,13 +927,152 @@ mod tests {
         );
     }
 
+    /// Tokenize a capability description into whole identifier tokens (split on
+    /// any non-`[A-Za-z0-9_]` char, lowercased). A tool counts as "named" only
+    /// if its name is one of these tokens — so `search` is not satisfied by
+    /// "research" nor `tree` by "street".
+    fn description_tokens(desc: &str) -> std::collections::HashSet<String> {
+        desc.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .filter(|t| !t.is_empty())
+            .map(|t| t.to_ascii_lowercase())
+            .collect()
+    }
+
+    /// Every tool in `tools` that `desc` fails to name (empty == complete). The
+    /// single checker BOTH the guard and its meta-test run through, so the
+    /// meta-test genuinely exercises the guard's logic.
+    fn tools_not_named_in(desc: &str, tools: &[String]) -> Vec<String> {
+        let toks = description_tokens(desc);
+        tools
+            .iter()
+            .filter(|t| !toks.contains(&t.to_ascii_lowercase()))
+            .cloned()
+            .collect()
+    }
+
+    /// The registry `description` (== `what_it_does`) for a platform extension,
+    /// looked up by its `def.name`.
+    fn platform_extension_description(ext_name: &str) -> &'static str {
+        PLATFORM_EXTENSIONS
+            .values()
+            .find(|d| d.name == ext_name)
+            .unwrap_or_else(|| panic!("extension {ext_name:?} missing from PLATFORM_EXTENSIONS"))
+            .description
+    }
+
+    /// **Self-knowledge completeness (structural guard).** Every tool an
+    /// extension can actually expose must be *named* in that extension's
+    /// registry `description` — otherwise the tool renders into no line of the
+    /// `permagent_self` brief and the agent cannot know it exists. This closes
+    /// the gap the descriptor contract left open: `PlatformExtensionDef::descriptor`
+    /// copies `description` verbatim into `what_it_does`, so coverage was
+    /// guaranteed at *extension* granularity but never at *tool* granularity — an
+    /// extension could ship a tool its blurb never mentions and every test stayed
+    /// green. Shipping an undescribed tool now fails the build.
+    ///
+    /// Source of truth per extension:
+    ///
+    /// - **Developer** & **Project Manager** expose a static `get_tools()`, so
+    ///   the inventory is the real, live tool list — add a tool there and this
+    ///   test fails until the blurb names it (fully drift-proof).
+    /// - **Extension Manager** builds tools dynamically (`async get_tools(&self)`
+    ///   gated on Brain / resource availability), so it is not statically
+    ///   enumerable; its hand-maintained `ext_manager::TOOL_NAMES` is the
+    ///   inventory instead (the same idiom as `KNOWN_WORKER_IDS` above).
+    #[test]
+    fn tool_descriptions_name_every_callable_tool() {
+        use crate::agents::platform_extensions::{developer, ext_manager, project_manager};
+
+        let developer_tools: Vec<String> = developer::DeveloperClient::get_tools()
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        let project_tools: Vec<String> = project_manager::ProjectManagerClient::get_tools()
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        let ext_manager_tools: Vec<String> = ext_manager::TOOL_NAMES
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let cases: [(&str, &[String]); 3] = [
+            (developer::EXTENSION_NAME, &developer_tools),
+            (project_manager::EXTENSION_NAME, &project_tools),
+            (ext_manager::EXTENSION_NAME, &ext_manager_tools),
+        ];
+
+        let mut gaps = Vec::new();
+        for (ext_name, tools) in cases {
+            assert!(
+                !tools.is_empty(),
+                "{ext_name}: empty tool inventory — test wiring is broken"
+            );
+            let desc = platform_extension_description(ext_name);
+            for missing in tools_not_named_in(desc, tools) {
+                gaps.push(format!(
+                    "{ext_name}: tool `{missing}` is callable but its description never names it"
+                ));
+            }
+        }
+
+        assert!(
+            gaps.is_empty(),
+            "self-knowledge completeness gap — an extension ships a tool its \
+             description never names, so the agent cannot know the tool exists. \
+             Name each missing tool in its `PlatformExtensionDef.description`:\n{}",
+            gaps.join("\n")
+        );
+    }
+
+    /// **Test-of-the-test.** Proves the completeness guard above actually has
+    /// teeth: it must REPORT a gap when a description omits a tool, not silently
+    /// pass. Pinned on the highest-priority case — Extension Manager owns
+    /// `search_memory` (Brain recall), the exact tool whose omission this PR
+    /// exists to catch. If a future refactor neutered
+    /// `tool_descriptions_name_every_callable_tool` into a no-op, this fails.
+    #[test]
+    fn completeness_guard_catches_a_dropped_search_memory() {
+        use crate::agents::platform_extensions::ext_manager;
+
+        let inventory: Vec<String> = ext_manager::TOOL_NAMES
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(
+            inventory.iter().any(|t| t == "search_memory"),
+            "ext_manager::TOOL_NAMES must include search_memory (the tool this PR enforces)"
+        );
+
+        // The REAL, shipped Extension Manager description names every tool.
+        let real = platform_extension_description(ext_manager::EXTENSION_NAME);
+        assert!(
+            tools_not_named_in(real, &inventory).is_empty(),
+            "the real Extension Manager description must name every tool in TOOL_NAMES"
+        );
+
+        // The pre-fix blurb (which never named search_memory) MUST be flagged —
+        // the exact regression the guard exists to prevent. This is the
+        // "verify it RED-builds if search_memory is dropped" check, run in CI.
+        let pre_fix_blurb =
+            "Enable extension management tools for discovering, enabling, and disabling extensions";
+        let missing = tools_not_named_in(pre_fix_blurb, &inventory);
+        assert!(
+            missing.iter().any(|t| t == "search_memory"),
+            "guard is a no-op: a description dropping search_memory was not flagged (missing: {missing:?})"
+        );
+    }
+
     /// **Branding guard (systems fix).** No user-facing capability string may
     /// leak the upstream `goose` fork name. Every field that renders into the
     /// self-knowledge brief and the capability cards — `display_name`,
     /// `what_it_does`, `why_it_matters` — is scanned case-insensitively across
     /// all descriptor registries (platform extensions, workers, guards,
     /// surfaces). A re-introduced "goose" in card copy or the brief fails the
-    /// build instead of shipping.
+    /// build instead of shipping. The scan also covers the two out-of-registry
+    /// platform tools (`manage_schedule`, `load_feature_lesson`) registered
+    /// directly in `agent.rs` rather than via PLATFORM_EXTENSIONS — their
+    /// user-facing name/description is exactly where a leak previously hid.
     ///
     /// In scope: rendered card/brief copy only. OUT of scope (never reaches
     /// these strings): the internal crate name `goose`, directory paths, and
@@ -977,6 +1116,28 @@ mod tests {
                 }
             }
         }
+
+        // Out-of-registry platform tools: `manage_schedule` and
+        // `load_feature_lesson` are pushed straight into the tool list in
+        // `agent.rs`, not via PLATFORM_EXTENSIONS, so the descriptor scan above
+        // never reaches them. Their user-facing name + description must not leak
+        // the fork name either — this is where the goose-riddled schedule blurb
+        // used to hide, escaping the descriptor-only guard.
+        for tool in [
+            crate::agents::platform_tools::manage_schedule_tool(),
+            crate::agents::platform_tools::load_feature_lesson_tool(),
+        ] {
+            let desc = tool.description.as_deref().unwrap_or_default();
+            for (field, text) in [("name", &*tool.name), ("description", desc)] {
+                if text.to_lowercase().contains("goose") {
+                    leaks.push(format!(
+                        "platform_tool {:?} field `{field}` leaks 'goose': {text:?}",
+                        tool.name
+                    ));
+                }
+            }
+        }
+
         assert!(
             leaks.is_empty(),
             "user-facing 'goose' branding leak(s) found — rebrand to Permagent \
