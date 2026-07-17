@@ -146,3 +146,34 @@ tabs:
       - User asks what skills you have saved or learned
       - User wants to view, edit, or remove a specific skill
     customizable_layout: false
+
+  - name: Sessions
+    tool_type: sessions
+    panel_type: overlay
+    description: >-
+      The Sessions history lists the user's past conversations — each with its
+      title and when it was last active — so they can reopen an earlier chat and
+      pick up where they left off, or rename and delete old ones.
+    affords:
+      - Browse past conversations by recency
+      - Reopen a past session back into the chat dock
+      - Rename or delete old sessions
+    suggest_when:
+      - User asks to return to or find an earlier conversation
+      - User wants to review, rename, or clean up past sessions
+    customizable_layout: false
+
+  - name: Trace
+    tool_type: trace
+    panel_type: overlay
+    description: >-
+      The Execution trace shows the runtime's most recent events live off the
+      global event bus — a timestamped stream of tool calls, worker activity,
+      navigations, and lifecycle signals as they happen.
+    affords:
+      - Watch recent runtime events in real time
+      - Inspect what the system just did under the hood
+    suggest_when:
+      - User wants to see the raw event stream or debug what just happened
+      - User asks what the system is doing right now at a low level
+    customizable_layout: false
