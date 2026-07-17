@@ -183,6 +183,31 @@ fn validate_enrichment_payload(p: &EnrichmentProposalPayload) -> Result<(), Stri
     Ok(())
 }
 
+/// Payload for `kind='tool_approval'` — an agent turn parked on a needs-approval
+/// tool call (GOOSE_MODE `approve`/`smart_approve`). The turn's stream is
+/// suspended on a `ToolConfirmationRouter` oneshot; answering this decision
+/// approve/reject delivers the confirmation back to that exact parked await
+/// (see `crates/goose-server/src/routes/decisions.rs::deliver_tool_confirmation`),
+/// so approve runs the tool and reject skips it. `session_id` + `request_id`
+/// are the routing keys: `session_id` selects the per-session Agent, `request_id`
+/// is the router key the reply stream registered.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolApprovalPayload {
+    /// The chat session whose turn is parked awaiting this confirmation.
+    pub session_id: String,
+    /// The tool-call request id the `ToolConfirmationRouter` is keyed on.
+    pub request_id: String,
+    /// Tool the assistant wants to run (e.g. `developer__shell`).
+    pub tool_name: String,
+    /// Arguments the tool was called with, shown to the approver.
+    #[serde(default)]
+    pub arguments: serde_json::Value,
+    /// Optional note from tool inspection (e.g. a prompt-injection finding).
+    #[serde(default)]
+    pub security_message: Option<String>,
+}
+
 // ── Decision rows ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -291,6 +316,7 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
         "risk_gate",
         "automation_proposal",
         "enrichment_proposal",
+        "tool_approval",
     ]
     .contains(&req.kind.as_str())
     {
@@ -340,6 +366,9 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
                 Err(e) => Err(e.to_string()),
             }
         }
+        "tool_approval" => serde_json::from_value::<ToolApprovalPayload>(req.payload.clone())
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
         _ => unreachable!("kind validated above"),
     };
     payload_result.map_err(|e| format!("payload failed schema for kind '{}': {}", req.kind, e))
@@ -1125,6 +1154,56 @@ mod tests {
         );
         assert!(d.payload.get("error").is_some());
         assert!(d.payload.get("raw").is_some());
+    }
+
+    fn valid_tool_approval() -> NewDecision {
+        NewDecision {
+            kind: "tool_approval".to_string(),
+            headline: Some("Approve tool call: developer__shell".to_string()),
+            detail: Some("The assistant wants to run 'developer__shell'".to_string()),
+            payload: serde_json::json!({
+                "session_id": "sess-1",
+                "request_id": "req-1",
+                "tool_name": "developer__shell",
+                "arguments": {"command": "ls -la"},
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_approval_created_at_tier2_fail_closed() {
+        let pool = test_pool().await;
+        let d = create_decision(&pool, valid_tool_approval()).await.unwrap();
+        assert_eq!(d.kind, "tool_approval");
+        // No seeded risk_policy class for tool_approval → fail-closed to Tier 2,
+        // so only 'jesse' (the human) can answer it — never henry-policy/system.
+        assert_eq!(d.tier, 2);
+        assert_eq!(d.status, "open");
+        // Routing keys round-trip through the stored payload.
+        assert_eq!(
+            d.payload.get("request_id").and_then(|v| v.as_str()),
+            Some("req-1")
+        );
+        assert_eq!(
+            d.payload.get("session_id").and_then(|v| v.as_str()),
+            Some("sess-1")
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_approval_missing_routing_keys_is_malformed() {
+        let pool = test_pool().await;
+        let mut req = valid_tool_approval();
+        // Missing request_id + tool_name violates the typed payload schema.
+        req.payload = serde_json::json!({"session_id": "sess-1"});
+        let d = create_decision(&pool, req).await.unwrap();
+        assert_eq!(d.kind, "malformed");
+        assert_eq!(d.tier, 2);
+        assert_eq!(
+            d.payload.get("original_kind").and_then(|v| v.as_str()),
+            Some("tool_approval")
+        );
     }
 
     #[tokio::test]

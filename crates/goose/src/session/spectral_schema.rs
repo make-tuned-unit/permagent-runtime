@@ -1769,7 +1769,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS decisions (
             id            TEXT PRIMARY KEY,
             kind          TEXT NOT NULL CHECK (kind IN
-                            ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','malformed')),
+                            ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','tool_approval','malformed')),
             goal_id       TEXT REFERENCES cards(id) ON DELETE SET NULL,
             project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
             tier          INTEGER NOT NULL CHECK (tier IN (0,1,2)),
@@ -1815,22 +1815,27 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
     }
 
     // Widen the `kind` CHECK to admit 'automation_proposal' (Initiative → Decision
-    // Inbox) and 'enrichment_proposal' (the Enricher, #495 slice 4), AND the
-    // `answer` CHECK to admit 'edit' (approve-with-edits / edit-as-training). SQLite
-    // cannot ALTER a CHECK, so an older table is rebuilt in place. FK-safe: nothing
-    // references `decisions` via a foreign key (decision_audit stores a plain TEXT
-    // id; the complete-guard trigger resolves by name after the rename). Gated on
-    // the widened constraints' marker tokens, so it runs at most once per widening:
-    // a table missing 'enrichment_proposal' OR missing the 'edit' answer value is
-    // rebuilt to the current DDL, which widens all of them together (an old-answer
-    // DB only ever holds the four legacy values, all valid under the new CHECK, so
-    // the row copy is lossless).
+    // Inbox), 'enrichment_proposal' (the Enricher, #495 slice 4), and 'tool_approval'
+    // (needs-approval tool calls routed to the inbox), AND the `answer` CHECK to
+    // admit 'edit' (approve-with-edits / edit-as-training). SQLite cannot ALTER a
+    // CHECK, so an older table is rebuilt in place. FK-safe: nothing references
+    // `decisions` via a foreign key (decision_audit stores a plain TEXT id; the
+    // complete-guard trigger resolves by name after the rename). Gated on the
+    // widened constraints' marker tokens, so it runs at most once per widening: a
+    // table missing 'enrichment_proposal', the 'edit' answer value, OR 'tool_approval'
+    // is rebuilt to the current DDL, which widens all of them together (an older DB
+    // only ever holds legacy values, all valid under the new CHECK, so the row copy
+    // is lossless).
     let decisions_ddl: Option<String> =
         sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE type='table' AND name='decisions'")
             .fetch_optional(&mut *tx)
             .await?;
     if decisions_ddl
-        .map(|sql| !sql.contains("enrichment_proposal") || !sql.contains("'edit'"))
+        .map(|sql| {
+            !sql.contains("enrichment_proposal")
+                || !sql.contains("'edit'")
+                || !sql.contains("tool_approval")
+        })
         .unwrap_or(false)
     {
         info!("Widening decisions kind/answer CHECK constraints (in-place rebuild)");
@@ -1857,7 +1862,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
             "CREATE TABLE decisions_new (
                 id            TEXT PRIMARY KEY,
                 kind          TEXT NOT NULL CHECK (kind IN
-                                ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','malformed')),
+                                ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','tool_approval','malformed')),
                 goal_id       TEXT REFERENCES cards(id) ON DELETE SET NULL,
                 project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
                 tier          INTEGER NOT NULL CHECK (tier IN (0,1,2)),
@@ -3337,5 +3342,110 @@ mod inbox_schema_tests {
             still_edit, "edit",
             "the edited row is stable across a re-run"
         );
+    }
+
+    /// `tool_approval` kind widening: an existing DB that already carries the
+    /// enrichment_proposal + 'edit' widenings but whose `kind` CHECK predates
+    /// 'tool_approval' must still be rebuilt by `apply_decision_inbox_schema`.
+    /// This isolates the new marker token — the other two gate clauses are
+    /// already satisfied, so only the tool_approval clause can trigger the
+    /// rebuild — proving the gate was broadened (not just the DDL).
+    #[tokio::test]
+    async fn decisions_kind_check_widens_for_tool_approval_in_place() {
+        let pool = mem_pool().await;
+        init_spectral_db(&pool).await.unwrap();
+
+        // Downgrade: widened `answer` (has 'edit') and enrichment_proposal in
+        // `kind`, but NO 'tool_approval' — the exact case only the new gate
+        // clause catches.
+        sqlx::query("DROP TABLE decisions")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE decisions (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL CHECK (kind IN
+                    ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','malformed')),
+                goal_id TEXT REFERENCES cards(id) ON DELETE SET NULL,
+                project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+                tier INTEGER NOT NULL CHECK (tier IN (0,1,2)),
+                headline TEXT NOT NULL CHECK (length(headline) > 0 AND length(headline) <= 80),
+                detail TEXT NOT NULL CHECK (length(detail) > 0),
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                rank REAL,
+                status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','answered','expired','superseded')),
+                answer TEXT CHECK (answer IN ('approve','reject','choice','input','edit')),
+                answer_note TEXT, answer_choice_id TEXT, answer_input TEXT,
+                acted_by TEXT CHECK (acted_by IN ('jesse','henry-policy','system')),
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                resolved_at TEXT,
+                CHECK (status != 'answered'
+                       OR (answer IS NOT NULL AND acted_by IS NOT NULL AND resolved_at IS NOT NULL))
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // A legacy row (NULL goal/project → no FK dependency) to prove lossless copy.
+        sqlx::query(
+            "INSERT INTO decisions (id, kind, tier, headline, detail, status)
+             VALUES ('d-legacy', 'choice', 2, 'Legacy open row', 'detail', 'open')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Precondition: the old kind CHECK rejects 'tool_approval'.
+        assert!(
+            sqlx::query(
+                "INSERT INTO decisions (id, kind, tier, headline, detail)
+                 VALUES ('d-ta', 'tool_approval', 2, 'x', 'y')",
+            )
+            .execute(&pool)
+            .await
+            .is_err(),
+            "old kind CHECK must reject 'tool_approval' before the widening runs"
+        );
+
+        // The idempotent decision-inbox schema rebuilds to widen `kind`.
+        apply_decision_inbox_schema(&pool).await.unwrap();
+
+        let ddl: String = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='decisions'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            ddl.contains("tool_approval"),
+            "kind CHECK must be widened to admit 'tool_approval': {ddl}"
+        );
+
+        // Legacy row survived the rebuild losslessly...
+        let survived: String =
+            sqlx::query_scalar("SELECT headline FROM decisions WHERE id='d-legacy'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(survived, "Legacy open row");
+
+        // ...and a tool_approval row is now accepted by the constraint.
+        sqlx::query(
+            "INSERT INTO decisions (id, kind, tier, headline, detail)
+             VALUES ('d-ta', 'tool_approval', 2, 'Approve tool', 'run ls')",
+        )
+        .execute(&pool)
+        .await
+        .expect("widened CHECK must accept kind='tool_approval'");
+
+        // Idempotent: a second run neither errors nor rebuilds it away.
+        apply_decision_inbox_schema(&pool).await.unwrap();
+        let still_there: String = sqlx::query_scalar("SELECT kind FROM decisions WHERE id='d-ta'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(still_there, "tool_approval");
     }
 }

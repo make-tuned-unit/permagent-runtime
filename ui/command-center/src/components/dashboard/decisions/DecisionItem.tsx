@@ -78,6 +78,11 @@ function effectTextFor(kind: string, answer: 'approve' | 'reject', agentName: st
       ? `Confirm approve — ${agentName} will save these details to the person's profile (your manual entries stay protected).`
       : 'Confirm reject — nothing is written to the profile.';
   }
+  if (kind === 'tool_approval') {
+    return answer === 'approve'
+      ? `Confirm approve — ${agentName} will run this tool and continue the turn.`
+      : `Confirm reject — ${agentName} will skip this tool and continue the turn.`;
+  }
   // malformed and anything unknown: recorded only, no state change.
   return answer === 'approve'
     ? 'Confirm — this is recorded for the audit trail; nothing else changes.'
@@ -138,7 +143,8 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
   const isChoice = d.kind === 'choice';
   const isApprovalLike =
     d.kind === 'approve_review' || d.kind === 'risk_gate' || d.kind === 'malformed' ||
-    d.kind === 'enrichment_proposal' || d.kind === 'automation_proposal';
+    d.kind === 'enrichment_proposal' || d.kind === 'automation_proposal' ||
+    d.kind === 'tool_approval';
   // The agent's original draft, when this decision carries one (payload.draft):
   // enables "approve with edits" — revise the text, then accept (answer='edit').
   const draft = draftText(d);

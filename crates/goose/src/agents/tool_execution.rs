@@ -98,10 +98,28 @@ impl Agent {
 
                 let confirmation_rx = self.tool_confirmation_router.register(request.id.clone()).await;
 
+                let tool_name = tool_call.name.to_string();
+
+                // Route this needs-approval tool call through the Decision Inbox so the
+                // command-center (which never calls /action-required/tool-confirmation)
+                // can answer it: answering the decision approve/reject delivers the
+                // confirmation back to `confirmation_rx` below via
+                // ToolConfirmationRouter::deliver, unblocking this parked await.
+                // Best-effort — a failure here leaves the legacy action_required path
+                // (yielded just below) intact and never breaks the turn.
+                self.create_tool_approval_decision(
+                    &request.id,
+                    &tool_name,
+                    tool_call.arguments.clone().unwrap_or_default(),
+                    security_message.as_deref(),
+                    &session.id,
+                )
+                .await;
+
                 let action_required_msg = Message::assistant()
                     .with_action_required(
                         request.id.clone(),
-                        tool_call.name.to_string().clone(),
+                        tool_name.clone(),
                         tool_call.arguments.clone().unwrap_or_default(),
                         security_message,
                     )
@@ -184,5 +202,102 @@ impl Agent {
             }
         }
         .boxed()
+    }
+
+    /// Surface a needs-approval tool call as a Decision-Inbox row (`kind =
+    /// tool_approval`) so it can be answered asynchronously by the command-center.
+    /// The row carries the `session_id` + `request_id` routing keys; answering it
+    /// approve/reject delivers the confirmation back to the parked
+    /// [`ToolConfirmationRouter`] await that `handle_approval_tool_requests` is
+    /// suspended on (see `goose-server` `routes::decisions::deliver_tool_confirmation`).
+    /// Best-effort: any failure is logged and the turn proceeds on the legacy
+    /// `/action-required` path, so this never breaks a turn.
+    async fn create_tool_approval_decision(
+        &self,
+        request_id: &str,
+        tool_name: &str,
+        arguments: serde_json::Value,
+        security_message: Option<&str>,
+        session_id: &str,
+    ) {
+        use crate::decisions::{
+            create_decision, NewDecision, ToolApprovalPayload, MAX_HEADLINE_CHARS,
+        };
+
+        let pool = match self.config.session_manager.pool_clone().await {
+            Ok(pool) => pool,
+            Err(e) => {
+                tracing::warn!(
+                    "tool-approval decision skipped for request {}: no DB pool ({})",
+                    request_id,
+                    e
+                );
+                return;
+            }
+        };
+
+        // Compact args preview for the human-readable detail; the full arguments
+        // live in the payload (borrow before `arguments` is moved into it).
+        let args_preview: String = serde_json::to_string(&arguments)
+            .unwrap_or_else(|_| "{}".to_string())
+            .chars()
+            .take(400)
+            .collect();
+
+        // Headline must be <= MAX_HEADLINE_CHARS or create_decision stores the row
+        // as malformed; cap defensively (tool names are short in practice).
+        let headline = {
+            let h = format!("Approve tool call: {}", tool_name);
+            if h.chars().count() > MAX_HEADLINE_CHARS {
+                h.chars().take(MAX_HEADLINE_CHARS).collect()
+            } else {
+                h
+            }
+        };
+        let mut detail = format!(
+            "The assistant is requesting approval to run the '{}' tool with arguments: {}",
+            tool_name, args_preview
+        );
+        if let Some(msg) = security_message {
+            detail.push_str(&format!(" — security note: {}", msg));
+        }
+
+        let payload = ToolApprovalPayload {
+            session_id: session_id.to_string(),
+            request_id: request_id.to_string(),
+            tool_name: tool_name.to_string(),
+            arguments,
+            security_message: security_message.map(str::to_string),
+        };
+        let payload_json = match serde_json::to_value(&payload) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    "tool-approval decision skipped for request {}: payload serialize failed ({})",
+                    request_id,
+                    e
+                );
+                return;
+            }
+        };
+
+        if let Err(e) = create_decision(
+            &pool,
+            NewDecision {
+                kind: "tool_approval".to_string(),
+                headline: Some(headline),
+                detail: Some(detail),
+                payload: payload_json,
+                ..Default::default()
+            },
+        )
+        .await
+        {
+            tracing::warn!(
+                "tool-approval decision create failed for request {}: {}",
+                request_id,
+                e
+            );
+        }
     }
 }
