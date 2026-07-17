@@ -78,7 +78,9 @@ const DEFAULT_MIN_CHARS: usize = 16;
 const DEFAULT_MIN_CONFIDENCE: f64 = 0.45;
 
 // ── Local-summary (Ollama) config — mirrors the Librarian's local LLM use ──
-const OLLAMA_BASE_URL: &str = "http://localhost:11434";
+// Dispatched through `crate::mesh::pool::generate` (Workload::Batch) — the
+// pool engine's scheduler + fallback ladder when PERMAGENT_MESH_ENGINE is on,
+// plain `resolve_route(Batch)` (config::ollama_host() under the hood) when off.
 const SUMMARY_MODEL: &str = "qwen2.5:7b";
 // The digest is what Henry SAYS to the user, so the summarizer must never
 // state a specific it might get wrong. Exact facts (dates, amounts, IDs, names)
@@ -377,35 +379,27 @@ async fn summarize(text: &str) -> String {
 }
 
 async fn ollama_summary(text: &str) -> Result<String, String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .map_err(|e| e.to_string())?;
     let prompt = format!(
         "Write a brief, conservative gist (one or two sentences, NO exact dates/amounts/numbers/names — keep specifics vague or omit them) of this extracted text:\n\n{}",
         truncate(text, 6000)
     );
-    let body = serde_json::json!({
-        "model": SUMMARY_MODEL,
-        "prompt": prompt,
-        "system": SUMMARY_SYSTEM,
-        "stream": false,
-        "options": { "temperature": 0.2, "num_predict": 120 },
-    });
-    let resp = client
-        .post(format!("{OLLAMA_BASE_URL}/api/generate"))
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("Ollama unreachable: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("Ollama error: {}", resp.status()));
-    }
-    let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    Ok(v.get("response")
-        .and_then(|r| r.as_str())
-        .unwrap_or_default()
-        .to_string())
+    // Dispatch through the mesh pool engine: with `PERMAGENT_MESH_ENGINE` on,
+    // this rides the full ladder (trusted healthy peer → local → escalation
+    // hint); with it off, a single attempt against `resolve_route(Batch)`
+    // with the same 60s budget this function always used. The wire body is
+    // built by the engine's inference-only choke-point.
+    crate::mesh::pool::generate(crate::mesh::pool::GenerateRequest {
+        model: SUMMARY_MODEL.to_string(),
+        prompt,
+        system: Some(SUMMARY_SYSTEM.to_string()),
+        options: Some(serde_json::json!({ "temperature": 0.2, "num_predict": 120 })),
+        keep_alive: None,
+        timeout: None,
+        workload: crate::mesh::Workload::Batch,
+    })
+    .await
+    .map(|resp| resp.text)
+    .map_err(|e| e.message)
 }
 
 /// A distinctive semantic phrase for `search_memory` — filename stem plus the

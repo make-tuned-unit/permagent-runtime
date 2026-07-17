@@ -93,6 +93,10 @@ fn default_env_filter() -> EnvFilter {
         // ("WAL checkpoint ok") were in the trap.
         .add_directive("durability=info".parse().unwrap())
         .add_directive("steward=info".parse().unwrap())
+        // #746: the onboarding coach logs its once-a-day teach offer and its
+        // usage/teachable updates under this target; without the directive the
+        // INFO lines fall below the WARN floor (the #580 trap).
+        .add_directive("onboarding=info".parse().unwrap())
         .add_directive(LevelFilter::WARN.into())
 }
 

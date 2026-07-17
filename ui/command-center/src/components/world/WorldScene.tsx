@@ -11,6 +11,11 @@ import { MezzanineLibrary } from './areas/hall/MezzanineLibrary';
 import { WorkstationCluster } from './props/WorkstationCluster';
 import { GoalPlaques } from './props/GoalPlaques';
 import { ShelfBook } from './props/ShelfBook';
+import { BenchArtifacts } from './props/BenchArtifacts';
+import { Horologium } from './props/Horologium';
+import { PetitionBasin } from './props/PetitionBasin';
+import { WatcherBeacon } from './props/WatcherBeacon';
+import { ColonnadeLanterns } from './props/ColonnadeLanterns';
 import { Zones } from './areas/WorldZones';
 import { Agora, PortalStream } from './areas/forum/Agora';
 import { Atmosphere, DistantGrid } from './atmosphere/Atmosphere';
@@ -93,7 +98,8 @@ export function WorldSceneContent({
       {/* The working bay (W2 WorkstationCluster, previously unmounted): six
           real seat anchors by the Lab pedestal, with holo plaques bound to
           REAL active goals — the Kanban made physical. The Librarian's shelf
-          book animates off the mezzanine wall on real describe events. */}
+          book animates off the mezzanine wall on real describe events. Bench
+          artifacts: LIVE task completions leave cooling work-stones. */}
       <WorkstationCluster
         position={[0, 0, -11.4]}
         rotationY={Math.PI}
@@ -102,6 +108,20 @@ export function WorldSceneContent({
       />
       <GoalPlaques origin={[0, 0, -11.4]} rotationY={Math.PI} />
       <ShelfBook />
+      <BenchArtifacts />
+
+      {/* Environment truth props (this pass) — each bound to one real feed:
+            Horologium     — /api/runs schedules (tick per REAL job; the
+                             escapement turns only while one really runs)
+            PetitionBasin  — /api/decisions (a sealed scroll per REAL pending
+                             decision; created drops in, resolved ascends)
+            WatcherBeacon  — the Watcher's vigil tower; flares + plaque only
+                             on a REAL proactive_nudge event
+            ColonnadeLanterns — decorative Light-tier craft on the real clock */}
+      <Horologium />
+      <PetitionBasin />
+      <WatcherBeacon />
+      <ColonnadeLanterns />
 
       {/* The relocated Mesh Stargate in the colonnade opening (clickable → the
           Agora arc, #306). */}

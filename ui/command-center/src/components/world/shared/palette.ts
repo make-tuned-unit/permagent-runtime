@@ -33,6 +33,10 @@ export const AGENT_TRIM = {
   nova: '#A78BFA',
   librarian: '#8B7E6F',
   reader: '#4FD1C5', // cool teal — the OCR/document ingest pipeline (#336/#342)
+  // Additive identity entry (same precedent as `reader`, added when its worker
+  // shipped): the Watcher / Echo (#672), the daemon's proactive nudge worker.
+  // Pale vigil steel-blue — watchful, quiet, distinct from every STATE color.
+  watcher: '#9FB8D8',
 } as const;
 
 export type AgentHudState = keyof typeof STATE;

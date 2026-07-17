@@ -1,3 +1,4 @@
+pub mod builtin_recipes;
 pub mod extract_from_cli;
 pub mod github_recipe;
 pub mod print_recipe;

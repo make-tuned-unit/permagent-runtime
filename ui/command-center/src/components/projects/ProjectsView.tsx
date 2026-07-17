@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { apiFetch } from '../../lib/api';
+import { toast } from '../../lib/notifications';
 import { useGoalEvents } from '../../lib/useGoalEvents';
 import { useCommandCenter } from '../../lib/store';
 import { ProjectWorkspace } from './ProjectWorkspace';
@@ -101,8 +102,10 @@ export function ProjectsView() {
         body: JSON.stringify({ status: newStatus }),
       });
       loadProjects();
-    } catch {
-      // silently fail
+    } catch (err) {
+      // Surfaced (2026-07 wiring audit): a swallowed failure left the card
+      // visually snapped back with no explanation.
+      toast('Couldn\'t move project', err instanceof Error ? err.message : String(err));
     }
   }, [loadProjects]);
 
@@ -210,8 +213,12 @@ projects, onOpenProject, onStatusChange }: {
   onOpenProject: (id: string) => void;
   onStatusChange: (id: string, status: string) => void;
 }) {
-  const { colors } = useTheme();
+  const { colors, theme } = useTheme();
   const { gradient } = useTheme();
+  // White veils vanish on silver's white surfaces — flip to a faint graphite
+  // tint there (same approach as BrainList's theme-conditional rows).
+  const stripVeil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
+  const chipVeil = theme === 'silver' ? 'rgba(30,37,48,0.06)' : 'rgba(255,255,255,0.06)';
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
@@ -309,7 +316,7 @@ projects, onOpenProject, onStatusChange }: {
               style={{
                 marginTop: 14, borderRadius: 10,
                 border: isOver ? `1px solid ${colors.borderHi}` : `1px solid ${colors.border}`,
-                background: isOver ? colors.cyanSoft : 'rgba(255,255,255,0.02)',
+                background: isOver ? colors.cyanSoft : stripVeil,
                 transition: 'all 150ms',
               }}
             >
@@ -328,7 +335,7 @@ projects, onOpenProject, onStatusChange }: {
                 <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                   {col.label}
                 </span>
-                <span style={{ fontSize: 10, color: colors.textDim, background: 'rgba(255,255,255,0.06)', padding: '1px 6px', borderRadius: 8 }}>
+                <span style={{ fontSize: 10, color: colors.textDim, background: chipVeil, padding: '1px 6px', borderRadius: 8 }}>
                   {colProjects.length}
                 </span>
                 {!isOpen && colProjects.length > 0 && (
@@ -371,7 +378,8 @@ project, onOpen, onDragStart }: {
   onOpen: () => void;
   onDragStart: (e: React.DragEvent) => void;
 }) {
-  const { colors, reduceMotion } = useTheme();
+  const { colors, theme, reduceMotion } = useTheme();
+  const tagVeil = theme === 'silver' ? 'rgba(30,37,48,0.06)' : 'rgba(255,255,255,0.06)';
   const isPersonal = project.id === PERSONAL_ID;
 
   return (
@@ -413,7 +421,7 @@ project, onOpen, onDragStart }: {
       {project.tags.length > 0 && (
         <div style={{ display: 'flex', gap: 4, marginTop: 6, flexWrap: 'wrap' }}>
           {project.tags.slice(0, 3).map((tag, ti) => (
-            <span key={`${tag}-${ti}`} style={{ fontSize: 9, padding: '1px 5px', borderRadius: 4, background: 'rgba(255,255,255,0.06)', color: colors.textDim }}>
+            <span key={`${tag}-${ti}`} style={{ fontSize: 9, padding: '1px 5px', borderRadius: 4, background: tagVeil, color: colors.textDim }}>
               {tag}
             </span>
           ))}
@@ -430,8 +438,11 @@ project, onOpen, onDragStart }: {
 // renders only the columns — no header of its own.
 
 export function ProjectKanban({ project }: { project: Project }) {
-  const { colors } = useTheme();
+  const { colors, theme } = useTheme();
   const { gradient } = useTheme();
+  // Theme-safe veils — white washes are invisible on silver's white surfaces.
+  const colVeil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
+  const chipVeil = theme === 'silver' ? 'rgba(30,37,48,0.06)' : 'rgba(255,255,255,0.06)';
   const [columns, setColumns] = useState<BoardColumn[]>([]);
   const [cards, setCards] = useState<Card[]>([]);
   const [loading, setLoading] = useState(true);
@@ -523,7 +534,9 @@ export function ProjectKanban({ project }: { project: Project }) {
               body: JSON.stringify({ columnId: targetCol }),
             });
             loadBoard();
-          } catch { /* silently fail */ }
+          } catch (err) {
+            toast('Couldn\'t move card', err instanceof Error ? err.message : String(err));
+          }
         }
       }
     };
@@ -554,8 +567,8 @@ export function ProjectKanban({ project }: { project: Project }) {
       setNewCardTitle('');
       setAddingCardCol(null);
       loadBoard();
-    } catch {
-      // silently fail
+    } catch (err) {
+      toast('Couldn\'t add card', err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -563,8 +576,8 @@ export function ProjectKanban({ project }: { project: Project }) {
     try {
       await apiFetch(`/api/projects/${project.id}/cards/${cardId}`, { method: 'DELETE' });
       loadBoard();
-    } catch {
-      // silently fail
+    } catch (err) {
+      toast('Couldn\'t delete card', err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -574,8 +587,8 @@ export function ProjectKanban({ project }: { project: Project }) {
     try {
       await apiFetch(`/api/projects/${project.id}/cards/${cardId}/cancel`, { method: 'POST' });
       loadBoard();
-    } catch {
-      // silently fail
+    } catch (err) {
+      toast('Couldn\'t cancel goal', err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -630,7 +643,7 @@ export function ProjectKanban({ project }: { project: Project }) {
               ref={(el) => { if (el) colRefs.current.set(col.id, el); else colRefs.current.delete(col.id); }}
               style={{
                 flex: 1, minWidth: 200, display: 'flex', flexDirection: 'column',
-                background: isOver ? colors.cyanSoft : 'rgba(255,255,255,0.02)',
+                background: isOver ? colors.cyanSoft : colVeil,
                 borderRadius: 10, padding: '12px 10px',
                 border: isOver ? `1px solid ${colors.borderHi}` : '1px solid transparent',
                 transition: 'all 150ms',
@@ -641,7 +654,7 @@ export function ProjectKanban({ project }: { project: Project }) {
                 <span style={{ fontSize: 12, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', flex: 1 }}>
                   {col.name}
                 </span>
-                <span style={{ fontSize: 10, color: colors.textDim, background: 'rgba(255,255,255,0.06)', padding: '1px 6px', borderRadius: 8 }}>
+                <span style={{ fontSize: 10, color: colors.textDim, background: chipVeil, padding: '1px 6px', borderRadius: 8 }}>
                   {colCards.length}
                 </span>
               </div>
@@ -680,7 +693,7 @@ export function ProjectKanban({ project }: { project: Project }) {
                     placeholder="Card title..."
                     style={{
                       padding: '6px 8px', borderRadius: 6,
-                      background: 'rgba(255,255,255,0.06)',
+                      background: colors.inputBg,
                       border: `1px solid ${colors.border}`,
                       color: colors.text, fontFamily: font.body, fontSize: 12,
                       outline: 'none',

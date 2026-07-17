@@ -37,7 +37,8 @@ export function MomentIntent({ intent, setIntent, onAdvance }: Props) {
         What will you build together?
       </h1>
       <p style={{ fontFamily: font.body, fontSize: 14, color: colors.textMuted, marginBottom: 28, textAlign: 'center', maxWidth: 380 }}>
-        Tell your agent what you're working on. This helps it prepare context for your first conversation.
+        Tell your agent what you're working on. It'll be waiting as your first
+        chat message — edit it or send it as-is.
       </p>
 
       <div style={{ width: 400, marginBottom: 24 }}>
@@ -48,14 +49,14 @@ export function MomentIntent({ intent, setIntent, onAdvance }: Props) {
           rows={4}
           style={{
             width: '100%', fontFamily: font.body, fontSize: 14, color: colors.text,
-            background: 'rgba(255,255,255,0.02)',
-            border: '1px solid rgba(255,255,255,0.08)',
+            background: colors.inputBg,
+            border: `1px solid ${colors.border}`,
             borderRadius: 12, padding: '14px 16px', outline: 'none', resize: 'none',
             lineHeight: 1.6,
             transition: `border-color 160ms ${ease.out}`,
           }}
-          onFocus={e => { e.currentTarget.style.borderColor = colors.cyan; e.currentTarget.style.boxShadow = '0 0 0 3px rgba(0,213,255,0.12)'; }}
-          onBlur={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; e.currentTarget.style.boxShadow = 'none'; }}
+          onFocus={e => { e.currentTarget.style.borderColor = colors.cyan; e.currentTarget.style.boxShadow = `0 0 0 3px ${colors.cyanGlow}`; }}
+          onBlur={e => { e.currentTarget.style.borderColor = colors.border; e.currentTarget.style.boxShadow = 'none'; }}
         />
       </div>
 

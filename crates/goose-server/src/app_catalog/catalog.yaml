@@ -98,3 +98,34 @@ tabs:
       - User asks "what's happening" or wants a summary
       - User asks about customizing their home view
     customizable_layout: true
+
+  - name: Grow
+    tool_type: grow
+    panel_type: workspace
+    description: >-
+      The Grow tab is a per-project go-to-market workspace — strategy pillars
+      (audience, positioning, channels), a content calendar of drafted posts,
+      and a growth/analytics view.
+    affords:
+      - Think through audience, positioning, and channels for a project
+      - Draft launch posts and outreach in the user's voice
+      - Review a content calendar and growth signals
+    suggest_when:
+      - User wants to take a project to market, plan a launch, or draft a post
+      - User asks about audience, growth, or content for a project
+    customizable_layout: false
+
+  - name: Inbox
+    tool_type: inbox
+    panel_type: overlay
+    description: >-
+      The Downloads inbox lists files that landed in Permagent's intake folder
+      (~/.permagent/inbox) via the in-app browser download flow — filename,
+      source, size, and when each arrived.
+    affords:
+      - Review files downloaded into Permagent
+      - See where each file came from and when it arrived
+    suggest_when:
+      - User asks where a downloaded file went or wants to see their inbox
+      - User downloaded something in the in-app browser
+    customizable_layout: false

@@ -40,6 +40,10 @@ fn assert_envelope(frame: &serde_json::Value, expected_type: &str) {
     );
 }
 
+// One test per integration binary (own process): PERMAGENT_PATH_ROOT and the
+// global event bus are per-process, so #[serial] had nothing to serialize
+// against here — it was a no-op (superseding #695). Delivery robustness comes
+// from the re-emit-until-captured loop below, not from serialization.
 #[tokio::test(flavor = "multi_thread")]
 async fn all_lanes_emit_to_real_websocket() {
     let tmp = tempfile::tempdir().unwrap();
@@ -62,49 +66,83 @@ async fn all_lanes_emit_to_real_websocket() {
     let url = format!("ws://{addr}/events");
     let (mut ws, _resp) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
-    // The handler waits up to 500ms for an optional resume_from, replays the buffer,
-    // then subscribes. Wait that out so our LIVE emits reach a live subscriber.
-    tokio::time::sleep(Duration::from_millis(800)).await;
-
-    // ── Emit one event per lane via its PRODUCTION constructor (sentinel ids) ──
+    // The /events handler subscribes to the LIVE bus only AFTER an up-to-500ms
+    // resume-wait and a one-shot replay of the buffer snapshot it took at connect
+    // (see routes::events). An event emitted before that subscribe lands in the
+    // already-drained buffer and never reaches THIS subscriber — so a single
+    // fixed pre-emit sleep is a race under CI load (the flake this fix targets).
+    // Defeat it by RE-EMITTING the sentinel set each round until every lane's
+    // frame has been observed off the wire: once the handler is live, the next
+    // round is captured. Emits are pure bus sends (no DB, no side effects) and
+    // the asserts match on payload identity, so duplicate frames are harmless.
     use permagent::events::{self, emit};
-    eprintln!("\n── emitting 7 events through production constructors ──");
-    emit(events::memory_added(
-        "mem-EVID-1",
-        "activity:evid:browser_navigated:abcd1234",
-        "browser_navigated",
-        Some("personal"),
-    )); // lane 1
-    emit(events::memory_recalled(
-        "when did I switch editors",
-        3,
-        "search_memory",
-    )); // lane 3 (#324)
-    emit(events::entity_added("term:evid-rust", "term")); // lane 4 (#325)
-    emit(events::entity_updated("cat:evid-tools", "cat")); // lane 4 (#325)
-    emit(events::decision_created("dec-EVID-1", "unblock", 2)); // lane 5 (#302)
-    emit(events::decision_resolved(
-        "dec-EVID-1",
-        "unblock",
-        "approve",
-        "jesse",
-        2,
-    )); // lane 5 (#302)
-    emit(events::agent_state_changed("henry", "Henry", "working")); // lane 6 (#288)
+    let emit_all_lanes = || {
+        emit(events::memory_added(
+            "mem-EVID-1",
+            "activity:evid:browser_navigated:abcd1234",
+            "browser_navigated",
+            Some("personal"),
+        )); // lane 1
+        emit(events::memory_recalled(
+            "when did I switch editors",
+            3,
+            "search_memory",
+        )); // lane 3 (#324)
+        emit(events::entity_added("term:evid-rust", "term")); // lane 4 (#325)
+        emit(events::entity_updated("cat:evid-tools", "cat")); // lane 4 (#325)
+        emit(events::decision_created("dec-EVID-1", "unblock", 2)); // lane 5 (#302)
+        emit(events::decision_resolved(
+            "dec-EVID-1",
+            "unblock",
+            "approve",
+            "jesse",
+            2,
+        )); // lane 5 (#302)
+        emit(events::agent_state_changed("henry", "Henry", "working")); // lane 6 (#288)
+    };
 
-    // ── Capture frames off the wire until all sentinels seen (or timeout) ──
+    // All 7 lane sentinels present in what we've captured so far?
+    let have_all_lanes = |frames: &[serde_json::Value]| {
+        find(frames, "memory_added", |p| p["memory_id"] == "mem-EVID-1").is_some()
+            && find(frames, "memory_recalled", |p| {
+                p["source"] == "search_memory"
+            })
+            .is_some()
+            && find(frames, "entity_added", |p| {
+                p["entity_id"] == "term:evid-rust"
+            })
+            .is_some()
+            && find(frames, "entity_updated", |p| {
+                p["entity_id"] == "cat:evid-tools"
+            })
+            .is_some()
+            && find(frames, "decision_created", |p| {
+                p["decision_id"] == "dec-EVID-1"
+            })
+            .is_some()
+            && find(frames, "decision_resolved", |p| p["answer"] == "approve").is_some()
+            && find(frames, "agent_state_changed", |p| p["state"] == "working").is_some()
+    };
+
+    // ── Emit a round, drain the wire, repeat until every lane is seen (or the
+    //    overall deadline). No dependence on winning the subscribe/emit timing. ──
+    eprintln!("\n── emitting 7 events through production constructors (re-emit until captured) ──");
     let mut frames: Vec<serde_json::Value> = Vec::new();
-    let overall = tokio::time::Instant::now() + Duration::from_secs(4);
-    while tokio::time::Instant::now() < overall && frames.len() < 200 {
-        match tokio::time::timeout(Duration::from_millis(300), ws.next()).await {
-            Ok(Some(Ok(Message::Text(txt)))) => {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
-                    frames.push(v);
+    let overall = tokio::time::Instant::now() + Duration::from_secs(10);
+    while tokio::time::Instant::now() < overall && !have_all_lanes(&frames) && frames.len() < 500 {
+        emit_all_lanes();
+        let round_end = tokio::time::Instant::now() + Duration::from_millis(400);
+        while tokio::time::Instant::now() < round_end && frames.len() < 500 {
+            match tokio::time::timeout(Duration::from_millis(200), ws.next()).await {
+                Ok(Some(Ok(Message::Text(txt)))) => {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+                        frames.push(v);
+                    }
                 }
+                Ok(Some(Ok(_))) => {} // ping/binary/close — ignore
+                Ok(Some(Err(_))) | Ok(None) => break,
+                Err(_) => {} // idle read; keep waiting until the round ends
             }
-            Ok(Some(Ok(_))) => {} // ping/binary/close — ignore
-            Ok(Some(Err(_))) | Ok(None) => break,
-            Err(_) => {} // idle read; keep waiting until the deadline
         }
     }
     eprintln!(

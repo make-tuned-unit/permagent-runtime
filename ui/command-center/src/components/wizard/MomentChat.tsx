@@ -47,7 +47,7 @@ export function MomentChat({ persona, onComplete }: Props) {
       {/* Header */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: 14, padding: '18px 24px',
-        borderBottom: '1px solid rgba(255,255,255,0.06)',
+        borderBottom: `1px solid ${colors.border}`,
       }}>
         <Mobius size={29} state={isSpeaking ? 'speaking' : 'idle'} logoMode />
         <div>
@@ -57,10 +57,12 @@ export function MomentChat({ persona, onComplete }: Props) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <div style={{
               width: 6, height: 6, borderRadius: '50%',
-              background: isSpeaking ? colors.cyan : '#22c55e',
+              background: isSpeaking ? colors.cyan : colors.success,
             }} />
             <span style={{ fontFamily: font.body, fontSize: 11, color: colors.textMuted }}>
-              {isSpeaking ? 'Speaking...' : 'Online'}
+              {/* "Typing", not "Speaking" — this greeting is typed on screen;
+                  no audio plays here (2026-07 wiring audit). */}
+              {isSpeaking ? 'Typing...' : 'Online'}
             </span>
           </div>
         </div>
@@ -79,14 +81,14 @@ export function MomentChat({ persona, onComplete }: Props) {
 
       {/* Footer — enter app */}
       <div style={{
-        padding: '16px 24px', borderTop: '1px solid rgba(255,255,255,0.06)',
+        padding: '16px 24px', borderTop: `1px solid ${colors.border}`,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}>
         <button onClick={onComplete} style={{
           fontFamily: font.body, fontSize: 14, fontWeight: 600,
-          color: colors.text, background: colors.purple,
+          color: colors.textOnAccent, background: colors.purple,
           border: 'none', borderRadius: 10, padding: '12px 32px',
-          cursor: 'pointer', boxShadow: '0 4px 14px rgba(141,68,174,0.32)',
+          cursor: 'pointer', boxShadow: `0 4px 14px ${colors.purpleGlow}`,
         }}>
           Enter Permagent
         </button>

@@ -61,6 +61,22 @@ export const ROSTER: AgentIdentity[] = [
     home: { x: 5, y: 0, z: -2 },
     weathering: 0,
   },
+  {
+    // The Watcher (Echo, #672) — the daemon's proactive worker: watches the
+    // Brain + project news and surfaces at most one nudge a day. It has no live
+    // status endpoint yet, so its presence is sim-ambient (the §4 clamp holds it
+    // to idle/available — it can never fake work). Its REAL moment is the
+    // proactive_nudge event: the vigil beacon flares and it walks the nudge to
+    // Henry (behavior.ts + props/WatcherBeacon). Home is the tower's base.
+    id: 'watcher',
+    name: 'The Watcher',
+    role: 'agent',
+    trimColor: AGENT_TRIM.watcher,
+    isHenry: false,
+    mezzanineLocked: false,
+    home: { x: 7.9, y: 0, z: -7.2 },
+    weathering: 0.25,
+  },
 ];
 
 export function getIdentity(id: string): AgentIdentity | undefined {

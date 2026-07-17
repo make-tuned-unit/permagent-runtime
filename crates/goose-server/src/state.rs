@@ -47,6 +47,10 @@ pub struct AppState {
     pub context_builder: Option<Arc<permagent::activity::context_builder::ContextBuilder>>,
     /// Bridge for pending browser content extraction requests.
     pub browser_content_bridge: Arc<crate::routes::browser_content::BrowserContentBridge>,
+    /// Bridge for pending act-on-page snapshot requests (#649).
+    pub browser_snapshot_bridge: Arc<crate::routes::browser_act::SnapshotBridge>,
+    /// Bridge for pending act-on-page act requests (#649).
+    pub browser_act_bridge: Arc<crate::routes::browser_act::ActBridge>,
     /// App catalog — static tab/view descriptions for agent navigation.
     pub app_catalog: Arc<permagent::app_catalog::AppCatalog>,
     /// Voice STT provider (Moonshine via sherpa-onnx in dev, swappable).
@@ -145,15 +149,6 @@ impl AppState {
         // Brain::builder().build() creates its own tokio runtime internally,
         // so we must run it off the async executor via spawn_blocking.
         // What leaves this block is a SafeBrain.
-        //
-        // Provenance-protected entity ids (people-in-graph v1 #583): loaded here in
-        // the async context (the reconciler runs inside spawn_blocking and has no
-        // pool). The reconciler must never prune these runtime/extracted persons.
-        // Tolerant — an empty set on any error reproduces prune-all-not-in-ontology.
-        let protected_ids = match agent_manager.session_manager().pool_clone().await {
-            Ok(pool) => permagent::people_provenance::protected_entity_ids(&pool).await,
-            Err(_) => std::collections::HashSet::new(),
-        };
         let brain: Option<permagent::brain_handle::SafeBrain> =
             tokio::task::spawn_blocking(move || {
                 let brain_dir = permagent::config::paths::Paths::brain_dir();
@@ -170,8 +165,7 @@ impl AppState {
 
                 // ── Pre-migration backup: brain/memory.db ──
                 // Must run before Brain::builder().build() which triggers Spectral
-                // auto-migration. Also before sync_graph_with_ontology which mutates
-                // graph.kz (separate store, but keeps backup timing unambiguous).
+                // auto-migration.
                 {
                     let source = brain_dir.join("memory.db");
                     let backup_root = permagent::config::paths::Paths::data_dir().join("backups");
@@ -187,15 +181,6 @@ impl AppState {
                         );
                     }
                 }
-
-                // Reconcile Kuzu graph with ontology before Brain opens.
-                // This removes entities that were pruned from ontology.toml —
-                // except provenance-protected runtime/extracted persons (#583).
-                crate::brain_sync::sync_graph_with_ontology(
-                    &brain_dir,
-                    &ontology_path,
-                    &protected_ids,
-                );
 
                 let device_id_str =
                     std::env::var("HOSTNAME").unwrap_or_else(|_| "permagent-host".into());
@@ -308,6 +293,24 @@ impl AppState {
                         "People↔graph bridge (graph side) sync failed (non-fatal)"
                     ),
                 }
+            }
+
+            // Skills source-of-truth migration: export any indexed skill that
+            // lacks an on-disk SKILL.md folder to the portable agentskills.io
+            // format under ~/.permagent/skills. The on-disk folder is the source
+            // of truth; the DB row is its index. Idempotent + non-fatal, so it is
+            // safe to run on every boot (a steady state exports nothing).
+            match permagent::skills::reconcile_skills_to_disk(&pool).await {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(
+                    target: "permagentd::skills",
+                    "Skills SKILL.md migration exported {n} skill(s) to disk"
+                ),
+                Err(e) => tracing::warn!(
+                    target: "permagentd::skills",
+                    error = %e,
+                    "Skills SKILL.md migration failed (non-fatal)"
+                ),
             }
         }
 
@@ -565,6 +568,71 @@ impl AppState {
             );
         }
 
+        // Durable activity journal (#619): a long-lived consumer on the same
+        // event bus, persisting selected kinds (goal transitions, decisions,
+        // librarian describe runs, Watcher nudges, task failures) as
+        // append-only rows so "what did my agents do today" survives the
+        // 1000-event ring buffer.
+        // Starts with a retention pass (rows older than 90 days). Failure-
+        // tolerant: a bad event is logged and skipped, never crashes the task.
+        if let Ok(pool) = agent_manager.session_manager().pool_clone().await {
+            tokio::spawn(async move {
+                match permagent::activity_journal::prune_older_than_days(
+                    &pool,
+                    permagent::activity_journal::RETENTION_DAYS,
+                )
+                .await
+                {
+                    Ok(n) if n > 0 => tracing::info!(
+                        target: "permagentd::journal",
+                        "Activity journal retention: pruned {} rows older than {} days",
+                        n,
+                        permagent::activity_journal::RETENTION_DAYS
+                    ),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(
+                        target: "permagentd::journal",
+                        error = %e,
+                        "Activity journal retention pass failed (non-fatal)"
+                    ),
+                }
+
+                let mut rx = permagent::events::subscribe();
+                tracing::info!(
+                    target: "permagentd::journal",
+                    "Activity journal subscribed to event bus"
+                );
+                loop {
+                    match rx.recv().await {
+                        Ok(event) => {
+                            if let Err(e) =
+                                permagent::activity_journal::record_event(&pool, &event).await
+                            {
+                                tracing::warn!(
+                                    target: "permagentd::journal",
+                                    error = %e,
+                                    "Failed to journal event (skipped)"
+                                );
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!(
+                                target: "permagentd::journal",
+                                "Activity journal consumer lagged, missed {} events",
+                                n
+                            );
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            });
+        } else {
+            tracing::warn!(
+                target: "permagentd::journal",
+                "no app DB pool available — activity journal disabled"
+            );
+        }
+
         // Librarian warm-load scheduler: checks once per minute if it's time
         // to warm the Librarian's Ollama model for the configured window.
         tokio::spawn(async move {
@@ -594,6 +662,14 @@ impl AppState {
         // Load app catalog (static tab/view descriptions for agent navigation).
         let app_catalog = crate::app_catalog::init();
 
+        // Agent-led onboarding: load durable feature-usage from config, then turn
+        // on write-through persistence so engagement observed from the activity
+        // bus is remembered across restarts. Order matters — hydrate the durable
+        // state into memory before enabling writes so we build on it, not clobber
+        // it.
+        permagent::agents::self_knowledge::usage::hydrate_from_config();
+        permagent::agents::self_knowledge::usage::enable_persistence();
+
         // Initialize voice providers (STT + TTS) if model files are present.
         let voice_paths = crate::voice::sherpa_backend::VoiceModelPaths::default_paths();
         let (voice_stt, voice_tts) = init_voice_providers(&voice_paths);
@@ -617,6 +693,8 @@ impl AppState {
             browser_content_bridge: Arc::new(
                 crate::routes::browser_content::BrowserContentBridge::new(),
             ),
+            browser_snapshot_bridge: Arc::new(crate::routes::browser_act::SnapshotBridge::new()),
+            browser_act_bridge: Arc::new(crate::routes::browser_act::ActBridge::new()),
             app_catalog,
             voice_stt,
             voice_tts: Arc::new(tokio::sync::RwLock::new(voice_tts)),

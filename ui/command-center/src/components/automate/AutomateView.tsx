@@ -5,8 +5,11 @@ import { cronToEnglish } from '../../lib/schedule-format';
 import { useCommandCenter } from '../../lib/store';
 import { apiFetch } from '../../lib/api';
 import { usePersona } from '../settings/useSettings';
+import { RunRoster } from './RunRoster';
 
 // ── Types ────────────────────────────────────────────────────────────
+
+type ScheduleRunStatus = 'ok' | 'error' | 'skipped' | 'missed';
 
 interface ScheduledJob {
   id: string;
@@ -18,6 +21,16 @@ interface ScheduledJob {
   current_session_id: string | null;
   process_start_time: string | null;
   worker_persona: string | null;
+  // Reliability (all optional — old jobs / old daemons omit them).
+  run_count?: number;
+  retry_count?: number;
+  max_retries?: number;
+  last_status?: ScheduleRunStatus | null;
+  last_error?: string | null;
+  // Richer schedule kinds (optional — a plain cron job omits them).
+  at?: string | null;
+  every_seconds?: number | null;
+  tz?: string | null;
   display_name: string | null;
   description: string | null;
   starter_id: string | null;
@@ -82,6 +95,42 @@ function timeAgo(iso: string): string {
   if (hrs < 24) return `${hrs}h ago`;
   const days = Math.floor(hrs / 24);
   return `${days}d ago`;
+}
+
+// Human summary of a job's schedule across kinds (cron / one-time / interval).
+function scheduleSummary(job: ScheduledJob): string {
+  if (job.at) return `Once on ${new Date(job.at).toLocaleString()}`;
+  if (job.every_seconds != null) return `Every ${formatInterval(job.every_seconds)}`;
+  const base = cronToEnglish(job.cron);
+  return job.tz ? `${base} (${job.tz})` : base;
+}
+
+function formatInterval(secs: number): string {
+  const plural = (n: number, unit: string) => `${n} ${unit}${n === 1 ? '' : 's'}`;
+  if (secs % 86400 === 0) return plural(secs / 86400, 'day');
+  if (secs % 3600 === 0) return plural(secs / 3600, 'hour');
+  if (secs % 60 === 0) return plural(secs / 60, 'minute');
+  return plural(secs, 'second');
+}
+
+// Last-run status pill metadata. Maps to a theme color TOKEN (resolved at the
+// call site where `colors` is in scope): ok→green, error→red, missed→amber,
+// skipped→dim.
+function statusInfo(
+  status: ScheduleRunStatus | null | undefined,
+): { label: string; token: 'success' | 'danger' | 'warning' | 'textDim' } | null {
+  switch (status) {
+    case 'ok':
+      return { label: 'OK', token: 'success' };
+    case 'error':
+      return { label: 'ERROR', token: 'danger' };
+    case 'missed':
+      return { label: 'MISSED', token: 'warning' };
+    case 'skipped':
+      return { label: 'SKIPPED', token: 'textDim' };
+    default:
+      return null;
+  }
 }
 
 function formatBytes(bytes: number): string {
@@ -283,26 +332,43 @@ export function AutomateView() {
       fetchJobs();
     }
   };
+  // Shared failure surface for the schedule mutations (2026-07 wiring audit):
+  // the old bare `catch {}` made every failed POST look like success — Btn's
+  // resolve path flashed "✓ Paused/Deleted/…" even on a 4xx/5xx. Show the
+  // failure on the same banner Run Now uses, and RE-THROW so Btn reverts to
+  // idle instead of faking success.
+  const failAction = (id: string, verb: string, err: unknown): never => {
+    const name = jobNameMap.get(id) || id;
+    const msg = err instanceof Error ? err.message : String(err);
+    setRunError(`Couldn't ${verb} "${name}": ${msg}`);
+    setTimeout(() => setRunError(null), 8000);
+    throw err;
+  };
   const handlePause = async (id: string) => {
     setActionState(`${id}:pause`, 'loading');
-    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/pause`, { method: 'POST' }); } catch {}
+    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/pause`, { method: 'POST' }); }
+    catch (err) { failAction(id, 'pause', err); }
   };
   const handleUnpause = async (id: string) => {
     setActionState(`${id}:unpause`, 'loading');
-    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/unpause`, { method: 'POST' }); } catch {}
+    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/unpause`, { method: 'POST' }); }
+    catch (err) { failAction(id, 'resume', err); }
   };
   const handleDelete = async (id: string) => {
     const name = jobNameMap.get(id) || id;
     if (!confirm(`Delete "${name}"? This can't be undone.`)) return;
     setActionState(`${id}:delete`, 'loading');
-    try { await apiFetch<unknown>(`/schedule/delete/${encodeURIComponent(id)}`, { method: 'DELETE' }); } catch {}
+    try { await apiFetch<unknown>(`/schedule/delete/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
+    catch (err) { failAction(id, 'delete', err); }
   };
   const handleKill = async (id: string) => {
-    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/kill`, { method: 'POST' }); fetchJobs(); } catch {}
+    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/kill`, { method: 'POST' }); fetchJobs(); }
+    catch (err) { failAction(id, 'stop', err); }
   };
   const handleResetToDefault = async (id: string) => {
     setActionState(`${id}:reset`, 'loading');
-    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/reset_to_default`, { method: 'POST' }); } catch {}
+    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/reset_to_default`, { method: 'POST' }); }
+    catch (err) { failAction(id, 'reset', err); }
   };
 
   // Callback for Btn to signal animation complete — clears mount guard + refreshes data
@@ -354,6 +420,9 @@ export function AutomateView() {
             }}>+ Create</button>
           </div>
         </div>
+
+        {/* Live run roster — everything at work right now, at a glance */}
+        <RunRoster />
 
         {/* Run completion banner */}
         {completionToast && (
@@ -689,9 +758,10 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
   const { colors } = useTheme();
   const name = job.display_name || job.id;
   const desc = job.description || '';
-  const schedule = cronToEnglish(job.cron);
+  const schedule = scheduleSummary(job);
   const statusColor = job.currently_running ? colors.success : job.paused ? colors.textDim : colors.cyan;
   const hasUpdate = job.starter_id && job.user_customized && job.embedded_version && job.version !== job.embedded_version;
+  const runStatus = statusInfo(job.last_status);
 
   return (
     <div
@@ -722,6 +792,14 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
             v{job.version}
           </span>
         )}
+        {!job.currently_running && runStatus && (
+          <span
+            title={job.last_error || undefined}
+            style={{ fontSize: 9, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: withAlpha(colors[runStatus.token], 0.15), color: colors[runStatus.token] }}
+          >
+            {runStatus.label}
+          </span>
+        )}
         <span style={{ fontSize: 9, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: colors.cyanSoft, color: colors.cyan }}>
           {job.currently_running ? 'RUNNING' : job.paused ? 'PAUSED' : 'SCHEDULED'}
         </span>
@@ -729,6 +807,7 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
       {desc && <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5, marginBottom: 8, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' } as React.CSSProperties}>{desc}</div>}
       <div style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono, marginBottom: 10 }}>
         {schedule} &middot; {job.last_run ? `Ran ${timeAgo(job.last_run)}` : 'Never run yet'}
+        {!!job.run_count && <> &middot; {job.run_count} run{job.run_count === 1 ? '' : 's'}</>}
         {hasUpdate && <> &middot; <span style={{ color: colors.warning }}>Update available</span></>}
       </div>
       <div style={{ display: 'flex', gap: 6 }} onClick={e => e.stopPropagation()}>
@@ -823,12 +902,20 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
           Update available (v{job.embedded_version}). Reset to default to apply.
         </div>
       )}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 24px', marginBottom: 20 }}>
-        <MetaField label="Schedule" value={cronToEnglish(job.cron)} />
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 24px', marginBottom: job.last_status === 'error' && job.last_error ? 12 : 20 }}>
+        <MetaField label="Schedule" value={scheduleSummary(job)} />
         <MetaField label="Status" value={job.currently_running ? 'Running' : job.paused ? 'Paused' : 'Active'} />
         <MetaField label="Last Run" value={job.last_run ? timeAgo(job.last_run) : 'Never'} />
+        <MetaField label="Last Result" value={statusInfo(job.last_status)?.label ?? '—'} />
+        {!!job.run_count && <MetaField label="Runs" value={String(job.run_count)} />}
+        {!!job.max_retries && <MetaField label="Max Retries" value={String(job.max_retries)} />}
         <MetaField label="ID" value={job.id} mono />
       </div>
+      {job.last_status === 'error' && job.last_error && (
+        <div style={{ marginBottom: 20, padding: '8px 12px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.08), border: `1px solid ${withAlpha(colors.danger, 0.2)}`, fontSize: 11, color: colors.danger, fontFamily: font.mono, wordBreak: 'break-word' }}>
+          Last error: {job.last_error}
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 8 }}>
         {job.currently_running ? (
           <Btn label="Stop" onClick={() => onKill(job.id)} danger />
@@ -1251,24 +1338,61 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
 
   const [name, setName] = useState('');
   const [prompt, setPrompt] = useState('');
+  // 'cron' (recurring) is the default so nothing about the existing flow changes.
+  const [kind, setKind] = useState<'cron' | 'once' | 'interval'>('cron');
   const [selectedPreset, setSelectedPreset] = useState(0);
   const [customCron, setCustomCron] = useState('');
+  const [atLocal, setAtLocal] = useState('');
+  const [intervalValue, setIntervalValue] = useState('1');
+  const [intervalUnit, setIntervalUnit] = useState<'minutes' | 'hours' | 'days'>('hours');
+  const [tz, setTz] = useState('');
+  const [maxRetries, setMaxRetries] = useState('0');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const overlayRef = useRef<HTMLDivElement>(null);
 
   const cron = selectedPreset < CRON_PRESETS.length - 1 ? CRON_PRESETS[selectedPreset].cron : customCron;
+  const unitSecs: Record<typeof intervalUnit, number> = { minutes: 60, hours: 3600, days: 86400 };
+  const everySeconds = Math.max(0, Math.round(Number(intervalValue) || 0)) * unitSecs[intervalUnit];
 
   const handleSave = async () => {
-    if (!name.trim() || !prompt.trim() || !cron.trim()) { setError('All fields are required.'); return; }
+    if (!name.trim() || !prompt.trim()) { setError('Name and task are required.'); return; }
+    const recipe = { version: '1.0.0', title: name.trim(), description: prompt.trim().slice(0, 120), prompt: prompt.trim() };
+    const body: Record<string, unknown> = {
+      id: name.trim().replace(/\s+/g, '-').toLowerCase(),
+      recipe,
+      max_retries: Math.max(0, Math.round(Number(maxRetries) || 0)),
+    };
+    if (kind === 'cron') {
+      if (!cron.trim()) { setError('Choose or enter a schedule.'); return; }
+      body.cron = cron;
+      if (tz.trim()) body.tz = tz.trim();
+    } else if (kind === 'once') {
+      if (!atLocal) { setError('Pick a date and time.'); return; }
+      const d = new Date(atLocal);
+      if (Number.isNaN(d.getTime())) { setError('Invalid date/time.'); return; }
+      body.at = d.toISOString();
+      if (tz.trim()) body.tz = tz.trim();
+    } else {
+      if (everySeconds < 1) { setError('Enter a valid interval.'); return; }
+      body.every_seconds = everySeconds;
+    }
     setSaving(true); setError('');
     try {
-      const recipe = { version: '1.0.0', title: name.trim(), description: prompt.trim().slice(0, 120), prompt: prompt.trim() };
-      await apiFetch<unknown>('/schedule/create', {
-        method: 'POST', body: JSON.stringify({ id: name.trim().replace(/\s+/g, '-').toLowerCase(), recipe, cron }),
-      });
+      await apiFetch<unknown>('/schedule/create', { method: 'POST', body: JSON.stringify(body) });
       onCreated();
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); setSaving(false); }
+  };
+
+  const kindTabs: { id: typeof kind; label: string }[] = [
+    { id: 'cron', label: 'Recurring' },
+    { id: 'once', label: 'One-time' },
+    { id: 'interval', label: 'Interval' },
+  ];
+  const fieldStyle = {
+    width: '100%', padding: '8px 12px', borderRadius: radius.sm, background: colors.surface,
+    border: `1px solid ${colors.border}`, color: colors.text, fontSize: 13, fontFamily: font.body,
+    outline: 'none', boxSizing: 'border-box' as const,
   };
 
   return (
@@ -1292,25 +1416,61 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
           }} />
 
         <label style={{ fontSize: 12, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: 6 }}>When should it run?</label>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 16 }}>
-          {CRON_PRESETS.map((preset, i) => (
-            <label key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', padding: '4px 0' }}>
-              <input type="radio" name="cron" checked={selectedPreset === i} onChange={() => setSelectedPreset(i)} style={{ accentColor: colors.cyan }} />
-              <span style={{ fontSize: 13, color: selectedPreset === i ? colors.text : colors.textMuted }}>{preset.label}</span>
-            </label>
+        <div style={{ display: 'flex', gap: 4, marginBottom: 12, background: colors.surface, borderRadius: radius.sm, padding: 3, border: `1px solid ${colors.border}` }}>
+          {kindTabs.map(t => (
+            <button key={t.id} onClick={() => setKind(t.id)} style={{
+              flex: 1, padding: '6px 0', borderRadius: radius.sm, border: 'none', cursor: 'pointer', fontSize: 12, fontFamily: font.body,
+              background: kind === t.id ? colors.cyan : 'transparent', color: kind === t.id ? '#000' : colors.textMuted, fontWeight: kind === t.id ? 600 : 400,
+            }}>{t.label}</button>
           ))}
         </div>
 
-        {selectedPreset === CRON_PRESETS.length - 1 && (
-          <div style={{ marginBottom: 16 }}>
-            <input value={customCron} onChange={e => setCustomCron(e.target.value)} placeholder="0 9 * * 1-5" style={{
-              width: '100%', padding: '8px 12px', borderRadius: radius.sm, background: colors.surface,
-              border: `1px solid ${colors.border}`, color: colors.text, fontSize: 13, fontFamily: font.mono,
-              outline: 'none', boxSizing: 'border-box',
-            }} />
-            {customCron.trim() && <div style={{ fontSize: 11, color: colors.textDim, marginTop: 4, fontFamily: font.mono }}>Preview: {cronToEnglish(customCron)}</div>}
+        {kind === 'cron' && (
+          <>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 12 }}>
+              {CRON_PRESETS.map((preset, i) => (
+                <label key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', padding: '4px 0' }}>
+                  <input type="radio" name="cron" checked={selectedPreset === i} onChange={() => setSelectedPreset(i)} style={{ accentColor: colors.cyan }} />
+                  <span style={{ fontSize: 13, color: selectedPreset === i ? colors.text : colors.textMuted }}>{preset.label}</span>
+                </label>
+              ))}
+            </div>
+            {selectedPreset === CRON_PRESETS.length - 1 && (
+              <div style={{ marginBottom: 12 }}>
+                <input value={customCron} onChange={e => setCustomCron(e.target.value)} placeholder="0 9 * * 1-5" style={{ ...fieldStyle, fontFamily: font.mono }} />
+                {customCron.trim() && <div style={{ fontSize: 11, color: colors.textDim, marginTop: 4, fontFamily: font.mono }}>Preview: {cronToEnglish(customCron)}</div>}
+              </div>
+            )}
+          </>
+        )}
+
+        {kind === 'once' && (
+          <div style={{ marginBottom: 12 }}>
+            <input type="datetime-local" value={atLocal} onChange={e => setAtLocal(e.target.value)} style={{ ...fieldStyle, fontFamily: font.mono }} />
           </div>
         )}
+
+        {kind === 'interval' && (
+          <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+            <input type="number" min={1} value={intervalValue} onChange={e => setIntervalValue(e.target.value)} style={{ ...fieldStyle, width: 100 }} />
+            <select value={intervalUnit} onChange={e => setIntervalUnit(e.target.value as typeof intervalUnit)} style={{ ...fieldStyle, flex: 1 }}>
+              <option value="minutes">minutes</option>
+              <option value="hours">hours</option>
+              <option value="days">days</option>
+            </select>
+          </div>
+        )}
+
+        {kind !== 'interval' && (
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 12, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: 6 }}>Timezone (optional)</label>
+            <input value={tz} onChange={e => setTz(e.target.value)} placeholder="UTC, +05:30, -08:00" style={{ ...fieldStyle, fontFamily: font.mono }} />
+          </div>
+        )}
+
+        <label style={{ fontSize: 12, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: 6 }}>Retries on failure</label>
+        <input type="number" min={0} max={10} value={maxRetries} onChange={e => setMaxRetries(e.target.value)} style={{ ...fieldStyle, marginBottom: 4 }} />
+        <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 16 }}>0 = no retry. If retries are exhausted, the job is escalated to your Decision Inbox.</div>
 
         {error && <div style={{ fontSize: 12, color: colors.danger, marginBottom: 12 }}>{error}</div>}
 

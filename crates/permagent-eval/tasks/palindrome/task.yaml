@@ -1,0 +1,21 @@
+id: palindrome
+title: Valid palindrome (alphanumeric, case-insensitive)
+category: classic
+max_turns: 25
+test: [python3, check.py]
+# Declares the workspace module the oracle imports (import-discipline guard).
+deliverables: [palindrome]
+prompt: |
+  In this directory, create a file `palindrome.py` that defines a function:
+
+      def is_palindrome(s: str) -> bool
+
+  Return True if `s` reads the same forwards and backwards when you consider ONLY
+  alphanumeric characters and ignore case; otherwise return False. An empty string
+  (or a string with no alphanumeric characters) is considered a palindrome.
+
+  Examples:
+    is_palindrome("A man, a plan, a canal: Panama") == True
+    is_palindrome("race a car") == False
+    is_palindrome("") == True
+    is_palindrome("0P") == False

@@ -47,6 +47,11 @@ fn post_json(uri: &str, body: serde_json::Value) -> Request<Body> {
         .unwrap()
 }
 
+// One test per integration binary (own process): PERMAGENT_PATH_ROOT and the
+// startup singletons are per-process, so #[serial] had nothing to serialize
+// against here — it was a no-op (superseding #695). The real flake was a
+// server-side lock-upgrade race in the resume effect
+// (goal_transition::advance_goal_checked), fixed there with BEGIN IMMEDIATE.
 #[tokio::test(flavor = "multi_thread")]
 async fn integration_wiring_through_router_and_startup() {
     // Throwaway data root for the whole process (single test in this binary).

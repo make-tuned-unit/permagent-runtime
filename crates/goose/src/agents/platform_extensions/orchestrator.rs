@@ -322,6 +322,10 @@ impl OrchestratorClient {
                  based on capability match, cost tier, and current load\n\
                  - Run workers autonomously, track progress on a Kanban board, and retry on failure\n\
                  - Manage approval gates: nothing completes without the user's explicit approve\n\
+                 - Gate code goals on an authored done-criterion: dispatch seeds a default build \
+                 completion check (the project's configured build_command, else stack detection — \
+                 prose goals are never force-checked); the verifier runs the checks in the worker's \
+                 worktree and a failing check blocks auto-approval\n\
                  - Escalate with a typed decision item when blocked, instead of \
                  retrying silently\n\
                  - Give real-time status on what's in flight, stalled, or completed\n\n\
@@ -640,10 +644,25 @@ impl OrchestratorClient {
         let root_path = project.root_path.as_deref().unwrap_or("(not specified)");
 
         // Build instructions
-        let instructions = format!(
+        let mut instructions = format!(
             "Goal: {}\n\nDescription: {}\nProject: {}\nProject root: {}",
             card.title, card.description, project.name, root_path
         );
+        // Verify-loop escalation (the #739 ACTION): read the goal's per-goal
+        // escalation state. On an escalated RE-dispatch, carry the prior (weaker)
+        // attempt's diff + verify failure forward as context (R2) so the stronger
+        // model continues the fix rather than restarting cold.
+        let escalation_state = card
+            .metadata_json
+            .as_object()
+            .and_then(crate::cost_router::GoalEscalationState::from_metadata);
+        if let Some(handoff) = escalation_state
+            .as_ref()
+            .filter(|s| s.is_escalated())
+            .and_then(|s| s.handoff.as_ref())
+        {
+            instructions = format!("{instructions}\n\n{handoff}");
+        }
 
         // Working dir + baseline commit at dispatch time (recorded beside
         // dispatched_at so a commit-producing worker's changes can be diffed
@@ -665,6 +684,39 @@ impl OrchestratorClient {
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .filter(|s| !s.is_empty());
+
+        // Author the goal's completion criterion at dispatch, in precedence
+        // order (all seed the SAME `metadata_json.completion_checks` the #682
+        // verifier runs in the worker's worktree):
+        //   1. user-authored `completion_checks` win — never overwritten;
+        //   2. else the goal's acceptance criteria, COMPILED into enforced
+        //      checks (spec-driven builds, extends #682): unlike spec-kit, which
+        //      only prompts the model, we prove each mechanically-checkable
+        //      criterion — source "spec-acceptance";
+        //   3. else the #456 project-default build check — source
+        //      "project-default".
+        // A failing check clamps the verdict to Fail and blocks auto-approval.
+        let (seeded_checks, checks_source): (Option<serde_json::Value>, &str) =
+            if card.metadata_json.get("completion_checks").is_some() {
+                (None, "")
+            } else if let Some(acc) = checks_from_acceptance(
+                &card.metadata_json,
+                &card.description,
+                &project.metadata_json,
+                &working_dir,
+            ) {
+                (Some(acc), ACCEPTANCE_CHECKS_SOURCE)
+            } else {
+                (
+                    default_completion_checks(
+                        &card.metadata_json,
+                        &project.metadata_json,
+                        &working_dir,
+                        baseline_commit.is_some(),
+                    ),
+                    PROJECT_DEFAULT_CHECKS_SOURCE,
+                )
+            };
 
         // Resolve the engine for this worker and dispatch. The engine owns *how*
         // the goal runs; the card lifecycle around it stays here.
@@ -698,11 +750,52 @@ impl OrchestratorClient {
             _ => {
                 let provider = self.get_provider().await?;
                 let extensions = self.parent_extensions();
+                // Resolve the worker's workflow role → its CONFIGURED model (#730
+                // wiring). Unset ⇒ None ⇒ the engine clones the parent session
+                // model (single-model fallback; never a baked-in vendor default).
+                let worker_role = worker_cfg.and_then(|w| w.routing_role());
+                let mut role = worker_role;
+                let mut model_override = worker_role.and_then(crate::cost_router::role_model);
+
+                // Verify-loop escalation override: an escalated re-dispatch runs
+                // the CONFIGURED model for the climbed tier. This is never a baked
+                // default — `escalate_verify_fix_loop` only marks a swap when the
+                // next tier is actually configured (else it parks), so an escalated
+                // goal reaching here has a mapped model.
+                if let Some(tier) = escalation_state
+                    .as_ref()
+                    .filter(|s| s.is_escalated())
+                    .and_then(|s| s.current_tier)
+                {
+                    let esc_role = crate::cost_router::workflow_role_for_tier(tier);
+                    if let Some(rm) = crate::cost_router::role_model(esc_role) {
+                        role = Some(esc_role);
+                        model_override = Some(rm);
+                    }
+                } else if escalation_state.is_none() {
+                    // First dispatch of a fresh goal: seed the escalation ladder
+                    // position from the worker's role tier so the first verify-loop
+                    // climb knows which rung it leaves. A role-less (single-model)
+                    // worker seeds no tier → any later escalation parks (no-default).
+                    let seed = crate::cost_router::GoalEscalationState::seed(
+                        worker_role.map(crate::cost_router::tier_for_workflow_role),
+                    );
+                    if let Err(e) = persist_escalation_state(&pool, card_id, &seed).await {
+                        tracing::warn!(
+                            target: "permagentd::brain",
+                            card_id,
+                            error = %e,
+                            "failed to seed verify-escalation state (non-fatal)",
+                        );
+                    }
+                }
                 Box::new(goal_engine::InternalSubagentEngine {
                     session_manager: self.context.session_manager.clone(),
                     provider,
                     extensions,
                     persona_override,
+                    role,
+                    model_override,
                 })
             }
         };
@@ -859,6 +952,20 @@ impl OrchestratorClient {
         );
         if let Some(ref baseline) = baseline_commit {
             patch.insert("baseline_commit".to_string(), serde_json::json!(baseline));
+        }
+        if let Some(checks) = seeded_checks {
+            tracing::info!(
+                target: "permagentd::brain",
+                "Seeding {} completion checks onto goal '{}': {}",
+                checks_source,
+                card.title,
+                checks
+            );
+            patch.insert("completion_checks".to_string(), checks);
+            patch.insert(
+                "completion_checks_source".to_string(),
+                serde_json::json!(checks_source),
+            );
         }
 
         goal_transition::advance_goal_checked(
@@ -1644,7 +1751,7 @@ impl OrchestratorClient {
              Output ONLY a valid JSON object matching this exact schema — no prose, no markdown fences:\n\
              {\n  \"goals\": [\n    {\n      \"title\": \"short goal title\",\n      \
              \"description\": \"what to do and how to verify it's done\",\n      \
-             \"acceptance_criteria\": [\"criterion 1\", ...],\n      \
+             \"acceptance_criteria\": [\"measurable, mechanically-verifiable criterion\", ...],\n      \
              \"tags\": [\"code_edit\", \"shell\", ...],\n      \
              \"depends_on\": []  // indices of prerequisite goals (0-based)\n    }\n  ]\n}\n\n\
              Rules:\n\
@@ -1652,24 +1759,30 @@ impl OrchestratorClient {
              - Each goal completable in a single agent session (< 30 min of work)\n\
              - depends_on uses 0-based indices referencing other goals in the array\n\
              - No circular dependencies\n\
-             - Tags describe required capabilities: code_edit, shell, web_search, etc.";
+             - Tags describe required capabilities: code_edit, shell, web_search, etc.\n\
+             - acceptance_criteria are COMPILED INTO CHECKS THE DAEMON RUNS in the goal's \
+             worktree before the goal can be approved — they are enforced, not just advisory. \
+             Write each one measurable and tech-agnostic, and phrase mechanically-checkable \
+             ones so they map to a check: 'the project builds' / '`cargo test` passes' (a \
+             command exits 0), 'GET /health returns 200' (a loopback endpoint status), \
+             'docs/guide.md exists' (a file is created), 'no TODO remains in src/lib.rs' (a \
+             pattern is absent from a named file). Criteria that cannot be mechanically \
+             verified are still recorded for the human reviewer, but prefer verifiable ones.";
 
         let mut user_text = format!(
             "Objective: {}\nProject: {}\nProject root: {}",
             objective, project.name, root_path
         );
 
-        // L3 Learn recall: inject Jesse's past decisions for this project as
-        // a quoted data-not-instructions block. Local-only (SQLite + local
-        // embeddings) — zero cloud tokens; failures are non-fatal.
+        // L3 Learn recall: inject Jesse's past decisions AND how he has revised
+        // past drafts (edit-as-training) for this project, each as a quoted
+        // data-not-instructions block. Local-only (SQLite + local embeddings) —
+        // zero cloud tokens; failures are non-fatal.
         if let Some(brain) = super::get_global_brain() {
-            match crate::decision_inbox::learn::recall_decisions(&brain, &objective, &project.slug)
-                .await
-            {
+            use crate::decision_inbox::learn;
+            match learn::recall_decisions(&brain, &objective, &project.slug).await {
                 Ok(hits) => {
-                    if let Some(block) =
-                        crate::decision_inbox::learn::format_decision_context_block(&hits)
-                    {
+                    if let Some(block) = learn::format_decision_context_block(&hits) {
                         user_text.push_str("\n\n");
                         user_text.push_str(&block);
                     }
@@ -1678,6 +1791,23 @@ impl OrchestratorClient {
                     tracing::debug!(
                         target: "permagentd::brain",
                         "Skipping past-decision recall for decompose: {}",
+                        e
+                    );
+                }
+            }
+            // Corrections: how Jesse has revised similar drafts before, surfaced
+            // at draft time so the decomposition moves toward how he'd write it.
+            match learn::recall_corrections(&brain, &objective, &project.slug).await {
+                Ok(hits) => {
+                    if let Some(block) = learn::format_correction_context_block(&hits) {
+                        user_text.push_str("\n\n");
+                        user_text.push_str(&block);
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        target: "permagentd::brain",
+                        "Skipping past-correction recall for decompose: {}",
                         e
                     );
                 }
@@ -2090,6 +2220,10 @@ impl McpClientTrait for OrchestratorClient {
                 "decompose_roadmap".to_string(),
                 "Decompose a high-level objective into a proposed roadmap of goal cards. \
                  Returns a PROPOSED plan for user review — does NOT create cards. \
+                 Each goal carries acceptance_criteria; mechanically-verifiable ones are \
+                 compiled into completion checks the daemon runs in the goal's worktree \
+                 before it can be approved, so phrase them measurably (a command exits 0, a \
+                 file exists, an endpoint returns a status, a pattern is absent). \
                  After the user approves, call create_roadmap with the goals JSON."
                     .to_string(),
                 schema::<DecomposeRoadmapParams>(),
@@ -2098,6 +2232,8 @@ impl McpClientTrait for OrchestratorClient {
                 "create_roadmap".to_string(),
                 "Create goal cards from an approved roadmap proposal. Call this ONLY after \
                  the user has reviewed and approved the output of decompose_roadmap. \
+                 Each goal's mechanically-verifiable acceptance_criteria are compiled into \
+                 enforced completion checks at dispatch (source 'spec-acceptance'). \
                  Root goals (no dependencies) are auto-dispatched to workers."
                     .to_string(),
                 schema::<CreateRoadmapParams>(),
@@ -2501,14 +2637,581 @@ pub async fn format_board_summary(pool: &sqlx::Pool<sqlx::Sqlite>) -> Result<Str
 pub type GoalReviewHook = Box<dyn Fn(sqlx::Pool<sqlx::Sqlite>, String) + Send + Sync>;
 pub static GOAL_REVIEW_HOOK: std::sync::OnceLock<GoalReviewHook> = std::sync::OnceLock::new();
 
-/// Handle the completion of a dispatched goal worker.
+/// Goal types that never get a forced build check (#456, ruled 2026-06-23):
+/// prose/content-flavored work has no build to run — seeding one would
+/// false-fail correct work. Content goals get their publish-sequence +
+/// live-check default with #457.
+const NON_CODE_GOAL_TYPES: &[&str] = &["prose", "content", "writing", "docs", "research"];
+
+/// Default timeout for the seeded build check (checks.rs clamps to 600s max).
+const DEFAULT_BUILD_CHECK_TIMEOUT_SECS: u64 = 600;
+
+/// `completion_checks_source` marker for checks compiled from a goal's
+/// acceptance criteria (spec-driven builds — extends #682). Distinguishes the
+/// compiled acceptance checks from the #456 project-default build check.
+const ACCEPTANCE_CHECKS_SOURCE: &str = "spec-acceptance";
+/// `completion_checks_source` marker for the #456 project-default build check.
+const PROJECT_DEFAULT_CHECKS_SOURCE: &str = "project-default";
+/// Timeout for a `command_exit_zero` check compiled from an acceptance
+/// criterion (checks.rs clamps to 600s max, so this is the ceiling).
+const ACCEPTANCE_CMD_TIMEOUT_SECS: u64 = 600;
+
+/// Resolve a build command for `working_dir`: explicit
+/// `project.metadata_json.build_command` first (explicit config over hidden
+/// defaults), else conservative stack detection — `npm run build` when
+/// package.json declares a build script, `cargo check` for a Cargo project.
+/// `None` when the stack is unknown; callers never guess a command (a check
+/// `error` clamps the verdict to Fail, so a wrong guess would false-fail).
+fn resolve_build_command(
+    project_meta: &serde_json::Value,
+    working_dir: &std::path::Path,
+) -> Option<String> {
+    let explicit = project_meta
+        .get("build_command")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if let Some(c) = explicit {
+        return Some(c.to_string());
+    }
+
+    let has_npm_build = std::fs::read_to_string(working_dir.join("package.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|pkg| pkg.get("scripts")?.get("build").cloned())
+        .is_some();
+    if has_npm_build {
+        Some("npm run build".to_string())
+    } else if working_dir.join("Cargo.toml").is_file() {
+        Some("cargo check".to_string())
+    } else {
+        None
+    }
+}
+
+/// Default completion checks for a code-flavored goal at dispatch (#456).
 ///
-/// Called by the tracker task spawned in dispatch_goal when the JoinHandle resolves.
-/// On success: moves card InProgress → Review.
-/// On failure: increments attempt_count. At 3 attempts, moves to Triage with
-/// needs_human_attention. Otherwise leaves in InProgress for retry.
+/// Opt-in with per-goal-type defaults (Jesse's ruling, 2026-06-23). Seeds a
+/// single `command_exit_zero` build check ONLY when ALL of:
+/// * the goal declares no `completion_checks` of its own — user authoring and
+///   retry re-dispatches always win; this never overwrites;
+/// * the goal is not explicitly typed as a non-code goal (`goal_type`);
+/// * the project root is a git repo (`is_git_repo` — the dispatch baseline
+///   resolved), the code-flavor heuristic;
+/// * a build command is known: explicit `project.metadata_json.build_command`
+///   first (explicit config over hidden defaults), else conservative stack
+///   detection — `npm run build` when package.json declares a build script,
+///   `cargo check` for a Cargo project.
 ///
-/// Gracefully no-ops if the card is no longer in InProgress (manual intervention).
+/// Returns the JSON array for `metadata_json.completion_checks`
+/// (verification/checks.rs schema) or None to seed nothing. Never guesses a
+/// command: an unknown stack seeds nothing — a check `error` clamps the
+/// verdict to Fail, and manufacturing false-fails is the one thing the ruling
+/// forbids.
+fn default_completion_checks(
+    card_meta: &serde_json::Value,
+    project_meta: &serde_json::Value,
+    working_dir: &std::path::Path,
+    is_git_repo: bool,
+) -> Option<serde_json::Value> {
+    if !is_git_repo || card_meta.get("completion_checks").is_some() {
+        return None;
+    }
+    if let Some(goal_type) = card_meta.get("goal_type").and_then(|v| v.as_str()) {
+        if NON_CODE_GOAL_TYPES.contains(&goal_type) {
+            return None;
+        }
+    }
+
+    let cmd = resolve_build_command(project_meta, working_dir)?;
+
+    let timeout_secs = project_meta
+        .get("build_timeout_secs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(DEFAULT_BUILD_CHECK_TIMEOUT_SECS);
+
+    Some(serde_json::json!([{
+        "type": "command_exit_zero",
+        "cmd": cmd,
+        "timeout_secs": timeout_secs,
+    }]))
+}
+
+// ── Acceptance criteria → enforced completion checks (spec-driven, extends #682)
+//
+// spec-kit turns a spec's Success Criteria into checks the model is only
+// *prompted* to honor. Permagent already carries `acceptance_criteria` on a
+// goal (decompose/create_roadmap → metadata), but today they only feed the
+// verifier's LLM prompt — the same "prompt the model" weakness. Here we COMPILE
+// each mechanically-checkable criterion into a `CompletionCheck` the #682
+// verifier RUNS in the goal worktree: done-ness is proven, not claimed.
+//
+// The mapping is deterministic and conservative. A criterion becomes a check
+// ONLY when its text mechanically determines one; anything ambiguous is SKIPPED
+// (logged) rather than turned into a guessed check — a wrong check `error`s and
+// clamps the verdict to Fail, so inventing checks would false-fail correct work.
+//
+// Emits raw JSON matching the verification/checks.rs `CompletionCheck` wire
+// schema (deny_unknown_fields): this lives in the `goose` crate, which cannot
+// depend on `goose-server` where the type is defined, so — like
+// `default_completion_checks` — it emits the wire shape directly. Tests assert
+// the emitted fields are exactly what each check kind accepts.
+
+/// Compile a goal's acceptance criteria into completion checks. Reads criteria
+/// from the structured `acceptance_criteria` array and from an
+/// "Acceptance/Success Criteria" list in the description. Returns the JSON array
+/// for `metadata_json.completion_checks`, or `None` when there are no criteria
+/// or none is mechanically checkable.
+fn checks_from_acceptance(
+    card_meta: &serde_json::Value,
+    description: &str,
+    project_meta: &serde_json::Value,
+    working_dir: &std::path::Path,
+) -> Option<serde_json::Value> {
+    let criteria = collect_acceptance_criteria(card_meta, description);
+    if criteria.is_empty() {
+        return None;
+    }
+
+    let mut checks: Vec<serde_json::Value> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    for c in &criteria {
+        match criterion_to_check(c, project_meta, working_dir) {
+            Some(check) => checks.push(check),
+            None => skipped.push(c.clone()),
+        }
+    }
+
+    if !skipped.is_empty() {
+        tracing::info!(
+            target: "permagentd::brain",
+            "Acceptance criteria not mechanically checkable — SKIPPED (no false check seeded): {:?}",
+            skipped
+        );
+    }
+
+    if checks.is_empty() {
+        None
+    } else {
+        Some(serde_json::Value::Array(checks))
+    }
+}
+
+/// Gather acceptance criteria from `metadata_json.acceptance_criteria` and from
+/// an "Acceptance/Success Criteria" list in the goal description. Order-
+/// preserving, deduped, blank entries dropped.
+fn collect_acceptance_criteria(card_meta: &serde_json::Value, description: &str) -> Vec<String> {
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(arr) = card_meta
+        .get("acceptance_criteria")
+        .and_then(|v| v.as_array())
+    {
+        candidates.extend(
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.trim().to_string()),
+        );
+    }
+    candidates.extend(parse_criteria_from_description(description));
+
+    let mut seen: HashSet<String> = HashSet::new();
+    candidates
+        .into_iter()
+        .filter(|s| !s.is_empty() && seen.insert(s.clone()))
+        .collect()
+}
+
+/// Extract criteria from a description ONLY under an explicit
+/// "Acceptance Criteria" / "Success Criteria" heading, reading the list items
+/// that follow. Conservative by design: no heading ⇒ nothing parsed (free prose
+/// is never mined for checks).
+fn parse_criteria_from_description(description: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut in_section = false;
+    for raw in description.lines() {
+        let line = raw.trim();
+        let heading = line
+            .trim_start_matches('#')
+            .trim()
+            .trim_end_matches(':')
+            .trim()
+            .to_ascii_lowercase();
+        if heading == "acceptance criteria"
+            || heading == "success criteria"
+            || heading == "acceptance"
+        {
+            in_section = true;
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        if line.is_empty() {
+            continue; // tolerate blank lines between list items
+        }
+        match strip_list_marker(line) {
+            Some(item) if !item.is_empty() => out.push(item),
+            _ => break, // a non-list line closes the section
+        }
+    }
+    out
+}
+
+/// Strip a leading list marker (`-`, `*`, `+`, optional `[ ]`/`[x]` checkbox, or
+/// `N.`/`N)`), returning the item text. `None` when the line is not a list item.
+fn strip_list_marker(line: &str) -> Option<String> {
+    for m in ['-', '*', '+'] {
+        if let Some(rest) = line.strip_prefix(m) {
+            let rest = rest.trim_start();
+            let rest = rest
+                .strip_prefix("[ ]")
+                .or_else(|| rest.strip_prefix("[x]"))
+                .or_else(|| rest.strip_prefix("[X]"))
+                .unwrap_or(rest);
+            return Some(rest.trim().to_string());
+        }
+    }
+    let digits = line.chars().take_while(|c| c.is_ascii_digit()).count();
+    if digits > 0 && matches!(line.chars().nth(digits), Some('.') | Some(')')) {
+        let rest: String = line.chars().skip(digits + 1).collect();
+        return Some(rest.trim().to_string());
+    }
+    None
+}
+
+/// Map ONE acceptance criterion to a completion check, or `None` if its text
+/// does not mechanically determine one. Most-specific patterns first.
+fn criterion_to_check(
+    criterion: &str,
+    project_meta: &serde_json::Value,
+    working_dir: &std::path::Path,
+) -> Option<serde_json::Value> {
+    let text = criterion.trim();
+    let lower = text.to_ascii_lowercase();
+    try_grep_absent(text, &lower)
+        .or_else(|| try_http_assert(text, &lower))
+        .or_else(|| try_file_exists(text, &lower))
+        .or_else(|| try_command(text, &lower, project_meta, working_dir))
+}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|n| haystack.contains(*n))
+}
+
+/// `command_exit_zero` from a criterion: an explicit backticked command paired
+/// with a success verb, or a generic "builds/compiles" statement mapped to the
+/// detected build command (never guessed — unknown stack ⇒ skip).
+fn try_command(
+    text: &str,
+    lower: &str,
+    project_meta: &serde_json::Value,
+    working_dir: &std::path::Path,
+) -> Option<serde_json::Value> {
+    const SUCCESS_VERBS: &[&str] = &[
+        "passes",
+        "pass",
+        "succeeds",
+        "succeed",
+        "exits 0",
+        "exit 0",
+        "exits zero",
+        "returns 0",
+        "is green",
+        "runs clean",
+        "runs cleanly",
+        "builds",
+        "compiles",
+        "works",
+    ];
+    if contains_any(lower, SUCCESS_VERBS) {
+        if let Some(bt) = first_backtick(text) {
+            let cmd = bt.trim();
+            if is_command_like(cmd) {
+                return Some(command_check(cmd));
+            }
+        }
+    }
+
+    const BUILD_PHRASES: &[&str] = &[
+        "builds",
+        "compiles",
+        "build passes",
+        "build succeeds",
+        "compilation succeeds",
+        "build is green",
+    ];
+    if contains_any(lower, BUILD_PHRASES) {
+        if let Some(cmd) = resolve_build_command(project_meta, working_dir) {
+            return Some(command_check(&cmd));
+        }
+    }
+    None
+}
+
+fn command_check(cmd: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "command_exit_zero",
+        "cmd": cmd,
+        "timeout_secs": ACCEPTANCE_CMD_TIMEOUT_SECS,
+    })
+}
+
+/// True when `s` looks like a runnable command (has arguments, or its sole word
+/// is a recognized build/test tool) — not a bare file path in backticks.
+fn is_command_like(s: &str) -> bool {
+    let mut words = s.split_whitespace();
+    let Some(first) = words.next() else {
+        return false;
+    };
+    if words.next().is_some() {
+        return true; // command + arguments
+    }
+    const COMMAND_WORDS: &[&str] = &[
+        "make", "cargo", "npm", "pnpm", "yarn", "go", "python", "python3", "pytest", "tsc",
+        "eslint", "prettier", "gradle", "mvn", "just", "bun", "deno", "ruff", "black", "rustc",
+        "node", "jest", "vitest", "cmake", "ninja", "bash", "sh", "dotnet", "cabal", "stack",
+    ];
+    COMMAND_WORDS.contains(&first)
+}
+
+/// `http_assert` from a criterion naming a path and an expected status, e.g.
+/// "GET /health returns 200". Loopback-only (base_url defaults to 127.0.0.1 in
+/// checks.rs). Methods the verifier cannot run (PUT/DELETE/PATCH/OPTIONS) ⇒ skip.
+fn try_http_assert(text: &str, lower: &str) -> Option<serde_json::Value> {
+    const HTTP_SIGNALS: &[&str] = &[
+        "endpoint", "route", "http", "url", "respond", "returns", "return ", "status", "api",
+        "get ", "post ", "head ",
+    ];
+    if !contains_any(lower, HTTP_SIGNALS) {
+        return None;
+    }
+    let path = first_http_path(text)?;
+    let status = extract_status_code(text)?;
+    let method = detect_http_method(text)?;
+    Some(serde_json::json!({
+        "type": "http_assert",
+        "method": method,
+        "path": path,
+        "status": status,
+    }))
+}
+
+/// The HTTP method to assert. `None` (skip the check) when the criterion names a
+/// method checks.rs cannot run — a seeded check for it would only ever `error`.
+fn detect_http_method(text: &str) -> Option<&'static str> {
+    for tok in text.split_whitespace() {
+        match clean_token(tok).to_ascii_uppercase().as_str() {
+            "GET" => return Some("GET"),
+            "HEAD" => return Some("HEAD"),
+            "POST" => return Some("POST"),
+            "PUT" | "DELETE" | "PATCH" | "OPTIONS" => return None,
+            _ => {}
+        }
+    }
+    Some("GET")
+}
+
+/// `file_exists` from a criterion asserting a file is present or created.
+fn try_file_exists(text: &str, lower: &str) -> Option<serde_json::Value> {
+    const EXIST_SIGNALS: &[&str] = &[
+        "exist",
+        "is created",
+        "are created",
+        "is generated",
+        "created",
+        "creates",
+        "create ",
+        "generated",
+        "written",
+        "present",
+        "added",
+        "produced",
+    ];
+    if !contains_any(lower, EXIST_SIGNALS) {
+        return None;
+    }
+    let path = first_relative_path(text)?;
+    Some(serde_json::json!({
+        "type": "file_exists",
+        "path": path,
+    }))
+}
+
+/// `grep_absent` from a criterion asserting a token is absent from named
+/// file(s), e.g. "no TODO comments remain in src/lib.rs". Requires BOTH an
+/// absence signal + recognizable token AND at least one concrete named path —
+/// grep_absent reads specific files, so a pathless "no TODO" is skipped (there
+/// is nothing to grep) rather than guessed.
+fn try_grep_absent(text: &str, lower: &str) -> Option<serde_json::Value> {
+    const ABSENCE_SIGNALS: &[&str] = &[
+        "no ",
+        "without",
+        "does not contain",
+        "doesn't contain",
+        "removed",
+        "remaining",
+        "remain",
+        " left",
+        "absent",
+        "zero ",
+        "not present",
+        "eliminated",
+        "stripped",
+    ];
+    if !contains_any(lower, ABSENCE_SIGNALS) {
+        return None;
+    }
+    let token = absence_token(text, lower)?;
+    let paths = path_tokens(text);
+    if paths.is_empty() {
+        return None;
+    }
+    Some(serde_json::json!({
+        "type": "grep_absent",
+        "pattern": regex::escape(&token),
+        "paths": paths,
+    }))
+}
+
+/// The token that must be absent: a backticked literal, else a recognized dev
+/// marker (TODO/FIXME/unwrap(/…). `None` when no concrete token is named.
+fn absence_token(text: &str, lower: &str) -> Option<String> {
+    if let Some(bt) = first_backtick(text) {
+        let bt = bt.trim();
+        if !bt.is_empty() && !looks_like_path(bt) {
+            return Some(bt.to_string());
+        }
+    }
+    const MARKERS: &[&str] = &[
+        "TODO",
+        "FIXME",
+        "XXX",
+        "HACK",
+        "todo!",
+        "unimplemented!",
+        "unwrap(",
+        "panic!",
+        "dbg!",
+        "console.log",
+        "debugger",
+        "println!",
+    ];
+    for m in MARKERS {
+        let needle = m.to_ascii_lowercase();
+        if lower.contains(needle.as_str()) {
+            return Some((*m).to_string());
+        }
+    }
+    None
+}
+
+// ── Token / path / status extraction (pure string ops — no &str slicing, so the
+// `clippy::string_slice` restriction lint stays green under `-D warnings`) ──
+
+/// The content between the first pair of backticks, if any.
+fn first_backtick(text: &str) -> Option<&str> {
+    if text.matches('`').count() < 2 {
+        return None;
+    }
+    let inside = text.split('`').nth(1)?;
+    if inside.trim().is_empty() {
+        None
+    } else {
+        Some(inside)
+    }
+}
+
+/// Strip wrapping quotes/brackets and trailing sentence punctuation from a
+/// whitespace-split token, preserving `/` and a leading `.` (so `./x` and
+/// `README.md` survive).
+fn clean_token(tok: &str) -> &str {
+    let t = tok.trim_end_matches([',', ';', ':', '!', '?', '.']);
+    t.trim_matches(['`', '"', '\'', '(', ')', '[', ']', '{', '}', '<', '>', '*'])
+}
+
+const PATH_EXTENSIONS: &[&str] = &[
+    "rs", "toml", "md", "txt", "json", "yaml", "yml", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py",
+    "go", "sh", "bash", "lock", "html", "htm", "css", "scss", "sql", "rb", "java", "kt", "c", "h",
+    "cpp", "hpp", "cc", "cs", "php", "xml", "ini", "cfg", "conf", "env", "proto", "graphql", "svg",
+    "png", "csv", "tsv", "rst", "adoc", "vue", "svelte",
+];
+
+fn has_path_extension(tok: &str) -> bool {
+    match tok.rsplit_once('.') {
+        Some((base, ext)) => {
+            let ext = ext.to_ascii_lowercase();
+            !base.is_empty() && PATH_EXTENSIONS.contains(&ext.as_str())
+        }
+        None => false,
+    }
+}
+
+/// A relative-path-shaped token (a `/`-joined path or a file with a known
+/// extension). Excludes absolute paths and URLs.
+fn looks_like_path(tok: &str) -> bool {
+    if tok.is_empty() || tok.contains("://") {
+        return false;
+    }
+    (tok.contains('/') && !tok.starts_with('/')) || has_path_extension(tok)
+}
+
+fn path_tokens(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .filter_map(|tok| {
+            let t = clean_token(tok);
+            if looks_like_path(t) {
+                Some(t.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn first_relative_path(text: &str) -> Option<String> {
+    path_tokens(text).into_iter().next()
+}
+
+/// The first server-absolute request path (`/...`, not `//...`) in the text.
+fn first_http_path(text: &str) -> Option<String> {
+    text.split_whitespace().find_map(|tok| {
+        let t = clean_token(tok);
+        if t.starts_with('/') && !t.starts_with("//") {
+            Some(t.to_string())
+        } else {
+            None
+        }
+    })
+}
+
+/// The first standalone 3-digit HTTP status (100–599) in the text. Rejects
+/// digit runs glued to letters (e.g. the `200` in `200ms`).
+fn extract_status_code(text: &str) -> Option<u16> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if !chars[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && chars[i].is_ascii_digit() {
+            i += 1;
+        }
+        let before_ok = start == 0 || !chars[start - 1].is_alphanumeric();
+        let after_ok = i >= chars.len() || !chars[i].is_alphanumeric();
+        if i - start == 3 && before_ok && after_ok {
+            let digits: String = chars[start..i].iter().collect();
+            if let Ok(n) = digits.parse::<u16>() {
+                if (100..=599).contains(&n) {
+                    return Some(n);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// The canned approve_review detail used when no deterministic evidence is
 /// available (in-process subagent, pre-evidence goals).
 fn review_detail_base(card_id: &str) -> String {
@@ -2690,6 +3393,14 @@ pub async fn cancel_goal(
     Ok(new_state)
 }
 
+/// Handle the completion of a dispatched goal worker.
+///
+/// Called by the tracker task spawned in dispatch_goal when the JoinHandle resolves.
+/// On success: moves card InProgress → Review.
+/// On failure: increments attempt_count. At 3 attempts, moves to Triage with
+/// needs_human_attention. Otherwise leaves in InProgress for retry.
+///
+/// Gracefully no-ops if the card is no longer in InProgress (manual intervention).
 pub async fn handle_goal_completion(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     card_id: &str,
@@ -2984,6 +3695,380 @@ pub async fn handle_goal_blocked(
         reason
     );
     Ok(())
+}
+
+/// Map a running worker session to the goal it is executing (its current
+/// attempt), if any. A runaway worker's goal is `in_progress`, so we scan those
+/// and match `worker_session_id`. Interactive (non-goal) sessions → `None`.
+async fn goal_for_worker_session(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    session_id: &str,
+) -> Result<Option<(String, String, String)>, String> {
+    let rows = sqlx::query_as::<_, (String, String, String, String)>(
+        "SELECT c.id, c.project_id, c.title, c.metadata_json FROM cards c
+         JOIN board_columns bc ON c.column_id = bc.id
+         WHERE c.card_type = 'goal'
+           AND bc.state_binding = 'in_progress'
+           AND c.archived_at IS NULL",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    for (id, project_id, title, meta_str) in rows {
+        if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&meta_str) {
+            if meta.get("worker_session_id").and_then(|v| v.as_str()) == Some(session_id) {
+                return Ok(Some((id, project_id, title)));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// L3 escalation for an in-session runaway loop detected by the ProgressMonitor
+/// (non-negotiable B). Maps the worker session to its goal; if it maps to one
+/// still in progress, raises a DEDUPLICATED `unblock`/`Stuck` decision carrying
+/// the loop signal + recent-actions evidence, parks the goal (WORK-PRESERVING —
+/// park moves to Triage, never a terminal cancel, so the worktree is never
+/// reaped), and stops the worker via the kill registry (L4).
+///
+/// Order matters and mirrors [`cancel_goal`]: park runs FIRST so the worker's
+/// completion tracker (which guards on `in_progress`) no-ops when the kill
+/// fires — the diff is preserved, nothing is thrown away. For an in-process
+/// worker the kill cancels its [`CancellationToken`]; for an external worker it
+/// kills the process group.
+///
+/// Best-effort and idempotent: a second escalation for the same goal dedupes
+/// onto the existing open decision (never a duplicate) and re-parks harmlessly.
+/// Interactive sessions with no goal are a no-op (L1 already blocked the call).
+/// Returns the open decision id when one exists for the goal, else `None`.
+pub async fn escalate_session_loop(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    session_id: &str,
+    signal: &str,
+    evidence: &str,
+) -> Result<Option<String>, String> {
+    let Some((card_id, project_id, title)) = goal_for_worker_session(pool, session_id).await?
+    else {
+        return Ok(None);
+    };
+
+    // Dedup: one open unblock decision per goal (the durable dedup guarantee —
+    // a second trigger for the same goal never stacks a duplicate).
+    let decision_id = if let Some(existing) =
+        decisions::find_open_decision_for_goal(pool, &card_id, "unblock").await?
+    {
+        existing.id
+    } else {
+        let headline = format!(
+            "\"{}\" looks stuck in a loop and needs your direction",
+            title
+        );
+        let headline = if headline.chars().count() > decisions::MAX_HEADLINE_CHARS {
+            let cut: String = headline
+                .chars()
+                .take(decisions::MAX_HEADLINE_CHARS - 1)
+                .collect();
+            format!("{}…", cut)
+        } else {
+            headline
+        };
+        let detail = format!(
+            "The runaway-loop guard stopped this goal's worker: {}.\n\nRecent actions:\n{}\n\n\
+             Keep going (re-dispatch a fresh attempt — its work is preserved), give direction, \
+             or stop and keep the changes made so far.",
+            signal, evidence
+        );
+        let payload = serde_json::to_value(decisions::UnblockPayload {
+            reason: decisions::UnblockReason::Stuck,
+            spent: None,
+            cap: None,
+        })
+        .map_err(|e| e.to_string())?;
+        decisions::create_decision(
+            pool,
+            decisions::NewDecision {
+                kind: "unblock".to_string(),
+                goal_id: Some(card_id.clone()),
+                project_id: Some(project_id.clone()),
+                headline: Some(headline),
+                detail: Some(detail),
+                payload,
+                ..Default::default()
+            },
+        )
+        .await?
+        .id
+    };
+
+    // Park FIRST (work-preserving: Triage + needs_human_attention, never a
+    // terminal cancel → the worktree is never reaped).
+    goal_transition::park_goal(
+        pool,
+        &card_id,
+        decisions::ACTOR_SYSTEM,
+        &format!("runaway-loop guard: {}", signal),
+    )
+    .await
+    .map_err(String::from)?;
+
+    // L4: stop the worker now that the goal is parked. The completion tracker
+    // guards on `in_progress`, so this cancel/kill leaves the preserved worktree
+    // untouched.
+    if let Some(kill) = take_goal_worker(&card_id) {
+        kill.kill();
+    }
+
+    tracing::warn!(
+        target: "permagentd::brain",
+        "Goal '{}' escalated by runaway-loop guard ({}) — parked (work preserved), decision {}",
+        title,
+        signal,
+        decision_id
+    );
+
+    Ok(Some(decision_id))
+}
+
+// ── Live verifier-driven escalation (the #739 ACTION) ────────────────────────
+
+/// The running session spend (USD) for the goal worker's session — the spend-cap
+/// input (guardrail 3). Unknown/unpriced ⇒ `0.0` (never fabricate a stop, per the
+/// budget ledger contract).
+async fn session_spent_usd(pool: &sqlx::Pool<sqlx::Sqlite>, session_id: &str) -> f64 {
+    sqlx::query_scalar::<_, Option<f64>>("SELECT accumulated_cost_usd FROM sessions WHERE id = ?")
+        .bind(session_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .flatten()
+        .unwrap_or(0.0)
+}
+
+/// The goal's normal retry-attempt count (kept UNCHANGED across an escalation
+/// re-dispatch — R1: escalation has its own `max_escalations` budget and must not
+/// starve the goal of its ordinary attempts).
+fn current_attempt_count(meta: &serde_json::Value) -> u64 {
+    meta.get("attempt_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+}
+
+/// Persist a goal's escalation state to `metadata_json[verify_escalation]`
+/// (metadata-only write, mirrors `cards::set_goal_dispatch_evidence`). Best-effort
+/// caller-side; the state must survive the kill-and-re-dispatch a swap performs.
+async fn persist_escalation_state(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    state: &crate::cost_router::GoalEscalationState,
+) -> Result<(), String> {
+    let card = cards::get_card(pool, card_id)
+        .await?
+        .ok_or_else(|| format!("Card '{}' not found for escalation state", card_id))?;
+    let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
+    meta.insert(
+        crate::cost_router::ESCALATION_METADATA_KEY.to_string(),
+        state.to_metadata_value(),
+    );
+    let meta_str =
+        serde_json::to_string(&serde_json::Value::Object(meta)).map_err(|e| e.to_string())?;
+    sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+        .bind(&meta_str)
+        .bind(card_id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Capture the current worker's uncommitted diff (`git diff HEAD` in the goal's
+/// working dir) for the escalation handoff (R2) — the "here's what was tried"
+/// half. Best-effort and bounded; a non-repo or git error yields an empty diff
+/// (the failure text alone still carries forward). Never fails the escalation.
+async fn capture_worktree_diff(working_dir: &std::path::Path) -> String {
+    let output = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(working_dir)
+        .args(["diff", "HEAD"])
+        .output()
+        .await;
+    match output {
+        Ok(o) if o.status.success() => {
+            let diff = String::from_utf8_lossy(&o.stdout);
+            const MAX: usize = 8000;
+            if diff.chars().count() > MAX {
+                let head: String = diff.chars().take(MAX).collect();
+                format!("{head}\n…(diff truncated)")
+            } else {
+                diff.into_owned()
+            }
+        }
+        _ => String::new(),
+    }
+}
+
+/// THE live verifier-driven escalation (completes #739's decision core). Fired
+/// from the runaway-loop monitor's detached task when a goal's `verify` has failed
+/// identically `consecutive` times. Within the four guardrails it AUTO-re-attempts
+/// the fix on a stronger CONFIGURED model — no human gate — or parks at a ceiling:
+///
+/// - **Swap** ([`crate::cost_router::EscalationOutcome::Swap`]): persist the
+///   climbed per-goal tier + a diff/failure handoff (R2), emit an AMBIENT,
+///   non-blocking cost-transparency note (R3), then — park-first-then-kill (R4) —
+///   requeue the goal to Ready WITHOUT incrementing its attempt count (R1) and
+///   kill the worker. The orchestrator's next dispatch pass re-dispatches the
+///   Ready goal, and [`OrchestratorClient::dispatch_goal`] reads the escalated
+///   state to route it to the stronger model. This is deliberately the SAME
+///   Send-safe path a human-answered "keep going" unblock takes: `dispatch_goal`
+///   is `!Send` and can only run in the orchestrator's own context, never from
+///   this spawned monitor task — so the swap requeues rather than dispatching
+///   inline.
+/// - **Park**: no configured stronger tier (single-model / unmapped — the
+///   no-default rule), the per-goal `max_escalations` cap, the tier ceiling, or
+///   the spend cap → the EXISTING work-preserving, human-gated park
+///   ([`escalate_session_loop`]). Park-first is fully preserved.
+///
+/// Interactive sessions with no goal are a no-op. Best-effort; a returned error
+/// makes the monitor release its reservation so a later turn retries.
+pub async fn escalate_verify_fix_loop(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    session_id: &str,
+    consecutive: u32,
+    evidence: &str,
+    verify_failure: Option<&str>,
+) -> Result<(), String> {
+    // Map the worker session to its goal. No goal (interactive) ⇒ nothing to do.
+    let Some((card_id, project_id, title)) = goal_for_worker_session(pool, session_id).await?
+    else {
+        return Ok(());
+    };
+    let card = cards::get_card(pool, &card_id)
+        .await?
+        .ok_or_else(|| format!("Card '{}' not found during verify escalation", card_id))?;
+
+    // Per-goal escalation state (seeded at first dispatch). Absent ⇒ treat as a
+    // single-model goal with no ladder → the decision parks (no-default).
+    let state = card
+        .metadata_json
+        .as_object()
+        .and_then(crate::cost_router::GoalEscalationState::from_metadata)
+        .unwrap_or_else(|| crate::cost_router::GoalEscalationState::seed(None));
+
+    // Guardrail inputs: the user's CONFIGURED ladder (None-when-unset — NEVER the
+    // packs.rs defaults), the per-goal climb budget, and the running spend.
+    let resolve =
+        |tier| crate::cost_router::role_model(crate::cost_router::workflow_role_for_tier(tier));
+    let spent = session_spent_usd(pool, session_id).await;
+    let budget_cfg = crate::cost_router::budget::load_budget_config();
+    let verdict = crate::cost_router::budget_verdict(0.0, spent, &budget_cfg);
+    let max_escalations = crate::cost_router::load_max_escalations();
+
+    let outcome = crate::cost_router::decide_escalation(
+        state.current_tier,
+        state.escalations_used,
+        max_escalations,
+        consecutive,
+        resolve,
+        verdict,
+    );
+
+    match outcome {
+        crate::cost_router::EscalationOutcome::KeepFixing => Ok(()),
+
+        crate::cost_router::EscalationOutcome::Swap {
+            to_tier,
+            model,
+            new_escalations_used,
+        } => {
+            // R2: hand the prior attempt's failure + diff forward so the stronger
+            // model continues rather than restarting cold.
+            let prior_model = state
+                .current_tier
+                .and_then(|t| {
+                    crate::cost_router::role_model(crate::cost_router::workflow_role_for_tier(t))
+                })
+                .map(|rm| rm.model)
+                .unwrap_or_else(|| "the previous model".to_string());
+            let working_dir = crate::projects::get_project(pool, &project_id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|p| p.root_path)
+                .map(std::path::PathBuf::from);
+            let diff = match &working_dir {
+                Some(dir) => capture_worktree_diff(dir).await,
+                None => String::new(),
+            };
+            let handoff = crate::cost_router::build_handoff(
+                &prior_model,
+                verify_failure.unwrap_or(evidence),
+                &diff,
+            );
+
+            // Persist the climbed state (tier + count + handoff) BEFORE the
+            // requeue, so the re-dispatch reads it and routes to the stronger model.
+            let new_state = crate::cost_router::GoalEscalationState::escalated_to(
+                to_tier,
+                new_escalations_used,
+                handoff,
+            );
+            persist_escalation_state(pool, &card_id, &new_state).await?;
+
+            // R3: ambient, non-blocking cost-transparency note (never an interrupt).
+            crate::events::activity::emit_activity(crate::events::activity::goal_escalated(
+                &card_id,
+                &title,
+                state.current_tier.map(|t| t.as_str()),
+                to_tier.as_str(),
+                &model.model,
+                spent,
+            ));
+            tracing::info!(
+                target: "permagent::escalation",
+                goal = %title,
+                from = state.current_tier.map(|t| t.as_str()).unwrap_or("single-model"),
+                to = to_tier.as_str(),
+                model = %model.model,
+                session_spent_usd = spent,
+                "verify-loop escalation: auto-retrying the fix on a stronger configured model",
+            );
+
+            // R4 park-first-then-kill: move the goal out of in_progress to Ready
+            // (NON-incrementing — R1: escalation must not consume a normal attempt)
+            // FIRST, so the dying worker's completion tracker no-ops on it (the
+            // existing `in_progress` guard), then kill. Work is preserved (Ready is
+            // never reaped). The orchestrator's next dispatch pass re-dispatches the
+            // Ready goal — `dispatch_goal` reads the escalated state and routes it to
+            // the stronger model — exactly the Send-safe path a human-answered
+            // "keep going" unblock takes (dispatch_goal is `!Send`, so it can only
+            // run in the orchestrator's own context, never from this spawned task).
+            let attempt = current_attempt_count(&card.metadata_json);
+            goal_transition::requeue_goal(
+                pool,
+                &card_id,
+                decisions::ACTOR_SYSTEM,
+                attempt,
+                &format!(
+                    "verify-loop escalation: retry on a stronger model ({})",
+                    to_tier.as_str()
+                ),
+            )
+            .await
+            .map_err(|e| format!("verify-loop escalation requeue failed: {e}"))?;
+            if let Some(kill) = take_goal_worker(&card_id) {
+                kill.kill();
+            }
+            Ok(())
+        }
+
+        crate::cost_router::EscalationOutcome::Park(reason) => {
+            // Ceiling: fall back to the EXISTING work-preserving, human-gated park.
+            let signal = format!("verify failing the same way — {}", reason.label());
+            escalate_session_loop(pool, session_id, &signal, evidence).await?;
+            Ok(())
+        }
+    }
 }
 
 /// Process-global identifier for the current daemon lifecycle, minted once on
@@ -3351,6 +4436,382 @@ async fn try_complete_dead_worker_from_worktree(
 mod tests {
     use super::*;
 
+    // ── default_completion_checks (#456 seeding heuristic) ──────────────────
+
+    fn seeded_cmd(checks: &serde_json::Value) -> &str {
+        checks[0]["cmd"].as_str().unwrap()
+    }
+
+    #[test]
+    fn seed_uses_explicit_project_build_command_over_detection() {
+        let dir = tempfile::tempdir().unwrap();
+        // Detection would say npm, but explicit config must win.
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts": {"build": "vite build"}}"#,
+        )
+        .unwrap();
+        let checks = default_completion_checks(
+            &serde_json::json!({}),
+            &serde_json::json!({"build_command": "just build", "build_timeout_secs": 120}),
+            dir.path(),
+            true,
+        )
+        .expect("explicit build_command must seed");
+        assert_eq!(seeded_cmd(&checks), "just build");
+        assert_eq!(checks[0]["type"], "command_exit_zero");
+        assert_eq!(checks[0]["timeout_secs"], 120);
+    }
+
+    #[test]
+    fn seed_detects_npm_and_cargo_stacks() {
+        let npm = tempfile::tempdir().unwrap();
+        std::fs::write(
+            npm.path().join("package.json"),
+            r#"{"scripts": {"build": "tsc && vite build"}}"#,
+        )
+        .unwrap();
+        let checks = default_completion_checks(
+            &serde_json::json!({}),
+            &serde_json::json!({}),
+            npm.path(),
+            true,
+        )
+        .expect("npm build script must seed");
+        assert_eq!(seeded_cmd(&checks), "npm run build");
+        assert_eq!(checks[0]["timeout_secs"], DEFAULT_BUILD_CHECK_TIMEOUT_SECS);
+
+        let cargo = tempfile::tempdir().unwrap();
+        std::fs::write(cargo.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        let checks = default_completion_checks(
+            &serde_json::json!({}),
+            &serde_json::json!({}),
+            cargo.path(),
+            true,
+        )
+        .expect("Cargo project must seed");
+        assert_eq!(seeded_cmd(&checks), "cargo check");
+    }
+
+    #[test]
+    fn seed_never_overwrites_and_skips_non_code_cases() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\n").unwrap();
+
+        // Existing checks (user-authored or a retry re-dispatch) win.
+        assert!(default_completion_checks(
+            &serde_json::json!({"completion_checks": []}),
+            &serde_json::json!({"build_command": "make"}),
+            dir.path(),
+            true,
+        )
+        .is_none());
+
+        // Explicitly non-code goal types are never force-checked.
+        assert!(default_completion_checks(
+            &serde_json::json!({"goal_type": "prose"}),
+            &serde_json::json!({"build_command": "make"}),
+            dir.path(),
+            true,
+        )
+        .is_none());
+
+        // Not a git repo (no dispatch baseline) → not code-flavored.
+        assert!(default_completion_checks(
+            &serde_json::json!({}),
+            &serde_json::json!({"build_command": "make"}),
+            dir.path(),
+            false,
+        )
+        .is_none());
+
+        // Unknown stack and no explicit command → seed nothing, never guess.
+        let bare = tempfile::tempdir().unwrap();
+        assert!(default_completion_checks(
+            &serde_json::json!({}),
+            &serde_json::json!({}),
+            bare.path(),
+            true,
+        )
+        .is_none());
+
+        // package.json WITHOUT a build script must not seed npm.
+        let no_build = tempfile::tempdir().unwrap();
+        std::fs::write(
+            no_build.path().join("package.json"),
+            r#"{"dependencies": {"esbuild": "^0.20"}}"#,
+        )
+        .unwrap();
+        assert!(default_completion_checks(
+            &serde_json::json!({}),
+            &serde_json::json!({}),
+            no_build.path(),
+            true,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn seeded_checks_parse_against_the_checks_schema() {
+        // The seeded JSON must round-trip through the deny_unknown_fields
+        // CompletionCheck schema the verifier parses (verification/checks.rs
+        // mirrors this shape; goal_transition's serde types are the contract
+        // available from this crate — assert the wire shape directly).
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\n").unwrap();
+        let checks = default_completion_checks(
+            &serde_json::json!({}),
+            &serde_json::json!({}),
+            dir.path(),
+            true,
+        )
+        .unwrap();
+        let arr = checks.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        let obj = arr[0].as_object().unwrap();
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec!["cmd", "timeout_secs", "type"],
+            "exactly the fields command_exit_zero accepts (deny_unknown_fields)"
+        );
+    }
+
+    // ── checks_from_acceptance (spec-driven builds — extends #682) ──────────
+
+    /// Sorted JSON object keys, for asserting deny_unknown_fields wire parity.
+    fn sorted_keys(check: &serde_json::Value) -> Vec<String> {
+        let mut keys: Vec<String> = check.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+
+    fn map_one(criterion: &str) -> Option<serde_json::Value> {
+        // No build detection needed for non-command criteria — bare dir is fine.
+        let dir = tempfile::tempdir().unwrap();
+        criterion_to_check(criterion, &serde_json::json!({}), dir.path())
+    }
+
+    #[test]
+    fn build_criterion_maps_to_detected_command_exit_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\n").unwrap();
+        let check =
+            criterion_to_check("The project builds", &serde_json::json!({}), dir.path()).unwrap();
+        assert_eq!(check["type"], "command_exit_zero");
+        assert_eq!(check["cmd"], "cargo check");
+        assert_eq!(check["timeout_secs"], ACCEPTANCE_CMD_TIMEOUT_SECS);
+        assert_eq!(sorted_keys(&check), vec!["cmd", "timeout_secs", "type"]);
+    }
+
+    #[test]
+    fn build_criterion_honors_explicit_project_build_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let check = criterion_to_check(
+            "It compiles cleanly",
+            &serde_json::json!({"build_command": "just build"}),
+            dir.path(),
+        )
+        .unwrap();
+        assert_eq!(check["cmd"], "just build");
+    }
+
+    #[test]
+    fn build_criterion_skipped_when_stack_unknown() {
+        // "builds" with no explicit command and no detectable stack ⇒ never
+        // guess a command (would false-fail).
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            criterion_to_check("The binary builds", &serde_json::json!({}), dir.path()).is_none()
+        );
+    }
+
+    #[test]
+    fn explicit_backticked_command_with_success_verb_maps() {
+        let check = map_one("`cargo test` passes").unwrap();
+        assert_eq!(check["type"], "command_exit_zero");
+        assert_eq!(check["cmd"], "cargo test");
+
+        let check = map_one("the command `make lint` exits 0").unwrap();
+        assert_eq!(check["cmd"], "make lint");
+    }
+
+    #[test]
+    fn backticked_path_is_not_treated_as_a_command() {
+        // A backticked bare file path + "passes" is ambiguous — not a command.
+        assert!(map_one("`src/main.rs` passes").is_none());
+    }
+
+    #[test]
+    fn endpoint_status_maps_to_http_assert() {
+        let check = map_one("GET /health returns 200").unwrap();
+        assert_eq!(check["type"], "http_assert");
+        assert_eq!(check["method"], "GET");
+        assert_eq!(check["path"], "/health");
+        assert_eq!(check["status"], 200);
+        assert_eq!(
+            sorted_keys(&check),
+            vec!["method", "path", "status", "type"]
+        );
+
+        let check = map_one("the POST /api/tasks endpoint responds with 201").unwrap();
+        assert_eq!(check["method"], "POST");
+        assert_eq!(check["path"], "/api/tasks");
+        assert_eq!(check["status"], 201);
+    }
+
+    #[test]
+    fn http_assert_skips_methods_the_verifier_cannot_run() {
+        // checks.rs run_http_check only allows GET/HEAD/POST.
+        assert!(map_one("DELETE /users/1 returns 204").is_none());
+        assert!(map_one("PUT /config responds 200").is_none());
+    }
+
+    #[test]
+    fn status_extraction_rejects_number_glued_to_letters() {
+        assert_eq!(extract_status_code("returns 200."), Some(200));
+        assert_eq!(extract_status_code("code 404,"), Some(404));
+        assert_eq!(extract_status_code("responds within 200ms"), None);
+        assert_eq!(extract_status_code("HTTP 1200 is not a status"), None);
+        assert_eq!(extract_status_code("no numbers here"), None);
+    }
+
+    #[test]
+    fn file_criterion_maps_to_file_exists() {
+        let check = map_one("The file src/config.rs exists").unwrap();
+        assert_eq!(check["type"], "file_exists");
+        assert_eq!(check["path"], "src/config.rs");
+        assert_eq!(sorted_keys(&check), vec!["path", "type"]);
+
+        // Root-level file with an extension, no slash.
+        let check = map_one("A README.md is created at the repo root").unwrap();
+        assert_eq!(check["path"], "README.md");
+    }
+
+    #[test]
+    fn no_marker_in_named_file_maps_to_grep_absent() {
+        let check = map_one("No TODO comments remain in src/lib.rs").unwrap();
+        assert_eq!(check["type"], "grep_absent");
+        assert_eq!(check["pattern"], "TODO");
+        assert_eq!(check["paths"], serde_json::json!(["src/lib.rs"]));
+        assert_eq!(sorted_keys(&check), vec!["paths", "pattern", "type"]);
+    }
+
+    #[test]
+    fn grep_absent_escapes_regex_metacharacters_in_token() {
+        let check = map_one("no `unwrap(` left in src/engine.rs").unwrap();
+        assert_eq!(check["type"], "grep_absent");
+        // `(` must be escaped so the pattern matches the literal token.
+        assert_eq!(check["pattern"], "unwrap\\(");
+    }
+
+    #[test]
+    fn pathless_absence_criterion_is_skipped() {
+        // "no TODO left" names no file — grep_absent has nothing to read, so we
+        // skip rather than invent a path.
+        assert!(map_one("No TODO comments left anywhere").is_none());
+    }
+
+    #[test]
+    fn unmappable_criterion_is_skipped() {
+        assert!(map_one("The UI feels responsive and looks clean").is_none());
+        assert!(map_one("Users are happy with the result").is_none());
+    }
+
+    #[test]
+    fn checks_from_acceptance_reads_structured_field_and_skips_unmappable() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\n").unwrap();
+        let card_meta = serde_json::json!({
+            "acceptance_criteria": [
+                "The project builds",
+                "GET /health returns 200",
+                "docs/guide.md exists",
+                "The design feels polished",  // unmappable → skipped
+            ]
+        });
+        let checks =
+            checks_from_acceptance(&card_meta, "", &serde_json::json!({}), dir.path()).unwrap();
+        let arr = checks.as_array().unwrap();
+        assert_eq!(arr.len(), 3, "three mappable criteria, one skipped");
+        assert_eq!(arr[0]["type"], "command_exit_zero");
+        assert_eq!(arr[1]["type"], "http_assert");
+        assert_eq!(arr[2]["type"], "file_exists");
+    }
+
+    #[test]
+    fn checks_from_acceptance_none_when_no_criteria_or_none_mappable() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(checks_from_acceptance(
+            &serde_json::json!({}),
+            "",
+            &serde_json::json!({}),
+            dir.path()
+        )
+        .is_none());
+        // Criteria present but none mechanically checkable.
+        let card_meta = serde_json::json!({"acceptance_criteria": ["Looks nice", "Feels fast"]});
+        assert!(
+            checks_from_acceptance(&card_meta, "", &serde_json::json!({}), dir.path()).is_none()
+        );
+    }
+
+    #[test]
+    fn checks_from_acceptance_parses_description_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let description = "Do the work.\n\n\
+             ## Acceptance Criteria\n\
+             - `README.md` exists\n\
+             - No FIXME remains in src/main.rs\n\
+             \n\
+             ## Notes\n\
+             - this line is not a criterion (endpoint /x returns 500)\n";
+        let checks = checks_from_acceptance(
+            &serde_json::json!({}),
+            description,
+            &serde_json::json!({}),
+            dir.path(),
+        )
+        .unwrap();
+        let arr = checks.as_array().unwrap();
+        // The two items under the heading map; the item under "## Notes" is
+        // outside the section and ignored.
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["type"], "file_exists");
+        assert_eq!(arr[0]["path"], "README.md");
+        assert_eq!(arr[1]["type"], "grep_absent");
+        assert_eq!(arr[1]["pattern"], "FIXME");
+    }
+
+    #[test]
+    fn collect_acceptance_dedupes_across_sources() {
+        let card_meta = serde_json::json!({"acceptance_criteria": ["A builds", "A builds"]});
+        let out = collect_acceptance_criteria(&card_meta, "");
+        assert_eq!(out, vec!["A builds".to_string()]);
+    }
+
+    #[test]
+    fn strip_list_marker_handles_bullets_checkboxes_and_numbers() {
+        assert_eq!(strip_list_marker("- foo").as_deref(), Some("foo"));
+        assert_eq!(strip_list_marker("* bar").as_deref(), Some("bar"));
+        assert_eq!(strip_list_marker("- [ ] task").as_deref(), Some("task"));
+        assert_eq!(strip_list_marker("1. first").as_deref(), Some("first"));
+        assert_eq!(strip_list_marker("12) twelfth").as_deref(), Some("twelfth"));
+        assert_eq!(strip_list_marker("not a list item"), None);
+    }
+
+    #[test]
+    fn looks_like_path_excludes_urls_and_absolute_paths() {
+        assert!(looks_like_path("src/main.rs"));
+        assert!(looks_like_path("README.md"));
+        assert!(looks_like_path("http.rs")); // a file that happens to start "http"
+        assert!(!looks_like_path("https://example.com/x"));
+        assert!(!looks_like_path("/health")); // server path, not a repo file
+        assert!(!looks_like_path("e.g.")); // ".g" is not a code extension
+        assert!(!looks_like_path("word"));
+    }
+
     async fn test_pool() -> sqlx::Pool<sqlx::Sqlite> {
         use crate::session::spectral_schema::init_spectral_db;
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -3403,6 +4864,251 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    /// Stamp a goal card with the running worker's session id (what dispatch
+    /// records), so the runaway-loop escalation can map session → goal.
+    async fn stamp_worker_session(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        card_id: &str,
+        session_id: &str,
+    ) {
+        let card = cards::get_card(pool, card_id).await.unwrap().unwrap();
+        let mut meta = card.metadata_json.as_object().cloned().unwrap();
+        meta.insert(
+            "worker_session_id".to_string(),
+            serde_json::json!(session_id),
+        );
+        let meta_str = serde_json::to_string(&serde_json::Value::Object(meta)).unwrap();
+        sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+            .bind(&meta_str)
+            .bind(card_id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    async fn open_unblock_count(pool: &sqlx::Pool<sqlx::Sqlite>, goal_id: &str) -> i64 {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM decisions WHERE goal_id = ? AND kind = 'unblock'",
+        )
+        .bind(goal_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn runaway_escalation_raises_stuck_and_parks_preserving_work() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_worker_session(&pool, &card.id, "sess-loop").await;
+
+        let decision_id = escalate_session_loop(
+            &pool,
+            "sess-loop",
+            "same action failing the same way",
+            "- developer__shell → error\n- developer__shell → error",
+        )
+        .await
+        .unwrap()
+        .expect("a goal-mapped session must raise a decision");
+
+        // Parked, not cancelled → the worktree is never reaped (work preserved).
+        let after = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &after.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("triage"),
+            "L3/L4 must park (work-preserving), never terminal-cancel"
+        );
+        assert_eq!(
+            after.metadata_json.get("needs_human_attention"),
+            Some(&serde_json::Value::Bool(true))
+        );
+
+        // An open unblock/Stuck decision surfaces the loop.
+        let dec = decisions::get_decision(&pool, &decision_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(dec.kind, "unblock");
+        assert_eq!(dec.status, "open");
+        assert_eq!(dec.goal_id.as_deref(), Some(card.id.as_str()));
+        let payload: decisions::UnblockPayload =
+            serde_json::from_value(dec.payload.clone()).unwrap();
+        assert_eq!(payload.reason, decisions::UnblockReason::Stuck);
+    }
+
+    #[tokio::test]
+    async fn runaway_escalation_dedupes_onto_existing_open_decision() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_worker_session(&pool, &card.id, "sess-loop").await;
+
+        // An open unblock decision already exists for this goal.
+        let existing = decisions::create_decision(
+            &pool,
+            decisions::NewDecision {
+                kind: "unblock".to_string(),
+                goal_id: Some(card.id.clone()),
+                project_id: Some(card.project_id.clone()),
+                headline: Some("Existing unblock for the test goal is already open".to_string()),
+                detail: Some("prior escalation".to_string()),
+                payload: serde_json::to_value(decisions::UnblockPayload {
+                    reason: decisions::UnblockReason::Stuck,
+                    spent: None,
+                    cap: None,
+                })
+                .unwrap(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let got = escalate_session_loop(&pool, "sess-loop", "repeated identical call", "evidence")
+            .await
+            .unwrap()
+            .expect("still returns the open decision id");
+
+        assert_eq!(got, existing.id, "must dedupe onto the existing decision");
+        assert_eq!(
+            open_unblock_count(&pool, &card.id).await,
+            1,
+            "a second trigger must not stack a duplicate decision"
+        );
+    }
+
+    #[tokio::test]
+    async fn runaway_escalation_noop_for_unknown_session() {
+        let pool = test_pool().await;
+        let _card = setup_goal_in_state(&pool, "in_progress", 1).await;
+
+        let got = escalate_session_loop(&pool, "no-such-session", "repeated identical call", "e")
+            .await
+            .unwrap();
+        assert!(got.is_none(), "an interactive/non-goal session is a no-op");
+    }
+
+    // ── Live verifier-driven escalation (the #739 ACTION) ────────────────────
+
+    #[tokio::test]
+    async fn verify_loop_single_model_goal_parks_never_swaps() {
+        // A goal with no escalation state is single-model (no configured ladder).
+        // The Nth identical verify failure must NOT inject a stronger model — the
+        // load-bearing no-default rule — it PARKS (work-preserving, human-gated),
+        // exactly like every other loop signal.
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_worker_session(&pool, &card.id, "sess-verify").await;
+
+        escalate_verify_fix_loop(
+            &pool,
+            "sess-verify",
+            3, // at the S6 escalate threshold
+            "- verify → error\n- verify → error",
+            Some("assertion failed: left != right"),
+        )
+        .await
+        .unwrap();
+
+        let after = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &after.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("triage"),
+            "single-model verify-loop parks (no swap)"
+        );
+        assert_eq!(
+            open_unblock_count(&pool, &card.id).await,
+            1,
+            "parks with exactly one unblock decision"
+        );
+        // Nothing climbed: no escalated state was recorded.
+        let escalated = after
+            .metadata_json
+            .as_object()
+            .and_then(crate::cost_router::GoalEscalationState::from_metadata)
+            .map(|s| s.is_escalated())
+            .unwrap_or(false);
+        assert!(!escalated, "a single-model park must not record a climb");
+    }
+
+    #[tokio::test]
+    async fn verify_loop_below_threshold_keeps_fixing_no_park() {
+        // Below the consecutive-same-failure threshold the current model keeps
+        // trying — no park, no decision, goal stays in_progress.
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_worker_session(&pool, &card.id, "sess-verify").await;
+
+        escalate_verify_fix_loop(&pool, "sess-verify", 1, "evidence", None)
+            .await
+            .unwrap();
+
+        let after = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &after.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("in_progress"),
+            "below threshold: keep fixing, never park"
+        );
+        assert_eq!(open_unblock_count(&pool, &card.id).await, 0);
+    }
+
+    #[tokio::test]
+    async fn verify_loop_noop_for_unknown_session() {
+        let pool = test_pool().await;
+        let _card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        // No goal maps to this session → a clean no-op (never errors).
+        escalate_verify_fix_loop(&pool, "no-such-session", 3, "e", None)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn escalation_state_round_trips_on_the_goal_card() {
+        // The per-goal climb + carry-forward handoff persist on the card so the
+        // state survives the requeue-and-re-dispatch a swap performs (a new
+        // worker/session is minted, so in-memory state would be lost). The
+        // dispatch path keys off `is_escalated()` to route to the climbed tier.
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+
+        let state = crate::cost_router::GoalEscalationState::escalated_to(
+            crate::cost_router::Tier::CheapCloud,
+            1,
+            "prior diff + verify failure".to_string(),
+        );
+        persist_escalation_state(&pool, &card.id, &state)
+            .await
+            .unwrap();
+
+        let after = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let read = crate::cost_router::GoalEscalationState::from_metadata(
+            after.metadata_json.as_object().unwrap(),
+        )
+        .expect("escalation state persisted");
+        assert_eq!(read, state);
+        assert!(
+            read.is_escalated(),
+            "escalated goal runs the climbed tier's model"
+        );
+        assert_eq!(
+            read.current_tier,
+            Some(crate::cost_router::Tier::CheapCloud)
+        );
+        assert_eq!(read.handoff.as_deref(), Some("prior diff + verify failure"));
     }
 
     #[tokio::test]

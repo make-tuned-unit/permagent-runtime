@@ -15,15 +15,22 @@ export function SkillEditor({ skill, onClose }: SkillEditorProps) {
   const [name, setName] = useState(skill.name);
   const [description, setDescription] = useState(skill.description || '');
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const hasChanges = name !== skill.name || description !== (skill.description || '');
 
   const handleSave = async () => {
     if (!hasChanges || !name.trim()) return;
     setSaving(true);
-    await updateSkill(skill.id, { name: name.trim(), description: description.trim() });
+    setError(null);
+    const ok = await updateSkill(skill.id, { name: name.trim(), description: description.trim() });
     setSaving(false);
-    onClose();
+    // Only close if it actually persisted; otherwise keep the edits and tell the user.
+    if (ok) {
+      onClose();
+    } else {
+      setError('Could not save. Please try again.');
+    }
   };
 
   const inputStyle: React.CSSProperties = {
@@ -100,6 +107,9 @@ export function SkillEditor({ skill, onClose }: SkillEditorProps) {
           Cancel
         </button>
       </div>
+      {error && (
+        <p className="text-[10px] text-red-400" style={{ fontFamily: font.mono }}>{error}</p>
+      )}
     </div>
   );
 }

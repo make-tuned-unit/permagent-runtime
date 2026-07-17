@@ -49,7 +49,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -58,13 +58,14 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '22'
 
-      # The bundle embeds the daemon as a sidecar + the MCP runtime. This is the
-      # existing `build:all` chain minus the final tauri build (tauri-action
-      # does that): icons → command-center UI → daemon → sidecar → mcp-runtime.
+      # The bundle embeds the daemon as a sidecar + the MCP runtime + the local
+      # Whisper dictation model. This is the existing `build:all` chain minus the
+      # final tauri build (tauri-action does that): icons → command-center UI →
+      # daemon → sidecar → mcp-runtime → whisper-model.
       - name: Stage sidecar + resources
         working-directory: ui/desktop
         run: |
@@ -74,6 +75,7 @@ jobs:
           npm run build:daemon
           npm run build:sidecar
           npm run build:mcp-runtime
+          npm run build:whisper-model
 
       - name: Build, sign, and publish the bundle
         uses: tauri-apps/tauri-action@v0

@@ -8,6 +8,9 @@
 // (explicit scope fence, bible §4).
 
 import { STAIR, MEZZ_INNER_R, MEZZ_OUTER_R, MEZZ_HEIGHT } from '../areas/hall/MezzanineLibrary';
+import type { Engagement } from './poses';
+
+export type { Engagement } from './poses';
 
 export interface Waypoint {
   x: number;
@@ -18,8 +21,6 @@ export interface Waypoint {
   /** Pause at this waypoint before continuing to the next one. */
   pauseMs?: number;
 }
-
-export type Engagement = 'none' | 'seated' | 'standing' | 'tending';
 
 export interface MotionState {
   x: number;

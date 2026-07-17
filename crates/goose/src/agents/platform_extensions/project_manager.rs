@@ -174,6 +174,112 @@ pub const BUILD_TAB_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         teaching: &[],
     };
 
+/// Self-knowledge descriptor for the **Permagent coding harness** (#719/#720) —
+/// the third Build-tab launch option, beside the Claude and Codex CLIs, that
+/// runs Permagent's OWN internal agent loop (`permagent run --recipe
+/// permagent-coding`) configured for software engineering. Co-located with
+/// [`BUILD_TAB_FEATURE`] because the Build tab is where the user launches it;
+/// aggregated by `crate::agents::self_knowledge::SURFACE_DESCRIPTORS`. Static —
+/// the capability is described without claiming a live session status. The
+/// bundled sub-capabilities (reliable edit tool #711, structured search #718,
+/// ranked-tags repo-map #712, and tiered routing + cost meter — see
+/// [`crate::cost_router`]) are indexed inside this one descriptor rather than as
+/// standalone surfaces: they are the harness's internals, not independent views
+/// the user opens.
+pub const CODING_HARNESS_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "coding_harness",
+        display_name: "Permagent coding harness",
+        category: crate::agents::self_knowledge::FeatureCategory::Surface,
+        what_it_does:
+            "Permagent's own internal coding agent, launched from the Build tab as the third \
+             option beside the Claude and Codex CLIs — it runs your own agent loop (permagent run \
+             --recipe permagent-coding) configured for software engineering, not an external \
+             tool. It is provider-agnostic (it uses whichever model the operator configured) and \
+             cost-optimized: it bundles a reliable edit tool that tolerates whitespace drift and \
+             refuses any edit that would introduce a syntax error, a token-efficient structured \
+             search, the analyze code-structure tool, and a ranked-tags repo-map auto-loaded into \
+             its context for cheap orientation, and it verifies its own work by building and \
+             running tests; on a substantive change, once its own tests pass an independent, \
+             different-model reviewer adversarially checks the diff — for correctness, security, \
+             spec-fit, and test-integrity — before it calls the work done, all under \
+             runaway-loop safety and a live cost meter always on",
+        why_it_matters:
+            "It is the answer when the user says 'build this with the Permagent harness': you \
+             launch it from the Build tab and it codes with your own loop, keeping the expensive \
+             main reasoning on one stable model while offloading mechanical, latency-tolerant \
+             sub-work to cheaper tiers — down to a free local model — and escalating a sub-task \
+             only when the cheap tier stumbles, so it is economical without you managing any of \
+             it. Reach for it, not a one-shot shell, whenever the user wants Permagent itself to \
+             write, edit, or fix code in a project: open the Build tab, launch the Permagent \
+             option, and let it work in the terminal where the user can watch and take over",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        teaching: &[
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Launch the harness from the Build tab",
+                body: "Take the user to the Build tab and point out the third launch option on a \
+                       project's chip — 'Permagent', beside Claude and Codex. Explain that unlike \
+                       those two (which drive external CLIs), this one runs Permagent's own \
+                       coding loop locally, provider-agnostic and cost-optimized, and opens in \
+                       the same project-aware terminal so they can watch and take over.",
+                open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                    tab: "Build",
+                    section: None,
+                }),
+                confirm: None,
+            },
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Hand it a task, let it verify itself",
+                body: "Offer to build something small end-to-end with it — 'write a simple \
+                       game', fix a failing test, add a function. Explain what it will do on its \
+                       own: read a repo-map for orientation, search and analyze before editing, \
+                       make the smallest change, then build and run tests to verify — routing the \
+                       cheap mechanical steps to cheaper models while the hard reasoning stays on \
+                       a strong one, all under runaway-loop safety and a live cost meter.",
+                open_surface: None,
+                confirm: None,
+            },
+        ],
+    };
+
+/// Self-knowledge descriptor for the Grow tab — the per-project go-to-market
+/// workspace. Static surface; teaching steps drive onboarding. Closes the
+/// coverage gap where Henry could not describe or guide the user to Grow.
+pub const GROW_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "grow",
+        display_name: "Grow tab",
+        category: crate::agents::self_knowledge::FeatureCategory::Surface,
+        what_it_does: "A per-project go-to-market workspace: strategy pillars (audience, value \
+             proposition, positioning, channels, content) you think through with the user, a \
+             content calendar of drafted posts, and a growth view — with any post or outreach \
+             you draft written in a crisp human voice, never chatbot boilerplate",
+        why_it_matters:
+            "It is where the user takes a project to market with you. When they want to reach an \
+             audience, plan a launch, or draft a post, bring them here and draft it in their \
+             voice — marketing copy the user publishes must not read like AI wrote it",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        teaching: &[
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Open Grow",
+                body: "Show the user the go-to-market workspace for a project — where strategy, \
+                       content, and launch planning live.",
+                open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                    tab: "Grow",
+                    section: None,
+                }),
+                confirm: None,
+            },
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Draft something real",
+                body: "Offer to draft a launch post or outreach message for their project, in a \
+                       sharp human voice, then show them it landed in the content calendar.",
+                open_surface: None,
+                confirm: None,
+            },
+        ],
+    };
+
 /// Self-knowledge descriptor for the Projects tab itself (#471). Each project
 /// opens into a workspace with two lenses: an Overview dashboard (summary, key
 /// facts, links, live task status) and the Kanban board. Static — always-on
@@ -368,6 +474,7 @@ impl ProjectManagerClient {
             site_url: args.get("site_url").map(|v| v.as_str().map(String::from)),
             repo_url: args.get("repo_url").map(|v| v.as_str().map(String::from)),
             notes: args.get("notes").and_then(|v| v.as_str()).map(String::from),
+            metadata_json: None,
         };
         let updated = projects::update_project(&pool, &project.id, input)
             .await?

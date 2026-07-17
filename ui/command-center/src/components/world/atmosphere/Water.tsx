@@ -44,7 +44,7 @@ const CHANNEL_FROM = new THREE.Vector3(0, 0.05, ROTUNDA_RADIUS - 3.5);
 const CHANNEL_TO = new THREE.Vector3(0, 0.05, 2);
 
 /** Coarse, slow map from real memory count → water "fullness" in [0,1]. */
-function fullnessFromMemories(count: number): number {
+export function fullnessFromMemories(count: number): number {
   if (count <= 0) return 0;
   // log-ish: 1 memory already reads; saturates around ~200 memories (months).
   return Math.min(1, Math.log10(count + 1) / Math.log10(200));
@@ -162,7 +162,7 @@ function River({ reduceMotion }: { reduceMotion: boolean }) {
  * geometry; their presence count is the only "animation" and it changes on the
  * slow graph poll, so no per-frame work and no reduceMotion branch needed.
  */
-const GROVE_SLOTS: { x: number; z: number }[] = [
+export const GROVE_SLOTS: { x: number; z: number }[] = [
   { x: ROTUNDA_RADIUS - 4, z: -ROTUNDA_RADIUS + 6 },
   { x: -ROTUNDA_RADIUS + 6, z: -ROTUNDA_RADIUS + 5 },
   { x: -ROTUNDA_RADIUS + 5, z: ROTUNDA_RADIUS - 6 },

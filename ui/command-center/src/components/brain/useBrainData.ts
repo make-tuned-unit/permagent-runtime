@@ -20,20 +20,25 @@ export function useBrainData(searchQuery = '') {
   const [data, setData] = useState<BrainGraph | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const intervalRef = useRef<ReturnType<typeof setInterval>>();
   const queryRef = useRef(searchQuery);
   queryRef.current = searchQuery;
+  // Monotonic request sequence — a response only lands if no newer request has
+  // started since, so a slow stale reply can never clobber a fresher graph.
+  const seqRef = useRef(0);
 
   const fetchGraph = useCallback(async () => {
+    const seq = ++seqRef.current;
     try {
       const q = queryRef.current.trim();
       const endpoint = q
         ? `/api/brain/graph?q=${encodeURIComponent(q)}`
         : '/api/brain/graph';
       const result = await apiFetch<BrainGraph>(endpoint);
+      if (seq !== seqRef.current) return;
       setData(result);
       setError(null);
     } catch (e) {
+      if (seq !== seqRef.current) return;
       // Only surface the error when we have nothing to show — a failed poll
       // while data is already on screen keeps the stale graph, not an alarm.
       setError(e instanceof Error ? e.message : 'Could not reach the Brain');
@@ -41,15 +46,13 @@ export function useBrainData(searchQuery = '') {
     setLoading(false);
   }, []);
 
+  // Single query-keyed effect: fetch immediately on mount and whenever the
+  // query changes, and poll on one interval. (Previously a mount effect and a
+  // query effect both fired on mount — a double-fetch race.)
   useEffect(() => {
     fetchGraph();
-    intervalRef.current = setInterval(fetchGraph, 60_000);
-    return () => clearInterval(intervalRef.current);
-  }, [fetchGraph]);
-
-  // Re-fetch when search query changes
-  useEffect(() => {
-    fetchGraph();
+    const interval = setInterval(fetchGraph, 60_000);
+    return () => clearInterval(interval);
   }, [searchQuery, fetchGraph]);
 
   return { data, loading, error, refresh: fetchGraph };

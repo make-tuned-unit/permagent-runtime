@@ -41,9 +41,9 @@ export function MomentCalibration({ onAdvance }: Props) {
             <button key={p.id} onClick={() => setSelected(p.id)}
               style={{
                 padding: '16px 14px', borderRadius: 12, cursor: 'pointer',
-                background: active ? 'rgba(0,213,255,0.10)' : 'rgba(255,255,255,0.02)',
-                border: active ? `1px solid ${colors.cyan}` : '1px solid rgba(255,255,255,0.06)',
-                boxShadow: active ? '0 0 0 3px rgba(0,213,255,0.12)' : 'none',
+                background: active ? colors.cyanSoft : colors.inputBg,
+                border: active ? `1px solid ${colors.cyan}` : `1px solid ${colors.border}`,
+                boxShadow: active ? `0 0 0 3px ${colors.cyanGlow}` : 'none',
                 textAlign: 'left', transition: `all 200ms ${ease.out}`,
               }}>
               <div style={{ fontFamily: font.body, fontSize: 14, fontWeight: 600, color: colors.text, marginBottom: 4 }}>

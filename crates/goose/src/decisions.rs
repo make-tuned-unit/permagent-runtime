@@ -24,7 +24,10 @@ pub const ACTOR_HENRY: &str = "henry-policy";
 pub const ACTOR_SYSTEM: &str = "system";
 
 const VALID_ACTORS: &[&str] = &[ACTOR_JESSE, ACTOR_HENRY, ACTOR_SYSTEM];
-const VALID_ANSWERS: &[&str] = &["approve", "reject", "choice", "input"];
+// `edit` = approve-with-edits: an acceptance that ALSO carries a revised draft
+// in `answer_input` (the original lives in `payload.draft`). The delta is
+// captured as Brain training by `decision_inbox::learn` (edit-as-training).
+const VALID_ANSWERS: &[&str] = &["approve", "reject", "choice", "input", "edit"];
 
 // ── Typed payloads (S2) ─────────────────────────────────────────────────────
 
@@ -104,6 +107,80 @@ pub struct AutomationProposalPayload {
     pub occurrence_count: u64,
     #[serde(default)]
     pub exemplars: Vec<String>,
+    /// The agent-drafted proposal text shown to the user, carried so an
+    /// approve-with-edits (`answer='edit'`) can diff it against the user's
+    /// revision (edit-as-training, `decision_inbox::learn`). Optional: the
+    /// anti-nag flywheel and plain approve/reject never read it.
+    #[serde(default)]
+    pub draft: Option<String>,
+}
+
+/// One proposed field in an `enrichment_proposal` (#495 slice 4). The
+/// `source_url` is REQUIRED — verifiability is the point of bounding the
+/// Enricher to structured fields.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProposedEnrichmentField {
+    /// Must be one of [`crate::people::ENRICHABLE_FIELD_NAMES`].
+    pub field_name: String,
+    pub value: String,
+    /// The page where the value was verified.
+    pub source_url: String,
+}
+
+/// Payload for `kind='enrichment_proposal'` — the Enricher (#495 slice 4)
+/// researched a person and proposes structured field values. Review-gated
+/// (Approach B): the approve effect writes each field to the person's graph
+/// entity via `set_entity_field` with `FieldSource::Enriched`; a reject
+/// records and writes nothing. Manual-provenance fields are never overwritten
+/// (enforced in Spectral's store, re-checked at apply time).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnrichmentProposalPayload {
+    /// Display name at proposal time (for the human reading the inbox).
+    pub person_name: String,
+    /// Bare 64-hex Spectral `EntityId` of the person's graph node — the write
+    /// target, resolved at proposal time so the approve path never re-resolves.
+    pub graph_entity_id: String,
+    /// Directory row key (`people.entity_uuid`), when known.
+    #[serde(default)]
+    pub entity_uuid: Option<String>,
+    pub fields: Vec<ProposedEnrichmentField>,
+}
+
+/// Structural checks beyond serde for an enrichment proposal: at least one
+/// field, every field name on the enrichable allowlist, non-empty values and
+/// source URLs, and a well-formed 64-hex graph entity id. Failing any of
+/// these stores the request as `kind='malformed'` — never coerced (S2).
+fn validate_enrichment_payload(p: &EnrichmentProposalPayload) -> Result<(), String> {
+    if p.fields.is_empty() {
+        return Err("enrichment_proposal requires at least one field".to_string());
+    }
+    if p.graph_entity_id.len() != 64 || !p.graph_entity_id.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!(
+            "graph_entity_id must be a bare 64-hex EntityId, got '{}'",
+            p.graph_entity_id
+        ));
+    }
+    for f in &p.fields {
+        if !crate::people::ENRICHABLE_FIELD_NAMES.contains(&f.field_name.as_str()) {
+            return Err(format!(
+                "field '{}' is not enrichable (allowed: {})",
+                f.field_name,
+                crate::people::ENRICHABLE_FIELD_NAMES.join(", ")
+            ));
+        }
+        if f.value.trim().is_empty() {
+            return Err(format!("field '{}' has an empty value", f.field_name));
+        }
+        if f.source_url.trim().is_empty() {
+            return Err(format!(
+                "field '{}' is missing its source_url",
+                f.field_name
+            ));
+        }
+    }
+    Ok(())
 }
 
 // ── Decision rows ───────────────────────────────────────────────────────────
@@ -213,6 +290,7 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
         "choice",
         "risk_gate",
         "automation_proposal",
+        "enrichment_proposal",
     ]
     .contains(&req.kind.as_str())
     {
@@ -255,6 +333,12 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
             serde_json::from_value::<AutomationProposalPayload>(req.payload.clone())
                 .map(|_| ())
                 .map_err(|e| e.to_string())
+        }
+        "enrichment_proposal" => {
+            match serde_json::from_value::<EnrichmentProposalPayload>(req.payload.clone()) {
+                Ok(p) => validate_enrichment_payload(&p),
+                Err(e) => Err(e.to_string()),
+            }
         }
         _ => unreachable!("kind validated above"),
     };
@@ -648,7 +732,7 @@ pub async fn answer_decision(
     }
     if !VALID_ANSWERS.contains(&answer.answer.as_str()) {
         return Err(AnswerError::Invalid(format!(
-            "answer must be one of approve|reject|choice|input, got '{}'",
+            "answer must be one of approve|reject|choice|input|edit, got '{}'",
             answer.answer
         )));
     }
@@ -709,6 +793,12 @@ pub async fn answer_decision(
             if answer.answer == "input" && answer.input_text.as_deref().unwrap_or("").is_empty() {
                 return Err(AnswerError::Invalid(
                     "answer 'input' requires input_text".to_string(),
+                ));
+            }
+            // approve-with-edits carries the revised draft in input_text.
+            if answer.answer == "edit" && answer.input_text.as_deref().unwrap_or("").is_empty() {
+                return Err(AnswerError::Invalid(
+                    "answer 'edit' requires input_text (the revised draft)".to_string(),
                 ));
             }
         }
@@ -888,7 +978,13 @@ pub async fn record_effect_outcome(
     decision: &Decision,
     outcome: &str,
 ) -> Result<(), String> {
-    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    // BEGIN IMMEDIATE: append_audit_tx reads the audit-chain head before its
+    // INSERT, so this write-back would hit an un-retryable BUSY lock-upgrade if a
+    // concurrent writer commits in between; take the write lock up front.
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| e.to_string())?;
     append_audit_tx(
         &mut tx,
         &decision.id,
@@ -1137,6 +1233,98 @@ mod tests {
         assert_eq!(d.tier, 2, "unknown action_class must fail closed");
     }
 
+    // ── Enrichment proposals (#495 slice 4) ──
+
+    fn enrichment_fields(fields: serde_json::Value) -> NewDecision {
+        NewDecision {
+            kind: "enrichment_proposal".to_string(),
+            headline: Some("Approve enriched details for Jane Doe".to_string()),
+            detail: Some("linkedin: … (source: …)".to_string()),
+            payload: serde_json::json!({
+                "person_name": "Jane Doe",
+                "graph_entity_id": "ab".repeat(32),
+                "entity_uuid": "0197-fake",
+                "fields": fields,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn enrichment_proposal_is_valid_and_user_only() {
+        let pool = test_pool().await;
+        let req = enrichment_fields(serde_json::json!([
+            {
+                "field_name": "linkedin",
+                "value": "https://www.linkedin.com/in/janedoe",
+                "source_url": "https://www.linkedin.com/in/janedoe"
+            },
+            {
+                "field_name": "company",
+                "value": "Acme Corp",
+                "source_url": "https://acme.example/about"
+            }
+        ]));
+        let d = create_decision(&pool, req).await.unwrap();
+        assert_eq!(
+            d.kind, "enrichment_proposal",
+            "a real proposal, not coerced"
+        );
+        assert_eq!(d.tier, 2, "no seeded class → user-only (fail-closed)");
+        assert_eq!(d.status, "open");
+        assert_eq!(
+            d.payload["fields"][1]["value"],
+            serde_json::json!("Acme Corp")
+        );
+    }
+
+    #[tokio::test]
+    async fn enrichment_proposal_rejects_manual_only_field() {
+        let pool = test_pool().await;
+        // email is manual-only — OFF LIMITS to enrichment by ruling.
+        let req = enrichment_fields(serde_json::json!([
+            {
+                "field_name": "email",
+                "value": "jane@example.com",
+                "source_url": "https://acme.example/team"
+            }
+        ]));
+        let d = create_decision(&pool, req).await.unwrap();
+        assert_eq!(d.kind, "malformed", "manual-only field must be rejected");
+    }
+
+    #[tokio::test]
+    async fn enrichment_proposal_rejects_empty_fields_and_missing_source() {
+        let pool = test_pool().await;
+        let empty = enrichment_fields(serde_json::json!([]));
+        let d = create_decision(&pool, empty).await.unwrap();
+        assert_eq!(d.kind, "malformed", "zero fields is not a proposal");
+
+        let no_source = enrichment_fields(serde_json::json!([
+            { "field_name": "job_title", "value": "CTO", "source_url": "  " }
+        ]));
+        let d = create_decision(&pool, no_source).await.unwrap();
+        assert_eq!(d.kind, "malformed", "source_url is required per field");
+    }
+
+    #[tokio::test]
+    async fn enrichment_proposal_rejects_bad_entity_id_and_unknown_payload_fields() {
+        let pool = test_pool().await;
+        let mut bad_id = enrichment_fields(serde_json::json!([
+            { "field_name": "company", "value": "Acme", "source_url": "https://a.example" }
+        ]));
+        bad_id.payload["graph_entity_id"] = serde_json::json!("not-hex");
+        let d = create_decision(&pool, bad_id).await.unwrap();
+        assert_eq!(d.kind, "malformed", "graph_entity_id must be 64-hex");
+
+        let mut extra = enrichment_fields(serde_json::json!([
+            { "field_name": "company", "value": "Acme", "source_url": "https://a.example" }
+        ]));
+        extra.payload["bogus"] = serde_json::json!(true);
+        let d = create_decision(&pool, extra).await.unwrap();
+        assert_eq!(d.kind, "malformed", "deny_unknown_fields holds");
+    }
+
     // ── S5: tier gates on answering ──
 
     #[tokio::test]
@@ -1258,6 +1446,114 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(answered.answer_choice_id.as_deref(), Some("blue"));
+    }
+
+    // ── approve-with-edits (edit-as-training) ──
+
+    fn draft_proposal() -> NewDecision {
+        NewDecision {
+            kind: "automation_proposal".to_string(),
+            project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+            headline: Some("Automate your morning git sync?".to_string()),
+            detail: Some("You've run `git status && git pull` 3 times.".to_string()),
+            payload: serde_json::json!({
+                "normalized_command": "git status && git pull",
+                "occurrence_count": 3,
+                "exemplars": ["git status && git pull"],
+                "draft": "git status && git pull",
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn draft_field_is_accepted_not_coerced_to_malformed() {
+        let pool = test_pool().await;
+        let d = create_decision(&pool, draft_proposal()).await.unwrap();
+        assert_eq!(
+            d.kind, "automation_proposal",
+            "payload.draft must not trip deny_unknown_fields"
+        );
+        assert_eq!(
+            d.payload["draft"],
+            serde_json::json!("git status && git pull")
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_answer_stores_revised_input_and_is_accepted() {
+        let pool = test_pool().await;
+        let d = create_decision(&pool, draft_proposal()).await.unwrap();
+
+        let ans = DecisionAnswer {
+            answer: "edit".to_string(),
+            input_text: Some("git status && git pull --rebase".to_string()),
+            ..Default::default()
+        };
+        let (answered, proof) = answer_decision(&pool, &d.id, &ans, ACTOR_JESSE)
+            .await
+            .unwrap();
+        assert_eq!(answered.status, "answered");
+        assert_eq!(answered.answer.as_deref(), Some("edit"));
+        assert_eq!(
+            answered.answer_input.as_deref(),
+            Some("git status && git pull --rebase"),
+            "the revised draft is stored in answer_input"
+        );
+        // The original draft is untouched in the payload — the delta is diffable.
+        assert_eq!(
+            answered.payload["draft"],
+            serde_json::json!("git status && git pull")
+        );
+        assert_eq!(proof.answer(), "edit");
+    }
+
+    #[tokio::test]
+    async fn edit_answer_requires_input_text() {
+        let pool = test_pool().await;
+        let d = create_decision(&pool, draft_proposal()).await.unwrap();
+        // An edit with no revision has nothing to accept or learn.
+        let ans = DecisionAnswer {
+            answer: "edit".to_string(),
+            ..Default::default()
+        };
+        let err = answer_decision(&pool, &d.id, &ans, ACTOR_JESSE)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AnswerError::Invalid(_)),
+            "edit without input_text must be Invalid: {:?}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_answer_rejected_on_choice_kind() {
+        let pool = test_pool().await;
+        let req = NewDecision {
+            kind: "choice".to_string(),
+            headline: Some("Pick a colour for the new room".to_string()),
+            detail: Some("technical context".to_string()),
+            payload: serde_json::json!({
+                "question": "Which colour?",
+                "options": [
+                    {"id": "red", "label": "Red"},
+                    {"id": "blue", "label": "Blue"}
+                ]
+            }),
+            ..Default::default()
+        };
+        let d = create_decision(&pool, req).await.unwrap();
+        // You pick a choice; you don't edit it.
+        let ans = DecisionAnswer {
+            answer: "edit".to_string(),
+            input_text: Some("purple".to_string()),
+            ..Default::default()
+        };
+        let err = answer_decision(&pool, &d.id, &ans, ACTOR_JESSE)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AnswerError::Invalid(_)));
     }
 
     // ── S3: audit hash chain ──

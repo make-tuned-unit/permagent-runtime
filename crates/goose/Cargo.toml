@@ -127,6 +127,10 @@ fs-err = "3"
 rand = { workspace = true }
 utoipa = { workspace = true, features = ["chrono"] }
 tokio-cron-scheduler = "0.14.0"
+# Cron occurrence math for missed-run detection. Already in the lock transitively
+# via tokio-cron-scheduler (2.2.0); declaring it direct adds only a dependency
+# edge (no new package/checksum). Same parse builder chain the engine uses.
+croner = "2.2.0"
 urlencoding = { workspace = true }
 v_htmlescape = "0.17"
 sqlx = { version = "0.8", default-features = false, features = [
@@ -178,6 +182,7 @@ shellexpand = { workspace = true }
 indexmap = "2.14.0"
 ignore = { workspace = true }
 rayon = { workspace = true }
+petgraph = { workspace = true }
 tree-sitter = { workspace = true }
 tree-sitter-go = { workspace = true }
 tree-sitter-java = { workspace = true }

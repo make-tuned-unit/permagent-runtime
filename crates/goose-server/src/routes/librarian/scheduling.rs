@@ -2,7 +2,6 @@
 //! status endpoint, and the "run now" manual trigger.
 
 use crate::routes::errors::ErrorResponse;
-use crate::routes::ollama::OLLAMA_BASE;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
@@ -284,40 +283,39 @@ async fn warm_and_run(schedule: &LibrarianSchedule, keep_alive_secs: u64) -> Res
     let (total, described) = query_memory_counts()?;
     librarian_state::set_warming(total, described);
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
-        .map_err(|e| {
-            librarian_state::set_error(&format!("HTTP client error: {}", e));
-            format!("HTTP client error: {}", e)
-        })?;
-
-    let body = serde_json::json!({
-        "model": schedule.model,
-        "prompt": "ok",
-        "stream": false,
-        "keep_alive": format!("{}s", keep_alive_secs),
-        "options": { "num_predict": 1 }
-    });
-
-    let resp = client
-        .post(format!("{}/api/generate", OLLAMA_BASE))
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| {
-            librarian_state::set_error(&format!("Ollama unreachable: {}", e));
-            format!("Ollama unreachable: {}", e)
-        })?;
-
-    if !resp.status().is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        let msg = format!("Warm-load failed: {}", text);
+    // Warm-load through the mesh pool ladder so the warm follows EXACTLY the
+    // routing the batch itself will follow: with the pool engine on, this
+    // warms the trusted healthy peer the scheduler would pick (falling back
+    // to local); with it off, it warms `resolve_route(Batch)` — the
+    // configured pool or localhost. The old hardcoded-localhost warm aborted
+    // every scheduled pass whenever localhost had no Ollama even though a
+    // trusted pool was up (and warmed the wrong host when both ran). Now a
+    // warm failure means every rung the batch could use is down — the only
+    // case where aborting is correct.
+    let warm = permagent::mesh::pool::generate(permagent::mesh::pool::GenerateRequest {
+        model: schedule.model.clone(),
+        prompt: "ok".to_string(),
+        system: None,
+        options: Some(serde_json::json!({ "num_predict": 1 })),
+        keep_alive: Some(format!("{}s", keep_alive_secs)),
+        // A cold load of a large model legitimately exceeds the engine's 60s
+        // rung budget — keep the 120s this warm has always had.
+        timeout: Some(std::time::Duration::from_secs(120)),
+        workload: permagent::mesh::Workload::Batch,
+    })
+    .await
+    .map_err(|e| {
+        let msg = format!("Warm-load failed on every batch endpoint: {}", e.message);
         librarian_state::set_error(&msg);
-        return Err(msg);
-    }
+        msg
+    })?;
 
-    tracing::info!(model = %schedule.model, keep_alive = keep_alive_secs, "Librarian model warm-loaded");
+    tracing::info!(
+        model = %schedule.model,
+        keep_alive = keep_alive_secs,
+        served_by = ?warm.served_by,
+        "Librarian model warm-loaded on the batch route"
+    );
 
     // Annotation backfill runs at daemon startup (state.rs), not here.
 
@@ -329,26 +327,108 @@ async fn warm_and_run(schedule: &LibrarianSchedule, keep_alive_secs: u64) -> Res
         librarian_state::set_error(e);
     }
 
-    // #387 — the entity-summary pass rides the same warm model: reachable
-    // undescribed graph entities (people/projects/topics) get one-line
-    // descriptions so the Brain view reads like the memory cards do.
-    match permagent::agents::platform_extensions::librarian::describe_entities_batch(
+    // #387 v2 — the entity sweep rides the same warm model: ALL knowledge-graph
+    // items (people, projects, topics/terms, categories, locations) get
+    // evidence-grounded descriptions, stale ones get refreshed, and entities
+    // whose evidence is too thin to describe truthfully land in the
+    // ask-the-user queue (see librarian_entities.rs). Replaces the v1
+    // neighborhood-only `describe_entities_batch`.
+    match permagent::agents::platform_extensions::librarian_entities::run_entity_sweep(
         &brain,
-        20,
         &schedule.model,
     )
     .await
     {
-        Ok(0) => {}
-        Ok(n) => tracing::info!(entities = n, "Librarian entity pass complete (#387)"),
-        Err(e) => tracing::warn!(error = %e, "Librarian entity pass failed (#387)"),
+        Ok(s) => tracing::info!(
+            worklist = s.worklist,
+            described = s.described,
+            redescribed = s.redescribed,
+            insufficient = s.insufficient,
+            skipped_no_graph_identity = s.skipped_no_graph_identity,
+            skipped_not_in_graph = s.skipped_not_in_graph,
+            unresolved_terms = s.unresolved_terms,
+            awaiting_context = s.awaiting_context,
+            "Librarian entity sweep complete (#387 v2)"
+        ),
+        Err(e) => tracing::warn!(error = %e, "Librarian entity sweep failed (#387 v2)"),
+    }
+
+    // ── Consolidation-atom pass (layered store) ──────────────────────────
+    // Write-time, strong-model, provenance-linked atoms over recurring
+    // clusters. GATED default-OFF behind LIBRARIAN_ATOMS_ENABLED — default-ON
+    // is gated on the mac-mini paired Arm A/B eval, which is NOT part of this
+    // change. Until the flag flips this pass is inert, so actor behavior is
+    // unchanged. Best-effort: a failure here never fails the warm-run.
+    if atoms_enabled() {
+        let provider = resolve_atom_provider().await;
+        if provider.is_none() {
+            tracing::info!(
+                target: "permagentd::librarian",
+                "atom pass: no strong-model provider resolved — using extractive fallback"
+            );
+        }
+        match permagent::agents::platform_extensions::librarian_atoms::run_atom_consolidation(
+            &brain,
+            ATOMS_PER_SWEEP,
+            provider,
+        )
+        .await
+        {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(
+                target: "permagentd::librarian",
+                atoms = n,
+                "Librarian consolidation-atom pass complete"
+            ),
+            Err(e) => tracing::warn!(
+                target: "permagentd::librarian",
+                error = %e,
+                "Librarian consolidation-atom pass failed"
+            ),
+        }
     }
 
     result
 }
 
+/// Per-sweep cap on consolidation atoms written, so one warm window can't run
+/// an unbounded number of strong-model calls.
+const ATOMS_PER_SWEEP: usize = 10;
+
+/// Feature flag gating the entire consolidation-atom mechanism. Default OFF:
+/// default-ON is gated on the mac-mini paired eval (Arm B > Arm A). Read via
+/// `Config::global().get_param`; any error/absence is treated as OFF.
+fn atoms_enabled() -> bool {
+    permagent::config::Config::global()
+        .get_param::<bool>("LIBRARIAN_ATOMS_ENABLED")
+        .unwrap_or(false)
+}
+
+/// Resolve the strong-model provider for atom generation. Mirrors
+/// `proactive::resolve_provider`, but atoms call `provider.complete` (the
+/// lead/actor model) rather than `complete_fast` — the quality contract demands
+/// actor-tier or better. `None` → the extractive `$0` fallback still yields
+/// layered recall.
+async fn resolve_atom_provider() -> Option<std::sync::Arc<dyn permagent::providers::base::Provider>>
+{
+    let config = permagent::config::Config::global();
+    let provider_name = config.get_goose_provider().ok()?;
+    let model_name = config.get_goose_model().ok()?;
+    if provider_name.trim().is_empty() || model_name.trim().is_empty() {
+        return None;
+    }
+    permagent::providers::create_with_named_model(&provider_name, &model_name, Vec::new())
+        .await
+        .ok()
+}
+
 /// Background loop: ticks once per minute, warm-loads if in window.
 pub async fn librarian_scheduler_loop() {
+    // #387 v2 — re-seed the "entities awaiting your context" live count from
+    // the sidecar ledger, so the ask-seam in the capabilities brief survives
+    // daemon restarts instead of waiting for the next nightly sweep.
+    permagent::agents::platform_extensions::librarian_entities::restore_awaiting_context_state();
+
     let schedule = load_schedule();
     let brain_db = permagent::config::paths::Paths::brain_dir().join("memory.db");
     tracing::info!(

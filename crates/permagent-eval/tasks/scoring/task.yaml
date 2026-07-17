@@ -1,0 +1,20 @@
+id: scoring
+title: Implement a scoring function to pass the provided test
+category: add-function
+max_turns: 30
+test: [python3, test_scoring.py]
+# Declares the workspace module the oracle imports (import-discipline guard).
+deliverables: [scoring]
+prompt: |
+  This directory contains `scoring.py` (with an unimplemented `total_score`
+  function) and `test_scoring.py` (a runnable test). Implement `total_score` in
+  `scoring.py` so that running `python3 test_scoring.py` passes (exits 0).
+
+  The scoring rule:
+    `total_score(rounds)` takes a list of `(hits, multiplier)` integer tuples.
+    The base score is the sum of `hits * multiplier` over all rounds. If the list
+    is non-empty AND every round has `hits > 0` (a "flawless" game), add a flat
+    bonus of 50. An empty list scores 0.
+
+  Read `test_scoring.py` for the exact expected values. Do not modify the test
+  file; only edit `scoring.py`.

@@ -38,10 +38,16 @@ export const STATIONS: StationConfig[] = [
     tooltip: 'Brain',
   },
   {
-    id: 'forum-portal',
+    // Was id 'forum-portal' with a portal icon — a leftover from before the
+    // Stargate was relocated to the NW colonnade opening. That id is special-
+    // cased to launch the Agora arc, so clicking the AUTOMATE pedestal dove
+    // you into the mesh. The pedestal is now honestly Automate (glide-to like
+    // every other station, horologium rings icon); 'forum-portal' remains the
+    // Stargate group's own click id (areas/WorldZones.tsx).
+    id: 'automate',
     name: 'Automate',
     position: [-10, 0, 0] as Vector3Tuple,
-    iconType: 'portal',
+    iconType: 'rings',
     tooltip: 'Automate',
   },
 ];

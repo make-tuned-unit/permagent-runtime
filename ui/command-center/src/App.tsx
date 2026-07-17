@@ -3,6 +3,7 @@ import { useCommandCenter } from './lib/store';
 import { useTheme } from './styles/useTheme';
 import { Sidebar } from './components/sidebar/Sidebar';
 import { SettingsView } from './components/settings/SettingsView';
+import { InboxPanel } from './components/inbox/InboxPanel';
 import { WorkspaceRenderer } from './components/workspaces/WorkspaceRenderer';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { WizardShell } from './components/wizard/WizardShell';
@@ -29,6 +30,7 @@ function MainContent() {
   const workspacesLoaded = useCommandCenter(s => s.workspacesLoaded);
 
   const showSettings = activePanel === 'settings';
+  const showInbox = activePanel === 'inbox';
 
   if (!workspacesLoaded) {
     return (
@@ -38,7 +40,7 @@ function MainContent() {
     );
   }
 
-  if (!activeWorkspaceId && !showSettings) {
+  if (!activeWorkspaceId && !showSettings && !showInbox) {
     return (
       <div className="flex h-full items-center justify-center text-dark-muted text-xs font-mono">
         No workspaces available
@@ -56,11 +58,16 @@ function MainContent() {
           <SettingsView />
         </div>
       )}
+      {showInbox && (
+        <div className="absolute inset-0 z-10">
+          <InboxPanel />
+        </div>
+      )}
       {workspaces.map(ws => (
         <div
           key={ws.id}
           className="absolute inset-0"
-          style={{ display: (!showSettings && ws.id === activeWorkspaceId) ? 'block' : 'none' }}
+          style={{ display: (!showSettings && !showInbox && ws.id === activeWorkspaceId) ? 'block' : 'none' }}
         >
           <ErrorBoundary surface="the workspace">
             <WorkspaceRenderer workspaceId={ws.id} />
@@ -99,6 +106,26 @@ function App() {
   }, [theme]);
 
   const [phase, setPhase] = useState<'splash' | 'loading' | 'wizard' | 'app'>('splash');
+
+  // Install the bundled dictation model on first run so the mic "just works"
+  // offline, with no download and no setup. Resolves the bundled Whisper model
+  // (Tauri resource) and asks the daemon to install it + set LOCAL_WHISPER_MODEL.
+  // Idempotent, fire-and-forget; a dev/unbundled build simply no-ops. Gated on
+  // `phase === 'app'` so the daemon is known ready (mount is too early — the app
+  // is still waiting for the daemon, and provisioning runs only once).
+  const dictationProvisioned = useRef(false);
+  useEffect(() => {
+    if (phase !== 'app' || dictationProvisioned.current) return;
+    if (!('__TAURI_INTERNALS__' in window)) return;
+    dictationProvisioned.current = true;
+    (async () => {
+      try {
+        const { resolveResource } = await import('@tauri-apps/api/path');
+        const modelPath = await resolveResource('whisper/whisper-base-q8_0.gguf');
+        await api.provisionDictationModel(modelPath);
+      } catch { /* no bundled model (dev build) — dictation stays opt-in */ }
+    })();
+  }, [phase]);
 
   // Subscribe to AppNavigate events from the agent
   useAppNavigate();

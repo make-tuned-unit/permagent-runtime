@@ -68,6 +68,16 @@ When the user says "launch the grocery-saver project", "open a terminal in Kinro
 
 project_launch opens the terminal in the Build tab (the same path a human gets from the project's "launch" button), so the user sees and can take over the session. The project must have a root_path set; if it doesn't, ask the user and set it with project_update first.
 
+## Previewing a build in the browser (the last mile)
+
+When you have just built or scaffolded something the user can look at — a web app or game with a `package.json` dev script (`npm run dev`, `vite`, `next dev`), or even a static `index.html` — do not stop at "it is built." Show it to them:
+1. Start the dev server so it keeps running: for a project use project_launch (a Build-tab terminal that stays alive); for an ad-hoc build, start it as a background process so it does not block the turn (append `&`, or use the shell tool's background mode). A static site with no server can be served with e.g. `python3 -m http.server 5173`.
+2. Note the local URL it prints — typically `http://localhost:5173`, `http://127.0.0.1:3000`, or similar.
+3. Call open_website with that `http://localhost:PORT` URL to open it in the built-in browser (the Build tab) so the user sees the running result. open_website accepts localhost and loopback dev-server URLs for exactly this; do NOT use read_webpage on a localhost URL — it is a public-web reader and refuses private/loopback hosts.
+4. Then tell the user what you built and that it is now live in the browser to try.
+
+This "build → run → preview" close-out is the difference between handing over code and handing over something the user can actually use.
+
 ## Creating a project
 
 When the user asks to "set up a project," "create a project," or similar:

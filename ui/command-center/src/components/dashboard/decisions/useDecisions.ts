@@ -15,12 +15,17 @@ import type { AnswerBody, Decision, DecisionsResponse, HistoryItem } from './typ
 import { DecisionConflictError } from './types';
 
 export type AnswerResult =
-  | { ok: true; decision: Decision; effect: string | null }
+  | { ok: true; decision: Decision; effect: string | null; effect_error: string | null }
   | { ok: false; conflict: true };
 
 export function useDecisions() {
   const [data, setData] = useState<DecisionsResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  // True when the last fetch failed AND we have nothing to show. With stale
+  // data on screen the poll failure stays silent (useDashboard pattern), but
+  // a cold failure must NOT render as the "No decisions needed" all-clear
+  // (2026-07 wiring audit).
+  const [error, setError] = useState(false);
   const showAllRef = useRef(false);
   const intervalRef = useRef<ReturnType<typeof setInterval>>();
 
@@ -30,7 +35,14 @@ export function useDecisions() {
         showAllRef.current ? { all: true } : undefined,
       );
       setData(result);
-    } catch { /* ignore — stale data stays, matching useDashboard */ }
+      setError(false);
+    } catch {
+      // Stale data stays (matching useDashboard); flag only the cold failure.
+      setData(prev => {
+        if (prev === null) setError(true);
+        return prev;
+      });
+    }
     setLoading(false);
   }, []);
 
@@ -101,7 +113,15 @@ export function useDecisions() {
       try {
         const outcome = await decisionsClient.answer(id, body);
         await fetchDecisions();
-        return { ok: true, decision: outcome.decision, effect: outcome.effect };
+        // effect_error rides through (2026-07 wiring audit): the daemon
+        // reports "answer committed but the gated effect failed" — dropping
+        // it made partial failures invisible.
+        return {
+          ok: true,
+          decision: outcome.decision,
+          effect: outcome.effect,
+          effect_error: outcome.effect_error,
+        };
       } catch (e) {
         if (e instanceof DecisionConflictError) {
           return { ok: false, conflict: true };
@@ -118,5 +138,5 @@ export function useDecisions() {
     return items;
   }, []);
 
-  return { data, loading, refresh: fetchDecisions, showAll, answer, loadHistory };
+  return { data, loading, error, refresh: fetchDecisions, showAll, answer, loadHistory };
 }

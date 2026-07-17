@@ -29,6 +29,17 @@
 //! (e.g. scheduler job count, librarian phase). [`StateSource::Static`] features
 //! render editorial-only — we describe what they are without claiming a live
 //! status we cannot cheaply observe. This avoids over-claiming.
+//!
+//! ## Onboarding (agent-led teaching)
+//!
+//! Two submodules turn this inventory into an active teaching loop:
+//! [`usage`] tracks which capabilities the user has actually engaged (fed by the
+//! existing activity bus), and [`teachable`] is the curated set of features the
+//! agent can walk the user through — each mapped to a real navigable surface.
+//! `inventory − used` is the "learn next" list.
+
+pub mod teachable;
+pub mod usage;
 
 use std::fmt::Write as _;
 
@@ -136,6 +147,7 @@ pub static WORKER_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::steward::SELF_KNOWLEDGE_FEATURE,
     crate::initiative::SELF_KNOWLEDGE_FEATURE,
     crate::echo::SELF_KNOWLEDGE_FEATURE,
+    usage::ONBOARDING_COACH_FEATURE,
 ];
 
 /// Deterministic guardrails the agent operates under. Co-located with the
@@ -143,6 +155,7 @@ pub static WORKER_DESCRIPTORS: &[FeatureDescriptor] = &[
 pub static GUARD_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::steward::secret_scan::SELF_KNOWLEDGE_FEATURE,
     crate::session::crash_capture::DURABILITY_FEATURE,
+    crate::tool_monitor::SELF_KNOWLEDGE_FEATURE,
 ];
 
 /// User-facing surfaces. Each entry is a `const` co-located with its module.
@@ -158,6 +171,13 @@ pub static SURFACE_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::agents::platform_extensions::project_manager::DEVICES_FEATURE,
     crate::decision_inbox::DECISION_INBOX_FEATURE,
     crate::inbox::INBOX_FEATURE,
+    crate::activity_journal::TIMELINE_FEATURE,
+    crate::scheduler::RUN_ROSTER_FEATURE,
+    crate::agents::platform_extensions::project_manager::GROW_FEATURE,
+    crate::agents::platform_extensions::analyze::CODEBASE_INDEX_FEATURE,
+    crate::agents::platform_extensions::project_manager::CODING_HARNESS_FEATURE,
+    crate::cost_router::COST_OPTIMIZER_FEATURE,
+    crate::mesh::MESH_FEATURE,
 ];
 
 /// Tool ids that are described under another category and therefore skipped in
@@ -367,10 +387,23 @@ impl SelfKnowledgeBuilder {
                 .map(|n| format!("{n} job(s) scheduled")),
             id if id == librarian_state_id() => {
                 let s = librarian_state::get_state();
-                Some(format!(
-                    "{} described, {} pending",
-                    s.lifetime_stats.described, s.lifetime_stats.pending
-                ))
+                // The "awaiting your context" clause (#387 v2 ask-seam) renders
+                // only when non-zero: the zero state stays byte-identical to the
+                // pre-v2 brief (snapshot-stable), and the agent is only prompted
+                // to ask when there is actually something to ask about.
+                Some(if s.entities_awaiting_context > 0 {
+                    format!(
+                        "{} described, {} pending, {} awaiting your context",
+                        s.lifetime_stats.described,
+                        s.lifetime_stats.pending,
+                        s.entities_awaiting_context
+                    )
+                } else {
+                    format!(
+                        "{} described, {} pending",
+                        s.lifetime_stats.described, s.lifetime_stats.pending
+                    )
+                })
             }
             "initiative" => Some(if crate::initiative::driver::is_enabled() {
                 "on — watching for repeated commands".to_string()
@@ -493,6 +526,7 @@ mod tests {
         "git_steward",
         "initiative",
         "watcher",
+        "onboarding_coach",
     ];
     /// Every known surface id must have exactly one descriptor.
     const KNOWN_SURFACE_IDS: &[&str] = &[
@@ -507,6 +541,13 @@ mod tests {
         "devices",
         "decision_inbox",
         "inbox",
+        "timeline",
+        "run_roster",
+        "grow",
+        "codebase",
+        "coding_harness",
+        "cost_optimizer",
+        "mesh",
     ];
     /// The Phase-2-v1 lesson set — each must resolve to a descriptor with steps.
     const V1_LESSON_IDS: &[&str] = &["reader", "brain", "scheduler", "persona"];
@@ -542,7 +583,11 @@ mod tests {
     /// constraint he is subject to.
     #[test]
     fn guardrails_have_descriptors_and_render() {
-        const KNOWN_GUARD_IDS: &[&str] = &["credential_commit_guard", "durability_supervision"];
+        const KNOWN_GUARD_IDS: &[&str] = &[
+            "credential_commit_guard",
+            "durability_supervision",
+            "runaway_loop_guard",
+        ];
         for id in KNOWN_GUARD_IDS {
             let n = GUARD_DESCRIPTORS.iter().filter(|d| d.id == *id).count();
             assert_eq!(n, 1, "guard id {id:?} must have exactly one descriptor");
@@ -747,6 +792,52 @@ mod tests {
         let mut sorted = names.clone();
         sorted.sort();
         assert_eq!(names, sorted);
+    }
+
+    /// The coding harness and its cost optimizer are discoverable in
+    /// self-knowledge: findable by id, rendered into the brief, and carrying
+    /// authored teaching steps so the agent can describe, launch, and GUIDE the
+    /// user through them. This is the capstone of the coding-harness workstream
+    /// (#719/#720) — the agent must KNOW the harness exists and how to use it,
+    /// not just that a Build tab exists.
+    #[test]
+    fn coding_harness_capabilities_are_discoverable_and_teachable() {
+        for (id, display) in [
+            ("coding_harness", "Permagent coding harness"),
+            ("cost_optimizer", "Cost optimizer"),
+        ] {
+            let d = find_descriptor(id)
+                .unwrap_or_else(|| panic!("{id:?} must be discoverable via find_descriptor"));
+            assert_eq!(d.display_name, display);
+            assert_eq!(d.category, FeatureCategory::Surface);
+            assert!(
+                !d.teaching.is_empty(),
+                "{id:?} must carry teaching steps so the agent can guide the user"
+            );
+            let lesson = lesson_for(id).expect("lesson_for must render a known feature");
+            assert!(lesson.contains("Step 1"), "{id:?} lesson must have steps");
+        }
+
+        let brief = SelfKnowledgeBuilder {
+            agent_display_name: "Aria".to_string(),
+            scheduled_job_count: None,
+            dispatchable_workers: Vec::new(),
+        }
+        .build();
+        // The harness + cost optimizer render under Surfaces and self-describe
+        // their headline properties, so the agent can answer "build this with
+        // the Permagent harness" knowing what it is and how to launch it.
+        assert!(brief.contains("**Permagent coding harness**"));
+        assert!(brief.contains("**Cost optimizer**"));
+        assert!(brief.contains("provider-agnostic"));
+        assert!(brief.contains("launched from the Build tab"));
+        // The agent can now describe the independent adversarial reviewer gate:
+        // after its own tests pass, a different-model reviewer checks the diff
+        // before it calls the work done.
+        assert!(
+            brief.contains("different-model reviewer adversarially checks the diff"),
+            "the coding-harness self-knowledge must describe the independent reviewer gate"
+        );
     }
 
     /// **Branding guard (systems fix).** No user-facing capability string may

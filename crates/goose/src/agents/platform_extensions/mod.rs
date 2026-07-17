@@ -1,6 +1,7 @@
 pub mod analyze;
 pub mod app_conductor;
 pub mod apps;
+pub mod best_of_n_adapter;
 pub mod browser;
 pub mod chatrecall;
 #[cfg(feature = "code-mode")]
@@ -9,7 +10,10 @@ pub mod developer;
 pub mod ext_manager;
 pub mod goal_engine;
 pub mod librarian;
+pub mod librarian_atoms;
+pub mod librarian_entities;
 pub mod librarian_state;
+pub mod listen;
 pub mod orchestrator;
 pub mod people;
 pub mod project_manager;
@@ -125,29 +129,87 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: browser::EXTENSION_NAME,
                 display_name: "Browser",
-                description: "Drive and read the web: open any site in the in-app browser \
-                              (open_website), fetch a public page's readable text without a tab \
-                              (read_webpage), and read the page the user currently has open \
-                              (read_browser_content)",
+                description: "Drive, read, and act on the web: open any site in the in-app \
+                              browser (open_website), fetch a public page's readable text without \
+                              a tab (read_webpage), read the page the user currently has open \
+                              (read_browser_content), list a page's interactive elements as \
+                              stable refs (get_page_snapshot), and click, type, or select on them \
+                              (act_on_page)",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
                 why_it_matters:
                     "When the user says 'go to BBC and read me the homepage', open_website shows \
                      it to them and read_webpage gives you the text to read aloud — no pasting, \
-                     no guessing. read_browser_content covers whatever tab they already have open.",
-                teaching: &[crate::agents::self_knowledge::TeachingStep {
-                    title: "Browse together",
-                    body: "Offer it live: open a site the user cares about with open_website, \
-                           then read_webpage the same URL and give them the highlights out \
-                           loud. Works by voice too — this is the hands-free news flow.",
-                    open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
-                        tab: "Build",
-                        section: Some("browser"),
-                    }),
-                    confirm: None,
-                }],
+                     no guessing. read_browser_content covers whatever tab they already have \
+                     open. And when they need something DONE on a page — fill a form, click a \
+                     button, pick an option — get_page_snapshot lists the interactive elements \
+                     and act_on_page clicks, types, or selects, so you drive the page instead of \
+                     only reading it. open_website also opens a LOCAL dev server \
+                     (http://localhost:PORT) in the browser, so after you build or scaffold an \
+                     app you can show the user the running result — the coding last mile.",
+                teaching: &[
+                    crate::agents::self_knowledge::TeachingStep {
+                        title: "Browse together",
+                        body: "Offer it live: open a site the user cares about with open_website, \
+                               then read_webpage the same URL and give them the highlights out \
+                               loud. Works by voice too — this is the hands-free news flow.",
+                        open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                            tab: "Build",
+                            section: Some("browser"),
+                        }),
+                        confirm: None,
+                    },
+                    crate::agents::self_knowledge::TeachingStep {
+                        title: "Act on the page, don't just read it",
+                        body: "When a page needs DOING — a search box, a form, a button — call \
+                               get_page_snapshot to see the interactive elements as numbered \
+                               refs, then act_on_page with a ref to click, type, or select. Take \
+                               a fresh snapshot after each act; the page may have changed.",
+                        open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                            tab: "Build",
+                            section: Some("browser"),
+                        }),
+                        confirm: None,
+                    },
+                ],
                 client_factory: |ctx| Box::new(browser::BrowserClient::new(ctx).unwrap()),
+            },
+        );
+
+        map.insert(
+            listen::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: listen::EXTENSION_NAME,
+                display_name: "Audience Listening",
+                description:
+                    "Listen to what an audience is saying about a topic or on a channel (listen_to_audience) — RSS-first and zero-config: a topic reads live news chatter, or point it at a feed URL (a subreddit, blog, or podcast) for a specific channel; it health-probes each source and returns only real recent items (title, snippet, date, link)",
+                default_enabled: true,
+                unprefixed_tools: true,
+                hidden: false,
+                why_it_matters:
+                    "Ground a project's Grow strategy — its Audience and Channels — in what people are really saying, not guesses. When the user wants to understand or reach an audience, listen first: it tries RSS then web_search in order, reports which backend answered, and never fabricates chatter",
+                teaching: &[
+                    crate::agents::self_knowledge::TeachingStep {
+                        title: "Open Grow",
+                        body: "Bring the user to the project's go-to-market workspace, where \
+                               audience and channel strategy live.",
+                        open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                            tab: "Grow",
+                            section: None,
+                        }),
+                        confirm: None,
+                    },
+                    crate::agents::self_knowledge::TeachingStep {
+                        title: "Listen to their audience",
+                        body: "Offer to listen on a topic or channel the user cares about — call \
+                               listen_to_audience and read back the real, recent items — then use \
+                               what you heard to sharpen the Audience and Channels pillars together.",
+                        open_surface: None,
+                        confirm: None,
+                    },
+                ],
+                client_factory: |ctx| Box::new(listen::ListenClient::new(ctx).unwrap()),
             },
         );
 
@@ -333,7 +395,29 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 why_it_matters:
                     "Run multi-agent work — dispatch goals, track roadmaps, and steer other sessions when one agent is not enough — escalating decisions to the user for approval rather than acting unsupervised.",
-                teaching: &[],
+                teaching: &[
+                    crate::agents::self_knowledge::TeachingStep {
+                        title: "Give me acceptance criteria",
+                        body: "Tell the user that when they hand you a goal's acceptance \
+                               criteria — 'the project builds', 'GET /health returns 200', \
+                               'docs/guide.md exists', 'no TODO remains in src/lib.rs' — you \
+                               compile the mechanically-checkable ones into checks the daemon \
+                               runs in the goal's worktree before it can be approved. Ask for \
+                               criteria in that measurable, verifiable shape.",
+                        open_surface: None,
+                        confirm: None,
+                    },
+                    crate::agents::self_knowledge::TeachingStep {
+                        title: "Proof, not a claim",
+                        body: "Make the point out loud: with acceptance criteria you verify a \
+                               goal is actually done — the goal cannot pass review until its \
+                               checks pass — rather than just relaying that a worker reported \
+                               success. Offer to add a checkable criterion to a real goal so \
+                               they see it enforced.",
+                        open_surface: None,
+                        confirm: None,
+                    },
+                ],
                 client_factory: |ctx| Box::new(orchestrator::OrchestratorClient::new(ctx).unwrap()),
             },
         );
@@ -360,12 +444,12 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: skills::EXTENSION_NAME,
                 display_name: "Skills",
-                description: "Discover and provide skill instructions from filesystem and builtins",
+                description: "Discover and load skills stored as portable SKILL.md folders (the open agentskills.io standard) from the filesystem and builtins",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
                 why_it_matters:
-                    "Pull in proven step-by-step procedures instead of improvising a workflow.",
+                    "Pull in proven step-by-step procedures instead of improvising a workflow. Skills are portable SKILL.md folders compatible with Claude Code, Cursor, Codex, and the broader agent ecosystem, so learned capability moves in and out without lock-in.",
                 teaching: &[],
                 client_factory: |ctx| Box::new(skills::SkillsClient::new(ctx).unwrap()),
             },
@@ -417,7 +501,11 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 unprefixed_tools: true,
                 hidden: false,
                 why_it_matters:
-                    "Turn a repeatable task into a saved automation or schedule the user can rely on.",
+                    "Turn a repeatable task into a saved automation or schedule the user can rely on. \
+                     Saved skills are written as portable SKILL.md folders (the open agentskills.io \
+                     standard, shared with Claude Code, Cursor, and Codex); the ones that prove useful \
+                     are promoted to the front of what you reach for, and ones that never fire retire \
+                     themselves, so the skill library stays honest.",
                 teaching: &[],
                 client_factory: |ctx| {
                     Box::new(recipe_author::RecipeAuthorClient::new(ctx).unwrap())
@@ -467,12 +555,12 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: people::EXTENSION_NAME,
                 display_name: "People",
                 description:
-                    "Create people and associate them with projects — mints a durable graph entity plus a CRM directory row in one deterministic step",
+                    "Create people, associate them with projects, and enrich a person's professional details — creating mints a durable graph entity plus a CRM directory row in one deterministic step; enrichment researches structured fields and files a review-gated Decision Inbox proposal",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
                 why_it_matters:
-                    "When the user says \"add <name>\" or \"associate <name> with <project>\", do it directly — you create and link people, you do not just remember them as a note.",
+                    "When the user says \"add <name>\" or \"associate <name> with <project>\", do it directly — you create and link people, you do not just remember them as a note. When they ask to enrich or refresh a contact's details, start with enrich_person — nothing is written until they approve the proposal.",
                 teaching: &[],
                 client_factory: |ctx| Box::new(people::PeopleClient::new(ctx).unwrap()),
             },

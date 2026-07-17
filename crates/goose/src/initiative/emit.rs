@@ -82,6 +82,13 @@ pub async fn surface_initiative_proposal(
                         "normalized_command": pattern.normalized,
                         "occurrence_count": pattern.count,
                         "exemplars": pattern.exemplars,
+                        // The editable draft surfaced to the user (mirrors
+                        // `detail`). Approve-with-edits diffs the user's
+                        // revision against this to learn a correction
+                        // (edit-as-training, decision_inbox::learn). This is the
+                        // one producer wired to exercise the edit path
+                        // end-to-end; other decision kinds carry no draft yet.
+                        "draft": draft_description,
                     }),
                     ..Default::default()
                 },
@@ -212,6 +219,12 @@ mod tests {
             serde_json::json!("git status && git pull")
         );
         assert_eq!(decision.payload["occurrence_count"], serde_json::json!(3));
+        // The editable draft is carried so approve-with-edits can diff a
+        // revision against it (edit-as-training).
+        assert_eq!(
+            decision.payload["draft"],
+            serde_json::json!("You've run `git status && git pull` 3 times this week.")
+        );
         // No card was created on the inbox surface.
         let card_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cards")
             .fetch_one(&pool)

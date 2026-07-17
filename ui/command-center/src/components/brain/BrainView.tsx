@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { font, ease } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { apiFetch } from '../../lib/api';
+import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { Mobius } from '../mobius/Mobius';
 import { BrainScene, type TypeFilters } from './BrainScene';
 import { useBrainData, type GraphMemory, type GraphEntity } from './useBrainData';
@@ -62,6 +64,32 @@ export function BrainView() {
   const selectEntity = useCallback((ent: GraphEntity) => {
     setSelected({ id: ent.id, kind: ent.type, label: ent.name, note: ent.note, data: ent });
   }, []);
+
+  // Project entities link out to their real workspace: resolve the graph
+  // entity to a project by name/slug, and offer "Open project" instead of a
+  // dead-end. No match (or an unreachable projects API) simply shows nothing.
+  const setPendingProjectNavigation = useCommandCenter(s => s.setPendingProjectNavigation);
+  const [projectMatch, setProjectMatch] = useState<{ id: string; name: string } | null>(null);
+  useEffect(() => {
+    setProjectMatch(null);
+    if (selected?.kind !== 'project' || !selected.label) return;
+    let active = true;
+    apiFetch<{ id: string; slug: string; name: string }[]>('/api/projects')
+      .then(list => {
+        if (!active) return;
+        const needle = selected.label.trim().toLowerCase();
+        const hit = list.find(p => p.name.trim().toLowerCase() === needle || p.slug.toLowerCase() === needle);
+        if (hit) setProjectMatch({ id: hit.id, name: hit.name });
+      })
+      .catch(() => { /* no affordance when projects can't be resolved */ });
+    return () => { active = false; };
+  }, [selected?.id, selected?.kind, selected?.label]);
+
+  const openProjectWorkspace = useCallback(() => {
+    if (!projectMatch) return;
+    setPendingProjectNavigation(projectMatch.id);
+    navigateToTool('projects');
+  }, [projectMatch, setPendingProjectNavigation]);
 
   const reduceMotion = typeof window !== 'undefined'
     && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
@@ -421,6 +449,27 @@ export function BrainView() {
                   </div>
                 )}
 
+                {selected.kind === 'project' && projectMatch && (
+                  <button
+                    type="button"
+                    onClick={openProjectWorkspace}
+                    title={`Open ${projectMatch.name} in Projects`}
+                    style={{
+                      alignSelf: 'flex-start', marginBottom: 16,
+                      fontFamily: font.body, fontSize: 12, fontWeight: 600, color: colors.cyan,
+                      background: colors.cyanSoft, cursor: 'pointer',
+                      border: `1px solid ${colors.borderHi}`, borderRadius: 8, padding: '6px 12px',
+                      transition: chipTransition,
+                    }}
+                    onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = colors.cyanGlow; }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = colors.cyanSoft; }}
+                    onFocus={e => { (e.currentTarget as HTMLButtonElement).style.outline = `2px solid ${colors.cyan}`; }}
+                    onBlur={e => { (e.currentTarget as HTMLButtonElement).style.outline = 'none'; }}
+                  >
+                    Open project →
+                  </button>
+                )}
+
                 <div style={{ display: 'flex', gap: 18, marginTop: 'auto', paddingTop: 12, borderTop: `1px solid ${colors.border}` }}>
                   {[
                     { label: 'CONNECTIONS', value: degree, onClick: undefined as (() => void) | undefined },
@@ -516,11 +565,13 @@ export function BrainView() {
                       </div>
                     )}
                   </div>
-                  {/* Pinned stats footer */}
-                  <div style={{ flexShrink: 0, display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, borderTop: `1px solid ${colors.borderHi}`, paddingTop: 12 }}>
+                  {/* Pinned stats footer. "last recalled" removed (2026-07
+                      wiring audit): it fabricated concrete recall dates
+                      ("3 days ago") from the same age bucket recency already
+                      shows — the backend tracks no recall timestamp. */}
+                  <div style={{ flexShrink: 0, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, borderTop: `1px solid ${colors.borderHi}`, paddingTop: 12 }}>
                     <Stat label="reinforcement" value={`${Math.round(mem.weight * 100)}%`} />
                     <Stat label="recency" value={recencyLabel(mem.age)} />
-                    <Stat label="last recalled" value={mem.age < 0.1 ? 'today' : mem.age < 0.3 ? '3 days ago' : '2 weeks ago'} />
                   </div>
                 </div>
               );

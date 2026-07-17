@@ -18,6 +18,15 @@ import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import type { Project } from '../projects/types';
 
+// Appended to every Grow prompt that DRAFTS user-facing copy (value props,
+// posts, outreach) so the output reads like a sharp human wrote it, not a
+// chatbot. The full voice spec lives in the "humanize" builtin skill; this
+// names it and inlines the top AI tells so the draft is humanized even before
+// the skill loads. Strategy prompts (audience/positioning/channels) deliberately
+// omit it — they produce internal analysis, not copy the user will publish.
+const HUMANIZE_VOICE =
+  ' Write it the way a sharp person actually writes: lead with the point, stay specific and concrete, keep sentences short, and cut every AI tell (no em-dashes, no hype words like "seamless" or "leverage" or "unlock", no throat-clearing openers). Apply your "humanize" skill for the full voice spec before you hand it back.';
+
 // The five GTM pillars (research: target market · value prop · pricing &
 // positioning · channels · integrated marketing) — the strategy spine every
 // launch needs. Each is a Henry-assisted prompt seed.
@@ -32,7 +41,7 @@ const PILLARS: { key: string; label: string; prompt: (p: string) => string; hint
     key: 'value',
     label: 'Value proposition',
     hint: 'The one sentence that makes them care.',
-    prompt: (p) => `Draft 3 one-line value propositions for "${p}" — the sharp promise that makes the target audience stop scrolling. Ground them in the project's actual capabilities.`,
+    prompt: (p) => `Draft 3 one-line value propositions for "${p}" — the sharp promise that makes the target audience stop scrolling. Ground them in the project's actual capabilities.${HUMANIZE_VOICE}`,
   },
   {
     key: 'positioning',
@@ -50,7 +59,7 @@ const PILLARS: { key: string; label: string; prompt: (p: string) => string; hint
     key: 'content',
     label: 'Content & launch',
     hint: 'The hub piece and the posts that orbit it.',
-    prompt: (p) => `For "${p}", outline the launch content: one substantial hub piece (a guide/thread that establishes authority) and a week of social posts that link back to it. Draft the first post so I can schedule it.`,
+    prompt: (p) => `For "${p}", outline the launch content: one substantial hub piece (a guide/thread that establishes authority) and a week of social posts that link back to it. Draft the first post so I can schedule it.${HUMANIZE_VOICE}`,
   },
 ];
 
@@ -60,6 +69,26 @@ interface SocialCard {
   description: string;
   // social_post cards carry scheduling in metadata; tolerant read.
   metadata_json?: Record<string, unknown> | null;
+}
+
+// The deterministic growth inbox (backend GET /api/projects/:id/growth-inbox).
+// Ranked with NO LLM from the project's real signals — matches the Rust
+// response (camelCase). See crates/goose-server/src/routes/grow.rs.
+type MovePriority = 'high' | 'medium' | 'low';
+interface GrowthMove {
+  title: string;
+  why: string;
+  priority: MovePriority;
+  evidenceCount: number;
+}
+interface GrowthWin {
+  title: string;
+  why: string;
+}
+interface GrowthInboxData {
+  moves: GrowthMove[];
+  wins: GrowthWin[];
+  signal: { posts: number; shipped: number; activeGoals: number; daysSinceLastPost: number | null };
 }
 
 type GrowLens = 'strategy' | 'calendar' | 'analytics';
@@ -99,17 +128,32 @@ export function GrowView() {
 
   // Content calendar = social_post cards on this project (reserved card type
   // already exists; empty until Henry/the user create them).
-  const loadPosts = useCallback((id: string) => {
-    setPostsState('loading');
+  const loadPosts = useCallback((id: string, opts?: { silent?: boolean }) => {
+    // Background refreshes keep the current list on screen (no loading flash);
+    // only user-visible (re)loads show the loading state.
+    if (!opts?.silent) setPostsState('loading');
     apiFetch<SocialCard[]>(`/api/projects/${encodeURIComponent(id)}/cards?card_type=social_post`)
       .then((p) => { setPosts(p); setPostsState('ready'); })
-      .catch(() => { setPosts([]); setPostsState('error'); });
+      .catch(() => {
+        if (!opts?.silent) { setPosts([]); setPostsState('error'); }
+      });
   }, []);
 
   useEffect(() => {
     if (!activeId) return;
     loadPosts(activeId);
   }, [activeId, loadPosts]);
+
+  // Keep the Content calendar live while it's on screen: "+ Draft a post with
+  // Henry" hands off to chat, and before this poll the drafted social_post
+  // card never appeared until the user switched projects and back (2026-07
+  // wiring audit — persist-but-no-readback). Same 15s stale-while-revalidate
+  // cadence the dashboard uses.
+  useEffect(() => {
+    if (!activeId || lens !== 'calendar') return;
+    const t = setInterval(() => loadPosts(activeId, { silent: true }), 15_000);
+    return () => clearInterval(t);
+  }, [activeId, lens, loadPosts]);
 
   const active = projects.find((p) => p.id === activeId) ?? null;
 
@@ -131,6 +175,9 @@ export function GrowView() {
         apiFetch<{ card_type: string }[]>(`/api/projects/${encodeURIComponent(activeId)}/cards`).catch(() => []),
       ]);
       if (!alive) return;
+      // Count of goal cards in ANY state — labeled "goals", not "shipped"
+      // (2026-07 wiring audit: the old "N shipped" label counted in-progress
+      // and triage cards as shipped work).
       const goals = cards.filter((c) => c.card_type === 'goal').length;
       setCtx({ people: people.length, goals });
     })();
@@ -161,7 +208,7 @@ export function GrowView() {
               <a href={active.repoUrl} target="_blank" rel="noreferrer" style={{ color: colors.cyan, textDecoration: 'none' }}>repo ↗</a>
             )}
             {ctx && (
-              <span style={{ color: colors.textDim }}>{ctx.goals} shipped · {ctx.people} {ctx.people === 1 ? 'person' : 'people'}</span>
+              <span style={{ color: colors.textDim }}>{ctx.goals} {ctx.goals === 1 ? 'goal' : 'goals'} · {ctx.people} {ctx.people === 1 ? 'person' : 'people'}</span>
             )}
           </div>
         </div>
@@ -247,7 +294,7 @@ export function GrowView() {
               <span style={{ fontSize: 10, color: colors.textDim, background: colors.bgDeeper, padding: '1px 6px', borderRadius: radius.pill, fontVariantNumeric: 'tabular-nums' }}>{posts.length}</span>
               <div style={{ flex: 1 }} />
               <button
-                onClick={() => send(`For "${active.name}", draft a social post I can schedule (pick the best channel from the strategy above), and create it as a social_post card on this project.`)}
+                onClick={() => send(`For "${active.name}", draft a social post I can schedule (pick the best channel from the strategy above), and create it as a social_post card on this project.${HUMANIZE_VOICE}`)}
                 style={{
                   fontSize: 11, fontFamily: font.body, color: colors.text,
                   background: 'transparent', border: `1px solid ${colors.border}`,
@@ -405,6 +452,21 @@ function GrowAnalytics({
   posts: SocialCard[];
   colors: ThemeColors;
 }) {
+  // The deterministic growth inbox — this week's ranked moves + wins, computed
+  // server-side (NO LLM) from the project's real signals. Fetched on-read so
+  // it's always fresh; its own load lifecycle keeps a fetch failure honest.
+  const [inbox, setInbox] = useState<GrowthInboxData | null>(null);
+  const [inboxState, setInboxState] = useState<LoadState>('loading');
+
+  const loadInbox = useCallback((id: string) => {
+    setInboxState('loading');
+    apiFetch<GrowthInboxData>(`/api/projects/${encodeURIComponent(id)}/growth-inbox`)
+      .then((d) => { setInbox(d); setInboxState('ready'); })
+      .catch(() => { setInbox(null); setInboxState('error'); });
+  }, []);
+
+  useEffect(() => { loadInbox(project.id); }, [project.id, loadInbox]);
+
   // The classic growth funnel (research: awareness → interest → action →
   // retention). Awareness/reach comes from published content; the deeper
   // stages await the analytics pipeline.
@@ -426,6 +488,14 @@ function GrowAnalytics({
 
   return (
     <>
+      {/* Growth inbox — the headline: your 2-3 ranked moves this week + wins. */}
+      <GrowthInboxSection
+        colors={colors}
+        state={inboxState}
+        inbox={inbox}
+        onRetry={() => loadInbox(project.id)}
+      />
+
       <div style={{
         fontSize: 11, color: colors.textDim, background: colors.bgDeeper,
         border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: '8px 12px', marginBottom: 4,
@@ -478,5 +548,124 @@ function GrowAnalytics({
         </div>
       </section>
     </>
+  );
+}
+
+// ── Growth inbox (Analytics lens headline) ───────────────────────────────────
+// The deterministic inbox rendered atop the analytics lens: this week's ranked
+// moves + a "keep doing" wins strip. All content comes from the backend ranker
+// (grow.rs) — this component only presents it, with honest loading / error /
+// empty states. No Henry drafting hand-offs here (those belong to GrowView's
+// prompt seams); the inbox is informational.
+
+function priorityMeta(priority: MovePriority, colors: ThemeColors): { label: string; color: string } {
+  switch (priority) {
+    case 'high': return { label: 'High priority', color: colors.warning };
+    case 'medium': return { label: 'Medium priority', color: colors.cyan };
+    default: return { label: 'Low priority', color: colors.textDim };
+  }
+}
+
+function GrowthInboxSection({
+  colors, state, inbox, onRetry,
+}: {
+  colors: ThemeColors;
+  state: LoadState;
+  inbox: GrowthInboxData | null;
+  onRetry: () => void;
+}) {
+  const hasSignal = !!inbox && (inbox.signal.posts > 0 || inbox.signal.shipped > 0);
+  const empty = !!inbox && inbox.moves.length === 0 && inbox.wins.length === 0;
+
+  return (
+    <section>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, margin: '0 0 12px', flexWrap: 'wrap' }}>
+        <h3 style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>
+          Your growth moves this week
+        </h3>
+        {hasSignal && inbox && (
+          <span style={{ fontSize: 10, color: colors.textDim }}>
+            from {inbox.signal.posts} {inbox.signal.posts === 1 ? 'post' : 'posts'} · {inbox.signal.shipped} shipped
+          </span>
+        )}
+      </div>
+
+      {state === 'error' ? (
+        <ErrorState colors={colors} inline message="Couldn't load your growth moves." onRetry={onRetry} />
+      ) : state === 'loading' ? (
+        <LoadingState colors={colors} inline label="Ranking your growth moves…" />
+      ) : !inbox ? null : empty ? (
+        <div style={{
+          border: `1px dashed ${colors.border}`, borderRadius: radius.lg, padding: 28,
+          textAlign: 'center', fontSize: 12, color: colors.textDim, lineHeight: 1.6,
+        }}>
+          Not enough signal yet. Publish a post or ship a goal and I'll start surfacing your 2-3
+          highest-leverage growth moves here each week — ranked, no guesswork.
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {inbox.moves.length > 0 ? (
+            inbox.moves.map((m) => <MoveCard key={m.title} move={m} colors={colors} />)
+          ) : (
+            <div style={{
+              border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: '12px 14px',
+              fontSize: 12, color: colors.textMuted, background: colors.surface,
+            }}>
+              You're on track — no urgent moves this week. Keep doing what's working below.
+            </div>
+          )}
+          {inbox.wins.length > 0 && <WinsStrip wins={inbox.wins} colors={colors} />}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function MoveCard({ move, colors }: { move: GrowthMove; colors: ThemeColors }) {
+  const meta = priorityMeta(move.priority, colors);
+  return (
+    <div style={{
+      display: 'flex', flexDirection: 'column', gap: 6,
+      background: colors.surface, border: `1px solid ${colors.border}`,
+      borderLeft: `3px solid ${meta.color}`, borderRadius: radius.md, padding: '12px 14px',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{
+          fontSize: 10, fontFamily: font.mono, textTransform: 'uppercase', letterSpacing: '0.06em',
+          color: meta.color, border: `1px solid ${meta.color}`, borderRadius: radius.pill, padding: '1px 8px',
+        }}>{meta.label}</span>
+        <div style={{ flex: 1 }} />
+        <span style={{ fontSize: 10, color: colors.textDim, fontVariantNumeric: 'tabular-nums' }}>
+          {move.evidenceCount} {move.evidenceCount === 1 ? 'signal' : 'signals'}
+        </span>
+      </div>
+      <div style={{ fontSize: 14, fontWeight: 600, color: colors.text }}>{move.title}</div>
+      <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>{move.why}</div>
+    </div>
+  );
+}
+
+function WinsStrip({ wins, colors }: { wins: GrowthWin[]; colors: ThemeColors }) {
+  return (
+    <div style={{ marginTop: 4 }}>
+      <div style={{ fontSize: 10, fontFamily: font.mono, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>
+        Keep doing
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {wins.map((w) => (
+          <div key={w.title} style={{
+            display: 'flex', alignItems: 'flex-start', gap: 8,
+            background: colors.surface, border: `1px solid ${colors.border}`,
+            borderLeft: `3px solid ${colors.success}`, borderRadius: radius.md, padding: '10px 12px',
+          }}>
+            <span aria-hidden style={{ color: colors.success, fontSize: 13, lineHeight: '18px' }}>✓</span>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>{w.title}</div>
+              <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5, marginTop: 2 }}>{w.why}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }

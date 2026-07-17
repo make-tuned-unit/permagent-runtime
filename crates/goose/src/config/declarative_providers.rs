@@ -404,6 +404,24 @@ fn load_fixed_providers() -> Result<Vec<DeclarativeProviderConfig>> {
     Ok(res)
 }
 
+/// Enumerate ALL declarative provider configs — the bundled fixed providers plus
+/// any operator-defined custom providers — WITHOUT registering or instantiating
+/// them.
+///
+/// This is the data-driven surface the cost-router's cheap ladder walks to
+/// discover configured, priced cheap-cloud providers (see
+/// [`crate::cost_router::cheap`]): each config carries the provider id
+/// ([`DeclarativeProviderConfig::name`]), the `api_key_env` that activates it,
+/// and the [`DeclarativeProviderConfig::models`] it serves. Adding a new priced
+/// provider is a matter of dropping a JSON here — it then auto-appears to the
+/// router, no code change. Best-effort: a missing custom dir or an unreadable
+/// file yields fewer entries, never an error.
+pub fn all_declarative_provider_configs() -> Vec<DeclarativeProviderConfig> {
+    let mut out = load_fixed_providers().unwrap_or_default();
+    out.extend(load_custom_providers(&custom_providers_dir()).unwrap_or_default());
+    out
+}
+
 pub fn register_declarative_providers(
     registry: &mut crate::providers::provider_registry::ProviderRegistry,
 ) -> Result<()> {
@@ -587,6 +605,61 @@ mod tests {
             serde_json::from_str(json).expect("groq.json should parse without env_vars");
         assert!(config.env_vars.is_none());
         assert!(config.dynamic_models.is_none());
+    }
+
+    #[test]
+    fn test_moonshot_kimi_json_resolves_endpoint_model_and_key_env() {
+        // Kimi (Moonshot) cheap-cloud provider: OpenAI-compatible chat-completions,
+        // activates on MOONSHOT_API_KEY. Verifies the declarative config the
+        // operator relies on resolves — endpoint + model + key-env.
+        use crate::cost_router::cheap;
+        let json = include_str!("../providers/declarative/moonshot.json");
+        let config: DeclarativeProviderConfig =
+            serde_json::from_str(json).expect("moonshot.json should parse");
+        assert_eq!(config.name, cheap::PROVIDER_MOONSHOT);
+        assert_eq!(config.display_name, "Moonshot");
+        assert!(matches!(config.engine, ProviderEngine::OpenAI));
+        assert_eq!(
+            config.base_url,
+            "https://api.moonshot.ai/v1/chat/completions"
+        );
+        assert_eq!(config.supports_streaming, Some(true));
+        // The env var the operator sets to activate Kimi must match the one the
+        // cost-router's cheap ladder checks for availability.
+        assert_eq!(config.api_key_env, cheap::DEFAULT_KIMI_KEY_ENV);
+        // The router's default cheap Kimi model must be one this provider serves.
+        assert!(
+            config
+                .models
+                .iter()
+                .any(|m| m.name == cheap::DEFAULT_KIMI_MODEL),
+            "moonshot.json must serve {} (the cost-router's default cheap Kimi model)",
+            cheap::DEFAULT_KIMI_MODEL
+        );
+    }
+
+    #[test]
+    fn test_minimax_json_resolves_endpoint_model_and_key_env() {
+        // MiniMax cheap-cloud provider: Anthropic-compatible endpoint, activates
+        // on MINIMAX_API_KEY. Endpoint + model + key-env all resolve.
+        use crate::cost_router::cheap;
+        let json = include_str!("../providers/declarative/minimax.json");
+        let config: DeclarativeProviderConfig =
+            serde_json::from_str(json).expect("minimax.json should parse");
+        assert_eq!(config.name, cheap::PROVIDER_MINIMAX);
+        assert_eq!(config.display_name, "MiniMax");
+        assert!(matches!(config.engine, ProviderEngine::Anthropic));
+        assert_eq!(config.base_url, "https://api.minimax.io/anthropic");
+        assert_eq!(config.supports_streaming, Some(true));
+        assert_eq!(config.api_key_env, cheap::DEFAULT_MINIMAX_KEY_ENV);
+        assert!(
+            config
+                .models
+                .iter()
+                .any(|m| m.name == cheap::DEFAULT_MINIMAX_MODEL),
+            "minimax.json must serve {} (the cost-router's default cheap MiniMax model)",
+            cheap::DEFAULT_MINIMAX_MODEL
+        );
     }
 
     #[test]

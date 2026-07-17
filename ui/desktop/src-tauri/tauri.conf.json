@@ -56,7 +56,8 @@
       "binaries/permagentd"
     ],
     "resources": {
-      "resources/mcp-runtime/": "mcp-runtime/"
+      "resources/mcp-runtime/": "mcp-runtime/",
+      "resources/whisper/": "whisper/"
     },
     "createUpdaterArtifacts": true
   },

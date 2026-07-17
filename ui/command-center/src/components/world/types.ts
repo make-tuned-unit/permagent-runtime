@@ -15,7 +15,7 @@ export interface StationConfig {
   id: string;
   name: string;
   position: Vector3Tuple;
-  iconType: 'gear' | 'scroll' | 'planets' | 'portal';
+  iconType: 'gear' | 'scroll' | 'planets' | 'portal' | 'rings';
   tooltip: string;
   disabled?: boolean;
 }

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, FixedOffset, Local, Utc};
 use futures::future::FutureExt as _;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -21,7 +21,7 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
         id: "scheduler",
         display_name: "Scheduler",
         category: crate::agents::self_knowledge::FeatureCategory::Worker,
-        what_it_does: "Runs saved recipes and reminders on a cron schedule in the background",
+        what_it_does: "Runs saved recipes and reminders in the background on cron, one-time, or interval schedules — retrying transient failures, recovering runs missed during downtime, and escalating repeated failures to the Decision Inbox",
         why_it_matters:
             "Lets you promise recurring or future work and actually deliver it without the user re-asking",
         state_source: crate::agents::self_knowledge::StateSource::Queryable,
@@ -46,6 +46,21 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
         ],
     };
 
+/// Self-knowledge descriptor for the "agents at work" run roster — the
+/// run-visibility surface on the Automate tab (served by `/api/runs`). A Surface
+/// (Static) because it is a viewing/control surface, not a queryable worker.
+pub const RUN_ROSTER_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "run_roster",
+        display_name: "Agents at work",
+        category: crate::agents::self_knowledge::FeatureCategory::Surface,
+        what_it_does: "A live roster on the Automate tab of everything running or recently active — background workers, scheduled jobs with their run status, and active agent sessions — each with a status dot, what it is doing, when it last acted, and a one-click stop for anything interruptible",
+        why_it_matters:
+            "Long-running and parallel agent work used to be invisible; this is where the user watches it happen and stops a runaway or stuck run — when they ask what you are doing right now, point them here",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        teaching: &[],
+    };
+
 use crate::agents::AgentEvent;
 use crate::agents::{Agent, SessionConfig};
 use crate::config::paths::Paths;
@@ -62,6 +77,10 @@ use crate::session::{Session, SessionManager};
 
 type RunningTasksMap = HashMap<String, CancellationToken>;
 type JobsMap = HashMap<String, (JobId, ScheduledJob)>;
+/// The boxed future a fired scheduled task returns. Aliased so the shared
+/// closure can name its return type (needed to drive the `dyn Future` unsizing
+/// coercion) without an inline complex type.
+type ScheduledTaskFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
 
 pub fn get_default_scheduler_storage_path() -> Result<PathBuf, io::Error> {
     let data_dir = Paths::data_dir();
@@ -85,6 +104,7 @@ pub enum SchedulerError {
     AgentSetupError(String),
     PersistError(String),
     CronParseError(String),
+    InvalidScheduleSpec(String),
     SchedulerInternalError(String),
     AnyhowError(anyhow::Error),
 }
@@ -99,6 +119,7 @@ impl std::fmt::Display for SchedulerError {
             SchedulerError::AgentSetupError(e) => write!(f, "Agent setup error: {}", e),
             SchedulerError::PersistError(e) => write!(f, "Failed to persist schedules: {}", e),
             SchedulerError::CronParseError(e) => write!(f, "Invalid cron string: {}", e),
+            SchedulerError::InvalidScheduleSpec(e) => write!(f, "Invalid schedule spec: {}", e),
             SchedulerError::SchedulerInternalError(e) => {
                 write!(f, "Scheduler internal error: {}", e)
             }
@@ -135,10 +156,28 @@ impl From<anyhow::Error> for SchedulerError {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug, utoipa::ToSchema)]
+/// Outcome of a job's most recent fire. Serialized snake_case into
+/// `schedule.json` and the `/schedule/list` payload for the Automate tab.
+#[derive(Clone, Copy, Serialize, Deserialize, Debug, PartialEq, Eq, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleRunStatus {
+    /// The run completed successfully.
+    Ok,
+    /// The run failed (after any retries were exhausted).
+    Error,
+    /// The run was intentionally not executed (e.g. paused at fire time).
+    Skipped,
+    /// A scheduled fire was due during downtime and did not run.
+    Missed,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug, Default, utoipa::ToSchema)]
 pub struct ScheduledJob {
     pub id: String,
     pub source: String,
+    /// Cron expression (5- or 6-field). The default schedule kind. Empty when
+    /// the job is a one-time (`at`) or interval (`every_seconds`) job.
+    #[serde(default)]
     pub cron: String,
     pub last_run: Option<DateTime<Utc>>,
     #[serde(default)]
@@ -154,6 +193,37 @@ pub struct ScheduledJob {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_persona: Option<String>,
 
+    // ── Reliability fields (all serde-default → old schedule.json loads clean) ──
+    /// Total number of times this job has completed a fire (success or failure).
+    #[serde(default)]
+    pub run_count: u64,
+    /// Retry attempts spent on the CURRENT failing fire; reset to 0 on success.
+    #[serde(default)]
+    pub retry_count: u32,
+    /// Max automatic retries per fire. Default 0 preserves today's behavior
+    /// (a failure is terminal, no retry).
+    #[serde(default)]
+    pub max_retries: u32,
+    /// Outcome of the most recent fire. `None` = has never fired.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_status: Option<ScheduleRunStatus>,
+    /// Human-readable error from the most recent failed fire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+
+    // ── Richer schedule kinds (serde-default None → existing cron jobs unchanged) ──
+    /// One-time fire at this instant. Mutually exclusive with cron/every_seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<DateTime<Utc>>,
+    /// Fixed interval in seconds. Mutually exclusive with cron/at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub every_seconds: Option<u64>,
+    /// Timezone for cron evaluation. `None` = system local (today's behavior).
+    /// Accepts "UTC"/"Z" or a fixed offset ("+05:30", "-08:00"); IANA names fall
+    /// back to local (see `resolve_cron_timezone`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tz: Option<String>,
+
     // ── Starter recipe versioning fields ──
     /// Non-null for starter recipes (e.g. "storage-insights", "workspace-snapshot").
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -167,6 +237,172 @@ pub struct ScheduledJob {
     /// True if the user has manually edited this starter recipe.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_customized: Option<bool>,
+}
+
+/// Reliability + kind constants. Retry backoff is exponential and capped so a
+/// flapping job cannot storm.
+const RETRY_BASE_SECS: u64 = 10;
+const RETRY_MAX_SECS: u64 = 300;
+/// Interval bounds (seconds): reject 0/absurd values. One year ceiling.
+const MIN_INTERVAL_SECS: u64 = 1;
+const MAX_INTERVAL_SECS: u64 = 31_536_000;
+
+/// Whether a terminal job failure should escalate to the Decision Inbox.
+/// Escalate only when the user configured retries (`max_retries > 0`) AND this is
+/// the first failure of a streak (`prior_status` wasn't already `Error`). So a
+/// job that fails every fire escalates once (not per-fire spam), and default
+/// no-retry jobs never escalate — preserving today's behavior exactly.
+fn should_escalate_failure(max_retries: u32, prior_status: Option<ScheduleRunStatus>) -> bool {
+    max_retries > 0 && prior_status != Some(ScheduleRunStatus::Error)
+}
+
+/// Exponential backoff for retry `attempt` (1-based), capped at `RETRY_MAX_SECS`.
+fn retry_backoff(attempt: u32) -> std::time::Duration {
+    let exp = attempt.saturating_sub(1).min(31);
+    let secs = RETRY_BASE_SECS
+        .saturating_mul(2u64.saturating_pow(exp))
+        .min(RETRY_MAX_SECS);
+    std::time::Duration::from_secs(secs)
+}
+
+/// Which timezone a cron job evaluates in. Split out so the (typed) engine call
+/// picks the right `TimeZone` implementor. `Local` preserves today's DST-aware
+/// behavior for jobs with no `tz`; `Fixed` is used for an explicit offset.
+enum CronTimezone {
+    Local,
+    Fixed(FixedOffset),
+}
+
+/// Resolve a job's `tz` string to a concrete timezone for cron evaluation.
+///
+/// - `None` → `Local` (unchanged, DST-aware — existing cron jobs behave exactly
+///   as before).
+/// - `"UTC"`/`"Z"` → fixed +00:00.
+/// - `"+HH:MM"` / `"-HH:MM"` / `"+HHMM"` → parsed fixed offset.
+/// - Anything else (e.g. an IANA name like `America/New_York`) → `Local`, with a
+///   warning. Full IANA support needs the `chrono-tz` database, deferred to a
+///   follow-up so this PR adds no unverifiable lockfile change.
+fn resolve_cron_timezone(tz: Option<&str>) -> CronTimezone {
+    let Some(raw) = tz.map(str::trim).filter(|s| !s.is_empty()) else {
+        return CronTimezone::Local;
+    };
+    if raw.eq_ignore_ascii_case("utc") || raw.eq_ignore_ascii_case("z") {
+        return CronTimezone::Fixed(FixedOffset::east_opt(0).expect("0 is a valid offset"));
+    }
+    if let Some(offset) = parse_fixed_offset(raw) {
+        return CronTimezone::Fixed(offset);
+    }
+    tracing::warn!(
+        "Timezone '{}' is not a recognized offset (IANA names need chrono-tz, not yet wired); \
+         falling back to system local time",
+        raw
+    );
+    CronTimezone::Local
+}
+
+/// Parse a `+HH:MM` / `-HH:MM` / `+HHMM` fixed-offset string into a
+/// `FixedOffset`. Returns `None` for any other shape.
+// All slices below are on ASCII char boundaries: `raw[1..]` skips a single
+// `+`/`-` byte, and `digits` is filtered to ASCII digits, so `digits[0..2]` /
+// `[2..4]` are always valid boundaries.
+#[allow(clippy::string_slice)]
+fn parse_fixed_offset(raw: &str) -> Option<FixedOffset> {
+    let bytes = raw.as_bytes();
+    let sign = match bytes.first()? {
+        b'+' => 1,
+        b'-' => -1,
+        _ => return None,
+    };
+    let digits: String = raw[1..].chars().filter(|c| c.is_ascii_digit()).collect();
+    let (hours, mins) = match digits.len() {
+        4 => (
+            digits[0..2].parse::<i32>().ok()?,
+            digits[2..4].parse::<i32>().ok()?,
+        ),
+        2 => (digits[0..2].parse::<i32>().ok()?, 0),
+        _ => return None,
+    };
+    if hours > 23 || mins > 59 {
+        return None;
+    }
+    FixedOffset::east_opt(sign * (hours * 3600 + mins * 60))
+}
+
+/// Validate the schedule kind of a job spec: EXACTLY one of cron / at /
+/// every_seconds must be set, and an interval must be within bounds. Returns a
+/// human-readable reason on failure. Applied centrally in `add_scheduled_job` so
+/// every entry point (route, agent tool, trait) is guarded.
+fn validate_schedule_spec(job: &ScheduledJob) -> Result<(), String> {
+    let has_cron = !job.cron.trim().is_empty();
+    let has_at = job.at.is_some();
+    let has_every = job.every_seconds.is_some();
+    let count = [has_cron, has_at, has_every].iter().filter(|b| **b).count();
+    if count != 1 {
+        return Err(format!(
+            "exactly one schedule kind must be set (cron, at, or every_seconds); got {} \
+             (cron={}, at={}, every_seconds={})",
+            count, has_cron, has_at, has_every
+        ));
+    }
+    if let Some(secs) = job.every_seconds {
+        if !(MIN_INTERVAL_SECS..=MAX_INTERVAL_SECS).contains(&secs) {
+            return Err(format!(
+                "interval every_seconds={} out of bounds [{}, {}]",
+                secs, MIN_INTERVAL_SECS, MAX_INTERVAL_SECS
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Pure missed-run predicate: was a scheduled fire due in the window since
+/// `last_run` that did not run? Used at startup to flag `Missed`. Paused jobs are
+/// never "missed". Evaluated in UTC (a small skew vs the job's local firing tz is
+/// immaterial to multi-hour-downtime detection).
+fn is_run_missed(job: &ScheduledJob, now: DateTime<Utc>) -> bool {
+    if job.paused {
+        return false;
+    }
+    // One-time: due once `at` has passed and it never ran.
+    if let Some(at) = job.at {
+        return job.last_run.is_none() && at <= now;
+    }
+    // Interval: a fire was due if a full interval elapsed since the last run.
+    if let Some(secs) = job.every_seconds {
+        if secs == 0 {
+            return false;
+        }
+        return match job.last_run {
+            // Never run → interval anchors from arm time (unknown at load); don't
+            // claim a miss.
+            None => false,
+            Some(lr) => now.signed_duration_since(lr).num_seconds().max(0) as u64 >= secs,
+        };
+    }
+    // Cron: the next scheduled fire strictly after last_run is already in the
+    // past. Requires a known last_run (a never-run cron can't be judged missed).
+    match job.last_run {
+        None => false,
+        Some(lr) => match parse_cron_schedule(&job.cron) {
+            Some(cron) => cron
+                .find_next_occurrence(&lr, false)
+                .map(|next| next <= now)
+                .unwrap_or(false),
+            None => false,
+        },
+    }
+}
+
+/// Parse a (normalized) cron string the SAME way `tokio_cron_scheduler` does, so
+/// missed-detection agrees with the engine's firing. Returns `None` on a parse
+/// error (caller treats an unparseable cron as "not missed").
+fn parse_cron_schedule(cron: &str) -> Option<croner::Cron> {
+    let normalized = normalize_cron_to_6field(cron).unwrap_or_else(|| cron.to_string());
+    croner::Cron::new(&normalized)
+        .with_seconds_required()
+        .with_dom_and_dow()
+        .parse()
+        .ok()
 }
 
 async fn persist_jobs(
@@ -187,7 +423,7 @@ async fn persist_jobs(
 ///
 /// Returns `Some(normalized)` if the input was legacy 5-field, `None` if it is
 /// already 6-field (or any other field count — left untouched for
-/// `create_cron_task` to surface the error). Idempotent: a 6-field cron yields
+/// `create_job_task` to surface the error). Idempotent: a 6-field cron yields
 /// `None`, so re-running over an already-normalized store is a no-op.
 fn normalize_cron_to_6field(cron: &str) -> Option<String> {
     match cron.split_whitespace().count() {
@@ -241,7 +477,11 @@ impl Scheduler {
         Ok(arc_self)
     }
 
-    fn create_cron_task(&self, job: ScheduledJob) -> Result<Job, SchedulerError> {
+    /// Build a `tokio_cron_scheduler` job for `job`, dispatching on its kind:
+    /// `at` → one-shot, `every_seconds` → interval, else cron (tz-aware). The
+    /// fired closure is identical across kinds; only the arming differs. Renamed
+    /// from `create_cron_task` now that it builds non-cron jobs too.
+    fn create_job_task(&self, job: ScheduledJob) -> Result<Job, SchedulerError> {
         let job_for_task = job.clone();
         let jobs_arc = self.jobs.clone();
         let storage_path = self.storage_path.clone();
@@ -249,31 +489,20 @@ impl Scheduler {
         let brain_arc = self.brain.clone();
         let persona_arc = self.persona.clone();
         let agent_config_arc = self.agent_config.clone();
+        let session_manager_arc = self.session_manager.clone();
+        // One-shots delete themselves after they fire (see the closure tail), so
+        // they never re-run on the next restart.
+        let is_one_shot = job.at.is_some();
 
-        let cron_parts: Vec<&str> = job.cron.split_whitespace().collect();
-        let cron = match cron_parts.len() {
-            5 => {
-                tracing::warn!(
-                    "Job '{}' has legacy 5-field cron '{}', converting to 6-field",
-                    job.id,
-                    job.cron
-                );
-                format!("0 {}", job.cron)
-            }
-            6 => job.cron.clone(),
-            _ => {
-                return Err(SchedulerError::CronParseError(format!(
-                    "Invalid cron expression '{}': expected 5 or 6 fields, got {}",
-                    job.cron,
-                    cron_parts.len()
-                )))
-            }
-        };
-
-        let local_tz = Local::now().timezone();
-
-        Job::new_async_tz(&cron, local_tz, move |_uuid, _l| {
-            tracing::info!("Cron task triggered for job '{}'", job_for_task.id);
+        // The fired task body — kind-agnostic. Built once, moved into whichever
+        // constructor the kind selects below (match arms are mutually exclusive,
+        // so the single closure is moved exactly once per path). The explicit
+        // return type is REQUIRED: separated from its constructor, the closure
+        // would otherwise infer a concrete `Pin<Box<{async block}>>` that won't
+        // unify with the `Pin<Box<dyn Future>>` the three constructors expect —
+        // annotating drives the unsizing coercion at the `Box::pin` below.
+        let task_closure = move |_uuid: uuid::Uuid, _l: TokioJobScheduler| -> ScheduledTaskFuture {
+            tracing::info!("Scheduled task triggered for job '{}'", job_for_task.id);
             let task_job_id = job_for_task.id.clone();
             let current_jobs_arc = jobs_arc.clone();
             let local_storage_path = storage_path.clone();
@@ -282,6 +511,7 @@ impl Scheduler {
             let brain_for_task = brain_arc.clone();
             let persona_for_task = persona_arc.clone();
             let agent_config_for_task = agent_config_arc.clone();
+            let session_manager_for_task = session_manager_arc.clone();
 
             Box::pin(async move {
                 let should_execute = {
@@ -297,14 +527,19 @@ impl Scheduler {
                 }
 
                 let current_time = Utc::now();
-                {
+                // Snapshot the status the PREVIOUS fire left, before we overwrite
+                // it — used to dedup failure escalations to one per failure streak.
+                let prior_status = {
                     let mut jobs_guard = current_jobs_arc.lock().await;
-                    if let Some((_, job)) = jobs_guard.get_mut(&task_job_id) {
+                    jobs_guard.get_mut(&task_job_id).map(|(_, job)| {
+                        let prior = job.last_status;
                         job.last_run = Some(current_time);
                         job.currently_running = true;
                         job.process_start_time = Some(current_time);
-                    }
+                        prior
+                    })
                 }
+                .flatten();
 
                 if let Err(e) = persist_jobs(&local_storage_path, &current_jobs_arc).await {
                     tracing::error!("Failed to persist job status: {}", e);
@@ -322,52 +557,113 @@ impl Scheduler {
                 );
 
                 let job_start_instant = std::time::Instant::now();
-                let brain_snapshot = brain_for_task.read().await.clone();
-                let persona_snapshot = persona_for_task.read().await.clone();
-                let ac_snapshot = agent_config_for_task.read().await.clone();
-                // Isolate a job panic (durability F3): without this, an
-                // `.unwrap()`/index/overflow inside execute_job would unwind past
-                // here and could take down the whole cron loop — freezing ALL
-                // future firings of ALL jobs. catch_unwind converts the panic into
-                // an Err so the cleanup below (clearing `currently_running`) still
-                // runs and other jobs keep firing.
-                let result = std::panic::AssertUnwindSafe(execute_job(
-                    job_to_execute,
-                    current_jobs_arc.clone(),
-                    task_job_id.clone(),
-                    cancel_token.clone(),
-                    brain_snapshot,
-                    persona_snapshot,
-                    ac_snapshot,
-                ))
-                .catch_unwind()
-                .await
-                .unwrap_or_else(|panic| {
-                    let msg = panic
-                        .downcast_ref::<&str>()
-                        .map(|s| s.to_string())
-                        .or_else(|| panic.downcast_ref::<String>().cloned())
-                        .unwrap_or_else(|| "<non-string panic payload>".to_string());
-                    tracing::error!(
-                        target: "durability",
-                        job = %task_job_id,
-                        "scheduler job panicked (contained, loop survives): {msg}"
-                    );
-                    Err(anyhow!("job '{}' panicked: {}", task_job_id, msg))
-                });
+
+                // ── Bounded retry loop ──
+                // Attempt the run; on failure with retries remaining, back off and
+                // retry INLINE (the fire stays `currently_running` for its whole
+                // retry sequence). Bounded by the live `max_retries`, so a flapping
+                // job can never storm. Default max_retries=0 → a single attempt,
+                // exactly today's behavior.
+                let mut attempt: u32 = 0;
+                let final_result = loop {
+                    let brain_snapshot = brain_for_task.read().await.clone();
+                    let persona_snapshot = persona_for_task.read().await.clone();
+                    let ac_snapshot = agent_config_for_task.read().await.clone();
+                    // Isolate a job panic (durability F3): a panic inside
+                    // execute_job is converted to an Err so cleanup still runs and
+                    // other jobs keep firing.
+                    let attempt_result = std::panic::AssertUnwindSafe(execute_job(
+                        job_to_execute.clone(),
+                        current_jobs_arc.clone(),
+                        task_job_id.clone(),
+                        cancel_token.clone(),
+                        brain_snapshot,
+                        persona_snapshot,
+                        ac_snapshot,
+                    ))
+                    .catch_unwind()
+                    .await
+                    .unwrap_or_else(|panic| {
+                        let msg = panic
+                            .downcast_ref::<&str>()
+                            .map(|s| s.to_string())
+                            .or_else(|| panic.downcast_ref::<String>().cloned())
+                            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+                        tracing::error!(
+                            target: "durability",
+                            job = %task_job_id,
+                            "scheduler job panicked (contained, loop survives): {msg}"
+                        );
+                        Err(anyhow!("job '{}' panicked: {}", task_job_id, msg))
+                    });
+
+                    match attempt_result {
+                        Ok(session_id) => break Ok(session_id),
+                        Err(e) => {
+                            let max_retries = {
+                                let g = current_jobs_arc.lock().await;
+                                g.get(&task_job_id).map(|(_, j)| j.max_retries).unwrap_or(0)
+                            };
+                            if attempt < max_retries && !cancel_token.is_cancelled() {
+                                attempt += 1;
+                                {
+                                    let mut g = current_jobs_arc.lock().await;
+                                    if let Some((_, j)) = g.get_mut(&task_job_id) {
+                                        j.retry_count = attempt;
+                                        j.last_status = Some(ScheduleRunStatus::Error);
+                                        j.last_error = Some(e.to_string());
+                                    }
+                                }
+                                let _ = persist_jobs(&local_storage_path, &current_jobs_arc).await;
+                                let backoff = retry_backoff(attempt);
+                                tracing::warn!(
+                                    target: "durability",
+                                    job = %task_job_id,
+                                    "scheduled job failed (attempt {}/{}), retrying in {:?}: {}",
+                                    attempt, max_retries, backoff, e
+                                );
+                                tokio::time::sleep(backoff).await;
+                                continue;
+                            }
+                            break Err(e);
+                        }
+                    }
+                };
 
                 {
                     let mut tasks = running_tasks.lock().await;
                     tasks.remove(&task_job_id);
                 }
 
-                {
+                // Record terminal outcome onto the job's reliability fields.
+                let (max_retries, retry_spent) = {
                     let mut jobs_guard = current_jobs_arc.lock().await;
                     if let Some((_, job)) = jobs_guard.get_mut(&task_job_id) {
                         job.currently_running = false;
                         job.current_session_id = None;
                         job.process_start_time = None;
+                        job.run_count = job.run_count.saturating_add(1);
+                        match &final_result {
+                            Ok(_) => {
+                                job.last_status = Some(ScheduleRunStatus::Ok);
+                                job.last_error = None;
+                                job.retry_count = 0;
+                            }
+                            Err(e) => {
+                                job.last_status = Some(ScheduleRunStatus::Error);
+                                job.last_error = Some(e.to_string());
+                            }
+                        }
+                        (job.max_retries, job.retry_count)
+                    } else {
+                        (0, 0)
                     }
+                };
+
+                // One-shot jobs are done the moment they fire — remove so they
+                // never re-run on restart (the durable "fire exactly once").
+                if is_one_shot {
+                    current_jobs_arc.lock().await.remove(&task_job_id);
                 }
 
                 if let Err(e) = persist_jobs(&local_storage_path, &current_jobs_arc).await {
@@ -375,7 +671,7 @@ impl Scheduler {
                 }
 
                 let duration_ms = job_start_instant.elapsed().as_millis() as u64;
-                match result {
+                match final_result {
                     Ok(ref session_id) => {
                         tracing::info!("Job '{}' completed", task_job_id);
                         crate::events::activity::emit_activity(
@@ -399,11 +695,70 @@ impl Scheduler {
                         );
                         #[cfg(feature = "telemetry")]
                         crate::posthog::emit_error("scheduler_job_failed", &e.to_string());
+
+                        // Escalate to the Decision Inbox when a job the user gave
+                        // retries to has exhausted them (i.e. it "keeps failing").
+                        // Deduped to one decision per failure streak via
+                        // `prior_status`, so a job that fails every fire does not
+                        // spam. Default jobs (max_retries=0) never escalate —
+                        // exactly today's behavior. Best-effort: logged, never
+                        // fatal to the loop.
+                        if should_escalate_failure(max_retries, prior_status) {
+                            escalate_persistent_failure(
+                                &session_manager_for_task,
+                                &task_job_id,
+                                retry_spent,
+                                max_retries,
+                                &e.to_string(),
+                            )
+                            .await;
+                        }
                     }
                 }
             })
-        })
-        .map_err(|e| SchedulerError::CronParseError(e.to_string()))
+        };
+
+        // ── Kind dispatch ── one-shot / interval / cron(tz). ──────────────────
+        let build_result = if let Some(at) = job.at {
+            // Fire once, `at - now` from now (clamped to zero if already due →
+            // a startup catch-up for a one-shot missed during downtime).
+            let delay = at
+                .signed_duration_since(Utc::now())
+                .to_std()
+                .unwrap_or(std::time::Duration::ZERO);
+            Job::new_one_shot_async(delay, task_closure)
+        } else if let Some(secs) = job.every_seconds {
+            Job::new_repeated_async(std::time::Duration::from_secs(secs), task_closure)
+        } else {
+            // Cron (the default kind). Validate/normalize field count here only —
+            // one-shot/interval jobs carry an empty cron.
+            let cron_parts: Vec<&str> = job.cron.split_whitespace().collect();
+            let cron = match cron_parts.len() {
+                5 => {
+                    tracing::warn!(
+                        "Job '{}' has legacy 5-field cron '{}', converting to 6-field",
+                        job.id,
+                        job.cron
+                    );
+                    format!("0 {}", job.cron)
+                }
+                6 => job.cron.clone(),
+                _ => {
+                    return Err(SchedulerError::CronParseError(format!(
+                        "Invalid cron expression '{}': expected 5 or 6 fields, got {}",
+                        job.cron,
+                        cron_parts.len()
+                    )))
+                }
+            };
+            match resolve_cron_timezone(job.tz.as_deref()) {
+                CronTimezone::Local => {
+                    Job::new_async_tz(&cron, Local::now().timezone(), task_closure)
+                }
+                CronTimezone::Fixed(offset) => Job::new_async_tz(&cron, offset, task_closure),
+            }
+        };
+        build_result.map_err(|e| SchedulerError::CronParseError(e.to_string()))
     }
 
     pub async fn add_scheduled_job(
@@ -411,6 +766,10 @@ impl Scheduler {
         original_job_spec: ScheduledJob,
         make_copy: bool,
     ) -> Result<(), SchedulerError> {
+        // Central kind guard: every entry point (route, agent tool, trait) funnels
+        // here, so exactly-one-of cron/at/every and interval bounds are enforced
+        // once. Existing cron-only callers pass validation unchanged.
+        validate_schedule_spec(&original_job_spec).map_err(SchedulerError::InvalidScheduleSpec)?;
         {
             let jobs_guard = self.jobs.lock().await;
             if jobs_guard.contains_key(&original_job_spec.id) {
@@ -443,7 +802,7 @@ impl Scheduler {
             stored_job.process_start_time = None;
         }
 
-        let cron_task = self.create_cron_task(stored_job.clone())?;
+        let cron_task = self.create_job_task(stored_job.clone())?;
 
         let job_uuid = self
             .tokio_scheduler
@@ -495,6 +854,7 @@ impl Scheduler {
                         starter_version: None,
                         starter_content_hash: None,
                         user_customized: None,
+                        ..Default::default()
                     };
                     self.add_scheduled_job(job, false).await
                 }
@@ -605,11 +965,28 @@ impl Scheduler {
                 crons_normalized = true;
             }
 
-            let cron_task = match self.create_cron_task(job_to_load.clone()) {
+            // Missed-run detection (feature B): if a scheduled fire was due while
+            // the daemon was down, flag it so the Automate tab shows `Missed`
+            // (amber). Detection only — we deliberately do NOT auto-execute a
+            // catch-up for cron/interval jobs here (that would risk a wake-storm
+            // and runs before brain/persona are wired); the job runs at its next
+            // natural tick. One-shot jobs self-catch-up: they re-arm below with a
+            // zero delay and fire once immediately, then delete themselves.
+            if is_run_missed(&job_to_load, Utc::now()) {
+                tracing::warn!(
+                    target: "durability",
+                    "Job '{}' missed a scheduled run during downtime; marking Missed",
+                    job_to_load.id
+                );
+                job_to_load.last_status = Some(ScheduleRunStatus::Missed);
+                reconciled = true;
+            }
+
+            let cron_task = match self.create_job_task(job_to_load.clone()) {
                 Ok(task) => task,
                 Err(e) => {
                     tracing::error!(
-                        "Failed to create cron task for job '{}': {}. Skipping.",
+                        "Failed to create task for job '{}': {}. Skipping.",
                         job_to_load.id,
                         e
                     );
@@ -684,7 +1061,7 @@ impl Scheduler {
                 );
                 continue;
             }
-            let cron_task = match self.create_cron_task(job.clone()) {
+            let cron_task = match self.create_job_task(job.clone()) {
                 Ok(t) => t,
                 Err(e) => {
                     tracing::error!(
@@ -927,10 +1304,81 @@ impl Scheduler {
             .await
             .map_err(|e| SchedulerError::SchedulerInternalError(e.to_string()))?;
 
-        let cron_task = self.create_cron_task(updated_job)?;
+        let cron_task = self.create_job_task(updated_job)?;
         let new_uuid = self
             .tokio_scheduler
             .add(cron_task)
+            .await
+            .map_err(|e| SchedulerError::SchedulerInternalError(e.to_string()))?;
+
+        {
+            let mut jobs_guard = self.jobs.lock().await;
+            if let Some((uuid, _)) = jobs_guard.get_mut(sched_id) {
+                *uuid = new_uuid;
+            }
+        }
+
+        persist_jobs(&self.storage_path, &self.jobs).await
+    }
+
+    /// Generalized reschedule: change a job's KIND (cron / one-time / interval)
+    /// and/or timezone, then re-arm. Sibling to `update_schedule` (which stays
+    /// cron-only for back-compat). Setting one kind clears the others so the
+    /// exactly-one invariant holds; `validate_schedule_spec` re-checks it. A
+    /// currently-running job cannot be rescheduled.
+    pub async fn update_schedule_spec(
+        &self,
+        sched_id: &str,
+        cron: Option<String>,
+        at: Option<DateTime<Utc>>,
+        every_seconds: Option<u64>,
+        tz: Option<String>,
+    ) -> Result<(), SchedulerError> {
+        let (old_uuid, updated_job) = {
+            let mut jobs_guard = self.jobs.lock().await;
+            match jobs_guard.get_mut(sched_id) {
+                Some((uuid, job)) => {
+                    if job.currently_running {
+                        return Err(SchedulerError::AnyhowError(anyhow!(
+                            "Cannot update running schedule '{}'",
+                            sched_id
+                        )));
+                    }
+                    // Apply exactly one kind, clearing the others.
+                    if let Some(c) = cron {
+                        job.cron = c;
+                        job.at = None;
+                        job.every_seconds = None;
+                    } else if let Some(a) = at {
+                        job.at = Some(a);
+                        job.cron = String::new();
+                        job.every_seconds = None;
+                    } else if let Some(s) = every_seconds {
+                        job.every_seconds = Some(s);
+                        job.cron = String::new();
+                        job.at = None;
+                    }
+                    // tz is independent of kind (applies to cron/at evaluation).
+                    if tz.is_some() {
+                        job.tz = tz;
+                    }
+                    (*uuid, job.clone())
+                }
+                None => return Err(SchedulerError::JobNotFound(sched_id.to_string())),
+            }
+        };
+
+        validate_schedule_spec(&updated_job).map_err(SchedulerError::InvalidScheduleSpec)?;
+
+        self.tokio_scheduler
+            .remove(&old_uuid)
+            .await
+            .map_err(|e| SchedulerError::SchedulerInternalError(e.to_string()))?;
+
+        let task = self.create_job_task(updated_job)?;
+        let new_uuid = self
+            .tokio_scheduler
+            .add(task)
             .await
             .map_err(|e| SchedulerError::SchedulerInternalError(e.to_string()))?;
 
@@ -984,6 +1432,92 @@ impl Scheduler {
             Some(_) => Ok(None),
             None => Err(SchedulerError::JobNotFound(sched_id.to_string())),
         }
+    }
+}
+
+/// Escalate a persistently-failing scheduled job to the Decision Inbox so the
+/// user is asked to intervene. Mirrors the Enricher's creation path (#495): build
+/// a typed [`crate::decisions::NewDecision`] and call `create_decision`. We reuse
+/// the existing `unblock` kind with reason `AttemptCap` — semantically "an
+/// automated process exhausted its retry budget and is parked, needing human
+/// direction", which is exactly a scheduled job that keeps failing. No new
+/// `DecisionKind` is invented.
+///
+/// Best-effort by contract: any failure (pool unavailable, schema absent in a
+/// test pool, malformed) is logged and swallowed — a failed escalation must
+/// never take down the scheduler loop.
+async fn escalate_persistent_failure(
+    session_manager: &SessionManager,
+    job_id: &str,
+    retry_spent: u32,
+    max_retries: u32,
+    error: &str,
+) {
+    let pool = match session_manager.pool_clone().await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(
+                target: "permagentd::scheduler",
+                "Failed-job escalation for '{}' skipped: no pool: {}",
+                job_id, e
+            );
+            return;
+        }
+    };
+
+    let payload = crate::decisions::UnblockPayload {
+        reason: crate::decisions::UnblockReason::AttemptCap,
+        spent: Some(retry_spent as u64),
+        cap: Some(max_retries as u64),
+    };
+    let payload_json = match serde_json::to_value(&payload) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                target: "permagentd::scheduler",
+                "Failed-job escalation for '{}' skipped: payload serialize: {}",
+                job_id, e
+            );
+            return;
+        }
+    };
+
+    // Headline is user-facing and must be <= 80 chars (create_decision enforces).
+    let mut headline = format!("A scheduled job keeps failing: {}", job_id);
+    if headline.chars().count() > 80 {
+        headline = headline.chars().take(79).collect::<String>() + "…";
+    }
+    let detail = format!(
+        "Scheduled job '{}' failed after exhausting {} of {} retries. Last error: {}. \
+         Intervene from the Automate tab (pause, edit, or delete it).",
+        job_id, retry_spent, max_retries, error
+    );
+
+    let req = crate::decisions::NewDecision {
+        kind: "unblock".to_string(),
+        project_id: Some(crate::projects::PERSONAL_PROJECT_ID.to_string()),
+        headline: Some(headline),
+        detail: Some(detail),
+        payload: payload_json,
+        ..Default::default()
+    };
+
+    match crate::decisions::create_decision(&pool, req).await {
+        Ok(d) if d.kind == "malformed" => tracing::warn!(
+            target: "permagentd::scheduler",
+            "Failed-job escalation for '{}' stored as malformed: {}",
+            job_id, d.detail
+        ),
+        Ok(d) => tracing::info!(
+            target: "permagentd::scheduler",
+            "Escalated failing job '{}' to Decision Inbox as decision {}",
+            job_id, d.id
+        ),
+        Err(e) => tracing::warn!(
+            target: "permagentd::scheduler",
+            "Failed-job escalation for '{}' failed: {}",
+            job_id, e
+        ),
     }
 }
 
@@ -1483,6 +2017,18 @@ impl SchedulerTrait for Scheduler {
         self.update_schedule(sched_id, new_cron).await
     }
 
+    async fn update_schedule_spec(
+        &self,
+        sched_id: &str,
+        cron: Option<String>,
+        at: Option<DateTime<Utc>>,
+        every_seconds: Option<u64>,
+        tz: Option<String>,
+    ) -> Result<(), SchedulerError> {
+        self.update_schedule_spec(sched_id, cron, at, every_seconds, tz)
+            .await
+    }
+
     async fn kill_running_job(&self, sched_id: &str) -> Result<(), SchedulerError> {
         self.kill_running_job(sched_id).await
     }
@@ -1548,9 +2094,212 @@ mod tests {
         );
         // Already 6-field → no change (idempotent).
         assert_eq!(normalize_cron_to_6field("0 0 6 * * 1-5"), None);
-        // Other field counts left untouched (create_cron_task surfaces the error).
+        // Other field counts left untouched (create_job_task surfaces the error).
         assert_eq!(normalize_cron_to_6field("* * * *"), None);
         assert_eq!(normalize_cron_to_6field(""), None);
+    }
+
+    fn ts(s: &str) -> DateTime<Utc> {
+        s.parse::<DateTime<Utc>>().unwrap()
+    }
+
+    /// DURABILITY / back-compat proof: an old `schedule.json` entry with NONE of
+    /// the new reliability/kind fields deserializes cleanly, with every new field
+    /// taking its serde default. This is the property that lets us add fields
+    /// with zero migration.
+    #[test]
+    fn old_schedule_json_loads_with_defaults() {
+        // Exactly the pre-PR shape (a real legacy cron job) — no run_count,
+        // max_retries, last_status, at, every_seconds, tz, etc.
+        let old = r#"{
+            "id": "legacy-job",
+            "source": "/recipes/legacy.yaml",
+            "cron": "0 0 8 * * 1-5",
+            "last_run": "2026-01-01T08:00:00Z",
+            "currently_running": false,
+            "paused": false,
+            "current_session_id": null,
+            "process_start_time": null,
+            "starter_id": "storage-insights"
+        }"#;
+        let job: ScheduledJob = serde_json::from_str(old).expect("old schedule.json must load");
+        assert_eq!(job.id, "legacy-job");
+        assert_eq!(job.cron, "0 0 8 * * 1-5");
+        assert_eq!(job.starter_id.as_deref(), Some("storage-insights"));
+        // New fields default — behavior is unchanged for this job.
+        assert_eq!(job.run_count, 0);
+        assert_eq!(job.retry_count, 0);
+        assert_eq!(job.max_retries, 0, "default 0 → no retry, today's behavior");
+        assert_eq!(job.last_status, None);
+        assert_eq!(job.last_error, None);
+        assert_eq!(job.at, None);
+        assert_eq!(job.every_seconds, None);
+        assert_eq!(job.tz, None);
+        // A whole list round-trips too (this is how the store is actually read).
+        let list: Vec<ScheduledJob> =
+            serde_json::from_str(&format!("[{}]", old)).expect("list must load");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].max_retries, 0);
+    }
+
+    /// Kind → validation: EXACTLY one of cron/at/every, with interval bounds.
+    #[test]
+    fn validate_schedule_spec_requires_exactly_one_kind() {
+        // Cron only (today's default) — valid.
+        let cron_job = ScheduledJob {
+            cron: "0 0 * * * *".to_string(),
+            ..Default::default()
+        };
+        assert!(validate_schedule_spec(&cron_job).is_ok());
+        // One-time only — valid.
+        let at_job = ScheduledJob {
+            at: Some(ts("2026-02-01T00:00:00Z")),
+            ..Default::default()
+        };
+        assert!(validate_schedule_spec(&at_job).is_ok());
+        // Interval only — valid.
+        let every_job = ScheduledJob {
+            every_seconds: Some(3600),
+            ..Default::default()
+        };
+        assert!(validate_schedule_spec(&every_job).is_ok());
+        // Zero kinds — invalid.
+        assert!(validate_schedule_spec(&ScheduledJob::default()).is_err());
+        // Two kinds — invalid.
+        let two = ScheduledJob {
+            cron: "0 0 * * * *".to_string(),
+            every_seconds: Some(60),
+            ..Default::default()
+        };
+        assert!(validate_schedule_spec(&two).is_err());
+        // Interval out of bounds — invalid (0 and > 1 year).
+        assert!(validate_schedule_spec(&ScheduledJob {
+            every_seconds: Some(0),
+            ..Default::default()
+        })
+        .is_err());
+        assert!(validate_schedule_spec(&ScheduledJob {
+            every_seconds: Some(MAX_INTERVAL_SECS + 1),
+            ..Default::default()
+        })
+        .is_err());
+    }
+
+    /// Missed-run detection: given last_run + schedule + now → missed?
+    #[test]
+    fn is_run_missed_across_kinds() {
+        let last = ts("2026-01-01T00:00:00Z");
+
+        // Cron (hourly at :00): a fire at 01:00 was due by 02:00 → missed.
+        let cron_job = ScheduledJob {
+            cron: "0 0 * * * *".to_string(),
+            last_run: Some(last),
+            ..Default::default()
+        };
+        assert!(is_run_missed(&cron_job, ts("2026-01-01T02:00:00Z")));
+        // ...but only 30 min later, the next :00 hasn't arrived → not missed.
+        assert!(!is_run_missed(&cron_job, ts("2026-01-01T00:30:00Z")));
+        // Never-run cron can't be judged missed (no anchor).
+        let cron_never = ScheduledJob {
+            cron: "0 0 * * * *".to_string(),
+            ..Default::default()
+        };
+        assert!(!is_run_missed(&cron_never, ts("2030-01-01T00:00:00Z")));
+
+        // Interval (1h): 2h elapsed since last run → a fire was due → missed.
+        let every = ScheduledJob {
+            every_seconds: Some(3600),
+            last_run: Some(last),
+            ..Default::default()
+        };
+        assert!(is_run_missed(&every, ts("2026-01-01T02:00:00Z")));
+        assert!(!is_run_missed(&every, ts("2026-01-01T00:30:00Z")));
+
+        // One-time: at passed and never ran → missed; already ran → not.
+        let at_job = ScheduledJob {
+            at: Some(ts("2026-01-01T00:00:00Z")),
+            ..Default::default()
+        };
+        assert!(is_run_missed(&at_job, ts("2026-01-01T01:00:00Z")));
+        let at_ran = ScheduledJob {
+            at: Some(ts("2026-01-01T00:00:00Z")),
+            last_run: Some(ts("2026-01-01T00:00:01Z")),
+            ..Default::default()
+        };
+        assert!(!is_run_missed(&at_ran, ts("2026-01-01T01:00:00Z")));
+
+        // Paused jobs are never missed.
+        let paused = ScheduledJob {
+            every_seconds: Some(3600),
+            last_run: Some(last),
+            paused: true,
+            ..Default::default()
+        };
+        assert!(!is_run_missed(&paused, ts("2026-01-01T05:00:00Z")));
+    }
+
+    /// Escalation gate: only when retries were configured AND this is the first
+    /// failure of a streak (dedup across fires); default jobs never escalate.
+    #[test]
+    fn should_escalate_failure_gates_on_retries_and_streak() {
+        // No retries configured → never escalate (preserves today's behavior).
+        assert!(!should_escalate_failure(0, None));
+        assert!(!should_escalate_failure(0, Some(ScheduleRunStatus::Error)));
+        // Retries configured, first failure of a streak → escalate.
+        assert!(should_escalate_failure(3, None));
+        assert!(should_escalate_failure(3, Some(ScheduleRunStatus::Ok)));
+        assert!(should_escalate_failure(3, Some(ScheduleRunStatus::Missed)));
+        // Already Error last time → deduped (don't re-escalate every fire).
+        assert!(!should_escalate_failure(3, Some(ScheduleRunStatus::Error)));
+    }
+
+    #[test]
+    fn retry_backoff_is_bounded_and_monotonic() {
+        assert_eq!(retry_backoff(1), std::time::Duration::from_secs(10));
+        assert_eq!(retry_backoff(2), std::time::Duration::from_secs(20));
+        assert_eq!(retry_backoff(3), std::time::Duration::from_secs(40));
+        // Capped at RETRY_MAX_SECS, and no overflow at large attempt counts.
+        assert_eq!(
+            retry_backoff(1000),
+            std::time::Duration::from_secs(RETRY_MAX_SECS)
+        );
+    }
+
+    #[test]
+    fn timezone_resolution_offsets_and_fallback() {
+        assert_eq!(parse_fixed_offset("+05:30"), FixedOffset::east_opt(19800));
+        assert_eq!(parse_fixed_offset("-08:00"), FixedOffset::east_opt(-28800));
+        assert_eq!(parse_fixed_offset("+0000"), FixedOffset::east_opt(0));
+        assert_eq!(parse_fixed_offset("not-an-offset"), None);
+        // "UTC"/"Z" resolve to a fixed +00:00; an IANA name falls back to Local.
+        assert!(matches!(
+            resolve_cron_timezone(Some("UTC")),
+            CronTimezone::Fixed(_)
+        ));
+        assert!(matches!(resolve_cron_timezone(None), CronTimezone::Local));
+        assert!(matches!(
+            resolve_cron_timezone(Some("America/New_York")),
+            CronTimezone::Local
+        ));
+    }
+
+    /// Escalation end-to-end: a persistent failure files an `unblock` decision
+    /// into the Decision Inbox (the same table the Enricher writes to).
+    #[tokio::test]
+    async fn escalation_creates_unblock_decision() {
+        let temp = tempdir().unwrap();
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        escalate_persistent_failure(&sm, "flaky-digest", 3, 3, "provider timeout").await;
+
+        let pool = sm.pool_clone().await.unwrap();
+        let open = crate::decisions::list_open_decisions(&pool).await.unwrap();
+        assert_eq!(open.len(), 1, "one decision should be filed");
+        assert_eq!(open[0].decision.kind, "unblock");
+        assert!(
+            open[0].decision.detail.contains("flaky-digest"),
+            "detail names the job: {}",
+            open[0].decision.detail
+        );
     }
 
     #[tokio::test]
@@ -1581,6 +2330,7 @@ mod tests {
             starter_version: None,
             starter_content_hash: None,
             user_customized: None,
+            ..Default::default()
         };
 
         scheduler.add_scheduled_job(job, true).await.unwrap();
@@ -1618,6 +2368,7 @@ mod tests {
             starter_version: None,
             starter_content_hash: None,
             user_customized: None,
+            ..Default::default()
         };
 
         scheduler.add_scheduled_job(job, true).await.unwrap();
@@ -1662,6 +2413,7 @@ mod tests {
             starter_version: None,
             starter_content_hash: None,
             user_customized: None,
+            ..Default::default()
         };
 
         // Schedule the job and let it run — should not panic

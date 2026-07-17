@@ -448,6 +448,7 @@ fn event_type_str(t: &ActivityEventType) -> &'static str {
         ActivityEventType::AutomationJobCompleted => "automation_job_completed",
         ActivityEventType::AutomationJobFailed => "automation_job_failed",
         ActivityEventType::StarterRecipeUpgraded => "starter_recipe_upgraded",
+        ActivityEventType::GoalEscalated => "goal_escalated",
     }
 }
 

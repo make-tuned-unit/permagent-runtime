@@ -161,7 +161,14 @@ impl ContextBuilder {
             let recognition_ctx = spectral::graph::RecognitionContext::empty()
                 .with_persona(crate::config::agent_identity::DEFAULT_PERSONA_KEY);
             // Called from spawn_blocking context — use raw handle.
-            match brain.recall_cascade(&q, &recognition_ctx, &Default::default()) {
+            // Cascade config defaults to a no-op except `spread`, resolved from
+            // the PERMAGENT_ACR_MODE toggle (OFF by default). Same resolver as
+            // the SafeBrain::recall_cascade wrapper, so every path agrees.
+            let cascade_config = spectral::graph::cascade_layers::CascadePipelineConfig {
+                spread: crate::brain_handle::acr_spread_config(),
+                ..Default::default()
+            };
+            match brain.recall_cascade(&q, &recognition_ctx, &cascade_config) {
                 Ok(result) => result
                     .merged_hits
                     .into_iter()

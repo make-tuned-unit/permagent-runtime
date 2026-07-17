@@ -234,6 +234,7 @@ pub enum PermagentEventType {
     SkillProposed,
     SkillSaved,
     SkillTriggered,
+    SkillRetired,
     // Session / Chat
     MessageReceived,
     StreamChunk,
@@ -252,6 +253,14 @@ pub enum PermagentEventType {
     /// The agent asked the in-app browser to open a URL (#567). The frontend
     /// bridge listens and routes it to the Build tab's browser.
     BrowserNavigateRequested,
+    /// The agent asked for a snapshot of the open page's interactive elements
+    /// (#649). The frontend bridge injects the grounding script and POSTs the
+    /// stamped a11y refs back.
+    BrowserSnapshotRequested,
+    /// The agent asked to act on a ref — click / type / select (#649). Payload
+    /// carries the ref, action and value; the frontend performs it and POSTs a
+    /// fresh snapshot back.
+    BrowserActRequested,
     // App navigation (chat agent → frontend)
     AppNavigate,
     // App action — act WITHIN a surface, not just navigate to it (chat agent →
@@ -491,6 +500,18 @@ pub fn skill_triggered(skill_id: &str, execution_id: &str, trigger_type: &str) -
     )
 }
 
+/// A saved skill was auto-archived by the retirement sweep for never firing
+/// within the grace window.
+pub fn skill_retired(skill_id: &str, name: &str) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::SkillRetired,
+        serde_json::json!({
+            "skill_id": skill_id,
+            "name": name,
+        }),
+    )
+}
+
 pub fn message_received(session_id: &str, role: &str, content_preview: &str) -> PermagentEvent {
     PermagentEvent::new(
         PermagentEventType::MessageReceived,
@@ -681,11 +702,15 @@ mod tests {
         emit(event.clone());
 
         // Try to receive (non-blocking would need tokio runtime)
-        // Just verify buffer works
+        // Just verify buffer works. The buffer is process-global and sibling
+        // tests emit concurrently, so assert OUR event is present by id —
+        // `.last()` races with whatever another test emitted after us.
         let buffered = buffered_events();
         assert!(!buffered.is_empty());
-        let last = buffered.last().unwrap();
-        assert_eq!(last.event_type, PermagentEventType::DaemonStarted);
+        assert!(
+            buffered.iter().any(|e| e.id == event.id),
+            "emitted event not found in buffer"
+        );
     }
 
     #[test]

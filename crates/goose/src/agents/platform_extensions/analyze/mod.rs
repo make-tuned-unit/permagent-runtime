@@ -2,6 +2,7 @@ pub mod format;
 pub mod graph;
 pub mod languages;
 pub mod parser;
+pub mod repo_map;
 
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
@@ -204,6 +205,85 @@ impl AnalyzeClient {
         }
     }
 }
+
+/// A persisted **code map**: the rendered directory/symbol overview plus the
+/// count of files that parsed into it — what a caller reports as "indexed N
+/// files".
+pub struct CodeMap {
+    /// Rendered map text — byte-identical to the `analyze` tool's directory
+    /// (structure) mode for the same root and depth.
+    pub text: String,
+    /// Files that parsed into the map (matches the map header's own count).
+    pub files: usize,
+}
+
+/// Build a project **code map** for durable persistence: the same
+/// directory-structure overview the `analyze` tool renders for a directory (a
+/// file tree with per-file LOC / function / class digests), returned as a plain
+/// `String` instead of streamed to a transcript.
+///
+/// Reuses the tool's own collect → parallel-parse → format pipeline (identical
+/// to the private `structure_mode`) so the stored map is byte-identical to what
+/// the agent sees interactively. `max_depth` follows the tool's semantics
+/// (0 = unlimited); [`ignore::WalkBuilder`] honors `.gitignore` / hidden-file
+/// rules, so build artifacts (`node_modules`, `target`, `.git`, …) are excluded
+/// without extra config. The tool's transcript size guard
+/// ([`format::check_size`]) is intentionally *not* applied — a persisted memory
+/// is not a transcript, and the caller owns any truncation policy.
+pub fn build_code_map(root: &Path, max_depth: u32) -> CodeMap {
+    let files = AnalyzeClient::collect_files(root, max_depth);
+    let total_files = files.len();
+    let analyses: Vec<FileAnalysis> = files
+        .par_iter()
+        .filter_map(|f| AnalyzeClient::analyze_file(f))
+        .collect();
+    let text = format::format_structure(&analyses, root, max_depth, total_files);
+    CodeMap {
+        files: analyses.len(),
+        text,
+    }
+}
+
+/// Self-knowledge descriptor for the **codebase index** surface (#471): a
+/// project's code can be parsed into a durable, project-scoped code map in the
+/// Brain, then recalled and described like its documents. Co-located with
+/// [`build_code_map`] (the pass that produces the persisted map); aggregated by
+/// `crate::agents::self_knowledge::SURFACE_DESCRIPTORS`. Static — the capability
+/// is described without claiming a live per-project index status.
+pub const CODEBASE_INDEX_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "codebase",
+        display_name: "Codebase Index",
+        category: crate::agents::self_knowledge::FeatureCategory::Surface,
+        what_it_does:
+            "A project's codebase can be indexed into your Brain — the analyze extension's tree-sitter pass renders a durable code map of its directory structure and per-file symbols, stored and scoped to that project exactly as dropped documents and written notes are",
+        why_it_matters:
+            "It makes a codebase a first-class thing you remember and recall — not a transcript you parse once and forget; once a project is indexed you can recall how its code is shaped and what its symbols are without re-reading every file, and the Librarian describes the map just as it describes documents",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        // Onboarding lesson (Jesse's rule: every user-facing capability carries
+        // teaching steps, not just a descriptor). A Static surface that writes to
+        // the Brain confirms by the MemoryRecallable proxy — the sanctioned
+        // read-back when there is no live status to poll (mirrors the Reader).
+        teaching: &[
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Open a project's codebase",
+                body: "Take them to Projects, open a project that has a code folder, and point out the Codebase panel on its Overview — where its code can be indexed into your Brain the way its documents and notes already are.",
+                open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                    tab: "Projects",
+                    section: None,
+                }),
+                confirm: None,
+            },
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Index it, then ask about the code",
+                body: "Offer to index the project's code for them, then prove it landed: have them ask you about the codebase — its shape, where something lives, what its main pieces are — and answer from the code map you just stored, not by re-reading files.",
+                open_surface: None,
+                confirm: Some(crate::agents::self_knowledge::ConfirmCheck::MemoryRecallable(
+                    "this project's code structure and symbols — the code map you just indexed",
+                )),
+            },
+        ],
+    };
 
 #[async_trait]
 impl McpClientTrait for AnalyzeClient {
@@ -437,5 +517,29 @@ fn helper() { validate(0); }
         let big = "x".repeat(60_000);
         assert!(format::check_size(&big, false).is_err());
         assert!(format::check_size(&big, true).is_ok());
+    }
+
+    #[test]
+    fn build_code_map_reuses_structure_pass() {
+        let tmp = tempdir().unwrap();
+        fs::write(
+            tmp.path().join("lib.rs"),
+            "use std::io;\nfn read() {}\nfn write() {}\nstruct Buffer;\n",
+        )
+        .unwrap();
+        fs::write(
+            tmp.path().join("app.py"),
+            "import os\nclass App:\n    pass\ndef main():\n    pass\n",
+        )
+        .unwrap();
+
+        let map = build_code_map(tmp.path(), 0);
+        // Both supported files parsed into the map.
+        assert_eq!(map.files, 2);
+        // The persisted text is the same structure overview the tool renders to
+        // a transcript — so a stored code map reads identically to a live one.
+        assert!(map.text.contains("2 files"));
+        assert!(map.text.contains("lib.rs"));
+        assert!(map.text.contains("app.py"));
     }
 }
