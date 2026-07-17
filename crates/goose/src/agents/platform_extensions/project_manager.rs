@@ -200,7 +200,10 @@ pub const CODING_HARNESS_FEATURE: crate::agents::self_knowledge::FeatureDescript
              refuses any edit that would introduce a syntax error, a token-efficient structured \
              search, the analyze code-structure tool, and a ranked-tags repo-map auto-loaded into \
              its context for cheap orientation, and it verifies its own work by building and \
-             running tests — with runaway-loop safety and a live cost meter always on",
+             running tests; on a substantive change, once its own tests pass an independent, \
+             different-model reviewer adversarially checks the diff — for correctness, security, \
+             spec-fit, and test-integrity — before it calls the work done, all under \
+             runaway-loop safety and a live cost meter always on",
         why_it_matters:
             "It is the answer when the user says 'build this with the Permagent harness': you \
              launch it from the Build tab and it codes with your own loop, keeping the expensive \
