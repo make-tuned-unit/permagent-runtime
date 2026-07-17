@@ -3,7 +3,7 @@
  * Aligned with the actual permagentd endpoints.
  */
 
-import type { ProjectDocument, ProjectNote } from '../components/projects/types';
+import type { ProjectDocument, ProjectNote, ProjectMemory } from '../components/projects/types';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 const API_BASE_URL = (
@@ -843,6 +843,15 @@ export const api = {
       `${API_BASE_URL}/api/projects/${encodeURIComponent(projectId)}/documents/${encodeURIComponent(docId)}`,
       { method: 'DELETE', headers: authHeaders() },
     ),
+
+  // ── Project memories (the Brain-loop read side, #587-adjacent) ─────────────
+
+  /** List the Brain memories associated with a project, resolved from the LIVE
+   *  Brain, newest association first. This is the read-back the Memories panel
+   *  and the panels' "View in Brain" links resolve their keys against — every
+   *  note / document / code-index write auto-associates, so they all appear. */
+  listProjectMemories: (projectId: string) =>
+    apiFetch<ProjectMemory[]>(`/api/projects/${encodeURIComponent(projectId)}/memories`),
 
   // ── Project notes (freeform notes indexed into the Brain) ──────────────────
 

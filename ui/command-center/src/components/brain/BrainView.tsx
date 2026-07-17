@@ -7,6 +7,7 @@ import { Mobius } from '../mobius/Mobius';
 import { BrainScene, type TypeFilters } from './BrainScene';
 import { useBrainData, type GraphMemory, type GraphEntity } from './useBrainData';
 import { BrainList } from './BrainList';
+import { resolveFocusedMemory, deriveMemoryTitle } from './brainMemoryFocus';
 
 type ViewMode = 'graph' | 'list';
 
@@ -64,6 +65,37 @@ export function BrainView() {
   const selectEntity = useCallback((ent: GraphEntity) => {
     setSelected({ id: ent.id, kind: ent.type, label: ent.name, note: ent.note, data: ent });
   }, []);
+
+  // Select a memory through the same channel (mirrors selectEntity + the list
+  // row's onSelect shape, so the side panel renders identically).
+  const selectMemory = useCallback((mem: GraphMemory) => {
+    setSelected({ id: mem.id, kind: 'memory', label: deriveMemoryTitle(mem), note: mem.text.slice(0, 120), data: mem });
+  }, []);
+
+  // Brain-loop deep-link (#587-adjacent): focus the memory a product surface
+  // asked to surface. Graph-preferred (real recency/chips); the caller's preview
+  // is the fallback when the memory isn't in the current graph — fresh,
+  // description-less writes are excluded from the graph's default view until the
+  // Librarian enriches them, so a just-created note/code memory needs the
+  // preview to render at all.
+  const pendingBrainMemory = useCommandCenter(s => s.pendingBrainMemory);
+  const clearPendingBrainMemory = useCommandCenter(s => s.clearPendingBrainMemory);
+  useEffect(() => {
+    if (!pendingBrainMemory) return;
+    const resolution = resolveFocusedMemory(pendingBrainMemory, data?.memories ?? []);
+    if (resolution.kind === 'none') {
+      // No graph hit and no preview. If the graph hasn't loaded yet, wait — it
+      // may still carry the memory. Once loaded, best-effort seed the search
+      // with the key rather than strand the click, then stop retrying.
+      if (data) {
+        if (pendingBrainMemory.key) setSearch(pendingBrainMemory.key);
+        clearPendingBrainMemory();
+      }
+      return;
+    }
+    selectMemory(resolution.memory);
+    clearPendingBrainMemory();
+  }, [pendingBrainMemory, data, selectMemory, clearPendingBrainMemory]);
 
   // Project entities link out to their real workspace: resolve the graph
   // entity to a project by name/slug, and offer "Open project" instead of a

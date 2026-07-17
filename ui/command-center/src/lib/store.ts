@@ -4,6 +4,7 @@ import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload, TokenS
 import { costFromFrame } from './costMeter';
 import { startEventPruning } from './eventBus';
 import type { ProjectPerson } from '../components/projects/types';
+import type { BrainMemoryTarget } from '../components/brain/brainMemoryFocus';
 
 // --- Types ---
 
@@ -284,6 +285,17 @@ interface CommandCenterStore {
   // --- Project navigation (from agent/voice) ---
   pendingProjectNavigation: string | null;
   setPendingProjectNavigation: (id: string | null) => void;
+
+  // --- Brain-loop: "View in Brain" deep-link (surface a specific memory) ---
+  // Product surfaces that write into the Brain (Projects Memories panel, Notes,
+  // Codebase index) close the loop by focusing the memory they created back in
+  // the Brain view. focusBrainMemory stashes the target + navigates to the Brain
+  // (the 'memory' tool); BrainView consumes it (graph-preferred, preview
+  // fallback) and opens that memory's side panel. Reusable by any future caller
+  // that has a memory id/key (e.g. the operator last-mile).
+  pendingBrainMemory: BrainMemoryTarget | null;
+  focusBrainMemory: (target: BrainMemoryTarget) => void;
+  clearPendingBrainMemory: () => void;
 
   // --- Settings deep-link (from agent/voice: "Settings → <pane>") ---
   pendingSettingsSection: string | null;
@@ -1135,6 +1147,17 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   // Project navigation (from agent/voice)
   pendingProjectNavigation: null,
   setPendingProjectNavigation: (id) => set({ pendingProjectNavigation: id }),
+
+  // Brain-loop "View in Brain" deep-link. Stash the target, then switch to the
+  // Brain workspace; BrainView consumes pendingBrainMemory on mount/refresh, so
+  // the focus still resolves if the Brain view was not yet open (mirrors the
+  // pendingBrowserUrl / pendingTerminalLaunch seams).
+  pendingBrainMemory: null,
+  focusBrainMemory: (target) => {
+    set({ pendingBrainMemory: target });
+    navigateToTool('memory');
+  },
+  clearPendingBrainMemory: () => set({ pendingBrainMemory: null }),
 
   pendingSettingsSection: null,
   setPendingSettingsSection: (section) => set({ pendingSettingsSection: section }),

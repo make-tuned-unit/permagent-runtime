@@ -98,6 +98,23 @@ export interface ProjectNote {
   updated_at: string;
 }
 
+/**
+ * A Brain memory associated with a project (`GET /api/projects/{id}/memories`).
+ * Resolved from the LIVE Brain (`memory.db`) — content/description reflect the
+ * current memory, not a stale copy. Serialized **snake_case** (the backend
+ * `ProjectMemory` struct carries no `rename_all`) — match the wire exactly.
+ * `id` is the Spectral memory id; `key` is the stable memory key.
+ */
+export interface ProjectMemory {
+  id: string;
+  key: string;
+  content: string;
+  description: string | null;
+  signal_score: number;
+  created_at: string;
+  associated_at: string;
+}
+
 /** The implicit Personal project — undeletable, can't change status. */
 export const PERSONAL_ID = '00000000-0000-0000-0000-000000000001';
 
