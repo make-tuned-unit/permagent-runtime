@@ -208,8 +208,10 @@ interface CommandCenterStore {
   sendMessage: (text: string, files?: File[]) => Promise<void>;
   /** Interrupt the in-flight turn: POST /sessions/{id}/cancel with the active
    *  request_id. The daemon emits a terminal Finish so the UI settles on the
-   *  normal stream path. Throws if the cancel POST fails (agent still alive). */
-  stopStreaming: () => Promise<void>;
+   *  normal stream path. Returns true if a cancel was issued, false if there was
+   *  nothing to cancel (idle, or the request_id hasn't landed yet); throws if the
+   *  cancel POST itself fails (agent still alive). */
+  stopStreaming: () => Promise<boolean>;
   /**
    * Decision Inbox deep-link (#303): open a fresh chat session seeded with a
    * decision's context and a context-aware opening turn. Set transiently while
@@ -765,11 +767,16 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
    * would let the next send race the slot (400 "already has an active request").
    * If the POST itself throws the agent is still alive, so we propagate rather
    * than lie that it stopped (the caller re-enables Stop to allow a retry).
+   * Returns false when there is nothing to cancel — including the brief window
+   * after a send where isStreaming is already true but the request_id hasn't
+   * come back yet — so the caller can drop its "stopping" affordance and let the
+   * user click again once the id lands (never a stuck, un-cancellable turn).
    */
   stopStreaming: async () => {
     const { chatSessionId, _activeRequestId, isStreaming } = get();
-    if (!isStreaming || !chatSessionId || !_activeRequestId) return;
+    if (!isStreaming || !chatSessionId || !_activeRequestId) return false;
     await api.cancelReply(chatSessionId, _activeRequestId);
+    return true;
   },
 
   /**

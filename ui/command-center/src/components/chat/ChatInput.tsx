@@ -78,7 +78,10 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
     try {
       // Server emits a terminal Finish on cancel, which settles the UI and frees
       // the request slot — so we wait for it rather than optimistically resetting.
-      await stopStreaming();
+      // If nothing was cancelled (the request_id hasn't landed yet), re-enable
+      // Stop so the click isn't swallowed and the turn stays cancellable.
+      const issued = await stopStreaming();
+      if (!issued) setStopping(false);
     } catch (err) {
       // Cancel POST failed (e.g. turn already ended, or network): the agent may
       // still be alive, so re-enable Stop instead of pretending it stopped.

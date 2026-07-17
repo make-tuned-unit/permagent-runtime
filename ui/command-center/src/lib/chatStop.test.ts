@@ -90,21 +90,24 @@ describe('active request tracking', () => {
 });
 
 describe('stopStreaming', () => {
-  it('POSTs cancel for the active request while streaming', async () => {
+  it('POSTs cancel for the active request while streaming and reports it', async () => {
     useCommandCenter.setState({ isStreaming: true, chatSessionId: 'sess-1', _activeRequestId: 'req-9' });
-    await useCommandCenter.getState().stopStreaming();
+    const issued = await useCommandCenter.getState().stopStreaming();
+    expect(issued).toBe(true);
     expect(cancelReply).toHaveBeenCalledWith('sess-1', 'req-9');
   });
 
-  it('is a no-op when not streaming', async () => {
+  it('is a no-op (returns false) when not streaming', async () => {
     useCommandCenter.setState({ isStreaming: false, chatSessionId: 'sess-1', _activeRequestId: 'req-9' });
-    await useCommandCenter.getState().stopStreaming();
+    const issued = await useCommandCenter.getState().stopStreaming();
+    expect(issued).toBe(false);
     expect(cancelReply).not.toHaveBeenCalled();
   });
 
-  it('is a no-op when there is no active request_id', async () => {
+  it('is a no-op (returns false) when the request_id has not landed yet', async () => {
     useCommandCenter.setState({ isStreaming: true, chatSessionId: 'sess-1', _activeRequestId: null });
-    await useCommandCenter.getState().stopStreaming();
+    const issued = await useCommandCenter.getState().stopStreaming();
+    expect(issued).toBe(false);
     expect(cancelReply).not.toHaveBeenCalled();
   });
 
