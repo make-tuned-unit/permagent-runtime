@@ -818,6 +818,13 @@ mod tests {
         assert!(brief.contains("**Cost optimizer**"));
         assert!(brief.contains("provider-agnostic"));
         assert!(brief.contains("launched from the Build tab"));
+        // The agent can now describe the independent adversarial reviewer gate:
+        // after its own tests pass, a different-model reviewer checks the diff
+        // before it calls the work done.
+        assert!(
+            brief.contains("different-model reviewer adversarially checks the diff"),
+            "the coding-harness self-knowledge must describe the independent reviewer gate"
+        );
     }
 
     /// **Branding guard (systems fix).** No user-facing capability string may

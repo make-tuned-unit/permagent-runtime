@@ -38,6 +38,7 @@ pub mod knowledge;
 pub mod mesh;
 pub mod packs;
 pub mod recommend;
+pub mod review_gate;
 pub mod role_map;
 pub mod tier;
 
@@ -68,6 +69,12 @@ pub use recommend::{
     available_from, discover_available_models, is_provider_configured, provider_key_env, recommend,
     recommend_configured, recommend_from_available, resolve_known, AvailableModel, ProviderModels,
     Recommendation, RoleRecommendation, WorkflowRole, EDIT_RELIABILITY_FLOOR,
+};
+pub use review_gate::{
+    build_review_prompt, classify_path, gate_decision, parse_review, review_required,
+    reviewer_routing, FileClass, GateDecision, ReviewFinding, ReviewLens, ReviewOutcome,
+    ReviewTrigger, ReviewerRouting, Verdict, REVIEWER_DIVERSITY_WARNING, REVIEWER_EXTENSIONS,
+    REVIEW_ESCALATE_AT, REVIEW_SYSTEM_PROMPT,
 };
 pub use role_map::{
     cache_guard_should_warn, clear_role_model, configured as configured_role_models, derive_role,

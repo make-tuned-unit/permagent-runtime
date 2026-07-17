@@ -415,6 +415,35 @@ pub fn default_roster() -> HashMap<String, WorkerPersona> {
         },
     );
 
+    roster.insert(
+        "reviewer".to_string(),
+        WorkerPersona {
+            first_name: "Reviewer".to_string(),
+            // The adversarial framing is injected into the subagent's system
+            // prompt via `system_prompt_block()` — this IS the reviewer's mandate.
+            role: "Independent adversarial code reviewer — a DIFFERENT engineer than the author. \
+                   After the coding harness's own tests pass, you check the diff to REFUTE it: \
+                   assume a bug until you have checked, and treat the author's reasoning as a \
+                   claim to test, not evidence. Review through five lenses — correctness, \
+                   security, performance, spec-fit, and test-integrity (were tests weakened or \
+                   deleted to pass?). You are READ-ONLY: read and analyze, never edit. Default \
+                   to reject — if you cannot confidently sign off, the verdict is UNCERTAIN, \
+                   not APPROVE"
+                .to_string(),
+            // `review` derives WorkflowRole::Review (cost_router::role_map::derive_role), so a
+            // configured REVIEW role→model routes this delegate to a DIFFERENT-family model;
+            // unset ⇒ it falls back to the main session model (no baked-in vendor default).
+            tool_kinds: vec!["review".to_string()],
+            workflow_role: Some("review".to_string()),
+            // Always runnable: it is an in-process subagent whose model is chosen by the
+            // Review role→model map, not gated on any local binary.
+            availability_check: "always".to_string(),
+            cost_tier: "paid_api".to_string(),
+            engine: WorkerEngineKind::InternalSubagent,
+            ..Default::default()
+        },
+    );
+
     roster
 }
 
@@ -640,6 +669,11 @@ workers:
             roster["librarian"].routing_role(),
             Some(WorkflowRole::Mechanical)
         );
+        // The Reviewer routes to REVIEW — the cross-vendor critic role.
+        assert_eq!(
+            roster["reviewer"].routing_role(),
+            Some(WorkflowRole::Review)
+        );
 
         // An explicit workflow_role tag overrides the tool-kind derivation.
         let tagged = WorkerPersona {
@@ -660,7 +694,22 @@ workers:
     #[test]
     fn default_roster_seeds_three_workers_with_engines() {
         let roster = default_roster();
-        assert_eq!(roster.len(), 3, "expected claude_code + codex + librarian");
+        assert_eq!(
+            roster.len(),
+            4,
+            "expected claude_code + codex + librarian + reviewer"
+        );
+
+        // The reviewer: in-process subagent, review-tagged (routes to the Review
+        // role's cross-vendor model), always runnable — no external binary.
+        let reviewer = &roster["reviewer"];
+        assert_eq!(reviewer.engine, WorkerEngineKind::InternalSubagent);
+        assert_eq!(reviewer.availability_check, "always");
+        assert_eq!(
+            reviewer.routing_role(),
+            Some(crate::cost_router::WorkflowRole::Review),
+            "the reviewer must route to the Review role for cross-vendor dispatch"
+        );
 
         // Claude Code: external CLI, prompt token present, gated on the binary.
         match &roster["claude_code"].engine {
@@ -701,7 +750,7 @@ workers:
         if config.workers.is_empty() {
             config.workers = default_roster();
         }
-        assert_eq!(config.workers.len(), 3);
+        assert_eq!(config.workers.len(), 4);
     }
 
     #[test]
