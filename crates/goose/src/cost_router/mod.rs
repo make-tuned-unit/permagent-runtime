@@ -23,6 +23,11 @@
 //! - The **prompt-cache discipline** keeps a conversation's model stable and its
 //!   prefix ordered, so cheaper tiers never silently discard a warm cache. See
 //!   `cache`.
+//! - **Execution-grounded best-of-N** turns spare cheap-tier compute into
+//!   accuracy: on a task the difficulty router judges hard, sample N candidate
+//!   solutions and select the one that PASSES `verify` (CodeT dual-execution
+//!   agreement), never a neural reranker. Cheap-tier only, spend-capped. See
+//!   `best_of_n`.
 //!
 //! The whole module is pure/near-pure by design (the test bar demands testable
 //! decisions, and CI is the build gate): every routing, escalation, gate, and
@@ -30,6 +35,7 @@
 //! `budget::load_budget_config` touch IO, and each is a thin wrapper over a pure
 //! core.
 
+pub mod best_of_n;
 pub mod budget;
 pub mod cache;
 pub mod cheap;
@@ -41,6 +47,11 @@ pub mod recommend;
 pub mod role_map;
 pub mod tier;
 
+pub use best_of_n::{
+    best_of_n_enabled, best_of_n_from, difficulty, load_best_of_n, plan_candidates, run_best_of_n,
+    select as select_candidate, BestOfNOutcome, BestOfNPlan, CandidateSource, CandidateVerdict,
+    Difficulty, DifficultySignals, Selection, Verdict, BEST_OF_N_DEFAULT, MAX_BEST_OF_N,
+};
 pub use budget::{
     budget_verdict, BudgetBand, BudgetCeilings, BudgetConfig, BudgetScope, BudgetVerdict,
 };
