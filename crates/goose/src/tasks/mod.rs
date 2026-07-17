@@ -494,4 +494,42 @@ mod tests {
         assert!(compute_argument_shape_hash(Some("tool"), None).is_none());
         assert!(compute_argument_shape_hash(None, Some(&serde_json::json!({}))).is_none());
     }
+
+    #[tokio::test]
+    async fn repetition_loop_emits_skill_proposal() {
+        use sqlx::sqlite::SqlitePoolOptions;
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::session::spectral_schema::init_spectral_db(&pool)
+            .await
+            .unwrap();
+
+        // Seed a repeated pattern: two completed tasks with the same tool +
+        // argument shape, completed just now (inside the 7-day window).
+        for _ in 0..2 {
+            sqlx::query(
+                "INSERT INTO tasks (id, user_id, description, tool_used, argument_shape_hash, status, completed_at)
+                 VALUES (?, 'default', 'search my inbox for invoices', 'gmail__search', 'shape-abc',
+                         'completed', strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+            )
+            .bind(Uuid::now_v7().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        // The SKILL.md source-of-truth change must not break the auto-skills
+        // loop. A Some(..) fragment means the repetition→SkillProposed path fired:
+        // the skill_proposed event is emitted on the same iteration that builds
+        // this fragment (see check_repetition_candidates).
+        let logger = TaskLogger::new(pool);
+        let prompt = logger
+            .check_repetition_candidates(&SkillsConfig::default())
+            .await
+            .expect("a repeated pattern must produce a skill proposal");
+        assert!(prompt.contains("Skill Proposal"), "{prompt}");
+        assert!(prompt.contains("gmail__search"), "{prompt}");
+    }
 }

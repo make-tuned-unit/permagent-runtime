@@ -278,6 +278,7 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
             status            TEXT NOT NULL DEFAULT 'active',
             version           INTEGER NOT NULL DEFAULT 1,
             source_task_id    TEXT REFERENCES tasks(id),
+            skill_path        TEXT,
             created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
             updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
         )",
@@ -996,6 +997,29 @@ pub async fn apply_project_metadata_column(pool: &Pool<Sqlite>) -> Result<()> {
             .execute(pool)
             .await?;
         info!("Added projects.metadata_json column (schema v26)");
+    }
+    Ok(())
+}
+
+/// Add the `skills.skill_path` index column: it points each indexed skill at its
+/// on-disk `SKILL.md` folder (the portable agentskills.io source-of-truth). The
+/// DB row is the fast lookup + repetition-detection index; the folder is
+/// authoritative. PRAGMA-guarded and applied by column-existence — NOT gated on
+/// a version stamp — so it is present on any DB regardless of the recorded schema
+/// version (mirrors the recognition-columns safety-net precedent, since the
+/// SPECTRAL_SCHEMA_VERSION const is not bumped for this additive column).
+/// Idempotent.
+pub async fn apply_skill_path_column(pool: &Pool<Sqlite>) -> Result<()> {
+    let has_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('skills') WHERE name = 'skill_path'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if has_column == 0 {
+        sqlx::query("ALTER TABLE skills ADD COLUMN skill_path TEXT")
+            .execute(pool)
+            .await?;
+        info!("Added skills.skill_path column (SKILL.md source-of-truth index)");
     }
     Ok(())
 }
