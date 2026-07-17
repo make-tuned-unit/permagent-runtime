@@ -157,7 +157,15 @@ export interface SSEPingEvent {
   type: 'Ping';
 }
 
-export type SSEEvent = SSEMessageEvent | SSEErrorEvent | SSEFinishEvent | SSEPingEvent | { type: string; [key: string]: unknown };
+/** Sent at the start of an SSE stream listing the session's in-flight
+ *  request_ids so a (re)connecting client can reattach — the Stop button reads
+ *  it to recover the cancel target after an EventSource reconnect mid-turn. */
+export interface SSEActiveRequestsEvent {
+  type: 'ActiveRequests';
+  request_ids: string[];
+}
+
+export type SSEEvent = SSEMessageEvent | SSEErrorEvent | SSEFinishEvent | SSEActiveRequestsEvent | SSEPingEvent | { type: string; [key: string]: unknown };
 
 /**
  * Live per-frame token + cost state. Rides every SSE MessageEvent frame
@@ -561,6 +569,19 @@ export const api = {
     console.log('[api-reply] response:', result);
     return result;
   },
+
+  /**
+   * Interrupt an in-flight turn via POST /sessions/{id}/cancel. The daemon
+   * cancels the request's CancellationToken; the reply loop then breaks and
+   * publishes a terminal Finish { reason: "stop" } on the SSE channel, so the
+   * UI settles on the normal stream path. Returns 200 (empty body) on success;
+   * apiFetch throws on 404 (the turn had already ended) so callers can react.
+   */
+  cancelReply: (sessionId: string, requestId: string) =>
+    apiFetch<void>(`/sessions/${encodeURIComponent(sessionId)}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ request_id: requestId }),
+    }),
 
   /** Build the SSE URL for per-session events. */
   sessionEventsUrl: (sessionId: string): string =>

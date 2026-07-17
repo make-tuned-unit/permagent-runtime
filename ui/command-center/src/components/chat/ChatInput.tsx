@@ -17,9 +17,14 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
   const { colors } = useTheme();
   const isStreaming = useCommandCenter(s => s.isStreaming);
   const sendMessage = useCommandCenter(s => s.sendMessage);
+  const stopStreaming = useCommandCenter(s => s.stopStreaming);
 
   const [input, setInput] = useState('');
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  // Local "cancel requested" state: set on Stop click, cleared when the turn
+  // actually settles (isStreaming → false via the Finish event). Kept out of the
+  // global store — it's pure per-input affordance state.
+  const [stopping, setStopping] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const disabled = isStreaming;
@@ -40,6 +45,12 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Once the turn settles (Finish/Error flips isStreaming off), drop the
+  // transient "stopping" state so the composer returns to its idle Send button.
+  useEffect(() => {
+    if (!isStreaming) setStopping(false);
+  }, [isStreaming]);
+
   const addFiles = useCallback((files: File[]) => {
     const valid = files.filter(f => f.size <= MAX_FILE_SIZE);
     setPendingFiles(prev => [...prev, ...valid]);
@@ -59,6 +70,21 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
     setInput('');
     setPendingFiles([]);
     await sendMessage(msg || '(file upload)', files.length > 0 ? files : undefined);
+  };
+
+  const handleStop = async () => {
+    if (stopping) return;
+    setStopping(true);
+    try {
+      // Server emits a terminal Finish on cancel, which settles the UI and frees
+      // the request slot — so we wait for it rather than optimistically resetting.
+      await stopStreaming();
+    } catch (err) {
+      // Cancel POST failed (e.g. turn already ended, or network): the agent may
+      // still be alive, so re-enable Stop instead of pretending it stopped.
+      console.error('[chat] stop failed:', err);
+      setStopping(false);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -150,20 +176,47 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
             e.currentTarget.style.boxShadow = 'none';
           }}
         />
-        <button
-          onClick={handleSend}
-          disabled={(!input.trim() && pendingFiles.length === 0) || disabled}
-          className="transition disabled:opacity-30"
-          style={{
-            width: 28, height: 28, borderRadius: 6, flexShrink: 0,
-            display: 'grid', placeItems: 'center',
-            background: colors.ribbonGradient,
-            color: colors.textOnAccent,
-            fontWeight: 600,
-          }}
-        >
-          {isStreaming ? <FiLoader size={12} className="animate-spin" /> : <FiSend size={12} />}
-        </button>
+        {isStreaming ? (
+          // Every-turn escape hatch: while a turn streams, the Send button
+          // becomes a Stop button that cancels the in-flight request. Danger-
+          // outlined so it reads as an interrupt and stays legible on every
+          // theme (dark's coral + silver's red both contrast on the inset).
+          <button
+            onClick={handleStop}
+            disabled={stopping}
+            title="Stop generating"
+            aria-label="Stop generating"
+            className="transition disabled:opacity-50"
+            style={{
+              width: 28, height: 28, borderRadius: 6, flexShrink: 0,
+              display: 'grid', placeItems: 'center',
+              border: `1px solid ${colors.danger}`,
+              backgroundColor: colors.inputBg,
+              color: colors.danger,
+            }}
+          >
+            {stopping
+              ? <FiLoader size={12} className="animate-spin" style={{ display: 'block' }} />
+              : <span style={{ width: 9, height: 9, borderRadius: 2, backgroundColor: colors.danger, display: 'block' }} />}
+          </button>
+        ) : (
+          <button
+            onClick={handleSend}
+            disabled={!input.trim() && pendingFiles.length === 0}
+            title="Send message"
+            aria-label="Send message"
+            className="transition disabled:opacity-30"
+            style={{
+              width: 28, height: 28, borderRadius: 6, flexShrink: 0,
+              display: 'grid', placeItems: 'center',
+              background: colors.ribbonGradient,
+              color: colors.textOnAccent,
+              fontWeight: 600,
+            }}
+          >
+            <FiSend size={12} />
+          </button>
+        )}
       </div>
     </div>
   );

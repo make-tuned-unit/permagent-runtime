@@ -191,6 +191,10 @@ interface CommandCenterStore {
   chatSessionId: string | null;
   addChatMessage: (msg: ChatMessage) => void;
   _streamingMessageId: string | null;
+  /** request_id of the in-flight reply turn (client-generated in api.sendReply,
+   *  re-adopted from the daemon's ActiveRequests SSE event on reconnect). The
+   *  Stop button's cancel target; null when idle. */
+  _activeRequestId: string | null;
   _pendingContext: { probed_memories: ProbedMemoryRef[]; recalled_memories: RecalledMemoryRef[] } | null;
 
   // --- SSE streaming ---
@@ -202,6 +206,10 @@ interface CommandCenterStore {
    */
   liveTokens: TokenState | null;
   sendMessage: (text: string, files?: File[]) => Promise<void>;
+  /** Interrupt the in-flight turn: POST /sessions/{id}/cancel with the active
+   *  request_id. The daemon emits a terminal Finish so the UI settles on the
+   *  normal stream path. Throws if the cancel POST fails (agent still alive). */
+  stopStreaming: () => Promise<void>;
   /**
    * Decision Inbox deep-link (#303): open a fresh chat session seeded with a
    * decision's context and a context-aware opening turn. Set transiently while
@@ -587,6 +595,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   // Streaming
   isStreaming: false,
   liveTokens: null,
+  _activeRequestId: null,
 
   /**
    * Ensure a session exists. Creates one via POST /api/sessions if needed.
@@ -726,13 +735,16 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     const appContext = buildAppContext(get());
 
     try {
-      // Fire-and-forget: events arrive on SSE channel
-      await api.sendReply(sessionId, outgoingText, images, appContext);
+      // Fire-and-forget: the turn streams on the SSE channel. Capture the
+      // request_id it returns so the Stop button can cancel THIS turn.
+      const { request_id } = await api.sendReply(sessionId, outgoingText, images, appContext);
+      set({ _activeRequestId: request_id });
     } catch (err) {
       console.error('[send] api.sendReply FAILED:', err);
       set(s => ({
         isStreaming: false,
         _streamingMessageId: null,
+        _activeRequestId: null,
         chatMessages: [...s.chatMessages, {
           id: `msg-${Date.now()}-err`,
           role: 'system' as const,
@@ -741,6 +753,23 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         }],
       }));
     }
+  },
+
+  /**
+   * Interrupt the in-flight turn. POSTs /sessions/{id}/cancel with the active
+   * request_id; the daemon cancels the turn's CancellationToken and publishes a
+   * terminal Finish { reason: "stop" }, so the UI settles on the normal stream
+   * path (the Finish handler flips isStreaming off + rehydrates the transcript).
+   * That same Finish is when the daemon frees the session's single request slot,
+   * so we deliberately keep isStreaming true until it lands — resetting early
+   * would let the next send race the slot (400 "already has an active request").
+   * If the POST itself throws the agent is still alive, so we propagate rather
+   * than lie that it stopped (the caller re-enables Stop to allow a retry).
+   */
+  stopStreaming: async () => {
+    const { chatSessionId, _activeRequestId, isStreaming } = get();
+    if (!isStreaming || !chatSessionId || !_activeRequestId) return;
+    await api.cancelReply(chatSessionId, _activeRequestId);
   },
 
   /**
@@ -761,7 +790,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       return;
     }
     get().disconnectSession();
-    set({ chatSessionId: sessionId, chatMessages: [], isStreaming: false, _streamingMessageId: null });
+    set({ chatSessionId: sessionId, chatMessages: [], isStreaming: false, _streamingMessageId: null, _activeRequestId: null });
     try { localStorage.setItem('permagent-chat-session-id', sessionId); } catch { /* */ }
     get().connectSession(sessionId);
     get().setActivePanel('chat');
@@ -777,7 +806,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
   switchToSession: async (sessionId: string) => {
     get().disconnectSession();
-    set({ chatSessionId: sessionId, chatMessages: [], isStreaming: false, _streamingMessageId: null });
+    set({ chatSessionId: sessionId, chatMessages: [], isStreaming: false, _streamingMessageId: null, _activeRequestId: null });
     try { localStorage.setItem('permagent-chat-session-id', sessionId); } catch { /* */ }
     await get().loadSessionMessages(sessionId);
     get().connectSession(sessionId);
@@ -993,6 +1022,15 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     if (ts) set({ liveTokens: ts });
 
     switch (data.type) {
+      case 'ActiveRequests': {
+        // On (re)connect the daemon lists this session's in-flight requests.
+        // try_register_request enforces a single active request, so adopt the
+        // first as the Stop target — keeps interrupt working after an
+        // EventSource auto-reconnect mid-turn (isStreaming persists across it).
+        const ids = (data as { type: string; request_ids?: string[] }).request_ids;
+        if (ids && ids.length > 0) set({ _activeRequestId: ids[0] });
+        break;
+      }
       case 'Message': {
         const msg = (data as { type: string; message: DaemonMessage }).message;
         if (msg.role === 'assistant') {
@@ -1038,6 +1076,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         set(s => ({
           isStreaming: false,
           _streamingMessageId: null,
+          _activeRequestId: null,
           chatMessages: [...s.chatMessages, {
             id: `msg-${Date.now()}-err`,
             role: 'system' as const,
@@ -1048,7 +1087,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         break;
       }
       case 'Finish': {
-        set({ isStreaming: false, _streamingMessageId: null });
+        set({ isStreaming: false, _streamingMessageId: null, _activeRequestId: null });
         // Reload proposals + skills after each reply completes — the agent may
         // have created a skill (save_skill) or a new proposal may have fired.
         get().loadProposals();
