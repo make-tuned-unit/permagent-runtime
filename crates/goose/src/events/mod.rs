@@ -266,6 +266,9 @@ pub enum PermagentEventType {
     // App action — act WITHIN a surface, not just navigate to it (chat agent →
     // frontend): toggle a Build pane, open/close/detach the chat dock, etc.
     AppAction,
+    // App open-item — the last mile past a tab: open a SPECIFIC item by id (chat
+    // agent → frontend): a goal's detail modal, a project's Grow planner, etc.
+    AppOpenItem,
     // Project terminal launch (chat agent → frontend Build tab)
     ProjectLaunch,
     // Goal lifecycle (create / transition / park / requeue / failure / delete)
@@ -631,6 +634,31 @@ pub fn app_action(
             "surface": surface,
             "action": action,
             "params": params,
+            "reason": reason,
+        }),
+    )
+}
+
+/// Emitted when the chat agent wants to open a SPECIFIC item — the last mile
+/// past a tab. Sibling to [`app_action`]: the daemon never touches the DOM; the
+/// frontend dispatcher catches this and calls the matching store seam that
+/// already backs the human button (goal → `openGoalDetail`, grow →
+/// `growProject`). `kind` is validated against the app_conductor item catalog
+/// before this is emitted, so the frontend can trust it. `card_id` is only set
+/// for kinds that need a second id (a goal's card); `project_id` is required for
+/// every kind.
+pub fn app_open_item(
+    kind: &str,
+    project_id: &str,
+    card_id: Option<&str>,
+    reason: &str,
+) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::AppOpenItem,
+        serde_json::json!({
+            "kind": kind,
+            "project_id": project_id,
+            "card_id": card_id,
             "reason": reason,
         }),
     )
