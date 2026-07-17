@@ -21,6 +21,14 @@ const SETTINGS_ICON = 'M12 9a3 3 0 100 6 3 3 0 000-6zM19.4 15a1.65 1.65 0 00.33 
 // overlay to return to a past conversation.
 const SESSIONS_ICON = 'M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8M3 3v5h5M12 7v5l4 2';
 
+// "Inbox" tray glyph — opens the Downloads inbox overlay (files that landed in
+// ~/.permagent/inbox via the in-app browser).
+const INBOX_ICON = 'M22 12h-6l-2 3h-4l-2-3H2M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z';
+
+// "Activity" pulse glyph — opens the execution Trace overlay (recent events
+// from the daemon event bus).
+const TRACE_ICON = 'M22 12h-4l-3 9L9 3l-3 9H2';
+
 function SidebarRow({
   icon, label, active, open, onClick, title,
 }: {
@@ -65,6 +73,8 @@ export function Sidebar() {
 
   const isSettingsOpen = activePanel === 'settings';
   const isSessionsOpen = activePanel === 'sessions';
+  const isInboxOpen = activePanel === 'inbox';
+  const isTraceOpen = activePanel === 'trace';
   // Any non-chat panel (settings, inbox, skills, sessions) is a full-screen overlay. It
   // must be dismissed when the user picks a workspace, or the overlay stays
   // stuck over the tab they just selected.
@@ -140,6 +150,26 @@ export function Sidebar() {
         active={isSessionsOpen}
         open={open}
         onClick={() => setActivePanel(isSessionsOpen ? 'chat' : 'sessions')}
+      />
+
+      {/* Downloads inbox — the human entry point to the inbox overlay (files
+          downloaded in the in-app browser). */}
+      <SidebarRow
+        icon={INBOX_ICON}
+        label="Inbox"
+        active={isInboxOpen}
+        open={open}
+        onClick={() => setActivePanel(isInboxOpen ? 'chat' : 'inbox')}
+      />
+
+      {/* Trace — the human entry point to the execution-trace overlay (recent
+          events from the daemon event bus). */}
+      <SidebarRow
+        icon={TRACE_ICON}
+        label="Trace"
+        active={isTraceOpen}
+        open={open}
+        onClick={() => setActivePanel(isTraceOpen ? 'chat' : 'trace')}
       />
 
       {/* Settings */}

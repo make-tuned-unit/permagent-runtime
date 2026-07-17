@@ -6,6 +6,7 @@ import { SettingsView } from './components/settings/SettingsView';
 import { InboxPanel } from './components/inbox/InboxPanel';
 import { SkillsPanel } from './components/skills/SkillsPanel';
 import { SessionsList } from './components/sessions/SessionsList';
+import { ExecutionTrace } from './components/trace/ExecutionTrace';
 import { WorkspaceRenderer } from './components/workspaces/WorkspaceRenderer';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { WizardShell } from './components/wizard/WizardShell';
@@ -41,6 +42,10 @@ function MainContent() {
   // can browse/switch/rename/delete past conversations. Reached from the sidebar
   // "Sessions" row; selecting a session loads it into the chat dock.
   const showSessions = activePanel === 'sessions';
+  // Execution trace renders as a labeled overlay (mirrors sessions/skills/inbox).
+  // ExecutionTrace reads the global `events` buffer and needs no session id, so a
+  // global overlay is the honest entry point. Reached from the sidebar "Trace" row.
+  const showTrace = activePanel === 'trace';
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
 
   if (!workspacesLoaded) {
@@ -51,7 +56,7 @@ function MainContent() {
     );
   }
 
-  if (!activeWorkspaceId && !showSettings && !showInbox && !showSkills && !showSessions) {
+  if (!activeWorkspaceId && !showSettings && !showInbox && !showSkills && !showSessions && !showTrace) {
     return (
       <div className="flex h-full items-center justify-center text-dark-muted text-xs font-mono">
         No workspaces available
@@ -84,11 +89,16 @@ function MainContent() {
           <SessionsList onClose={() => setActivePanel('chat')} />
         </div>
       )}
+      {showTrace && (
+        <div className="absolute inset-0 z-10">
+          <ExecutionTrace onClose={() => setActivePanel('chat')} />
+        </div>
+      )}
       {workspaces.map(ws => (
         <div
           key={ws.id}
           className="absolute inset-0"
-          style={{ display: (!showSettings && !showInbox && !showSkills && !showSessions && ws.id === activeWorkspaceId) ? 'block' : 'none' }}
+          style={{ display: (!showSettings && !showInbox && !showSkills && !showSessions && !showTrace && ws.id === activeWorkspaceId) ? 'block' : 'none' }}
         >
           <ErrorBoundary surface="the workspace">
             <WorkspaceRenderer workspaceId={ws.id} />
