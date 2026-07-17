@@ -938,6 +938,13 @@ impl SessionStorage {
                     // Idempotent — a steady-state boot adds nothing.
                     #[cfg(feature = "spectral-recognition")]
                     spectral_schema::apply_recognition_v22_columns(&self.pool).await?;
+
+                    // Version-independent: ensure the skills.skill_path index
+                    // column exists on any DB regardless of the recorded schema
+                    // version. The on-disk SKILL.md source-of-truth migration
+                    // (skills::reconcile_skills_to_disk) relies on it. Additive +
+                    // idempotent, so SPECTRAL_SCHEMA_VERSION is not bumped.
+                    spectral_schema::apply_skill_path_column(&self.pool).await?;
                 } else {
                     info!("Initializing Spectral schema at {:?}", self.db_path);
                     spectral_schema::init_spectral_db(&self.pool).await?;

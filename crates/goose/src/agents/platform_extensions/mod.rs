@@ -444,12 +444,12 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: skills::EXTENSION_NAME,
                 display_name: "Skills",
-                description: "Discover and provide skill instructions from filesystem and builtins",
+                description: "Discover and load skills stored as portable SKILL.md folders (the open agentskills.io standard) from the filesystem and builtins",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
                 why_it_matters:
-                    "Pull in proven step-by-step procedures instead of improvising a workflow.",
+                    "Pull in proven step-by-step procedures instead of improvising a workflow. Skills are portable SKILL.md folders compatible with Claude Code, Cursor, Codex, and the broader agent ecosystem, so learned capability moves in and out without lock-in.",
                 teaching: &[],
                 client_factory: |ctx| Box::new(skills::SkillsClient::new(ctx).unwrap()),
             },
@@ -502,8 +502,10 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 why_it_matters:
                     "Turn a repeatable task into a saved automation or schedule the user can rely on. \
-                     Saved skills that prove useful are promoted to the front of what you reach for, \
-                     and ones that never fire retire themselves, so the skill library stays honest.",
+                     Saved skills are written as portable SKILL.md folders (the open agentskills.io \
+                     standard, shared with Claude Code, Cursor, and Codex); the ones that prove useful \
+                     are promoted to the front of what you reach for, and ones that never fire retire \
+                     themselves, so the skill library stays honest.",
                 teaching: &[],
                 client_factory: |ctx| {
                     Box::new(recipe_author::RecipeAuthorClient::new(ctx).unwrap())

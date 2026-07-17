@@ -68,6 +68,7 @@ pub mod scheduler_trait;
 pub mod security;
 pub mod session;
 pub mod session_context;
+pub mod skill_md;
 pub mod skills;
 pub mod slash_commands;
 pub mod sources;

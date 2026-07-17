@@ -294,6 +294,24 @@ impl AppState {
                     ),
                 }
             }
+
+            // Skills source-of-truth migration: export any indexed skill that
+            // lacks an on-disk SKILL.md folder to the portable agentskills.io
+            // format under ~/.permagent/skills. The on-disk folder is the source
+            // of truth; the DB row is its index. Idempotent + non-fatal, so it is
+            // safe to run on every boot (a steady state exports nothing).
+            match permagent::skills::reconcile_skills_to_disk(&pool).await {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(
+                    target: "permagentd::skills",
+                    "Skills SKILL.md migration exported {n} skill(s) to disk"
+                ),
+                Err(e) => tracing::warn!(
+                    target: "permagentd::skills",
+                    error = %e,
+                    "Skills SKILL.md migration failed (non-fatal)"
+                ),
+            }
         }
 
         // Self-healing annotation backfill — runs at daemon startup, not gated on Ollama.
