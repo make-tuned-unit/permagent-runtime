@@ -19,6 +19,13 @@ export interface ActiveGoalLite {
   title: string;
   /** 'ready' | 'in_progress' (the ACTIVE_BINDINGS set). */
   state: string;
+  /**
+   * Owning project id. Already returned by /api/goals/active (the dashboard's
+   * In-Flight cards use it), it was simply dropped from this lite shape. Carried
+   * through so a goal plaque can address the goal-detail modal via the existing
+   * openGoalDetail(project_id, id) seam — a click-through, not just a label.
+   */
+  project_id?: string;
 }
 
 interface GoalActivityState {

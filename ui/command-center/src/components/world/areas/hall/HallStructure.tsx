@@ -250,8 +250,8 @@ function StationPedestal({
   return (
     <group
       position={station.position}
-      onPointerOver={(e) => { e.stopPropagation(); onHover(station.id); }}
-      onPointerOut={(e) => { e.stopPropagation(); onHover(null); }}
+      onPointerOver={(e) => { e.stopPropagation(); document.body.style.cursor = 'pointer'; onHover(station.id); }}
+      onPointerOut={(e) => { e.stopPropagation(); document.body.style.cursor = 'auto'; onHover(null); }}
       onClick={(e) => { e.stopPropagation(); onClick(station.id); }}
     >
       {/* Pedestal */}

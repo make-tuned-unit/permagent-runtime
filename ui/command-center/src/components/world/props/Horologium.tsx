@@ -26,6 +26,7 @@ import { Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { ENV } from '../shared/palette';
 import { getReduceMotion } from '../../../styles/tokens';
+import { navigateToTool } from '../../../lib/store';
 import { InstancedProp, type InstanceTransform } from '../shared/instancing';
 import { unitBox } from './geometries';
 import {
@@ -88,7 +89,14 @@ export function Horologium() {
   const pz = Math.sin(WHEEL_ANGLE) * WHEEL_R;
 
   return (
-    <group position={[px, 0, pz]} rotation-y={Math.PI / 2 - WHEEL_ANGLE + Math.PI}>
+    // Click the wheel to open Automate — the tab that owns /api/runs schedules.
+    <group
+      position={[px, 0, pz]}
+      rotation-y={Math.PI / 2 - WHEEL_ANGLE + Math.PI}
+      onClick={(e) => { e.stopPropagation(); navigateToTool('automate'); }}
+      onPointerOver={(e) => { e.stopPropagation(); document.body.style.cursor = 'pointer'; }}
+      onPointerOut={(e) => { e.stopPropagation(); document.body.style.cursor = 'auto'; }}
+    >
       {/* Plinth */}
       <mesh position-y={0.15} material={stoneMarble} castShadow>
         <boxGeometry args={[2.4, 0.3, 1.0]} />

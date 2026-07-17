@@ -3,6 +3,7 @@ import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { CameraMode, AgentState } from './types';
 import { COLORS, STATIONS } from './constants';
+import { navigateToTool, type ToolType } from '../../lib/store';
 import { WorldSceneContent } from './WorldScene';
 // W3 v2 agent stack (mount swap, bible §5 — replaces legacy WorldCharacters/useAgentStates).
 import { WorldAgents, ROSTER, getAgentPosition, getHenryPresence, nudgeAgent, setPath } from './agents';
@@ -21,6 +22,21 @@ import { TourMode } from './camera/TourMode';
 
 // DEV-ONLY: window.__worldDev harness for ambience evidence (no-op in prod).
 installDevHarness();
+
+// Cardinal pedestal → product tab (World click-through / launchpad). Station ids
+// are the World's own names (constants.ts); each maps to the ToolType its label
+// names. Brain is the 'memory' tool (WorkspaceRenderer → BrainView). The Lab
+// pedestal is intentionally absent: there is no 'lab' ToolType — no product tab
+// exists for it — so it stays glide-only (see PHASE-0 report). forum-portal is
+// special-cased to the Agora arc, never a tab.
+const STATION_TOOL: Partial<Record<string, ToolType>> = {
+  library: 'build',
+  observatory: 'memory',
+  automate: 'automate',
+};
+// The pedestal camera glide plays for this long, then the user lands on the tab —
+// a "dive toward the zone" transition kept from the watch-only diorama.
+const PEDESTAL_NAV_DELAY_MS = 700;
 
 function LoadingShimmer() {
   return (
@@ -222,8 +238,16 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
   // code, and the camera dives through the membrane into the collective mind.
   const [focusPoint, setFocusPoint] = useState<[number, number, number] | null>(null);
   const agoraPhase = useAgoraPhase();
+  // Pending pedestal→tab navigation. Held in a ref and cleared on a new click or
+  // on unmount so a manual navigation during the 700ms glide can't later yank the
+  // user onto a tab they no longer wanted.
+  const navTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleClickStation = useCallback((id: string) => {
     setHoveredStation(id);
+    if (navTimerRef.current) {
+      clearTimeout(navTimerRef.current);
+      navTimerRef.current = null;
+    }
     if (id === 'forum-portal') {
       // Beat 1 (descent): draw the sovereign to the portal mouth. Beats 2-4
       // (dissolve → absorb → witness) run off the arc + the camera dive.
@@ -237,8 +261,21 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
     }
     const station = STATIONS.find((s) => s.id === id);
     if (station) setFocusPoint([...station.position] as [number, number, number]);
+    // Launchpad: glide toward the pedestal, then land on its product tab. The Lab
+    // pedestal has no tab (absent from STATION_TOOL) — it stays glide-only.
+    const tool = STATION_TOOL[id];
+    if (tool) {
+      navTimerRef.current = setTimeout(() => {
+        navTimerRef.current = null;
+        navigateToTool(tool);
+      }, PEDESTAL_NAV_DELAY_MS);
+    }
   }, []);
   const handleFocusDone = useCallback(() => setFocusPoint(null), []);
+  // Clear any pending pedestal navigation if the view unmounts mid-glide.
+  useEffect(() => () => {
+    if (navTimerRef.current) clearTimeout(navTimerRef.current);
+  }, []);
 
   // Beat 5 (return): pull back through the portal — Henry rematerializes on the
   // Rotunda side (the dissolve played backward) and the camera comes home.
