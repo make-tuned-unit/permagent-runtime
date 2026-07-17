@@ -60,14 +60,18 @@ export function Sidebar() {
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
 
   const isSettingsOpen = activePanel === 'settings';
+  // Any non-chat panel (settings, inbox, skills) is a full-screen overlay. It
+  // must be dismissed when the user picks a workspace, or the overlay stays
+  // stuck over the tab they just selected.
+  const overlayOpen = activePanel !== 'chat';
   const W = open ? 208 : 64;
 
   const goToWorkspace = useCallback((workspaceId: string) => {
     switchWorkspace(workspaceId);
-    if (isSettingsOpen) {
+    if (overlayOpen) {
       setActivePanel('chat');
     }
-  }, [switchWorkspace, setActivePanel, isSettingsOpen]);
+  }, [switchWorkspace, setActivePanel, overlayOpen]);
 
   // Keyboard shortcuts: Cmd+1..5
   useEffect(() => {
@@ -105,7 +109,7 @@ export function Sidebar() {
 
       {/* Workspace items */}
       {workspaces.map((ws, i) => {
-        const isActive = activeWorkspaceId === ws.id && !isSettingsOpen;
+        const isActive = activeWorkspaceId === ws.id && !overlayOpen;
         const iconPath = ICON_PATHS[ws.icon] || ICON_PATHS.home;
         const shortcut = navigator.platform.includes('Mac') ? `⌘${i + 1}` : `Ctrl+${i + 1}`;
         return (

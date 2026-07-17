@@ -195,6 +195,16 @@ export function AutomateView() {
   const loadProposals = useCommandCenter(s => s.loadProposals);
   const saveProposal = useCommandCenter(s => s.saveProposal);
   const dismissProposal = useCommandCenter(s => s.dismissProposal);
+  const setActivePanel = useCommandCenter(s => s.setActivePanel);
+  const setSelectedSkillId = useCommandCenter(s => s.setSelectedSkillId);
+
+  // Open a saved skill in the full Skills Library overlay (master list +
+  // SkillDetailPanel) with it preselected — turns the read-only Learned cards
+  // into a real path into the library.
+  const openSkill = useCallback((id: string) => {
+    setSelectedSkillId(id);
+    setActivePanel('skills');
+  }, [setSelectedSkillId, setActivePanel]);
 
   // Persist Installed collapse state
   const toggleInstalledExpanded = useCallback((val: boolean) => {
@@ -573,11 +583,22 @@ export function AutomateView() {
                   const tierFg = tier === 'MASTERED' ? colors.warning : tier === 'TRUSTED' ? colors.success : colors.purpleBright;
                   const dotColor = tier === 'MASTERED' ? colors.warning : tier === 'TRUSTED' ? colors.success : (skill.status === 'active' ? colors.purpleBright : colors.textDim);
                   return (
-                    <div key={skill.id} style={{
-                      padding: '16px 20px', borderRadius: radius.lg,
-                      background: colors.surface, border: `1px solid ${colors.border}`,
-                      transition: 'border-color 150ms',
-                    }}>
+                    <div
+                      key={skill.id}
+                      onClick={() => openSkill(skill.id)}
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Open ${skill.name} in the skills library`}
+                      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openSkill(skill.id); } }}
+                      onMouseEnter={e => { e.currentTarget.style.borderColor = colors.borderHi; }}
+                      onMouseLeave={e => { e.currentTarget.style.borderColor = colors.border; }}
+                      onFocus={e => { e.currentTarget.style.borderColor = colors.borderHi; e.currentTarget.style.boxShadow = `0 0 0 2px ${colors.cyanGlow}`; }}
+                      onBlur={e => { e.currentTarget.style.borderColor = colors.border; e.currentTarget.style.boxShadow = 'none'; }}
+                      style={{
+                        padding: '16px 20px', borderRadius: radius.lg, cursor: 'pointer', outline: 'none',
+                        background: colors.surface, border: `1px solid ${colors.border}`,
+                        transition: 'border-color 150ms, box-shadow 150ms',
+                      }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
                         <div style={{ width: 8, height: 8, borderRadius: '50%', background: dotColor }} />
                         <div style={{ fontSize: 14, fontWeight: 600, fontFamily: font.display, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{skill.name}</div>

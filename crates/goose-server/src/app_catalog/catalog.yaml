@@ -21,7 +21,7 @@ tabs:
     affords:
       - Run a scheduled recipe on-demand
       - View next run time for each scheduled recipe
-      - (Skills section coming in PR 1.6.B)
+      - See saved skills in the Learned section; open one to view it in the Skills library
       - (Insights section coming in PR 1.6.C)
     suggest_when:
       - User asks about scheduled tasks, recipes, skills, or automation
@@ -128,4 +128,21 @@ tabs:
     suggest_when:
       - User asks where a downloaded file went or wants to see their inbox
       - User downloaded something in the in-app browser
+    customizable_layout: false
+
+  - name: Skills
+    tool_type: skills
+    panel_type: overlay
+    description: >-
+      The Skills Library is where the user's saved skills live — the reusable
+      task recipes the agent learns when the user repeats a task and saves it.
+      Each skill is a portable SKILL.md folder the user can search, open, edit,
+      or delete.
+    affords:
+      - Browse and search saved skills
+      - Open a skill to view its steps, usage count, and run history
+      - Edit or delete a saved skill
+    suggest_when:
+      - User asks what skills you have saved or learned
+      - User wants to view, edit, or remove a specific skill
     customizable_layout: false

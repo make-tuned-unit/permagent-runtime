@@ -8,6 +8,23 @@ use sqlx::{Pool, Row, Sqlite};
 use std::path::PathBuf;
 use uuid::Uuid;
 
+/// Self-knowledge descriptor for the Skills library surface. Lets the agent
+/// tell the user where its saved skills live and how to curate them. Static:
+/// editorial, no live status claim. Reachable as an overlay (no seeded
+/// workspace hosts it) — the agent opens it via `navigate_app("Skills")`.
+pub const SKILLS_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "skills",
+        display_name: "Skills Library",
+        category: crate::agents::self_knowledge::FeatureCategory::Surface,
+        what_it_does:
+            "The library of saved skills — reusable task recipes you learn when the user repeats a task and accepts the offer to remember it. Each is a portable SKILL.md folder the user can search, open, edit, or delete, shown with its usage count and graduation tier (learned, trusted, mastered)",
+        why_it_matters:
+            "It is where the user sees and curates what you have learned to do for them; when they ask what skills you know, where a saved skill lives, or want to change or remove one, bring them here",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        teaching: &[],
+    };
+
 // ── Data types ─────────────────────────────────────────────────────────────
 
 /// Request payload for creating a skill from a detected pattern.
