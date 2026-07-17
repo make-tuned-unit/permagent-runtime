@@ -67,4 +67,27 @@ mod tests {
         assert_eq!(skills.tool_type, "skills");
         assert_eq!(skills.panel_type, "overlay");
     }
+
+    /// Sessions + Trace are overlay-only surfaces (no seeded workspace hosts
+    /// either), so — exactly like Inbox and Skills — the catalog entry is the
+    /// ONLY thing that makes navigate_app resolve them, and `panel_type` must be
+    /// `overlay` so useAppNavigate routes them to `setActivePanel(...)` rather
+    /// than the no-op workspace-host search.
+    #[test]
+    fn sessions_and_trace_are_overlay_navigable() {
+        let catalog: AppCatalog =
+            serde_yaml::from_str(CATALOG_YAML).expect("catalog.yaml must parse");
+
+        let sessions = catalog
+            .find_by_name("Sessions")
+            .expect("Sessions must be in the navigate_app catalog");
+        assert_eq!(sessions.tool_type, "sessions");
+        assert_eq!(sessions.panel_type, "overlay");
+
+        let trace = catalog
+            .find_by_name("Trace")
+            .expect("Trace must be in the navigate_app catalog");
+        assert_eq!(trace.tool_type, "trace");
+        assert_eq!(trace.panel_type, "overlay");
+    }
 }

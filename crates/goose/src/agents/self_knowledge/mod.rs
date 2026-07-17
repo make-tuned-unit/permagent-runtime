@@ -196,6 +196,8 @@ pub static SURFACE_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::cost_router::COST_OPTIMIZER_FEATURE,
     crate::mesh::MESH_FEATURE,
     crate::skills::SKILLS_FEATURE,
+    crate::session::SESSIONS_FEATURE,
+    crate::events::TRACE_FEATURE,
 ];
 
 /// Tool ids that are described under another category and therefore skipped in
@@ -575,6 +577,8 @@ mod tests {
         "cost_optimizer",
         "mesh",
         "skills",
+        "sessions",
+        "trace",
     ];
     /// The Phase-2-v1 lesson set — each must resolve to a descriptor with steps.
     const V1_LESSON_IDS: &[&str] = &["reader", "brain", "scheduler", "persona"];

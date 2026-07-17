@@ -79,8 +79,14 @@ export function dispatchOpenItem(payload: {
   if (payload?.reason) showNavigationCue(payload.reason);
 }
 
+// Tool types that a workspace layout can host — the ONLY set the tool-host
+// branch below searches. Overlay-only surfaces (inbox, sessions, trace) are
+// deliberately absent: no seeded workspace hosts them, so their catalog entry
+// carries panel_type:'overlay' and they route through the overlay branch
+// (setActivePanel) instead. Listing 'trace' here made navigate_app("Trace")
+// fall into the tool-host search, which no-ops because nothing hosts it.
 const VALID_TOOL_TYPES = new Set<string>([
-  'chat', 'skills', 'trace', 'world', 'terminal', 'browser', 'memory', 'dashboard', 'build', 'automate', 'projects', 'grow',
+  'chat', 'skills', 'world', 'terminal', 'browser', 'memory', 'dashboard', 'build', 'automate', 'projects', 'grow',
 ]);
 
 /**
