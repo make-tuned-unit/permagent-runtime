@@ -16,7 +16,10 @@
  */
 
 import { useState } from 'react';
+import { FiExternalLink } from 'react-icons/fi';
 import { api } from '../../lib/api';
+import { useCommandCenter } from '../../lib/store';
+import { projectMemoryPreview, type BrainMemoryTarget } from '../brain/brainMemoryFocus';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Panel } from './Panel';
@@ -29,6 +32,8 @@ export function CodeIndexPanel({ project }: { project: Project }) {
   const [indexing, setIndexing] = useState(false);
   const [result, setResult] = useState<Result | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [viewing, setViewing] = useState(false);
+  const focusBrainMemory = useCommandCenter(s => s.focusBrainMemory);
 
   // Nothing to index without a codebase location.
   if (!project.rootPath) return null;
@@ -45,6 +50,27 @@ export function CodeIndexPanel({ project }: { project: Project }) {
     } finally {
       setIndexing(false);
     }
+  };
+
+  // Close the loop: jump from the code map's key to where it lives in the Brain.
+  // Resolve the key to its live memory via the same associated-memories endpoint
+  // the Memories panel uses (the code map is written description-less, so it
+  // isn't in the graph's default view until the Librarian enriches it — the
+  // resolved content is the preview that guarantees the Brain renders it). Falls
+  // back to a best-effort focus by key if the lookup can't find/reach it.
+  const viewInBrain = async () => {
+    if (!result || viewing) return;
+    setViewing(true);
+    let target: BrainMemoryTarget = { key: result.memoryKey };
+    try {
+      const mems = await api.listProjectMemories(project.id);
+      const hit = mems.find(m => m.key === result.memoryKey);
+      if (hit) target = { id: hit.id, key: hit.key, preview: projectMemoryPreview(hit) };
+    } catch {
+      // best-effort: fall back to focusing by key alone
+    }
+    setViewing(false);
+    focusBrainMemory(target);
   };
 
   return (
@@ -78,9 +104,23 @@ export function CodeIndexPanel({ project }: { project: Project }) {
             Indexed {result.files} file{result.files !== 1 ? 's' : ''}
           </span>{' '}
           into your Brain, scoped to this project.
-          <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, marginTop: 3 }}>
-            {result.memoryKey}
-          </div>
+          {/* The code map's key, now a link back into the Brain (was inert text). */}
+          <button
+            onClick={viewInBrain}
+            disabled={viewing}
+            title="View this code map in your Brain"
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5, marginTop: 3, maxWidth: '100%',
+              background: 'none', border: 'none', padding: 0,
+              cursor: viewing ? 'default' : 'pointer', opacity: viewing ? 0.6 : 1,
+              color: colors.cyan, fontFamily: font.mono, fontSize: 10,
+            }}
+          >
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {result.memoryKey}
+            </span>
+            <FiExternalLink size={10} style={{ flexShrink: 0 }} />
+          </button>
         </div>
       )}
     </Panel>

@@ -21,8 +21,9 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { FiTrash2, FiMic, FiSquare, FiLoader } from 'react-icons/fi';
+import { FiTrash2, FiMic, FiSquare, FiLoader, FiExternalLink } from 'react-icons/fi';
 import { api } from '../../lib/api';
+import { useCommandCenter } from '../../lib/store';
 import { useDictation } from '../../hooks/useDictation';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
@@ -33,6 +34,7 @@ export function NotesPanel({ project }: { project: Project }) {
   const { colors, theme } = useTheme();
   // White veils vanish on silver — flip to a faint graphite tint there.
   const rowVeil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
+  const focusBrainMemory = useCommandCenter(s => s.focusBrainMemory);
   const [notes, setNotes] = useState<ProjectNote[]>([]);
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
@@ -87,6 +89,16 @@ export function NotesPanel({ project }: { project: Project }) {
     } catch (e) {
       setError(`Couldn't delete note: ${(e as Error).message || 'request failed'}`);
     }
+  };
+
+  // Close the loop: focus this note's Brain memory. The note's own text is the
+  // preview so the Brain renders it even before the Librarian enriches it (fresh,
+  // description-less writes aren't in the graph yet); the live graph copy wins
+  // once present. `text` mirrors the backend's note_memory_content(title, body).
+  const viewInBrain = (note: ProjectNote) => {
+    if (!note.memory_key) return;
+    const text = note.title ? `${note.title}\n\n${note.body}` : note.body;
+    focusBrainMemory({ key: note.memory_key, preview: { text, description: null, timestamp: note.created_at } });
   };
 
   return (
@@ -215,8 +227,21 @@ export function NotesPanel({ project }: { project: Project }) {
                 }}>
                   {note.body}
                 </div>
-                <div style={{ fontSize: 10, color: colors.textDim, marginTop: 4 }}>
-                  {relativeTime(note.created_at)}
+                <div style={{ fontSize: 10, color: colors.textDim, marginTop: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span>{relativeTime(note.created_at)}</span>
+                  {note.memory_key && (
+                    <button
+                      onClick={() => viewInBrain(note)}
+                      title="View this note in your Brain"
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 4,
+                        background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                        color: colors.cyan, fontFamily: font.body, fontSize: 10, fontWeight: 600,
+                      }}
+                    >
+                      View in Brain <FiExternalLink size={9} />
+                    </button>
+                  )}
                 </div>
               </div>
               <button

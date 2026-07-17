@@ -4,43 +4,9 @@ import { api } from '../../lib/api';
 import type { GraphMemory, GraphEntity } from './useBrainData';
 import type { TypeFilters } from './BrainScene';
 import { useTheme } from '../../styles/useTheme';
-
-// ── Title derivation ─────────────────────────────────────────────────
-
-function deriveTitle(mem: GraphMemory): string {
-  // Description-first: use first sentence
-  if (mem.description) {
-    const firstSentence = mem.description.split(/\.\s/)[0];
-    if (firstSentence.length > 0 && firstSentence.length <= 80) {
-      return firstSentence.endsWith('.') ? firstSentence : firstSentence + '.';
-    }
-    if (firstSentence.length > 80) {
-      return firstSentence.slice(0, 77) + '...';
-    }
-  }
-
-  // Key fallback: humanize
-  if (mem.key) {
-    return humanizeKey(mem.key);
-  }
-
-  // Last resort: content preview
-  return mem.text.slice(0, 60) + (mem.text.length > 60 ? '...' : '');
-}
-
-function humanizeKey(key: string): string {
-  // Split on : _ -
-  const parts = key.split(/[:_\-]+/);
-  // Drop hex hashes (>6 hex chars), timestamps (all-digit >8 chars)
-  const clean = parts.filter(p => {
-    if (p.length > 8 && /^\d+$/.test(p)) return false;
-    if (p.length > 6 && /^[0-9a-f]+$/i.test(p)) return false;
-    return p.length > 0;
-  });
-  if (clean.length === 0) return key.slice(0, 40);
-  // Title case
-  return clean.map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
-}
+// Title derivation is shared with the cross-surface "View in Brain" focus seam
+// (brainMemoryFocus) so a memory reads the same in the list and when deep-linked.
+import { deriveMemoryTitle } from './brainMemoryFocus';
 
 // ── Date formatting ──────────────────────────────────────────────────
 
@@ -244,7 +210,7 @@ export function BrainList({ onSelect, selectedId, timeValue, searchQuery, entiti
             onClick={() => onSelect({
               id: mem.id,
               kind: 'memory',
-              label: deriveTitle(mem),
+              label: deriveMemoryTitle(mem),
               note: mem.text.slice(0, 120),
               data: mem,
             })}
@@ -317,7 +283,7 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
     ? colors.cyanSoft
     : theme === 'silver' ? 'rgba(255,255,255,0.7)' : 'rgba(20,28,48,0.4)';
   const rowHoverBg = theme === 'silver' ? 'rgba(255,255,255,0.9)' : 'rgba(20,28,48,0.65)';
-  const title = deriveTitle(memory);
+  const title = deriveMemoryTitle(memory);
   const preview = memory.text.slice(0, 100) + (memory.text.length > 100 ? '...' : '');
   const descPreview = memory.description
     ? memory.description.slice(0, 120) + (memory.description.length > 120 ? '...' : '')

@@ -10,6 +10,7 @@ import { PeoplePanel } from './PeoplePanel';
 import { DocumentsPanel } from './DocumentsPanel';
 import { NotesPanel } from './NotesPanel';
 import { CodeIndexPanel } from './CodeIndexPanel';
+import { MemoriesPanel } from './MemoriesPanel';
 import type { Project, BoardColumn, Card } from './types';
 
 // ── Project Overview ────────────────────────────────────────────────────────
@@ -18,9 +19,9 @@ import type { Project, BoardColumn, Card } from './types';
 // two-column read of a single project. LEFT = substance, RIGHT = people +
 // action. Ships Summary, Key Facts, Links, Tasks, People, Documents (the
 // #471 Layer 2 document hub + in-app viewer), and Notes (freeform notes the
-// user writes, indexed into the Brain). The Memories panel is still
-// deferred to the association layer; its slot is reserved in-layout below so it
-// drops in without restructuring.
+// user writes, indexed into the Brain). The Memories panel closes the Brain
+// loop: it reads back the Brain memories this project's own surfaces wrote
+// (notes / documents / indexed code), each deep-linkable into the Brain view.
 
 export function ProjectOverview({ project }: { project: Project }) {
   const { colors, gradient } = useTheme();
@@ -59,7 +60,7 @@ export function ProjectOverview({ project }: { project: Project }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
           <SummaryPanel project={project} />
           <KeyFactsPanel project={project} />
-          {/* Memories panel slots here (association layer). */}
+          <MemoriesPanel project={project} />
           <DocumentsPanel project={project} />
           <NotesPanel project={project} />
           <CodeIndexPanel project={project} />
