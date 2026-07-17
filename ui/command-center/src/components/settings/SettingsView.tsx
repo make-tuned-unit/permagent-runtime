@@ -281,6 +281,13 @@ function MemoryPanel() {
   );
 }
 
+// Only `auto` and `chat` are wired end-to-end in this app. `approve` and
+// `smart_approve` yield a tool-confirmation the command-center has no surface
+// to answer (crates/goose/src/agents/tool_execution.rs), so the turn hangs on
+// an unbounded await. Block NEW selection of those two; still surface them if a
+// user is already there, so they can switch back to a safe mode.
+const SELECTABLE_TRUST_MODES = new Set(['auto', 'chat']);
+
 function AutonomyPanel() {
   const { colors } = useThemeHook();
   // Trust level is REAL (2026-07-10 audit): it reads/writes the daemon's
@@ -290,10 +297,18 @@ function AutonomyPanel() {
   useEffect(() => {
     api.getConfig().then(cfg => {
       const mode = (cfg.config as Record<string, unknown>)?.GOOSE_MODE;
-      setTrust(typeof mode === 'string' ? mode : 'smart_approve');
-    }).catch(() => setTrust('smart_approve'));
+      // Daemon default is GooseMode::Auto (crates/goose/src/config/goose_mode.rs) —
+      // when GOOSE_MODE is unset the agent runs in `auto`, so reflect that here
+      // instead of `smart_approve` (which is a hanging mode and no longer newly
+      // selectable). Showing `smart_approve` as "active" used to lure users into
+      // clicking it and hanging their turn.
+      setTrust(typeof mode === 'string' ? mode : 'auto');
+    }).catch(() => setTrust('auto'));
   }, []);
   const saveTrust = (mode: string) => {
+    // Defense in depth: the hanging modes are also disabled in the UI below, but
+    // never write one from a fresh selection even if a click slips through.
+    if (!SELECTABLE_TRUST_MODES.has(mode)) return;
     const prev = trust;
     setTrust(mode);
     setTrustError(null);
@@ -308,10 +323,10 @@ function AutonomyPanel() {
   const [perSession, setPerSession] = useState(5);
   const [perDay, setPerDay] = useState(20);
   const trustLevels = [
-    { v: 'approve', l: 'Tight', d: 'Ask before every tool call' },
-    { v: 'smart_approve', l: 'Default', d: 'Ask only for sensitive tool calls' },
-    { v: 'auto', l: 'Loose', d: 'Approve tool calls automatically' },
+    { v: 'auto', l: 'Automatic', d: 'Run tool calls without asking (default)' },
     { v: 'chat', l: 'Chat only', d: 'No tool calls at all' },
+    { v: 'approve', l: 'Ask every time', d: 'Confirm before every tool call' },
+    { v: 'smart_approve', l: 'Smart approve', d: 'Confirm only sensitive calls' },
   ];
   const confirmItems = ['Sending email or messages', 'Spending money', 'Deleting files or records', 'Pushing to main / production', 'Reading sensitive memory'];
   return (
@@ -323,20 +338,42 @@ function AutonomyPanel() {
         )}
         <Row label="Trust level" hint="How tool calls are approved.">
           <div style={{ display: 'flex', gap: 6 }}>
-            {trustLevels.map(opt => (
-              <button key={opt.v} onClick={() => saveTrust(opt.v)} style={{
-                padding: 12, borderRadius: 10, cursor: 'pointer',
-                background: trust === opt.v ? colors.cyanSoft : colors.bgDeeper,
-                border: trust === opt.v ? `1px solid ${colors.borderHi}` : `1px solid ${colors.border}`,
-                color: colors.text, textAlign: 'left', flex: 1, fontFamily: font.body,
-                opacity: trust === null ? 0.5 : 1,
-              }}>
-                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4, color: trust === opt.v ? colors.cyan : colors.text }}>{opt.l}</div>
-                <div style={{ fontSize: 11, color: colors.textMuted }}>{opt.d}</div>
-              </button>
-            ))}
+            {trustLevels.map(opt => {
+              const current = trust === opt.v;
+              const locked = !SELECTABLE_TRUST_MODES.has(opt.v);
+              return (
+                <button key={opt.v} disabled={locked} onClick={() => saveTrust(opt.v)}
+                  title={locked ? "Per-tool approval isn't available in this app yet" : undefined}
+                  style={{
+                    padding: 12, borderRadius: 10, cursor: locked ? 'not-allowed' : 'pointer',
+                    background: current ? colors.cyanSoft : colors.bgDeeper,
+                    border: current ? `1px solid ${colors.borderHi}` : `1px solid ${colors.border}`,
+                    color: colors.text, textAlign: 'left', flex: 1, fontFamily: font.body,
+                    opacity: trust === null ? 0.5 : locked && !current ? 0.55 : 1,
+                  }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, marginBottom: 4 }}>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: current ? colors.cyan : colors.text }}>{opt.l}</span>
+                    {locked && (
+                      <span style={{ fontSize: 9, fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', color: colors.textMuted, border: `1px solid ${colors.border}`, borderRadius: 999, padding: '1px 6px' }}>Soon</span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 11, color: colors.textMuted }}>{opt.d}</div>
+                </button>
+              );
+            })}
           </div>
         </Row>
+        <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 10, lineHeight: 1.5 }}>
+          Per-tool approval (Ask every time / Smart approve) isn't available in
+          this app yet — it's coming soon. For now, pick Automatic or Chat only.
+        </div>
+        {trust !== null && !SELECTABLE_TRUST_MODES.has(trust) && (
+          <div style={{ marginTop: 10, padding: '10px 14px', borderRadius: 10, background: `${colors.warning}1A`, border: `1px solid ${colors.warning}55`, color: colors.text, fontSize: 12, lineHeight: 1.5 }}>
+            You're currently on a per-tool-approval mode that can stall the agent
+            in this app, because there's no way to answer the approval prompt here
+            yet. Switch to <strong>Automatic</strong> or <strong>Chat only</strong> above to recover.
+          </div>
+        )}
       </Section>
       <PreviewNotice />
       <Section title="Always confirm before…">
