@@ -52,8 +52,9 @@ pub fn decision_memory_key(project_slug: &str, decision_id: &str) -> String {
 }
 
 /// Keep key parts parseable: colons and whitespace become hyphens so the
-/// `decision:{project}:{id}` structure stays unambiguous.
-fn sanitize_key_part(part: &str) -> String {
+/// `decision:{project}:{id}` structure stays unambiguous. `pub(crate)` so the
+/// playbook module builds its keys with the identical sanitization.
+pub(crate) fn sanitize_key_part(part: &str) -> String {
     part.trim()
         .chars()
         .map(|c| {
@@ -114,7 +115,9 @@ pub fn correction_memory_content(original: &str, edited: &str) -> String {
     )
 }
 
-fn ensure_sentence(s: &str) -> String {
+/// Terminate `s` as a sentence (add a trailing period unless it already ends
+/// in one). `pub(crate)` so the playbook module shapes hint prose identically.
+pub(crate) fn ensure_sentence(s: &str) -> String {
     let trimmed = s.trim();
     if trimmed.ends_with(['.', '!', '?']) {
         trimmed.to_string()
@@ -394,8 +397,9 @@ fn select_prefixed(
 /// merged hits flattened to `(key, content, signal_score)`, then filtered to
 /// `prefix` capped at `cap`. Both [`recall_decisions`] and
 /// [`recall_corrections`] are thin typed wrappers. Local-only; zero cloud
-/// tokens.
-async fn recall_prefixed(
+/// tokens. `pub(crate)` so the playbook module recalls its `playbook:`-prefixed
+/// hints through the exact same prefix-isolated cascade.
+pub(crate) async fn recall_prefixed(
     brain: &SafeBrain,
     query: &str,
     wing: &str,
@@ -466,8 +470,9 @@ pub async fn recall_corrections(
 /// Shared quoted-block renderer for recalled-memory context injection (S2:
 /// memory content is data; the header says so explicitly). Flattens newlines so
 /// every memory stays inside its own quoted line — prompt-injection discipline.
-/// Returns None when nothing is injected.
-fn format_reference_block<'a>(
+/// Returns None when nothing is injected. `pub(crate)` so the playbook module
+/// injects its hints through the identical data-not-instructions renderer.
+pub(crate) fn format_reference_block<'a>(
     header: &str,
     contents: impl Iterator<Item = &'a str>,
     cap: usize,

@@ -1812,6 +1812,40 @@ impl OrchestratorClient {
                     );
                 }
             }
+            // Playbook hints (flag-gated, default OFF): distilled tendencies from
+            // Jesse's past decisions, recalled ALONGSIDE the raw decisions above
+            // and framed as OVERRIDABLE suggestions with provenance — never rules
+            // (the −9pp authoritative-atoms lesson). This is the behavior-change
+            // seam: the Brain leaning the decomposition toward how Jesse decides.
+            // When the flag is off this whole block is skipped, so the decompose
+            // context is byte-for-byte identical to before. The `playbook` INFO
+            // line is the observable A/B signal a decompose-eval reads to confirm
+            // the treatment arm actually injected.
+            if crate::playbook::is_enabled() {
+                match crate::playbook::recall_playbook_hints(&brain, &objective, &project.slug)
+                    .await
+                {
+                    Ok(hits) => {
+                        if let Some(block) = crate::playbook::format_playbook_context_block(&hits) {
+                            user_text.push_str("\n\n");
+                            user_text.push_str(&block);
+                            tracing::info!(
+                                target: "playbook",
+                                project = %project.slug,
+                                hints = hits.len(),
+                                "injected playbook hints into decompose context"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!(
+                            target: "playbook",
+                            "Skipping playbook recall for decompose: {}",
+                            e
+                        );
+                    }
+                }
+            }
         }
 
         let user_message = crate::conversation::message::Message::user().with_text(user_text);

@@ -568,6 +568,20 @@ impl AppState {
             );
         }
 
+        // Playbook synthesis worker (learning loop, increment 1): a periodic,
+        // project-scoped, local-first pass that distills Jesse's answered
+        // decisions + corrections into provenance-linked hints. Flag-gated
+        // (PERMAGENT_PLAYBOOK_ENABLED, default OFF) — spawn() logs the on/off
+        // state and does nothing when the flag is unset.
+        if let Ok(pool) = agent_manager.session_manager().pool_clone().await {
+            permagent::playbook::synthesis::spawn(pool);
+        } else {
+            tracing::warn!(
+                target: "playbook",
+                "no app DB pool available — playbook synthesis worker not started"
+            );
+        }
+
         // Durable activity journal (#619): a long-lived consumer on the same
         // event bus, persisting selected kinds (goal transitions, decisions,
         // librarian describe runs, Watcher nudges, task failures) as
