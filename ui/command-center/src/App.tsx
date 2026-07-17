@@ -4,6 +4,7 @@ import { useTheme } from './styles/useTheme';
 import { Sidebar } from './components/sidebar/Sidebar';
 import { SettingsView } from './components/settings/SettingsView';
 import { InboxPanel } from './components/inbox/InboxPanel';
+import { SkillsPanel } from './components/skills/SkillsPanel';
 import { WorkspaceRenderer } from './components/workspaces/WorkspaceRenderer';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { WizardShell } from './components/wizard/WizardShell';
@@ -31,6 +32,11 @@ function MainContent() {
 
   const showSettings = activePanel === 'settings';
   const showInbox = activePanel === 'inbox';
+  // Skills Library renders as a labeled overlay (mirrors inbox) so accepting a
+  // skill proposal — which sets activePanel:'skills' — lands on a real surface
+  // instead of a blank/unchanged screen. Also the target of navigate_app("Skills").
+  const showSkills = activePanel === 'skills';
+  const setActivePanel = useCommandCenter(s => s.setActivePanel);
 
   if (!workspacesLoaded) {
     return (
@@ -40,7 +46,7 @@ function MainContent() {
     );
   }
 
-  if (!activeWorkspaceId && !showSettings && !showInbox) {
+  if (!activeWorkspaceId && !showSettings && !showInbox && !showSkills) {
     return (
       <div className="flex h-full items-center justify-center text-dark-muted text-xs font-mono">
         No workspaces available
@@ -63,11 +69,16 @@ function MainContent() {
           <InboxPanel />
         </div>
       )}
+      {showSkills && (
+        <div className="absolute inset-0 z-10">
+          <SkillsPanel onClose={() => setActivePanel('chat')} />
+        </div>
+      )}
       {workspaces.map(ws => (
         <div
           key={ws.id}
           className="absolute inset-0"
-          style={{ display: (!showSettings && !showInbox && ws.id === activeWorkspaceId) ? 'block' : 'none' }}
+          style={{ display: (!showSettings && !showInbox && !showSkills && ws.id === activeWorkspaceId) ? 'block' : 'none' }}
         >
           <ErrorBoundary surface="the workspace">
             <WorkspaceRenderer workspaceId={ws.id} />
