@@ -516,24 +516,14 @@ async fn record_effect_failure(pool: &Pool<Sqlite>, decision: &decisions::Decisi
 
 // ── Tool-confirmation bridge ─────────────────────────────────────────────────
 
-/// Deliver a freshly answered `tool_approval` decision back to the parked agent
-/// turn. Maps approve→`AllowOnce` / reject→`DenyOnce` and delivers it through the
-/// session's `ToolConfirmationRouter` (via `Agent::handle_confirmation` — the same
-/// channel the legacy `/action-required/tool-confirmation` modal uses), so the
-/// awaiting tool call unblocks: approve runs the tool, reject skips it, and the
-/// turn continues.
-///
-/// Lifecycle: the parked await lives inside a detached, event-bus-decoupled turn
-/// task that keeps the reply stream polled until cancel/completion, so it is
-/// still alive to receive this delivery even though the answer arrives on a
-/// separate request long after the turn parked. If the turn was cancelled or the
-/// daemon restarted in the interim, the router simply reports no waiter
-/// (`handle_confirmation` logs it) — the decision is already answered and no
-/// live turn hangs; that is the correct, moot outcome, not an error here.
-async fn deliver_tool_confirmation(
-    state: &Arc<AppState>,
+/// Pure mapping from a freshly answered `tool_approval` decision to the routing
+/// keys, the `PermissionConfirmation` to deliver, and the human-readable effect
+/// message: approve→`AllowOnce` (tool runs), reject→`DenyOnce` (tool skipped).
+/// No I/O — this is the risk-bearing logic and is unit-tested directly, without
+/// an `AppState` or a database.
+fn tool_confirmation_from_decision(
     decision: &decisions::Decision,
-) -> Result<String, String> {
+) -> Result<(String, String, PermissionConfirmation, String), String> {
     let payload: permagent::decisions::ToolApprovalPayload =
         serde_json::from_value(decision.payload.clone())
             .map_err(|e| format!("tool_approval payload unreadable: {}", e))?;
@@ -555,20 +545,43 @@ async fn deliver_tool_confirmation(
         }
     };
 
-    let agent = state
-        .get_agent(payload.session_id.clone())
-        .await
-        .map_err(|e| format!("no agent for session {}: {}", payload.session_id, e))?;
+    Ok((
+        payload.session_id,
+        payload.request_id,
+        PermissionConfirmation {
+            principal_type: PrincipalType::Tool,
+            permission,
+        },
+        effect_msg,
+    ))
+}
 
-    agent
-        .handle_confirmation(
-            payload.request_id.clone(),
-            PermissionConfirmation {
-                principal_type: PrincipalType::Tool,
-                permission,
-            },
-        )
-        .await;
+/// Deliver a freshly answered `tool_approval` decision back to the parked agent
+/// turn: resolve the session's `Agent` and hand the confirmation to its
+/// `ToolConfirmationRouter` via `Agent::handle_confirmation` — the same channel
+/// the legacy `/action-required/tool-confirmation` modal uses — so the awaiting
+/// tool call unblocks: approve runs the tool, reject skips it, the turn continues.
+///
+/// Lifecycle: the parked await lives inside a detached, event-bus-decoupled turn
+/// task that keeps the reply stream polled until cancel/completion, so it is
+/// still alive to receive this delivery even though the answer arrives on a
+/// separate request long after the turn parked. If the turn was cancelled or the
+/// daemon restarted in the interim, the router simply reports no waiter
+/// (`handle_confirmation` logs it) — the decision is already answered and no
+/// live turn hangs; that is the correct, moot outcome, not an error here.
+async fn deliver_tool_confirmation(
+    state: &Arc<AppState>,
+    decision: &decisions::Decision,
+) -> Result<String, String> {
+    let (session_id, request_id, confirmation, effect_msg) =
+        tool_confirmation_from_decision(decision)?;
+
+    let agent = state
+        .get_agent(session_id.clone())
+        .await
+        .map_err(|e| format!("no agent for session {}: {}", session_id, e))?;
+
+    agent.handle_confirmation(request_id, confirmation).await;
 
     Ok(effect_msg)
 }
@@ -681,12 +694,27 @@ mod tests {
 
     // ── Tool-confirmation bridge round-trip (the real trust-mode fix) ──
     //
-    // A parked tool call registers a oneshot on the session agent's
-    // ToolConfirmationRouter (exactly what handle_approval_tool_requests does).
-    // Answering its tool_approval decision through the real handler must deliver
-    // the mapped Permission back to that oneshot — approve→AllowOnce (tool runs),
-    // reject→DenyOnce (tool skipped) — proving the async inbox answer reaches the
-    // in-turn await. AppState singletons ⇒ #[serial]; ids are unique per test.
+    // The risk-bearing logic is `tool_confirmation_from_decision` (answer →
+    // routing keys + PermissionConfirmation) and its delivery through
+    // `Agent::handle_confirmation` — the same channel a parked
+    // `handle_approval_tool_requests` await is suspended on. Both are exercised
+    // with an in-memory decisions DB + a real Agent (no AppState / no on-disk DB:
+    // the AppState session store is a process singleton whose path is not
+    // openable under `cargo test` on every platform). Mirrors the sibling tier2
+    // test's in-memory pool and the Agent::new()+handle_confirmation tests in
+    // crates/goose/src/agents/agent.rs.
+
+    use permagent::agents::Agent;
+    use permagent::session::spectral_schema::init_spectral_db;
+
+    async fn memory_pool() -> Pool<Sqlite> {
+        let pool = permagent::sqlx::sqlite::SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        init_spectral_db(&pool).await.unwrap();
+        pool
+    }
 
     fn tool_approval_new(
         session_id: &str,
@@ -707,106 +735,98 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    #[serial_test::serial]
-    async fn answered_tool_approval_delivers_approve_to_agent() {
-        let state = AppState::new(true).await.unwrap();
-        let session_id = "tool-approval-bridge-approve";
-        let request_id = "req-approve-1";
-
-        // Simulate the parked turn: register the confirmation on the session
-        // agent's router (the same Agent instance the handler will resolve).
-        let agent = state.get_agent(session_id.to_string()).await.unwrap();
-        let rx = agent
-            .tool_confirmation_router
-            .register(request_id.to_string())
-            .await;
-
-        // File the tool_approval decision the parked turn would have created.
-        let pool = pool_of(&state).await.unwrap();
-        let d = decisions::create_decision(&pool, tool_approval_new(session_id, request_id, "ls"))
-            .await
-            .unwrap();
+    /// Create then answer a tool_approval decision, returning the answered row.
+    async fn create_and_answer(
+        pool: &Pool<Sqlite>,
+        session_id: &str,
+        request_id: &str,
+        command: &str,
+        answer: &str,
+    ) -> decisions::Decision {
+        let d =
+            decisions::create_decision(pool, tool_approval_new(session_id, request_id, command))
+                .await
+                .unwrap();
         assert_ne!(
             d.kind, "malformed",
             "valid tool_approval must not be malformed"
         );
         assert_eq!(d.tier, 2, "tool_approval is human-only (Tier 2)");
-
-        // Answer 'approve' through the real HTTP handler.
-        let resp = answer_decision_handler(
-            State(state.clone()),
-            Path(d.id.clone()),
-            Json(AnswerRequest {
-                answer: "approve".to_string(),
-                note: None,
-                choice_id: None,
-                input_text: None,
-            }),
-        )
-        .await
-        .expect("answer handler should succeed");
-        assert_eq!(resp.0.decision.status, "answered");
-        assert!(
-            resp.0
-                .effect
-                .as_deref()
-                .unwrap_or_default()
-                .contains("approved"),
-            "effect should report the delivered approval: {:?}",
-            resp.0.effect
-        );
-
-        // The parked await is unblocked with AllowOnce → the tool runs.
-        let confirmation = tokio::time::timeout(std::time::Duration::from_secs(5), rx)
-            .await
-            .expect("deliver must unblock the parked await within the timeout")
-            .expect("confirmation sender must not have been dropped");
-        assert_eq!(confirmation.permission, Permission::AllowOnce);
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    #[serial_test::serial]
-    async fn answered_tool_approval_delivers_deny_to_agent() {
-        let state = AppState::new(true).await.unwrap();
-        let session_id = "tool-approval-bridge-deny";
-        let request_id = "req-deny-1";
-
-        let agent = state.get_agent(session_id.to_string()).await.unwrap();
-        let rx = agent
-            .tool_confirmation_router
-            .register(request_id.to_string())
-            .await;
-
-        let pool = pool_of(&state).await.unwrap();
-        let d = decisions::create_decision(
-            &pool,
-            tool_approval_new(session_id, request_id, "rm -rf /tmp/x"),
+        let (answered, _proof) = decisions::answer_decision(
+            pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: answer.to_string(),
+                ..Default::default()
+            },
+            decisions::ACTOR_JESSE,
         )
         .await
         .unwrap();
+        answered
+    }
 
-        // Answer 'reject' through the real HTTP handler.
-        let resp = answer_decision_handler(
-            State(state.clone()),
-            Path(d.id.clone()),
-            Json(AnswerRequest {
-                answer: "reject".to_string(),
-                note: None,
-                choice_id: None,
-                input_text: None,
-            }),
-        )
-        .await
-        .expect("answer handler should succeed");
-        assert_eq!(resp.0.decision.status, "answered");
+    #[tokio::test]
+    async fn tool_confirmation_from_answered_decision_maps_approve_and_reject() {
+        let pool = memory_pool().await;
 
-        // The parked await is unblocked with DenyOnce → the tool is skipped and
-        // the turn continues (the DECLINED path in handle_approval_tool_requests).
-        let confirmation = tokio::time::timeout(std::time::Duration::from_secs(5), rx)
-            .await
-            .expect("deliver must unblock the parked await within the timeout")
-            .expect("confirmation sender must not have been dropped");
+        let approved = create_and_answer(&pool, "sess-1", "req-1", "ls", "approve").await;
+        let (session_id, request_id, confirmation, effect) =
+            tool_confirmation_from_decision(&approved).unwrap();
+        assert_eq!(session_id, "sess-1");
+        assert_eq!(request_id, "req-1");
+        assert_eq!(confirmation.permission, Permission::AllowOnce);
+        assert!(effect.contains("approved"), "effect: {}", effect);
+
+        let rejected = create_and_answer(&pool, "sess-2", "req-2", "rm -rf /tmp/x", "reject").await;
+        let (_s, _r, confirmation, effect) = tool_confirmation_from_decision(&rejected).unwrap();
         assert_eq!(confirmation.permission, Permission::DenyOnce);
+        assert!(effect.contains("denied"), "effect: {}", effect);
+    }
+
+    /// End-to-end: an answered tool_approval decision, mapped and delivered
+    /// through `Agent::handle_confirmation`, unblocks a parked
+    /// `ToolConfirmationRouter` await — approve→AllowOnce (tool runs),
+    /// reject→DenyOnce (tool skipped) — the exact await
+    /// `handle_approval_tool_requests` suspends the turn on.
+    #[tokio::test]
+    async fn answered_tool_approval_unblocks_parked_agent_await() {
+        let pool = memory_pool().await;
+
+        // Approve → AllowOnce (tool runs).
+        {
+            let agent = Agent::new();
+            let rx = agent
+                .tool_confirmation_router
+                .register("req-approve".to_string())
+                .await;
+            let answered = create_and_answer(&pool, "s-a", "req-approve", "ls", "approve").await;
+            let (_sid, request_id, confirmation, _msg) =
+                tool_confirmation_from_decision(&answered).unwrap();
+            agent.handle_confirmation(request_id, confirmation).await;
+            let delivered = tokio::time::timeout(std::time::Duration::from_secs(5), rx)
+                .await
+                .expect("deliver must unblock the parked await")
+                .expect("confirmation sender must not have been dropped");
+            assert_eq!(delivered.permission, Permission::AllowOnce);
+        }
+
+        // Reject → DenyOnce (tool skipped, turn continues).
+        {
+            let agent = Agent::new();
+            let rx = agent
+                .tool_confirmation_router
+                .register("req-deny".to_string())
+                .await;
+            let answered = create_and_answer(&pool, "s-d", "req-deny", "rm", "reject").await;
+            let (_sid, request_id, confirmation, _msg) =
+                tool_confirmation_from_decision(&answered).unwrap();
+            agent.handle_confirmation(request_id, confirmation).await;
+            let delivered = tokio::time::timeout(std::time::Duration::from_secs(5), rx)
+                .await
+                .expect("deliver must unblock the parked await")
+                .expect("confirmation sender must not have been dropped");
+            assert_eq!(delivered.permission, Permission::DenyOnce);
+        }
     }
 }
