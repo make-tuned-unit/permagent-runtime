@@ -43,6 +43,42 @@ function dispatchAppAction(
   if (payload?.reason) showNavigationCue(payload.reason);
 }
 
+/**
+ * Agent-driven open_item: the last mile past a tab — open a SPECIFIC item by id.
+ * Mirrors the daemon's app_conductor ITEM_CATALOG 1:1 (kind is validated
+ * daemon-side before emit), so this only maps known kinds to the store seams
+ * that already back the human buttons (goal → openGoalDetail, grow →
+ * growProject). Both seams self-navigate to their surface, so no extra nav here.
+ * Reads live state imperatively via getState() so the WS callback never goes stale.
+ *
+ * Exported for wiring tests. Keep the handled kinds in lockstep with the Rust
+ * ITEM_CATALOG (app_conductor.rs) — a kind on one side but not the other is a
+ * silently-dropped event.
+ */
+export function dispatchOpenItem(payload: {
+  kind?: string;
+  project_id?: string;
+  card_id?: string;
+  reason?: string;
+}) {
+  const { kind, project_id, card_id } = payload ?? {};
+  if (!kind || !project_id) return;
+  const s = useCommandCenter.getState();
+
+  if (kind === 'goal') {
+    // Goal-detail modal needs both ids; a goal without its card_id is unopenable
+    // (the daemon rejects this too, but guard the direct/cross-window path).
+    if (!card_id) return;
+    s.openGoalDetail(project_id, card_id);
+  } else if (kind === 'grow') {
+    s.growProject(project_id);
+  } else {
+    return; // unknown kind — drop rather than guess
+  }
+
+  if (payload?.reason) showNavigationCue(payload.reason);
+}
+
 const VALID_TOOL_TYPES = new Set<string>([
   'chat', 'skills', 'trace', 'world', 'terminal', 'browser', 'memory', 'dashboard', 'build', 'automate', 'projects', 'grow',
 ]);
@@ -162,6 +198,10 @@ export function useAppNavigate() {
             dispatchAppAction(event.payload ?? {}, themeRef.current);
             return;
           }
+          if (eventType === 'app_open_item') {
+            dispatchOpenItem(event.payload ?? {});
+            return;
+          }
           if (eventType !== 'app_navigate') return;
           navigateRef.current(event.payload ?? {});
         } catch {
@@ -217,7 +257,11 @@ export function useAppNavigate() {
           'app_action',
           (ev) => dispatchAppAction(ev.payload ?? {}, themeRef.current),
         );
-        const stopBoth = () => { stop(); stopLaunch(); stopAction(); };
+        const stopOpenItem = await listen<{ kind?: string; project_id?: string; card_id?: string; reason?: string }>(
+          'app_open_item',
+          (ev) => dispatchOpenItem(ev.payload ?? {}),
+        );
+        const stopBoth = () => { stop(); stopLaunch(); stopAction(); stopOpenItem(); };
         if (disposed) stopBoth(); else unlisten = stopBoth;
       } catch { /* not in Tauri / event API unavailable */ }
     })();

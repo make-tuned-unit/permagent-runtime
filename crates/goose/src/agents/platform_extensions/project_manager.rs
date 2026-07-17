@@ -332,12 +332,14 @@ pub const PROJECT_WORKSPACE_FEATURE: crate::agents::self_knowledge::FeatureDescr
             "The Projects tab where each project opens into a workspace with two lenses, toggled \
              in shared chrome: an Overview dashboard (summary, key facts, links, live task \
              status, the People panel with person profile cards, the Documents hub with an \
-             in-app viewer for PDFs/images/markdown, and a Notes panel) and the Kanban board of \
+             in-app viewer for PDFs/images/markdown, a Notes panel, and a Memories panel that \
+             lists what your Brain has learned about the project — each with a 'View in Brain' \
+             deep-link that focuses that memory in the Brain view) and the Kanban board of \
              goal and to-do cards. A document dropped into a project is extracted and indexed \
              into your Brain and associated with that project; notes the user writes on a \
              project are indexed into your Brain the same way — both recallable and \
-             Librarian-enriched, scoped to the project. A project switcher drives both lenses \
-             from the same selected project",
+             Librarian-enriched, scoped to the project, and both surface back in the Memories \
+             panel. A project switcher drives both lenses from the same selected project",
         why_it_matters:
             "It is the user's at-a-glance home for a project — what it is, its links, and the live \
              state of its work. Because dropped documents and written notes land in your Brain \
