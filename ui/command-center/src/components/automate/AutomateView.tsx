@@ -984,6 +984,13 @@ function ExtensionDetail({ ext }: { ext: ExtensionInfo }) {
 
 function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string }; displayName: string }) {
   const { colors } = useTheme();
+  const switchToSession = useCommandCenter(s => s.switchToSession);
+  const openChatDock = useCommandCenter(s => s.openChatDock);
+  // A run's id IS its session id — open the full conversation in the chat dock.
+  const openConversation = useCallback(() => {
+    switchToSession(run.id).catch(err => console.error('[automate] open session failed:', err));
+    openChatDock();
+  }, [switchToSession, openChatDock, run.id]);
   const [reportText, setReportText] = useState<string | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [actionInFlight, setActionInFlight] = useState<string | null>(null);
@@ -1041,9 +1048,26 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
   return (
     <>
       <div style={{ fontSize: 18, fontWeight: 600, fontFamily: font.display, marginBottom: 4 }}>{displayName}</div>
-      <div style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono, marginBottom: 16, fontVariantNumeric: 'tabular-nums' }}>
+      <div style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono, marginBottom: 12, fontVariantNumeric: 'tabular-nums' }}>
         {new Date(run.createdAt).toLocaleString()} &middot; {run.messageCount} msgs &middot; {run.totalTokens ?? 0} tokens
       </div>
+      <button
+        onClick={openConversation}
+        title="Open this run's full conversation in chat"
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6, marginBottom: 20,
+          padding: '5px 12px', borderRadius: radius.sm,
+          background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
+          color: colors.cyan, fontSize: 12, fontWeight: 600, fontFamily: font.body, cursor: 'pointer',
+        }}
+        onMouseEnter={e => { e.currentTarget.style.filter = 'brightness(1.12)'; }}
+        onMouseLeave={e => { e.currentTarget.style.filter = 'none'; }}
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+        </svg>
+        Open conversation
+      </button>
       {loading ? (
         <div style={{ fontSize: 12, color: colors.textDim }}>Loading results...</div>
       ) : findings.length > 0 ? (
