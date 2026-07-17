@@ -294,8 +294,33 @@ mod tests {
             "PERMAGENT_PATH_ROOT",
             "PERMAGENT_DISABLE_KEYRING",
             "GOOSE_MODE",
+            // The playbook A/B toggle — must flow through (see the dedicated test).
+            "PERMAGENT_PLAYBOOK_ENABLED",
         ] {
             assert!(!is_scrubbed_env(name), "{name} should NOT be scrubbed");
+        }
+    }
+
+    /// Measurement lock-in for the learning playbook (increment 1). The playbook
+    /// consultation injects at the harness's decompose step, gated by
+    /// `PERMAGENT_PLAYBOOK_ENABLED`. A with-vs-without decompose eval on the mini
+    /// drives the two arms by exporting that flag, which reaches every child run
+    /// only because it is NOT a scrubbed router-family knob. This pins the
+    /// passthrough: a future scrub-prefix change that swept it would silently
+    /// disable the A/B seam and make the measurement a misleading null.
+    #[test]
+    fn playbook_ab_flag_flows_through_to_the_harness() {
+        assert!(
+            !is_scrubbed_env("PERMAGENT_PLAYBOOK_ENABLED"),
+            "PERMAGENT_PLAYBOOK_ENABLED is the playbook A/B toggle the decompose eval drives — \
+             scrubbing it would silently disable the measurement seam"
+        );
+        // Sanity: it does not accidentally match a router-family prefix.
+        for prefix in SCRUBBED_ENV_PREFIXES {
+            assert!(
+                !"PERMAGENT_PLAYBOOK_ENABLED".starts_with(prefix),
+                "the playbook flag must not collide with scrubbed prefix {prefix}"
+            );
         }
     }
 

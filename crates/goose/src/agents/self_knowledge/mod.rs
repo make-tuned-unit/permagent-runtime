@@ -148,7 +148,24 @@ pub static WORKER_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::initiative::SELF_KNOWLEDGE_FEATURE,
     crate::echo::SELF_KNOWLEDGE_FEATURE,
     usage::ONBOARDING_COACH_FEATURE,
+    // Render-gated (see `worker_descriptor_visible`): hidden from the brief
+    // while `PERMAGENT_PLAYBOOK_ENABLED` is off, so this experimental, unproven
+    // capability does not enter every user's Henry until deliberately enabled.
+    crate::playbook::PLAYBOOK_SYNTHESIS_FEATURE,
 ];
+
+/// Whether a worker descriptor should be rendered into the `permagent_self`
+/// brief. Almost all are always visible; a flag-gated, experimental worker is
+/// hidden until its flag is on, so the capability the agent can DESCRIBE is
+/// exactly the one it can DO — and, with the flag off, the brief is byte-for-
+/// byte identical to before the descriptor existed (the canonical snapshots
+/// stay unchanged; a dedicated test covers the enabled rendering).
+fn worker_descriptor_visible(d: &FeatureDescriptor) -> bool {
+    if d.id == crate::playbook::PLAYBOOK_FEATURE_ID {
+        return crate::playbook::is_enabled();
+    }
+    true
+}
 
 /// Deterministic guardrails the agent operates under. Co-located with the
 /// safety-core module that enforces each one.
@@ -328,6 +345,11 @@ impl SelfKnowledgeBuilder {
         )
         .ok();
         for d in WORKER_DESCRIPTORS {
+            // Flag-gated workers are omitted from the brief while disabled — off
+            // is a byte-for-byte no-op (see `worker_descriptor_visible`).
+            if !worker_descriptor_visible(d) {
+                continue;
+            }
             let live = self.worker_live_state(d);
             match live {
                 Some(state) => writeln!(
@@ -527,6 +549,9 @@ mod tests {
         "initiative",
         "watcher",
         "onboarding_coach",
+        // In the registry always (so `find_descriptor` resolves it); its render
+        // into the brief is flag-gated (see `worker_descriptor_visible`).
+        "playbook",
     ];
     /// Every known surface id must have exactly one descriptor.
     const KNOWN_SURFACE_IDS: &[&str] = &[
@@ -697,6 +722,66 @@ mod tests {
         assert!(brief.contains("**Persona"));
         // Queryable scheduler state merged in.
         assert!(brief.contains("3 job(s) scheduled"));
+    }
+
+    /// B1 render-gate: the flag-gated Decision Playbook worker is HIDDEN from the
+    /// brief when `PERMAGENT_PLAYBOOK_ENABLED` is off. This is why the canonical
+    /// prompt_manager snapshots stay byte-for-byte unchanged — off is a no-op.
+    /// (Pins config to an empty temp root, like the snapshot tests, so the flag
+    /// is the only variable.)
+    #[test]
+    fn playbook_descriptor_hidden_when_flag_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().display().to_string();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(root.as_str())),
+            ("PERMAGENT_PATH_ROOT", Some(root.as_str())),
+            ("PERMAGENT_PLAYBOOK_ENABLED", None::<&str>),
+        ]);
+
+        let brief = SelfKnowledgeBuilder {
+            agent_display_name: "Aria".to_string(),
+            scheduled_job_count: None,
+            dispatchable_workers: Vec::new(),
+        }
+        .build();
+
+        assert!(
+            !brief.contains("Decision Playbook"),
+            "playbook descriptor must be hidden from the brief when the flag is off"
+        );
+    }
+
+    /// B1 enabled rendering: when `PERMAGENT_PLAYBOOK_ENABLED` is on, the Decision
+    /// Playbook worker renders in the brief with its hints-with-provenance
+    /// framing — so the capability the agent can DO is exactly the one it can
+    /// DESCRIBE. The dedicated guard the coordinator asked for.
+    #[test]
+    fn playbook_descriptor_shown_when_flag_on() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().display().to_string();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(root.as_str())),
+            ("PERMAGENT_PATH_ROOT", Some(root.as_str())),
+            ("PERMAGENT_PLAYBOOK_ENABLED", Some("1")),
+        ]);
+
+        let brief = SelfKnowledgeBuilder {
+            agent_display_name: "Aria".to_string(),
+            scheduled_job_count: None,
+            dispatchable_workers: Vec::new(),
+        }
+        .build();
+
+        assert!(
+            brief.contains("**Decision Playbook**"),
+            "playbook descriptor must render in the brief when the flag is on"
+        );
+        // The rendered copy must carry the non-authoritative, provenance framing.
+        assert!(
+            brief.contains("provenance"),
+            "the rendered playbook descriptor must convey hints-with-provenance"
+        );
     }
 
     #[test]

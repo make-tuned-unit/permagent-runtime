@@ -97,6 +97,11 @@ fn default_env_filter() -> EnvFilter {
         // usage/teachable updates under this target; without the directive the
         // INFO lines fall below the WARN floor (the #580 trap).
         .add_directive("onboarding=info".parse().unwrap())
+        // Learning playbook: the synthesis worker logs its ON/OFF startup state
+        // and per-project distillation, and the decompose consultation logs when
+        // it injects hints (the A/B-observable signal). Without the directive
+        // both fall below the WARN floor (the #580 trap).
+        .add_directive("playbook=info".parse().unwrap())
         .add_directive(LevelFilter::WARN.into())
 }
 
