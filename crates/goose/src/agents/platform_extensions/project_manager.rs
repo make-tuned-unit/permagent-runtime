@@ -1133,7 +1133,7 @@ impl ProjectManagerClient {
         ))])
     }
 
-    fn get_tools() -> Vec<Tool> {
+    pub(crate) fn get_tools() -> Vec<Tool> {
         let create_schema = serde_json::to_value(schema_for!(ProjectCreateParams)).unwrap();
         let update_schema = serde_json::to_value(schema_for!(ProjectUpdateParams)).unwrap();
         let delete_schema = serde_json::to_value(schema_for!(ProjectDeleteParams)).unwrap();

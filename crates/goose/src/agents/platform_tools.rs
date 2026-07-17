@@ -60,18 +60,18 @@ pub fn manage_schedule_tool() -> Tool {
     Tool::new(
         PLATFORM_MANAGE_SCHEDULE_TOOL_NAME.to_string(),
         indoc! {r#"
-            Manage goose's internal scheduled recipe execution.
+            Manage Permagent's internal scheduled recipe execution.
 
             Actions:
-            - "list": List all goose scheduled jobs
-            - "create": Create a new goose scheduled job from a recipe file
-            - "run_now": Execute a goose scheduled job immediately
-            - "pause": Pause a goose scheduled job
-            - "unpause": Resume a paused goose scheduled job
-            - "delete": Remove a goose scheduled job
-            - "kill": Terminate a currently running goose scheduled job
-            - "inspect": Get details about a running goose scheduled job
-            - "sessions": List execution history for a goose scheduled job
+            - "list": List all scheduled jobs
+            - "create": Create a new scheduled job from a recipe file
+            - "run_now": Execute a scheduled job immediately
+            - "pause": Pause a scheduled job
+            - "unpause": Resume a paused scheduled job
+            - "delete": Remove a scheduled job
+            - "kill": Terminate a currently running scheduled job
+            - "inspect": Get details about a running scheduled job
+            - "sessions": List execution history for a scheduled job
             - "session_content": Get the full content (messages) of a specific session
         "#}
         .to_string(),

@@ -43,7 +43,7 @@ pub const BRAIN_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
             },
             crate::agents::self_knowledge::TeachingStep {
                 title: "Prove it remembers",
-                body: "Ask them to tell you one durable fact about themselves, save it to memory, then recall it back — unlike an ordinary chatbot, you will still know it tomorrow and in every future session.",
+                body: "Ask them to tell you one durable fact about themselves; it is written to your Brain automatically — memory is captured by ingestion, the Reader, notes, and consolidation, never by a save tool you call — then recall it back with search_memory: unlike an ordinary chatbot, you will still know it tomorrow and in every future session.",
                 open_surface: None,
                 confirm: Some(crate::agents::self_knowledge::ConfirmCheck::MemoryRecallable(
                     "the fact they just told you about themselves",
