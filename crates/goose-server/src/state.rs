@@ -662,6 +662,14 @@ impl AppState {
         // Load app catalog (static tab/view descriptions for agent navigation).
         let app_catalog = crate::app_catalog::init();
 
+        // Agent-led onboarding: load durable feature-usage from config, then turn
+        // on write-through persistence so engagement observed from the activity
+        // bus is remembered across restarts. Order matters — hydrate the durable
+        // state into memory before enabling writes so we build on it, not clobber
+        // it.
+        permagent::agents::self_knowledge::usage::hydrate_from_config();
+        permagent::agents::self_knowledge::usage::enable_persistence();
+
         // Initialize voice providers (STT + TTS) if model files are present.
         let voice_paths = crate::voice::sherpa_backend::VoiceModelPaths::default_paths();
         let (voice_stt, voice_tts) = init_voice_providers(&voice_paths);

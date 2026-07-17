@@ -237,6 +237,16 @@ impl Agent {
                  ask again. Offer only once — never nag."
                     .to_string(),
             );
+        } else {
+            // Past first-run: the onboarding coach may gently surface ONE feature
+            // the user hasn't tried yet — at most once a day (its own config
+            // cooldown), through this same in-context seam, not a new channel.
+            if let Some(hint) =
+                crate::agents::self_knowledge::teachable::proactive_learn_next_hint()
+            {
+                let mut pm = self.prompt_manager.lock().await;
+                pm.add_system_prompt_extra("learn_next_offer".to_string(), hint);
+            }
         }
 
         // Prepare system prompt

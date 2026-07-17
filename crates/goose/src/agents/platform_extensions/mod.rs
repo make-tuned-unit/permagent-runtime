@@ -1,6 +1,7 @@
 pub mod analyze;
 pub mod app_conductor;
 pub mod apps;
+pub mod best_of_n_adapter;
 pub mod browser;
 pub mod chatrecall;
 #[cfg(feature = "code-mode")]
