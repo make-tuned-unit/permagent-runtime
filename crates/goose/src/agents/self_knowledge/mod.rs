@@ -29,6 +29,17 @@
 //! (e.g. scheduler job count, librarian phase). [`StateSource::Static`] features
 //! render editorial-only — we describe what they are without claiming a live
 //! status we cannot cheaply observe. This avoids over-claiming.
+//!
+//! ## Onboarding (agent-led teaching)
+//!
+//! Two submodules turn this inventory into an active teaching loop:
+//! [`usage`] tracks which capabilities the user has actually engaged (fed by the
+//! existing activity bus), and [`teachable`] is the curated set of features the
+//! agent can walk the user through — each mapped to a real navigable surface.
+//! `inventory − used` is the "learn next" list.
+
+pub mod teachable;
+pub mod usage;
 
 use std::fmt::Write as _;
 
@@ -136,6 +147,7 @@ pub static WORKER_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::steward::SELF_KNOWLEDGE_FEATURE,
     crate::initiative::SELF_KNOWLEDGE_FEATURE,
     crate::echo::SELF_KNOWLEDGE_FEATURE,
+    usage::ONBOARDING_COACH_FEATURE,
 ];
 
 /// Deterministic guardrails the agent operates under. Co-located with the
@@ -514,6 +526,7 @@ mod tests {
         "git_steward",
         "initiative",
         "watcher",
+        "onboarding_coach",
     ];
     /// Every known surface id must have exactly one descriptor.
     const KNOWN_SURFACE_IDS: &[&str] = &[

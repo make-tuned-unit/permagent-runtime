@@ -185,6 +185,14 @@ pub fn emit_activity(event: ActivityEvent) {
         }
     }
 
+    // Agent-led onboarding: derive feature-usage from the activity the real
+    // surfaces already emit. We consume this existing stream — no new event is
+    // fabricated — and map each signal to the capability it evidences.
+    crate::agents::self_knowledge::usage::record_from_activity(
+        &event.event_type,
+        &event.source_surface,
+    );
+
     // Forward to the global event bus as a PermagentEvent
     let payload = serde_json::json!({
         "channel": "activity",
