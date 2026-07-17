@@ -15,7 +15,7 @@ import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/tokens';
 import { apiFetch } from '../../lib/api';
-import { useCommandCenter } from '../../lib/store';
+import { useCommandCenter, navigateToTool } from '../../lib/store';
 import type { Project } from '../projects/types';
 
 // Appended to every Grow prompt that DRAFTS user-facing copy (value props,
@@ -111,6 +111,7 @@ export function GrowView() {
   const setActivePanel = useCommandCenter((st) => st.setActivePanel);
   const sendMessage = useCommandCenter((st) => st.sendMessage);
   const openGrowForProject = useCommandCenter((st) => st.openGrowForProject);
+  const setPendingProjectNavigation = useCommandCenter((st) => st.setPendingProjectNavigation);
 
   const loadProjects = useCallback(() => {
     setProjectsState('loading');
@@ -192,6 +193,16 @@ export function GrowView() {
     void sendMessage(prompt);
   };
 
+  // Close the one-way door: Projects → Grow deep-links in (openGrowForProject),
+  // but Grow had no way back. Return to this project in the Projects tab, reusing
+  // the pendingProjectNavigation seam ProjectsView consumes (mirrors BrainView's
+  // "Open project"). No new store seam.
+  const openInProjects = useCallback(() => {
+    if (!activeId) return;
+    setPendingProjectNavigation(activeId);
+    navigateToTool('projects');
+  }, [activeId, setPendingProjectNavigation]);
+
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: gradient.workspace, color: colors.text, fontFamily: font.body }}>
       {/* Header + project switcher — brand ribbon accent */}
@@ -206,6 +217,17 @@ export function GrowView() {
             )}
             {active?.repoUrl && (
               <a href={active.repoUrl} target="_blank" rel="noreferrer" style={{ color: colors.cyan, textDecoration: 'none' }}>repo ↗</a>
+            )}
+            {active && (
+              <button
+                type="button"
+                onClick={openInProjects}
+                title={`Open ${active.name} in Projects`}
+                style={{
+                  color: colors.cyan, background: 'none', border: 'none', padding: 0,
+                  cursor: 'pointer', fontSize: 11, fontFamily: font.body,
+                }}
+              >open project ↗</button>
             )}
             {ctx && (
               <span style={{ color: colors.textDim }}>{ctx.goals} {ctx.goals === 1 ? 'goal' : 'goals'} · {ctx.people} {ctx.people === 1 ? 'person' : 'people'}</span>
