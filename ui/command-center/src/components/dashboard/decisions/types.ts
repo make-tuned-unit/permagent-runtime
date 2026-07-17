@@ -30,6 +30,7 @@ export type DecisionKind =
   | 'risk_gate'
   | 'automation_proposal'
   | 'enrichment_proposal'
+  | 'tool_approval'
   | 'malformed';
 
 /** One selectable option (decisions.rs:71-74 — {id, label} only). */
