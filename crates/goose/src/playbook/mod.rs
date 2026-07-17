@@ -87,7 +87,11 @@ pub const PLAYBOOK_SYNTHESIS_FEATURE: crate::agents::self_knowledge::FeatureDesc
              provenance — never rules — so you weigh them against the specifics and override \
              freely; an experiment that treated such hints as authoritative measurably hurt \
              outcomes",
-        state_source: crate::agents::self_knowledge::StateSource::Static,
+        // Workers are declared Queryable by invariant; this one has no cheap live
+        // status to merge, so `worker_live_state` returns None for its id and it
+        // renders editorially (no `_(now: …)_` suffix) — exactly like the
+        // onboarding coach and the Watcher.
+        state_source: crate::agents::self_knowledge::StateSource::Queryable,
         teaching: &[],
     };
 
