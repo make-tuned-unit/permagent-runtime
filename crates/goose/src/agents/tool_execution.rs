@@ -110,7 +110,7 @@ impl Agent {
                 self.create_tool_approval_decision(
                     &request.id,
                     &tool_name,
-                    tool_call.arguments.clone().unwrap_or_default(),
+                    serde_json::Value::Object(tool_call.arguments.clone().unwrap_or_default()),
                     security_message.as_deref(),
                     &session.id,
                 )
