@@ -119,14 +119,20 @@ pub const SELF_KNOWLEDGE_FEATURE: FeatureDescriptor = FeatureDescriptor {
          you are stuck — the same call producing the same result, the same failure retried, a \
          verify check failing the same way across your edits, a no-progress read cycle, or two \
          actions oscillating. It first blocks the offending call and tells you to try a different \
-         approach; if you keep looping it escalates to the Decision Inbox and stops the run, \
-         always leaving your work in place. It also refuses a reward-hack: a verify made to pass \
-         by editing only the tests it runs is blocked, not accepted as proof of work",
+         approach. When a verify check keeps failing the same way, it goes further: it auto-retries \
+         the fix on a STRONGER model you configured — climbing your own tier ladder and carrying \
+         the prior attempt's diff and failure forward as context — but only within your spend cap \
+         and a bounded number of climbs, and never to a model you did not configure. When nothing \
+         stronger is configured, the budget is spent, or the climb limit is reached — or for any \
+         other stuck signal — it escalates to the Decision Inbox and stops the run, always leaving \
+         your work in place. It also refuses a reward-hack: a verify made to pass by editing only \
+         the tests it runs is blocked, not accepted as proof of work",
     why_it_matters:
         "It is the safety floor that guarantees you never get trapped in a loop the user can't \
-         get out of: identical-and-unchanging work is stopped and handed to the user for \
-         direction rather than burning turns and money, and stopping always preserves the diff \
-         so nothing you did is thrown away",
+         get out of: repeated verify failures are first retried on a stronger model within budget, \
+         and identical-and-unchanging work that still cannot progress is handed to the user for \
+         direction rather than burning turns and money — stopping always preserves the diff so \
+         nothing you did is thrown away",
     state_source: StateSource::Static,
     teaching: &[],
 };
@@ -410,6 +416,55 @@ pub fn reconstruct_window(messages: &[Message]) -> Vec<ToolEvent> {
     events
 }
 
+/// The output text of the most recent COMPLETED `verify` call that failed — the
+/// "why it failed" half of the escalation handoff (R2), carried forward into the
+/// stronger model's attempt. Serializes the tool-response body (matching how
+/// [`reconstruct_window`] hashes it) and truncates to a sane budget so a huge log
+/// never bloats the re-dispatch prompt. `None` when no failed verify is present.
+pub fn last_verify_failure_text(messages: &[Message]) -> Option<String> {
+    let mut pending: HashMap<String, String> = HashMap::new(); // id → tool name
+    let mut latest: Option<String> = None;
+    for msg in messages {
+        for content in &msg.content {
+            match content {
+                MessageContent::ToolRequest(req) => {
+                    if let Ok(call) = &req.tool_call {
+                        pending.insert(req.id.clone(), call.name.to_string());
+                    }
+                }
+                MessageContent::ToolResponse(resp) => {
+                    let Some(name) = pending.remove(&resp.id) else {
+                        continue;
+                    };
+                    if !is_verify(&name) {
+                        continue;
+                    }
+                    let (is_error, body) = match &resp.tool_result {
+                        Ok(r) => (
+                            r.is_error.unwrap_or(false),
+                            serde_json::to_string(&r.content).unwrap_or_default(),
+                        ),
+                        Err(e) => (true, serde_json::to_string(e).unwrap_or_default()),
+                    };
+                    if is_error {
+                        latest = Some(body);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    latest.map(|s| {
+        const MAX: usize = 6000;
+        if s.chars().count() > MAX {
+            let head: String = s.chars().take(MAX).collect();
+            format!("{head}\n…(truncated)")
+        } else {
+            s
+        }
+    })
+}
+
 /// Assess an incoming tool call against the reconstructed window. Pure — no I/O,
 /// no state. The whole safety policy lives here so it is directly testable.
 pub fn assess_tool_call(window: &[ToolEvent], name: &str, args: &Value) -> LoopAction {
@@ -461,28 +516,13 @@ pub fn assess_tool_call(window: &[ToolEvent], name: &str, args: &Value) -> LoopA
     // ── S6: verify fix-loop (identical verify failures ACROSS edits) ─────────
     // The real fix loop is `verify → edit → verify → …`; each interleaved edit
     // breaks the S1/S2 identical-call run above, so that bound never binds here.
-    // S6 walks the window counting the trailing run of THIS verify target's
-    // OBSERVED identical failures, skipping the non-verify calls (edits/reads)
-    // between them. A different verify target, a PASS, or a changed failure hash
-    // breaks the run — that is progress, and the normal second verify after a
-    // single failure (run == 1) passes untouched.
+    // The trailing run of THIS verify target's OBSERVED identical failures is
+    // counted by `observed_verify_failure_run` (shared with the live escalation
+    // path so both read the same count). A different verify target, a PASS, or a
+    // changed failure hash breaks the run — that is progress, and the normal
+    // second verify after a single failure (run == 1) passes untouched.
     if is_verify(name) {
-        let mut run = 0usize;
-        let mut common_hash: Option<u64> = None;
-        for e in win.iter().rev() {
-            if !is_verify(&e.name) {
-                continue; // skip the edits/reads interleaved between verifies
-            }
-            if e.name != name || &e.args != args || !e.is_error {
-                break; // a different verify target, or a pass → progress
-            }
-            match common_hash {
-                None => common_hash = Some(e.result_hash),
-                Some(h) if h == e.result_hash => {}
-                Some(_) => break, // a different failure → progress
-            }
-            run += 1;
-        }
+        let run = observed_verify_failure_run(win, name, args);
         if run >= S6_VERIFY_ESCALATE_AT {
             return LoopAction::Escalate(Signal::VerifyLoop);
         }
@@ -509,6 +549,43 @@ pub fn assess_tool_call(window: &[ToolEvent], name: &str, args: &Value) -> LoopA
     }
 
     LoopAction::Pass
+}
+
+/// The trailing run of OBSERVED identical `verify` failures for this target,
+/// counted across the interleaved edits/reads between re-runs (the S6 count).
+/// Walks the window backwards, skipping non-`verify` calls; a different verify
+/// target, a PASS (`!is_error`), or a changed failure `result_hash` breaks the
+/// run — that is progress. Extracted from [`assess_tool_call`] so the live
+/// verifier-driven escalation ([`crate::agents::platform_extensions::orchestrator::escalate_verify_fix_loop`])
+/// feeds the SAME consecutive-failure count into the escalation decision that the
+/// pure loop policy uses to fire the signal. Truncates to the last [`WINDOW_MAX`]
+/// events defensively so callers may pass the full or a pre-trimmed window.
+pub fn observed_verify_failure_run(window: &[ToolEvent], name: &str, args: &Value) -> usize {
+    if !is_verify(name) {
+        return 0;
+    }
+    let win = if window.len() > WINDOW_MAX {
+        &window[window.len() - WINDOW_MAX..]
+    } else {
+        window
+    };
+    let mut run = 0usize;
+    let mut common_hash: Option<u64> = None;
+    for e in win.iter().rev() {
+        if !is_verify(&e.name) {
+            continue; // skip the edits/reads interleaved between verifies
+        }
+        if e.name != name || &e.args != args || !e.is_error {
+            break; // a different verify target, or a pass → progress
+        }
+        match common_hash {
+            None => common_hash = Some(e.result_hash),
+            Some(h) if h == e.result_hash => {}
+            Some(_) => break, // a different failure → progress
+        }
+        run += 1;
+    }
+    run
 }
 
 /// Length of the trailing run of non-mutating calls whose result never changes
@@ -725,6 +802,79 @@ impl ProgressMonitor {
             }
         });
     }
+
+    /// Fire the LIVE verifier-driven escalation for a verify fix-loop, once per
+    /// session. Best-effort and detached (mirrors [`Self::escalate`]'s reservation
+    /// discipline exactly): reserves the session so concurrent turns don't double-
+    /// fire, releasing it on failure so a later turn retries. Hands off to
+    /// `escalate_verify_fix_loop`, which — within the guardrails — auto-re-attempts
+    /// the fix on a stronger CONFIGURED model or parks at a ceiling.
+    ///
+    /// `consecutive` is the observed same-failure run (S6 count); `verify_failure`
+    /// is the failing check's output, carried forward to the stronger model (R2).
+    /// A swap mints a NEW session, so the once-per-session reservation is correct:
+    /// this session escalates once, then the fresh session may escalate again.
+    fn escalate_verify_loop(
+        &self,
+        session_id: &str,
+        consecutive: usize,
+        evidence: String,
+        verify_failure: Option<String>,
+    ) {
+        let Some(session_manager) = self.session_manager.clone() else {
+            return;
+        };
+        {
+            let mut set = match self.escalated.lock() {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            if !set.insert(session_id.to_string()) {
+                return; // already escalated (or in flight) this session
+            }
+        }
+        let escalated = Arc::clone(&self.escalated);
+        let session_id = session_id.to_string();
+        tokio::spawn(async move {
+            let pool = match session_manager.pool_clone().await {
+                Ok(p) => p,
+                Err(e) => {
+                    if let Ok(mut set) = escalated.lock() {
+                        set.remove(&session_id);
+                    }
+                    tracing::warn!(
+                        target: "permagent::progress_monitor",
+                        session_id = %session_id,
+                        error = %e,
+                        "verifier-driven escalation could not reach the pool; released the \
+                         reservation so a later turn retries",
+                    );
+                    return;
+                }
+            };
+            if let Err(e) =
+                crate::agents::platform_extensions::orchestrator::escalate_verify_fix_loop(
+                    &pool,
+                    &session_id,
+                    consecutive as u32,
+                    &evidence,
+                    verify_failure.as_deref(),
+                )
+                .await
+            {
+                if let Ok(mut set) = escalated.lock() {
+                    set.remove(&session_id);
+                }
+                tracing::warn!(
+                    target: "permagent::progress_monitor",
+                    session_id = %session_id,
+                    error = %e,
+                    "verifier-driven escalation failed; released the reservation so a later \
+                     turn retries",
+                );
+            }
+        });
+    }
 }
 
 #[async_trait]
@@ -803,10 +953,20 @@ impl ToolInspector for ProgressMonitor {
                 "runaway-loop guard: possible loop detected",
             );
 
-            // L3: escalate (once per session) with evidence.
+            // L3: escalate. A verify fix-loop takes the LIVE verifier-driven
+            // path — auto-retry the fix on a stronger CONFIGURED model within the
+            // guardrails, else park (the escalation ACTION completing #739). Every
+            // other loop signal takes the existing work-preserving park.
             if matches!(action, LoopAction::Escalate(_)) {
                 let evidence = evidence_from_window(&window, call.name.as_ref());
-                self.escalate(session_id, signal, evidence);
+                if matches!(signal, Signal::VerifyLoop) {
+                    let consecutive =
+                        observed_verify_failure_run(&window, call.name.as_ref(), &args);
+                    let failure = last_verify_failure_text(messages);
+                    self.escalate_verify_loop(session_id, consecutive, evidence, failure);
+                } else {
+                    self.escalate(session_id, signal, evidence);
+                }
             }
 
             // L1/L3 both block the offending call and carry an actionable reason
@@ -1149,6 +1309,43 @@ mod tests {
             assess_tool_call(&win, "developer__verify", &json!({})),
             LoopAction::Escalate(Signal::VerifyLoop),
             "3 identical verify failures across edits must escalate"
+        );
+    }
+
+    #[test]
+    fn observed_verify_failure_run_is_the_shared_escalation_count() {
+        // The exact count the live escalation feeds into the decision, extracted
+        // from the same walk the S6 signal uses: 3 identical failures across edits.
+        let win = vec![
+            verr(0xF),
+            edit("src/a.rs"),
+            verr(0xF),
+            edit("src/a.rs"),
+            verr(0xF),
+            edit("src/a.rs"),
+        ];
+        assert_eq!(
+            observed_verify_failure_run(&win, "developer__verify", &json!({})),
+            3
+        );
+    }
+
+    #[test]
+    fn observed_verify_failure_run_breaks_on_progress_or_nonverify() {
+        // A PASS ends the run (progress).
+        assert_eq!(
+            observed_verify_failure_run(&[verr(0xF), vok(0xA)], "developer__verify", &json!({})),
+            0
+        );
+        // A DIFFERENT failure hash ends the run at 1 (the error changed).
+        assert_eq!(
+            observed_verify_failure_run(&[verr(0xF), verr(0xE)], "developer__verify", &json!({})),
+            1
+        );
+        // A non-verify incoming target is never counted.
+        assert_eq!(
+            observed_verify_failure_run(&[verr(0xF)], "read_file", &json!({})),
+            0
         );
     }
 

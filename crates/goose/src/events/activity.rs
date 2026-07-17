@@ -56,6 +56,11 @@ pub enum ActivityEventType {
     AutomationJobCompleted,
     AutomationJobFailed,
     StarterRecipeUpgraded,
+    /// A goal's fix was auto-escalated to a stronger configured model after
+    /// repeated verify failures (the live verifier-driven escalation). Ambient
+    /// and non-blocking — surfaced for cost transparency ("no surprises"), never
+    /// an interrupt; the goal keeps running on the stronger model.
+    GoalEscalated,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -138,7 +143,8 @@ fn default_tier(event_type: &ActivityEventType) -> EventTier {
         | ActivityEventType::IntegrationTokenRefreshed
         | ActivityEventType::AutomationJobCompleted
         | ActivityEventType::AutomationJobFailed
-        | ActivityEventType::StarterRecipeUpgraded => EventTier::Always,
+        | ActivityEventType::StarterRecipeUpgraded
+        | ActivityEventType::GoalEscalated => EventTier::Always,
 
         ActivityEventType::BrowserNavigated | ActivityEventType::BrowserFormSubmitted => {
             EventTier::Aggregated
@@ -303,6 +309,34 @@ pub fn starter_recipe_upgraded(
     )
 }
 
+/// The ambient, non-blocking note emitted on each live verifier-driven
+/// escalation (R3): goal X climbed tier `from`→`to` on a stronger configured
+/// model after repeated verify failures, at the given running session spend.
+/// Visible in the activity feed for cost transparency; it never gates or
+/// interrupts the run (only a ceiling — spend cap / max-escalations / no stronger
+/// tier — parks to the Decision Inbox).
+pub fn goal_escalated(
+    goal_id: &str,
+    goal_title: &str,
+    from_tier: Option<&str>,
+    to_tier: &str,
+    model: &str,
+    session_spent_usd: f64,
+) -> ActivityEvent {
+    ActivityEvent::new(
+        ActivityEventType::GoalEscalated,
+        SourceSurface::Agent,
+        serde_json::json!({
+            "goal_id": goal_id,
+            "goal_title": goal_title,
+            "from_tier": from_tier,
+            "to_tier": to_tier,
+            "model": model,
+            "session_spent_usd": session_spent_usd,
+        }),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,6 +355,40 @@ mod tests {
     fn chat_turn_completed_is_always_tier() {
         let event = chat_turn_completed("s1", 100, 50, 25);
         assert_eq!(event.tier, EventTier::Always);
+    }
+
+    #[test]
+    fn goal_escalated_is_an_always_visible_ambient_note() {
+        // R3: the escalation note is visible (Always tier) but non-blocking — an
+        // activity event, never a gating decision — and carries the tier climb +
+        // spend for cost transparency.
+        let event = goal_escalated(
+            "goal-1",
+            "Fix the parser",
+            Some("local_free"),
+            "cheap_cloud",
+            "claude-haiku-4-5",
+            0.42,
+        );
+        assert_eq!(event.event_type, ActivityEventType::GoalEscalated);
+        assert_eq!(
+            event.tier,
+            EventTier::Always,
+            "escalations are always surfaced"
+        );
+        assert_eq!(event.source_surface, SourceSurface::Agent);
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"event_type\":\"goal_escalated\""));
+        assert!(json.contains("\"from_tier\":\"local_free\""));
+        assert!(json.contains("\"to_tier\":\"cheap_cloud\""));
+        assert!(json.contains("claude-haiku-4-5"));
+        assert_eq!(
+            event
+                .payload
+                .get("session_spent_usd")
+                .and_then(|v| v.as_f64()),
+            Some(0.42)
+        );
     }
 
     #[test]
