@@ -17,6 +17,10 @@ const ICON_PATHS: Record<string, string> = {
 
 const SETTINGS_ICON = 'M12 9a3 3 0 100 6 3 3 0 000-6zM19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 008 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 004.6 15a1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 4.6a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0019.4 9c.16.55.62.96 1.18 1H21a2 2 0 110 4h-.09c-.6.04-1.06.45-1.51 1z';
 
+// "History" glyph (clock + counter-clockwise arrow) — opens the Sessions
+// overlay to return to a past conversation.
+const SESSIONS_ICON = 'M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8M3 3v5h5M12 7v5l4 2';
+
 function SidebarRow({
   icon, label, active, open, onClick, title,
 }: {
@@ -60,7 +64,8 @@ export function Sidebar() {
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
 
   const isSettingsOpen = activePanel === 'settings';
-  // Any non-chat panel (settings, inbox, skills) is a full-screen overlay. It
+  const isSessionsOpen = activePanel === 'sessions';
+  // Any non-chat panel (settings, inbox, skills, sessions) is a full-screen overlay. It
   // must be dismissed when the user picks a workspace, or the overlay stays
   // stuck over the tab they just selected.
   const overlayOpen = activePanel !== 'chat';
@@ -126,6 +131,16 @@ export function Sidebar() {
       })}
 
       <div style={{ flex: 1 }} />
+
+      {/* Sessions — return to a past conversation (the only entry to the
+          Sessions history overlay). */}
+      <SidebarRow
+        icon={SESSIONS_ICON}
+        label="Sessions"
+        active={isSessionsOpen}
+        open={open}
+        onClick={() => setActivePanel(isSessionsOpen ? 'chat' : 'sessions')}
+      />
 
       {/* Settings */}
       <SidebarRow
