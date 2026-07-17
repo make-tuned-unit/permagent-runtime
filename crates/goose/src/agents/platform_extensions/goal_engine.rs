@@ -474,7 +474,7 @@ impl GoalEngine for ExternalCliEngine {
 /// Returns the worktree path. The worktree is intentionally *not* removed on
 /// completion — its commits are the work product the Decision Inbox review
 /// points to.
-async fn create_goal_worktree(
+pub(crate) async fn create_goal_worktree(
     repo: &Path,
     baseline: &str,
     run_id: &str,
