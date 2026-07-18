@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useCommandCenter } from '../lib/store';
-import { getApiBaseUrl, apiFetch } from '../lib/api';
+import { eventsWsUrl, apiFetch } from '../lib/api';
 import { wireEventType } from '../lib/wireEvent';
 
 /**
@@ -19,10 +19,13 @@ export function useBrowserContentBridge(activeWebviewId: string | null | undefin
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let disposed = false;
 
-    function connect() {
+    async function connect() {
       if (disposed) return;
-      const base = getApiBaseUrl().replace(/^http/, 'ws');
-      ws = new WebSocket(`${base}/events`);
+      // Daemon token rides the WS query (C1/C2 auth); re-check `disposed`
+      // after the await so a token load racing unmount never opens a socket.
+      const url = await eventsWsUrl();
+      if (disposed) return;
+      ws = new WebSocket(url);
 
       ws.onmessage = async (ev) => {
         try {

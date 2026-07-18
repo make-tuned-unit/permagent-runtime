@@ -13,6 +13,8 @@
 
 use axum::{
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
+    extract::{Query, State},
+    http::HeaderMap,
     response::IntoResponse,
     routing::get,
     Router,
@@ -22,14 +24,31 @@ use permagent::events;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
-pub fn routes(_state: Arc<crate::state::AppState>) -> Router {
-    // Event bus is global — no AppState needed for the handler itself.
-    // We accept state for consistency with other route modules.
-    Router::new().route("/events", get(ws_handler))
+use crate::middleware::auth::{bearer_token, validate_daemon_token, TokenQuery};
+
+pub fn routes(state: Arc<crate::state::AppState>) -> Router {
+    // The event bus itself is global; AppState is needed only to validate the
+    // daemon token on upgrade.
+    Router::new()
+        .route("/events", get(ws_handler))
+        .with_state(state)
 }
 
-async fn ws_handler(ws: WebSocketUpgrade) -> impl IntoResponse {
-    ws.on_upgrade(handle_socket)
+/// Token-gated upgrade (C2 launch audit): the bus carries live agent/session
+/// activity, so the upgrade requires the daemon token — via the bearer header
+/// (native clients: the CLI's `activity tail`) or `?token=` (browser
+/// `WebSocket` cannot set headers). Validated fail-closed and constant-time
+/// (`middleware::auth`) BEFORE the upgrade completes: without a valid token
+/// the handshake gets 401/503 instead of 101.
+async fn ws_handler(
+    State(state): State<Arc<crate::state::AppState>>,
+    Query(query): Query<TokenQuery>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Result<impl IntoResponse, axum::http::StatusCode> {
+    let provided = bearer_token(&headers).or(query.token.as_deref());
+    validate_daemon_token(&state, provided)?;
+    Ok(ws.on_upgrade(handle_socket))
 }
 
 async fn handle_socket(socket: WebSocket) {

@@ -112,15 +112,18 @@ impl TokenCache {
     }
 
     async fn save(&self, token: &KimiToken) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        tokio::fs::write(&self.path, serde_json::to_string(token)?).await?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            tokio::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(0o600)).await?;
-        }
+        // Atomic write with owner-only permissions from the first byte (and a
+        // 0700 parent dir) — the OAuth token must never be observable
+        // world-readable, even transiently.
+        let path = self.path.clone();
+        let json = serde_json::to_string(token)?;
+        tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            if let Some(parent) = path.parent() {
+                crate::config::secure_fs::ensure_private_dir(parent)?;
+            }
+            crate::config::secure_fs::write_private_file(&path, json.as_bytes())
+        })
+        .await??;
         Ok(())
     }
 

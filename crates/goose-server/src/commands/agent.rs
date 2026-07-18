@@ -5,7 +5,7 @@ use axum_server::Handle;
 use permagent::events;
 #[cfg(any(feature = "rustls-tls", feature = "native-tls"))]
 use permagent_daemon::tls::setup_tls;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::info;
 
 #[cfg(unix)]
@@ -117,10 +117,39 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
         .set_server_secret(tunnel_secret)
         .await;
 
+    // CORS tightened from `Any` to the known app origins (C1/C2 audit): the
+    // Tauri webview, loopback dev/served origins, same-origin companion
+    // devices, plus `PERMAGENT_ALLOWED_ORIGINS` extras. Same allowlist as the
+    // server-side origin guard (which enforces even when CORS wouldn't).
+    // `last-event-id` is sent by EventSource on cross-origin auto-reconnects
+    // (the Tauri webview's SSE to 127.0.0.1:3001 is cross-origin).
     let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_origin(AllowOrigin::predicate(|origin, parts| {
+            let host = parts
+                .headers
+                .get(axum::http::header::HOST)
+                .and_then(|v| v.to_str().ok());
+            origin.to_str().is_ok_and(|origin| {
+                crate::middleware::origin_guard::origin_allowed(
+                    origin,
+                    host,
+                    crate::middleware::origin_guard::env_allowed_origins().as_deref(),
+                )
+            })
+        }))
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::PUT,
+            axum::http::Method::DELETE,
+            axum::http::Method::PATCH,
+            axum::http::Method::OPTIONS,
+        ])
+        .allow_headers([
+            axum::http::header::AUTHORIZATION,
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderName::from_static("last-event-id"),
+        ]);
 
     let app = crate::routes::configure(app_state.clone()).layer(cors);
 

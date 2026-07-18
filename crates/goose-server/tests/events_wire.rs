@@ -62,8 +62,14 @@ async fn all_lanes_emit_to_real_websocket() {
             .unwrap();
     });
 
-    // Connect a real WebSocket client.
-    let url = format!("ws://{addr}/events");
+    // Connect a real WebSocket client. /events now requires the daemon token
+    // on upgrade (C1/C2 auth plane) — ride it on the query string like the
+    // browser clients do (auth_plane.rs covers the reject paths).
+    let token = state
+        .daemon_token
+        .clone()
+        .expect("test AppState should have generated a daemon token");
+    let url = format!("ws://{addr}/events?token={token}");
     let (mut ws, _resp) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
     // The /events handler subscribes to the LIVE bus only AFTER an up-to-500ms
