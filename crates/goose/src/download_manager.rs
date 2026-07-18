@@ -88,9 +88,19 @@ async fn sha256_file_hex(path: &Path) -> Result<String> {
     let path = path.to_path_buf();
     tokio::task::spawn_blocking(move || -> Result<String> {
         use sha2::{Digest, Sha256};
+        use std::io::Read;
         let mut file = std::fs::File::open(&path)?;
         let mut hasher = Sha256::new();
-        std::io::copy(&mut file, &mut hasher)?;
+        // Chunked update instead of io::copy: the workspace's digest features
+        // don't provide io::Write for Sha256, and model files run to ~800MB.
+        let mut buf = vec![0u8; 1024 * 1024];
+        loop {
+            let n = file.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
         Ok(hex::encode(hasher.finalize()))
     })
     .await
