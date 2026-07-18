@@ -173,6 +173,7 @@ pub static GUARD_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::steward::secret_scan::SELF_KNOWLEDGE_FEATURE,
     crate::session::crash_capture::DURABILITY_FEATURE,
     crate::tool_monitor::SELF_KNOWLEDGE_FEATURE,
+    crate::sovereignty::SELF_KNOWLEDGE_FEATURE,
 ];
 
 /// User-facing surfaces. Each entry is a `const` co-located with its module.
@@ -618,6 +619,7 @@ mod tests {
             "credential_commit_guard",
             "durability_supervision",
             "runaway_loop_guard",
+            "sovereignty_guard",
         ];
         for id in KNOWN_GUARD_IDS {
             let n = GUARD_DESCRIPTORS.iter().filter(|d| d.id == *id).count();
@@ -640,6 +642,12 @@ mod tests {
         .build();
         assert!(brief.contains("## Guardrails you operate under"));
         assert!(brief.contains("**Credential commit guard**"));
+        // The sovereignty guard renders unconditionally (always-visible, like
+        // every guard): the agent must be able to describe the boundary — and
+        // recognize a `[sovereign]` refusal — even when the mode is off, and
+        // sovereignty is per-context, so there is no single bit to gate on.
+        assert!(brief.contains("**Sovereignty guard**"));
+        assert!(brief.contains("[sovereign]"));
     }
 
     #[test]

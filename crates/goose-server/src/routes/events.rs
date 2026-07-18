@@ -2,6 +2,14 @@
 //!
 //! Upgrades to WebSocket, streams all [`PermagentEvent`]s as JSON.
 //! Supports event replay via `{"resume_from": "<event_id>"}` on connect.
+//!
+//! Replay honesty (#770 follow-up): every frame re-delivered from the replay
+//! buffer — the full-buffer backfill on a plain connect AND the `resume_from`
+//! replay — is stamped `"replayed": true` server-side (`into_replayed`), so
+//! clients can tell history from a live instruction without inferring it from
+//! timestamps. Live frames omit the field entirely (byte-identical to the
+//! pre-marker wire). What gets buffered/replayed is unchanged — frames are
+//! only *marked*.
 
 use axum::{
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
@@ -54,7 +62,8 @@ async fn handle_socket(socket: WebSocket) {
                     resume_id
                 );
                 for event in replay_events {
-                    if let Ok(json) = serde_json::to_string(&event) {
+                    // Buffer re-delivery → stamp the replay marker.
+                    if let Ok(json) = serde_json::to_string(&event.into_replayed()) {
                         if sender.send(Message::Text(json.into())).await.is_err() {
                             return; // Client disconnected
                         }
@@ -75,10 +84,11 @@ async fn handle_socket(socket: WebSocket) {
             }
         }
     } else {
-        // No resume requested — send all buffered events
+        // No resume requested — send all buffered events, each stamped as a
+        // replay so the client never mistakes backfill for a live instruction.
         let buffered = events::buffered_events();
         for event in buffered {
-            if let Ok(json) = serde_json::to_string(&event) {
+            if let Ok(json) = serde_json::to_string(&event.into_replayed()) {
                 if sender.send(Message::Text(json.into())).await.is_err() {
                     return;
                 }

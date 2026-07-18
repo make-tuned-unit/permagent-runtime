@@ -9,9 +9,14 @@
 // work it witnessed live — see stateSources' Librarian rule).
 //
 // Semantics preserved from the strictest prior consumer (stateSources):
+//   • The daemon's server-side `"replayed": true` marker is authoritative when
+//     present (every buffer re-delivery carries it), so a reconnect's replay
+//     burst is marked replayed even for frames emitted while we were
+//     disconnected — the gap the timestamp heuristic alone missed.
 //   • `startedAt` is captured ONCE when the wire first starts and is stable
-//     across reconnects, so a mid-session reconnect's replay burst is still
-//     marked replayed instead of re-animating old work.
+//     across reconnects — the epoch fallback for unmarked frames (older
+//     daemons), so a mid-session reconnect's replay burst is still marked
+//     replayed instead of re-animating old work.
 //   • Reconnect with a flat 3s retry (same cadence as before).
 //   • Malformed frames are dropped silently.
 //
@@ -30,8 +35,11 @@ export interface WorldWireEvent {
   /** Raw RFC3339 timestamp string, when present. */
   timestamp?: string;
   /**
-   * True when this event predates the wire's first start — i.e. it arrived in
-   * a replayed daemon buffer, not live. State-claiming consumers skip these.
+   * True when this event arrived in a replayed daemon buffer, not live.
+   * State-claiming consumers skip these. Sourced from the server-side
+   * `"replayed": true` marker when the daemon sends one (authoritative), with
+   * the predates-wire-start heuristic as the fallback for unmarked frames —
+   * see {@link frameReplayed}.
    */
   replayed: boolean;
 }
@@ -51,10 +59,37 @@ const RETRY_MS = 3000;
  * Pure classification helper (unit-tested): an event is replayed when its
  * timestamp parses and predates the wire start. Untimestamped events are
  * treated as live (the daemon stamps everything; absence means a test frame).
+ *
+ * This is the epoch FALLBACK. Prefer {@link frameReplayed}, which consults the
+ * server-side replay marker first and only falls back to this heuristic.
  */
 export function isReplayed(timestamp: string | undefined, wireStartedAt: number): boolean {
   const ts = Date.parse(timestamp ?? '');
   return Number.isFinite(ts) && ts < wireStartedAt;
+}
+
+/**
+ * Replay classification for one parsed `/events` frame — the in-repo source of
+ * truth shared with the app-navigation gate (`shouldActOnFrame`).
+ *
+ * Prefers the server-side marker: the daemon stamps `"replayed": true` on
+ * every frame it re-delivers from its replay buffer (full backfill on connect
+ * AND `resume_from` replays), which is authoritative and immune to the clock
+ * skew the timestamp heuristic accepts. The marker is one-directional by
+ * design — the server only ever marks replayed frames, and an UNMARKED frame
+ * only means "not buffered replay at send time": it says nothing about an
+ * older daemon that doesn't mark at all, nor about client-side staleness (a
+ * frame delivered after a sleep/wake). Both of those still fall back to the
+ * per-epoch timestamp heuristic ({@link isReplayed}), so the marker can only
+ * ever make classification MORE conservative, never less.
+ */
+export function frameReplayed(frame: unknown, wireStartedAt: number): boolean {
+  if (frame && typeof frame === 'object') {
+    const f = frame as { replayed?: unknown; timestamp?: unknown };
+    if (f.replayed === true) return true;
+    return isReplayed(typeof f.timestamp === 'string' ? f.timestamp : undefined, wireStartedAt);
+  }
+  return isReplayed(undefined, wireStartedAt);
 }
 
 /** Pure decode of one raw frame → WorldWireEvent (null on malformed input). */
@@ -83,7 +118,7 @@ export function decodeWireFrame(raw: string, wireStartedAt: number): WorldWireEv
     payload,
     id: parsed.id,
     timestamp: parsed.timestamp,
-    replayed: isReplayed(parsed.timestamp, wireStartedAt),
+    replayed: frameReplayed(parsed, wireStartedAt),
   };
 }
 

@@ -53,6 +53,36 @@ pub const SOVEREIGN_STRICT_AUDIT_KEY: &str = "sovereign_strict_audit";
 /// recognize a sovereign refusal without a dedicated `ProviderError` variant.
 pub const SOVEREIGN_BLOCK_PREFIX: &str = "[sovereign]";
 
+/// Self-knowledge: the sovereignty boundary as a guardrail the agent is
+/// *subject to* and must be able to describe — what sovereign mode does, when
+/// it engages, and what to do when a cloud call is refused. Aggregated by
+/// `crate::agents::self_knowledge::GUARD_DESCRIPTORS`.
+///
+/// Always-visible (NOT render-gated on the mode), matching the other guards:
+/// this machinery is standing policy, not a flag-gated experiment — the egress
+/// audit records every cloud call even with the mode off, and sovereignty is
+/// per-*context* (`is_context_sovereign` = global mode OR a session mark), so
+/// there is no single "off" bit to gate on; gating on the global toggle would
+/// hide exactly the knowledge needed to explain a session-sovereign
+/// `[sovereign]` refusal, or to offer the boundary when the user asks for it.
+/// Static (no live "currently on/off" line): the guard render path is
+/// editorial by design, and the honest live truth is per-context, which the
+/// brief builder cannot know — a global-only status line would over-claim in a
+/// sovereign session. The live signal is the refusal itself, which carries
+/// [`SOVEREIGN_BLOCK_PREFIX`] and reaches the agent exactly when it matters.
+pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "sovereignty_guard",
+        display_name: "Sovereignty guard",
+        category: crate::agents::self_knowledge::FeatureCategory::Guard,
+        what_it_does:
+            "A fail-closed data boundary at the provider layer. When sovereign mode is on — the Sovereignty section in Settings, or SOVEREIGN_MODE=true in config — or the current session is individually marked sovereign, every cloud inference call is refused before any data leaves this machine, and only local models (the built-in local-inference provider, or Ollama on localhost) may run; the mesh side-path is refused the same way. Independently of the toggle, every cloud call — blocked or allowed — is recorded in an append-only local egress audit log the user can read in Settings, and a strict-audit option (SOVEREIGN_STRICT_AUDIT) refuses an allowed cloud call whose audit write failed rather than let egress go unlogged",
+        why_it_matters:
+            "A refusal starting with [sovereign] is this boundary working, not an outage: tell the user plainly that this context is sovereign so the request stayed on this machine, and offer the local routes — a local model through Ollama or the built-in local-inference provider — or the Settings toggle if they explicitly choose to allow cloud egress again. Never try to work around the block by re-sending the same content through another provider, session, or worker; the boundary is enforced in code at the single choke point every provider call flows through",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        teaching: &[],
+    };
+
 // ── Local vs cloud identity ─────────────────────────────────────────────────
 
 /// Where a model's inference physically runs — the load-bearing local-vs-cloud
@@ -437,6 +467,39 @@ mod tests {
         assert_eq!(a, b, "same input hashes identically");
         assert_ne!(a, c, "different input hashes differently");
         assert_eq!(a.len(), 64, "sha256 hex is 64 chars");
+    }
+
+    /// The self-knowledge descriptor narrates both halves of the guarantee
+    /// (fail-closed local-only inference + always-on egress audit) and teaches
+    /// recognition of the REAL refusal prefix — asserted against the constant
+    /// itself so the prose cannot drift from the wire format.
+    #[test]
+    fn self_knowledge_descriptor_narrates_the_boundary() {
+        use crate::agents::self_knowledge::{FeatureCategory, StateSource};
+        let d = SELF_KNOWLEDGE_FEATURE;
+        assert_eq!(d.id, "sovereignty_guard");
+        assert_eq!(d.category, FeatureCategory::Guard);
+        assert_eq!(
+            d.state_source,
+            StateSource::Static,
+            "guards render editorially; per-context truth cannot be claimed globally"
+        );
+        assert!(
+            d.why_it_matters.contains(SOVEREIGN_BLOCK_PREFIX),
+            "the descriptor must teach the agent to recognize a {SOVEREIGN_BLOCK_PREFIX} refusal"
+        );
+        assert!(
+            d.what_it_does.contains("fail-closed") && d.what_it_does.contains("refused"),
+            "must narrate fail-closed local-only inference"
+        );
+        assert!(
+            d.what_it_does.contains("egress audit"),
+            "must narrate the always-on egress audit"
+        );
+        assert!(
+            d.why_it_matters.contains("Never try to work around"),
+            "must instruct the agent to never circumvent the boundary"
+        );
     }
 
     #[test]
