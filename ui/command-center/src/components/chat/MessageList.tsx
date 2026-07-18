@@ -14,6 +14,11 @@ export function MessageList() {
   const isStreaming = useCommandCenter(s => s.isStreaming);
   const streamingMessageId = useCommandCenter(s => s._streamingMessageId);
   const agentName = useCommandCenter(s => s.agentName);
+  // C8 / #568 lesson: a transient history-load failure surfaces inline with a
+  // retry — never a silent catch that leaves an inexplicably empty chat.
+  const sessionLoadError = useCommandCenter(s => s.sessionLoadError);
+  const chatSessionId = useCommandCenter(s => s.chatSessionId);
+  const loadSessionMessages = useCommandCenter(s => s.loadSessionMessages);
   // W3a: in-character opening greeting shown at conversation start. Display-only
   // — never pushed into chatMessages, so it never enters LLM context, is never
   // replayed, and vanishes the moment a real message exists.
@@ -74,7 +79,28 @@ export function MessageList() {
         onScroll={handleScroll}
         className="h-full overflow-y-auto p-4 space-y-3"
       >
-        {timeline.length === 0 && !isStreaming && (
+        {sessionLoadError && chatSessionId && (
+          <div
+            className="flex items-center gap-2.5 rounded-lg px-3 py-2"
+            style={{ border: `1px solid ${colors.danger}44`, backgroundColor: colors.surface }}
+          >
+            <span className="text-[12px]" style={{ color: colors.danger, fontFamily: font.body }}>
+              Couldn't load this conversation: {sessionLoadError}
+            </span>
+            <button
+              onClick={() => void loadSessionMessages(chatSessionId)}
+              className="text-[12px]"
+              style={{
+                color: colors.cyan, background: 'none', border: 'none', cursor: 'pointer',
+                fontFamily: font.body, padding: 0, fontWeight: 600, flexShrink: 0,
+              }}
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
+        {timeline.length === 0 && !isStreaming && !sessionLoadError && (
           greeting ? (
             // Agent's in-character opening, rendered as a top-left assistant
             // bubble (matches MessageBubble's assistant styling) — the identity

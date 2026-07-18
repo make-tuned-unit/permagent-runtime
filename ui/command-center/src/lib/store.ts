@@ -195,6 +195,11 @@ interface CommandCenterStore {
   // --- Chat state ---
   chatMessages: ChatMessage[];
   chatSessionId: string | null;
+  /** Non-null when the last loadSessionMessages failed transiently (daemon
+   *  hiccup, network) — the #568-lesson surface: MessageList renders it inline
+   *  with a Retry instead of the old silent catch that disowned the session.
+   *  Null while loading and after a successful load. */
+  sessionLoadError: string | null;
   addChatMessage: (msg: ChatMessage) => void;
   _streamingMessageId: string | null;
   /** request_id of the in-flight reply turn (client-generated in api.sendReply,
@@ -213,10 +218,13 @@ interface CommandCenterStore {
   liveTokens: TokenState | null;
   sendMessage: (text: string, files?: File[]) => Promise<void>;
   /** Interrupt the in-flight turn: POST /sessions/{id}/cancel with the active
-   *  request_id. The daemon emits a terminal Finish so the UI settles on the
-   *  normal stream path. Returns true if a cancel was issued, false if there was
-   *  nothing to cancel (idle, or the request_id hasn't landed yet); throws if the
-   *  cancel POST itself fails (agent still alive). */
+   *  request_id. Returns true when the daemon confirmed a live request was
+   *  cancelled (a terminal Finish follows on SSE and settles the UI); false
+   *  when there was nothing to cancel — locally idle, the request_id hasn't
+   *  landed yet, or the daemon answered {cancelled:false} (stale id: the turn
+   *  already ended or the daemon restarted), in which case streaming state is
+   *  reconciled to idle here because no terminal frame will ever arrive.
+   *  Throws if the cancel POST itself fails (agent still alive). */
   stopStreaming: () => Promise<boolean>;
   /**
    * Decision Inbox deep-link (#303): open a fresh chat session seeded with a
@@ -351,7 +359,13 @@ interface CommandCenterStore {
   _eventSource: EventSource | null;
   _reconnectTimer: ReturnType<typeof setTimeout> | null;
   _reconnectAttempts: number;
+  /** SSE cursor: the last `id:` seen on the stream. Sent back to the daemon as
+   *  `?last_event_id=` on reconnect so the replay resumes instead of repeating
+   *  the whole buffer (duplicate deltas/error bubbles — P1). */
   _lastEventId: string | null;
+  /** Which session `_lastEventId` belongs to — sequence numbers are per-session,
+   *  so a cursor must never leak across a session switch. */
+  _lastEventSessionId: string | null;
   connectSession: (sessionId: string) => void;
   disconnectSession: () => void;
   ensureSession: () => Promise<string | null>;
@@ -617,6 +631,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   chatSessionId: (() => {
     try { return localStorage.getItem('permagent-chat-session-id'); } catch { return null; }
   })(),
+  sessionLoadError: null,
   _streamingMessageId: null,
   _pendingContext: null,
   discussSeedDecisionId: null,
@@ -797,23 +812,35 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
   /**
    * Interrupt the in-flight turn. POSTs /sessions/{id}/cancel with the active
-   * request_id; the daemon cancels the turn's CancellationToken and publishes a
-   * terminal Finish { reason: "stop" }, so the UI settles on the normal stream
-   * path (the Finish handler flips isStreaming off + rehydrates the transcript).
-   * That same Finish is when the daemon frees the session's single request slot,
-   * so we deliberately keep isStreaming true until it lands — resetting early
-   * would let the next send race the slot (400 "already has an active request").
+   * request_id and acts on the daemon's HONEST answer:
+   *
+   * {cancelled:true} — a live request's token was cancelled; the daemon
+   * publishes a terminal Finish { reason: "stop" }, so the UI settles on the
+   * normal stream path (the Finish handler flips isStreaming off + rehydrates
+   * the transcript). That same Finish is when the daemon frees the session's
+   * single request slot, so we deliberately keep isStreaming true until it
+   * lands — resetting early would let the next send race the slot (400
+   * "already has an active request").
+   *
+   * {cancelled:false} — the daemon knows nothing about that request_id (the
+   * turn already ended, or the daemon restarted and the request evaporated).
+   * NO terminal frame is ever coming for it, so waiting would wedge the
+   * composer + spin the Stop button forever — reconcile to idle right here.
+   *
    * If the POST itself throws the agent is still alive, so we propagate rather
    * than lie that it stopped (the caller re-enables Stop to allow a retry).
-   * Returns false when there is nothing to cancel — including the brief window
+   * Returns false when nothing was cancelled — including the brief window
    * after a send where isStreaming is already true but the request_id hasn't
-   * come back yet — so the caller can drop its "stopping" affordance and let the
-   * user click again once the id lands (never a stuck, un-cancellable turn).
+   * come back yet — so the caller can drop its "stopping" affordance.
    */
   stopStreaming: async () => {
     const { chatSessionId, _activeRequestId, isStreaming } = get();
     if (!isStreaming || !chatSessionId || !_activeRequestId) return false;
-    await api.cancelReply(chatSessionId, _activeRequestId);
+    const { cancelled } = await api.cancelReply(chatSessionId, _activeRequestId);
+    if (!cancelled) {
+      set({ isStreaming: false, _streamingMessageId: null, _activeRequestId: null });
+      return false;
+    }
     return true;
   },
 
@@ -854,7 +881,14 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     set({ chatSessionId: sessionId, chatMessages: [], isStreaming: false, _streamingMessageId: null, _activeRequestId: null });
     try { localStorage.setItem('permagent-chat-session-id', sessionId); } catch { /* */ }
     await get().loadSessionMessages(sessionId);
-    get().connectSession(sessionId);
+    // A 404 inside loadSessionMessages disowns the id (the session is gone);
+    // don't open an SSE channel to a session the store no longer owns — the
+    // reconnect loop keys off chatSessionId and would die silently (C8).
+    // Transient failures KEEP the id (inline error + retry), so we still
+    // connect: the turn stream works even while history is unloaded.
+    if (get().chatSessionId === sessionId) {
+      get().connectSession(sessionId);
+    }
   },
 
   deleteSession: async (sessionId: string) => {
@@ -1031,8 +1065,16 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     }
   },
 
-  /** Load messages from a session's conversation history. Handles 404 gracefully. */
+  /** Load messages from a session's conversation history.
+   *
+   *  Failure honesty (C8): only a 404 — the session genuinely no longer
+   *  exists — disowns the stored session id. Every other failure (daemon
+   *  hiccup, network) is transient: the id is KEPT and the error surfaces
+   *  inline via sessionLoadError (MessageList renders it with a Retry —
+   *  the #568 lesson), instead of silently discarding a working session and
+   *  leaving connectSession running against a disowned id. */
   loadSessionMessages: async (sessionId: string) => {
+    set({ sessionLoadError: null });
     try {
       const session = await api.getSession(sessionId);
       if (session.conversation && session.conversation.length > 0) {
@@ -1040,11 +1082,20 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         const msgs = session.conversation.map((m, i) => daemonMsgToChat(m, i, sessionId, responses));
         set({ chatMessages: msgs });
       }
-    } catch {
-      // Session may not exist (404) — clear stale ID and start fresh
-      console.warn('Session not found, will create new on next message');
-      set({ chatMessages: [], chatSessionId: null });
-      try { localStorage.removeItem('permagent-chat-session-id'); } catch { /* */ }
+    } catch (err) {
+      if ((err as { status?: number }).status === 404) {
+        // Session no longer exists — clear the stale ID and start fresh.
+        console.warn('Session not found, will create new on next message');
+        set({ chatMessages: [], chatSessionId: null });
+        try { localStorage.removeItem('permagent-chat-session-id'); } catch { /* */ }
+      } else {
+        console.error('Failed to load session messages:', err);
+        set({
+          sessionLoadError: err instanceof Error && err.message
+            ? err.message
+            : 'Could not reach the agent',
+        });
+      }
     }
   },
 
@@ -1068,12 +1119,37 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
     switch (data.type) {
       case 'ActiveRequests': {
-        // On (re)connect the daemon lists this session's in-flight requests.
-        // try_register_request enforces a single active request, so adopt the
-        // first as the Stop target — keeps interrupt working after an
-        // EventSource auto-reconnect mid-turn (isStreaming persists across it).
+        // On EVERY (re)connect the daemon lists this session's in-flight
+        // requests — the truth signal in both directions (C1/C4):
+        //
+        // Non-empty ⇒ a turn IS live server-side. Adopt the id AND flip
+        // isStreaming on, so a window that attached mid-turn (reload, detached
+        // dock) shows an honest composer + Stop button instead of an idle
+        // input whose send would 400 ("already has an active request").
+        // try_register_request enforces a single active request, so the first
+        // id is the Stop target. _streamingMessageId is left alone: if this
+        // window started the turn its placeholder keeps streaming; a freshly
+        // attached window has none and settles on the Finish rehydrate (the
+        // StreamingIndicator covers the meantime).
+        //
+        // EMPTY ⇒ the daemon says nothing is running. If we believe a turn is
+        // live, it died without a terminal frame (daemon restart mid-turn:
+        // fresh bus, empty replay — no Finish/Error is ever coming) — clear
+        // streaming state or the composer stays "Agent is responding…"
+        // forever. Sole exception: while our own reply POST is still in
+        // flight (isStreaming set, request_id not yet returned) the server
+        // may simply not have registered the request yet — don't let a
+        // racing reconnect kill a turn that is being born.
         const ids = (data as { type: string; request_ids?: string[] }).request_ids;
-        if (ids && ids.length > 0) set({ _activeRequestId: ids[0] });
+        if (ids && ids.length > 0) {
+          set({ _activeRequestId: ids[0], isStreaming: true });
+        } else {
+          const { isStreaming, _activeRequestId } = get();
+          const replyPostInFlight = isStreaming && !_activeRequestId;
+          if (!replyPostInFlight) {
+            set({ isStreaming: false, _streamingMessageId: null, _activeRequestId: null });
+          }
+        }
         break;
       }
       case 'Message': {
@@ -1239,6 +1315,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   _reconnectTimer: null,
   _reconnectAttempts: 0,
   _lastEventId: null,
+  _lastEventSessionId: null,
 
   connectSession: (sessionId: string) => {
     const state = get();
@@ -1250,10 +1327,20 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       clearTimeout(state._reconnectTimer);
     }
 
+    // The SSE cursor is per-session (sequence numbers restart on every bus):
+    // reset it when this connection targets a different session than the one
+    // the cursor was recorded against.
+    if (state._lastEventSessionId !== sessionId) {
+      set({ _lastEventId: null, _lastEventSessionId: sessionId });
+    }
+
     set({ connectionStatus: 'connecting' });
     startEventPruning();
 
-    const url = api.sessionEventsUrl(sessionId);
+    // Resume the replay after the last event we processed (P1): EventSource
+    // can't set the Last-Event-ID header on this manual reconnect, so the
+    // cursor rides a query param. First connect (null cursor) replays all.
+    const url = api.sessionEventsUrl(sessionId, get()._lastEventId);
     const es = new EventSource(url);
 
     es.onopen = () => {

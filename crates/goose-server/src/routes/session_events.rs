@@ -3,7 +3,7 @@ use crate::routes::reply::{get_token_state, track_tool_telemetry, MessageEvent};
 use crate::session_event_bus::RequestGuard;
 use crate::state::AppState;
 use axum::{
-    extract::{DefaultBodyLimit, Path, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{self, HeaderMap},
     response::IntoResponse,
     routing::{get, post},
@@ -64,6 +64,17 @@ pub struct SessionReplyResponse {
 #[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct CancelRequest {
     pub request_id: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
+pub struct CancelResponse {
+    /// True when a live request was found and its cancellation was triggered —
+    /// a terminal `Finish { reason: "stop" }` will follow on the SSE stream.
+    /// False when there was nothing to cancel (unknown/stale request_id, e.g.
+    /// the turn already finished or the daemon restarted): no terminal frame
+    /// will ever arrive for that id, so the client must reconcile its own
+    /// streaming state instead of waiting for one.
+    pub cancelled: bool,
 }
 
 // ── SSE Event Stream Response ───────────────────────────────────────────
@@ -174,11 +185,25 @@ fn serialize_session_event(seq: u64, request_id: Option<&str>, event: &MessageEv
 
 // ── GET /sessions/{id}/events ───────────────────────────────────────────
 
+/// Query parameters for the SSE endpoint. `last_event_id` mirrors the
+/// `Last-Event-ID` header for EventSource clients, which cannot set request
+/// headers when they construct a fresh connection (the browser only sends the
+/// header on its own automatic reconnects — not on the manual
+/// close-and-reconnect the store's backoff loop performs).
+#[derive(Debug, Deserialize)]
+pub struct SessionEventsQuery {
+    pub last_event_id: Option<String>,
+}
+
 #[utoipa::path(
     get,
     path = "/sessions/{id}/events",
     params(
         ("id" = String, Path, description = "Session ID"),
+        ("last_event_id" = Option<String>, Query,
+         description = "Resume event replay after this sequence number. \
+                        Query-param mirror of the Last-Event-ID header for \
+                        EventSource clients that cannot set headers."),
     ),
     responses(
         (status = 200, description = "SSE event stream",
@@ -190,6 +215,7 @@ fn serialize_session_event(seq: u64, request_id: Option<&str>, event: &MessageEv
 pub async fn session_events(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
+    Query(query): Query<SessionEventsQuery>,
     headers: HeaderMap,
 ) -> Result<SseEventStream, axum::http::StatusCode> {
     // Validate the session exists before creating an event bus.
@@ -199,10 +225,15 @@ pub async fn session_events(
         .await
         .map_err(|_| axum::http::StatusCode::NOT_FOUND)?;
 
+    // Header wins over the query param: on a browser-native auto-reconnect the
+    // header carries a fresher cursor than the URL captured at construction.
+    // Both parse leniently — a malformed cursor degrades to a full replay
+    // rather than a 400 on the streaming endpoint.
     let last_event_id: Option<u64> = headers
         .get("Last-Event-ID")
         .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse().ok());
+        .and_then(|s| s.parse().ok())
+        .or_else(|| query.last_event_id.as_deref().and_then(|s| s.parse().ok()));
 
     let bus = state.get_or_create_event_bus(&session_id).await;
 
@@ -232,21 +263,24 @@ pub async fn session_events(
     tokio::spawn(async move {
         let bus = task_bus;
 
-        // Notify the client about any in-flight requests BEFORE replay
-        // so it can register event handlers before replayed events arrive.
-        // Emitted without an SSE `id:` field so it doesn't regress the
-        // client's Last-Event-ID cursor.
+        // Notify the client about in-flight requests BEFORE replay so it can
+        // register event handlers before replayed events arrive. ALWAYS
+        // emitted — an EMPTY list is the "nothing is running" reconciliation
+        // signal (C1): after a daemon restart mid-turn there is no terminal
+        // Finish/Error anywhere (fresh bus, empty replay buffer), and without
+        // this frame a reconnecting client that still believes a turn is live
+        // stays wedged on "Agent is responding…" forever. Emitted without an
+        // SSE `id:` field so it doesn't regress the client's Last-Event-ID
+        // cursor.
         let active_ids = bus.active_request_ids().await;
-        if !active_ids.is_empty() {
-            let event = MessageEvent::ActiveRequests {
-                request_ids: active_ids,
-            };
-            let json_str = serde_json::to_string(&serde_json::to_value(&event).unwrap_or_default())
-                .unwrap_or_default();
-            let frame = format!("data: {}\n\n", json_str);
-            if tx.send(frame).await.is_err() {
-                return;
-            }
+        let event = MessageEvent::ActiveRequests {
+            request_ids: active_ids,
+        };
+        let json_str = serde_json::to_string(&serde_json::to_value(&event).unwrap_or_default())
+            .unwrap_or_default();
+        let frame = format!("data: {}\n\n", json_str);
+        if tx.send(frame).await.is_err() {
+            return;
         }
 
         // Send replayed events
@@ -480,6 +514,10 @@ pub async fn session_reply(
                     },
                 )
                 .await;
+                // This Error IS the terminal frame — disarm so the guard's
+                // armed-drop handler doesn't publish a duplicate one.
+                _guard.disarm();
+                task_bus.cleanup_request(&task_request_id).await;
                 return;
             }
         };
@@ -499,6 +537,9 @@ pub async fn session_reply(
                     },
                 )
                 .await;
+                // Terminal frame published — disarm (see above).
+                _guard.disarm();
+                task_bus.cleanup_request(&task_request_id).await;
                 return;
             }
         };
@@ -685,6 +726,9 @@ pub async fn session_reply(
                     },
                 )
                 .await;
+                // Terminal frame published — disarm (see above).
+                _guard.disarm();
+                task_bus.cleanup_request(&task_request_id).await;
                 return;
             }
         };
@@ -891,20 +935,25 @@ pub async fn session_reply(
     ),
     request_body = CancelRequest,
     responses(
-        (status = 200, description = "Cancellation accepted"),
+        (status = 200, description = "Honest cancel result", body = CancelResponse),
     )
 )]
 pub async fn session_cancel(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
     Json(request): Json<CancelRequest>,
-) -> axum::http::StatusCode {
-    let bus = match state.get_event_bus(&session_id).await {
-        Some(bus) => bus,
-        None => return axum::http::StatusCode::NOT_FOUND,
+) -> Json<CancelResponse> {
+    // Always 200 with an honest body. "No bus for this session" and "bus has
+    // no such request" both mean the same thing to the caller — nothing is
+    // running, nothing was cancelled, and no terminal frame is coming — so
+    // they share `cancelled: false` rather than an ambiguous 404 (which the
+    // client cannot distinguish from a wrong URL, and which previously hid
+    // behind an unconditional 200 that lied about cancelling nothing).
+    let cancelled = match state.get_event_bus(&session_id).await {
+        Some(bus) => bus.cancel_request(&request.request_id).await,
+        None => false,
     };
-    bus.cancel_request(&request.request_id).await;
-    axum::http::StatusCode::OK
+    Json(CancelResponse { cancelled })
 }
 
 // ── Route registration ──────────────────────────────────────────────────
