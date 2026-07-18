@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { getApiBaseUrl } from '../lib/api';
 import { wireEventType } from '../lib/wireEvent';
+import { appendTraceRecord, claimTraceEventId, globalFrameToRecord } from '../lib/traceEvents';
 import { useCommandCenter, navigateToTool } from '../lib/store';
 import type { ActivePanel } from '../lib/store';
 import { createChatWindow } from '../lib/chatWindow';
@@ -90,8 +91,26 @@ const VALID_TOOL_TYPES = new Set<string>([
 ]);
 
 /**
+ * Record a global `/events` frame into the trace buffer (`store.events`) with
+ * its real wire type — the ExecutionTrace's global-bus feed. Before this seam
+ * the trace's only writer was the chat SSE, so it showed the user's own chat
+ * frames while the Trace catalog entry promised the whole running system. The
+ * daemon replays its buffer on every (re)connect, so records are deduped by
+ * envelope id (first connect lands recent history once; reconnect bursts are
+ * dropped). Exported for wiring tests.
+ */
+export function recordGlobalTraceFrame(frame: unknown): void {
+  const rec = globalFrameToRecord(frame);
+  if (!rec || !claimTraceEventId(rec.id)) return;
+  useCommandCenter.setState(s => ({ events: appendTraceRecord(s.events, rec) }));
+}
+
+/**
  * Subscribes to the daemon's global event bus (/events WebSocket).
- * When an AppNavigate event arrives, navigates the UI to the specified tab.
+ * When an AppNavigate event arrives, navigates the UI to the specified tab;
+ * every frame (nav or not) is also mirrored into the trace events buffer with
+ * its real type via {@link recordGlobalTraceFrame}, so the Execution trace
+ * genuinely shows the running system, not just chat frames.
  */
 export function useAppNavigate() {
   const switchWorkspace = useCommandCenter(s => s.switchWorkspace);
@@ -195,6 +214,9 @@ export function useAppNavigate() {
       ws.onmessage = (ev) => {
         try {
           const event = JSON.parse(ev.data);
+          // Trace first, route second — navigation frames belong in the trace
+          // too, and a routing throw must not lose the record.
+          recordGlobalTraceFrame(event);
           const eventType = wireEventType(event);
           if (eventType === 'project_launch') {
             launchRef.current(event.payload ?? {});

@@ -3,6 +3,7 @@ import { api, apiFetch, extractText, extractThinking, fileToBase64, readerIngest
 import { emitActivity, type ActivityEventName, type ActivitySourceSurface } from './emitActivity';
 import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload, TokenState } from './api';
 import { costFromFrame } from './costMeter';
+import { appendTraceRecord, sessionFrameToRecord } from './traceEvents';
 import { startEventPruning } from './eventBus';
 import type { ProjectPerson } from '../components/projects/types';
 import type { BrainMemoryTarget } from '../components/brain/brainMemoryFocus';
@@ -275,6 +276,10 @@ interface CommandCenterStore {
 
   // --- Sessions state ---
   sessions: SessionState[];
+  /** True when the last loadSessions() failed — lets SessionsList show an
+      inline error + retry instead of the lying "No sessions yet" empty state
+      (#568 empty-body lesson; mirrors providersError). */
+  sessionsError: boolean;
   loadSessions: () => Promise<void>;
 
   // --- Event filters ---
@@ -1008,6 +1013,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
   // Sessions
   sessions: [],
+  sessionsError: false,
   loadSessions: async () => {
     // #341 instrumentation: time fetch+parse vs the map+store-commit (which
     // triggers the React re-render of the session list). The map projects away
@@ -1025,13 +1031,16 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
           updated_at: s.updated_at,
           message_count: s.message_count,
         })),
+        sessionsError: false,
       });
       console.info(
         `[session-perf] loadSessions fetch+parse=${(tFetched - t0).toFixed(1)}ms ` +
           `map+set=${(performance.now() - tFetched).toFixed(1)}ms count=${sessions.length}`,
       );
     } catch {
-      set({ sessions: [] });
+      // Daemon unreachable ≠ "no sessions yet" — flag the failure so the list
+      // renders an inline error + retry instead of the empty state (#568).
+      set({ sessions: [], sessionsError: true });
     }
   },
 
@@ -1104,20 +1113,9 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
           }
         }
 
-        // Also push to trace events
-        const record: EventRecord = {
-          id: `sse-${Date.now()}`,
-          timestamp: new Date().toISOString(),
-          source: 'permagentd',
-          event_type: 'Message',
-          severity: 'info',
-          run_id: null,
-          task_id: null,
-          agent_id: null,
-          correlation_id: null,
-          payload: data as unknown as Record<string, unknown>,
-        };
-        set(s => ({ events: [record, ...s.events].slice(0, MAX_EVENTS_BUFFER) }));
+        // Trace recording moved to the connectSession funnel (es.onmessage →
+        // sessionFrameToRecord): every frame type is recorded there with its
+        // real type (tool_call/Message/Error/Finish), not just Message rows.
         break;
       }
       case 'Error': {
@@ -1275,6 +1273,12 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
       try {
         const data = JSON.parse(ev.data) as SSEEvent;
+        // Trace (C3): record the frame with its REAL type — tool-bearing
+        // Message frames become tool_call rows, Error/Finish are the turn's
+        // lifecycle signals; streaming text deltas coalesce into one row.
+        // This is the single production entry point for session frames.
+        const rec = sessionFrameToRecord(data);
+        if (rec) set(s => ({ events: appendTraceRecord(s.events, rec, MAX_EVENTS_BUFFER) }));
         get().handleSessionEvent(data);
       } catch {
         // Ignore malformed events
