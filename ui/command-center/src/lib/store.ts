@@ -383,6 +383,11 @@ const MAX_EVENTS_BUFFER = 1000;
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 
+/** Guards the async gap in connectSession (awaiting the daemon token before
+ *  constructing the EventSource): a newer connect/disconnect bumps the epoch,
+ *  and a stale in-flight connect aborts instead of opening a duplicate SSE. */
+let _sseConnectEpoch = 0;
+
 /** Pull a toolRequest's name/args, tolerating the daemon's tool_result_serde
  *  wrapper `{ status, value:{ name, arguments } }` as well as a flat shape.
  *  (The old code read `.name` off the wrapper, so every tool showed "unknown".) */
@@ -1323,7 +1328,8 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   _lastEventId: null,
   _lastEventSessionId: null,
 
-  connectSession: (sessionId: string) => {
+  connectSession: async (sessionId: string) => {
+    const epoch = ++_sseConnectEpoch;
     const state = get();
     // Close existing connection
     if (state._eventSource) {
@@ -1346,7 +1352,10 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     // Resume the replay after the last event we processed (P1): EventSource
     // can't set the Last-Event-ID header on this manual reconnect, so the
     // cursor rides a query param. First connect (null cursor) replays all.
-    const url = api.sessionEventsUrl(sessionId, get()._lastEventId);
+    // The daemon token rides the query too (C1/C2 auth) — awaiting it opens
+    // an async gap, so re-check the epoch before constructing the stream.
+    const url = await api.sessionEventsUrl(sessionId, get()._lastEventId);
+    if (epoch !== _sseConnectEpoch) return; // superseded while awaiting the token
     const es = new EventSource(url);
 
     es.onopen = () => {
@@ -1393,6 +1402,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   },
 
   disconnectSession: () => {
+    _sseConnectEpoch++; // cancel any connect still awaiting the daemon token
     const { _eventSource, _reconnectTimer } = get();
     if (_reconnectTimer) clearTimeout(_reconnectTimer);
     if (_eventSource) _eventSource.close();

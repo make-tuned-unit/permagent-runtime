@@ -109,6 +109,18 @@ export function loadDaemonToken(): Promise<string | null> {
 // Kick off token loading immediately so it's ready when needed.
 loadDaemonToken();
 
+/** URL for the global `/events` WebSocket, daemon token attached (`?token=`).
+ *  The browser WebSocket API cannot set an Authorization header, so the token
+ *  rides the query string — same contract as the `/voice` WS, validated
+ *  server-side by the same fail-closed constant-time core (C1/C2 auth).
+ *  Async: waits for the token (Tauri IPC on first call) so the first
+ *  connection attempt is already authenticated. */
+export async function eventsWsUrl(): Promise<string> {
+  const token = await loadDaemonToken();
+  const base = getApiBaseUrl().replace(/^http/, 'ws');
+  return token ? `${base}/events?token=${encodeURIComponent(token)}` : `${base}/events`;
+}
+
 // --- Daemon types ---
 
 /** Content block inside a Message */
@@ -690,10 +702,17 @@ export const api = {
    *  server replay after that sequence number (P1): EventSource cannot set the
    *  Last-Event-ID header on the manual close-and-reconnect the store's
    *  backoff loop performs, so the cursor rides a query param the daemon
-   *  reads as its header-equivalent. */
-  sessionEventsUrl: (sessionId: string, lastEventId?: string | null): string => {
+   *  reads as its header-equivalent. The daemon token rides the query too
+   *  (EventSource cannot set Authorization either — C1/C2 auth); async so the
+   *  first connect is already authenticated once the token loads. */
+  sessionEventsUrl: async (sessionId: string, lastEventId?: string | null): Promise<string> => {
+    const token = await loadDaemonToken();
     const base = `${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/events`;
-    return lastEventId ? `${base}?last_event_id=${encodeURIComponent(lastEventId)}` : base;
+    const params = new URLSearchParams();
+    if (lastEventId) params.set('last_event_id', lastEventId);
+    if (token) params.set('token', token);
+    const qs = params.toString();
+    return qs ? `${base}?${qs}` : base;
   },
 
   // Identity

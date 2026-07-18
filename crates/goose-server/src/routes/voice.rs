@@ -28,7 +28,6 @@ use axum::{
 use permagent::download_manager::{get_download_manager, DownloadProgress, DownloadStatus};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use subtle;
 
 // ── User pronunciation lexicon (#516 follow-through: the never-spell rule) ──
 
@@ -404,12 +403,9 @@ async fn voice_ws_handler(
     Query(query): Query<VoiceQuery>,
 ) -> Result<impl IntoResponse, axum::http::StatusCode> {
     // Manual token validation — WebSocket upgrade can't use Bearer middleware.
-    if let Some(ref expected) = state.daemon_token {
-        match &query.token {
-            Some(t) if subtle::ConstantTimeEq::ct_eq(t.as_bytes(), expected.as_bytes()).into() => {}
-            _ => return Err(axum::http::StatusCode::UNAUTHORIZED),
-        }
-    }
+    // Shared fail-closed, constant-time core (middleware::auth): a tokenless
+    // daemon refuses (503) instead of serving the voice socket anonymously.
+    crate::middleware::auth::validate_daemon_token(&state, query.token.as_deref())?;
     Ok(ws.on_upgrade(move |socket| handle_voice_socket(socket, state, query.session_id)))
 }
 
