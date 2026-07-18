@@ -2178,15 +2178,14 @@ impl OrchestratorClient {
     }
 }
 
-#[async_trait]
-impl McpClientTrait for OrchestratorClient {
-    async fn list_tools(
-        &self,
-        _session_id: &str,
-        _next_cursor: Option<String>,
-        _cancel_token: CancellationToken,
-    ) -> Result<ListToolsResult, Error> {
-        let tools = vec![
+impl OrchestratorClient {
+    /// The full, static tool inventory. Extracted from `list_tools` so the
+    /// self-knowledge completeness guard
+    /// (`self_knowledge::tests::tool_descriptions_name_every_callable_tool`)
+    /// derives its inventory from the REAL list — add a tool here and CI fails
+    /// until the registry `description` names it.
+    pub(crate) fn get_tools() -> Vec<Tool> {
+        vec![
             Tool::new(
                 "list_sessions".to_string(),
                 "List agent sessions with their status (loaded, busy, idle). Returns the most recent 10 by default. Optionally filter by session type."
@@ -2299,10 +2298,20 @@ impl McpClientTrait for OrchestratorClient {
                     .to_string(),
                 schema::<crate::decision_inbox::escalate::EscalateParams>(),
             ),
-        ];
+        ]
+    }
+}
 
+#[async_trait]
+impl McpClientTrait for OrchestratorClient {
+    async fn list_tools(
+        &self,
+        _session_id: &str,
+        _next_cursor: Option<String>,
+        _cancel_token: CancellationToken,
+    ) -> Result<ListToolsResult, Error> {
         Ok(ListToolsResult {
-            tools,
+            tools: Self::get_tools(),
             next_cursor: None,
             meta: None,
         })

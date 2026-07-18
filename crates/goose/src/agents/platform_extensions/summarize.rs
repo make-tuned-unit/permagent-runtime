@@ -66,7 +66,7 @@ impl SummarizeClient {
         Ok(provider)
     }
 
-    fn get_tools() -> Vec<Tool> {
+    pub(crate) fn get_tools() -> Vec<Tool> {
         let schema = schema_for!(SummarizeParams);
         let schema_value =
             serde_json::to_value(schema).expect("Failed to serialize SummarizeParams schema");

@@ -1,8 +1,12 @@
-//! App Conductor — lets the chat agent navigate the user to UI tabs/views.
+//! App Conductor — lets the chat agent drive the app's UI for the user.
 //!
-//! Exposes one tool: `navigate_app`. When called, it validates the tab name
-//! against the app catalog, emits an `AppNavigate` event on the global bus,
-//! and returns a confirmation to the agent.
+//! Exposes three tools: `navigate_app` (go to a tab, optionally a sub-view),
+//! `app_action` (act within a surface — open/close/detach the chat dock,
+//! show/hide the Build tab's browser and terminal panes), and `open_item`
+//! (carry the user the last mile to a specific item — a goal's detail or a
+//! project's Grow planner). Each validates its input against a catalog
+//! (tab catalog / `ACTION_CATALOG` / `ITEM_CATALOG`), emits the matching
+//! event on the global bus, and returns a confirmation to the agent.
 
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
@@ -306,17 +310,13 @@ impl AppConductorClient {
     }
 }
 
-// ── MCP trait implementation ────────────────────────────────────────────────
-
-#[async_trait]
-impl McpClientTrait for AppConductorClient {
-    async fn list_tools(
-        &self,
-        _session_id: &str,
-        _next_cursor: Option<String>,
-        _cancel_token: CancellationToken,
-    ) -> std::result::Result<ListToolsResult, Error> {
-        let tools = vec![
+impl AppConductorClient {
+    /// The full, static tool inventory. Extracted from `list_tools` so the
+    /// self-knowledge completeness guard derives its inventory from the REAL
+    /// list — add a tool here and CI fails until the registry `description`
+    /// names it.
+    pub(crate) fn get_tools() -> Vec<Tool> {
+        vec![
             Tool::new(
                 "navigate_app".to_string(),
                 "Navigate the user to a specific tab, optionally drilling into a \
@@ -358,10 +358,22 @@ impl McpClientTrait for AppConductorClient {
                     .to_string(),
                 schema::<OpenItemParams>(),
             ),
-        ];
+        ]
+    }
+}
 
+// ── MCP trait implementation ────────────────────────────────────────────────
+
+#[async_trait]
+impl McpClientTrait for AppConductorClient {
+    async fn list_tools(
+        &self,
+        _session_id: &str,
+        _next_cursor: Option<String>,
+        _cancel_token: CancellationToken,
+    ) -> std::result::Result<ListToolsResult, Error> {
         Ok(ListToolsResult {
-            tools,
+            tools: Self::get_tools(),
             next_cursor: None,
             meta: None,
         })

@@ -285,15 +285,13 @@ pub const CODEBASE_INDEX_FEATURE: crate::agents::self_knowledge::FeatureDescript
         ],
     };
 
-#[async_trait]
-impl McpClientTrait for AnalyzeClient {
-    async fn list_tools(
-        &self,
-        _session_id: &str,
-        _next_cursor: Option<String>,
-        _cancellation_token: CancellationToken,
-    ) -> Result<ListToolsResult, Error> {
-        let tool = Tool::new(
+impl AnalyzeClient {
+    /// The full, static tool inventory. Extracted from `list_tools` so the
+    /// self-knowledge completeness guard derives its inventory from the REAL
+    /// list — add a tool here and CI fails until the registry `description`
+    /// names it.
+    pub(crate) fn get_tools() -> Vec<Tool> {
+        vec![Tool::new(
             "analyze".to_string(),
             "Analyze code structure in 3 modes: 1) Directory overview - file tree with LOC/function/class counts to max_depth. 2) File details - functions, classes, imports. 3) Symbol focus - call graphs across directory to max_depth (requires file or directory path, case-sensitive). Typical flow: directory → files → symbols. Functions called >3x show •N.".to_string(),
             Self::schema::<AnalyzeParams>(),
@@ -304,10 +302,20 @@ impl McpClientTrait for AnalyzeClient {
             Some(false),
             Some(true),
             Some(false),
-        ));
+        ))]
+    }
+}
 
+#[async_trait]
+impl McpClientTrait for AnalyzeClient {
+    async fn list_tools(
+        &self,
+        _session_id: &str,
+        _next_cursor: Option<String>,
+        _cancellation_token: CancellationToken,
+    ) -> Result<ListToolsResult, Error> {
         Ok(ListToolsResult {
-            tools: vec![tool],
+            tools: Self::get_tools(),
             next_cursor: None,
             meta: None,
         })

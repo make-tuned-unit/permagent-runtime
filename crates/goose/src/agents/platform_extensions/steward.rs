@@ -323,7 +323,7 @@ impl StewardClient {
         }
     }
 
-    fn get_tools() -> Vec<Tool> {
+    pub(crate) fn get_tools() -> Vec<Tool> {
         let schema = serde_json::to_value(schema_for!(ProposeGitOpParams)).unwrap();
         let report_schema = serde_json::to_value(schema_for!(SurfaceReportParams)).unwrap();
         vec![

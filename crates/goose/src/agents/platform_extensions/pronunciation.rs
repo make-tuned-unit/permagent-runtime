@@ -63,7 +63,7 @@ impl PronunciationClient {
 }
 
 impl PronunciationClient {
-    fn get_tools() -> Vec<Tool> {
+    pub(crate) fn get_tools() -> Vec<Tool> {
         let schema: JsonObject = serde_json::from_value(serde_json::json!({
             "type": "object",
             "properties": {

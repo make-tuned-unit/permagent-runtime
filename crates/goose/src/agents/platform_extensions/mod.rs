@@ -249,7 +249,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: todo::EXTENSION_NAME,
                 display_name: "Todo",
                 description:
-                    "Enable a todo list for the agent so it can keep track of what it is doing",
+                    "Keep a persistent todo list of what you are doing — one tool (todo_write) overwrites its entire content, and it survives across turns and compaction",
                 default_enabled: true,
                 unprefixed_tools: false,
                 hidden: false,
@@ -265,7 +265,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: apps::EXTENSION_NAME,
                 display_name: "Apps",
                 description:
-                    "Create and manage custom Permagent apps through chat. Apps are HTML/CSS/JavaScript and run in sandboxed windows.",
+                    "Create and manage custom Permagent apps through chat — see what exists (list_apps), generate a new app from a description (create_app), improve one from feedback (iterate_app), or remove one (delete_app). Apps are HTML/CSS/JavaScript and run in sandboxed windows",
                 default_enabled: true,
                 unprefixed_tools: false,
                 hidden: false,
@@ -282,7 +282,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: chatrecall::EXTENSION_NAME,
                 display_name: "Chat Recall",
                 description:
-                    "Search past conversations and load session summaries for contextual memory",
+                    "Search past conversations and load session summaries for contextual memory, in one tool (chatrecall): search mode takes keywords, load mode returns a session's first and last messages",
                 default_enabled: false,
                 unprefixed_tools: false,
                 hidden: false,
@@ -315,7 +315,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: summon::EXTENSION_NAME,
                 display_name: "Summon",
-                description: "Load knowledge and delegate tasks to subagents",
+                description: "Load knowledge into your context — subrecipes, recipes, agents, and background-task results (load) — and delegate tasks to subagents that run independently, in parallel or in the background (delegate)",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
@@ -331,7 +331,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: summarize::EXTENSION_NAME,
                 display_name: "Summarize",
-                description: "Load files/directories and get an LLM summary in a single call",
+                description: "Load files/directories and get an LLM summary in a single call (summarize)",
                 default_enabled: false,
                 unprefixed_tools: false,
                 hidden: false,
@@ -348,7 +348,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: code_execution::EXTENSION_NAME,
                 display_name: "Code Mode",
-                description: "Make extension calls through code execution, saving tokens",
+                description: "Make extension calls through code execution, saving tokens: discover callable functions (list_functions, get_function_details) and run many calls in one script (execute_typescript, execute_bash) — which of these are exposed depends on the configured disclosure mode",
                 default_enabled: false,
                 unprefixed_tools: true,
                 hidden: false,
@@ -389,7 +389,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: orchestrator::EXTENSION_NAME,
                 display_name: "Orchestrator",
                 description:
-                    "Orchestrate work across agent sessions: list, view, start, message, interrupt, and stop agents; dispatch roadmap goals to worker agents; and surface decisions in the Decision Inbox for supervised approval",
+                    "Orchestrate work across agent sessions: list, view, start, message, and interrupt them (list_sessions, view_session, start_agent, send_message, interrupt_agent); inspect available workers (list_workers, check_worker); plan objectives and dispatch roadmap goals to worker agents (decompose_roadmap, create_roadmap, goal_advance, goal_status, pause_roadmap, resume_roadmap); and surface decisions in the Decision Inbox for supervised approval (escalate)",
                 default_enabled: true,
                 unprefixed_tools: false,
                 hidden: false,
@@ -444,7 +444,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: skills::EXTENSION_NAME,
                 display_name: "Skills",
-                description: "Discover and load skills stored as portable SKILL.md folders (the open agentskills.io standard) from the filesystem and builtins",
+                description: "Discover skills stored as portable SKILL.md folders (the open agentskills.io standard) from the filesystem and builtins, and load one's full instructions into your context (load_skill)",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
@@ -477,7 +477,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: app_conductor::EXTENSION_NAME,
                 display_name: "App Conductor",
-                description: "Navigate the user to tabs and views, act within them — open/close/detach the chat dock, show/hide the Build tab's browser and terminal panes — and carry them the last mile past a tab to a specific item: a goal's detail or a project's Grow planner, in the Permagent app",
+                description: "Navigate the user to tabs and views in the Permagent app (navigate_app), act within them — open/close/detach the chat dock, show/hide the Build tab's browser and terminal panes (app_action) — and carry them the last mile past a tab to a specific item: a goal's detail or a project's Grow planner (open_item)",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
@@ -496,7 +496,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: recipe_author::EXTENSION_NAME,
                 display_name: "Recipe Author",
                 description:
-                    "Create, list, and manage scheduled automations and saved skills through chat",
+                    "Create, list, run, pause, and delete scheduled automations (create_recipe, list_recipes, run_recipe, pause_recipe, delete_recipe) and save or list reusable skills (save_skill, list_skills) through chat",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
@@ -519,7 +519,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: storage_health::EXTENSION_NAME,
                 display_name: "Storage Health",
                 description:
-                    "Scan the filesystem for storage cleanup opportunities — dev caches, app caches, stale downloads, and large files",
+                    "Scan the filesystem for storage cleanup opportunities (scan_storage_health) — dev caches, app caches, stale downloads, and large files",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
@@ -555,7 +555,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: people::EXTENSION_NAME,
                 display_name: "People",
                 description:
-                    "Create people, associate them with projects, and enrich a person's professional details — creating mints a durable graph entity plus a CRM directory row in one deterministic step; enrichment researches structured fields and files a review-gated Decision Inbox proposal",
+                    "Create people and associate them with projects (create_person, associate_person_with_project) — minting a durable graph entity plus a CRM directory row in one deterministic step — and enrich a person's professional details: enrich_person returns a research briefing, you research with your web tools, and propose_enrichment files the findings as a review-gated Decision Inbox proposal",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,

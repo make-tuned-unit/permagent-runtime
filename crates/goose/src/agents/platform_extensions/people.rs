@@ -515,7 +515,7 @@ impl PeopleClient {
         ))])
     }
 
-    fn get_tools() -> Vec<Tool> {
+    pub(crate) fn get_tools() -> Vec<Tool> {
         let create_schema = serde_json::to_value(schema_for!(CreatePersonParams)).unwrap();
         let associate_schema = serde_json::to_value(schema_for!(AssociatePersonParams)).unwrap();
         vec![
