@@ -70,6 +70,14 @@ impl AppState {
     pub async fn new(tls: bool) -> anyhow::Result<Arc<AppState>> {
         register_builtin_extensions(permagent_mcp::BUILTIN_EXTENSIONS.clone());
 
+        // This daemon serves the Decision Inbox answer path (routes/decisions.rs)
+        // over the process-wide AgentManager, so agent turns in THIS process may
+        // file `tool_approval` decision rows — answering can reach their parked
+        // waiters. Out-of-process populations (CLI sessions, examples) never set
+        // this and keep their own answer surfaces instead of filing zombie cards;
+        // in-process headless agents (scheduled jobs) are excluded agent-side.
+        permagent::decisions::mark_process_serves_inbox();
+
         let agent_manager = AgentManager::instance().await?;
         let tunnel_manager = Arc::new(TunnelManager::new(tls));
         let gateway_manager = Arc::new(GatewayManager::new(agent_manager.clone())?);
