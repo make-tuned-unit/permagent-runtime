@@ -8,7 +8,9 @@ import { createChatWindow } from '../lib/chatWindow';
 import { useTheme } from '../styles/useTheme';
 // The world view's replay classifier — the one in-repo source of truth for
 // "did this /events frame arrive live, or in the daemon's replay buffer?".
-import { isReplayed } from '../components/world/shared/worldEvents';
+// Prefers the daemon's server-side `"replayed": true` marker, with the
+// per-epoch timestamp heuristic as the fallback for unmarked frames.
+import { frameReplayed } from '../components/world/shared/worldEvents';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
@@ -136,39 +138,39 @@ const ACTION_FRAME_TYPES = new Set([
 
 /**
  * Replay honesty for ACTION frames. The daemon's /events socket replays its
- * whole event buffer (≤1000 frames) on EVERY (re)connect with no server-side
- * replay marker (routes/events.rs streams `buffered_events()` before the live
- * subscription; frames are serialized identically either way). Without
+ * whole event buffer (≤1000 frames) on EVERY (re)connect. Without
  * discrimination, a sleep/wake or daemon-restart reconnect re-delivers an
  * hours-old `app_navigate` and the UI yanks the user.
  *
- * Discriminator — a per-CONNECTION epoch over the daemon's own timestamps,
- * through the same classifier the world view uses ({@link isReplayed}): a
- * frame stamped before THIS connection opened is history, not a live
- * instruction. That classifies the entire replay burst as stale (buffered
- * frames always predate the connection that delivers them) AND frames emitted
- * while we were disconnected — a navigation emitted mid-sleep is stale on
- * wake however unseen it is. This is the one deliberate departure from
- * worldEvents' once-per-app epoch: the world may still animate
- * never-witnessed work after a reconnect; an action must only fire for a
- * frame emitted while this client was actually connected.
+ * Primary discriminator — the SERVER-SIDE replay marker (via the shared
+ * {@link frameReplayed} classifier): the daemon stamps `"replayed": true` on
+ * every frame it re-delivers from its buffer (full backfill and `resume_from`
+ * replays alike; routes/events.rs), which is authoritative and free of the
+ * clock-skew caveat. A marked frame is never acted on, full stop.
  *
- * Clock-skew caveat (the same one worldEvents already accepts): server stamp
- * vs client clock. Both failure directions are bounded by the skew (NTP:
+ * Fallback for UNMARKED frames — the per-CONNECTION epoch over the daemon's
+ * own timestamps: a frame stamped before THIS connection opened is history,
+ * not a live instruction. The fallback stays load-bearing in two real cases
+ * the marker cannot cover: an older daemon that doesn't mark at all, and
+ * client-side staleness (a live-sent frame delivered only after a sleep/wake
+ * — live at send time, stale by the time this client processes it). This
+ * remains the one deliberate departure from worldEvents' once-per-app epoch:
+ * the world may still animate never-witnessed work after a reconnect; an
+ * action must only fire for a frame emitted while this client was actually
+ * connected.
+ *
+ * Clock-skew caveat (fallback path only, same as worldEvents accepts): server
+ * stamp vs client clock, both failure directions bounded by the skew (NTP:
  * sub-second) and benign — a live action inside the first skew-window of a
  * connection is recorded but not acted on; a skew-old action acts, which is
- * indistinguishable from live. Untimestamped frames count as live (the daemon
- * stamps every event; absence means a test/dev frame — worldEvents' rule).
+ * indistinguishable from live. Untimestamped unmarked frames count as live
+ * (the daemon stamps every event; absence means a test/dev frame).
  *
  * Exported for wiring tests.
  */
 export function shouldActOnFrame(event: unknown, connectionEpoch: number): boolean {
   if (!ACTION_FRAME_TYPES.has(wireEventType(event))) return false;
-  const ts =
-    event && typeof event === 'object'
-      ? (event as { timestamp?: unknown }).timestamp
-      : undefined;
-  return !isReplayed(typeof ts === 'string' ? ts : undefined, connectionEpoch);
+  return !frameReplayed(event, connectionEpoch);
 }
 
 /**
@@ -304,9 +306,11 @@ export function useAppNavigate() {
     function connect() {
       if (disposed) return;
       const base = getApiBaseUrl().replace(/^http/, 'ws');
-      // Per-connection replay epoch: captured fresh on every (re)connect so
-      // the daemon's replay burst — and anything emitted while we were
-      // disconnected — is recorded but never acted on (see shouldActOnFrame).
+      // Per-connection replay epoch: captured fresh on every (re)connect. The
+      // daemon's server-side replay marker is authoritative when present; this
+      // epoch is the fallback so unmarked frames — an older daemon's replay
+      // burst, or anything emitted while we were disconnected — are recorded
+      // but never acted on (see shouldActOnFrame).
       const connectionEpoch = Date.now();
       ws = new WebSocket(`${base}/events`);
 

@@ -38,13 +38,21 @@ pub struct ScanResult {
     pub total_bytes: u64,
 }
 
+/// Production home resolution. The scan bodies never read this (or any other
+/// process-global state) directly: each public scanner is a thin delegator to
+/// a `*_in(home, …)` variant that takes the scan root as a parameter, and
+/// tests call the `_in` variants with a TempDir. Keeping `$HOME` out of the
+/// scan path is what makes the tests race-free by construction — mutating the
+/// global env under `#[serial]` (the pre-#462-fix approach) still flaked on
+/// CI because `serial_test` only serializes against its own group, not against
+/// env-touching tests in the config/provider `env_lock` domain.
 fn home_dir() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()))
 }
 
-/// Resolve dev scan roots: probe conventional directories first, fall back to $HOME.
-fn dev_scan_roots() -> Vec<(PathBuf, u32)> {
-    let home = home_dir();
+/// Resolve dev scan roots under `home`: probe conventional directories first,
+/// fall back to `home` itself.
+fn dev_scan_roots(home: &Path) -> Vec<(PathBuf, u32)> {
     let conventional = ["dev", "code", "src", "projects", "repos", "workspace"];
     // Also check Documents/GitHub (common for GitHub Desktop users)
     let extra = ["Documents/GitHub"];
@@ -64,8 +72,8 @@ fn dev_scan_roots() -> Vec<(PathBuf, u32)> {
     }
 
     if roots.is_empty() {
-        // Fallback: scan $HOME with depth 3, skip irrelevant subdirs
-        roots.push((home, 3));
+        // Fallback: scan `home` itself with depth 3, skip irrelevant subdirs
+        roots.push((home.to_path_buf(), 3));
     }
     roots
 }
@@ -95,9 +103,12 @@ fn should_skip_dev_dir(path: &Path, home: &Path) -> bool {
 /// Scan for cargo target/ directories (with Cargo.toml sibling)
 /// and node_modules/ directories (with package.json sibling).
 pub fn scan_dev_caches(counter: &mut u32) -> Vec<ScanFinding> {
+    scan_dev_caches_in(&home_dir(), counter)
+}
+
+fn scan_dev_caches_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
     let mut findings = Vec::new();
-    let roots = dev_scan_roots();
-    let home = home_dir();
+    let roots = dev_scan_roots(home);
 
     for (root, max_depth) in &roots {
         let walker = ignore::WalkBuilder::new(root)
@@ -112,8 +123,8 @@ pub fn scan_dev_caches(counter: &mut u32) -> Vec<ScanFinding> {
         for entry in walker.flatten() {
             let path = entry.path();
 
-            // When scanning $HOME, skip irrelevant top-level dirs
-            if *root == home && should_skip_dev_dir(path, &home) {
+            // When scanning the home root itself, skip irrelevant top-level dirs
+            if root.as_path() == home && should_skip_dev_dir(path, home) {
                 continue;
             }
 
@@ -182,7 +193,10 @@ pub fn scan_dev_caches(counter: &mut u32) -> Vec<ScanFinding> {
 
 /// Scan app cache directories: ~/Library/Caches, ~/.cache, ~/.npm, ~/.cargo/registry.
 pub fn scan_app_caches(counter: &mut u32) -> Vec<ScanFinding> {
-    let home = home_dir();
+    scan_app_caches_in(&home_dir(), counter)
+}
+
+fn scan_app_caches_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
     let cache_dirs = [
         home.join("Library/Caches"),
         home.join(".cache"),
@@ -249,7 +263,11 @@ pub fn scan_app_caches(counter: &mut u32) -> Vec<ScanFinding> {
 
 /// Scan Xcode DerivedData.
 pub fn scan_xcode_derived(counter: &mut u32) -> Vec<ScanFinding> {
-    let derived_data = home_dir().join("Library/Developer/Xcode/DerivedData");
+    scan_xcode_derived_in(&home_dir(), counter)
+}
+
+fn scan_xcode_derived_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
+    let derived_data = home.join("Library/Developer/Xcode/DerivedData");
     let mut findings = Vec::new();
 
     if !derived_data.is_dir() {
@@ -286,7 +304,11 @@ pub fn scan_xcode_derived(counter: &mut u32) -> Vec<ScanFinding> {
 
 /// Scan ~/Downloads for files older than 30 days and >10MB.
 pub fn scan_stale_downloads(counter: &mut u32) -> Vec<ScanFinding> {
-    let downloads = home_dir().join("Downloads");
+    scan_stale_downloads_in(&home_dir(), counter)
+}
+
+fn scan_stale_downloads_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
+    let downloads = home.join("Downloads");
     let mut findings = Vec::new();
 
     if !downloads.is_dir() {
@@ -340,7 +362,10 @@ pub fn scan_stale_downloads(counter: &mut u32) -> Vec<ScanFinding> {
 
 /// Scan ~/Downloads, ~/Desktop, ~/Documents for files >100MB.
 pub fn scan_large_user_files(counter: &mut u32) -> Vec<ScanFinding> {
-    let home = home_dir();
+    scan_large_user_files_in(&home_dir(), counter)
+}
+
+fn scan_large_user_files_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
     let dirs = [
         home.join("Downloads"),
         home.join("Desktop"),
@@ -397,19 +422,19 @@ pub fn scan_large_user_files(counter: &mut u32) -> Vec<ScanFinding> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serial_test::serial;
     use std::fs;
     use tempfile::TempDir;
 
-    // These tests mutate the process-global `HOME` env var (the scanners
-    // resolve their roots via `home_dir()` reading `$HOME`). Rust runs tests
-    // in parallel by default, so without serialization a sibling test can
-    // clobber `HOME` mid-scan — making `scan_dev_caches` walk the wrong root
-    // and find nothing (issue #462: intermittent "should find cargo target/"
-    // failure on CI). `#[serial]` forces them to run one at a time.
+    // These tests inject their TempDir as the scan root via the `*_in`
+    // variants — no `$HOME` mutation, no serialization requirement. The old
+    // versions set the process-global `HOME` under `#[serial]` (issue #462),
+    // but that still flaked on CI: `serial_test` only serializes tests inside
+    // its own group, and env-touching tests in the OTHER serialization domain
+    // (the config/provider `env_lock` mutex) could clobber `HOME` mid-scan.
+    // Injecting the root removes the shared global state instead of trying to
+    // lock it — the race is gone by construction.
 
     #[test]
-    #[serial]
     fn test_dev_cache_finds_target_with_cargo_toml() {
         let tmp = TempDir::new().unwrap();
         let project = tmp.path().join("myproject");
@@ -419,18 +444,34 @@ mod tests {
         let data = vec![0u8; 11_000_000];
         fs::write(project.join("target/debug/big.o"), &data).unwrap();
 
-        std::env::set_var("HOME", tmp.path());
         let mut counter = 0;
-        let findings = scan_dev_caches(&mut counter);
+        let findings = scan_dev_caches_in(tmp.path(), &mut counter);
         assert!(!findings.is_empty(), "should find cargo target/");
         assert_eq!(findings[0].finding_type, "dev_cache");
         assert!(findings[0].path.contains("target"));
         assert!(findings[0].size_bytes >= 11_000_000);
-        std::env::remove_var("HOME");
     }
 
     #[test]
-    #[serial]
+    fn test_dev_cache_scans_conventional_root() {
+        // A conventional dev dir (~/dev) present under the injected root must
+        // be preferred over the home-fallback walk (the non-fallback branch of
+        // `dev_scan_roots`).
+        let tmp = TempDir::new().unwrap();
+        let project = tmp.path().join("dev/myproject");
+        fs::create_dir_all(project.join("target")).unwrap();
+        fs::write(project.join("Cargo.toml"), "[package]\nname = \"test\"").unwrap();
+        let data = vec![0u8; 11_000_000];
+        fs::write(project.join("target/big.o"), &data).unwrap();
+
+        let mut counter = 0;
+        let findings = scan_dev_caches_in(tmp.path(), &mut counter);
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].path.contains("dev"));
+        assert!(findings[0].path.contains("target"));
+    }
+
+    #[test]
     fn test_dev_cache_ignores_target_without_cargo_toml() {
         let tmp = TempDir::new().unwrap();
         let project = tmp.path().join("notaproject");
@@ -439,18 +480,15 @@ mod tests {
         fs::write(project.join("target/big.o"), &data).unwrap();
         // No Cargo.toml
 
-        std::env::set_var("HOME", tmp.path());
         let mut counter = 0;
-        let findings = scan_dev_caches(&mut counter);
+        let findings = scan_dev_caches_in(tmp.path(), &mut counter);
         assert!(
             findings.is_empty(),
             "should not find target/ without Cargo.toml"
         );
-        std::env::remove_var("HOME");
     }
 
     #[test]
-    #[serial]
     fn test_stale_downloads_respects_mtime() {
         let tmp = TempDir::new().unwrap();
         let downloads = tmp.path().join("Downloads");
@@ -460,15 +498,12 @@ mod tests {
         let data = vec![0u8; 11_000_000];
         fs::write(downloads.join("fresh.zip"), &data).unwrap();
 
-        std::env::set_var("HOME", tmp.path());
         let mut counter = 0;
-        let findings = scan_stale_downloads(&mut counter);
+        let findings = scan_stale_downloads_in(tmp.path(), &mut counter);
         assert!(findings.is_empty(), "fresh file should not be flagged");
-        std::env::remove_var("HOME");
     }
 
     #[test]
-    #[serial]
     fn test_large_user_files() {
         let tmp = TempDir::new().unwrap();
         let desktop = tmp.path().join("Desktop");
@@ -482,26 +517,21 @@ mod tests {
         let small = vec![0u8; 50_000_000];
         fs::write(desktop.join("medium.zip"), &small).unwrap();
 
-        std::env::set_var("HOME", tmp.path());
         let mut counter = 0;
-        let findings = scan_large_user_files(&mut counter);
+        let findings = scan_large_user_files_in(tmp.path(), &mut counter);
         assert_eq!(findings.len(), 1);
         assert!(findings[0].path.contains("huge.iso"));
         assert!(findings[0].size_bytes >= 101_000_000);
-        std::env::remove_var("HOME");
     }
 
     #[test]
-    #[serial]
     fn test_scan_empty_dir() {
         let tmp = TempDir::new().unwrap();
-        std::env::set_var("HOME", tmp.path());
         let mut counter = 0;
-        assert!(scan_dev_caches(&mut counter).is_empty());
-        assert!(scan_app_caches(&mut counter).is_empty());
-        assert!(scan_xcode_derived(&mut counter).is_empty());
-        assert!(scan_stale_downloads(&mut counter).is_empty());
-        assert!(scan_large_user_files(&mut counter).is_empty());
-        std::env::remove_var("HOME");
+        assert!(scan_dev_caches_in(tmp.path(), &mut counter).is_empty());
+        assert!(scan_app_caches_in(tmp.path(), &mut counter).is_empty());
+        assert!(scan_xcode_derived_in(tmp.path(), &mut counter).is_empty());
+        assert!(scan_stale_downloads_in(tmp.path(), &mut counter).is_empty());
+        assert!(scan_large_user_files_in(tmp.path(), &mut counter).is_empty());
     }
 }

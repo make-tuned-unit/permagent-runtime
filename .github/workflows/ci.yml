@@ -124,6 +124,66 @@ jobs:
       - name: Doc tests
         run: cargo test --locked --workspace --doc
 
+  # The command-center UI is what actually ships inside the .app — before this
+  # job existed, a broken frontend (type error, build failure, red vitest)
+  # could merge green on Rust-only CI and only surface in a release build.
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui/command-center
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/command-center/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      # `vite build` directly (not `npm run build`, which would re-run tsc —
+      # the Typecheck step above already gated it).
+      - name: Build
+        run: npx vite build
+      - name: Tests
+        run: npm test
+
+  # The desktop shell crate (daemon handshake, PTY, browser bridge, updater
+  # wiring) is deliberately EXCLUDED from the cargo workspace (root Cargo.toml
+  # `exclude`) so workspace builds don't drag in Tauri deps — which meant no CI
+  # job compiled it at all; release day would have been its first compile.
+  # macos-15 matches the release.yml runner, so this is the honest environment.
+  # (ui/goose2/src-tauri stays unchecked: legacy, not shipped.)
+  tauri-shell:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ui/desktop/src-tauri
+      - name: Format
+        run: cargo fmt --check --manifest-path ui/desktop/src-tauri/Cargo.toml
+      # tauri-build validates at build-script time that frontendDist, every
+      # externalBin (sidecar), and every macOS.frameworks entry EXIST — a bare
+      # `cargo check` fails without them. Empty placeholders satisfy the
+      # existence checks; the real artifacts are built by release.yml (and the
+      # real UI build is gated by the frontend job).
+      - name: Stage placeholder bundle inputs
+        run: |
+          mkdir -p ui/command-center/dist
+          cd ui/desktop/src-tauri
+          mkdir -p binaries resources/mcp-runtime resources/whisper
+          touch binaries/permagentd-aarch64-apple-darwin binaries/permagentd-x86_64-apple-darwin
+          chmod +x binaries/permagentd-aarch64-apple-darwin binaries/permagentd-x86_64-apple-darwin
+          touch binaries/libsherpa-onnx-c-api.dylib binaries/libonnxruntime.1.24.4.dylib binaries/libonnxruntime.dylib
+      - name: Check shell crate
+        run: cargo check --locked --manifest-path ui/desktop/src-tauri/Cargo.toml
+
   lint:
     runs-on: ubuntu-latest
     steps:

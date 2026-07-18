@@ -788,6 +788,10 @@ async fn stop_agent(
     Json(payload): Json<StopAgentRequest>,
 ) -> Result<StatusCode, ErrorResponse> {
     let session_id = payload.session_id;
+    // Intentional lifecycle teardown (assessed in the re-enable-gate epic,
+    // part B): stopping the agent is the explicit purpose of this endpoint,
+    // so cancelling a live turn's registered token here is the desired
+    // behavior, not an incidental kill — no busy-guard.
     state
         .agent_manager
         .remove_session(&session_id)
@@ -805,7 +809,13 @@ async fn restart_agent_internal(
     session_id: &str,
     session: &Session,
 ) -> Result<Vec<ExtensionLoadResult>, ErrorResponse> {
-    // Remove existing agent (ignore error if not found)
+    // Remove existing agent (ignore error if not found).
+    //
+    // Intentional lifecycle teardown (assessed in the re-enable-gate epic,
+    // part B): both callers — POST /agent/restart and POST
+    // /agent/update_working_dir — are explicit user actions whose contract IS
+    // "tear down and rebuild this agent", so interrupting a live turn is the
+    // requested behavior — no busy-guard.
     let _ = state.agent_manager.remove_session(session_id).await;
 
     let agent = state

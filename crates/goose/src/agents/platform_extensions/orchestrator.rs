@@ -1242,7 +1242,34 @@ impl OrchestratorClient {
             return Err(format!("'{}' is not a directory", working_dir));
         }
 
-        let mode = GooseMode::default();
+        // Sub-sessions INHERIT the parent agent's mode (re-enable-gate epic
+        // part B): hardcoding `GooseMode::default()` here silently widened an
+        // "ask before every tool call" parent to full-auto in delegated work.
+        // The parent's LIVE agent mode is the truest signal — it reflects both
+        // the session row and any runtime forcing (a headless/scheduled parent
+        // running Auto correctly yields an Auto sub-session). Fall back to the
+        // parent's persisted session row, then the context snapshot.
+        let manager = self.get_agent_manager().await?;
+        let parent = self.context.session.as_ref();
+        let live_parent_mode = match parent {
+            Some(p) => manager.cached_agent_mode(&p.id).await,
+            None => None,
+        };
+        let db_parent_mode = match parent {
+            Some(p) => self
+                .context
+                .session_manager
+                .get_session(&p.id, false)
+                .await
+                .ok()
+                .map(|s| s.goose_mode),
+            None => None,
+        };
+        let mode = inherited_sub_session_mode(
+            live_parent_mode,
+            db_parent_mode,
+            parent.map(|p| p.goose_mode),
+        );
 
         let session = self
             .context
@@ -1251,7 +1278,6 @@ impl OrchestratorClient {
             .await
             .map_err(|e| format!("Failed to create session: {}", e))?;
 
-        let manager = self.get_agent_manager().await?;
         let agent = manager
             .get_or_create_agent(session.id.clone())
             .await
@@ -2421,6 +2447,26 @@ fn extract_string(args: &JsonObject, key: &str) -> Result<String, String> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| format!("Missing or invalid '{}'", key))
+}
+
+/// Resolve the mode a new orchestrator sub-session inherits from its parent
+/// (re-enable-gate epic part B — a sub-session must never silently widen a
+/// parent's approve/smart_approve gating to Auto).
+///
+/// Precedence: the parent's LIVE agent mode (reflects runtime forcing — a
+/// headless/scheduled parent running Auto yields an Auto sub-session) → the
+/// parent's persisted session row → the context snapshot taken when the
+/// extension was built → `GooseMode::default()` only when there is no parent
+/// signal at all.
+fn inherited_sub_session_mode(
+    live_parent_mode: Option<GooseMode>,
+    db_parent_mode: Option<GooseMode>,
+    snapshot_parent_mode: Option<GooseMode>,
+) -> GooseMode {
+    live_parent_mode
+        .or(db_parent_mode)
+        .or(snapshot_parent_mode)
+        .unwrap_or_default()
 }
 
 /// Parse an LLM response into proposed goals with resilience.
@@ -4478,6 +4524,41 @@ async fn try_complete_dead_worker_from_worktree(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── inherited_sub_session_mode (re-enable-gate epic part B) ─────────────
+
+    #[test]
+    fn sub_session_mode_inheritance_precedence() {
+        // Live agent mode wins — runtime forcing (e.g. headless→Auto) included.
+        assert_eq!(
+            inherited_sub_session_mode(
+                Some(GooseMode::Auto),
+                Some(GooseMode::Approve),
+                Some(GooseMode::Approve)
+            ),
+            GooseMode::Auto
+        );
+        // An approve parent must never widen to Auto in delegated work.
+        assert_eq!(
+            inherited_sub_session_mode(Some(GooseMode::Approve), None, None),
+            GooseMode::Approve
+        );
+        // No live agent cached → the persisted session row decides.
+        assert_eq!(
+            inherited_sub_session_mode(None, Some(GooseMode::SmartApprove), Some(GooseMode::Chat)),
+            GooseMode::SmartApprove
+        );
+        // DB unreadable → the context snapshot still preserves the gate.
+        assert_eq!(
+            inherited_sub_session_mode(None, None, Some(GooseMode::Approve)),
+            GooseMode::Approve
+        );
+        // No parent signal at all → default.
+        assert_eq!(
+            inherited_sub_session_mode(None, None, None),
+            GooseMode::default()
+        );
+    }
 
     // ── default_completion_checks (#456 seeding heuristic) ──────────────────
 

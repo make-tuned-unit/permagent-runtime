@@ -212,6 +212,19 @@ pub struct PermagentEvent {
     pub event_type: PermagentEventType,
     pub timestamp: DateTime<Utc>,
     pub payload: Value,
+    /// Server-side replay marker (#770 follow-up). `Some(true)` ONLY on frames
+    /// a WebSocket handler re-delivers from its replay buffer on (re)connect;
+    /// `None` everywhere else, which serializes to *no field at all* — live
+    /// frames stay byte-identical to the pre-marker wire, and older clients
+    /// simply ignore the extra key on replayed ones.
+    ///
+    /// Never set by emitters: replayedness is a property of one *delivery*,
+    /// not of the event (the same buffered event replays to a reconnecting
+    /// client while another client received it live), so [`emit`] traffic and
+    /// the buffer always carry `None` and the `/events` route stamps its own
+    /// clone per delivery via [`PermagentEvent::into_replayed`].
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub replayed: Option<bool>,
 }
 
 impl PermagentEvent {
@@ -222,7 +235,16 @@ impl PermagentEvent {
             event_type,
             timestamp: Utc::now(),
             payload,
+            replayed: None,
         }
+    }
+
+    /// Stamp this delivery as a buffer replay (see the `replayed` field doc).
+    /// Consumes and returns the event so replay loops can mark their owned
+    /// clone inline without touching the buffered original.
+    pub fn into_replayed(mut self) -> Self {
+        self.replayed = Some(true);
+        self
     }
 }
 
@@ -739,6 +761,50 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"type\":\"daemon_started\""));
         assert!(json.contains("\"version\":\"0.1.0\""));
+    }
+
+    /// The replay-marker wire contract (#770 follow-up): a plain (emitted /
+    /// live) event serializes with NO `replayed` key at all — byte-compatible
+    /// with the pre-marker wire — while a delivery stamped via
+    /// `into_replayed` carries `"replayed":true`. Deserializing legacy JSON
+    /// without the field yields `None` (older daemons / stored frames).
+    #[test]
+    fn replay_marker_wire_contract() {
+        let event = daemon_started("0.1.0", "/tmp/config.yaml", "/tmp/spectral.db");
+        assert_eq!(event.replayed, None, "constructors must never pre-mark");
+        let live_json = serde_json::to_string(&event).unwrap();
+        assert!(
+            !live_json.contains("replayed"),
+            "live frame must omit the marker entirely: {live_json}"
+        );
+
+        let marked = event.clone().into_replayed();
+        let replay_json = serde_json::to_string(&marked).unwrap();
+        assert!(
+            replay_json.contains("\"replayed\":true"),
+            "replayed delivery must carry the marker: {replay_json}"
+        );
+
+        // Legacy frames (no field) still deserialize; the marker reads None.
+        let legacy: PermagentEvent = serde_json::from_str(&live_json).unwrap();
+        assert_eq!(legacy.replayed, None);
+        let roundtrip: PermagentEvent = serde_json::from_str(&replay_json).unwrap();
+        assert_eq!(roundtrip.replayed, Some(true));
+    }
+
+    /// The buffer stores what `emit` produced — never a pre-marked frame — so
+    /// every subscriber's replay decision is its own (marking is per delivery,
+    /// in the route, not global state).
+    #[test]
+    fn buffer_never_stores_marked_frames() {
+        let event = daemon_started("0.1.0", "/test-replay-buf", "/test-replay-buf");
+        let id = event.id.clone();
+        emit(event);
+        let stored = buffered_events()
+            .into_iter()
+            .find(|e| e.id == id)
+            .expect("emitted event present in buffer");
+        assert_eq!(stored.replayed, None);
     }
 
     #[test]

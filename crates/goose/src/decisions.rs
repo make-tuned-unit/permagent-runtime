@@ -29,6 +29,39 @@ const VALID_ACTORS: &[&str] = &[ACTOR_JESSE, ACTOR_HENRY, ACTOR_SYSTEM];
 // captured as Brain training by `decision_inbox::learn` (edit-as-training).
 const VALID_ANSWERS: &[&str] = &["approve", "reject", "choice", "input", "edit"];
 
+// ── Inbox-service process flag ──────────────────────────────────────────────
+
+/// Whether THIS process serves the Decision Inbox answer path (the daemon's
+/// `routes/decisions.rs` over the process-wide `AgentManager`).
+///
+/// Filing a `tool_approval` decision is only honest when answering it can
+/// reach the parked waiter — and the answer path resolves agents through the
+/// AgentManager of the process that serves the routes. A CLI session, an
+/// example binary, or any other out-of-process population parks in a process
+/// the answer path can never reach; a card filed from there is undeliverable
+/// by construction (a zombie the user can "answer" to no effect). Those
+/// populations keep their own answer surface (e.g. the CLI terminal prompt)
+/// and must not file.
+static PROCESS_SERVES_INBOX: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Mark this process as the one serving the Decision Inbox answer path.
+/// Called exactly once by the daemon at `AppState` assembly (goose-server),
+/// right where the decision routes and the shared `AgentManager` are wired.
+///
+/// Process-wide and irreversible. NEVER call this from `permagent` lib unit
+/// tests: they share one test binary, and flipping the flag would poison the
+/// flag-unset assertions (the CLI-population tests). Integration test binaries
+/// (`tests/*.rs`) each get their own process and may set it freely.
+pub fn mark_process_serves_inbox() {
+    PROCESS_SERVES_INBOX.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// See [`mark_process_serves_inbox`]. Gates `tool_approval` decision filing.
+pub fn process_serves_inbox() -> bool {
+    PROCESS_SERVES_INBOX.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 // ── Typed payloads (S2) ─────────────────────────────────────────────────────
 
 /// Payload for `kind='approve_review'` — a goal finished work and awaits
@@ -184,13 +217,16 @@ fn validate_enrichment_payload(p: &EnrichmentProposalPayload) -> Result<(), Stri
 }
 
 /// Payload for `kind='tool_approval'` — an agent turn parked on a needs-approval
-/// tool call (GOOSE_MODE `approve`/`smart_approve`). The turn's stream is
-/// suspended on a `ToolConfirmationRouter` oneshot; answering this decision
-/// approve/reject delivers the confirmation back to that exact parked await
-/// (see `crates/goose-server/src/routes/decisions.rs::deliver_tool_confirmation`),
+/// tool call (GOOSE_MODE `approve`/`smart_approve`). The park lives either on a
+/// `ToolConfirmationRouter` oneshot (core tool loop) or inside an
+/// ActionRequired-routing provider's own pending map (claude-code / ACP
+/// subprocess `can_use_tool` parks). Answering this decision approve/reject
+/// delivers the confirmation back to that exact parked await through
+/// `Agent::handle_confirmation` — provider first, router fallback — (see
+/// `crates/goose-server/src/routes/decisions.rs::deliver_tool_confirmation`),
 /// so approve runs the tool and reject skips it. `session_id` + `request_id`
 /// are the routing keys: `session_id` selects the per-session Agent, `request_id`
-/// is the router key the reply stream registered.
+/// is the key the parked waiter registered.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolApprovalPayload {
