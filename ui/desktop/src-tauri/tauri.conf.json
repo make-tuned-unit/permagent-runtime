@@ -48,9 +48,9 @@
         "binaries/libonnxruntime.1.24.4.dylib",
         "binaries/libonnxruntime.dylib"
       ],
-      "minimumSystemVersion": "10.15",
+      "minimumSystemVersion": "11.0",
       "signingIdentity": null,
-      "entitlements": null
+      "entitlements": "Entitlements.plist"
     },
     "externalBin": [
       "binaries/permagentd"
