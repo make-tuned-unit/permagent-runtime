@@ -13,6 +13,7 @@ import { ProvidersSection } from './ProvidersSection';
 import { SearchToolsSection } from './SearchToolsSection';
 import { usePersona } from './useSettings';
 import { resolveSettingsSection } from './sections';
+import { trustEnvOverrideNotice } from './autonomy';
 import { VoicePicker } from '../voice/VoicePicker';
 import { H1, Section, Row, TextInput, Chip, Toggle, Slider, Kbd, SaveButton } from './atoms';
 
@@ -283,11 +284,12 @@ function MemoryPanel() {
   );
 }
 
-// Only `auto` and `chat` are wired end-to-end in this app. `approve` and
-// `smart_approve` yield a tool-confirmation the command-center has no surface
-// to answer (crates/goose/src/agents/tool_execution.rs), so the turn hangs on
-// an unbounded await. Block NEW selection of those two; still surface them if a
-// user is already there, so they can switch back to a safe mode.
+// Only `auto` and `chat` are selectable here today. Per-tool confirmations
+// now route to the Decision Inbox (#760) and parked turns are answerable
+// there — but NEW selection of `approve`/`smart_approve` stays blocked until
+// the trust-chain re-enable gate (eviction ordering, sub-session mode
+// inheritance, effective-mode visibility) fully lands. Still surface them if
+// a user is already there (e.g. via env or old YAML), so they can switch back.
 const SELECTABLE_TRUST_MODES = new Set(['auto', 'chat']);
 
 function AutonomyPanel() {
@@ -295,6 +297,10 @@ function AutonomyPanel() {
   // Trust level is REAL (2026-07-10 audit): it reads/writes the daemon's
   // GOOSE_MODE, which gates tool-call approval in the agent loop.
   const [trust, setTrust] = useState<string | null>(null);
+  // What the daemon ACTUALLY runs (env var overrides YAML). Diverges from
+  // `trust` when GOOSE_MODE is set in the daemon's environment — the buttons
+  // below write YAML, which the env silently wins over.
+  const [effectiveTrust, setEffectiveTrust] = useState<string | null>(null);
   const [trustError, setTrustError] = useState<string | null>(null);
   useEffect(() => {
     api.getConfig().then(cfg => {
@@ -305,6 +311,8 @@ function AutonomyPanel() {
       // selectable). Showing `smart_approve` as "active" used to lure users into
       // clicking it and hanging their turn.
       setTrust(typeof mode === 'string' ? mode : 'auto');
+      const eff = cfg.effective_goose_mode;
+      setEffectiveTrust(typeof eff === 'string' && eff !== '' ? eff : null);
     }).catch(() => setTrust('auto'));
   }, []);
   const saveTrust = (mode: string) => {
@@ -338,6 +346,18 @@ function AutonomyPanel() {
         {trustError && (
           <div style={{ fontSize: 12, color: colors.danger, padding: '4px 0 8px' }}>{trustError}</div>
         )}
+        {(() => {
+          // Env-override honesty (re-enable-gate epic part B): with GOOSE_MODE
+          // set in the daemon's environment, these buttons write YAML the env
+          // silently wins over. Say so instead of highlighting a mode the
+          // daemon isn't running.
+          const envNotice = trustEnvOverrideNotice(effectiveTrust, trust);
+          return envNotice ? (
+            <div style={{ marginBottom: 10, padding: '10px 14px', borderRadius: 10, background: `${colors.warning}1A`, border: `1px solid ${colors.warning}55`, color: colors.text, fontSize: 12, lineHeight: 1.5 }}>
+              {envNotice}
+            </div>
+          ) : null;
+        })()}
         <Row label="Trust level" hint="How tool calls are approved.">
           <div style={{ display: 'flex', gap: 6 }}>
             {trustLevels.map(opt => {
@@ -345,7 +365,7 @@ function AutonomyPanel() {
               const locked = !SELECTABLE_TRUST_MODES.has(opt.v);
               return (
                 <button key={opt.v} disabled={locked} onClick={() => saveTrust(opt.v)}
-                  title={locked ? "Per-tool approval isn't available in this app yet" : undefined}
+                  title={locked ? 'Locked while the approval pipeline is hardened — approval prompts route to the Decision Inbox' : undefined}
                   style={{
                     padding: 12, borderRadius: 10, cursor: locked ? 'not-allowed' : 'pointer',
                     background: current ? colors.cyanSoft : colors.bgDeeper,
@@ -366,14 +386,18 @@ function AutonomyPanel() {
           </div>
         </Row>
         <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 10, lineHeight: 1.5 }}>
-          Per-tool approval (Ask every time / Smart approve) isn't available in
-          this app yet — it's coming soon. For now, pick Automatic or Chat only.
+          Per-tool approval (Ask every time / Smart approve) is temporarily
+          locked here while the approval pipeline is hardened. Approval prompts
+          already land in the <strong>Decision Inbox</strong> on your Dashboard —
+          these modes become selectable once the re-enable gate ships.
         </div>
         {trust !== null && !SELECTABLE_TRUST_MODES.has(trust) && (
           <div style={{ marginTop: 10, padding: '10px 14px', borderRadius: 10, background: `${colors.warning}1A`, border: `1px solid ${colors.warning}55`, color: colors.text, fontSize: 12, lineHeight: 1.5 }}>
-            You're currently on a per-tool-approval mode that can stall the agent
-            in this app, because there's no way to answer the approval prompt here
-            yet. Switch to <strong>Automatic</strong> or <strong>Chat only</strong> above to recover.
+            You're on a per-tool-approval mode: tool calls pause until you
+            approve them in the <strong>Decision Inbox</strong> on your
+            Dashboard. If a turn seems stuck, answer the pending approval
+            there. Prefer not to approve per-tool? Switch to{' '}
+            <strong>Automatic</strong> or <strong>Chat only</strong> above.
           </div>
         )}
       </Section>

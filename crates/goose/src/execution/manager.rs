@@ -26,6 +26,10 @@ pub struct AgentManager {
     default_mode: GooseMode,
     cancel_tokens: Arc<RwLock<HashMap<String, CancellationToken>>>,
     persona: tokio::sync::RwLock<Option<crate::config::agent_identity::SharedPersona>>,
+    /// Configured session cap. The LruCache capacity normally equals this, but
+    /// is temporarily grown when every cached agent has a live turn (see
+    /// [`Self::evict_for_capacity`]) — so keep the configured value separately.
+    max_sessions: usize,
 }
 
 impl AgentManager {
@@ -48,6 +52,7 @@ impl AgentManager {
             default_mode,
             cancel_tokens: Arc::new(RwLock::new(HashMap::new())),
             persona: tokio::sync::RwLock::new(None),
+            max_sessions: capacity.get(),
         };
 
         Ok(manager)
@@ -156,13 +161,114 @@ impl AgentManager {
             }
         }
 
+        // Snapshot busy session ids BEFORE taking the sessions write lock so we
+        // never hold `sessions` and `cancel_tokens` at once (lock-order
+        // safety). The tiny TOCTOU window (a turn registering between snapshot
+        // and eviction) is benign next to the pre-existing behavior this
+        // replaces: unconditional silent eviction of the LRU tail.
+        let busy_ids: std::collections::HashSet<String> =
+            self.cancel_tokens.read().await.keys().cloned().collect();
         let mut sessions = self.sessions.write().await;
         if let Some(existing) = sessions.get(&session_id) {
             Ok(Arc::clone(existing))
         } else {
+            Self::evict_for_capacity(&mut sessions, self.max_sessions, &busy_ids).await;
             sessions.put(session_id, agent.clone());
             Ok(agent)
         }
+    }
+
+    /// Make room for one more session without silently killing a live turn.
+    ///
+    /// A plain `LruCache::put` at capacity evicts the LRU tail regardless of
+    /// whether that agent has a running or parked turn — orphaning the turn on
+    /// its unreachable `Arc`, so a later Decision-Inbox answer would reach a
+    /// freshly recreated agent with no waiter. Instead: evict the
+    /// least-recently-used entries that are NOT busy (no registered cancel
+    /// token, no live confirmation waiter) until the configured cap is
+    /// respected. If every entry is busy, grow the cache past the cap with a
+    /// warning — never kill a live turn silently. The capacity shrinks back to
+    /// the configured cap once occupancy allows.
+    ///
+    /// Known gap: an interactive turn that is mid-stream but not parked on a
+    /// confirmation registers neither signal (the server-side event bus is not
+    /// visible from this crate), so it is only protected by its own recency in
+    /// the LRU order until it parks.
+    async fn evict_for_capacity(
+        sessions: &mut LruCache<String, Arc<Agent>>,
+        max_sessions: usize,
+        busy_ids: &std::collections::HashSet<String>,
+    ) {
+        let occupancy_after_insert = sessions.len() + 1;
+        if occupancy_after_insert > max_sessions {
+            // How many entries must go to respect the configured cap.
+            let mut excess = occupancy_after_insert - max_sessions;
+            let mut victims: Vec<String> = Vec::new();
+            // `iter()` walks MRU→LRU; `.rev()` walks LRU-first so the stalest
+            // idle sessions go first.
+            for (id, agent) in sessions.iter().rev() {
+                if excess == 0 {
+                    break;
+                }
+                let busy =
+                    busy_ids.contains(id) || agent.tool_confirmation_router.has_live_waiter().await;
+                if !busy {
+                    victims.push(id.clone());
+                    excess -= 1;
+                }
+            }
+            for id in &victims {
+                sessions.pop(id);
+                info!(
+                    session_id = %id,
+                    "Evicted idle LRU agent to stay within the session cap"
+                );
+            }
+            if excess > 0 {
+                // Every remaining entry has a live turn: grow past the cap
+                // rather than orphan one. Growth is minimal (just enough for
+                // this insert) and undone by the shrink branch below once
+                // occupancy drops back under the cap.
+                let new_cap = sessions.len() + 1;
+                if new_cap > sessions.cap().get() {
+                    if let Some(cap) = NonZeroUsize::new(new_cap) {
+                        sessions.resize(cap);
+                    }
+                }
+                tracing::warn!(
+                    busy_sessions = sessions.len(),
+                    max_sessions,
+                    "All cached agents have live turns; growing past the session cap instead of evicting a busy agent"
+                );
+            }
+        } else if sessions.cap().get() > max_sessions {
+            // Occupancy fits the configured cap again — shrink a previously
+            // grown cache back down. Never evicts: len + 1 <= max_sessions.
+            if let Some(cap) = NonZeroUsize::new(max_sessions) {
+                sessions.resize(cap);
+            }
+        }
+    }
+
+    /// True when the cached agent for this session is parked on a live
+    /// tool-confirmation waiter (a turn is waiting for a Decision-Inbox
+    /// answer). Peeks the cache without promoting the entry in LRU order and
+    /// without creating an agent.
+    pub async fn session_has_pending_confirmation(&self, session_id: &str) -> bool {
+        let agent = self.sessions.read().await.peek(session_id).cloned();
+        match agent {
+            Some(agent) => agent.tool_confirmation_router.has_live_waiter().await,
+            None => false,
+        }
+    }
+
+    /// Peek the live [`GooseMode`] of the cached agent for `session_id`
+    /// without creating one or promoting it in LRU order. `None` when the
+    /// session has no cached agent. Used by orchestrator sub-session creation
+    /// to inherit the parent's effective mode.
+    pub async fn cached_agent_mode(&self, session_id: &str) -> Option<GooseMode> {
+        let agent = self.sessions.read().await.peek(session_id).cloned()?;
+        Some(agent.goose_mode().await)
     }
 
     pub async fn remove_session(&self, session_id: &str) -> Result<()> {
@@ -245,12 +351,16 @@ mod tests {
     use super::AgentManager;
 
     async fn create_test_manager(temp_dir: &TempDir) -> AgentManager {
+        create_test_manager_with_cap(temp_dir, 100).await
+    }
+
+    async fn create_test_manager_with_cap(temp_dir: &TempDir, cap: usize) -> AgentManager {
         let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
         let schedule_path = temp_dir.path().join("schedule.json");
         AgentManager::new(
             session_manager,
             schedule_path,
-            Some(100),
+            Some(cap),
             GooseMode::default(),
         )
         .await
@@ -459,6 +569,173 @@ mod tests {
         let result = manager.remove_session(&session).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    // ── LRU busy-guard (re-enable-gate epic part B, finding 1b) ──
+    //
+    // The plain LruCache::put evicted the LRU tail even when that agent had a
+    // live turn (registered cancel token or parked confirmation waiter),
+    // orphaning the turn. These pin the guarded behavior: busy sessions are
+    // skipped, the next idle LRU entry goes instead, and when ALL are busy the
+    // cache grows past the cap rather than killing a live turn.
+
+    #[tokio::test]
+    async fn test_lru_eviction_skips_session_with_registered_request() {
+        use tokio_util::sync::CancellationToken;
+
+        let temp_dir = TempDir::new().unwrap();
+        let manager = create_test_manager_with_cap(&temp_dir, 3).await;
+
+        for id in ["s0", "s1", "s2"] {
+            manager.get_or_create_agent(id.to_string()).await.unwrap();
+        }
+        // s0 is the LRU tail AND has a live registered request (an
+        // orchestrator-driven turn). Eviction must skip it.
+        manager
+            .try_register_cancel_token("s0", CancellationToken::new())
+            .await
+            .unwrap();
+
+        manager.get_or_create_agent("s3".to_string()).await.unwrap();
+
+        assert!(
+            manager.has_session("s0").await,
+            "busy LRU-tail session must survive eviction"
+        );
+        assert!(
+            !manager.has_session("s1").await,
+            "the next idle LRU entry is evicted instead"
+        );
+        assert!(manager.has_session("s2").await);
+        assert!(manager.has_session("s3").await);
+        assert_eq!(manager.session_count().await, 3);
+
+        manager.unregister_cancel_token("s0").await;
+    }
+
+    #[tokio::test]
+    async fn test_lru_eviction_skips_session_parked_on_confirmation() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = create_test_manager_with_cap(&temp_dir, 2).await;
+
+        let parked = manager.get_or_create_agent("s0".to_string()).await.unwrap();
+        manager.get_or_create_agent("s1".to_string()).await.unwrap();
+
+        // Park a turn on s0: a live confirmation waiter (the Decision-Inbox
+        // answer will be delivered to THIS agent's router).
+        let _rx = parked
+            .tool_confirmation_router
+            .register("req-parked".to_string())
+            .await;
+
+        manager.get_or_create_agent("s2".to_string()).await.unwrap();
+
+        assert!(
+            manager.has_session("s0").await,
+            "session parked on a confirmation waiter must survive eviction"
+        );
+        assert!(
+            !manager.has_session("s1").await,
+            "the idle entry is evicted instead"
+        );
+        assert!(manager.has_session("s2").await);
+        assert_eq!(manager.session_count().await, 2);
+    }
+
+    #[tokio::test]
+    async fn test_lru_grows_past_cap_when_all_busy_then_recovers() {
+        use tokio_util::sync::CancellationToken;
+
+        let temp_dir = TempDir::new().unwrap();
+        let manager = create_test_manager_with_cap(&temp_dir, 2).await;
+
+        manager.get_or_create_agent("s0".to_string()).await.unwrap();
+        manager.get_or_create_agent("s1".to_string()).await.unwrap();
+        for id in ["s0", "s1"] {
+            manager
+                .try_register_cancel_token(id, CancellationToken::new())
+                .await
+                .unwrap();
+        }
+
+        // Every cached agent is busy: the cache must grow, not kill a turn.
+        manager.get_or_create_agent("s2".to_string()).await.unwrap();
+        assert!(manager.has_session("s0").await);
+        assert!(manager.has_session("s1").await);
+        assert!(manager.has_session("s2").await);
+        assert_eq!(
+            manager.session_count().await,
+            3,
+            "cache grows past the cap instead of evicting a busy agent"
+        );
+
+        // Turns finish: the next insert evicts idle entries back down to cap.
+        manager.unregister_cancel_token("s0").await;
+        manager.unregister_cancel_token("s1").await;
+        manager.get_or_create_agent("s3".to_string()).await.unwrap();
+        assert_eq!(
+            manager.session_count().await,
+            2,
+            "occupancy returns to the configured cap once turns are idle"
+        );
+        assert!(manager.has_session("s3").await);
+    }
+
+    #[tokio::test]
+    async fn test_session_has_pending_confirmation_probe() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = create_test_manager(&temp_dir).await;
+
+        let agent = manager.get_or_create_agent("s0".to_string()).await.unwrap();
+        assert!(!manager.session_has_pending_confirmation("s0").await);
+        assert!(
+            !manager.session_has_pending_confirmation("uncached").await,
+            "uncached session is not busy (and must not be created by the probe)"
+        );
+        assert!(!manager.has_session("uncached").await);
+
+        let rx = agent
+            .tool_confirmation_router
+            .register("req-1".to_string())
+            .await;
+        assert!(manager.session_has_pending_confirmation("s0").await);
+
+        drop(rx); // turn aborted — waiter is dead, probe must not pin the session
+        assert!(!manager.session_has_pending_confirmation("s0").await);
+    }
+
+    #[tokio::test]
+    async fn test_cached_agent_mode_peeks_without_creating() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = create_test_manager(&temp_dir).await;
+
+        let session = manager
+            .session_manager()
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "parent".into(),
+                crate::session::SessionType::User,
+                GooseMode::Approve,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            manager.cached_agent_mode(&session.id).await,
+            None,
+            "no agent cached yet — peek must not create one"
+        );
+        assert!(!manager.has_session(&session.id).await);
+
+        manager
+            .get_or_create_agent(session.id.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            manager.cached_agent_mode(&session.id).await,
+            Some(GooseMode::Approve),
+            "peek reports the live agent's mode"
+        );
     }
 
     #[test_case(GooseMode::Approve ; "approve")]
