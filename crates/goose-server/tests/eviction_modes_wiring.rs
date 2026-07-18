@@ -116,13 +116,15 @@ async fn eviction_ordering_and_effective_mode_wiring() {
         .await
         .unwrap();
 
-    session_reply(
+    let accepted_request_id = uuid::Uuid::new_v4().to_string();
+    let resp = session_reply(
         State(state.clone()),
         Path(session.id.clone()),
-        Json(reply_req(uuid::Uuid::new_v4().to_string())),
+        Json(reply_req(accepted_request_id.clone())),
     )
     .await
     .expect("reply is accepted; only the staleness sync is deferred");
+    assert_eq!(resp.0.request_id, accepted_request_id);
 
     assert!(
         manager.has_session(&session.id).await,
