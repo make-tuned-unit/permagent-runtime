@@ -328,9 +328,12 @@ interface CommandCenterStore {
   // --- In-app browser navigation (chat links, agent tour #353) ---
   pendingBrowserUrl: string | null;
   // Grow deep-link (2026-07-11): Projects → 'Grow this project' sets this, the
-  // Grow tab reads it to preselect the project.
+  // Grow tab reads it to preselect the project. GrowView consumes-then-clears
+  // via setOpenGrowForProject(null) (the pendingProjectNavigation pattern) so
+  // a one-shot deep link can't re-select that project on every later Grow visit.
   openGrowForProject: string | null;
   growProject: (projectId: string) => void;
+  setOpenGrowForProject: (id: string | null) => void;
   openInBrowser: (url: string) => void;
   clearPendingBrowserUrl: () => void;
 
@@ -1276,6 +1279,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   pendingBrowserUrl: null,
   openGrowForProject: null,
   growProject: (projectId) => { set({ openGrowForProject: projectId }); navigateToTool('grow'); },
+  setOpenGrowForProject: (id) => set({ openGrowForProject: id }),
   buildTerminalHidden: false,
   buildBrowserHidden: false,
   // Never allow both hidden: hiding one re-shows the other.

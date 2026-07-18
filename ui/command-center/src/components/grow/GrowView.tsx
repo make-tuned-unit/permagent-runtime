@@ -111,6 +111,7 @@ export function GrowView() {
   const setActivePanel = useCommandCenter((st) => st.setActivePanel);
   const sendMessage = useCommandCenter((st) => st.sendMessage);
   const openGrowForProject = useCommandCenter((st) => st.openGrowForProject);
+  const setOpenGrowForProject = useCommandCenter((st) => st.setOpenGrowForProject);
   const setPendingProjectNavigation = useCommandCenter((st) => st.setPendingProjectNavigation);
 
   const loadProjects = useCallback(() => {
@@ -158,12 +159,17 @@ export function GrowView() {
 
   const active = projects.find((p) => p.id === activeId) ?? null;
 
-  // Honor a cross-tab deep link (Projects → Grow this project).
+  // Honor a cross-tab deep link (Projects → Grow this project), then CLEAR it
+  // (the pendingProjectNavigation consume-then-clear pattern). Without the
+  // clear, one agent-driven grow open stuck in the store forever: every later
+  // manual Grow visit re-selected that project on remount, and a repeat
+  // open for the same project was a silent no-op (same value → no re-render).
   useEffect(() => {
     if (openGrowForProject) {
       setActiveId(openGrowForProject);
+      setOpenGrowForProject(null);
     }
-  }, [openGrowForProject]);
+  }, [openGrowForProject, setOpenGrowForProject]);
 
   // Real project context — Grow feels connected because it shows the project's
   // actual state (people, shipped work), not a blank canvas.
