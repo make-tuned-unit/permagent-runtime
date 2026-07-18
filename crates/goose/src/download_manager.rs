@@ -1,6 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tokio::io::AsyncWriteExt;
@@ -217,6 +217,11 @@ type DownloadMap = Arc<Mutex<HashMap<String, DownloadProgress>>>;
 
 pub struct DownloadManager {
     downloads: DownloadMap,
+    /// Destinations with a live download task. Two model_ids can resolve to
+    /// the same destination file; concurrent writers on one shared `.part`
+    /// could slip unverified bytes past the digest check between the hash
+    /// pass and the rename, so a destination is exclusive while claimed.
+    active_destinations: Arc<Mutex<HashSet<PathBuf>>>,
     /// Test-only escape hatch: allow plain-HTTP loopback URLs so tests can
     /// drive the full download path against a local mock server. Always false
     /// for the production singleton.
@@ -233,6 +238,7 @@ impl DownloadManager {
     pub fn new() -> Self {
         Self {
             downloads: Arc::new(Mutex::new(HashMap::new())),
+            active_destinations: Arc::new(Mutex::new(HashSet::new())),
             allow_insecure_loopback: false,
         }
     }
@@ -241,6 +247,7 @@ impl DownloadManager {
     fn new_with_insecure_loopback_for_tests() -> Self {
         Self {
             downloads: Arc::new(Mutex::new(HashMap::new())),
+            active_destinations: Arc::new(Mutex::new(HashSet::new())),
             allow_insecure_loopback: true,
         }
     }
@@ -353,13 +360,68 @@ impl DownloadManager {
             }
         }
 
+        // Claim every destination for the task's lifetime. Two model_ids can
+        // resolve to one destination (catalog entries sharing a filename); a
+        // second writer appending to the shared `.part` between the first
+        // task's hash pass and its rename could promote unverified bytes.
+        let files_for_cleanup: Vec<PathBuf> = files.iter().map(|f| f.destination.clone()).collect();
+        let clash: Option<PathBuf> = {
+            let mut active = self
+                .active_destinations
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Failed to acquire lock"))?;
+            let mut claimed: Vec<&PathBuf> = Vec::with_capacity(files_for_cleanup.len());
+            let mut clash = None;
+            for dest in &files_for_cleanup {
+                if !active.insert(dest.clone()) {
+                    clash = Some(dest.clone());
+                    break;
+                }
+                claimed.push(dest);
+            }
+            if clash.is_some() {
+                for dest in claimed {
+                    active.remove(dest);
+                }
+            }
+            clash
+        };
+        if let Some(dest) = clash {
+            let msg = format!(
+                "Destination '{}' is already being written by another download",
+                dest.display()
+            );
+            if let Ok(mut downloads) = self.downloads.lock() {
+                if let Some(progress) = downloads.get_mut(&model_id) {
+                    progress.status = DownloadStatus::Failed;
+                    progress.error = Some(msg.clone());
+                    progress.task_exited = true;
+                }
+            }
+            anyhow::bail!(msg);
+        }
+
         let downloads = self.downloads.clone();
         let model_id_clone = model_id.clone();
-        let files_for_cleanup: Vec<PathBuf> = files.iter().map(|f| f.destination.clone()).collect();
+        let active_destinations = self.active_destinations.clone();
+        let allow_insecure_loopback = self.allow_insecure_loopback;
 
         tokio::spawn(async move {
-            let result =
-                Self::download_files_sequentially(&files, &downloads, &model_id_clone).await;
+            let result = Self::download_files_sequentially(
+                &files,
+                &downloads,
+                &model_id_clone,
+                allow_insecure_loopback,
+            )
+            .await;
+
+            // Release the destination claims before recording the outcome so
+            // a follow-up download can start as soon as the task is done.
+            if let Ok(mut active) = active_destinations.lock() {
+                for dest in &files_for_cleanup {
+                    active.remove(dest);
+                }
+            }
 
             match result {
                 Ok(_) => {
@@ -438,10 +500,29 @@ impl DownloadManager {
         files: &[DownloadFile],
         downloads: &DownloadMap,
         model_id: &str,
+        allow_insecure_loopback: bool,
     ) -> Result<(), anyhow::Error> {
+        // Re-validate every redirect hop under the same policy as the initial
+        // URL: reqwest's default policy follows cross-host and https->http
+        // redirects, which would let an allowlisted host hand the transfer to
+        // an arbitrary origin — fatal for files downloaded without a pin.
+        let redirect_policy = reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() > 5 {
+                return attempt.error("too many redirects");
+            }
+            let url = attempt.url();
+            let loopback_ok = allow_insecure_loopback
+                && matches!(url.host_str(), Some("127.0.0.1") | Some("localhost"));
+            if loopback_ok || validate_download_url(url.as_str()).is_ok() {
+                attempt.follow()
+            } else {
+                attempt.error(format!("redirect to non-allowlisted URL '{url}'"))
+            }
+        });
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(30))
             .read_timeout(std::time::Duration::from_secs(120))
+            .redirect(redirect_policy)
             .build()?;
 
         // HEAD each file to get accurate total size. Only replace the hint if
@@ -1077,6 +1158,111 @@ mod tests {
         let progress = wait_for_terminal(&dm, "no-pin").await;
         assert_eq!(progress.status, DownloadStatus::Completed, "{:?}", progress);
         assert_eq!(std::fs::read(&dest).unwrap(), body);
+    }
+
+    #[tokio::test]
+    async fn redirect_to_non_allowlisted_url_is_refused() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/model.bin"))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .insert_header("Location", "https://evil.example/model.bin"),
+            )
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("model.bin");
+        let dm = DownloadManager::new_with_insecure_loopback_for_tests();
+        dm.download_model(
+            "redirected".to_string(),
+            format!("{}/model.bin", server.uri()),
+            dest.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let progress = wait_for_terminal(&dm, "redirected").await;
+        assert_eq!(progress.status, DownloadStatus::Failed, "{:?}", progress);
+        assert!(
+            progress
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("redirect"),
+            "error should name the refused redirect: {:?}",
+            progress.error
+        );
+        assert!(!dest.exists(), "no bytes may land via a refused redirect");
+        assert!(!partial_path_for(&dest).exists());
+    }
+
+    #[tokio::test]
+    async fn concurrent_downloads_to_same_destination_are_refused() {
+        let body = b"slow artifact".to_vec();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/model.bin"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(body.clone())
+                    .set_delay(std::time::Duration::from_millis(750)),
+            )
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("model.bin");
+        let dm = DownloadManager::new_with_insecure_loopback_for_tests();
+        dm.download_model(
+            "writer-a".to_string(),
+            format!("{}/model.bin", server.uri()),
+            dest.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Distinct model_id, same destination: refused while A holds the
+        // claim, with the failure recorded on B's own progress entry.
+        let err = dm
+            .download_model(
+                "writer-b".to_string(),
+                format!("{}/model.bin", server.uri()),
+                dest.clone(),
+                None,
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("already being written"),
+            "unexpected error: {err}"
+        );
+        let b = dm.get_progress("writer-b").unwrap();
+        assert_eq!(b.status, DownloadStatus::Failed);
+        assert!(b.task_exited);
+
+        let a = wait_for_terminal(&dm, "writer-a").await;
+        assert_eq!(a.status, DownloadStatus::Completed, "{:?}", a);
+
+        // Claim released after A's task exit: a new download to the same
+        // destination is accepted (and completes via the existing-file skip).
+        dm.download_model(
+            "writer-c".to_string(),
+            format!("{}/model.bin", server.uri()),
+            dest.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let c = wait_for_terminal(&dm, "writer-c").await;
+        assert_eq!(c.status, DownloadStatus::Completed, "{:?}", c);
     }
 
     #[tokio::test]
