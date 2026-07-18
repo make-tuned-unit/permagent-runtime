@@ -27,6 +27,8 @@ export function ConfigureProviderModal({ provider, onClose }: Props) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [setAsDefault, setSetAsDefault] = useState(!provider.isDefault);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
 
   // Keep the latest onClose without re-running the focus-trap effect (the parent
   // passes a fresh closure each render); the trap must set up once on mount.
@@ -101,46 +103,57 @@ export function ConfigureProviderModal({ provider, onClose }: Props) {
     };
   }, []);
 
-  const handleSave = async () => {
-    const keyChanged = secretKey && apiKey.trim();
+  // Persist a freshly-entered key: store the secret, then reload so the daemon
+  // picks it up without a restart. Reload failure is non-fatal (the key is in the
+  // keychain; the next restart applies it). Throws only if the upsert fails.
+  const persistKey = async () => {
+    if (!(secretKey && apiKey.trim())) return;
+    await api.upsertConfig(secretKey.name, apiKey.trim(), true);
+    try {
+      await api.reloadConfig();
+    } catch {
+      // Key saved to keychain — reload failed, but not fatal.
+    }
+  };
 
-    if (keyChanged) {
-      setSaving(true);
-      setError(null);
-      try {
-        await api.upsertConfig(secretKey.name, apiKey.trim(), true);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Failed to save key');
-        setSaving(false);
-        return;
-      }
-    } else if (secretKey && !provider.isConfigured && !apiKey.trim()) {
+  const handleSave = async () => {
+    const keyChanged = !!(secretKey && apiKey.trim());
+    if (!keyChanged && secretKey && !provider.isConfigured) {
       setError('API key is required');
       return;
     }
 
-    if (setAsDefault) {
-      try {
-        await setDefaultProvider(provider.name, selectedModel);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Failed to set default');
-        setSaving(false);
-        return;
-      }
-    }
-
-    // Reload the provider so fresh credentials take effect without daemon restart
-    if (keyChanged) {
-      try {
-        await api.reloadConfig();
-      } catch {
-        // Key saved to keychain — reload failed, but not fatal.
-        // Next daemon restart will pick it up.
-      }
+    setSaving(true);
+    setError(null);
+    try {
+      await persistKey();
+      if (setAsDefault) await setDefaultProvider(provider.name, selectedModel);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to save');
+      setSaving(false);
+      return;
     }
 
     setSaving(false);
     onClose();
+  };
+
+  // Validate the provider against the daemon. check_provider reads *stored*
+  // config, so persist a freshly-typed key first — otherwise "enter key → Test"
+  // would check the old/absent credential.
+  const handleTest = async () => {
+    setTesting(true);
+    setError(null);
+    setTestResult(null);
+    try {
+      await persistKey();
+      await api.checkProvider(provider.name);
+      setTestResult({ ok: true, message: 'Provider is configured and ready.' });
+    } catch (e) {
+      setTestResult({ ok: false, message: e instanceof Error ? e.message : 'Connection test failed.' });
+    } finally {
+      setTesting(false);
+    }
   };
 
   const handleRemoveKey = async () => {
@@ -283,10 +296,33 @@ export function ConfigureProviderModal({ provider, onClose }: Props) {
               {error}
             </div>
           )}
+
+          {testResult && (
+            <div
+              className="text-xs rounded px-3 py-2"
+              style={
+                testResult.ok
+                  ? { color: colors.success, backgroundColor: `${colors.success}1A`, border: `1px solid ${colors.success}33` }
+                  : { color: colors.danger, backgroundColor: `${colors.danger}1A`, border: `1px solid ${colors.danger}33` }
+              }
+            >
+              {testResult.message}
+            </div>
+          )}
         </div>
 
         <div className="flex items-center justify-between mt-5 pt-4" style={{ borderTop: `1px solid ${colors.border}` }}>
-          <div>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleTest}
+              disabled={testing || saving}
+              className="text-[11px] px-3 py-1.5 rounded transition disabled:opacity-50"
+              style={{ border: `1px solid ${colors.cyan}4D`, color: colors.cyan }}
+              onMouseEnter={e => { e.currentTarget.style.backgroundColor = colors.cyanSoft; }}
+              onMouseLeave={e => { e.currentTarget.style.backgroundColor = ''; }}
+            >
+              {testing ? 'Testing…' : 'Test connection'}
+            </button>
             {provider.isConfigured && secretKey && (
               <button
                 onClick={handleRemoveKey}
@@ -311,7 +347,7 @@ export function ConfigureProviderModal({ provider, onClose }: Props) {
             </button>
             <button
               onClick={handleSave}
-              disabled={saving}
+              disabled={saving || testing}
               className="px-4 py-1.5 text-sm rounded transition disabled:opacity-50"
               style={{ fontFamily: font.display, fontWeight: 600, backgroundColor: colors.cyan, color: colors.textOnAccent }}
               onMouseEnter={e => { e.currentTarget.style.backgroundColor = `${colors.cyan}CC`; }}

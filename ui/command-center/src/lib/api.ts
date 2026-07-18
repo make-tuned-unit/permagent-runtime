@@ -212,6 +212,19 @@ export interface PermagentConfig {
   [key: string]: unknown;
 }
 
+/** Wire shape for POST/PUT /config/custom-providers (backend
+ *  UpdateCustomProviderRequest). A custom provider is a user-defined
+ *  OpenAI/Anthropic/Ollama-compatible endpoint not in the built-in catalog. */
+export interface CustomProviderPayload {
+  engine: 'openai_compatible' | 'anthropic_compatible' | 'ollama_compatible';
+  display_name: string;
+  api_url: string;
+  api_key: string;
+  models: string[];
+  supports_streaming?: boolean;
+  requires_auth?: boolean;
+}
+
 export interface PermagentEvent {
   id: string;
   type: string;
@@ -692,6 +705,34 @@ export const api = {
       throw new Error(err.message || `HTTP ${response.status}`);
     }
   },
+
+  /** Validate a provider against its current stored config: confirms the daemon
+   *  can construct it (registered + required secrets present + well-formed URL /
+   *  headers). Resolves on success; rejects with the daemon's reason on failure.
+   *  Note: this is a config/constructibility check, not a guaranteed live API
+   *  round-trip for every provider. POST /config/check_provider returns an empty
+   *  200 body on success — apiFetch handles that (returns undefined). */
+  checkProvider: (provider: string): Promise<void> =>
+    apiFetch<void>('/config/check_provider', {
+      method: 'POST',
+      body: JSON.stringify({ provider }),
+    }),
+
+  /** Create a user-defined custom provider (writes a declarative provider
+   *  definition + stores its API key, then hot-registers it). The new provider
+   *  then appears in getProviders() tagged provider_type "Custom". Returns the
+   *  generated provider name (id). */
+  createCustomProvider: (payload: CustomProviderPayload): Promise<{ provider_name: string }> =>
+    apiFetch<{ provider_name: string }>('/config/custom-providers', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  /** Remove a user-defined custom provider by its id (the provider `name`). */
+  removeCustomProvider: (id: string): Promise<string> =>
+    apiFetch<string>(`/config/custom-providers/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
 
   // Skills CRUD
   getSkills: () => apiFetch<Skill[]>('/permagent/skills').catch(() => [] as Skill[]),
