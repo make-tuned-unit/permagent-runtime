@@ -3482,6 +3482,80 @@ pub async fn cancel_goal(
     Ok(new_state)
 }
 
+/// Create an inbox decision with one retry (bug-sweep wave 1). A decision card
+/// that silently fails to exist makes finished/blocked work invisible in the
+/// inbox forever, so a transient failure gets one retry and a persistent one
+/// is returned to the caller for logging plus a durable metadata trace.
+async fn create_decision_with_retry(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    req: decisions::NewDecision,
+) -> Result<decisions::Decision, String> {
+    let first_err = match decisions::create_decision(pool, req.clone()).await {
+        Ok(d) => return Ok(d),
+        Err(e) => e,
+    };
+    tracing::warn!(
+        target: "permagentd::brain",
+        "create_decision (kind '{}', goal {:?}) failed, retrying once: {}",
+        req.kind,
+        req.goal_id,
+        first_err
+    );
+    decisions::create_decision(pool, req)
+        .await
+        .map_err(|second_err| format!("first attempt: {}; retry: {}", first_err, second_err))
+}
+
+/// Durable trace of a decision-creation failure on the goal card itself, so
+/// the truth survives a restart even though the inbox card never appeared.
+/// Uses the existing card-metadata mechanism (`decision_create_error` is not a
+/// protected key); if even this write fails, the error is logged — the last
+/// resort on this spine, never a silent drop.
+async fn record_decision_create_failure(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    kind: &str,
+    error: &str,
+) {
+    let note = |meta: &serde_json::Value| -> Option<serde_json::Value> {
+        let mut obj = meta.as_object().cloned().unwrap_or_default();
+        obj.insert(
+            "decision_create_error".to_string(),
+            serde_json::json!({
+                "kind": kind,
+                "error": error,
+                "at": chrono::Utc::now().to_rfc3339(),
+            }),
+        );
+        Some(serde_json::Value::Object(obj))
+    };
+    let result = match cards::get_card(pool, card_id).await {
+        Ok(Some(card)) => cards::update_card(
+            pool,
+            card_id,
+            cards::UpdateCard {
+                metadata_json: note(&card.metadata_json),
+                ..Default::default()
+            },
+        )
+        .await
+        .map(|_| ()),
+        Ok(None) => Err(format!("card '{}' not found", card_id)),
+        Err(e) => Err(e),
+    };
+    if let Err(e) = result {
+        tracing::error!(
+            target: "permagentd::brain",
+            goal_id = %card_id,
+            "could not record decision-creation failure (kind '{}') on the goal card: {} \
+             (original decision error: {})",
+            kind,
+            e,
+            error
+        );
+    }
+}
+
 /// Handle the completion of a dispatched goal worker.
 ///
 /// Called by the tracker task spawned in dispatch_goal when the JoinHandle resolves.
@@ -3571,7 +3645,11 @@ pub async fn handle_goal_completion(
                     Some(proof) => serde_json::json!({ "completion_check": proof }),
                     None => serde_json::json!({}),
                 };
-                let _ = decisions::create_decision(
+                // The goal has already moved to Review — a failure to surface
+                // it in the inbox must not fail (or retry) the completion, but
+                // it MUST be visible: retry once, then error-log + durable
+                // metadata trace (bug-sweep wave 1; was `let _ =`).
+                if let Err(e) = create_decision_with_retry(
                     pool,
                     decisions::NewDecision {
                         kind: "approve_review".to_string(),
@@ -3583,7 +3661,20 @@ pub async fn handle_goal_completion(
                         ..Default::default()
                     },
                 )
-                .await;
+                .await
+                {
+                    tracing::error!(
+                        target: "permagentd::brain",
+                        goal_id = %card_id,
+                        project_id = %project_id,
+                        "Goal '{}' moved to Review but its approve_review decision could not \
+                         be created — the finished work will NOT appear in the Decision Inbox \
+                         until re-surfaced: {}",
+                        card.title,
+                        e
+                    );
+                    record_decision_create_failure(pool, card_id, "approve_review", &e).await;
+                }
             }
 
             // Lane L2: kick off post-Review verification (hook spawns its own
@@ -3758,7 +3849,10 @@ pub async fn handle_goal_blocked(
             cap: None,
         })
         .map_err(|e| e.to_string())?;
-        let _ = decisions::create_decision(
+        // The park below must still happen even if the inbox card cannot be
+        // created — but the missing card must be visible: retry once, then
+        // error-log + durable metadata trace (bug-sweep wave 1; was `let _ =`).
+        if let Err(e) = create_decision_with_retry(
             pool,
             decisions::NewDecision {
                 kind: "unblock".to_string(),
@@ -3770,7 +3864,20 @@ pub async fn handle_goal_blocked(
                 ..Default::default()
             },
         )
-        .await;
+        .await
+        {
+            tracing::error!(
+                target: "permagentd::brain",
+                goal_id = %card_id,
+                project_id = %project_id,
+                "Goal '{}' blocked by the credential guard but its unblock decision could \
+                 not be created — the parked goal will NOT appear in the Decision Inbox \
+                 until re-surfaced: {}",
+                card.title,
+                e
+            );
+            record_decision_create_failure(pool, card_id, "unblock", &e).await;
+        }
     }
 
     goal_transition::park_goal(pool, card_id, decisions::ACTOR_SYSTEM, reason)
@@ -6488,5 +6595,119 @@ mod tests {
                 schema_text
             );
         }
+    }
+
+    // ── Inbox-card creation resilience (bug-sweep wave 1) ───────────────────
+    //
+    // `handle_goal_completion` / `handle_goal_blocked` used `let _ =` on
+    // `create_decision` — a Review/parked goal's inbox card could silently
+    // never exist, leaving finished work invisible forever. Now: one retry,
+    // error log, and a durable `decision_create_error` trace on the card.
+
+    async fn decisions_pool() -> sqlx::Pool<sqlx::Sqlite> {
+        use crate::session::spectral_schema::init_spectral_db;
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        init_spectral_db(&pool).await.unwrap();
+        pool
+    }
+
+    fn review_decision_request(goal_id: &str) -> decisions::NewDecision {
+        decisions::NewDecision {
+            kind: "approve_review".to_string(),
+            goal_id: Some(goal_id.to_string()),
+            project_id: Some(crate::projects::PERSONAL_PROJECT_ID.to_string()),
+            headline: Some("Review the finished work on \"Test goal\"".to_string()),
+            detail: Some("evidence".to_string()),
+            payload: serde_json::json!({}),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn create_decision_with_retry_succeeds_on_healthy_pool() {
+        let pool = decisions_pool().await;
+        let d = create_decision_with_retry(&pool, review_decision_request("goal-1"))
+            .await
+            .expect("healthy pool must create the decision");
+        assert_eq!(d.kind, "approve_review");
+        assert_eq!(d.status, "open");
+    }
+
+    #[tokio::test]
+    async fn create_decision_with_retry_surfaces_both_attempts_on_failure() {
+        let pool = decisions_pool().await;
+        // Break decision creation entirely — both the attempt and the retry fail.
+        sqlx::query("DROP TABLE decisions")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let err = create_decision_with_retry(&pool, review_decision_request("goal-1"))
+            .await
+            .expect_err("dropped table must fail after the retry");
+        assert!(err.contains("first attempt:"), "{}", err);
+        assert!(err.contains("retry:"), "{}", err);
+    }
+
+    #[tokio::test]
+    async fn record_decision_create_failure_leaves_durable_metadata_trace() {
+        let pool = decisions_pool().await;
+        cards::seed_goal_columns(&pool, crate::projects::PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        let col = cards::get_goal_column(&pool, crate::projects::PERSONAL_PROJECT_ID, "review")
+            .await
+            .unwrap()
+            .unwrap();
+        let card = cards::create_card(
+            &pool,
+            cards::CreateCard {
+                project_id: crate::projects::PERSONAL_PROJECT_ID.to_string(),
+                title: "Goal whose inbox card failed".to_string(),
+                description: None,
+                card_type: Some("goal".to_string()),
+                column_id: Some(col.id.clone()),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({"attempt_count": 1})),
+            },
+        )
+        .await
+        .unwrap();
+
+        record_decision_create_failure(&pool, &card.id, "approve_review", "db said no").await;
+
+        let after = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let trace = after
+            .metadata_json
+            .get("decision_create_error")
+            .expect("durable trace must be written to card metadata");
+        assert_eq!(
+            trace.get("kind").and_then(|v| v.as_str()),
+            Some("approve_review")
+        );
+        assert_eq!(
+            trace.get("error").and_then(|v| v.as_str()),
+            Some("db said no")
+        );
+        assert!(trace.get("at").and_then(|v| v.as_str()).is_some());
+        // Pre-existing (protected) metadata is preserved by the merge.
+        assert_eq!(
+            after
+                .metadata_json
+                .get("attempt_count")
+                .and_then(|v| v.as_u64()),
+            Some(1)
+        );
+    }
+
+    /// The trace writer must never panic or clobber when the card is gone —
+    /// it degrades to an error log (asserted here only as "does not panic").
+    #[tokio::test]
+    async fn record_decision_create_failure_survives_missing_card() {
+        let pool = decisions_pool().await;
+        record_decision_create_failure(&pool, "no-such-card", "unblock", "db said no").await;
     }
 }

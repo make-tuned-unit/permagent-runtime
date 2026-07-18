@@ -67,8 +67,10 @@ struct AnswerResponse {
     decision: decisions::Decision,
     /// What the gated effect did (e.g. "goal advanced to complete"), if any.
     effect: Option<String>,
-    /// Present when the decision was answered but the effect failed; the
-    /// failure is also recorded in the audit log.
+    /// Present when the decision was answered but the effect failed — or when
+    /// the effect committed and a follow-on step (dependent promotion) failed
+    /// (`effect` is then ALSO set). Either way the failure is recorded in the
+    /// audit log.
     effect_error: Option<String>,
 }
 
@@ -142,9 +144,15 @@ async fn answer_decision_handler(
             .map_err(|e| (status_for_answer_error(&e), e.to_string()))?;
 
     // Execute the gated effect. The decision is already answered and audited;
-    // an effect failure is reported (and audit-logged), not silently dropped.
+    // an effect failure — or a follow-on warning after a committed effect —
+    // is reported (and audit-logged), not silently dropped.
     let (effect, effect_error) = match execute_effect(&pool, &decision, proof).await {
-        Ok(effect) => (effect, None),
+        Ok((effect, warning)) => {
+            if let Some(ref w) = warning {
+                record_effect_failure(&pool, &decision, w).await;
+            }
+            (effect, warning)
+        }
         Err(e) => {
             let msg = e.to_string();
             record_effect_failure(&pool, &decision, &msg).await;
@@ -224,18 +232,24 @@ async fn history_handler(
 
 /// Execute the state change a freshly answered decision authorizes. The
 /// `DecisionProof` is consumed here — one answer, at most one gated effect.
+///
+/// Returns `(effect, effect_warning)`: the effect message, plus a warning for
+/// a follow-on step (dependent promotion) that failed AFTER the effect itself
+/// committed. The warning surfaces in the response's `effect_error` and is
+/// audit-recorded — the decision-spine rule is that nothing here may discard
+/// a `Result` (bug-sweep wave 1).
 async fn execute_effect(
     pool: &Pool<Sqlite>,
     decision: &decisions::Decision,
     proof: decisions::DecisionProof,
-) -> Result<Option<String>, GuardError> {
+) -> Result<(Option<String>, Option<String>), GuardError> {
     let acted_by = proof.acted_by().to_string();
     match (decision.kind.as_str(), decision.answer.as_deref()) {
         // Review approved → goal completes; dependents become eligible.
         ("approve_review", Some("approve")) => {
             let goal_id = match decision.goal_id.as_deref() {
                 Some(g) => g,
-                None => return Ok(None),
+                None => return Ok((None, None)),
             };
             goal_transition::advance_goal_checked(
                 pool,
@@ -249,19 +263,26 @@ async fn execute_effect(
                 },
             )
             .await?;
-            if let Some(ref project_id) = decision.project_id {
-                let _ = goal_transition::promote_eligible_dependents(pool, project_id).await;
-            }
+            let promotion_warning = match decision.project_id.as_deref() {
+                Some(project_id) => {
+                    goal_transition::promote_eligible_dependents_or_warn(pool, project_id, goal_id)
+                        .await
+                }
+                None => None,
+            };
             // Recognition write-back (SECONDARY proxy): approval is a positive
             // outcome. 2-hop join goal_id → worker_session_id → recognition events.
             permagent::recognition::write_back_decision_outcome(pool, goal_id, true).await;
-            Ok(Some("goal approved: Review → Complete".to_string()))
+            Ok((
+                Some("goal approved: Review → Complete".to_string()),
+                promotion_warning,
+            ))
         }
         // Review rejected → bounce back for rework, or park on attempt exhaustion.
         ("approve_review", Some("reject")) => {
             let goal_id = match decision.goal_id.as_deref() {
                 Some(g) => g,
-                None => return Ok(None),
+                None => return Ok((None, None)),
             };
             // Recognition write-back (SECONDARY proxy): a bounce is a negative
             // outcome for the goal's worker-session recalls, whether it parks or
@@ -296,10 +317,13 @@ async fn execute_effect(
                 )
                 .await
                 .map_err(GuardError::Db)?;
-                Ok(Some(format!(
-                    "goal rejected at attempt cap: parked with unblock decision {}",
-                    decision_id
-                )))
+                Ok((
+                    Some(format!(
+                        "goal rejected at attempt cap: parked with unblock decision {}",
+                        decision_id
+                    )),
+                    None,
+                ))
             } else {
                 let mut patch = serde_json::Map::new();
                 patch.insert(
@@ -319,8 +343,9 @@ async fn execute_effect(
                     },
                 )
                 .await?;
-                Ok(Some(
-                    "goal rejected: Review → InProgress for rework".to_string(),
+                Ok((
+                    Some("goal rejected: Review → InProgress for rework".to_string()),
+                    None,
                 ))
             }
         }
@@ -329,7 +354,7 @@ async fn execute_effect(
         ("unblock", Some("approve")) => {
             let goal_id = match decision.goal_id.as_deref() {
                 Some(g) => g,
-                None => return Ok(None),
+                None => return Ok((None, None)),
             };
             let card = permagent::cards::get_card(pool, goal_id)
                 .await
@@ -370,10 +395,13 @@ async fn execute_effect(
                 },
             )
             .await?;
-            Ok(Some(format!(
-                "goal unparked: Triage → Ready with attempt_cap raised to {}",
-                attempt_count + goal_transition::DEFAULT_ATTEMPT_CAP
-            )))
+            Ok((
+                Some(format!(
+                    "goal unparked: Triage → Ready with attempt_cap raised to {}",
+                    attempt_count + goal_transition::DEFAULT_ATTEMPT_CAP
+                )),
+                None,
+            ))
         }
         // Approved goal deletion (user_data_deletion risk gate).
         ("risk_gate", Some("approve"))
@@ -386,11 +414,14 @@ async fn execute_effect(
         {
             let goal_id = decision.goal_id.as_deref().unwrap();
             let deleted = goal_transition::delete_goal_checked(pool, goal_id, proof).await?;
-            Ok(Some(if deleted {
-                format!("goal {} deleted", goal_id)
-            } else {
-                format!("goal {} was already gone", goal_id)
-            }))
+            Ok((
+                Some(if deleted {
+                    format!("goal {} deleted", goal_id)
+                } else {
+                    format!("goal {} was already gone", goal_id)
+                }),
+                None,
+            ))
         }
         // Declined automation proposal (Initiative → Decision Inbox). Record a
         // recognition bounce keyed on the observed command so the initiative gate
@@ -411,8 +442,9 @@ async fn execute_effect(
                 normalized,
                 "automation proposal declined on Decision Inbox — pruned, will not re-pitch"
             );
-            Ok(Some(
-                "automation proposal declined; will not re-pitch".to_string(),
+            Ok((
+                Some("automation proposal declined; will not re-pitch".to_string()),
+                None,
             ))
         }
         // Approved automation proposal (with or without edits): recorded now;
@@ -429,11 +461,14 @@ async fn execute_effect(
                 with_edits,
                 "automation proposal approved on Decision Inbox"
             );
-            Ok(Some(if with_edits {
-                "automation proposal approved with edits".to_string()
-            } else {
-                "automation proposal approved".to_string()
-            }))
+            Ok((
+                Some(if with_edits {
+                    "automation proposal approved with edits".to_string()
+                } else {
+                    "automation proposal approved".to_string()
+                }),
+                None,
+            ))
         }
         // Approved enrichment proposal (#495 slice 4): write each proposed field
         // to the person's graph entity with Enriched provenance + source URL.
@@ -489,33 +524,43 @@ async fn execute_effect(
             if skipped > 0 {
                 effect.push_str(&format!(", {} skipped (not enrichable)", skipped));
             }
-            Ok(Some(effect))
+            Ok((Some(effect), None))
         }
         // Declined enrichment proposal: recorded; nothing touches the profile.
-        ("enrichment_proposal", Some("reject")) => Ok(Some(
-            "enrichment proposal declined; nothing was written".to_string(),
+        ("enrichment_proposal", Some("reject")) => Ok((
+            Some("enrichment proposal declined; nothing was written".to_string()),
+            None,
         )),
         // Remaining shapes route through L3's resume:auto — `choice` answers
         // and `unblock` answered with input on a PARKED goal make it
         // re-dispatch eligible (Triage → Ready through the guard). Everything
         // else (rejections of unblock/risk_gate, malformed acks, unparked
         // goals) returns Ok(None): recorded; no state change to execute.
-        _ => {
-            permagent::decision_inbox::policy::resume_answered_decision(pool, decision, proof).await
-        }
+        _ => permagent::decision_inbox::policy::resume_answered_decision(pool, decision, proof)
+            .await
+            .map(|effect| (effect, None)),
     }
 }
 
-/// Best-effort audit record of an effect failure (the answer itself already
-/// succeeded and was audited).
+/// Audit record of an effect failure (the answer itself already succeeded and
+/// was audited). The audit write is the last resort on this spine — if it
+/// fails too, that failure is at least logged, never discarded.
 async fn record_effect_failure(pool: &Pool<Sqlite>, decision: &decisions::Decision, error: &str) {
     tracing::error!(
         "Decision {} answered but effect failed: {}",
         decision.id,
         error
     );
-    let _ =
-        decisions::record_effect_outcome(pool, decision, &format!("effect_error: {}", error)).await;
+    if let Err(audit_err) =
+        decisions::record_effect_outcome(pool, decision, &format!("effect_error: {}", error)).await
+    {
+        tracing::error!(
+            "Decision {} effect failure could not be audit-recorded: {} (original effect error: {})",
+            decision.id,
+            audit_err,
+            error
+        );
+    }
 }
 
 // ── Tool-confirmation bridge ─────────────────────────────────────────────────
@@ -711,6 +756,108 @@ mod tests {
         assert_eq!(
             status_for_guard_error(&GuardError::Denied("x".into())),
             StatusCode::FORBIDDEN
+        );
+    }
+
+    // ── Approve spine: dependent promotion surfaced, never discarded ──
+
+    /// approve_review through `execute_effect`: the approval commits, the
+    /// eligible dependent is actually promoted, and the healthy path carries
+    /// no warning (bug-sweep wave 1: the promotion Result used to be
+    /// `let _ =` — a failure left dependents blocked with no cause). The
+    /// failure seam itself is unit-tested in
+    /// `goal_transition::promote_or_warn_failure_returns_warning_with_ids`.
+    #[tokio::test]
+    async fn approve_effect_promotes_dependents_without_warning() {
+        use permagent::projects::PERSONAL_PROJECT_ID;
+        let pool = memory_pool().await;
+        permagent::cards::seed_goal_columns(&pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        let review_col = permagent::cards::get_goal_column(&pool, PERSONAL_PROJECT_ID, "review")
+            .await
+            .unwrap()
+            .unwrap();
+        let triage_col = permagent::cards::get_goal_column(&pool, PERSONAL_PROJECT_ID, "triage")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let goal = permagent::cards::create_card(
+            &pool,
+            permagent::cards::CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: "Goal under review".to_string(),
+                description: None,
+                card_type: Some("goal".to_string()),
+                column_id: Some(review_col.id.clone()),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({})),
+            },
+        )
+        .await
+        .unwrap();
+        let dependent = permagent::cards::create_card(
+            &pool,
+            permagent::cards::CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: "Dependent goal waiting on the review".to_string(),
+                description: None,
+                card_type: Some("goal".to_string()),
+                column_id: Some(triage_col.id.clone()),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({"depends_on": [goal.id]})),
+            },
+        )
+        .await
+        .unwrap();
+
+        let d = decisions::create_decision(
+            &pool,
+            decisions::NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Approve the finished work on the test goal".to_string()),
+                detail: Some("evidence: tests pass".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let (answered, proof) = decisions::answer_decision(
+            &pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            decisions::ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+
+        let (effect, warning) = execute_effect(&pool, &answered, proof).await.unwrap();
+        assert_eq!(effect.as_deref(), Some("goal approved: Review → Complete"));
+        assert!(
+            warning.is_none(),
+            "healthy path must not warn: {:?}",
+            warning
+        );
+
+        let dep_card = permagent::cards::get_card(&pool, &dependent.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let dep_col = permagent::cards::get_column(&pool, &dep_card.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            dep_col.state_binding.as_deref(),
+            Some("ready"),
+            "the dependent goal must be promoted once its dependency completes"
         );
     }
 

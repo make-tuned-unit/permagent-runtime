@@ -19,11 +19,41 @@ pub fn parse_and_validate_parameters(
     Ok(recipe_template)
 }
 
-fn validate_json_schema(schema: &serde_json::Value) -> Result<()> {
-    match jsonschema::validator_for(schema) {
-        Ok(_) => Ok(()),
-        Err(err) => Err(anyhow::anyhow!("JSON schema validation failed: {}", err)),
+/// Validate a recipe `response.json_schema` value.
+///
+/// Shared by recipe save/validation (authoring time) and
+/// [`crate::agents::final_output_tool::FinalOutputTool::new`] (run time), so a
+/// schema that would fail at run time is rejected in the recipe editor
+/// instead. The schema must be a non-empty JSON object that passes JSON Schema
+/// meta-validation and compiles. Note `true` and `{}` are valid JSON Schemas
+/// but are rejected here: they don't describe a usable final-output shape and
+/// previously crashed the daemon at tool-listing time.
+pub fn validate_response_json_schema(schema: &serde_json::Value) -> Result<()> {
+    let type_name = match schema {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "a boolean",
+        serde_json::Value::Number(_) => "a number",
+        serde_json::Value::String(_) => "a string",
+        serde_json::Value::Array(_) => "an array",
+        serde_json::Value::Object(_) => "an object",
+    };
+    let obj = schema.as_object().ok_or_else(|| {
+        anyhow::anyhow!(
+            "response.json_schema must be a JSON object, got {}",
+            type_name
+        )
+    })?;
+    if obj.is_empty() {
+        return Err(anyhow::anyhow!(
+            "response.json_schema must not be an empty object"
+        ));
     }
+    jsonschema::meta::validate(schema).map_err(|err| {
+        anyhow::anyhow!("response.json_schema is not a valid JSON Schema: {}", err)
+    })?;
+    jsonschema::validator_for(schema)
+        .map_err(|err| anyhow::anyhow!("response.json_schema failed to compile: {}", err))?;
+    Ok(())
 }
 
 pub fn validate_recipe_template_from_file(recipe_file: &RecipeFile) -> Result<Recipe> {
@@ -46,8 +76,15 @@ pub fn validate_recipe_template_from_content(
     validate_prompt_or_instructions(&recipe)?;
     validate_retry_config(&recipe)?;
     if let Some(response) = &recipe.response {
-        if let Some(json_schema) = &response.json_schema {
-            validate_json_schema(json_schema)?;
+        match &response.json_schema {
+            Some(json_schema) => validate_response_json_schema(json_schema)?,
+            // A `response` block without a schema used to slip through here
+            // and panic at run time when the final-output tool was built.
+            None => {
+                return Err(anyhow::anyhow!(
+                    "Recipe `response` block requires a `json_schema` (a non-empty JSON object)"
+                ))
+            }
         }
     }
 
@@ -209,5 +246,119 @@ parameters:
         assert_eq!(recipe.description, "A test recipe for validation");
         assert!(recipe.instructions.is_some());
         println!("Recipe: {:?}", recipe.prompt);
+    }
+
+    // ── response.json_schema validation (bug-sweep wave 1) ──────────────────
+    //
+    // Every rejected shape here previously panicked at RUN time when the
+    // final-output tool was constructed (or, for `true`, on every turn) —
+    // feeding the panic breaker and crash-cycling the daemon on a scheduled
+    // recipe. Rejecting at authoring time puts the error in the recipe editor.
+
+    #[test]
+    fn response_schema_boolean_true_rejected() {
+        let err = validate_response_json_schema(&serde_json::json!(true)).unwrap_err();
+        assert!(err.to_string().contains("must be a JSON object"));
+    }
+
+    #[test]
+    fn response_schema_empty_object_rejected() {
+        let err = validate_response_json_schema(&serde_json::json!({})).unwrap_err();
+        assert!(err.to_string().contains("empty"));
+    }
+
+    #[test]
+    fn response_schema_garbage_type_rejected() {
+        // `type: 42` violates the JSON Schema meta-schema.
+        let result = validate_response_json_schema(&serde_json::json!({"type": 42}));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn response_schema_non_object_shapes_rejected() {
+        for bad in [
+            serde_json::json!(false),
+            serde_json::json!(null),
+            serde_json::json!([1, 2]),
+            serde_json::json!("schema"),
+            serde_json::json!(7),
+        ] {
+            let err = validate_response_json_schema(&bad).unwrap_err();
+            assert!(
+                err.to_string().contains("must be a JSON object"),
+                "{:?} → {}",
+                bad,
+                err
+            );
+        }
+    }
+
+    #[test]
+    fn response_schema_valid_object_accepted() {
+        validate_response_json_schema(&serde_json::json!({
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"]
+        }))
+        .unwrap();
+    }
+
+    fn recipe_with_response(response_yaml: &str) -> String {
+        format!(
+            r#"
+version: 1.0.0
+title: Schema Test
+description: response schema validation
+instructions: do the thing
+{}
+"#,
+            response_yaml
+        )
+    }
+
+    #[test]
+    fn recipe_with_missing_json_schema_in_response_rejected() {
+        let content = recipe_with_response("response: {}");
+        let err = validate_recipe_template_from_content(&content, None).unwrap_err();
+        assert!(
+            err.to_string().contains("requires a `json_schema`"),
+            "{}",
+            err
+        );
+    }
+
+    #[test]
+    fn recipe_with_boolean_json_schema_rejected() {
+        let content = recipe_with_response("response:\n  json_schema: true");
+        let err = validate_recipe_template_from_content(&content, None).unwrap_err();
+        assert!(err.to_string().contains("must be a JSON object"), "{}", err);
+    }
+
+    #[test]
+    fn recipe_with_empty_object_json_schema_rejected() {
+        let content = recipe_with_response("response:\n  json_schema: {}");
+        let err = validate_recipe_template_from_content(&content, None).unwrap_err();
+        assert!(err.to_string().contains("empty"), "{}", err);
+    }
+
+    #[test]
+    fn recipe_with_garbage_json_schema_rejected() {
+        let content = recipe_with_response("response:\n  json_schema:\n    type: 42");
+        assert!(validate_recipe_template_from_content(&content, None).is_err());
+    }
+
+    #[test]
+    fn recipe_with_valid_json_schema_accepted() {
+        let content = recipe_with_response(
+            "response:\n  json_schema:\n    type: object\n    properties:\n      answer:\n        type: string",
+        );
+        let recipe = validate_recipe_template_from_content(&content, None).unwrap();
+        assert!(recipe.response.is_some());
+    }
+
+    #[test]
+    fn recipe_without_response_block_still_accepted() {
+        let content = recipe_with_response("");
+        assert!(validate_recipe_template_from_content(&content, None).is_ok());
     }
 }

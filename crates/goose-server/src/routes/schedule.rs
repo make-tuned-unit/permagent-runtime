@@ -282,8 +282,21 @@ async fn delete_schedule(
     Path(id): Path<String>,
 ) -> Result<StatusCode, ErrorResponse> {
     let scheduler = state.scheduler();
-    // Record deletion so starter recipes don't get re-installed on restart
-    crate::automation::starters::record_starter_deletion(&id);
+    // Record deletion FIRST so starter recipes don't get re-installed on
+    // restart. A tombstone that cannot be written fails the delete (the job
+    // still exists; the user can retry) — deleting anyway would let a starter
+    // silently resurrect on the next boot.
+    crate::automation::starters::record_starter_deletion(&id).map_err(|e| {
+        tracing::error!(
+            "Failed to record starter deletion tombstone for '{}': {}",
+            id,
+            e
+        );
+        ErrorResponse::internal(format!(
+            "Could not record the deletion (the schedule was NOT deleted): {}",
+            e
+        ))
+    })?;
     scheduler
         .remove_scheduled_job(&id, true)
         .await
