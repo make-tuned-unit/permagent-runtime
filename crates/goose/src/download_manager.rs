@@ -510,13 +510,16 @@ impl DownloadManager {
             if attempt.previous().len() > 5 {
                 return attempt.error("too many redirects");
             }
-            let url = attempt.url();
             let loopback_ok = allow_insecure_loopback
-                && matches!(url.host_str(), Some("127.0.0.1") | Some("localhost"));
-            if loopback_ok || validate_download_url(url.as_str()).is_ok() {
+                && matches!(
+                    attempt.url().host_str(),
+                    Some("127.0.0.1") | Some("localhost")
+                );
+            if loopback_ok || validate_download_url(attempt.url().as_str()).is_ok() {
                 attempt.follow()
             } else {
-                attempt.error(format!("redirect to non-allowlisted URL '{url}'"))
+                let msg = format!("redirect to non-allowlisted URL '{}'", attempt.url());
+                attempt.error(msg)
             }
         });
         let client = reqwest::Client::builder()
