@@ -14,6 +14,7 @@
  */
 import { useCallback, useRef, useState } from 'react';
 import { api } from '../lib/api';
+import { emitActivity } from '../lib/emitActivity';
 
 export type DictationState = 'idle' | 'recording' | 'transcribing' | 'error';
 
@@ -83,7 +84,13 @@ export function useDictation(onText: (text: string) => void) {
       const wav = encodeWav(merged, rate);
       const { text } = await api.transcribeAudio(new Blob([wav], { type: 'audio/wav' }));
       const trimmed = text.trim();
-      if (trimmed) onText(trimmed);
+      if (trimmed) {
+        onText(trimmed);
+        // Genuine voice usage — report engagement so the coach stops offering to
+        // teach dictation. No transcript in the payload: the text reaches Brain
+        // via the resulting chat/notes turn; this signal is usage-only.
+        emitActivity('dictation_completed', 'voice', { char_count: trimmed.length });
+      }
       setState('idle');
     } catch (e) {
       setError((e as Error).message || 'Transcription failed');

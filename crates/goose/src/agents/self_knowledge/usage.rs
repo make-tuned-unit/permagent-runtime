@@ -210,6 +210,20 @@ pub fn capability_for_activity(
         | AutomationJobFailed
         | StarterRecipeUpgraded => Some("scheduler"),
 
+        // Direct engagement signals for surfaces that used to be silent — each
+        // is a real user action (or, for web search, a tool the user's agent
+        // ran on their behalf), so the coach can mark the feature learned and
+        // stop re-recommending it. One event ↦ one teachable capability id.
+        PersonaConfigured => Some("persona"),
+        DecisionResolved => Some("decision_inbox"),
+        DevicesPaired => Some("devices"),
+        WebSearchPerformed => Some("web_search"),
+        DictationCompleted => Some("voice"),
+        WorldViewOpened => Some("world_view"),
+        InboxOpened => Some("inbox"),
+        GrowOpened => Some("grow"),
+        BrainOpened => Some("brain"),
+
         // Not a user surface-engagement signal: chat is the baseline, and the
         // rest are system/internal events (a token refresh, an internal context
         // probe, a goal the system escalated for approval).
@@ -385,6 +399,16 @@ mod tests {
             SkillExecuted,
             AutomationJobCompleted,
             StarterRecipeUpgraded,
+            // Onboarding-engagement events added with the surface instrumentation.
+            PersonaConfigured,
+            DecisionResolved,
+            DevicesPaired,
+            WebSearchPerformed,
+            DictationCompleted,
+            WorldViewOpened,
+            InboxOpened,
+            GrowOpened,
+            BrainOpened,
         ];
         for ev in cases {
             let id = capability_for_activity(&ev, &SourceSurface::Agent)
@@ -426,5 +450,87 @@ mod tests {
             capability_for_activity(&AutomationJobCompleted, &SourceSurface::Scheduler),
             Some("scheduler")
         );
+        // The newly instrumented engagement surfaces.
+        assert_eq!(
+            capability_for_activity(&PersonaConfigured, &SourceSurface::Settings),
+            Some("persona")
+        );
+        assert_eq!(
+            capability_for_activity(&DecisionResolved, &SourceSurface::Dashboard),
+            Some("decision_inbox")
+        );
+        assert_eq!(
+            capability_for_activity(&DevicesPaired, &SourceSurface::Settings),
+            Some("devices")
+        );
+        assert_eq!(
+            capability_for_activity(&WebSearchPerformed, &SourceSurface::Agent),
+            Some("web_search")
+        );
+        assert_eq!(
+            capability_for_activity(&DictationCompleted, &SourceSurface::Voice),
+            Some("voice")
+        );
+        assert_eq!(
+            capability_for_activity(&WorldViewOpened, &SourceSurface::World),
+            Some("world_view")
+        );
+        assert_eq!(
+            capability_for_activity(&InboxOpened, &SourceSurface::Inbox),
+            Some("inbox")
+        );
+        assert_eq!(
+            capability_for_activity(&GrowOpened, &SourceSurface::Grow),
+            Some("grow")
+        );
+        assert_eq!(
+            capability_for_activity(&BrainOpened, &SourceSurface::Brain),
+            Some("brain")
+        );
+    }
+
+    /// The acceptance check for the whole instrumentation: each new engagement
+    /// event maps to its teachable capability, recording it engages the feature,
+    /// and the coach's `learn_next` list then drops it — the exact re-recommend
+    /// bug this change closes.
+    #[test]
+    fn new_events_engage_their_feature_and_drop_from_learn_next() {
+        use super::super::teachable::learn_next_given;
+        use ActivityEventType::*;
+        let pairs = [
+            (PersonaConfigured, "persona"),
+            (DecisionResolved, "decision_inbox"),
+            (DevicesPaired, "devices"),
+            (WebSearchPerformed, "web_search"),
+            (DictationCompleted, "voice"),
+            (WorldViewOpened, "world_view"),
+            (InboxOpened, "inbox"),
+            (GrowOpened, "grow"),
+            (BrainOpened, "brain"),
+        ];
+        let now = at(2026, 7, 17, 9);
+        for (ev, id) in pairs {
+            // Before the event, the feature is unused → the coach offers it.
+            let mut store = UsageStore::new();
+            assert!(
+                learn_next_given(|q| store.is_engaged(q))
+                    .iter()
+                    .any(|t| t.id == id),
+                "{id} should start on the learn-next list"
+            );
+            // The event maps to exactly this capability and engages it.
+            let mapped = capability_for_activity(&ev, &SourceSurface::Agent)
+                .unwrap_or_else(|| panic!("{ev:?} must map to a capability"));
+            assert_eq!(mapped, id, "{ev:?} must map to {id}");
+            store.mark_used(mapped, now);
+            assert!(store.is_engaged(id), "{id} engaged after {ev:?}");
+            // ...so it drops off the learn-next list — no more re-recommending.
+            assert!(
+                !learn_next_given(|q| store.is_engaged(q))
+                    .iter()
+                    .any(|t| t.id == id),
+                "{id} must leave learn_next once {ev:?} fired"
+            );
+        }
     }
 }

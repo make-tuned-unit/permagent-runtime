@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
+import { emitActivity } from '../../lib/emitActivity';
 import { api, apiFetch, loadDaemonToken } from '../../lib/api';
 import { font, ease, setTheme as setThemeFn, setMobiusGlow, setIdleAnim, setShowHeroMobius, setDensity as setDensityFn, setReduceMotion as setReduceMotionFn, type ThemePref, type IdleAnim, type UIDensity } from '../../styles/tokens';
 import { useTheme as useThemeHook } from '../../styles/useTheme';
@@ -940,6 +941,10 @@ function DevicesPanel() {
                   navigator.clipboard.writeText(pairingUrl).then(() => {
                     setCopied(true);
                     setTimeout(() => setCopied(false), 1600);
+                    // Copying a pairing URL is the deliberate "add a device" act
+                    // — genuine engagement with Devices. No token in the payload
+                    // (the URL is a bearer secret); this only marks the feature used.
+                    emitActivity('devices_paired', 'settings');
                   });
                 }}
               >{copied ? 'Copied ✓' : 'Copy'}</button>

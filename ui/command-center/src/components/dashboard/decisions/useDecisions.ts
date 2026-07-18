@@ -11,6 +11,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { getApiBaseUrl } from '../../../lib/api';
 import { wireEventType } from '../../../lib/wireEvent';
 import { decisionsClient } from './client';
+import { emitActivity } from '../../../lib/emitActivity';
 import type { AnswerBody, Decision, DecisionsResponse, HistoryItem } from './types';
 import { DecisionConflictError } from './types';
 
@@ -112,6 +113,13 @@ export function useDecisions() {
     async (id: string, body: AnswerBody): Promise<AnswerResult> => {
       try {
         const outcome = await decisionsClient.answer(id, body);
+        // The user answered a decision — genuine engagement with the Decision
+        // Inbox. Report it so the onboarding coach stops offering to teach it.
+        emitActivity('decision_resolved', 'dashboard', {
+          decision_id: id,
+          resolution: body.answer,
+          headline: outcome.decision.headline,
+        });
         await fetchDecisions();
         // effect_error rides through (2026-07 wiring audit): the daemon
         // reports "answer committed but the gated effect failed" — dropping

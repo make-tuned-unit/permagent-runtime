@@ -9,16 +9,24 @@
 //! **Always** (substantive — will become Brain memory in Phase 2):
 //!   ChatTurnCompleted, TerminalCommandCompleted, FileEdited,
 //!   ProjectSelected, SkillExecuted, IntegrationTokenRefreshed,
-//!   AutomationJobCompleted, AutomationJobFailed
+//!   AutomationJobCompleted, AutomationJobFailed, PersonaConfigured,
+//!   DecisionResolved, DevicesPaired
 //!
 //! **Aggregated** (rolled up over time windows):
-//!   BrowserNavigated, BrowserFormSubmitted
+//!   BrowserNavigated, BrowserFormSubmitted, WebSearchPerformed
 //!
 //! **Ephemeral** (live-only, never persisted):
 //!   ChatTurnStarted, BrowserSessionStarted, BrowserSessionEnded,
 //!   FileOpened, ProjectOpened, TerminalCommandStarted,
 //!   TerminalSessionStarted, TerminalSessionEnded, AgentContextProbed,
-//!   AutomationJobStarted, TerminalProcessExited
+//!   AutomationJobStarted, TerminalProcessExited, DictationCompleted,
+//!   WorldViewOpened, InboxOpened, GrowOpened, BrainOpened
+//!
+//! The onboarding-engagement events (persona/decision/devices/web-search/
+//! dictation + the four `*Opened` navigations) additionally feed feature-usage
+//! tracking via `emit_activity` → `usage::record_from_activity`, regardless of
+//! tier — so a usage-only "open" is Ephemeral (bus-only) yet still marks the
+//! feature learned.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -61,6 +69,37 @@ pub enum ActivityEventType {
     /// and non-blocking — surfaced for cost transparency ("no surprises"), never
     /// an interrupt; the goal keeps running on the stronger model.
     GoalEscalated,
+
+    // ── Agent-led onboarding: genuine engagement signals for surfaces that
+    // previously emitted nothing. Each evidences the user actually *using* a
+    // capability (not an inferred proxy), so `capability_for_activity` can mark
+    // it learned and the coach stops re-recommending it. Consumed by the same
+    // `emit_activity` seam — no new bus.
+    /// The user configured their agent's identity/persona (name / voice) in
+    /// Settings → Identity. A deliberate act — evidences the `persona` capability.
+    PersonaConfigured,
+    /// The user resolved a Decision Inbox item (approve / reject / approve-with-
+    /// edits). Emitted only on a *user* resolution — genuine engagement with the
+    /// `decision_inbox` capability, never on a system-created decision.
+    DecisionResolved,
+    /// The user paired another device to this hub in Settings → Devices.
+    /// Evidences the `devices` capability.
+    DevicesPaired,
+    /// The agent performed a web search on the user's behalf (the `web_search`
+    /// tool ran). Evidences the `web_search` capability.
+    WebSearchPerformed,
+    /// The user completed a voice dictation (mic → transcript). Evidences the
+    /// `voice` capability. Usage-only: the transcript reaches Brain via the
+    /// resulting chat/notes turn, so this signal carries no content.
+    DictationCompleted,
+    /// The user opened the World view. Evidences the `world_view` surface.
+    WorldViewOpened,
+    /// The user opened the Inbox. Evidences the `inbox` surface.
+    InboxOpened,
+    /// The user opened the Grow tab. Evidences the `grow` surface.
+    GrowOpened,
+    /// The user opened the Brain view. Evidences the `brain` surface.
+    BrainOpened,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -76,6 +115,15 @@ pub enum SourceSurface {
     Agent,
     External,
     Scheduler,
+    // Onboarding-engagement surfaces (previously silent). One per user-facing
+    // view so the activity feed and awareness layer can attribute the signal.
+    Settings,
+    Dashboard,
+    World,
+    Inbox,
+    Grow,
+    Brain,
+    Voice,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -144,11 +192,17 @@ fn default_tier(event_type: &ActivityEventType) -> EventTier {
         | ActivityEventType::AutomationJobCompleted
         | ActivityEventType::AutomationJobFailed
         | ActivityEventType::StarterRecipeUpgraded
-        | ActivityEventType::GoalEscalated => EventTier::Always,
+        | ActivityEventType::GoalEscalated
+        // Substantive engagement worth remembering (a config change, a user's
+        // decision, a paired device).
+        | ActivityEventType::PersonaConfigured
+        | ActivityEventType::DecisionResolved
+        | ActivityEventType::DevicesPaired => EventTier::Always,
 
-        ActivityEventType::BrowserNavigated | ActivityEventType::BrowserFormSubmitted => {
-            EventTier::Aggregated
-        }
+        // High-frequency, rolled up over a window (web activity family).
+        ActivityEventType::BrowserNavigated
+        | ActivityEventType::BrowserFormSubmitted
+        | ActivityEventType::WebSearchPerformed => EventTier::Aggregated,
 
         ActivityEventType::ChatTurnStarted
         | ActivityEventType::BrowserSessionStarted
@@ -160,7 +214,16 @@ fn default_tier(event_type: &ActivityEventType) -> EventTier {
         | ActivityEventType::TerminalSessionEnded
         | ActivityEventType::TerminalProcessExited
         | ActivityEventType::AgentContextProbed
-        | ActivityEventType::AutomationJobStarted => EventTier::Ephemeral,
+        | ActivityEventType::AutomationJobStarted
+        // Usage-only navigation / dictation: mark the feature engaged (usage is
+        // recorded in `emit_activity` regardless of tier) but keep the bus-only,
+        // never-persisted contract so opens don't flood Brain and dictation does
+        // not duplicate the transcript already captured by the chat/notes turn.
+        | ActivityEventType::DictationCompleted
+        | ActivityEventType::WorldViewOpened
+        | ActivityEventType::InboxOpened
+        | ActivityEventType::GrowOpened
+        | ActivityEventType::BrainOpened => EventTier::Ephemeral,
     }
 }
 
@@ -345,6 +408,23 @@ pub fn goal_escalated(
     )
 }
 
+/// The user's agent ran a web search (the `web_search` tool). Emitted from the
+/// tool seam so "the user used web search" is a real engagement signal rather
+/// than an inferred proxy. Aggregated (web-activity family): the query is kept
+/// as ambient context, rolled up over a window. `web_search` has no user-facing
+/// frontend surface, so — unlike the other onboarding signals — it is emitted
+/// server-side where the tool actually executes.
+pub fn web_search_performed(query: &str, backend: &str) -> ActivityEvent {
+    ActivityEvent::new(
+        ActivityEventType::WebSearchPerformed,
+        SourceSurface::Agent,
+        serde_json::json!({
+            "query": query,
+            "backend": backend,
+        }),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -425,5 +505,82 @@ mod tests {
         assert!(recent
             .iter()
             .any(|e| e.event_type == ActivityEventType::TerminalProcessExited));
+    }
+
+    #[test]
+    fn onboarding_engagement_events_have_expected_tiers() {
+        use ActivityEventType::*;
+        // Substantive user engagement → persisted to Brain (Always).
+        for ev in [PersonaConfigured, DecisionResolved, DevicesPaired] {
+            assert_eq!(canonical_tier(&ev), EventTier::Always, "{ev:?} → Always");
+        }
+        // Web search rolls up like the browser family.
+        assert_eq!(canonical_tier(&WebSearchPerformed), EventTier::Aggregated);
+        // Opens + dictation are usage-only (bus-only, never persisted to Brain).
+        for ev in [
+            DictationCompleted,
+            WorldViewOpened,
+            InboxOpened,
+            GrowOpened,
+            BrainOpened,
+        ] {
+            assert_eq!(
+                canonical_tier(&ev),
+                EventTier::Ephemeral,
+                "{ev:?} → Ephemeral"
+            );
+        }
+    }
+
+    #[test]
+    fn web_search_performed_carries_query_and_backend() {
+        let e = web_search_performed("rust async traits", "venice");
+        assert_eq!(e.event_type, ActivityEventType::WebSearchPerformed);
+        assert_eq!(e.source_surface, SourceSurface::Agent);
+        assert_eq!(e.tier, EventTier::Aggregated);
+        let json = serde_json::to_string(&e).unwrap();
+        assert!(json.contains("\"event_type\":\"web_search_performed\""));
+        assert!(json.contains("rust async traits"));
+        assert!(json.contains("venice"));
+    }
+
+    /// The frontend emits these events/surfaces as snake_case strings through
+    /// `/activity/emit`; lock the wire spelling so an emit site can never drift
+    /// out of sync with the enum (a typo would silently deserialize-fail).
+    #[test]
+    fn onboarding_wire_spellings_are_stable() {
+        for (ev, wire) in [
+            (ActivityEventType::PersonaConfigured, "persona_configured"),
+            (ActivityEventType::DecisionResolved, "decision_resolved"),
+            (ActivityEventType::DevicesPaired, "devices_paired"),
+            (
+                ActivityEventType::WebSearchPerformed,
+                "web_search_performed",
+            ),
+            (ActivityEventType::DictationCompleted, "dictation_completed"),
+            (ActivityEventType::WorldViewOpened, "world_view_opened"),
+            (ActivityEventType::InboxOpened, "inbox_opened"),
+            (ActivityEventType::GrowOpened, "grow_opened"),
+            (ActivityEventType::BrainOpened, "brain_opened"),
+        ] {
+            let json = serde_json::to_string(&ev).unwrap();
+            assert_eq!(json, format!("\"{wire}\""), "{ev:?} wire spelling");
+            let back: ActivityEventType = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, ev, "{wire} must round-trip");
+        }
+        for (surface, wire) in [
+            (SourceSurface::Settings, "settings"),
+            (SourceSurface::Dashboard, "dashboard"),
+            (SourceSurface::World, "world"),
+            (SourceSurface::Inbox, "inbox"),
+            (SourceSurface::Grow, "grow"),
+            (SourceSurface::Brain, "brain"),
+            (SourceSurface::Voice, "voice"),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&surface).unwrap(),
+                format!("\"{wire}\"")
+            );
+        }
     }
 }

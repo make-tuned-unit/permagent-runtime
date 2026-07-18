@@ -449,6 +449,15 @@ fn event_type_str(t: &ActivityEventType) -> &'static str {
         ActivityEventType::AutomationJobFailed => "automation_job_failed",
         ActivityEventType::StarterRecipeUpgraded => "starter_recipe_upgraded",
         ActivityEventType::GoalEscalated => "goal_escalated",
+        ActivityEventType::PersonaConfigured => "persona_configured",
+        ActivityEventType::DecisionResolved => "decision_resolved",
+        ActivityEventType::DevicesPaired => "devices_paired",
+        ActivityEventType::WebSearchPerformed => "web_search_performed",
+        ActivityEventType::DictationCompleted => "dictation_completed",
+        ActivityEventType::WorldViewOpened => "world_view_opened",
+        ActivityEventType::InboxOpened => "inbox_opened",
+        ActivityEventType::GrowOpened => "grow_opened",
+        ActivityEventType::BrainOpened => "brain_opened",
     }
 }
 
@@ -547,6 +556,40 @@ fn render_content(event: &ActivityEvent) -> String {
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown error");
             format!("Automation '{}' failed: {}.", name, truncate(err, 200))
+        }
+        ActivityEventType::PersonaConfigured => {
+            let name = p.get("persona_name").and_then(|v| v.as_str());
+            match name {
+                Some(n) => format!("Configured agent identity — persona '{}'.", n),
+                None => "Configured agent identity in Settings.".to_string(),
+            }
+        }
+        ActivityEventType::DecisionResolved => {
+            let resolution = p
+                .get("resolution")
+                .and_then(|v| v.as_str())
+                .unwrap_or("resolved");
+            let headline = p.get("headline").and_then(|v| v.as_str());
+            match headline {
+                Some(h) => format!("Resolved decision '{}' ({}).", truncate(h, 120), resolution),
+                None => format!("Resolved a Decision Inbox item ({}).", resolution),
+            }
+        }
+        ActivityEventType::DevicesPaired => {
+            let name = p.get("device_name").and_then(|v| v.as_str());
+            match name {
+                Some(n) => format!("Paired device '{}' to this hub.", n),
+                None => "Paired a device to this hub.".to_string(),
+            }
+        }
+        ActivityEventType::WebSearchPerformed => {
+            let query = p.get("query").and_then(|v| v.as_str()).unwrap_or("?");
+            let backend = p.get("backend").and_then(|v| v.as_str()).unwrap_or("web");
+            format!(
+                "Searched the web for '{}' (via {}).",
+                truncate(query, 160),
+                backend
+            )
         }
         _ => format!(
             "{} event from {:?}.",
