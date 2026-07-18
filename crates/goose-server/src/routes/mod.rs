@@ -37,6 +37,7 @@ pub mod reply;
 pub mod runs;
 pub mod sampling;
 pub mod schedule;
+pub mod security;
 pub mod session;
 pub mod session_events;
 pub mod setup;
@@ -107,6 +108,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(action_required::routes(state.clone()))
         .merge(agent::routes(state.clone()))
         .merge(config_management::routes(state.clone()))
+        .merge(security::routes(state.clone()))
         .merge(prompts::routes())
         .merge(recipe::routes(state.clone()))
         .merge(session::routes(state.clone()))

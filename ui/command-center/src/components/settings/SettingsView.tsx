@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { emitActivity } from '../../lib/emitActivity';
-import { api, apiFetch, loadDaemonToken } from '../../lib/api';
+import { api, apiFetch, loadDaemonToken, type SovereigntyStatus, type EgressLogEntry } from '../../lib/api';
 import { font, ease, setTheme as setThemeFn, setMobiusGlow, setIdleAnim, setShowHeroMobius, setDensity as setDensityFn, setReduceMotion as setReduceMotionFn, type ThemePref, type IdleAnim, type UIDensity } from '../../styles/tokens';
 import { useTheme as useThemeHook } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
@@ -85,6 +85,7 @@ const CATEGORIES = [
     { key: 'appearance',  label: 'Appearance',       icon: 'M12 3a9 9 0 100 18 9 9 0 000-18zM12 3v18M3 12h18' },
     { key: 'shortcuts',   label: 'Shortcuts',        icon: 'M4 6h16v12H4zM8 10h.01M12 10h.01M16 10h.01M7 14h10' },
     { key: 'data',        label: 'Data & privacy',   icon: 'M12 2l9 4v6c0 5-4 9-9 10-5-1-9-5-9-10V6l9-4zM9 12l2 2 4-4' },
+    { key: 'sovereignty', label: 'Sovereignty',      icon: 'M7 11V7a5 5 0 0110 0v4M5 11h14v9H5zM12 15v2' },
   ]},
 ];
 
@@ -822,11 +823,97 @@ function DataPanel() {
 
 // ── Panel router ─────────────────────────────────────────────────────
 
+/** Sovereignty — the data boundary. The toggle writes the daemon's global
+ *  sovereign flag (enforced fail-closed at the provider choke point); the
+ *  egress log shows every cloud inference call this machine has made or
+ *  blocked. Live end-to-end (2026-07 sovereignty-router build). */
+function SovereigntyPanel() {
+  const { colors } = useThemeHook();
+  const [status, setStatus] = useState<SovereigntyStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [log, setLog] = useState<EgressLogEntry[] | null>(null);
+
+  const refreshLog = useCallback(() => {
+    api.getEgressLog(100).then(setLog).catch(() => setLog([]));
+  }, []);
+
+  useEffect(() => {
+    api.getSovereignty().then(setStatus).catch(() => setError('Could not load sovereignty status.'));
+    refreshLog();
+  }, [refreshLog]);
+
+  const save = (patch: { enabled?: boolean; capturePrompts?: boolean }) => {
+    setError(null);
+    // Optimistic; the daemon echoes the authoritative status back.
+    setStatus(s => (s ? {
+      enabled: patch.enabled ?? s.enabled,
+      capturePrompts: patch.capturePrompts ?? s.capturePrompts,
+      localProviderAvailable: s.localProviderAvailable,
+    } : s));
+    api.setSovereignty(patch)
+      .then(status => { setStatus(status); refreshLog(); })
+      .catch(err => setError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`));
+  };
+
+  return (
+    <div>
+      <H1 sub="Make the data boundary real. With sovereign mode on, every model call stays on this machine — cloud providers are refused (fail-closed), not just deprioritized.">Sovereignty</H1>
+
+      {error && (
+        <div style={{ fontSize: 12, color: colors.danger, padding: '4px 0 8px' }}>{error}</div>
+      )}
+
+      <Section title="Sovereign mode" sub="Live — writes the daemon's global sovereign flag, enforced at the provider choke point for every session.">
+        <Row label="Local-only inference" hint="Block all cloud providers. Nothing leaves this machine for inference.">
+          <Toggle on={!!status?.enabled} onChange={v => save({ enabled: v })} />
+        </Row>
+        {status?.enabled && !status.localProviderAvailable && (
+          <div style={{ fontSize: 12, color: colors.warning, padding: '2px 0 8px' }}>
+            No local provider (Ollama or local-inference) is registered — with sovereign mode on, inference will be refused until one is available.
+          </div>
+        )}
+        <Row label="Capture full prompts in the audit log" hint="Off by default — only a SHA-256 hash is stored. On records the full prompt text locally.">
+          <Toggle on={!!status?.capturePrompts} onChange={v => save({ capturePrompts: v })} />
+        </Row>
+      </Section>
+
+      <Section title="Egress log" sub="Everything that has left this machine for cloud inference, and when — newest first. BLOCKED means sovereign mode refused it.">
+        <Row label="Cloud inference calls" hint={`${log?.length ?? 0} recorded`}>
+          <button
+            onClick={refreshLog}
+            style={{
+              fontSize: 12, padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
+              background: colors.surfaceHi, color: colors.text, border: `1px solid ${colors.border}`,
+            }}
+          >Refresh</button>
+        </Row>
+        {log && log.length === 0 && (
+          <div style={{ fontSize: 12, color: colors.textDim, padding: '6px 0' }}>
+            Nothing has left this machine yet.
+          </div>
+        )}
+        {log?.map(e => (
+          <Row
+            key={e.id}
+            label={`${e.provider} · ${e.model}`}
+            hint={`${new Date(e.ts).toLocaleString()} · ${e.kind}${e.sessionId ? ' · ' + e.sessionId : ''} · ${e.contentHash.slice(0, 12)}…`}
+          >
+            <span style={{ fontSize: 11, fontWeight: 600, color: e.blocked ? colors.danger : colors.textDim }}>
+              {e.blocked ? 'BLOCKED' : 'sent'}
+            </span>
+          </Row>
+        ))}
+      </Section>
+    </div>
+  );
+}
+
 const PANELS: Record<string, (props: PanelProps) => JSX.Element> = {
   agent: PersonaPanel, profile: ProfilePanel, preferences: PreferencesPanel,
   memory: MemoryPanel, autonomy: AutonomyPanel, tools: ToolsPanel,
   models: ModelsPanel, keys: KeysPanel, devices: DevicesPanel, search: SearchPanel,
   appearance: AppearancePanel, shortcuts: ShortcutsPanel, data: DataPanel,
+  sovereignty: SovereigntyPanel,
 };
 
 /** Devices — hub-and-spoke pairing (MULTI_DEVICE.md). The hub (this machine)

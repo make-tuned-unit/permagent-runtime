@@ -550,6 +550,31 @@ export interface InboxFile {
   created_at: string;
 }
 
+/** Sovereign-mode status (GET/POST /api/security/sovereignty). */
+export interface SovereigntyStatus {
+  /** When on, all cloud inference is blocked (fail-closed) and audited. */
+  enabled: boolean;
+  /** Whether the egress log captures full prompts (vs a hash only). */
+  capturePrompts: boolean;
+  /** Whether a local provider (`local`/`ollama`) is registered to serve work. */
+  localProviderAvailable: boolean;
+}
+
+/** One row of the cloud-egress audit log (GET /api/security/egress-log). */
+export interface EgressLogEntry {
+  id: string;
+  ts: string;
+  provider: string;
+  model: string;
+  sessionId: string | null;
+  projectId: string | null;
+  kind: string;
+  /** True if this cloud call was blocked by sovereign mode. */
+  blocked: boolean;
+  contentHash: string;
+  prompt: string | null;
+}
+
 export const api = {
   // Health
   getHealth: () => apiFetch<{ status: string }>('/status'),
@@ -730,6 +755,22 @@ export const api = {
     apiFetch<string>(`/config/extensions/${encodeURIComponent(name)}`, {
       method: 'DELETE',
     }),
+
+  // ── Sovereignty / data boundary ──────────────────────────────────────
+  /** Current sovereign-mode status. */
+  getSovereignty: () =>
+    apiFetch<SovereigntyStatus>('/api/security/sovereignty'),
+
+  /** Toggle sovereign mode and/or full-prompt capture; returns new status. */
+  setSovereignty: (body: { enabled?: boolean; capturePrompts?: boolean }) =>
+    apiFetch<SovereigntyStatus>('/api/security/sovereignty', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  /** Recent cloud-egress audit entries (everything that has left this machine). */
+  getEgressLog: (limit = 100) =>
+    apiFetch<EgressLogEntry[]>(`/api/security/egress-log?limit=${limit}`),
 
   // Providers
   getProviders: () =>

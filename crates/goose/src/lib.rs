@@ -73,6 +73,7 @@ pub mod skill_md;
 pub mod skills;
 pub mod slash_commands;
 pub mod sources;
+pub mod sovereignty;
 pub mod steward;
 pub mod storage_health;
 pub mod subprocess;

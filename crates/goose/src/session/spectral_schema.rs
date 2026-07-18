@@ -704,6 +704,10 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // CREATE above) and only fire on existing DBs.
     apply_cost_ledger_schema(pool).await?;
 
+    // Egress audit log (schema v29, sovereignty). Idempotent; shared with
+    // migrate_v28_to_v29. Append-only, purely additive, base-independent.
+    apply_egress_audit_schema(pool).await?;
+
     info!(
         "Spectral schema v{} initialized successfully",
         SPECTRAL_SCHEMA_VERSION
@@ -1090,6 +1094,71 @@ pub async fn migrate_v26_to_v27(pool: &Pool<Sqlite>) -> Result<()> {
         .await?;
     info!("Spectral schema migrated to v27 (activity journal)");
 
+    Ok(())
+}
+
+/// Apply the egress-audit schema (schema v29, sovereignty): `egress_audit` —
+/// the always-on, append-only record of every **cloud** inference call the
+/// sovereignty guard sees (blocked or allowed), with a SHA-256 content hash by
+/// default (full prompt only when `sovereign_capture_prompts` is enabled).
+///
+/// Append-only is enforced *at the DB*: `BEFORE UPDATE` / `BEFORE DELETE`
+/// triggers `RAISE(ABORT)` so evidence of a cloud egress can never be quietly
+/// rewritten or deleted — a mutable audit is a lying audit. Purely additive and
+/// base-version independent (`CREATE ... IF NOT EXISTS`), so it applies cleanly
+/// over any earlier base and is safe on every boot. See
+/// [`crate::sovereignty`] for the writer/reader and enforcement policy.
+pub async fn apply_egress_audit_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool.begin().await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS egress_audit (
+            id           TEXT PRIMARY KEY,
+            ts           TEXT NOT NULL,
+            provider     TEXT NOT NULL,
+            model        TEXT NOT NULL,
+            session_id   TEXT,
+            project_id   TEXT,
+            kind         TEXT NOT NULL DEFAULT 'inference',
+            blocked      INTEGER NOT NULL DEFAULT 0,
+            content_hash TEXT NOT NULL,
+            prompt       TEXT
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_egress_audit_ts ON egress_audit(ts DESC)")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS trg_egress_audit_no_update
+            BEFORE UPDATE ON egress_audit
+            BEGIN SELECT RAISE(ABORT, 'egress_audit is append-only'); END",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS trg_egress_audit_no_delete
+            BEFORE DELETE ON egress_audit
+            BEGIN SELECT RAISE(ABORT, 'egress_audit is append-only'); END",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Migrate an existing database to the egress-audit schema (schema v29).
+///
+/// Purely additive and base-version independent; records v29 in
+/// `schema_version`.
+pub async fn migrate_v28_to_v29(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v28 -> v29 (egress audit log)");
+    apply_egress_audit_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (29)")
+        .execute(pool)
+        .await?;
     Ok(())
 }
 

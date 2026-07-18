@@ -48,6 +48,7 @@ mod retry;
 #[cfg(feature = "aws-providers")]
 pub mod sagemaker_tgi;
 pub mod snowflake;
+pub mod sovereign_guard;
 pub mod testprovider;
 pub mod tetrate;
 pub mod toolshim;
