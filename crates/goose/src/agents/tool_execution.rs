@@ -237,12 +237,14 @@ impl Agent {
         };
 
         // Compact args preview for the human-readable detail; the full arguments
-        // live in the payload (borrow before `arguments` is moved into it).
-        let args_preview: String = serde_json::to_string(&arguments)
-            .unwrap_or_else(|_| "{}".to_string())
-            .chars()
-            .take(400)
-            .collect();
+        // live in the payload (borrow before `arguments` is moved into it). A
+        // clipped preview carries an explicit truncation marker — a dangerous
+        // tail past the cap must never be silently invisible at approval time
+        // (the inbox card offers the full payload arguments alongside).
+        let args_preview = args_preview(
+            &serde_json::to_string(&arguments).unwrap_or_else(|_| "{}".to_string()),
+            ARGS_PREVIEW_MAX_CHARS,
+        );
 
         // Headline must be <= MAX_HEADLINE_CHARS or create_decision stores the row
         // as malformed; cap defensively (tool names are short in practice).
@@ -299,5 +301,67 @@ impl Agent {
                 e
             );
         }
+    }
+}
+
+/// Character cap for the tool-argument preview embedded in a `tool_approval`
+/// decision's `detail` text.
+const ARGS_PREVIEW_MAX_CHARS: usize = 400;
+
+/// Clip a JSON args string to `max_chars` characters for the human-readable
+/// decision detail. Informed consent requires that clipping is EXPLICIT: a
+/// clipped preview ends with "… [truncated — N more chars]" so the approver
+/// knows there is a tail they have not seen (and can open the full arguments
+/// on the card). Unclipped input is returned verbatim, marker-free.
+fn args_preview(args_json: &str, max_chars: usize) -> String {
+    let total_chars = args_json.chars().count();
+    if total_chars <= max_chars {
+        return args_json.to_string();
+    }
+    let clipped: String = args_json.chars().take(max_chars).collect();
+    format!(
+        "{}… [truncated — {} more chars]",
+        clipped,
+        total_chars - max_chars
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::args_preview;
+
+    #[test]
+    fn args_preview_untouched_at_or_under_cap() {
+        assert_eq!(args_preview("", 400), "");
+        let exactly = "x".repeat(400);
+        let out = args_preview(&exactly, 400);
+        assert_eq!(out, exactly, "exactly-at-cap input must not be marked");
+        assert!(!out.contains("truncated"));
+    }
+
+    #[test]
+    fn args_preview_marks_exactly_when_clipped() {
+        let over = "x".repeat(401);
+        let out = args_preview(&over, 400);
+        assert!(
+            out.ends_with("… [truncated — 1 more chars]"),
+            "one char past the cap must be marked: {}",
+            out
+        );
+        assert!(out.starts_with(&"x".repeat(400)));
+
+        let far_over = "y".repeat(1000);
+        let out = args_preview(&far_over, 400);
+        assert!(out.ends_with("… [truncated — 600 more chars]"), "{}", out);
+    }
+
+    #[test]
+    fn args_preview_counts_chars_not_bytes() {
+        // 500 multibyte chars (3 bytes each in UTF-8): clips at 400 CHARS on a
+        // valid boundary and reports the remaining 100 chars.
+        let multibyte = "€".repeat(500);
+        let out = args_preview(&multibyte, 400);
+        assert!(out.starts_with(&"€".repeat(400)));
+        assert!(out.ends_with("… [truncated — 100 more chars]"), "{}", out);
     }
 }

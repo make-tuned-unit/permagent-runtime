@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { api, apiFetch, extractText, extractThinking, fileToBase64, readerIngest } from './api';
-import { emitActivity } from './emitActivity';
+import { emitActivity, type ActivityEventName, type ActivitySourceSurface } from './emitActivity';
 import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload, TokenState } from './api';
 import { costFromFrame } from './costMeter';
 import { appendTraceRecord, sessionFrameToRecord } from './traceEvents';
@@ -460,7 +460,7 @@ function daemonMsgToChat(
  * tool (`brain` is the `memory` tool). Tools already instrumented by their own
  * events (build/terminal/browser/projects/etc.) are intentionally absent.
  */
-const OPEN_EVENT_BY_TOOL: Partial<Record<ToolType, { event: string; surface: string }>> = {
+const OPEN_EVENT_BY_TOOL: Partial<Record<ToolType, { event: ActivityEventName; surface: ActivitySourceSurface }>> = {
   world: { event: 'world_view_opened', surface: 'world' },
   memory: { event: 'brain_opened', surface: 'brain' },
   grow: { event: 'grow_opened', surface: 'grow' },
@@ -550,6 +550,10 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   },
 
   switchWorkspace: (workspaceId: string) => {
+    // Re-selecting the already-active workspace (a re-click, or a daemon-driven
+    // AppNavigate to the tab the user is on) is a no-op — in particular it must
+    // not re-emit an "opened" engagement event for a view that never closed.
+    if (get().activeWorkspaceId === workspaceId) return;
     set({ activeWorkspaceId: workspaceId });
     api.setActiveWorkspace(workspaceId).catch(() => {});
     // Report engagement for surfaces that emit nothing themselves. Boot sets

@@ -1051,12 +1051,20 @@ impl Agent {
         self.extension_manager.get_extension_configs().await
     }
 
-    /// Handle a confirmation response for a tool request
+    /// Handle a confirmation response for a tool request.
+    ///
+    /// Returns whether a live waiter actually received it: `true` when the
+    /// provider's ActionRequired routing consumed the confirmation or a parked
+    /// tool call was unblocked through the `ToolConfirmationRouter`; `false`
+    /// when nobody was waiting (the turn was cancelled, the daemon restarted,
+    /// or the request was already answered through another channel) — in that
+    /// case the confirmation had no effect and callers reporting an effect to
+    /// the user must say so instead of claiming the tool ran.
     pub async fn handle_confirmation(
         &self,
         request_id: String,
         confirmation: PermissionConfirmation,
-    ) {
+    ) -> bool {
         let provider = self.provider.lock().await.clone();
         if let Some(provider) = provider.as_ref() {
             if provider.permission_routing() == PermissionRouting::ActionRequired
@@ -1064,16 +1072,19 @@ impl Agent {
                     .handle_permission_confirmation(&request_id, &confirmation)
                     .await
             {
-                return;
+                return true;
             }
         }
-        if !self
+        let delivered = self
             .tool_confirmation_router
             .deliver(request_id, confirmation)
-            .await
-        {
+            .await;
+        if !delivered {
+            // Kept for callers that ignore the return value (CLI session loop):
+            // the router already warn!-ed with the request_id.
             error!("Failed to deliver confirmation");
         }
+        delivered
     }
 
     pub async fn supports_action_required_permissions(&self) -> bool {
@@ -2589,7 +2600,7 @@ mod tests {
             Some(provider.clone() as Arc<dyn crate::providers::base::Provider>);
 
         // Known request_id → provider handles it, confirmation_router NOT called
-        agent
+        let delivered = agent
             .handle_confirmation(
                 "known".to_string(),
                 PermissionConfirmation {
@@ -2598,6 +2609,7 @@ mod tests {
                 },
             )
             .await;
+        assert!(delivered, "provider-consumed confirmation must report true");
         assert_eq!(provider.handled.lock().await.len(), 1);
 
         // Unknown request_id → provider returns false, falls through to confirmation_router
@@ -2606,7 +2618,7 @@ mod tests {
             .tool_confirmation_router
             .register("unknown".to_string())
             .await;
-        agent
+        let delivered = agent
             .handle_confirmation(
                 "unknown".to_string(),
                 PermissionConfirmation {
@@ -2615,6 +2627,7 @@ mod tests {
                 },
             )
             .await;
+        assert!(delivered, "router-delivered confirmation must report true");
         assert_eq!(provider.handled.lock().await.len(), 2);
         // Verify the fallthrough went to confirmation_router
         let conf = rx.await.unwrap();
@@ -2630,7 +2643,7 @@ mod tests {
             .tool_confirmation_router
             .register("any".to_string())
             .await;
-        agent
+        let delivered = agent
             .handle_confirmation(
                 "any".to_string(),
                 PermissionConfirmation {
@@ -2639,9 +2652,47 @@ mod tests {
                 },
             )
             .await;
+        assert!(delivered);
 
         let conf = rx.await.unwrap();
         assert_eq!(conf.permission, crate::permission::Permission::AllowOnce);
+    }
+
+    /// A confirmation with no live waiter (turn cancelled, daemon restarted, or
+    /// already answered elsewhere) must report `false` — the honesty signal the
+    /// Decision Inbox effect message depends on.
+    #[tokio::test]
+    async fn test_handle_confirmation_reports_no_waiter() {
+        let agent = Agent::new();
+
+        // Nothing registered at all.
+        let delivered = agent
+            .handle_confirmation(
+                "never-registered".to_string(),
+                PermissionConfirmation {
+                    principal_type: PrincipalType::Tool,
+                    permission: crate::permission::Permission::AllowOnce,
+                },
+            )
+            .await;
+        assert!(!delivered, "no registered waiter must report false");
+
+        // Registered but the awaiting task is gone (receiver dropped).
+        let rx = agent
+            .tool_confirmation_router
+            .register("cancelled-turn".to_string())
+            .await;
+        drop(rx);
+        let delivered = agent
+            .handle_confirmation(
+                "cancelled-turn".to_string(),
+                PermissionConfirmation {
+                    principal_type: PrincipalType::Tool,
+                    permission: crate::permission::Permission::AllowOnce,
+                },
+            )
+            .await;
+        assert!(!delivered, "dropped receiver must report false");
     }
 
     #[tokio::test]
