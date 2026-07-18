@@ -134,6 +134,30 @@ fn item_is_valid(kind: &str) -> bool {
     ITEM_CATALOG.iter().any(|(k, _)| *k == kind)
 }
 
+/// The `open_item` success text — honest about the fire-and-forget contract.
+/// The tool validates only the kind and id PRESENCE, then emits to the app
+/// bus: it cannot confirm an app window is connected or that the ids are
+/// current, so the text must not claim the item is open. (The old "Opening
+/// {kind}." read as confirmed success to the agent while a stale id showed
+/// the user an error modal — or, with no app window, nothing at all.)
+fn open_item_result_text(
+    kind: &str,
+    project_id: &str,
+    card_id: Option<&str>,
+    reason: &str,
+) -> String {
+    let ids = match card_id {
+        Some(card) if !card.is_empty() => format!("{} (card {})", project_id, card),
+        _ => project_id.to_string(),
+    };
+    format!(
+        "Sent the open request for {} {} to the app. If the app isn't open or \
+         the id is stale, nothing will change on screen — project_resolve / \
+         board_summary / card_list give current ids. {}",
+        kind, ids, reason
+    )
+}
+
 fn schema<T: JsonSchema>() -> JsonObject {
     let mut obj = serde_json::to_value(schema_for!(T))
         .map(|v| v.as_object().unwrap().clone())
@@ -303,10 +327,14 @@ impl AppConductorClient {
             &args.reason,
         ));
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Opening {}. {}",
-            args.kind, args.reason
-        ))]))
+        Ok(CallToolResult::success(vec![Content::text(
+            open_item_result_text(
+                &args.kind,
+                &args.project_id,
+                args.card_id.as_deref(),
+                &args.reason,
+            ),
+        )]))
     }
 }
 
@@ -353,7 +381,10 @@ impl AppConductorClient {
                  a project's Grow planner; pass project_id.\n\n\
                  Get the ids from your own tools first: project_resolve → \
                  project_id; board_summary or card_list → a card_type \
-                 \"goal\" card's id. (To open a project's Kanban/Overview instead, \
+                 \"goal\" card's id. This sends the open request to the app but \
+                 cannot confirm the open: a stale or guessed id (or no app \
+                 window) changes nothing on screen, so always use CURRENT ids \
+                 from those tools. (To open a project's Kanban/Overview instead, \
                  use navigate_app to the Projects tab with state { project_id }.)"
                     .to_string(),
                 schema::<OpenItemParams>(),
@@ -457,6 +488,33 @@ mod tests {
         let listed = item_kinds_list();
         assert!(listed.contains("goal (needs project_id + card_id)"));
         assert!(listed.contains("grow (needs project_id)"));
+    }
+
+    #[test]
+    fn open_item_result_is_honest_about_delivery() {
+        // The tool only emits a bus event — it cannot verify the id or that an
+        // app window is listening. The success text must say "request sent",
+        // never claim the item is open, and point at the id-refresh tools.
+        let text = open_item_result_text("grow", "p1", None, "You asked to plan growth.");
+        assert!(text.starts_with("Sent the open request for grow p1"));
+        assert!(!text.contains("Opening"), "must not claim the item is open");
+        assert!(text.contains("isn't open"));
+        assert!(text.contains("stale"));
+        assert!(text.contains("project_resolve"));
+        assert!(
+            text.ends_with("You asked to plan growth."),
+            "reason must survive at the end (the established result shape)"
+        );
+    }
+
+    #[test]
+    fn open_item_result_names_both_ids_for_goal() {
+        let text = open_item_result_text("goal", "p1", Some("c9"), "r");
+        assert!(text.contains("goal p1 (card c9)"));
+        // Empty card_id (grow, or a goal caught by earlier validation) must not
+        // render a dangling "(card )".
+        let text = open_item_result_text("grow", "p1", Some(""), "r");
+        assert!(!text.contains("(card"));
     }
 
     #[test]
