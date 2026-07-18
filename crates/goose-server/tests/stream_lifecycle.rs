@@ -64,9 +64,15 @@ async fn read_sse_frames(
         match tokio::time::timeout(Duration::from_millis(300), stream.next()).await {
             Ok(Some(Ok(chunk))) => {
                 buf.push_str(&String::from_utf8_lossy(&chunk));
-                while let Some(pos) = buf.find("\n\n") {
-                    let block = buf[..pos].to_string();
-                    buf = buf[pos + 2..].to_string();
+                // Byte-safe split on the ASCII frame separator — no string
+                // indexing, so no char-boundary panic class (the repo denies
+                // clippy::string_slice). The map ends the borrow of `buf`
+                // before it is reassigned.
+                while let Some((block, rest)) = buf
+                    .split_once("\n\n")
+                    .map(|(b, r)| (b.to_string(), r.to_string()))
+                {
+                    buf = rest;
                     if block.trim().is_empty() || block.starts_with(':') {
                         continue; // heartbeat / SSE comment
                     }
