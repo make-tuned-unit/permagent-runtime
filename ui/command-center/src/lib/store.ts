@@ -153,6 +153,10 @@ export interface ProviderInfo {
   configKeys: Array<{ name: string; required: boolean; secret: boolean; description?: string }>;
   isConfigured: boolean;
   isDefault: boolean;
+  /** Registry classification: "Preferred" | "Builtin" | "Declarative" | "Custom".
+   *  "Custom" marks a user-defined provider (added via the custom-provider flow),
+   *  which is the only type that can be removed from the UI. */
+  providerType: string;
 }
 
 interface CommandCenterStore {
@@ -566,6 +570,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
           configKeys: p.metadata.config_keys,
           isConfigured: p.is_configured,
           isDefault: p.is_default ?? false,
+          providerType: p.provider_type,
         })),
       });
     } catch {
