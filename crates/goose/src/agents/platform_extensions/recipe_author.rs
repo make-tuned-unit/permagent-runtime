@@ -369,17 +369,13 @@ impl RecipeAuthorClient {
     }
 }
 
-// ── MCP trait implementation ────────────────────────────────────────────────
-
-#[async_trait]
-impl McpClientTrait for RecipeAuthorClient {
-    async fn list_tools(
-        &self,
-        _session_id: &str,
-        _next_cursor: Option<String>,
-        _cancel_token: CancellationToken,
-    ) -> std::result::Result<ListToolsResult, Error> {
-        let tools = vec![
+impl RecipeAuthorClient {
+    /// The full, static tool inventory. Extracted from `list_tools` so the
+    /// self-knowledge completeness guard derives its inventory from the REAL
+    /// list — add a tool here and CI fails until the registry `description`
+    /// names it.
+    pub(crate) fn get_tools() -> Vec<Tool> {
+        vec![
             Tool::new(
                 "create_recipe".to_string(),
                 "Create a new scheduled automation. You MUST call this when the user asks to \
@@ -434,10 +430,22 @@ impl McpClientTrait for RecipeAuthorClient {
                     .to_string(),
                 schema::<SaveSkillParams>(),
             ),
-        ];
+        ]
+    }
+}
 
+// ── MCP trait implementation ────────────────────────────────────────────────
+
+#[async_trait]
+impl McpClientTrait for RecipeAuthorClient {
+    async fn list_tools(
+        &self,
+        _session_id: &str,
+        _next_cursor: Option<String>,
+        _cancel_token: CancellationToken,
+    ) -> std::result::Result<ListToolsResult, Error> {
         Ok(ListToolsResult {
-            tools,
+            tools: Self::get_tools(),
             next_cursor: None,
             meta: None,
         })

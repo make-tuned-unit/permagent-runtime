@@ -124,15 +124,13 @@ fn category_label(key: &str) -> &str {
     }
 }
 
-#[async_trait]
-impl McpClientTrait for StorageHealthClient {
-    async fn list_tools(
-        &self,
-        _session_id: &str,
-        _next_cursor: Option<String>,
-        _cancel_token: CancellationToken,
-    ) -> std::result::Result<ListToolsResult, Error> {
-        let tools = vec![Tool::new(
+impl StorageHealthClient {
+    /// The full, static tool inventory. Extracted from `list_tools` so the
+    /// self-knowledge completeness guard derives its inventory from the REAL
+    /// list — add a tool here and CI fails until the registry `description`
+    /// names it.
+    pub(crate) fn get_tools() -> Vec<Tool> {
+        vec![Tool::new(
             "scan_storage_health".to_string(),
             "Scans the filesystem for storage cleanup opportunities. This is the ONLY \
              mechanism for producing storage findings. You MUST NOT attempt to run find, \
@@ -145,10 +143,20 @@ impl McpClientTrait for StorageHealthClient {
              3. Emit the findings JSON in <findings>{...}</findings> tags for the UI"
                 .to_string(),
             schema::<ScanStorageParams>(),
-        )];
+        )]
+    }
+}
 
+#[async_trait]
+impl McpClientTrait for StorageHealthClient {
+    async fn list_tools(
+        &self,
+        _session_id: &str,
+        _next_cursor: Option<String>,
+        _cancel_token: CancellationToken,
+    ) -> std::result::Result<ListToolsResult, Error> {
         Ok(ListToolsResult {
-            tools,
+            tools: Self::get_tools(),
             next_cursor: None,
             meta: None,
         })

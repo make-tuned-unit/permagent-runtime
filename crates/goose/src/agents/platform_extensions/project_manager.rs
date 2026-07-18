@@ -344,7 +344,7 @@ pub const PROJECT_WORKSPACE_FEATURE: crate::agents::self_knowledge::FeatureDescr
             "It is the user's at-a-glance home for a project — what it is, its links, and the live \
              state of its work. Because dropped documents and written notes land in your Brain \
              scoped to the project, you can recall a project's files and notes by content without \
-             the user re-pasting them. Reach for the project tools (list_projects, board_summary) \
+             the user re-pasting them. Reach for the project tools (project_list, board_summary) \
              to read or change what this surface shows; the Overview is the summary view, the \
              Kanban the working board",
         state_source: crate::agents::self_knowledge::StateSource::Static,

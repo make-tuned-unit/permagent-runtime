@@ -109,7 +109,7 @@ impl TodoClient {
         }
     }
 
-    fn get_tools() -> Vec<Tool> {
+    pub(crate) fn get_tools() -> Vec<Tool> {
         let schema = schema_for!(TodoWriteParams);
         let schema_value =
             serde_json::to_value(schema).expect("Failed to serialize TodoWriteParams schema");

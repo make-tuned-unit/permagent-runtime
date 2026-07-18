@@ -43,7 +43,7 @@ pub const TRACE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         display_name: "Execution trace",
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
         what_it_does:
-            "A live, chronological readout of the runtime's most recent events straight off the global /events bus — each entry a timestamp and event type as tool calls, worker activity, navigations, and lifecycle signals fire in real time. It reflects the whole running system and needs no session id",
+            "A live, chronological readout of the runtime's most recent events straight off the running system's event streams — each entry a timestamp and event type as tool calls, worker activity, navigations, and lifecycle signals fire in real time. It reflects the whole running system and needs no session id",
         why_it_matters:
             "It is the low-level, in-the-moment 'what is the system doing right now' view for inspecting or debugging behavior as it happens — distinct from the Activity timeline, which is the curated, durable record of what your agents did; when the user wants to watch the raw event stream or see what just fired under the hood, bring them here",
         state_source: crate::agents::self_knowledge::StateSource::Static,

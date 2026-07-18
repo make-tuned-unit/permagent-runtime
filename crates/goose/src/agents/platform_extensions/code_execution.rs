@@ -327,15 +327,12 @@ fn create_tool_callback(
     })
 }
 
-#[async_trait]
-impl McpClientTrait for CodeExecutionClient {
+impl CodeExecutionClient {
+    /// The static tool list for one disclosure mode — `list_tools` is exactly
+    /// this for `self.disclosure`, so every branch's tools are enumerable
+    /// without a constructed client.
     #[allow(clippy::too_many_lines)]
-    async fn list_tools(
-        &self,
-        _session_id: &str,
-        _next_cursor: Option<String>,
-        _cancellation_token: CancellationToken,
-    ) -> Result<ListToolsResult, Error> {
+    pub(crate) fn tools_for_disclosure(disclosure: &ToolDisclosure) -> Vec<McpTool> {
         fn schema<T: JsonSchema>() -> JsonObject {
             serde_json::to_value(schema_for!(T))
                 .map(|v| v.as_object().unwrap().clone())
@@ -350,7 +347,7 @@ impl McpClientTrait for CodeExecutionClient {
         }))
         .expect("valid schema");
 
-        let tools = match self.disclosure {
+        match disclosure {
             ToolDisclosure::Catalog => {
                 vec![
                     McpTool::new(
@@ -433,12 +430,42 @@ impl McpClientTrait for CodeExecutionClient {
                     Some(true),
                 ))]
             }
-        };
+        }
+    }
 
+    /// The full tool SUPERSET across every disclosure mode, deduplicated by
+    /// name in first-seen order. `list_tools` is `tools_for_disclosure` for the
+    /// configured mode, so a tool added to ANY branch lands here automatically
+    /// — the drift-proof inventory for the self-knowledge completeness guard:
+    /// add a tool to a branch and CI fails until the registry `description`
+    /// names it. (That guard is its only consumer, hence the test-only allow.)
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn all_possible_tools() -> Vec<McpTool> {
+        let mut seen = std::collections::HashSet::new();
+        [
+            ToolDisclosure::Catalog,
+            ToolDisclosure::Filesystem,
+            ToolDisclosure::Sidecar,
+        ]
+        .iter()
+        .flat_map(Self::tools_for_disclosure)
+        .filter(|t| seen.insert(t.name.to_string()))
+        .collect()
+    }
+}
+
+#[async_trait]
+impl McpClientTrait for CodeExecutionClient {
+    async fn list_tools(
+        &self,
+        _session_id: &str,
+        _next_cursor: Option<String>,
+        _cancellation_token: CancellationToken,
+    ) -> Result<ListToolsResult, Error> {
         Ok(ListToolsResult {
             meta: None,
             next_cursor: None,
-            tools,
+            tools: Self::tools_for_disclosure(&self.disclosure),
         })
     }
 

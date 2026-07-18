@@ -371,7 +371,19 @@ impl SummonClient {
         });
     }
 
-    fn create_load_tool(&self) -> Tool {
+    /// The full tool SUPERSET this extension can expose. `list_tools` is
+    /// genuinely dynamic — `delegate` is hidden from subagent sessions so they
+    /// cannot recurse — but it SELECTS from this list, so a tool absent here
+    /// cannot ship at all. That makes this the drift-proof inventory for the
+    /// self-knowledge completeness guard (the main-session view, which is
+    /// where the `permagent_self` brief renders). A constructed-client test in
+    /// `self_knowledge::tests` additionally asserts a real `list_tools` run
+    /// for a non-subagent session returns exactly these names.
+    pub(crate) fn all_possible_tools() -> Vec<Tool> {
+        vec![Self::create_load_tool(), Self::create_delegate_tool()]
+    }
+
+    fn create_load_tool() -> Tool {
         let schema = serde_json::json!({
             "type": "object",
             "properties": {
@@ -403,7 +415,7 @@ impl SummonClient {
         )
     }
 
-    fn create_delegate_tool(&self) -> Tool {
+    fn create_delegate_tool() -> Tool {
         let schema = serde_json::json!({
             "type": "object",
             "properties": {
@@ -1655,10 +1667,13 @@ impl McpClientTrait for SummonClient {
             .map(|s| s.session_type == SessionType::SubAgent)
             .unwrap_or(false);
 
-        let mut tools = vec![self.create_load_tool()];
+        // Select from the guarded superset so a tool that is not in
+        // `all_possible_tools()` cannot ship at all (mirrors ext_manager).
+        let mut tools = Self::all_possible_tools();
 
-        if !is_subagent {
-            tools.push(self.create_delegate_tool());
+        if is_subagent {
+            // Subagents must not recurse into further delegation.
+            tools.retain(|t| t.name.as_ref() != "delegate");
         }
 
         Ok(ListToolsResult {

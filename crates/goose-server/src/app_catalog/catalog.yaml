@@ -167,8 +167,8 @@ tabs:
     tool_type: trace
     panel_type: overlay
     description: >-
-      The Execution trace shows the runtime's most recent events live off the
-      global event bus — a timestamped stream of tool calls, worker activity,
+      The Execution trace shows the runtime's most recent events live from the
+      running system's event streams — timestamped tool calls, worker activity,
       navigations, and lifecycle signals as they happen.
     affords:
       - Watch recent runtime events in real time

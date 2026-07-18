@@ -496,15 +496,15 @@ impl AppsManagerClient {
     }
 }
 
-#[async_trait]
-impl McpClientTrait for AppsManagerClient {
-    async fn list_tools(
-        &self,
-        _session_id: &str,
-        _next_cursor: Option<String>,
-        _cancel_token: CancellationToken,
-    ) -> Result<ListToolsResult, Error> {
-        let tools = vec![
+impl AppsManagerClient {
+    /// The full, static tool inventory. Extracted from `list_tools` so the
+    /// self-knowledge completeness guard derives its inventory from the REAL
+    /// list — add a tool here and CI fails until the registry `description`
+    /// names it. (The internal LLM-facing content tools — `create_app_content`,
+    /// `update_app_content` — are prompt scaffolding passed to the generator
+    /// model, not agent-callable tools, so they are deliberately not here.)
+    pub(crate) fn get_tools() -> Vec<McpTool> {
+        vec![
             McpTool::new(
                 "list_apps".to_string(),
                 "List all available apps with their names and descriptions. Use this to see what apps exist before creating or modifying apps.".to_string(),
@@ -525,10 +525,20 @@ impl McpClientTrait for AppsManagerClient {
                 "Delete an app permanently".to_string(),
                 schema::<DeleteAppParams>(),
             ),
-        ];
+        ]
+    }
+}
 
+#[async_trait]
+impl McpClientTrait for AppsManagerClient {
+    async fn list_tools(
+        &self,
+        _session_id: &str,
+        _next_cursor: Option<String>,
+        _cancel_token: CancellationToken,
+    ) -> Result<ListToolsResult, Error> {
         Ok(ListToolsResult {
-            tools,
+            tools: Self::get_tools(),
             next_cursor: None,
             meta: None,
         })
