@@ -148,6 +148,13 @@ pub struct Agent {
     pub(super) provider: SharedProvider,
     pub config: AgentRunnerConfig,
     pub(super) current_goose_mode: Mutex<GooseMode>,
+    /// True for agents with no interactive approver (scheduled-recipe jobs).
+    /// A headless agent must NEVER park on tool approval — nobody exists to
+    /// answer, so a park is a permanent hang — and must NEVER file a
+    /// `tool_approval` Decision-Inbox row. Instead, approval-required tools
+    /// are auto-DENIED with a recorded skip (already always-allowed tools run
+    /// normally). See `tool_execution.rs` for both enforcement points.
+    pub(super) headless: std::sync::atomic::AtomicBool,
 
     pub extension_manager: Arc<ExtensionManager>,
     pub(super) final_output_tool: Arc<Mutex<Option<FinalOutputTool>>>,
@@ -241,6 +248,7 @@ impl Agent {
             provider: provider.clone(),
             config,
             current_goose_mode: Mutex::new(initial_mode),
+            headless: std::sync::atomic::AtomicBool::new(false),
             extension_manager: Arc::new(ExtensionManager::new(
                 provider.clone(),
                 session_manager,
@@ -1051,6 +1059,23 @@ impl Agent {
         self.extension_manager.get_extension_configs().await
     }
 
+    /// Mark this agent as headless: no interactive approver exists for it
+    /// (scheduled-recipe jobs). Approval-required tools are auto-denied with a
+    /// recorded skip instead of parking, and no `tool_approval` decision is
+    /// ever filed. Deliberately explicit — headlessness is a property of how
+    /// the agent is RUN (set by the runner that owns it), never an accident of
+    /// mode defaults.
+    pub fn set_headless(&self, headless: bool) {
+        self.headless
+            .store(headless, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether this agent runs without an interactive approver. See
+    /// [`Agent::set_headless`].
+    pub fn is_headless(&self) -> bool {
+        self.headless.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Handle a confirmation response for a tool request.
     ///
     /// Returns whether a live waiter actually received it: `true` when the
@@ -1484,6 +1509,20 @@ impl Agent {
                             }
 
                             if let Some(response) = response {
+                                // Provider-side permission parks (claude-code /
+                                // ACP subprocesses in approve/smart_approve):
+                                // the provider has yielded an ActionRequired
+                                // tool confirmation and is now parked on its own
+                                // oneshot awaiting handle_permission_confirmation.
+                                // Bridge the park into the Decision Inbox — or
+                                // auto-deny it when this agent is headless —
+                                // BEFORE the event reaches the client, mirroring
+                                // the core-park filing order. Best-effort: never
+                                // breaks the turn; the legacy action_required
+                                // event below still flows either way.
+                                self.bridge_provider_action_required(&response, &session_config.id)
+                                    .await;
+
                                 let ToolCategorizeResult {
                                     frontend_requests,
                                     remaining_requests,

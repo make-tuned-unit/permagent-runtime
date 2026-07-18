@@ -1521,6 +1521,26 @@ async fn escalate_persistent_failure(
     }
 }
 
+/// Build the agent for a headless scheduled-recipe run.
+///
+/// Scheduled jobs have NO approver: no terminal prompt exists and nobody is
+/// watching an inbox mid-run, so an approval park could only hang the job
+/// forever in the drain loop (the pre-#760 de-facto behavior), and any
+/// `tool_approval` decision it filed would be undeliverable (this bare agent
+/// is never registered in `AgentManager`, so answering reaches a fresh agent
+/// with no waiter). Rather than silently widening permissions to
+/// `GooseMode::Auto` — which would let anything able to schedule a recipe
+/// bypass approve mode entirely — the agent is marked HEADLESS: tools the user
+/// already always-allowed run normally, and any tool that would require
+/// interactive approval is auto-denied with a recorded skip (never parked,
+/// never filed). The user-visible remedies are pre-approving the tool or
+/// running the recipe in auto mode.
+fn new_scheduled_job_agent() -> Agent {
+    let agent = Agent::new();
+    agent.set_headless(true);
+    agent
+}
+
 #[allow(clippy::too_many_lines)]
 async fn execute_job(
     job: ScheduledJob,
@@ -1551,7 +1571,7 @@ async fn execute_job(
         }
     };
 
-    let agent = Agent::new();
+    let agent = new_scheduled_job_agent();
 
     // Wire persona into agent: worker persona if specified, else primary.
     if let Some(ref worker_key) = job.worker_persona {
@@ -2079,6 +2099,17 @@ mod tests {
         let recipe_path = dir.join(format!("{}.yaml", name));
         fs::write(&recipe_path, "prompt: test\n").unwrap();
         recipe_path
+    }
+
+    /// Scheduled jobs run with NO approver: `execute_job` must build its agent
+    /// through `new_scheduled_job_agent` so approval-required tools auto-deny
+    /// with a recorded skip instead of parking the drain loop forever or
+    /// filing undeliverable `tool_approval` decisions (the bare job agent is
+    /// never registered in `AgentManager`, so nothing could answer them).
+    #[test]
+    fn scheduled_job_agents_are_headless() {
+        let agent = new_scheduled_job_agent();
+        assert!(agent.is_headless(), "scheduled-job agents must be headless");
     }
 
     #[test]
