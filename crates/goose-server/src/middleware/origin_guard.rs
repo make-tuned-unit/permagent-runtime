@@ -102,8 +102,8 @@ pub fn origin_allowed(origin: &str, request_host: Option<&str>, extra: Option<&s
 /// Split `host[:port]` → host, tolerating a bracketed IPv6 literal.
 fn authority_host(authority: &str) -> &str {
     if authority.starts_with('[') {
-        if let Some(end) = authority.find(']') {
-            return &authority[..=end];
+        if let Some(host) = authority.find(']').and_then(|end| authority.get(..=end)) {
+            return host;
         }
     }
     authority.split(':').next().unwrap_or(authority)
