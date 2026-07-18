@@ -17,7 +17,8 @@
 //! status. Wrapping those would teach the model to discount the user's own
 //! data — the exact inversion this fixes.
 
-use crate::agents::tool_execution::ToolCallResult;
+use crate::agents::ToolCallResult;
+use crate::mcp_utils::ToolResult;
 use futures::FutureExt;
 use rmcp::model::{CallToolResult, RawContent};
 
@@ -114,7 +115,9 @@ pub fn apply_untrusted_result_framing(tool_name: &str, result: ToolCallResult) -
         result: Box::new(
             result
                 .result
-                .map(move |output| output.map(|r| frame_untrusted_tool_result(&tool_name, r))),
+                .map(move |output: ToolResult<CallToolResult>| {
+                    output.map(|r| frame_untrusted_tool_result(&tool_name, r))
+                }),
         ),
         notification_stream: result.notification_stream,
     }
