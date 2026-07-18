@@ -53,6 +53,28 @@ pub struct OllamaProvider {
     supports_streaming: bool,
     name: String,
     skip_canonical_filtering: bool,
+    /// Whether the configured Ollama host is loopback (this machine). A remote
+    /// Ollama is a cloud egress from the sovereignty point of view, so this
+    /// drives [`Provider::data_locality`]. Computed once at construction.
+    is_local_host: bool,
+}
+
+/// Whether an Ollama base URL points at this machine (loopback). Fail-closed:
+/// anything that is not clearly loopback is treated as remote (cloud).
+fn is_loopback_ollama(base_url: &Url) -> bool {
+    match base_url.host_str() {
+        Some(h) => {
+            let h = h.trim_start_matches('[').trim_end_matches(']');
+            h.eq_ignore_ascii_case("localhost")
+                || h == "::1"
+                || h.strip_prefix("127.")
+                    .map(|rest| {
+                        !rest.is_empty() && rest.bytes().all(|b| b == b'.' || b.is_ascii_digit())
+                    })
+                    .unwrap_or(false)
+        }
+        None => false,
+    }
 }
 fn resolve_ollama_num_ctx(model_config: &ModelConfig) -> Option<usize> {
     let config = crate::config::Config::global();
@@ -154,12 +176,15 @@ impl OllamaProvider {
         let api_client =
             ApiClient::with_timeout(base_url.to_string(), AuthMethod::NoAuth, timeout)?;
 
+        let is_local_host = is_loopback_ollama(&base_url);
+
         Ok(Self {
             api_client,
             model,
             supports_streaming: true,
             name: OLLAMA_PROVIDER_NAME.to_string(),
             skip_canonical_filtering: false,
+            is_local_host,
         })
     }
 
@@ -217,12 +242,15 @@ impl OllamaProvider {
             model
         };
 
+        let is_local_host = is_loopback_ollama(&base_url);
+
         Ok(Self {
             api_client,
             model,
             supports_streaming,
             name: config.name.clone(),
             skip_canonical_filtering: config.skip_canonical_filtering,
+            is_local_host,
         })
     }
 }
@@ -287,6 +315,16 @@ impl Provider for OllamaProvider {
 
     fn get_model_config(&self) -> ModelConfig {
         self.model.clone()
+    }
+
+    /// Local only when the Ollama host is loopback. A remote Ollama ships the
+    /// prompt off this machine, so it is treated as cloud egress (fail-closed).
+    fn data_locality(&self) -> crate::sovereignty::DataLocality {
+        if self.is_local_host {
+            crate::sovereignty::DataLocality::Local
+        } else {
+            crate::sovereignty::DataLocality::Cloud
+        }
     }
 
     fn retry_config(&self) -> RetryConfig {
@@ -464,6 +502,30 @@ fn stream_ollama(response: Response, mut log: RequestLog) -> Result<MessageStrea
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn is_loopback(u: &str) -> bool {
+        is_loopback_ollama(&Url::parse(u).unwrap())
+    }
+
+    #[test]
+    fn loopback_ollama_is_local() {
+        // Loopback hosts -> local (data stays on this machine).
+        assert!(is_loopback("http://localhost:11434"));
+        assert!(is_loopback("http://LOCALHOST:11434"));
+        assert!(is_loopback("http://127.0.0.1:11434"));
+        assert!(is_loopback("http://127.1.2.3:11434"));
+        assert!(is_loopback("http://[::1]:11434"));
+    }
+
+    #[test]
+    fn remote_ollama_is_cloud_fail_closed() {
+        // Anything not clearly loopback -> cloud (fail-closed): a remote Ollama
+        // ships the prompt off this machine.
+        assert!(!is_loopback("http://192.168.1.50:11434"));
+        assert!(!is_loopback("http://10.0.0.5:11434"));
+        assert!(!is_loopback("https://ollama.example.com"));
+        assert!(!is_loopback("http://ollama.internal:11434"));
+    }
 
     #[test]
     fn test_apply_ollama_options_uses_input_limit() {

@@ -1141,6 +1141,20 @@ pub async fn generate(req: GenerateRequest) -> Result<GenerateResponse, PoolErro
     match engine() {
         Some(engine) => engine.generate_with(&req).await,
         None => {
+            // Sovereignty boundary: the network rung dispatches inference to
+            // another node (a LAN pool peer), which leaves this machine. Under
+            // global sovereign mode that is refused (fail-closed) — only the
+            // in-process `engine()` rung above stays local. The Provider-trait
+            // guard covers cloud APIs; this covers the mesh side-path.
+            if crate::sovereignty::global_sovereign_mode() {
+                return Err(PoolError {
+                    message: format!(
+                        "{} mesh pool inference blocked: sovereign mode keeps all inference on this machine",
+                        crate::sovereignty::SOVEREIGN_BLOCK_PREFIX
+                    ),
+                    escalate_to: None,
+                });
+            }
             let route = crate::mesh::resolve_route(req.workload);
             let client = reqwest::Client::builder()
                 .connect_timeout(Duration::from_secs(5))

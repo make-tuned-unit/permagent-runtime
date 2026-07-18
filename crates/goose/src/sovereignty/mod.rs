@@ -1,0 +1,425 @@
+//! Sovereignty — the data-boundary enforcement layer.
+//!
+//! Permagent's sovereignty guarantee: when a context is marked *sovereign*,
+//! inference for that context is constrained to **local models only**, and any
+//! attempt to use a **cloud** provider is **blocked** (fail-closed) — sensitive
+//! data provably never leaves this machine for cloud inference. Every cloud
+//! inference call (blocked or allowed) is recorded in an append-only local
+//! egress audit log.
+//!
+//! Enforcement is centralized in [`crate::providers::sovereign_guard`], the
+//! decorator that wraps *every* provider minted by the factory
+//! (`crate::providers::create*`). That is the single choke point: all inference
+//! egress in the daemon flows through `Provider::stream` (with `complete` /
+//! `complete_fast` / `generate_session_name` funneling into it), so guarding
+//! `stream` there guards the whole surface. This module owns the *policy* state
+//! (what is sovereign) and the *audit* store (what has left, and when).
+//!
+//! The local-vs-cloud distinction is [`DataLocality`], surfaced by
+//! [`crate::providers::base::Provider::data_locality`]. It is **fail-closed**:
+//! any provider that does not *prove* it runs on this machine is treated as
+//! cloud egress.
+
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicI8, Ordering};
+use std::sync::{LazyLock, RwLock};
+
+use sha2::{Digest, Sha256};
+use sqlx::{Pool, Row, Sqlite};
+
+use crate::config::{Config, ConfigError};
+use crate::conversation::message::Message;
+
+/// Config key for the global sovereign-mode switch. Because `Config::get_param`
+/// checks the uppercased env var first, `SOVEREIGN_MODE=true` also works (handy
+/// as a kill-switch / for tests).
+pub const SOVEREIGN_MODE_KEY: &str = "sovereign_mode";
+
+/// Config key: when true, the egress audit log captures the full prompt text
+/// alongside the hash. Default false — only a SHA-256 content hash is stored.
+pub const SOVEREIGN_CAPTURE_PROMPTS_KEY: &str = "sovereign_capture_prompts";
+
+/// Prefix on the block error message so callers, the UI, and tests can
+/// recognize a sovereign refusal without a dedicated `ProviderError` variant.
+pub const SOVEREIGN_BLOCK_PREFIX: &str = "[sovereign]";
+
+// ── Local vs cloud identity ─────────────────────────────────────────────────
+
+/// Where a model's inference physically runs — the load-bearing local-vs-cloud
+/// distinction. **Fail-closed:** anything not *provably* local is [`Cloud`].
+///
+/// [`Cloud`]: DataLocality::Cloud
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataLocality {
+    /// Runs on this machine (in-process llama.cpp, or a loopback Ollama). Data
+    /// stays local; using it is never an egress.
+    Local,
+    /// Runs off this machine (a third-party cloud API, a CLI that ships the
+    /// prompt to a vendor, or a non-loopback host). Using it egresses the
+    /// prompt.
+    Cloud,
+}
+
+impl DataLocality {
+    pub fn is_local(self) -> bool {
+        matches!(self, DataLocality::Local)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DataLocality::Local => "local",
+            DataLocality::Cloud => "cloud",
+        }
+    }
+}
+
+// ── Global sovereign mode (cached) ──────────────────────────────────────────
+
+// -1 = not yet loaded, 0 = off, 1 = on. Cached so the provider hot path never
+// re-parses config.yaml per inference call (`get_param` is not cached).
+static GLOBAL_MODE_CACHE: AtomicI8 = AtomicI8::new(-1);
+
+/// Is process-wide sovereign mode on? Cheap (cached atomic after first read).
+/// When on, *all* cloud inference in the process is blocked and audited.
+pub fn global_sovereign_mode() -> bool {
+    match GLOBAL_MODE_CACHE.load(Ordering::Relaxed) {
+        0 => false,
+        1 => true,
+        _ => {
+            let on = Config::global()
+                .get_param::<bool>(SOVEREIGN_MODE_KEY)
+                .unwrap_or(false);
+            GLOBAL_MODE_CACHE.store(i8::from(on), Ordering::Relaxed);
+            on
+        }
+    }
+}
+
+/// Set (and persist) process-wide sovereign mode, updating the cache.
+pub fn set_global_sovereign_mode(on: bool) -> Result<(), ConfigError> {
+    Config::global().set_param(SOVEREIGN_MODE_KEY, on)?;
+    GLOBAL_MODE_CACHE.store(i8::from(on), Ordering::Relaxed);
+    Ok(())
+}
+
+/// Invalidate the cached global-mode value so the next read reloads from config
+/// (used after an external config change, and by tests).
+pub fn invalidate_global_mode_cache() {
+    GLOBAL_MODE_CACHE.store(-1, Ordering::Relaxed);
+}
+
+// ── Session sovereignty registry ────────────────────────────────────────────
+
+// Sessions explicitly marked sovereign (e.g. because their project is
+// sovereign) even when global mode is off. Populated at session/agent setup;
+// read in the provider hot path by `session_id`.
+static SOVEREIGN_SESSIONS: LazyLock<RwLock<HashSet<String>>> =
+    LazyLock::new(|| RwLock::new(HashSet::new()));
+
+/// Mark a session as sovereign (local-only). Idempotent.
+pub fn mark_session_sovereign(session_id: &str) {
+    if let Ok(mut set) = SOVEREIGN_SESSIONS.write() {
+        set.insert(session_id.to_string());
+    }
+}
+
+/// Clear a session's sovereign mark. Idempotent.
+pub fn unmark_session_sovereign(session_id: &str) {
+    if let Ok(mut set) = SOVEREIGN_SESSIONS.write() {
+        set.remove(session_id);
+    }
+}
+
+/// Is this specific session marked sovereign?
+pub fn is_session_sovereign(session_id: &str) -> bool {
+    SOVEREIGN_SESSIONS
+        .read()
+        .map(|s| s.contains(session_id))
+        .unwrap_or(false)
+}
+
+/// The load-bearing predicate: is inference for this context constrained to
+/// local models? True if global sovereign mode is on **or** the session is
+/// marked sovereign.
+pub fn is_context_sovereign(session_id: &str) -> bool {
+    global_sovereign_mode() || is_session_sovereign(session_id)
+}
+
+/// The error message returned when a cloud provider is blocked for a sovereign
+/// context. Prefixed with [`SOVEREIGN_BLOCK_PREFIX`] for recognition.
+pub fn sovereign_block_message(provider: &str, model: &str) -> String {
+    format!(
+        "{SOVEREIGN_BLOCK_PREFIX} cloud provider '{provider}' (model '{model}') is blocked: \
+         this context is sovereign (local-only). No conversation data will leave this machine \
+         for cloud inference. Switch to a local model (Ollama on localhost, or the built-in \
+         local-inference provider) to continue."
+    )
+}
+
+// ── Egress audit log ────────────────────────────────────────────────────────
+
+/// What kind of content left (or was blocked from leaving) the machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EgressKind {
+    /// A prompt-completion / streaming inference call.
+    Inference,
+    /// An embedding request.
+    Embedding,
+}
+
+impl EgressKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EgressKind::Inference => "inference",
+            EgressKind::Embedding => "embedding",
+        }
+    }
+}
+
+/// A single cloud-egress event to record. Built by the guard at the choke
+/// point.
+#[derive(Debug, Clone)]
+pub struct EgressRecord {
+    pub provider: String,
+    pub model: String,
+    pub session_id: String,
+    pub project_id: Option<String>,
+    pub kind: EgressKind,
+    /// True if this egress was *blocked* (sovereign context); false if allowed.
+    pub blocked: bool,
+    /// SHA-256 hex of the prompt content (always present).
+    pub content_hash: String,
+    /// Full prompt text, only when `sovereign_capture_prompts` is enabled.
+    pub prompt: Option<String>,
+}
+
+/// A row read back from the egress audit log (wire-friendly, camelCase JSON).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EgressLogEntry {
+    pub id: String,
+    pub ts: String,
+    pub provider: String,
+    pub model: String,
+    pub session_id: Option<String>,
+    pub project_id: Option<String>,
+    pub kind: String,
+    pub blocked: bool,
+    pub content_hash: String,
+    pub prompt: Option<String>,
+}
+
+/// Is full-prompt capture enabled? (Default false — hash only.)
+pub fn capture_prompts_enabled() -> bool {
+    Config::global()
+        .get_param::<bool>(SOVEREIGN_CAPTURE_PROMPTS_KEY)
+        .unwrap_or(false)
+}
+
+/// Render a prompt (system + messages) to a single canonical string for hashing
+/// and (optionally) capture.
+pub fn render_prompt(system: &str, messages: &[Message]) -> String {
+    let mut out = String::with_capacity(system.len() + 32);
+    out.push_str("system:\n");
+    out.push_str(system);
+    for m in messages {
+        out.push_str("\n\n");
+        // `==` (not `match`) so we never move `role` out of the `&Message`.
+        out.push_str(if m.role == rmcp::model::Role::User {
+            "user:\n"
+        } else {
+            "assistant:\n"
+        });
+        out.push_str(&m.as_concat_text());
+    }
+    out
+}
+
+/// SHA-256 hex of a system+messages prompt.
+pub fn hash_prompt(system: &str, messages: &[Message]) -> String {
+    hash_str(&render_prompt(system, messages))
+}
+
+/// SHA-256 hex of a batch of embedding inputs.
+pub fn hash_texts(texts: &[String]) -> String {
+    hash_str(&texts.join("\n"))
+}
+
+fn hash_str(s: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(s.as_bytes());
+    hex::encode(h.finalize())
+}
+
+/// Insert one egress event (pure — takes an explicit pool; used by the
+/// convenience wrapper and by tests).
+pub async fn record_egress_row(pool: &Pool<Sqlite>, rec: &EgressRecord) -> anyhow::Result<()> {
+    let id = uuid::Uuid::now_v7().to_string();
+    let ts = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    sqlx::query(
+        "INSERT INTO egress_audit \
+         (id, ts, provider, model, session_id, project_id, kind, blocked, content_hash, prompt) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(ts)
+    .bind(rec.provider.as_str())
+    .bind(rec.model.as_str())
+    .bind(rec.session_id.as_str())
+    .bind(rec.project_id.as_deref())
+    .bind(rec.kind.as_str())
+    .bind(i64::from(rec.blocked))
+    .bind(rec.content_hash.as_str())
+    .bind(rec.prompt.as_deref())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Read the most recent egress events, newest first (pure — explicit pool).
+pub async fn recent_egress_rows(
+    pool: &Pool<Sqlite>,
+    limit: i64,
+) -> anyhow::Result<Vec<EgressLogEntry>> {
+    let rows = sqlx::query(
+        "SELECT id, ts, provider, model, session_id, project_id, kind, blocked, content_hash, prompt \
+         FROM egress_audit ORDER BY ts DESC, id DESC LIMIT ?",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .iter()
+        .map(|r| EgressLogEntry {
+            id: r.get("id"),
+            ts: r.get("ts"),
+            provider: r.get("provider"),
+            model: r.get("model"),
+            session_id: r.get("session_id"),
+            project_id: r.get("project_id"),
+            kind: r.get("kind"),
+            blocked: r.get::<i64, _>("blocked") != 0,
+            content_hash: r.get("content_hash"),
+            prompt: r.get("prompt"),
+        })
+        .collect())
+}
+
+/// Record a cloud-egress event to the always-on audit log. Best-effort: a write
+/// failure is logged loudly (an unlogged cloud call is a lying audit) but never
+/// aborts the caller. Obtains the shared spectral pool via the global session
+/// manager, so it is callable from anywhere (including the provider layer).
+pub async fn record_egress(rec: EgressRecord) {
+    match crate::session::SessionManager::instance()
+        .pool_clone()
+        .await
+    {
+        Ok(pool) => {
+            if let Err(e) = record_egress_row(&pool, &rec).await {
+                tracing::error!(target: "sovereignty", "failed to write egress audit row: {e}");
+            }
+        }
+        Err(e) => {
+            tracing::error!(target: "sovereignty", "egress audit unavailable (no db pool): {e}");
+        }
+    }
+}
+
+/// Read recent egress events via the shared spectral pool.
+pub async fn recent_egress(limit: i64) -> anyhow::Result<Vec<EgressLogEntry>> {
+    let pool = crate::session::SessionManager::instance()
+        .pool_clone()
+        .await?;
+    recent_egress_rows(&pool, limit).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn mem_pool() -> Pool<Sqlite> {
+        // Mirror the proven in-memory test-pool idiom (see `activity_journal`
+        // tests): `init_spectral_db` builds the full schema, which now includes
+        // the `egress_audit` table + its append-only triggers.
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite pool");
+        crate::session::spectral_schema::init_spectral_db(&pool)
+            .await
+            .expect("spectral schema init");
+        pool
+    }
+
+    #[test]
+    fn data_locality_fail_closed_semantics() {
+        assert!(DataLocality::Local.is_local());
+        assert!(!DataLocality::Cloud.is_local());
+        assert_eq!(DataLocality::Local.as_str(), "local");
+        assert_eq!(DataLocality::Cloud.as_str(), "cloud");
+    }
+
+    #[test]
+    fn session_registry_marks_and_clears() {
+        let sid = "sess-registry-unit-test";
+        assert!(!is_session_sovereign(sid));
+        mark_session_sovereign(sid);
+        assert!(is_session_sovereign(sid));
+        assert!(is_context_sovereign(sid));
+        unmark_session_sovereign(sid);
+        assert!(!is_session_sovereign(sid));
+    }
+
+    #[test]
+    fn content_hash_is_stable_and_sensitive() {
+        let a = hash_texts(&["hello".to_string()]);
+        let b = hash_texts(&["hello".to_string()]);
+        let c = hash_texts(&["world".to_string()]);
+        assert_eq!(a, b, "same input hashes identically");
+        assert_ne!(a, c, "different input hashes differently");
+        assert_eq!(a.len(), 64, "sha256 hex is 64 chars");
+    }
+
+    #[test]
+    fn block_message_carries_prefix_and_names() {
+        let msg = sovereign_block_message("anthropic", "claude-x");
+        assert!(msg.starts_with(SOVEREIGN_BLOCK_PREFIX));
+        assert!(msg.contains("anthropic"));
+        assert!(msg.contains("claude-x"));
+    }
+
+    #[tokio::test]
+    async fn egress_row_roundtrip_and_append_only() {
+        let pool = mem_pool().await;
+        let rec = EgressRecord {
+            provider: "anthropic".to_string(),
+            model: "claude-x".to_string(),
+            session_id: "s1".to_string(),
+            project_id: Some("p1".to_string()),
+            kind: EgressKind::Inference,
+            blocked: false,
+            content_hash: "abc123".to_string(),
+            prompt: None,
+        };
+        record_egress_row(&pool, &rec).await.unwrap();
+
+        let rows = recent_egress_rows(&pool, 10).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].provider, "anthropic");
+        assert_eq!(rows[0].model, "claude-x");
+        assert_eq!(rows[0].kind, "inference");
+        assert!(!rows[0].blocked);
+        assert_eq!(rows[0].content_hash, "abc123");
+
+        // Append-only: the DB itself must reject UPDATE and DELETE so the audit
+        // cannot be quietly rewritten (a deletable log is a lying log).
+        let upd = sqlx::query("UPDATE egress_audit SET provider = 'x'")
+            .execute(&pool)
+            .await;
+        assert!(upd.is_err(), "egress_audit must reject UPDATE");
+        let del = sqlx::query("DELETE FROM egress_audit").execute(&pool).await;
+        assert!(del.is_err(), "egress_audit must reject DELETE");
+    }
+}

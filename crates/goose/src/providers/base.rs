@@ -616,6 +616,18 @@ pub trait Provider: Send + Sync {
     /// Get the model config from the provider
     fn get_model_config(&self) -> ModelConfig;
 
+    /// Where this provider's inference physically runs — the load-bearing
+    /// local-vs-cloud distinction used by the sovereignty guard.
+    ///
+    /// **Fail-closed default: [`DataLocality::Cloud`].** Any provider that does
+    /// not *prove* it runs on this machine is treated as cloud egress, so a new
+    /// or unknown provider can never silently be treated as local. Local
+    /// providers (in-process inference; a loopback Ollama) override this to
+    /// [`DataLocality::Local`].
+    fn data_locality(&self) -> crate::sovereignty::DataLocality {
+        crate::sovereignty::DataLocality::Cloud
+    }
+
     fn retry_config(&self) -> RetryConfig {
         RetryConfig::default()
     }

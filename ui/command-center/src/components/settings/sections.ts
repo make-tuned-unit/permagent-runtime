@@ -10,6 +10,7 @@
 export const SETTINGS_SECTION_KEYS = [
   'agent', 'profile', 'preferences', 'memory', 'autonomy', 'tools',
   'models', 'keys', 'devices', 'search', 'appearance', 'shortcuts', 'data',
+  'sovereignty',
 ] as const;
 
 export type SettingsSectionKey = (typeof SETTINGS_SECTION_KEYS)[number];

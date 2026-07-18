@@ -928,6 +928,13 @@ impl SessionStorage {
                     if version < 28 {
                         spectral_schema::migrate_v27_to_v28(&self.pool).await?;
                     }
+                    // v29: egress_audit table (sovereignty). Always-on,
+                    // append-only record of every cloud inference call the
+                    // sovereignty guard sees. Purely additive
+                    // (CREATE TABLE IF NOT EXISTS), base-independent.
+                    if version < 29 {
+                        spectral_schema::migrate_v28_to_v29(&self.pool).await?;
+                    }
                     // Version-independent safety net for the cfg-gated v22
                     // recognition columns. The always-on v23 above can stamp
                     // schema_version past the `version < 22` gate on a feature-off
