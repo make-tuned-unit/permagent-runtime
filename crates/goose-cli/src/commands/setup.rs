@@ -456,14 +456,9 @@ fn write_secrets_fallback(permagent_dir: &Path, key_name: &str, key: &str) -> Re
     }
 
     let yaml_str = serde_yaml::to_string(&secrets)?;
-    fs::write(&secrets_path, yaml_str)?;
-
-    // Set restrictive permissions on secrets file
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&secrets_path, fs::Permissions::from_mode(0o600))?;
-    }
+    // Atomic write, 0600 from the first byte — never observable
+    // world-readable, even transiently.
+    permagent::config::secure_fs::write_private_file(&secrets_path, yaml_str.as_bytes())?;
 
     Ok(())
 }

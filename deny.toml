@@ -6,8 +6,31 @@ yanked = "deny"
 unmaintained = "none"
 unsound = "none"
 
-# Ignore proc-macro-error unmaintained warning
-# See: https://github.com/aaif-goose/goose/issues/7008
+# Every entry here is a documented exception, not a dismissal: each one is a
+# DoS-class advisory whose fix sits behind a semver-incompatible bump of a
+# (transitive) dependency. Remove the entry as soon as the blocking upgrade
+# lands. Do NOT park RCE/info-leak advisories here.
 ignore = [
-    "RUSTSEC-2023-0071",  # rsa: Marvin Attack timing sidechannel (no safe upgrade available, via jsonwebtoken)
+    # rsa 0.9.x: Marvin Attack timing sidechannel. No fixed release exists
+    # ("no safe upgrade available" per RustSec). Reachable only under
+    # --all-features via jsonwebtoken -> rsa; exploiting it needs a remote
+    # timing oracle against RSA decryption, which this app does not expose.
+    # TODO: drop when rsa ships a fixed release and jsonwebtoken adopts it.
+    "RUSTSEC-2023-0071",
+    # lopdf < 0.42: stack-overflow SIGABRT on a ~21KB crafted PDF (deeply
+    # nested arrays). Direct dep of `permagent` (document/PDF ingestion).
+    # Fix requires the lopdf 0.41 -> 0.42 semver-incompatible bump + API
+    # migration. TODO: bump lopdf to 0.42 and drop this entry.
+    "RUSTSEC-2026-0187",
+    # quick-xml < 0.41: quadratic run time on duplicate start-tag attributes.
+    # Transitive via docx-rs 0.4 (0.36), plist/bat (0.37), umya-spreadsheet
+    # (0.38) — each pins its own 0.3x range, so no compatible fixed version
+    # exists until those upstreams move. DoS-only (CPU), parsing untrusted
+    # docx/xlsx/plist. TODO: drop when docx-rs/plist/bat/umya-spreadsheet
+    # release against quick-xml >= 0.41.
+    "RUSTSEC-2026-0194",
+    # quick-xml < 0.41: unbounded namespace-declaration allocation in
+    # NsReader (memory-exhaustion DoS). Same blocked upgrade path as
+    # RUSTSEC-2026-0194 above; same TODO.
+    "RUSTSEC-2026-0195",
 ]

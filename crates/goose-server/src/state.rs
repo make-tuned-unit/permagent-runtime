@@ -984,7 +984,8 @@ fn load_or_create_daemon_token() -> Option<String> {
     let token_bytes: [u8; 32] = rand::random();
     let token = hex::encode(token_bytes);
 
-    if let Err(e) = std::fs::create_dir_all(&secrets_dir) {
+    // 0700 from creation, re-enforced if the directory already exists.
+    if let Err(e) = permagent::config::secure_fs::ensure_private_dir(&secrets_dir) {
         tracing::error!(
             target: "permagentd::auth",
             "Failed to create secrets dir: {}",
@@ -996,15 +997,10 @@ fn load_or_create_daemon_token() -> Option<String> {
     let content = serde_json::json!({ "token": token });
     let json_str = serde_json::to_string_pretty(&content).unwrap();
 
-    match std::fs::write(&token_path, &json_str) {
+    // Atomic write, 0600 from the first byte — the control-plane auth token
+    // must never be observable world-readable.
+    match permagent::config::secure_fs::write_private_file(&token_path, json_str.as_bytes()) {
         Ok(_) => {
-            // Set file permissions to 0600 on Unix
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ =
-                    std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o600));
-            }
             tracing::info!(
                 target: "permagentd::auth",
                 "Daemon token generated and saved to {}",

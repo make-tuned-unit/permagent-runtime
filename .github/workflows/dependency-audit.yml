@@ -1,0 +1,83 @@
+# Dependency vulnerability gate (M2, production-readiness audit).
+#
+# Formerly cargo-deny.yml.disabled, inherited from upstream with an
+# `if: github.repository == 'aaif-goose/goose'` guard that meant it never ran
+# on this repo. Re-enabled here, advisories-focused (see deny.toml: yanked +
+# vulnerabilities, matching cargo-audit semantics), plus an npm audit leg for
+# the frontend packages — production dependencies only, failing on
+# high/critical advisories.
+name: Dependency Audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      # Run if workflow or policy changes
+      - '.github/workflows/dependency-audit.yml'
+      - 'deny.toml'
+      # Run on changed dependencies
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - 'ui/command-center/package.json'
+      - 'ui/command-center/package-lock.json'
+      - 'ui/desktop/package.json'
+      - 'ui/desktop/package-lock.json'
+  pull_request:
+    paths:
+      - '.github/workflows/dependency-audit.yml'
+      - 'deny.toml'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - 'ui/command-center/package.json'
+      - 'ui/command-center/package-lock.json'
+      - 'ui/desktop/package.json'
+      - 'ui/desktop/package-lock.json'
+  # Rerun periodically to pick up new advisories
+  schedule:
+    - cron: '0 0 * * *'
+  # Run manually
+  workflow_dispatch:
+
+jobs:
+  cargo-deny:
+    runs-on: ubuntu-latest
+    # Run everywhere on push/PR; restrict only the daily advisory cron to this
+    # repo so forks don't burn scheduled minutes.
+    if: github.event_name != 'schedule' || github.repository == 'make-tuned-unit/permagent-runtime'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      # https://github.com/EmbarkStudios/cargo-deny-action v2.0.15
+      - name: cargo deny (root workspace)
+        uses: EmbarkStudios/cargo-deny-action@91bf2b620e09e18d6eb78b92e7861937469acedb
+        with:
+          command: check advisories
+      # The Tauri shell crate is workspace-excluded with its own Cargo.lock —
+      # the root scan does not cover the binary we actually ship in the DMG.
+      # Shares the root deny.toml policy.
+      - name: cargo deny (tauri shell crate)
+        uses: EmbarkStudios/cargo-deny-action@91bf2b620e09e18d6eb78b92e7861937469acedb
+        with:
+          command: check advisories
+          manifest-path: ui/desktop/src-tauri/Cargo.toml
+
+  npm-audit:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule' || github.repository == 'make-tuned-unit/permagent-runtime'
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: [ui/command-center, ui/desktop]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      # Production dependencies only; exit non-zero on high/critical
+      # advisories. Works from the lockfile — no install needed.
+      - name: npm audit (production, high+critical)
+        working-directory: ${{ matrix.dir }}
+        run: npm audit --omit=dev --audit-level=high
