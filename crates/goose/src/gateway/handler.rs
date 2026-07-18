@@ -276,9 +276,30 @@ impl GatewayHandler {
         // Sync provider/model/extensions with the user's current desktop config.
         // If extensions changed we must tear down the old agent so stale
         // extension processes don't linger.
-        let extensions_changed = self.sync_session_config(&session).await?;
-        if extensions_changed {
-            let _ = self.agent_manager.remove_session(session_id).await;
+        //
+        // Busy-guard (re-enable-gate epic part B): this teardown fires
+        // incidentally on message relay, and `remove_session` cancels any
+        // registered cancel token — killing e.g. a live orchestrator-driven
+        // turn on this session — while a turn parked on a confirmation waiter
+        // would be orphaned. When such a turn is live, defer the WHOLE sync,
+        // not just the teardown: persisting the new config now would make the
+        // session look in-sync on the next message, so the stale agent would
+        // never actually be replaced.
+        let busy = self.agent_manager.is_session_busy(session_id).await
+            || self
+                .agent_manager
+                .session_has_pending_confirmation(session_id)
+                .await;
+        if busy {
+            tracing::info!(
+                session_id,
+                "Deferring gateway config sync: session has a live turn"
+            );
+        } else {
+            let extensions_changed = self.sync_session_config(&session).await?;
+            if extensions_changed {
+                let _ = self.agent_manager.remove_session(session_id).await;
+            }
         }
 
         let agent = self

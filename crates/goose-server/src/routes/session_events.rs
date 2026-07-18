@@ -383,48 +383,6 @@ pub async fn session_reply(
         .await
         .map_err(|_| ErrorResponse::not_found(format!("Session {} not found", session_id)))?;
 
-    // Sync session provider/model with current global config so stale
-    // sessions (created under a previous provider) pick up the user's
-    // latest Settings choice.
-    {
-        let config = permagent::config::Config::global();
-        let current_provider = config.get_goose_provider().ok();
-        let current_model = config.get_goose_model().ok();
-
-        let provider_stale = current_provider.is_some()
-            && current_provider.as_deref() != session_data.provider_name.as_deref();
-        let model_stale = current_model.is_some()
-            && current_model.as_deref()
-                != session_data
-                    .model_config
-                    .as_ref()
-                    .map(|m| m.model_name.as_str());
-
-        if provider_stale || model_stale {
-            let mut update = state.session_manager().update(&session_id);
-            if let Some(ref provider) = current_provider {
-                update = update.provider_name(provider.clone());
-            }
-            if let Some(ref model_name) = current_model {
-                if let Ok(mc) = permagent::model::ModelConfig::new(model_name) {
-                    update = update.model_config(mc);
-                }
-            }
-            if let Err(e) = update.apply().await {
-                tracing::warn!("Failed to sync session provider: {}", e);
-            } else {
-                tracing::info!(
-                    "Synced session {} provider {:?} -> {:?}",
-                    session_id,
-                    session_data.provider_name,
-                    current_provider
-                );
-                // Evict cached agent so it gets recreated with the new provider
-                let _ = state.agent_manager.remove_session(&session_id).await;
-            }
-        }
-    }
-
     let session_start = std::time::Instant::now();
 
     // Activity: chat turn started
@@ -460,6 +418,75 @@ pub async fn session_reply(
         .map_err(|_| {
             ErrorResponse::bad_request("Session already has an active request. Cancel it first.")
         })?;
+
+    // Sync session provider/model with current global config so stale
+    // sessions (created under a previous provider) pick up the user's
+    // latest Settings choice.
+    //
+    // Ordering matters (re-enable-gate epic part B): this must run AFTER
+    // `try_register_request`. It evicts the cached agent, and doing that
+    // before the active-request check orphaned a live parked/running turn —
+    // the turn kept running on the unreachable Arc while a later
+    // Decision-Inbox answer reached a freshly recreated agent with no waiter.
+    // A session with an active bus request now 400s above with the agent
+    // intact, and the swap is deferred to its next idle turn.
+    {
+        let config = permagent::config::Config::global();
+        let current_provider = config.get_goose_provider().ok();
+        let current_model = config.get_goose_model().ok();
+
+        let provider_stale = current_provider.is_some()
+            && current_provider.as_deref() != session_data.provider_name.as_deref();
+        let model_stale = current_model.is_some()
+            && current_model.as_deref()
+                != session_data
+                    .model_config
+                    .as_ref()
+                    .map(|m| m.model_name.as_str());
+
+        // Holding the bus request slot rules out a concurrent interactive
+        // turn, but not turns the bus can't see: an orchestrator-driven turn
+        // (registered cancel token on the AgentManager — evicting would cancel
+        // it) or a turn parked on a tool-confirmation waiter (e.g. driven via
+        // the gateway). Defer the whole sync in those cases — skipping only
+        // the eviction would persist the new provider in session metadata and
+        // make the session look non-stale on the next turn, so the live agent
+        // would never pick up the swap.
+        let busy_outside_bus = state.agent_manager.is_session_busy(&session_id).await
+            || state
+                .agent_manager
+                .session_has_pending_confirmation(&session_id)
+                .await;
+
+        if (provider_stale || model_stale) && busy_outside_bus {
+            tracing::info!(
+                session_id = %session_id,
+                "Deferring provider/model sync: session has a live turn outside the event bus"
+            );
+        } else if provider_stale || model_stale {
+            let mut update = state.session_manager().update(&session_id);
+            if let Some(ref provider) = current_provider {
+                update = update.provider_name(provider.clone());
+            }
+            if let Some(ref model_name) = current_model {
+                if let Ok(mc) = permagent::model::ModelConfig::new(model_name) {
+                    update = update.model_config(mc);
+                }
+            }
+            if let Err(e) = update.apply().await {
+                tracing::warn!("Failed to sync session provider: {}", e);
+            } else {
+                tracing::info!(
+                    "Synced session {} provider {:?} -> {:?}",
+                    session_id,
+                    session_data.provider_name,
+                    current_provider
+                );
+                // Evict cached agent so it gets recreated with the new provider
+                let _ = state.agent_manager.remove_session(&session_id).await;
+            }
+        }
+    }
 
     let user_message = request.user_message;
 

@@ -59,7 +59,16 @@ pub struct ConfigKeyQuery {
 
 #[derive(Serialize, ToSchema)]
 pub struct ConfigResponse {
+    /// YAML-file (+ bundled-defaults) values only — environment variables are
+    /// NOT reflected here, by design of `Config::all_values`.
     pub config: HashMap<String, Value>,
+    /// GOOSE_MODE as the daemon actually resolves it (env var takes precedence
+    /// over the YAML value, `permagent::config::base::Config::get_param`).
+    /// Surfaced so Settings can warn when an env override makes the YAML
+    /// selection inert instead of silently highlighting the wrong mode
+    /// (re-enable-gate epic part B). Snake_case, e.g. "auto", "approve",
+    /// "smart_approve", "chat".
+    pub effective_goose_mode: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -339,7 +348,13 @@ pub async fn read_all_config() -> Result<Json<ConfigResponse>, ErrorResponse> {
     let values = config
         .all_values()
         .map_err(|e| ErrorResponse::unprocessable(e.to_string()))?;
-    Ok(Json(ConfigResponse { config: values }))
+    // Resolved through get_param (env var → YAML → default), unlike the
+    // env-blind `values` map above.
+    let effective_goose_mode = config.get_goose_mode().unwrap_or_default().to_string();
+    Ok(Json(ConfigResponse {
+        config: values,
+        effective_goose_mode,
+    }))
 }
 
 #[utoipa::path(

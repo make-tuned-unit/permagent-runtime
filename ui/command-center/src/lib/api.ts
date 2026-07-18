@@ -260,6 +260,13 @@ export interface Skill {
 }
 
 export interface PermagentConfig {
+  /** YAML-file (+ defaults) config values. Env-blind by design — an env var
+   *  can override any of these at the daemon without appearing here. */
+  config?: Record<string, unknown>;
+  /** GOOSE_MODE as the daemon actually resolves it (env var overrides YAML;
+   *  backend ConfigResponse.effective_goose_mode). Snake_case mode value.
+   *  Absent on daemons that predate the re-enable-gate epic part B. */
+  effective_goose_mode?: string;
   [key: string]: unknown;
 }
 
