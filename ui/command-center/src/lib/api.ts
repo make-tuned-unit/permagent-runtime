@@ -635,21 +635,31 @@ export const api = {
   },
 
   /**
-   * Interrupt an in-flight turn via POST /sessions/{id}/cancel. The daemon
-   * cancels the request's CancellationToken; the reply loop then breaks and
-   * publishes a terminal Finish { reason: "stop" } on the SSE channel, so the
-   * UI settles on the normal stream path. Returns 200 (empty body) on success;
-   * apiFetch throws on 404 (the turn had already ended) so callers can react.
+   * Interrupt an in-flight turn via POST /sessions/{id}/cancel. Always 200
+   * with an HONEST body: `{cancelled:true}` means a live request's token was
+   * cancelled and a terminal Finish { reason: "stop" } will follow on the SSE
+   * channel (the UI settles on the normal stream path); `{cancelled:false}`
+   * means there was nothing to cancel (stale/unknown request_id — the turn
+   * already ended, or the daemon restarted), so NO terminal frame is coming
+   * and the caller must reconcile streaming state itself. apiFetch still
+   * throws on transport/server errors (agent may be alive — don't pretend it
+   * stopped).
    */
   cancelReply: (sessionId: string, requestId: string) =>
-    apiFetch<void>(`/sessions/${encodeURIComponent(sessionId)}/cancel`, {
+    apiFetch<{ cancelled: boolean }>(`/sessions/${encodeURIComponent(sessionId)}/cancel`, {
       method: 'POST',
       body: JSON.stringify({ request_id: requestId }),
     }),
 
-  /** Build the SSE URL for per-session events. */
-  sessionEventsUrl: (sessionId: string): string =>
-    `${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/events`,
+  /** Build the SSE URL for per-session events. `lastEventId` resumes the
+   *  server replay after that sequence number (P1): EventSource cannot set the
+   *  Last-Event-ID header on the manual close-and-reconnect the store's
+   *  backoff loop performs, so the cursor rides a query param the daemon
+   *  reads as its header-equivalent. */
+  sessionEventsUrl: (sessionId: string, lastEventId?: string | null): string => {
+    const base = `${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/events`;
+    return lastEventId ? `${base}?last_event_id=${encodeURIComponent(lastEventId)}` : base;
+  },
 
   // Identity
   getIdentity: () => apiFetch<{
