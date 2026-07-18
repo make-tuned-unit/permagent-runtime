@@ -26,7 +26,14 @@ const TOPIC_SUB_FILTERS: { key: keyof TypeFilters; label: string; shape: string 
 const TOPIC_KEYS: (keyof TypeFilters)[] = ['tool', 'location', 'organization', 'concept'];
 
 interface HoverInfo { id: string; kind: string; label: string; note: string; x: number; y: number }
-interface SelectedInfo { id: string; kind: string; label: string; note: string; data: any }
+interface SelectedInfo {
+  id: string; kind: string; label: string; note: string; data: any;
+  /** True when a focus deep-link resolved via the caller's PREVIEW rather than
+      the live graph (fresh writes aren't in the graph until the Librarian
+      enriches them; preview text may be a truncated content_summary). The side
+      panel badges it so a snapshot never masquerades as the whole memory. */
+  preview?: boolean;
+}
 
 export function BrainView() {
   const { gradient, colors, theme } = useTheme();
@@ -67,9 +74,10 @@ export function BrainView() {
   }, []);
 
   // Select a memory through the same channel (mirrors selectEntity + the list
-  // row's onSelect shape, so the side panel renders identically).
-  const selectMemory = useCallback((mem: GraphMemory) => {
-    setSelected({ id: mem.id, kind: 'memory', label: deriveMemoryTitle(mem), note: mem.text.slice(0, 120), data: mem });
+  // row's onSelect shape, so the side panel renders identically). `viaPreview`
+  // marks a preview-resolved focus (P4) so the panel can badge it honestly.
+  const selectMemory = useCallback((mem: GraphMemory, viaPreview = false) => {
+    setSelected({ id: mem.id, kind: 'memory', label: deriveMemoryTitle(mem), note: mem.text.slice(0, 120), data: mem, preview: viaPreview });
   }, []);
 
   // Brain-loop deep-link (#587-adjacent): focus the memory a product surface
@@ -93,7 +101,7 @@ export function BrainView() {
       }
       return;
     }
-    selectMemory(resolution.memory);
+    selectMemory(resolution.memory, resolution.kind === 'preview');
     clearPendingBrainMemory();
   }, [pendingBrainMemory, data, selectMemory, clearPendingBrainMemory]);
 
@@ -433,12 +441,26 @@ export function BrainView() {
               fontSize: 18, cursor: 'pointer',
             }}>×</button>
 
-            {/* Type label */}
-            <span style={{
-              fontFamily: font.mono, fontSize: 10, fontWeight: 600,
-              color: colors.cyan, textTransform: 'uppercase', letterSpacing: '0.1em',
-            }}>
-              {selected.kind === 'memory' ? 'MEMORY' : (selected.data as GraphEntity)?.type?.toUpperCase() || selected.kind.toUpperCase()}
+            {/* Type label (+ P4 honesty badge: a preview-resolved memory is the
+                caller's snapshot — possibly a truncated content_summary — not
+                the enriched graph copy; styled like the field-provenance chip) */}
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              <span style={{
+                fontFamily: font.mono, fontSize: 10, fontWeight: 600,
+                color: colors.cyan, textTransform: 'uppercase', letterSpacing: '0.1em',
+              }}>
+                {selected.kind === 'memory' ? 'MEMORY' : (selected.data as GraphEntity)?.type?.toUpperCase() || selected.kind.toUpperCase()}
+              </span>
+              {selected.kind === 'memory' && selected.preview && (
+                <span
+                  title="Preview from the surface you came from — not yet enriched into the Brain graph; the text may be truncated."
+                  style={{
+                    fontFamily: font.mono, fontSize: 8, padding: '1px 5px', borderRadius: 3,
+                    color: colors.warning, border: `1px solid ${colors.warning}`,
+                    textTransform: 'uppercase', letterSpacing: '0.08em',
+                  }}
+                >preview — not in graph yet</span>
+              )}
             </span>
 
             {/* Name / title */}

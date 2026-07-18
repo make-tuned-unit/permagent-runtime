@@ -20,13 +20,13 @@
 //!   FileOpened, ProjectOpened, TerminalCommandStarted,
 //!   TerminalSessionStarted, TerminalSessionEnded, AgentContextProbed,
 //!   AutomationJobStarted, TerminalProcessExited, DictationCompleted,
-//!   WorldViewOpened, InboxOpened, GrowOpened, BrainOpened
+//!   PairingLinkCopied, WorldViewOpened, InboxOpened, GrowOpened, BrainOpened
 //!
-//! The onboarding-engagement events (persona/decision/devices/web-search/
-//! dictation + the four `*Opened` navigations) additionally feed feature-usage
-//! tracking via `emit_activity` → `usage::record_from_activity`, regardless of
-//! tier — so a usage-only "open" is Ephemeral (bus-only) yet still marks the
-//! feature learned.
+//! The onboarding-engagement events (persona/decision/device-pairing +
+//! pairing-link-copy/web-search/dictation + the four `*Opened` navigations)
+//! additionally feed feature-usage tracking via `emit_activity` →
+//! `usage::record_from_activity`, regardless of tier — so a usage-only "open"
+//! is Ephemeral (bus-only) yet still marks the feature learned.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -82,9 +82,20 @@ pub enum ActivityEventType {
     /// edits). Emitted only on a *user* resolution — genuine engagement with the
     /// `decision_inbox` capability, never on a system-created decision.
     DecisionResolved,
-    /// The user paired another device to this hub in Settings → Devices.
-    /// Evidences the `devices` capability.
+    /// A companion device actually completed pairing with this hub: it opened
+    /// the pairing URL, captured the daemon token from the `#token=` fragment
+    /// on first load, and proved the credential works — the event rides the
+    /// bearer-authenticated `POST /activity/emit`, so an invalid or rotated
+    /// token can never mint it. Emitted from the served UI's token-capture
+    /// seam (`ui/command-center/src/lib/api.ts`), once per newly captured
+    /// credential per device (a history re-open of the same URL does not
+    /// re-claim a pairing). Evidences the `devices` capability.
     DevicesPaired,
+    /// The user copied the device-pairing URL on the hub (Settings → Devices).
+    /// Deliberate engagement with the `devices` feature, but only *intent* —
+    /// not a completed pairing (that is `DevicesPaired`, emitted by the new
+    /// device itself) — so it stays Ephemeral and never becomes a Brain memory.
+    PairingLinkCopied,
     /// The agent performed a web search on the user's behalf (the `web_search`
     /// tool ran). Evidences the `web_search` capability.
     WebSearchPerformed,
@@ -219,7 +230,10 @@ fn default_tier(event_type: &ActivityEventType) -> EventTier {
         // recorded in `emit_activity` regardless of tier) but keep the bus-only,
         // never-persisted contract so opens don't flood Brain and dictation does
         // not duplicate the transcript already captured by the chat/notes turn.
+        // The pairing-link copy likewise marks `devices` engaged without ever
+        // claiming a completed pairing (that is `DevicesPaired`, Always).
         | ActivityEventType::DictationCompleted
+        | ActivityEventType::PairingLinkCopied
         | ActivityEventType::WorldViewOpened
         | ActivityEventType::InboxOpened
         | ActivityEventType::GrowOpened
@@ -516,9 +530,13 @@ mod tests {
         }
         // Web search rolls up like the browser family.
         assert_eq!(canonical_tier(&WebSearchPerformed), EventTier::Aggregated);
-        // Opens + dictation are usage-only (bus-only, never persisted to Brain).
+        // Opens + dictation + the pairing-link copy are usage-only (bus-only,
+        // never persisted to Brain). In particular PairingLinkCopied MUST stay
+        // Ephemeral: copying the URL is intent, not a completed pairing, and an
+        // Always tier here would write a false "paired a device" Brain memory.
         for ev in [
             DictationCompleted,
+            PairingLinkCopied,
             WorldViewOpened,
             InboxOpened,
             GrowOpened,
@@ -553,6 +571,7 @@ mod tests {
             (ActivityEventType::PersonaConfigured, "persona_configured"),
             (ActivityEventType::DecisionResolved, "decision_resolved"),
             (ActivityEventType::DevicesPaired, "devices_paired"),
+            (ActivityEventType::PairingLinkCopied, "pairing_link_copied"),
             (
                 ActivityEventType::WebSearchPerformed,
                 "web_search_performed",

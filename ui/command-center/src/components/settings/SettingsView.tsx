@@ -941,10 +941,14 @@ function DevicesPanel() {
                   navigator.clipboard.writeText(pairingUrl).then(() => {
                     setCopied(true);
                     setTimeout(() => setCopied(false), 1600);
-                    // Copying a pairing URL is the deliberate "add a device" act
-                    // — genuine engagement with Devices. No token in the payload
-                    // (the URL is a bearer secret); this only marks the feature used.
-                    emitActivity('devices_paired', 'settings');
+                    // Copying the pairing URL is deliberate engagement with the
+                    // Devices feature — but it is *intent*, not a completed
+                    // pairing, so this stays Ephemeral (never a Brain memory).
+                    // The real `devices_paired` signal is emitted by the new
+                    // device itself when it opens this URL and captures the
+                    // token (see reportDevicePaired in lib/api.ts). No token in
+                    // the payload (the URL is a bearer secret).
+                    emitActivity('pairing_link_copied', 'settings');
                   });
                 }}
               >{copied ? 'Copied ✓' : 'Copy'}</button>

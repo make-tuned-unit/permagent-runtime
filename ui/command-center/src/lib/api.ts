@@ -4,6 +4,7 @@
  */
 
 import type { ProjectDocument, ProjectNote, ProjectMemory } from '../components/projects/types';
+import type { ActivityEventName } from './emitActivity';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 const API_BASE_URL = (
@@ -20,6 +21,50 @@ let _daemonTokenPromise: Promise<string | null> | null = null;
 
 const BROWSER_TOKEN_KEY = 'permagent-daemon-token';
 
+/** UUID v4 that also works on insecure origins (a plain-HTTP tailnet page is
+ *  not a secure context, so `crypto.randomUUID` may be absent there —
+ *  `crypto.getRandomValues` is available everywhere). */
+function uuidV4(): string {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40; // version 4
+  b[8] = (b[8] & 0x3f) | 0x80; // RFC 4122 variant
+  const hex = Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/** Report genuine pairing completion to the daemon's authenticated
+ *  `POST /activity/emit` (`devices_paired`, Always tier → a real Brain memory).
+ *
+ *  This runs on the *companion* device the moment it captures the hub token —
+ *  the true completion seam. The token rides the URL's `#` fragment, which the
+ *  browser never sends to the server, so the daemon has no server-side way to
+ *  observe a pairing; this authenticated self-report is how it learns. It is
+ *  self-proving: the request bears the just-captured token, so an invalid or
+ *  rotated-away token is rejected by the auth middleware and can never mint
+ *  the event. Fire-and-forget (pairing itself has already succeeded), and the
+ *  body never includes the token. The hub-side "Copy" button emits only
+ *  `pairing_link_copied` (Ephemeral) — intent, not completion. */
+function reportDevicePaired(token: string): void {
+  const eventType: ActivityEventName = 'devices_paired';
+  try {
+    fetch(`${API_BASE_URL}/activity/emit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        event_id: uuidV4(),
+        event_type: eventType,
+        source_surface: 'settings',
+        timestamp: new Date().toISOString(),
+        payload: {},
+        tier: 'always', // canonical; the daemon re-derives the tier server-side anyway
+      }),
+    }).catch(() => { /* best-effort awareness signal */ });
+  } catch {
+    /* best-effort awareness signal */
+  }
+}
+
 /** #366: browser-context pairing. A device opening
  *  http://<hub>:3001/ui/#token=<daemon_token> captures the token once into
  *  localStorage (and scrubs it from the URL so it never lingers in history).
@@ -29,10 +74,16 @@ function browserToken(): string | null {
     const frag = new URLSearchParams(window.location.hash.replace(/^#/, ''));
     const fromUrl = frag.get('token');
     if (fromUrl) {
+      const previous = localStorage.getItem(BROWSER_TOKEN_KEY);
       localStorage.setItem(BROWSER_TOKEN_KEY, fromUrl);
       frag.delete('token');
       const rest = frag.toString();
       history.replaceState(null, '', window.location.pathname + window.location.search + (rest ? `#${rest}` : ''));
+      // A pairing URL was actually opened here and its credential captured —
+      // the real `devices_paired` moment. Only report a credential this device
+      // did not already hold, so a history re-open of the same URL never
+      // re-claims a pairing.
+      if (fromUrl !== previous) reportDevicePaired(fromUrl);
     }
     return localStorage.getItem(BROWSER_TOKEN_KEY);
   } catch {
