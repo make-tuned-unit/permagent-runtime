@@ -15,23 +15,10 @@ use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 fn write_secrets_file(path: &Path, content: &str) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)?;
-
-        file.write_all(content.as_bytes())
-    }
-
-    #[cfg(not(unix))]
-    {
-        std::fs::write(path, content)
-    }
+    // Atomic replace via a same-directory 0600 temp file: never observable
+    // world-readable (even when overwriting a file created with loose
+    // permissions by an older version) and never observable half-written.
+    super::secure_fs::write_private_file(path, content.as_bytes())
 }
 
 const KEYRING_SERVICE: &str = "permagent";
