@@ -89,6 +89,25 @@ function effectTextFor(kind: string, answer: 'approve' | 'reject', agentName: st
     : 'Confirm reject — this is recorded for the audit trail; nothing else changes.';
 }
 
+/**
+ * Full tool-call arguments carried by a tool_approval payload, pretty-printed
+ * for display. The `detail` line above holds only a clipped preview (marked
+ * "[truncated — N more chars]" when clipped, tool_execution.rs); informed
+ * consent requires the WHOLE thing be inspectable before approving. Untrusted
+ * (S2): rendered as plain text only. Null when absent or unserializable.
+ * Exported for tests.
+ */
+export function toolArgumentsText(d: Decision): string | null {
+  if (d.kind !== 'tool_approval' || !d.payload) return null;
+  const raw = (d.payload as { arguments?: unknown }).arguments;
+  if (raw === undefined || raw === null) return null;
+  try {
+    return JSON.stringify(raw, null, 2) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCancelGoal }: Props) {
   const { colors, reduceMotion } = useTheme();
   const { data: persona } = usePersona();
@@ -105,6 +124,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
   const [editOpen, setEditOpen] = useState(false);
   const [editText, setEditText] = useState('');
   const [evidenceOpen, setEvidenceOpen] = useState(false);
+  const [argsOpen, setArgsOpen] = useState(false);
   const [cancelErr, setCancelErr] = useState<string | null>(null);
   const [answerErr, setAnswerErr] = useState<string | null>(null);
   const conflictTimer = useRef<ReturnType<typeof setTimeout>>();
@@ -153,6 +173,8 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
   const recommended = options.find(o => o.id === recommendedId) ?? null;
   // L2 digest lives on the goal card; only goal-bound reviews can have one.
   const hasEvidence = d.kind === 'approve_review' && !!d.goal_id && !!d.project_id;
+  // Full tool-call arguments (tool_approval) — the detail above may be clipped.
+  const toolArgs = toolArgumentsText(d);
 
   return (
     <div data-testid={`decision-${d.id}`} style={{
@@ -210,6 +232,36 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
           maxHeight: 96, overflow: 'auto',
         }}>
           {d.detail}
+        </div>
+      )}
+
+      {/* Full tool-call arguments (tool_approval) — the detail above holds a
+          clipped preview; what gets approved must be inspectable in full.
+          S2: plain text in a <pre>; nothing is interpreted or linked. */}
+      {toolArgs && (
+        <div>
+          <button
+            onClick={() => setArgsOpen(o => !o)}
+            style={{
+              marginTop: 6, background: 'none', border: 'none', padding: 0,
+              color: argsOpen ? colors.cyan : colors.textDim,
+              fontSize: 11, fontFamily: font.body, cursor: 'pointer',
+              transition: reduceMotion ? 'none' : `color 150ms ${ease.out}`,
+            }}
+          >
+            {argsOpen ? 'Hide full arguments ▾' : 'Show full arguments ▸'}
+          </button>
+          {argsOpen && (
+            <pre style={{
+              margin: '6px 0 0', borderRadius: radius.sm,
+              background: colors.codeBg, padding: '10px 12px',
+              fontFamily: font.mono, fontSize: 11, lineHeight: 1.6,
+              color: colors.textMuted, maxHeight: 240, overflow: 'auto',
+              whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
+            }}>
+              {toolArgs}
+            </pre>
+          )}
         </div>
       )}
 

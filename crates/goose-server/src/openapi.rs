@@ -511,6 +511,7 @@ derive_utoipa!(IconTheme as IconThemeSchema);
         super::routes::session_events::SessionReplyRequest,
         super::routes::session_events::SessionReplyResponse,
         super::routes::session_events::CancelRequest,
+        super::routes::session_events::CancelResponse,
         super::routes::session::ImportSessionRequest,
         super::routes::session::SessionListResponse,
         super::routes::session::UpdateSessionNameRequest,

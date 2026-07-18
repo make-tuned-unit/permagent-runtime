@@ -452,6 +452,7 @@ fn event_type_str(t: &ActivityEventType) -> &'static str {
         ActivityEventType::PersonaConfigured => "persona_configured",
         ActivityEventType::DecisionResolved => "decision_resolved",
         ActivityEventType::DevicesPaired => "devices_paired",
+        ActivityEventType::PairingLinkCopied => "pairing_link_copied",
         ActivityEventType::WebSearchPerformed => "web_search_performed",
         ActivityEventType::DictationCompleted => "dictation_completed",
         ActivityEventType::WorldViewOpened => "world_view_opened",
