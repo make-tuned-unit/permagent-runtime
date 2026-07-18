@@ -155,12 +155,16 @@ async fn answer_decision_handler(
     // Tool-confirmation bridge: a `tool_approval` decision has no goal-state
     // effect above — its real effect is delivering the approve/reject back to the
     // parked agent turn (the command-center analogue of the legacy
-    // /action-required modal). Runs here so the reported `effect` reflects it.
+    // /action-required modal). Runs here so the reported `effect` reflects what
+    // actually happened: a delivery that reached no live waiter (turn cancelled,
+    // daemon restarted, answered via the legacy prompt first) is a FAILED
+    // effect — reported honestly and audit-recorded via the same path
+    // goal-effects use, never papered over with a fabricated "running" claim.
     let (effect, effect_error) = if decision.kind == "tool_approval" {
         match deliver_tool_confirmation(&state, &decision).await {
             Ok(msg) => (Some(msg), effect_error),
             Err(e) => {
-                tracing::warn!("tool_approval deliver failed for {}: {}", decision.id, e);
+                record_effect_failure(&pool, &decision, &e).await;
                 (effect, Some(e))
             }
         }
@@ -556,6 +560,24 @@ fn tool_confirmation_from_decision(
     ))
 }
 
+/// What the inbox reports when a tool confirmation reached no live waiter.
+/// Nothing ran, and saying so is the effect — the alternative is fabricating
+/// "approved — running '<tool>'" over a delivery that went nowhere.
+const NO_WAITER_EFFECT: &str = "no live turn was waiting for this approval — nothing was run; \
+     the turn may have been cancelled or the daemon restarted";
+
+/// Pure mapping from the delivery outcome to the reported effect: only a
+/// delivery a live waiter actually received may claim the tool ran/was
+/// skipped; anything else is the honest no-waiter report (an effect FAILURE,
+/// so the caller audit-records it). Unit-tested without an `AppState`.
+fn delivery_effect(delivered: bool, effect_msg: String) -> Result<String, String> {
+    if delivered {
+        Ok(effect_msg)
+    } else {
+        Err(NO_WAITER_EFFECT.to_string())
+    }
+}
+
 /// Deliver a freshly answered `tool_approval` decision back to the parked agent
 /// turn: resolve the session's `Agent` and hand the confirmation to its
 /// `ToolConfirmationRouter` via `Agent::handle_confirmation` — the same channel
@@ -565,10 +587,10 @@ fn tool_confirmation_from_decision(
 /// Lifecycle: the parked await lives inside a detached, event-bus-decoupled turn
 /// task that keeps the reply stream polled until cancel/completion, so it is
 /// still alive to receive this delivery even though the answer arrives on a
-/// separate request long after the turn parked. If the turn was cancelled or the
-/// daemon restarted in the interim, the router simply reports no waiter
-/// (`handle_confirmation` logs it) — the decision is already answered and no
-/// live turn hangs; that is the correct, moot outcome, not an error here.
+/// separate request long after the turn parked. If the turn was cancelled, the
+/// daemon restarted, or the legacy endpoint answered first, the router reports
+/// no waiter — returned as `Err` here so the effect the user sees is the honest
+/// "nothing was run", not a success claim.
 async fn deliver_tool_confirmation(
     state: &Arc<AppState>,
     decision: &decisions::Decision,
@@ -581,9 +603,9 @@ async fn deliver_tool_confirmation(
         .await
         .map_err(|e| format!("no agent for session {}: {}", session_id, e))?;
 
-    agent.handle_confirmation(request_id, confirmation).await;
+    let delivered = agent.handle_confirmation(request_id, confirmation).await;
 
-    Ok(effect_msg)
+    delivery_effect(delivered, effect_msg)
 }
 
 // ── Plumbing ────────────────────────────────────────────────────────────────
@@ -803,7 +825,10 @@ mod tests {
             let answered = create_and_answer(&pool, "s-a", "req-approve", "ls", "approve").await;
             let (_sid, request_id, confirmation, _msg) =
                 tool_confirmation_from_decision(&answered).unwrap();
-            agent.handle_confirmation(request_id, confirmation).await;
+            assert!(
+                agent.handle_confirmation(request_id, confirmation).await,
+                "a parked waiter must report delivered=true"
+            );
             let delivered = tokio::time::timeout(std::time::Duration::from_secs(5), rx)
                 .await
                 .expect("deliver must unblock the parked await")
@@ -821,12 +846,71 @@ mod tests {
             let answered = create_and_answer(&pool, "s-d", "req-deny", "rm", "reject").await;
             let (_sid, request_id, confirmation, _msg) =
                 tool_confirmation_from_decision(&answered).unwrap();
-            agent.handle_confirmation(request_id, confirmation).await;
+            assert!(
+                agent.handle_confirmation(request_id, confirmation).await,
+                "a parked waiter must report delivered=true"
+            );
             let delivered = tokio::time::timeout(std::time::Duration::from_secs(5), rx)
                 .await
                 .expect("deliver must unblock the parked await")
                 .expect("confirmation sender must not have been dropped");
             assert_eq!(delivered.permission, Permission::DenyOnce);
         }
+    }
+
+    // ── Delivery honesty (no live waiter ⇒ no success claim) ──
+
+    /// The effect the user reads must track what the delivery actually did:
+    /// delivered=true keeps the mapped message; delivered=false becomes the
+    /// honest no-waiter report — which must never contain the success claims.
+    #[test]
+    fn delivery_effect_is_honest_about_no_waiter() {
+        assert_eq!(
+            delivery_effect(true, "approved — running 'developer__shell'".into()),
+            Ok("approved — running 'developer__shell'".to_string())
+        );
+
+        let err = delivery_effect(false, "approved — running 'developer__shell'".into())
+            .expect_err("no waiter must be an effect failure");
+        assert_eq!(err, NO_WAITER_EFFECT);
+        assert!(err.contains("nothing was run"));
+        assert!(
+            !err.contains("running") && !err.contains("approved —"),
+            "honest report must not echo the success claim: {}",
+            err
+        );
+    }
+
+    /// End-to-end for the stale case (turn cancelled / daemon restarted /
+    /// answered via the legacy prompt first): the answered decision maps fine,
+    /// but no waiter is registered — `handle_confirmation` reports false, the
+    /// effect becomes the honest no-waiter report, and the failure lands on the
+    /// audit chain via the same `record_effect_failure` path goal-effects use
+    /// (exactly what `answer_decision_handler` does on the Err branch).
+    #[tokio::test]
+    async fn undeliverable_tool_approval_reports_honestly_and_audits() {
+        let pool = memory_pool().await;
+        let agent = Agent::new(); // nothing registered — no live turn
+
+        let answered = create_and_answer(&pool, "s-gone", "req-gone", "ls", "approve").await;
+        let (_sid, request_id, confirmation, effect_msg) =
+            tool_confirmation_from_decision(&answered).unwrap();
+
+        let delivered = agent.handle_confirmation(request_id, confirmation).await;
+        assert!(!delivered, "no registered waiter must report false");
+
+        let effect = delivery_effect(delivered, effect_msg)
+            .expect_err("undelivered confirmation must surface as an effect failure");
+        record_effect_failure(&pool, &answered, &effect).await;
+
+        // The fabricated success claim is gone; the audit chain records the truth.
+        let outcome: String = permagent::sqlx::query_scalar(
+            "SELECT outcome FROM decision_audit WHERE decision_id = ? ORDER BY seq DESC LIMIT 1",
+        )
+        .bind(&answered.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(outcome, format!("effect_error: {}", NO_WAITER_EFFECT));
     }
 }

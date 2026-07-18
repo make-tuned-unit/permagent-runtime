@@ -533,6 +533,103 @@ pub async fn supersede_open_decisions_for_goal(
     Ok(res.rows_affected())
 }
 
+/// Close a single OPEN decision as `superseded`: it was resolved through
+/// another channel, so the inbox card is moot. Used when the legacy
+/// `/action-required/tool-confirmation` prompt answers a request that also has
+/// a mirrored `tool_approval` inbox card — leaving that card open would be a
+/// zombie whose later answer could do nothing.
+///
+/// `superseded` (not `answered`) because nobody answered it HERE: the tier
+/// gate in [`answer_decision`] rightly refuses a system-actor answer on a
+/// Tier-2 row, and `expired` would claim a timeout that never happened. The
+/// honest `note` lands in `answer_note` and in a hash-chained audit row
+/// (`acted_by='system'`, outcome `superseded: <note>`), so history shows what
+/// really resolved it.
+///
+/// Returns `Ok(false)` when the decision was not open (already answered,
+/// expired, superseded, or unknown) — a benign no-op for racing resolvers.
+pub async fn supersede_decision(
+    pool: &Pool<Sqlite>,
+    decision_id: &str,
+    note: &str,
+) -> Result<bool, String> {
+    let decision = match get_decision(pool, decision_id).await? {
+        Some(d) => d,
+        None => return Ok(false),
+    };
+
+    // BEGIN IMMEDIATE for the same reason as `record_effect_outcome`:
+    // append_audit_tx reads the audit-chain head before its INSERT, and that
+    // read→write upgrade hits an un-retryable BUSY if a concurrent writer
+    // commits in between.
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Atomic open → superseded: zero rows means someone resolved it first.
+    let res = sqlx::query(
+        "UPDATE decisions SET status = 'superseded', answer_note = ?, resolved_at = ? \
+         WHERE id = ? AND status = 'open'",
+    )
+    .bind(note)
+    .bind(now_timestamp())
+    .bind(decision_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    if res.rows_affected() == 0 {
+        // Dropping the tx rolls back (nothing was written).
+        return Ok(false);
+    }
+
+    append_audit_tx(
+        &mut tx,
+        decision_id,
+        decision.goal_id.as_deref(),
+        ACTOR_SYSTEM,
+        decision.tier,
+        &format!("superseded: {}", note),
+        None,
+    )
+    .await?;
+
+    tx.commit().await.map_err(|e| e.to_string())?;
+
+    // Same live signal an answer emits — the card leaves the inbox now, not on
+    // the next poll. Consumers key on the event type (refresh), not the answer.
+    crate::events::emit(crate::events::decision_resolved(
+        decision_id,
+        &decision.kind,
+        "superseded",
+        ACTOR_SYSTEM,
+        decision.tier,
+    ));
+
+    Ok(true)
+}
+
+/// Find the open `tool_approval` decision whose payload carries `request_id`
+/// (the `ToolConfirmationRouter` key), if any. Lets the legacy per-tool
+/// prompt locate the mirrored inbox card it is about to make moot.
+pub async fn find_open_tool_approval_by_request_id(
+    pool: &Pool<Sqlite>,
+    request_id: &str,
+) -> Result<Option<Decision>, String> {
+    let row = sqlx::query(&format!(
+        "SELECT {} FROM decisions \
+         WHERE kind = 'tool_approval' AND status = 'open' \
+           AND json_extract(payload_json, '$.request_id') = ? \
+         ORDER BY created_at DESC LIMIT 1",
+        DECISION_COLUMNS
+    ))
+    .bind(request_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(row.as_ref().map(row_to_decision))
+}
+
 // ── Inbox queries (Lane L4 contract) ────────────────────────────────────────
 
 /// Summary envelope returned beside the open-decision list.
@@ -1203,6 +1300,176 @@ mod tests {
         assert_eq!(
             d.payload.get("original_kind").and_then(|v| v.as_str()),
             Some("tool_approval")
+        );
+    }
+
+    // ── Supersede (single decision, legacy-prompt desync fix) ──
+
+    fn tool_approval_with_request_id(request_id: &str) -> NewDecision {
+        let mut req = valid_tool_approval();
+        req.payload = serde_json::json!({
+            "session_id": "sess-1",
+            "request_id": request_id,
+            "tool_name": "developer__shell",
+            "arguments": {"command": "ls -la"},
+        });
+        req
+    }
+
+    /// The legacy-prompt path: an open tool_approval closes as `superseded`
+    /// (never `answered` — nobody answered it here) with the honest note on the
+    /// row AND on a hash-chained audit row, so it leaves the inbox and still
+    /// shows up in history with what really resolved it.
+    #[tokio::test]
+    async fn supersede_decision_closes_open_row_with_audited_note() {
+        let pool = test_pool().await;
+        let d = create_decision(&pool, valid_tool_approval()).await.unwrap();
+
+        let note = "answered via the legacy per-tool prompt";
+        assert!(supersede_decision(&pool, &d.id, note).await.unwrap());
+
+        let after = get_decision(&pool, &d.id).await.unwrap().unwrap();
+        assert_eq!(after.status, "superseded");
+        assert_eq!(after.answer, None, "superseded is not an answer");
+        assert_eq!(after.acted_by, None, "no human/policy actor answered it");
+        assert_eq!(after.answer_note.as_deref(), Some(note));
+        assert!(after.resolved_at.is_some());
+
+        // Audit row: system actor, outcome carries the note.
+        let (acted_by, outcome): (String, String) = sqlx::query_as(
+            "SELECT acted_by, outcome FROM decision_audit WHERE decision_id = ? \
+             ORDER BY seq DESC LIMIT 1",
+        )
+        .bind(&d.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(acted_by, ACTOR_SYSTEM);
+        assert_eq!(outcome, format!("superseded: {}", note));
+
+        // It left the open inbox.
+        assert!(list_open_decisions(&pool)
+            .await
+            .unwrap()
+            .iter()
+            .all(|i| i.decision.id != d.id));
+
+        // And it can no longer be answered — the zombie card is dead for real.
+        let err = answer_decision(
+            &pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, AnswerError::AlreadyResolved(ref s) if s == "superseded"),
+            "expected AlreadyResolved(superseded), got {:?}",
+            err
+        );
+    }
+
+    /// Racing resolvers: superseding a non-open or unknown decision is a benign
+    /// no-op that writes no audit row.
+    #[tokio::test]
+    async fn supersede_decision_is_noop_when_not_open() {
+        let pool = test_pool().await;
+
+        // Unknown id.
+        assert!(!supersede_decision(&pool, "no-such-id", "note")
+            .await
+            .unwrap());
+
+        // Already answered via the inbox (inbox-first, legacy-second).
+        let d = create_decision(&pool, valid_tool_approval()).await.unwrap();
+        answer_decision(
+            &pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let audit_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM decision_audit")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        assert!(!supersede_decision(&pool, &d.id, "note").await.unwrap());
+
+        let after = get_decision(&pool, &d.id).await.unwrap().unwrap();
+        assert_eq!(after.status, "answered", "answered row must be untouched");
+        assert_eq!(after.answer.as_deref(), Some("approve"));
+        let audit_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM decision_audit")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(audit_before, audit_after, "no-op must not write audit rows");
+    }
+
+    /// Superseded decisions stay visible in history via their audit row (the
+    /// history query joins decision_audit; a status flip alone would vanish).
+    #[tokio::test]
+    async fn superseded_decision_appears_in_history() {
+        let pool = test_pool().await;
+        let d = create_decision(&pool, valid_tool_approval()).await.unwrap();
+        supersede_decision(&pool, &d.id, "answered via the legacy per-tool prompt")
+            .await
+            .unwrap();
+
+        let items = decision_history(&pool, 50, None).await.unwrap();
+        let item = items
+            .iter()
+            .find(|i| i.decision.id == d.id)
+            .expect("superseded decision must appear in history");
+        assert_eq!(item.audit_acted_by, ACTOR_SYSTEM);
+        assert!(item.outcome.starts_with("superseded:"), "{}", item.outcome);
+    }
+
+    #[tokio::test]
+    async fn find_open_tool_approval_by_request_id_matches_open_only() {
+        let pool = test_pool().await;
+        let d1 = create_decision(&pool, tool_approval_with_request_id("req-A"))
+            .await
+            .unwrap();
+        let d2 = create_decision(&pool, tool_approval_with_request_id("req-B"))
+            .await
+            .unwrap();
+
+        let found = find_open_tool_approval_by_request_id(&pool, "req-A")
+            .await
+            .unwrap()
+            .expect("open req-A must be found");
+        assert_eq!(found.id, d1.id);
+
+        // Unknown request_id → none.
+        assert!(find_open_tool_approval_by_request_id(&pool, "req-Z")
+            .await
+            .unwrap()
+            .is_none());
+
+        // Once superseded it is no longer a candidate; req-B is untouched.
+        supersede_decision(&pool, &d1.id, "answered via the legacy per-tool prompt")
+            .await
+            .unwrap();
+        assert!(find_open_tool_approval_by_request_id(&pool, "req-A")
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            find_open_tool_approval_by_request_id(&pool, "req-B")
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            d2.id
         );
     }
 
