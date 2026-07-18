@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useCommandCenter } from '../../lib/store';
+import { emitActivity } from '../../lib/emitActivity';
 import { api, type InboxFile } from '../../lib/api';
 import { font } from '../../styles/tokens';
 import { useTheme as useThemeHook } from '../../styles/useTheme';
@@ -39,6 +40,12 @@ export function InboxPanel() {
   const [error, setError] = useState<string | null>(null);
 
   const dismiss = useCallback(() => setActivePanel('chat'), [setActivePanel]);
+
+  // The panel mounts only while open (App renders it behind `showInbox`), so a
+  // mount effect is a faithful "user opened the Inbox" engagement signal.
+  useEffect(() => {
+    emitActivity('inbox_opened', 'inbox');
+  }, []);
 
   useEffect(() => {
     let active = true;

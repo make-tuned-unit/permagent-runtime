@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { api, apiFetch, extractText, extractThinking, fileToBase64, readerIngest } from './api';
+import { emitActivity } from './emitActivity';
 import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload, TokenState } from './api';
 import { costFromFrame } from './costMeter';
 import { startEventPruning } from './eventBus';
@@ -443,6 +444,19 @@ function daemonMsgToChat(
   };
 }
 
+/**
+ * Surfaces that emit no activity of their own — a `<tool>_opened` engagement
+ * signal is emitted when the user navigates to the workspace hosting them, so
+ * the onboarding coach knows they've used it. Keyed by the workspace's primary
+ * tool (`brain` is the `memory` tool). Tools already instrumented by their own
+ * events (build/terminal/browser/projects/etc.) are intentionally absent.
+ */
+const OPEN_EVENT_BY_TOOL: Partial<Record<ToolType, { event: string; surface: string }>> = {
+  world: { event: 'world_view_opened', surface: 'world' },
+  memory: { event: 'brain_opened', surface: 'brain' },
+  grow: { event: 'grow_opened', surface: 'grow' },
+};
+
 /** Extract the primary tool type from a workspace layout tree. */
 function primaryToolType(node: LayoutNode): ToolType | null {
   if (node.type === 'panel') return node.tool;
@@ -529,6 +543,13 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   switchWorkspace: (workspaceId: string) => {
     set({ activeWorkspaceId: workspaceId });
     api.setActiveWorkspace(workspaceId).catch(() => {});
+    // Report engagement for surfaces that emit nothing themselves. Boot sets
+    // activeWorkspaceId directly (not via this action), so this only fires on a
+    // real user/agent navigation, never on initial load.
+    const ws = get().workspaces.find(w => w.id === workspaceId);
+    const tool = ws ? primaryToolType(ws.layoutJson) : null;
+    const open = tool ? OPEN_EVENT_BY_TOOL[tool] : undefined;
+    if (open) emitActivity(open.event, open.surface);
   },
 
   updateWorkspaceLayout: (workspaceId: string, layoutJson: LayoutNode) => {
