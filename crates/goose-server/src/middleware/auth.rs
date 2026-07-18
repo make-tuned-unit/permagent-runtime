@@ -47,7 +47,12 @@ pub fn validate_token_value(
 ) -> Result<(), StatusCode> {
     let expected = expected.ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     match provided {
-        Some(t) if bool::from(subtle::ConstantTimeEq::ct_eq(t.as_bytes(), expected.as_bytes())) => {
+        Some(t)
+            if bool::from(subtle::ConstantTimeEq::ct_eq(
+                t.as_bytes(),
+                expected.as_bytes(),
+            )) =>
+        {
             Ok(())
         }
         _ => Err(StatusCode::UNAUTHORIZED),

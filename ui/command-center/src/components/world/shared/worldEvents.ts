@@ -22,7 +22,7 @@
 //
 // LAW: this module does no per-frame work; it only fans out network events.
 
-import { getApiBaseUrl } from '../../../lib/api';
+import { eventsWsUrl } from '../../../lib/api';
 import { wireEventType } from '../../../lib/wireEvent';
 
 export interface WorldWireEvent {
@@ -122,11 +122,14 @@ export function decodeWireFrame(raw: string, wireStartedAt: number): WorldWireEv
   };
 }
 
-function connect(): void {
+async function connect(): Promise<void> {
   if (!running) return;
-  const base = getApiBaseUrl().replace(/^http/, 'ws');
+  // Daemon token rides the WS query (C1/C2 auth); re-check `running` after
+  // the await so a token load racing stop() never opens an orphan socket.
+  const url = await eventsWsUrl();
+  if (!running) return;
   try {
-    ws = new WebSocket(`${base}/events`);
+    ws = new WebSocket(url);
   } catch {
     retryTimer = setTimeout(connect, RETRY_MS);
     return;

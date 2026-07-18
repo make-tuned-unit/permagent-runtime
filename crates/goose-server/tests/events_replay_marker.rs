@@ -70,8 +70,14 @@ async fn replayed_frames_are_marked_and_live_frames_are_not() {
     emit(a);
 
     // ── ws1: plain connect (no resume) → the full-buffer backfill delivers A,
-    //    and it must carry the marker. ──
-    let url = format!("ws://{addr}/events");
+    //    and it must carry the marker. /events requires the daemon token on
+    //    upgrade (C1/C2 auth plane) — ride it on the query string like the
+    //    browser clients do (auth_plane.rs covers the reject paths). ──
+    let token = state
+        .daemon_token
+        .clone()
+        .expect("test AppState should have generated a daemon token");
+    let url = format!("ws://{addr}/events?token={token}");
     let (mut ws1, _resp) = tokio_tungstenite::connect_async(&url).await.unwrap();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     let frame_a = capture_until(&mut ws1, deadline, |v| v["id"] == a_id.as_str())

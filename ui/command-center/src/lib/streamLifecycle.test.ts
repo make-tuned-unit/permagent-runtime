@@ -149,16 +149,18 @@ describe('switchToSession (C8)', () => {
 });
 
 describe('SSE resume cursor (P1)', () => {
-  it('reconnects to the SAME session with ?last_event_id from the recorded cursor', () => {
+  // connectSession is async since the auth plane (it awaits the daemon token
+  // before constructing the EventSource), so every test awaits it.
+  it('reconnects to the SAME session with ?last_event_id from the recorded cursor', async () => {
     useCommandCenter.setState({ _lastEventId: '42', _lastEventSessionId: 'sess-1' });
-    useCommandCenter.getState().connectSession('sess-1');
+    await useCommandCenter.getState().connectSession('sess-1');
     expect(sessionEventsUrl).toHaveBeenCalledWith('sess-1', '42');
     expect(FakeEventSource.instances[0].url).toContain('last_event_id=42');
   });
 
-  it('resets the cursor when connecting to a DIFFERENT session (seqs are per-session)', () => {
+  it('resets the cursor when connecting to a DIFFERENT session (seqs are per-session)', async () => {
     useCommandCenter.setState({ _lastEventId: '42', _lastEventSessionId: 'sess-1' });
-    useCommandCenter.getState().connectSession('sess-2');
+    await useCommandCenter.getState().connectSession('sess-2');
     expect(sessionEventsUrl).toHaveBeenCalledWith('sess-2', null);
     expect(FakeEventSource.instances[0].url).not.toContain('last_event_id');
     const s = useCommandCenter.getState();
@@ -166,15 +168,22 @@ describe('SSE resume cursor (P1)', () => {
     expect(s._lastEventSessionId).toBe('sess-2');
   });
 
-  it('first connect (no cursor) requests the full replay', () => {
-    useCommandCenter.getState().connectSession('sess-1');
+  it('first connect (no cursor) requests the full replay', async () => {
+    await useCommandCenter.getState().connectSession('sess-1');
     expect(sessionEventsUrl).toHaveBeenCalledWith('sess-1', null);
   });
 
-  it('records the cursor from each frame\'s SSE id (what the resume sends back)', () => {
-    useCommandCenter.getState().connectSession('sess-1');
+  it('records the cursor from each frame\'s SSE id (what the resume sends back)', async () => {
+    await useCommandCenter.getState().connectSession('sess-1');
     const es = FakeEventSource.instances[0];
     es.onmessage?.({ lastEventId: '7', data: JSON.stringify({ type: 'Ping' }) });
     expect(useCommandCenter.getState()._lastEventId).toBe('7');
+  });
+
+  it('a superseding disconnect during the token await never opens a stale stream', async () => {
+    const p = useCommandCenter.getState().connectSession('sess-1');
+    useCommandCenter.getState().disconnectSession(); // bumps the connect epoch
+    await p;
+    expect(FakeEventSource.instances).toHaveLength(0);
   });
 });

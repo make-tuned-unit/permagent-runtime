@@ -110,10 +110,7 @@ fn authority_host(authority: &str) -> &str {
 }
 
 /// Middleware: 403 any request whose `Origin` header is present but not ours.
-pub async fn require_allowed_origin(
-    request: Request,
-    next: Next,
-) -> Result<Response, StatusCode> {
+pub async fn require_allowed_origin(request: Request, next: Next) -> Result<Response, StatusCode> {
     let origin = match request.headers().get(header::ORIGIN) {
         None => return Ok(next.run(request).await),
         Some(value) => match value.to_str() {

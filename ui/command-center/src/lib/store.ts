@@ -374,7 +374,8 @@ interface CommandCenterStore {
   /** Which session `_lastEventId` belongs to — sequence numbers are per-session,
    *  so a cursor must never leak across a session switch. */
   _lastEventSessionId: string | null;
-  connectSession: (sessionId: string) => void;
+  /** Async: awaits the daemon token before opening the SSE (C1/C2 auth). */
+  connectSession: (sessionId: string) => Promise<void>;
   disconnectSession: () => void;
   ensureSession: () => Promise<string | null>;
 }

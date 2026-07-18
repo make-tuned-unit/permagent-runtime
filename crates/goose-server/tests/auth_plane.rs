@@ -163,7 +163,14 @@ async fn control_plane_requires_token_and_our_origin() {
     // ── C1: POST /sessions/{id}/cancel ──
     let resp = app
         .clone()
-        .oneshot(req("POST", "/sessions/ghost/cancel", None, None, None, Some(serde_json::json!({"request_id": "r1"}))))
+        .oneshot(req(
+            "POST",
+            "/sessions/ghost/cancel",
+            None,
+            None,
+            None,
+            Some(serde_json::json!({"request_id": "r1"})),
+        ))
         .await
         .unwrap();
     assert_eq!(
