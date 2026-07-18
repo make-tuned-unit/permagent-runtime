@@ -10,7 +10,7 @@
 // always-works path.
 
 import { useSyncExternalStore } from 'react';
-import { getApiBaseUrl } from './api';
+import { eventsWsUrl } from './api';
 import { wireEventType } from './wireEvent';
 import { navigateToTool } from './store';
 
@@ -175,9 +175,11 @@ export function ensureNotificationStream(): void {
   connect();
 }
 
-function connect(): void {
+async function connect(): Promise<void> {
   try {
-    const ws = new WebSocket(`${getApiBaseUrl().replace(/^http/, 'ws')}/events`);
+    // Daemon token rides the WS query (C1/C2 auth). This stream is started
+    // once and retries forever, so no post-await liveness re-check is needed.
+    const ws = new WebSocket(await eventsWsUrl());
     ws.onmessage = (msg) => {
       try {
         const evt = JSON.parse(msg.data as string);

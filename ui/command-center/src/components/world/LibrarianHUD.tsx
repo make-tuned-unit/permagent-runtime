@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { COLORS } from './constants';
-import { api, getApiBaseUrl } from '../../lib/api';
+import { api, eventsWsUrl } from '../../lib/api';
 import { wireEventType } from '../../lib/wireEvent';
 import { HudShell, Section, StatRow } from './HudShell';
 
@@ -56,39 +56,47 @@ function useLibrarianTokenStream(active: boolean): StreamState {
       return;
     }
 
-    const base = getApiBaseUrl().replace(/^http/, 'ws');
-    const ws = new WebSocket(`${base}/events`);
-    wsRef.current = ws;
+    // Daemon token rides the WS query (C1/C2 auth). The await opens an async
+    // gap, so the cleanup closes via wsRef and `cancelled` guards against a
+    // token load racing unmount opening an orphan socket.
+    let cancelled = false;
+    void (async () => {
+      const url = await eventsWsUrl();
+      if (cancelled) return;
+      const ws = new WebSocket(url);
+      wsRef.current = ws;
 
-    ws.onmessage = (ev) => {
-      try {
-        const event = JSON.parse(ev.data);
-        const eventType = wireEventType(event);
+      ws.onmessage = (ev) => {
+        try {
+          const event = JSON.parse(ev.data);
+          const eventType = wireEventType(event);
 
-        if (eventType === 'librarian_describe_started') {
-          currentKeyRef.current = event.payload?.memory_key ?? null;
-          setState({ tokens: '', retrying: false, lastQuality: null });
-        } else if (eventType === 'librarian_describe_retry') {
-          setState((prev) => ({ ...prev, tokens: '', retrying: true }));
-        } else if (eventType === 'librarian_describe_token') {
-          const key = event.payload?.memory_key;
-          if (key === currentKeyRef.current) {
-            setState((prev) => ({ ...prev, tokens: prev.tokens + (event.payload?.token ?? '') }));
+          if (eventType === 'librarian_describe_started') {
+            currentKeyRef.current = event.payload?.memory_key ?? null;
+            setState({ tokens: '', retrying: false, lastQuality: null });
+          } else if (eventType === 'librarian_describe_retry') {
+            setState((prev) => ({ ...prev, tokens: '', retrying: true }));
+          } else if (eventType === 'librarian_describe_token') {
+            const key = event.payload?.memory_key;
+            if (key === currentKeyRef.current) {
+              setState((prev) => ({ ...prev, tokens: prev.tokens + (event.payload?.token ?? '') }));
+            }
+          } else if (eventType === 'librarian_describe_completed') {
+            const quality = event.payload?.quality === 'fallback' ? 'fallback' as const : 'structured' as const;
+            setState((prev) => ({ ...prev, retrying: false, lastQuality: quality }));
+            currentKeyRef.current = null;
           }
-        } else if (eventType === 'librarian_describe_completed') {
-          const quality = event.payload?.quality === 'fallback' ? 'fallback' as const : 'structured' as const;
-          setState((prev) => ({ ...prev, retrying: false, lastQuality: quality }));
-          currentKeyRef.current = null;
+        } catch {
+          // ignore malformed
         }
-      } catch {
-        // ignore malformed
-      }
-    };
+      };
 
-    ws.onerror = () => ws.close();
+      ws.onerror = () => ws.close();
+    })();
 
     return () => {
-      ws.close();
+      cancelled = true;
+      wsRef.current?.close();
       wsRef.current = null;
     };
   }, [active]);
