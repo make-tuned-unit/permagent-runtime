@@ -692,6 +692,15 @@ impl DownloadManager {
             let response = match request.send().await {
                 Ok(r) => r,
                 Err(e) => {
+                    // A redirect the policy refused is deterministic — the
+                    // server will answer with the same disallowed Location on
+                    // every retry. Fail immediately, naming the policy reason.
+                    if e.is_redirect() {
+                        let detail = std::error::Error::source(&e)
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| e.to_string());
+                        anyhow::bail!("Download refused: {}", detail);
+                    }
                     if retries >= Self::MAX_RETRIES {
                         anyhow::bail!("Download failed after {} retries: {}", retries, e);
                     }
