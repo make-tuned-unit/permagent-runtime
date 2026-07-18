@@ -22,6 +22,12 @@ pub struct HfGgufFile {
     pub size_bytes: u64,
     pub quantization: String,
     pub download_url: String,
+    /// Expected SHA-256 of the file, from the HuggingFace API's LFS metadata
+    /// (`siblings[].lfs.sha256`). Threaded into the DownloadManager so the
+    /// downloaded bytes are verified before the model is installed. `None`
+    /// when the API response did not include blob metadata.
+    #[serde(default)]
+    pub sha256: Option<String>,
 }
 
 /// A quantization variant — groups sharded files into one logical entry.
@@ -57,6 +63,36 @@ struct HfApiSibling {
     rfilename: String,
     #[serde(default)]
     size: Option<u64>,
+    /// LFS blob metadata, present when the API is queried with `?blobs=true`.
+    /// `lfs.sha256` is the authoritative content digest for LFS-stored files
+    /// (GGUF weights always are) — it is what `git lfs` itself verifies.
+    #[serde(default)]
+    lfs: Option<HfLfsInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HfLfsInfo {
+    /// SHA-256 of the blob as lowercase hex. (Older API shapes call this
+    /// `oid`; both are the same digest.)
+    #[serde(default, alias = "oid")]
+    sha256: Option<String>,
+    #[serde(default)]
+    size: Option<u64>,
+}
+
+impl HfApiSibling {
+    /// The file's SHA-256 from LFS metadata, if the API provided it.
+    fn sha256(&self) -> Option<String> {
+        self.lfs.as_ref().and_then(|l| l.sha256.clone())
+    }
+
+    /// File size, preferring the sibling-level size and falling back to LFS
+    /// metadata.
+    fn size_bytes(&self) -> u64 {
+        self.size
+            .or_else(|| self.lfs.as_ref().and_then(|l| l.size))
+            .unwrap_or(0)
+    }
 }
 
 struct QuantInfo {
@@ -286,7 +322,7 @@ fn group_into_variants(repo_id: &str, files: Vec<HfApiSibling>) -> Vec<HfQuantVa
         let download_url = build_download_url(repo_id, &s.rfilename);
         variants.push(HfQuantVariant {
             quantization: quant,
-            size_bytes: s.size.unwrap_or(0),
+            size_bytes: s.size_bytes(),
             filename: s.rfilename.clone(),
             download_url,
             description: info.description,
@@ -301,7 +337,7 @@ fn group_into_variants(repo_id: &str, files: Vec<HfApiSibling>) -> Vec<HfQuantVa
             continue;
         }
         shards.sort_by(|a, b| a.rfilename.cmp(&b.rfilename));
-        let total_size: u64 = shards.iter().map(|s| s.size.unwrap_or(0)).sum();
+        let total_size: u64 = shards.iter().map(|s| s.size_bytes()).sum();
         let info = quant_info(&quant);
         let first_filename = &shards[0].rfilename;
         let download_url = build_download_url(repo_id, first_filename);
@@ -359,8 +395,9 @@ pub async fn search_gguf_models(query: &str, limit: usize) -> Result<Vec<HfModel
                     let quantization = parse_quantization(&s.rfilename);
                     let download_url = build_download_url(&repo_id, &s.rfilename);
                     HfGgufFile {
+                        size_bytes: s.size_bytes(),
+                        sha256: s.sha256(),
                         filename: s.rfilename,
-                        size_bytes: s.size.unwrap_or(0),
                         quantization,
                         download_url,
                     }
@@ -447,8 +484,9 @@ pub async fn get_repo_gguf_files(repo_id: &str) -> Result<Vec<HfGgufFile>> {
             let quantization = parse_quantization(&s.rfilename);
             let download_url = build_download_url(repo_id, &s.rfilename);
             HfGgufFile {
+                size_bytes: s.size_bytes(),
+                sha256: s.sha256(),
                 filename: s.rfilename,
-                size_bytes: s.size.unwrap_or(0),
                 quantization,
                 download_url,
             }
@@ -456,6 +494,55 @@ pub async fn get_repo_gguf_files(repo_id: &str) -> Result<Vec<HfGgufFile>> {
         .collect();
 
     Ok(files)
+}
+
+/// Fetch the expected SHA-256 for a single file in a HuggingFace repo from the
+/// hub API's LFS metadata (`siblings[].lfs.sha256` with `?blobs=true`).
+///
+/// Returns `None` (with a warning) when the digest cannot be determined — the
+/// digest comes from the same HTTPS origin as the artifact itself, so its
+/// absence downgrades to allowlist+HTTPS protection rather than failing the
+/// download outright. Used for artifacts whose URL is constructed directly
+/// (e.g. featured-model mmproj vision encoders) instead of going through
+/// [`resolve_model_spec_full`], which carries digests already.
+pub async fn fetch_expected_sha256(repo_id: &str, filename: &str) -> Option<String> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/{}?blobs=true", HF_API_BASE, repo_id);
+
+    let result = async {
+        let response = client
+            .get(&url)
+            .header("User-Agent", "goose-ai-agent")
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            bail!("HuggingFace API returned status {}", response.status());
+        }
+        let model: HfApiModel = response.json().await?;
+        Ok::<_, anyhow::Error>(model.siblings.unwrap_or_default())
+    }
+    .await;
+
+    match result {
+        Ok(siblings) => {
+            let sha = siblings
+                .iter()
+                .find(|s| s.rfilename == filename)
+                .and_then(|s| s.sha256());
+            if sha.is_none() {
+                tracing::warn!(
+                    repo_id,
+                    filename,
+                    "No LFS sha256 available for file — downloading without a digest pin"
+                );
+            }
+            sha
+        }
+        Err(e) => {
+            tracing::warn!(repo_id, filename, error = %e, "Failed to fetch expected sha256 — downloading without a digest pin");
+            None
+        }
+    }
 }
 
 /// Parse a model spec like "bartowski/Llama-3.2-1B-Instruct-GGUF:Q4_K_M" into (repo_id, quantization).
@@ -531,9 +618,10 @@ pub async fn resolve_model_spec_full(spec: &str) -> Result<(String, ResolvedMode
     if let Some(single) = single_files.first() {
         let file = HfGgufFile {
             filename: single.rfilename.clone(),
-            size_bytes: single.size.unwrap_or(0),
+            size_bytes: single.size_bytes(),
             quantization: quant,
             download_url: build_download_url(&repo_id, &single.rfilename),
+            sha256: single.sha256(),
         };
         let total_size = file.size_bytes;
         return Ok((
@@ -593,9 +681,10 @@ pub async fn resolve_model_spec_full(spec: &str) -> Result<(String, ResolvedMode
         .iter()
         .map(|s| HfGgufFile {
             filename: s.rfilename.clone(),
-            size_bytes: s.size.unwrap_or(0),
+            size_bytes: s.size_bytes(),
             quantization: quant.clone(),
             download_url: build_download_url(&repo_id, &s.rfilename),
+            sha256: s.sha256(),
         })
         .collect();
     let total_size: u64 = files.iter().map(|f| f.size_bytes).sum();
@@ -756,10 +845,12 @@ mod tests {
         let files = vec![
             HfApiSibling {
                 rfilename: "gemma-3-27b-it-Q4_K_M.gguf".into(),
+                lfs: None,
                 size: Some(4_000_000_000),
             },
             HfApiSibling {
                 rfilename: "mmproj-BF16.gguf".into(),
+                lfs: None,
                 size: Some(800_000_000),
             },
         ];
@@ -773,14 +864,17 @@ mod tests {
         let files = vec![
             HfApiSibling {
                 rfilename: "BF16/gemma-3-27b-it-BF16-00001-of-00002.gguf".into(),
+                lfs: None,
                 size: Some(40_000_000_000),
             },
             HfApiSibling {
                 rfilename: "BF16/gemma-3-27b-it-BF16-00002-of-00002.gguf".into(),
+                lfs: None,
                 size: Some(10_000_000_000),
             },
             HfApiSibling {
                 rfilename: "gemma-3-27b-it-Q4_K_M.gguf".into(),
+                lfs: None,
                 size: Some(4_000_000_000),
             },
         ];
@@ -795,18 +889,51 @@ mod tests {
     }
 
     #[test]
+    fn test_sibling_lfs_sha256_deserializes_from_api_shape() {
+        // Real shape returned by GET /api/models/{repo}?blobs=true
+        let json = r#"{
+            "rfilename": "model-tiny-q80.gguf",
+            "blobId": "47c351b72b8cd3449130eb5dc70d5b2ff58664ab",
+            "size": 40700160,
+            "lfs": {"sha256": "52deb0fdcbb9c36b4d570e35f5a65a5ad4275ccdb85e7a06e81a8b05b3743c9d", "size": 40700160, "pointerSize": 133}
+        }"#;
+        let sibling: HfApiSibling = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            sibling.sha256().as_deref(),
+            Some("52deb0fdcbb9c36b4d570e35f5a65a5ad4275ccdb85e7a06e81a8b05b3743c9d")
+        );
+        assert_eq!(sibling.size_bytes(), 40700160);
+
+        // Non-LFS files (no lfs object) and missing blob metadata degrade to None.
+        let plain: HfApiSibling =
+            serde_json::from_str(r#"{"rfilename": "README.md", "size": 3539}"#).unwrap();
+        assert_eq!(plain.sha256(), None);
+        assert_eq!(plain.size_bytes(), 3539);
+
+        // The `oid` alias (older API shape) is accepted too.
+        let aliased: HfApiSibling =
+            serde_json::from_str(r#"{"rfilename": "m.gguf", "lfs": {"oid": "aa", "size": 7}}"#)
+                .unwrap();
+        assert_eq!(aliased.sha256().as_deref(), Some("aa"));
+        assert_eq!(aliased.size_bytes(), 7);
+    }
+
+    #[test]
     fn test_group_into_variants_sorted_descending() {
         let files = vec![
             HfApiSibling {
                 rfilename: "Model-IQ1_S.gguf".into(),
+                lfs: None,
                 size: Some(500_000_000),
             },
             HfApiSibling {
                 rfilename: "Model-Q4_K_M.gguf".into(),
+                lfs: None,
                 size: Some(4_000_000_000),
             },
             HfApiSibling {
                 rfilename: "Model-Q8_0.gguf".into(),
+                lfs: None,
                 size: Some(8_000_000_000),
             },
         ];

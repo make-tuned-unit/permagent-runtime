@@ -4,8 +4,128 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tokio::io::AsyncWriteExt;
-use tracing::info;
+use tracing::{info, warn};
 use utoipa::ToSchema;
+
+/// Hosts the DownloadManager is willing to contact. Runtime-downloaded
+/// artifacts (GGUF weights, ONNX models, voice packs) are parsed by native
+/// code (llama.cpp, candle, onnxruntime), so a malicious artifact is
+/// arbitrary-code-execution: every download must originate from a trusted,
+/// explicitly listed host. Matching is exact (no subdomains) — the initial
+/// request URL is what gets validated; HTTPS redirects issued by a trusted
+/// host (e.g. huggingface.co -> its LFS CDN) are that host's responsibility.
+const ALLOWED_HOSTS: &[&str] = &["huggingface.co"];
+
+/// github.com is not generally trusted — only these exact release-asset path
+/// prefixes are (third-party projects we intentionally pin, e.g. the
+/// kokoro-onnx voice model release).
+const ALLOWED_GITHUB_PATH_PREFIXES: &[&str] = &["/thewh1teagle/kokoro-onnx/releases/download/"];
+
+/// Validate that `raw` is an HTTPS URL pointing at an allowlisted download
+/// host. Every URL handed to the DownloadManager must pass this check before
+/// any network I/O happens.
+pub fn validate_download_url(raw: &str) -> Result<()> {
+    let url = reqwest::Url::parse(raw)
+        .map_err(|e| anyhow::anyhow!("Invalid download URL '{}': {}", raw, e))?;
+
+    if url.scheme() != "https" {
+        anyhow::bail!(
+            "Refusing non-HTTPS download URL '{}': model downloads must use https://",
+            raw
+        );
+    }
+
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("Download URL '{}' has no host", raw))?
+        .to_ascii_lowercase();
+
+    if ALLOWED_HOSTS.contains(&host.as_str()) {
+        return Ok(());
+    }
+
+    if host == "github.com" {
+        if ALLOWED_GITHUB_PATH_PREFIXES
+            .iter()
+            .any(|prefix| url.path().starts_with(prefix))
+        {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "Refusing download from github.com path '{}': only pinned release paths are allowed",
+            url.path()
+        );
+    }
+
+    anyhow::bail!(
+        "Refusing download from untrusted host '{}': allowed hosts are {:?} plus pinned github.com release paths",
+        host,
+        ALLOWED_HOSTS
+    );
+}
+
+/// Normalize an expected SHA-256 into lowercase hex, accepting an optional
+/// "sha256:" prefix. Rejects anything that is not exactly 64 hex characters —
+/// a malformed pin is a bug at the call site, never something to skip past.
+fn normalize_sha256(expected: &str) -> Result<String> {
+    let cleaned = expected
+        .trim()
+        .trim_start_matches("sha256:")
+        .to_ascii_lowercase();
+    if cleaned.len() == 64 && cleaned.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Ok(cleaned)
+    } else {
+        anyhow::bail!(
+            "Invalid expected SHA-256 '{}': must be 64 hex characters (optionally prefixed with 'sha256:')",
+            expected
+        )
+    }
+}
+
+/// Compute the SHA-256 of a file as lowercase hex. Runs on the blocking pool —
+/// model files are multiple GB.
+async fn sha256_file_hex(path: &Path) -> Result<String> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || -> Result<String> {
+        use sha2::{Digest, Sha256};
+        let mut file = std::fs::File::open(&path)?;
+        let mut hasher = Sha256::new();
+        std::io::copy(&mut file, &mut hasher)?;
+        Ok(hex::encode(hasher.finalize()))
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("SHA-256 hashing task failed: {}", e))?
+}
+
+/// One file to download: source URL, final destination, and (whenever the
+/// artifact is known in advance) the expected SHA-256 of its contents.
+///
+/// When `expected_sha256` is present the downloaded bytes are hashed and MUST
+/// match before the file is promoted from its temporary `.part` path to
+/// `destination`; on mismatch the partial file is deleted and the download
+/// fails. When `None`, no content pin is enforced — the URL still has to pass
+/// the HTTPS + trusted-host checks. Prefer pinning wherever a trustworthy
+/// digest exists (static artifact tables, the HuggingFace API's `lfs.sha256`).
+#[derive(Debug, Clone)]
+pub struct DownloadFile {
+    pub url: String,
+    pub destination: PathBuf,
+    pub expected_sha256: Option<String>,
+}
+
+impl DownloadFile {
+    pub fn new(
+        url: impl Into<String>,
+        destination: impl Into<PathBuf>,
+        expected_sha256: Option<String>,
+    ) -> Self {
+        Self {
+            url: url.into(),
+            destination: destination.into(),
+            expected_sha256,
+        }
+    }
+}
 
 fn partial_path_for(destination: &Path) -> PathBuf {
     destination.with_extension(
@@ -87,6 +207,10 @@ type DownloadMap = Arc<Mutex<HashMap<String, DownloadProgress>>>;
 
 pub struct DownloadManager {
     downloads: DownloadMap,
+    /// Test-only escape hatch: allow plain-HTTP loopback URLs so tests can
+    /// drive the full download path against a local mock server. Always false
+    /// for the production singleton.
+    allow_insecure_loopback: bool,
 }
 
 impl Default for DownloadManager {
@@ -99,7 +223,29 @@ impl DownloadManager {
     pub fn new() -> Self {
         Self {
             downloads: Arc::new(Mutex::new(HashMap::new())),
+            allow_insecure_loopback: false,
         }
+    }
+
+    #[cfg(test)]
+    fn new_with_insecure_loopback_for_tests() -> Self {
+        Self {
+            downloads: Arc::new(Mutex::new(HashMap::new())),
+            allow_insecure_loopback: true,
+        }
+    }
+
+    /// Validate a download URL under this manager's policy: strict HTTPS +
+    /// host-allowlist rules, with a loopback exemption only for test managers.
+    fn validate_url(&self, raw: &str) -> Result<()> {
+        if self.allow_insecure_loopback {
+            if let Ok(url) = reqwest::Url::parse(raw) {
+                if matches!(url.host_str(), Some("127.0.0.1") | Some("localhost")) {
+                    return Ok(());
+                }
+            }
+        }
+        validate_download_url(raw)
     }
 
     pub fn get_progress(&self, model_id: &str) -> Option<DownloadProgress> {
@@ -125,20 +271,36 @@ impl DownloadManager {
         model_id: String,
         url: String,
         destination: PathBuf,
+        expected_sha256: Option<String>,
         on_complete: Option<Box<dyn FnOnce() + Send + 'static>>,
     ) -> Result<()> {
-        self.download_model_sharded(model_id, vec![(url, destination)], 0, on_complete)
-            .await
+        self.download_model_sharded(
+            model_id,
+            vec![DownloadFile::new(url, destination, expected_sha256)],
+            0,
+            on_complete,
+        )
+        .await
     }
 
     pub async fn download_model_sharded(
         &self,
         model_id: String,
-        files: Vec<(String, PathBuf)>,
+        mut files: Vec<DownloadFile>,
         total_size_hint: u64,
         on_complete: Option<Box<dyn FnOnce() + Send + 'static>>,
     ) -> Result<()> {
         info!(model_id = %model_id, file_count = files.len(), "Starting model download");
+
+        // Reject untrusted URLs and malformed digest pins up front, before any
+        // download state is registered or any network I/O happens.
+        for file in &mut files {
+            self.validate_url(&file.url)?;
+            if let Some(expected) = &file.expected_sha256 {
+                file.expected_sha256 = Some(normalize_sha256(expected)?);
+            }
+        }
+
         {
             let mut downloads = self
                 .downloads
@@ -173,8 +335,8 @@ impl DownloadManager {
         }
 
         // Create parent directories for all files
-        for (_, dest) in &files {
-            if let Some(parent) = dest.parent() {
+        for file in &files {
+            if let Some(parent) = file.destination.parent() {
                 tokio::fs::create_dir_all(parent)
                     .await
                     .map_err(|e| anyhow::anyhow!("Failed to create directory: {}", e))?;
@@ -183,7 +345,7 @@ impl DownloadManager {
 
         let downloads = self.downloads.clone();
         let model_id_clone = model_id.clone();
-        let files_for_cleanup: Vec<PathBuf> = files.iter().map(|(_, d)| d.clone()).collect();
+        let files_for_cleanup: Vec<PathBuf> = files.iter().map(|f| f.destination.clone()).collect();
 
         tokio::spawn(async move {
             let result =
@@ -258,8 +420,12 @@ impl DownloadManager {
 
     #[allow(clippy::too_many_arguments)]
     /// Download multiple files sequentially, tracking cumulative progress under one model_id.
+    ///
+    /// Files whose destination already exists are skipped (resume support) and
+    /// are NOT re-verified — integrity is enforced at download time, when the
+    /// bytes cross the trust boundary.
     async fn download_files_sequentially(
-        files: &[(String, PathBuf)],
+        files: &[DownloadFile],
         downloads: &DownloadMap,
         model_id: &str,
     ) -> Result<(), anyhow::Error> {
@@ -272,9 +438,9 @@ impl DownloadManager {
         // every file returned a size; partial results would underestimate.
         let mut total: u64 = 0;
         let mut all_resolved = true;
-        for (url, _) in files {
+        for file in files {
             let size = client
-                .head(url)
+                .head(&file.url)
                 .send()
                 .await
                 .ok()
@@ -296,10 +462,10 @@ impl DownloadManager {
         let start_time = std::time::Instant::now();
         let mut cumulative_bytes: u64 = 0;
         // Account for already-downloaded shards
-        for (_, dest) in files {
-            let partial = partial_path_for(dest);
-            if dest.exists() {
-                if let Ok(meta) = tokio::fs::metadata(dest).await {
+        for file in files {
+            let partial = partial_path_for(&file.destination);
+            if file.destination.exists() {
+                if let Ok(meta) = tokio::fs::metadata(&file.destination).await {
                     cumulative_bytes += meta.len();
                 }
             } else if partial.exists() {
@@ -310,20 +476,19 @@ impl DownloadManager {
         }
         let bytes_at_start = cumulative_bytes;
 
-        for (url, destination) in files {
+        for file in files {
             if Self::is_cancelled(downloads, model_id) {
                 anyhow::bail!("Download cancelled");
             }
 
             // Skip already-completed shards
-            if destination.exists() {
+            if file.destination.exists() {
                 continue;
             }
 
             Self::download_one_file(
                 &client,
-                url,
-                destination,
+                file,
                 downloads,
                 model_id,
                 &mut cumulative_bytes,
@@ -336,17 +501,44 @@ impl DownloadManager {
         Ok(())
     }
 
+    /// Verify the completed `.part` file against `file.expected_sha256` (when
+    /// pinned) and promote it to its final destination. On digest mismatch the
+    /// partial is deleted and an error is returned — a corrupted or tampered
+    /// artifact must never land at a path the loaders trust.
+    async fn verify_and_promote(
+        file: &DownloadFile,
+        partial_path: &Path,
+        model_id: &str,
+    ) -> Result<(), anyhow::Error> {
+        if let Some(expected) = &file.expected_sha256 {
+            let actual = sha256_file_hex(partial_path).await?;
+            if &actual != expected {
+                let _ = tokio::fs::remove_file(partial_path).await;
+                anyhow::bail!(
+                    "SHA-256 mismatch for {}: expected {}, got {} — the downloaded file was discarded",
+                    file.url,
+                    expected,
+                    actual
+                );
+            }
+            info!(model_id = %model_id, sha256 = %actual, "Download integrity verified");
+        }
+        tokio::fs::rename(partial_path, &file.destination).await?;
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn download_one_file(
         client: &reqwest::Client,
-        url: &str,
-        destination: &Path,
+        file: &DownloadFile,
         downloads: &DownloadMap,
         model_id: &str,
         cumulative_bytes: &mut u64,
         start_time: std::time::Instant,
         bytes_at_start: u64,
     ) -> Result<(), anyhow::Error> {
+        let url: &str = &file.url;
+        let destination: &Path = &file.destination;
         let partial_path = partial_path_for(destination);
         let mut retries = 0u32;
 
@@ -365,11 +557,23 @@ impl DownloadManager {
             .and_then(|r| r.content_length())
             .unwrap_or(0);
 
-        // If partial matches expected size exactly, promote it
+        // If partial matches expected size exactly, verify and promote it.
+        // A digest mismatch here may just be a corrupted resume from a previous
+        // run — discard the partial and fall through to a fresh download (whose
+        // result is verified again before promotion).
         if file_total > 0 && file_bytes == file_total {
-            tokio::fs::rename(&partial_path, destination).await?;
-            // cumulative_bytes already accounts for this file from the pre-scan
-            return Ok(());
+            match Self::verify_and_promote(file, &partial_path, model_id).await {
+                Ok(()) => {
+                    // cumulative_bytes already accounts for this file from the pre-scan
+                    return Ok(());
+                }
+                Err(e) => {
+                    warn!(model_id = %model_id, error = %e, "Complete partial failed verification, re-downloading from scratch");
+                    *cumulative_bytes = cumulative_bytes.saturating_sub(file_bytes);
+                    file_bytes = 0;
+                    let _ = tokio::fs::remove_file(&partial_path).await;
+                }
+            }
         }
 
         // If partial is oversized or remote changed, discard and re-download
@@ -471,7 +675,7 @@ impl DownloadManager {
                 }
             }
 
-            let mut file = tokio::fs::OpenOptions::new()
+            let mut part_file = tokio::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(&partial_path)
@@ -479,7 +683,7 @@ impl DownloadManager {
 
             let file_len = tokio::fs::metadata(&partial_path).await?.len();
             if file_len != file_bytes {
-                file.set_len(file_bytes).await?;
+                part_file.set_len(file_bytes).await?;
             }
 
             let mut stream_error = false;
@@ -494,7 +698,7 @@ impl DownloadManager {
                             anyhow::bail!("Download cancelled");
                         }
 
-                        file.write_all(&chunk).await?;
+                        part_file.write_all(&chunk).await?;
                         let chunk_len = chunk.len() as u64;
                         file_bytes += chunk_len;
                         *cumulative_bytes += chunk_len;
@@ -545,8 +749,8 @@ impl DownloadManager {
                 }
             }
 
-            file.flush().await?;
-            drop(file);
+            part_file.flush().await?;
+            drop(part_file);
 
             if stream_error {
                 if retries >= Self::MAX_RETRIES {
@@ -568,7 +772,10 @@ impl DownloadManager {
             break;
         }
 
-        tokio::fs::rename(&partial_path, destination).await?;
+        // Stream complete: enforce the digest pin (when present) before the
+        // file is promoted to the path the model loaders trust. A mismatch at
+        // this point is a hard failure — the server sent us the wrong bytes.
+        Self::verify_and_promote(file, &partial_path, model_id).await?;
         Ok(())
     }
 
@@ -591,4 +798,323 @@ static DOWNLOAD_MANAGER: once_cell::sync::Lazy<DownloadManager> =
 
 pub fn get_download_manager() -> &'static DownloadManager {
     &DOWNLOAD_MANAGER
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn sha256_hex_of(data: &[u8]) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        hex::encode(hasher.finalize())
+    }
+
+    // ── URL allowlist / scheme policy ──────────────────────────────────────
+
+    #[test]
+    fn allows_huggingface_https() {
+        assert!(validate_download_url(
+            "https://huggingface.co/oxide-lab/whisper-base-GGUF/resolve/main/whisper-base-q8_0.gguf"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn allows_pinned_github_release_path() {
+        assert!(validate_download_url(
+            "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn rejects_non_pinned_github_path() {
+        let err = validate_download_url(
+            "https://github.com/attacker/evil-repo/releases/download/v1/model.onnx",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("pinned release paths"));
+    }
+
+    #[test]
+    fn rejects_http_scheme() {
+        let err = validate_download_url(
+            "http://huggingface.co/oxide-lab/whisper-base-GGUF/resolve/main/model.gguf",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("https"));
+    }
+
+    #[test]
+    fn rejects_untrusted_host() {
+        let err = validate_download_url("https://evil.example.com/model.gguf").unwrap_err();
+        assert!(err.to_string().contains("untrusted host"));
+    }
+
+    #[test]
+    fn rejects_host_lookalikes() {
+        // Exact-match host policy: neither subdomain-forging nor suffix tricks pass.
+        assert!(validate_download_url("https://huggingface.co.evil.com/model.gguf").is_err());
+        assert!(validate_download_url("https://evilhuggingface.co/model.gguf").is_err());
+        assert!(validate_download_url("https://cdn.huggingface.co/model.gguf").is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_url() {
+        assert!(validate_download_url("not a url").is_err());
+        assert!(validate_download_url("file:///etc/passwd").is_err());
+    }
+
+    // ── Digest pin normalization ───────────────────────────────────────────
+
+    #[test]
+    fn normalizes_sha256_forms() {
+        let digest = "a".repeat(64);
+        assert_eq!(normalize_sha256(&digest).unwrap(), digest);
+        assert_eq!(
+            normalize_sha256(&format!("sha256:{}", digest)).unwrap(),
+            digest
+        );
+        assert_eq!(normalize_sha256(&digest.to_uppercase()).unwrap(), digest);
+    }
+
+    #[test]
+    fn rejects_malformed_sha256() {
+        assert!(normalize_sha256("").is_err());
+        assert!(normalize_sha256("abc123").is_err());
+        assert!(normalize_sha256(&"g".repeat(64)).is_err());
+        assert!(normalize_sha256(&"a".repeat(63)).is_err());
+        assert!(normalize_sha256(&"a".repeat(65)).is_err());
+    }
+
+    // ── Manager-level rejection (before any network I/O) ───────────────────
+
+    #[tokio::test]
+    async fn download_rejects_http_url_immediately() {
+        let dm = DownloadManager::new();
+        let dir = tempfile::tempdir().unwrap();
+        let err = dm
+            .download_model(
+                "http-test".to_string(),
+                "http://huggingface.co/some/model.gguf".to_string(),
+                dir.path().join("model.gguf"),
+                None,
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("https"));
+        assert!(dm.get_progress("http-test").is_none());
+    }
+
+    #[tokio::test]
+    async fn download_rejects_untrusted_host_immediately() {
+        let dm = DownloadManager::new();
+        let dir = tempfile::tempdir().unwrap();
+        let err = dm
+            .download_model(
+                "host-test".to_string(),
+                "https://evil.example.com/model.gguf".to_string(),
+                dir.path().join("model.gguf"),
+                None,
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("untrusted host"));
+        assert!(dm.get_progress("host-test").is_none());
+    }
+
+    #[tokio::test]
+    async fn download_rejects_malformed_expected_hash_immediately() {
+        let dm = DownloadManager::new();
+        let dir = tempfile::tempdir().unwrap();
+        let err = dm
+            .download_model(
+                "hash-format-test".to_string(),
+                "https://huggingface.co/some/model.gguf".to_string(),
+                dir.path().join("model.gguf"),
+                Some("not-a-real-digest".to_string()),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Invalid expected SHA-256"));
+        assert!(dm.get_progress("hash-format-test").is_none());
+    }
+
+    // ── End-to-end verification against a local mock server ───────────────
+
+    async fn wait_for_terminal(dm: &DownloadManager, id: &str) -> DownloadProgress {
+        let start = std::time::Instant::now();
+        loop {
+            if let Some(p) = dm.get_progress(id) {
+                if p.task_exited {
+                    return p;
+                }
+            }
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(30),
+                "download {id} did not reach a terminal state in time"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn matching_hash_promotes_to_destination() {
+        let body = b"tiny model fixture bytes for integrity testing".to_vec();
+        let expected = sha256_hex_of(&body);
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/model.bin"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("model.bin");
+        let dm = DownloadManager::new_with_insecure_loopback_for_tests();
+        dm.download_model(
+            "good-hash".to_string(),
+            format!("{}/model.bin", server.uri()),
+            dest.clone(),
+            Some(expected),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let progress = wait_for_terminal(&dm, "good-hash").await;
+        assert_eq!(progress.status, DownloadStatus::Completed, "{:?}", progress);
+        assert_eq!(std::fs::read(&dest).unwrap(), body);
+        assert!(!partial_path_for(&dest).exists());
+    }
+
+    #[tokio::test]
+    async fn hash_mismatch_fails_and_leaves_no_files() {
+        let body = b"bytes an attacker swapped in".to_vec();
+        // Expect the digest of DIFFERENT content.
+        let expected = sha256_hex_of(b"the artifact we actually pinned");
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/model.bin"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("model.bin");
+        let dm = DownloadManager::new_with_insecure_loopback_for_tests();
+        dm.download_model(
+            "bad-hash".to_string(),
+            format!("{}/model.bin", server.uri()),
+            dest.clone(),
+            Some(expected),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let progress = wait_for_terminal(&dm, "bad-hash").await;
+        assert_eq!(progress.status, DownloadStatus::Failed, "{:?}", progress);
+        assert!(
+            progress
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("SHA-256 mismatch"),
+            "error should name the digest mismatch: {:?}",
+            progress.error
+        );
+        assert!(!dest.exists(), "destination must not exist after mismatch");
+        assert!(
+            !partial_path_for(&dest).exists(),
+            "partial must be cleaned up after mismatch"
+        );
+    }
+
+    #[tokio::test]
+    async fn download_without_pin_still_works() {
+        let body = b"unpinned artifact".to_vec();
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/model.bin"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("model.bin");
+        let dm = DownloadManager::new_with_insecure_loopback_for_tests();
+        dm.download_model(
+            "no-pin".to_string(),
+            format!("{}/model.bin", server.uri()),
+            dest.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let progress = wait_for_terminal(&dm, "no-pin").await;
+        assert_eq!(progress.status, DownloadStatus::Completed, "{:?}", progress);
+        assert_eq!(std::fs::read(&dest).unwrap(), body);
+    }
+
+    #[tokio::test]
+    async fn sharded_download_verifies_every_file() {
+        let good = b"first shard bytes".to_vec();
+        let evil = b"second shard tampered".to_vec();
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/shard1.bin"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(good.clone()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/shard2.bin"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(evil))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let dest1 = dir.path().join("shard1.bin");
+        let dest2 = dir.path().join("shard2.bin");
+        let dm = DownloadManager::new_with_insecure_loopback_for_tests();
+        dm.download_model_sharded(
+            "sharded".to_string(),
+            vec![
+                DownloadFile::new(
+                    format!("{}/shard1.bin", server.uri()),
+                    dest1.clone(),
+                    Some(sha256_hex_of(&good)),
+                ),
+                DownloadFile::new(
+                    format!("{}/shard2.bin", server.uri()),
+                    dest2.clone(),
+                    Some(sha256_hex_of(b"what shard2 should have been")),
+                ),
+            ],
+            0,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let progress = wait_for_terminal(&dm, "sharded").await;
+        assert_eq!(progress.status, DownloadStatus::Failed, "{:?}", progress);
+        // Shard 1 verified and landed; shard 2 was rejected and cleaned up.
+        assert_eq!(std::fs::read(&dest1).unwrap(), good);
+        assert!(!dest2.exists());
+        assert!(!partial_path_for(&dest2).exists());
+    }
 }
