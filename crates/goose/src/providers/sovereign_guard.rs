@@ -17,7 +17,10 @@
 //! Enforcement is **fail-closed**: for a [`DataLocality::Cloud`] provider used
 //! in a sovereign context, the call is refused before any bytes leave, and the
 //! attempt is recorded in the egress audit log. A cloud call in a non-sovereign
-//! context is allowed but still recorded — the audit is complete.
+//! context is allowed but still recorded — the audit is complete. If the audit
+//! row itself cannot be written, the failure is logged loudly; with strict
+//! audit mode on (`sovereign_strict_audit`), an allowed cloud call is then
+//! refused too — no unlogged egress.
 
 use std::sync::Arc;
 
@@ -67,7 +70,7 @@ impl SovereignGuardProvider {
         let blocked = sovereignty::is_context_sovereign(session_id);
         // Always-on audit: record every cloud call (blocked or allowed) before
         // it is allowed to proceed. An unlogged cloud call is a lying audit.
-        sovereignty::record_egress(EgressRecord {
+        let audit = sovereignty::record_egress(EgressRecord {
             provider: self.inner.get_name().to_string(),
             model: model.to_string(),
             session_id: session_id.to_string(),
@@ -79,8 +82,22 @@ impl SovereignGuardProvider {
         })
         .await;
         if blocked {
+            // Unchanged fail-closed refusal — an audit failure cannot make a
+            // sovereign context leak, and `record_egress` has already logged
+            // the failure loudly with full context.
             return Err(ProviderError::ExecutionError(
                 sovereignty::sovereign_block_message(self.inner.get_name(), model),
+            ));
+        }
+        // Strict (fail-closed) audit: an ALLOWED cloud call whose audit row
+        // could not be written is refused before any bytes leave — for users
+        // whose compliance posture requires no-unlogged-egress. Default off:
+        // the loud error log is the remedy and the call proceeds.
+        if audit.is_err()
+            && sovereignty::audit_failure_fails_call(sovereignty::strict_audit_enabled(), blocked)
+        {
+            return Err(ProviderError::ExecutionError(
+                sovereignty::strict_audit_block_message(self.inner.get_name(), model),
             ));
         }
         Ok(())
