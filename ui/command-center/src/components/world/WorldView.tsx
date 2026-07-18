@@ -3,7 +3,8 @@ import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { CameraMode, AgentState } from './types';
 import { COLORS, STATIONS } from './constants';
-import { navigateToTool, type ToolType } from '../../lib/store';
+import { navigateToTool, useCommandCenter, type ToolType } from '../../lib/store';
+import { createPedestalNavController, worldNavAllowed, type PedestalNavController } from './pedestalNav';
 import { WorldSceneContent } from './WorldScene';
 // W3 v2 agent stack (mount swap, bible §5 — replaces legacy WorldCharacters/useAgentStates).
 import { WorldAgents, ROSTER, getAgentPosition, getHenryPresence, nudgeAgent, setPath } from './agents';
@@ -34,9 +35,7 @@ const STATION_TOOL: Partial<Record<string, ToolType>> = {
   observatory: 'memory',
   automate: 'automate',
 };
-// The pedestal camera glide plays for this long, then the user lands on the tab —
-// a "dive toward the zone" transition kept from the watch-only diorama.
-const PEDESTAL_NAV_DELAY_MS = 700;
+// The pedestal glide delay + pending-nav semantics live in pedestalNav.ts.
 
 function LoadingShimmer() {
   return (
@@ -238,16 +237,22 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
   // code, and the camera dives through the membrane into the collective mind.
   const [focusPoint, setFocusPoint] = useState<[number, number, number] | null>(null);
   const agoraPhase = useAgoraPhase();
-  // Pending pedestal→tab navigation. Held in a ref and cleared on a new click or
-  // on unmount so a manual navigation during the 700ms glide can't later yank the
-  // user onto a tab they no longer wanted.
-  const navTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Pending pedestal→tab navigation (C2): the controller owns the glide timer.
+  // It cancels on a new station click, on unmount, and — because App keeps
+  // every workspace MOUNTED behind display:none — whenever this view stops
+  // being the visible workspace (workspace switch / overlay open, via
+  // canvasActive below), with a store re-check at fire time so a manual
+  // navigation during the 700ms glide can never yank the user. pedestalNav.ts
+  // carries the semantics + tests.
+  const pedestalNavRef = useRef<PedestalNavController | null>(null);
+  if (pedestalNavRef.current === null) {
+    pedestalNavRef.current = createPedestalNavController(navigateToTool, {
+      canNavigate: () => worldNavAllowed(useCommandCenter.getState()),
+    });
+  }
   const handleClickStation = useCallback((id: string) => {
     setHoveredStation(id);
-    if (navTimerRef.current) {
-      clearTimeout(navTimerRef.current);
-      navTimerRef.current = null;
-    }
+    pedestalNavRef.current?.cancel();
     if (id === 'forum-portal') {
       // Beat 1 (descent): draw the sovereign to the portal mouth. Beats 2-4
       // (dissolve → absorb → witness) run off the arc + the camera dive.
@@ -264,18 +269,16 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
     // Launchpad: glide toward the pedestal, then land on its product tab. The Lab
     // pedestal has no tab (absent from STATION_TOOL) — it stays glide-only.
     const tool = STATION_TOOL[id];
-    if (tool) {
-      navTimerRef.current = setTimeout(() => {
-        navTimerRef.current = null;
-        navigateToTool(tool);
-      }, PEDESTAL_NAV_DELAY_MS);
-    }
+    if (tool) pedestalNavRef.current?.schedule(tool);
   }, []);
   const handleFocusDone = useCallback(() => setFocusPoint(null), []);
-  // Clear any pending pedestal navigation if the view unmounts mid-glide.
-  useEffect(() => () => {
-    if (navTimerRef.current) clearTimeout(navTimerRef.current);
-  }, []);
+  // C2: keep the controller's visibility current — going hidden (workspace
+  // switch or overlay open) cancels any pending pedestal landing — and clear
+  // it if the view ever unmounts mid-glide.
+  useEffect(() => {
+    pedestalNavRef.current?.setVisible(canvasActive);
+  }, [canvasActive]);
+  useEffect(() => () => pedestalNavRef.current?.dispose(), []);
 
   // Beat 5 (return): pull back through the portal — Henry rematerializes on the
   // Rotunda side (the dissolve played backward) and the camera comes home.
@@ -285,18 +288,23 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
   }, []);
 
   // ESC returns from the Agora (in orbit mode ESC is otherwise free; third-person
-  // ESC is owned by WorldCamera).
+  // ESC is owned by WorldCamera). Gated on the World being the VISIBLE
+  // workspace (P2): every workspace stays mounted behind display:none, so
+  // without the gate an Escape aimed at an overlay would also silently exit
+  // the Agora arc in the hidden World.
   useEffect(() => {
-    if (agoraPhase === 'home') return;
+    if (agoraPhase === 'home' || !canvasActive) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') handleExitAgora();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [agoraPhase, handleExitAgora]);
+  }, [agoraPhase, handleExitAgora, canvasActive]);
 
-  // Toggle FPS with ~ key
+  // Toggle FPS with ~ key — also gated on visibility (P2): the hidden World
+  // must not eat keystrokes typed into other surfaces.
   useEffect(() => {
+    if (!canvasActive) return;
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === '`') {
         setShowFps((prev) => !prev);
@@ -304,7 +312,20 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, []);
+  }, [canvasActive]);
+
+  // C7: station/prop hovers set a body-level pointer cursor that pointerOut
+  // normally resets — but navigating away hides the canvas with no pointerOut,
+  // leaving the destination tab showing a pointer over dead space. Reset it
+  // whenever this view stops being visible (and on unmount). '' clears the
+  // inline override; hovers re-set it live.
+  useEffect(() => {
+    const resetPointerCursor = () => {
+      if (document.body.style.cursor === 'pointer') document.body.style.cursor = '';
+    };
+    if (!canvasActive) resetPointerCursor();
+    return resetPointerCursor;
+  }, [canvasActive]);
 
   // Find hovered station tooltip
   const stationTooltip = hoveredStation
