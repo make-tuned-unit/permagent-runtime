@@ -634,7 +634,10 @@ export const api = {
     images?: Array<{ data: string; mime_type: string }>,
     appContext?: AppContextPayload,
   ): Promise<{ request_id: string }> => {
-    const requestId = crypto.randomUUID();
+    // uuidV4, not crypto.randomUUID: companion devices reach the hub over
+    // plain-HTTP tailnet URLs (insecure origin), where randomUUID is undefined
+    // and a raw call would make every chat send throw.
+    const requestId = uuidV4();
     const userMessage = buildUserMessage(text, images);
     const contentTypes = userMessage.content.map(c => (c as { type: string }).type);
     console.log('[api-reply] POST /sessions/' + sessionId + '/reply',
