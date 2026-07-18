@@ -217,6 +217,11 @@ pub fn capability_for_activity(
         PersonaConfigured => Some("persona"),
         DecisionResolved => Some("decision_inbox"),
         DevicesPaired => Some("devices"),
+        // Copying the pairing link is genuine engagement with the devices
+        // feature (the deliberate "add a device" act on the hub), even though
+        // only `DevicesPaired` — emitted by the new device on token capture —
+        // claims a *completed* pairing.
+        PairingLinkCopied => Some("devices"),
         WebSearchPerformed => Some("web_search"),
         DictationCompleted => Some("voice"),
         WorldViewOpened => Some("world_view"),
@@ -403,6 +408,7 @@ mod tests {
             PersonaConfigured,
             DecisionResolved,
             DevicesPaired,
+            PairingLinkCopied,
             WebSearchPerformed,
             DictationCompleted,
             WorldViewOpened,
@@ -463,6 +469,12 @@ mod tests {
             capability_for_activity(&DevicesPaired, &SourceSurface::Settings),
             Some("devices")
         );
+        // The hub-side link copy engages the same feature without claiming a
+        // completed pairing.
+        assert_eq!(
+            capability_for_activity(&PairingLinkCopied, &SourceSurface::Settings),
+            Some("devices")
+        );
         assert_eq!(
             capability_for_activity(&WebSearchPerformed, &SourceSurface::Agent),
             Some("web_search")
@@ -501,6 +513,10 @@ mod tests {
             (PersonaConfigured, "persona"),
             (DecisionResolved, "decision_inbox"),
             (DevicesPaired, "devices"),
+            // Copying the pairing link alone (no completed pairing yet) must
+            // already mark `devices` engaged — the coach stops re-recommending
+            // a feature the user has demonstrably started using.
+            (PairingLinkCopied, "devices"),
             (WebSearchPerformed, "web_search"),
             (DictationCompleted, "voice"),
             (WorldViewOpened, "world_view"),
