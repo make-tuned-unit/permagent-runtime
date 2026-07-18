@@ -1,13 +1,14 @@
 /**
  * Replay honesty for the /events ACTION path — wiring tests.
  *
- * The daemon replays its whole event buffer on every (re)connect with no
- * server-side replay marker, so the handler must discriminate client-side:
- * `shouldActOnFrame` (per-connection epoch over the daemon's own timestamps,
- * via worldEvents' `isReplayed`) decides, and `routeGlobalFrame` enforces
- * "replayed frames are RECORDED in the trace but never ACTED on". Without this
- * gate a sleep/wake reconnect re-delivered an hours-old app_navigate and
- * yanked the user.
+ * The daemon replays its whole event buffer on every (re)connect, stamping
+ * each re-delivered frame `"replayed": true` server-side. `shouldActOnFrame`
+ * (via worldEvents' `frameReplayed`) treats that marker as authoritative and
+ * keeps the per-connection epoch over the daemon's own timestamps as the
+ * fallback for unmarked frames (older daemons; frames emitted while
+ * disconnected), and `routeGlobalFrame` enforces "replayed frames are
+ * RECORDED in the trace but never ACTED on". Without this gate a sleep/wake
+ * reconnect re-delivered an hours-old app_navigate and yanked the user.
  *
  * `../lib/api` is mocked (the openItem-test pattern) so importing the store +
  * hook module touches no network. `reason` is omitted from every payload so
@@ -85,10 +86,50 @@ describe('shouldActOnFrame — per-connection replay gate', () => {
   });
 });
 
+describe('shouldActOnFrame — server-side replay marker (authoritative)', () => {
+  /** A frame the daemon stamped as buffer re-delivery. */
+  function marked(type: string, timestamp?: string): unknown {
+    return { ...(frame(type, {}, timestamp) as object), replayed: true };
+  }
+
+  it('never acts on a server-marked frame, even one stamped after this connection opened', () => {
+    // A reconnect replay of a frame emitted while we were disconnected: its
+    // timestamp postdates the OLD epoch and could postdate a skewed clock's
+    // new epoch too — the marker closes the #770 clock-skew caveat.
+    for (const type of ACTION_TYPES) {
+      expect(shouldActOnFrame(marked(type, LIVE_TS), EPOCH)).toBe(false);
+    }
+  });
+
+  it('never acts on a server-marked frame without a timestamp (marker needs no clock at all)', () => {
+    expect(shouldActOnFrame(marked('app_navigate'), EPOCH)).toBe(false);
+  });
+
+  it('keeps the epoch fallback for unmarked frames (older daemons)', () => {
+    // These frames carry no marker — exactly what an older daemon sends — and
+    // must classify exactly as before the marker existed.
+    expect(shouldActOnFrame(frame('app_navigate', {}, STALE_TS), EPOCH)).toBe(false);
+    expect(shouldActOnFrame(frame('app_navigate', {}, LIVE_TS), EPOCH)).toBe(true);
+  });
+
+  it('an explicit replayed:false does not overrule the epoch guard (marker is one-directional)', () => {
+    const f = { ...(frame('app_navigate', {}, STALE_TS) as object), replayed: false };
+    expect(shouldActOnFrame(f, EPOCH)).toBe(false);
+  });
+});
+
 describe('routeGlobalFrame — replayed frames are recorded, never acted on', () => {
   it('records a replayed app_navigate in the trace WITHOUT navigating', () => {
     const h = handlers();
     routeGlobalFrame(frame('app_navigate', { tool_type: 'build' }, STALE_TS), EPOCH, h);
+    expect(useCommandCenter.getState().events.map(e => e.event_type)).toEqual(['app_navigate']);
+    expect(h.navigate).not.toHaveBeenCalled();
+  });
+
+  it('records a server-marked app_navigate in the trace WITHOUT navigating, even with a live timestamp', () => {
+    const h = handlers();
+    const f = { ...(frame('app_navigate', { tool_type: 'build' }, LIVE_TS) as object), replayed: true };
+    routeGlobalFrame(f, EPOCH, h);
     expect(useCommandCenter.getState().events.map(e => e.event_type)).toEqual(['app_navigate']);
     expect(h.navigate).not.toHaveBeenCalled();
   });
