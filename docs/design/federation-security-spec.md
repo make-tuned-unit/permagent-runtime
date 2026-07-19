@@ -390,9 +390,19 @@ The **sovereignty-router's Phase-0 is landing separately** and will decide **whe
 
 ---
 
-## Open Decisions — hard tradeoffs for Jesse + coordinator (recommendation each)
+## Decisions — hard tradeoffs (RULED 2026-07-19)
 
-> These are deliberately **not** decided unilaterally. Each is a real fork with security/product weight.
+> Each is a real fork with security/product weight. **Jesse ruled 2026-07-19: adopt the recommendation on every OD.** The standing decisions the build now proceeds under:
+>
+> - **OD-1 / OD-5 transport:** purpose-built app-level E2E over a **dumb encrypted relay** (mandatory floor) + **P2P-over-Tailscale** as an opportunistic fast-path only. Cross-person federation never *requires* a shared tailnet.
+> - **OD-2 identity:** **per-user Ed25519 + X25519 keypairs.** No shared-secret.
+> - **OD-3 keys:** epoch'd realm key + **flat HPKE per-member wrapping**; rotate **fresh-random** on every removal with content-hash tiebreak (RT-2); wrap-all-live-epochs on add (history default, per-realm knob, RT-7); **≥2 admins**; MLS deferred.
+> - **OD-4 tombstone:** **hybrid** — author-only retraction + transparent, disputable admin-quarantine. **Admin hard-delete stays OFF in v1** (explicit product ruling: not enabled).
+> - **OD-6 recovery:** **admin-chain re-attestation first** (no secret-at-rest); passphrase-sealed identity export as an advanced opt-in.
+> - **OD-7 admin authority:** v1 = single-admin actions made transparent + disputable via the admin-chain; ≥2 admins for availability; **M-of-N deferred to the enterprise tier.**
+> - **Crypto stack (§9):** the **RustCrypto suite** (`ed25519-dalek`, `x25519-dalek`, `hpke`, `chacha20poly1305`, `hkdf`), **XChaCha20-Poly1305 only** (RT-6), reusing in-tree `keyring` + `rand`.
+>
+> **Still gated — a dependency, not a decision:** the **control-object placement** (Spectral dispatch §1, their call) and the **`author_id` wire-format ratification** (dispatch §2). The build proceeds on the Spectral-independent slices first.
 
 ### OD-1. P2P vs. relay for v1
 - **Tradeoff:** P2P = no third party sees even ciphertext, lowest latency, but both peers must be online + NAT traversal, and offline/async teams are unserved. Relay = serves offline/async (the real team case) and is honest-but-curious-safe by construction, but a third party sees ciphertext + timing/size metadata and can withhold (availability).
