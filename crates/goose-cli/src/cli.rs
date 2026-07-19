@@ -1740,13 +1740,14 @@ async fn handle_local_models_command(command: LocalModelsCommand) -> Result<()> 
                 registry.add_model(entry)?;
             }
 
-            // Download
+            // Download (verified against the HF LFS sha256 when available)
             let manager = permagent::download_manager::get_download_manager();
             manager
                 .download_model(
                     format!("{}-model", model_id),
                     file.download_url,
                     local_path,
+                    file.sha256,
                     None,
                 )
                 .await?;

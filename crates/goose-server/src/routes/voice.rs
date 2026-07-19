@@ -87,6 +87,17 @@ const KOKORO_MODEL_URL: &str =
     "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx";
 const KOKORO_VOICES_URL: &str =
     "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin";
+/// Pinned SHA-256 digests for the Kokoro release assets. These files are fed
+/// straight into onnxruntime's native parser, so their integrity is a hard
+/// requirement — the DownloadManager refuses to install bytes that don't
+/// match. Digests verified 2026-07 from two independent sources: hashing the
+/// canonical GitHub release assets themselves, and the LFS oids of the
+/// huggingface.co/leonelhs/kokoro-thewh1teagle mirror (sizes match the byte
+/// counts below exactly).
+const KOKORO_MODEL_SHA256: &str =
+    "7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5";
+const KOKORO_VOICES_SHA256: &str =
+    "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d";
 /// kokoro-v1.0.onnx (325_532_387) + voices-v1.0.bin (28_214_398).
 const KOKORO_TOTAL_BYTES: u64 = 353_746_785;
 /// DownloadManager key for the Kokoro asset bundle.
@@ -165,8 +176,16 @@ async fn download_voice_models(
     }
 
     let files = vec![
-        (KOKORO_MODEL_URL.to_string(), paths.model_path.clone()),
-        (KOKORO_VOICES_URL.to_string(), paths.voices_path.clone()),
+        permagent::download_manager::DownloadFile::new(
+            KOKORO_MODEL_URL,
+            paths.model_path.clone(),
+            Some(KOKORO_MODEL_SHA256.to_string()),
+        ),
+        permagent::download_manager::DownloadFile::new(
+            KOKORO_VOICES_URL,
+            paths.voices_path.clone(),
+            Some(KOKORO_VOICES_SHA256.to_string()),
+        ),
     ];
 
     // Build the provider off the blocking pool on completion and swap it in so
@@ -1157,9 +1176,26 @@ mod tests {
         assert_eq!(weird.language, "");
     }
 
+    /// The pinned Kokoro asset URLs must satisfy the DownloadManager's strict
+    /// policy (HTTPS + allowlisted release path), and the pinned digests must
+    /// be well-formed — otherwise the voice-model download endpoint is dead on
+    /// arrival.
+    #[test]
+    fn kokoro_urls_and_digests_pass_download_policy() {
+        permagent::download_manager::validate_download_url(KOKORO_MODEL_URL)
+            .expect("model URL must be allowlisted");
+        permagent::download_manager::validate_download_url(KOKORO_VOICES_URL)
+            .expect("voices URL must be allowlisted");
+        for digest in [KOKORO_MODEL_SHA256, KOKORO_VOICES_SHA256] {
+            assert_eq!(digest.len(), 64);
+            assert!(digest.bytes().all(|b| b.is_ascii_hexdigit()));
+        }
+    }
+
     /// End-to-end proof that the shipping Kokoro release URL fetches via the
-    /// production `DownloadManager` and lands the canonical asset. Uses the
-    /// smaller voices file (28MB) and a tempdir — never the real models path.
+    /// production `DownloadManager`, passes SHA-256 verification against the
+    /// pinned digest, and lands the canonical asset. Uses the smaller voices
+    /// file (28MB) and a tempdir — never the real models path.
     ///
     /// `#[ignore]`d so CI never pulls 28MB over the network; run explicitly:
     ///   cargo test -p permagent-daemon --lib voice:: -- --ignored --nocapture
@@ -1174,7 +1210,11 @@ mod tests {
         let dm = DownloadManager::new();
         dm.download_model_sharded(
             "kokoro-voices-test".to_string(),
-            vec![(KOKORO_VOICES_URL.to_string(), dest.clone())],
+            vec![permagent::download_manager::DownloadFile::new(
+                KOKORO_VOICES_URL,
+                dest.clone(),
+                Some(KOKORO_VOICES_SHA256.to_string()),
+            )],
             VOICES_BYTES,
             None,
         )
