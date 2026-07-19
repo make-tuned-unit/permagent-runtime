@@ -167,9 +167,62 @@ found them load-bearing. No new work — just confirming they hold at v1:
 ## Context
 
 Permagent's federation half is **design-first** — `docs/design/federation-security-spec.md`
-(PR #764, Rev 2, red-teamed). No crypto is written until Jesse rules the Open
-Decisions (now OD-1..OD-7). This dispatch keeps Spectral's plaintext-layer build
-aligned with the Rev-2 additions **without** blocking it on our crypto — the seam
-is deliberately crypto-agnostic. Related Permagent context: the sovereignty-router
-(landed, #765) owns the *inference* half of the `sovereign` flag; this layer owns
-the *export* half via `realm=Local`.
+(PR #764, Rev 2, red-teamed). OD-1..OD-7 ratified 2026-07-19. This dispatch keeps
+Spectral's plaintext-layer build aligned with the Rev-2 additions **without**
+blocking it on our crypto — the seam is deliberately crypto-agnostic. Related
+Permagent context: the sovereignty-router (landed, #765) owns the *inference* half
+of the `sovereign` flag; this layer owns the *export* half via `realm=Local`.
+
+---
+
+# Round 2 — Permagent reply (2026-07-19)
+
+Spectral answered (this thread). **All three gates cleared.** Recording resolutions
++ answering their three questions back.
+
+## Accepted from Spectral
+
+- **§1 = (A)** — control objects (genesis / admin_chain_link / realm_keyring) live in
+  a Permagent-owned parallel grow-only set keyed by `realm_id`, **beside** the pack,
+  never in Spectral's memory tables. `Pack` stays `{ wing_id, objects, tombstones }`.
+  Their (A)-over-(B) reasoning is exactly ours: recall-exclusion is structural (not a
+  flag threaded through every recall path — the shape of the spreading-reinjection
+  leak they already fixed), and cross-author merge stays in our set.
+- **§3b confirmed by construction** — `import_pack` consumes plaintext only; convergence
+  keys on `object_hash = blake3(source fields)`, no Permagent metadata in the pre-image.
+  Different sealing epochs → same plaintext → same hash → dedup. ✅
+- **Guarantees A + B hold in v1** (property-tested: `local_memory_is_never_exportable`,
+  `shared_scope_recall_never_surfaces_a_private_spread_mate`). Accuracy eval **+7pp**
+  (private+shared merged vs private-only), per-child cap `Some(20)` default. ✅
+- **Terminology:** their `wing_id` ≡ our `realm_id` (recall exposes it as `RealmScope`).
+  We'll align wiring on this.
+
+## Answers to Spectral's three open questions
+
+1. **`author_id` encoding — ratified.** The 32 opaque bytes = **the raw Ed25519 identity
+   public key** (NOT a hash of it — changed from our Rev-1 `SHA-256(pubkey)` draft).
+   Rationale: the author bytes *are* the verify key, so the authorship-invariant check
+   (Q2) is a direct equality with no registry lookup. Permagent display form is
+   `"ed25519:" || base32(pubkey)`, never sent to you. **We confirm: identity = the full
+   32 bytes, opaque to Spectral; `None` = legacy/unsigned, stays `Local`, untouched.**
+2. **Authorship check — Permagent owns it, pre-`import_pack`.** Confirmed. Our `open_pack`
+   verifies the pack signature, then rejects any added object whose embedded 32-byte
+   author ≠ the verified signer key, **before** handing plaintext to `import_pack`.
+   **We do NOT need the signer-into-`import_pack` API** — keep `import_pack`
+   crypto-agnostic. (Because `author_id` is the verify key, this is a byte-equality.)
+3. **have/want primitive — please expose it generically; we'll reuse, not mirror.**
+   Reusing your content-addressed enumerate / missing_locally / relay primitive lets our
+   control-set inherit #207's relay round-trip correctness (persist orig_key/supersedes,
+   reconstruct the wire object) instead of us re-deriving those integrity fixes. Factor
+   it out over hashes with no memory semantics when convenient; not a blocker to our
+   identity/seal-open work starting.
+
+## Permagent actions taken
+
+- Spec updated (PR #764): §3.2 (32-byte author id), §4 (authorship check is ours,
+  seam corrected), §6.5/RT-9 (manifest is our transport to pad; plaintext length = exact
+  count), §10 (G1/G2/G3 status, terminology map).
+- **Pin bump to Spectral #207 is now the first build action** — the relay was broken at
+  our pin `bd68467b` (imported objects couldn't re-export → A→B→C silently failed), which
+  our control-plane replication rides on. **Please confirm the exact rev to pin once #207
+  merges** (it read OPEN on 2026-07-19; main was `fc310a83`).

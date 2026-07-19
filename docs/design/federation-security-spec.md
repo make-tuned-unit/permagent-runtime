@@ -135,14 +135,15 @@ Each person (hub) holds, generated once at first run and stored in the OS `keyri
 
 ### 3.2 The `author` id — what binds to Spectral's OR-Set
 
-Spectral's OR-Set is keyed `(key, author)` and needs `author` to be **stable and verifiable**. We define:
+Spectral's OR-Set keys `(key, author)`; **`author` is `Option<[u8; 32]>` — 32 opaque bytes Spectral never interprets** (ratified, Spectral reply §2). Permagent defines those 32 bytes as **the raw Ed25519 identity public key**:
 
 ```
-author_id := "ed25519:" || base32( SHA-256( ed25519_public_key ) )     # stable, collision-resistant
+author_id (wire → Spectral) := ed25519_public_key                 # exactly 32 bytes, opaque to Spectral
+author_id (Permagent display) := "ed25519:" || base32(ed25519_public_key)
 ```
 
-- This replaces the hardcoded `"default"` for **shared** writes.
-- **Migration (coordination point with Spectral, §10):** existing rows are authored `"default"`; they predate identity and were never shareable. On identity bootstrap they **stay `Local`** and keep `"default"`; only new `Shared` writes carry the real `author_id`. The exact on-wire format of `author_id` **must be agreed with Spectral** since Spectral owns `(key, author)`.
+- **Why the raw key, not a hash of it (changed from Rev 1):** the author bytes *are* the signature-verification key, so the authorship-invariant check (§4) — "the object's embedded author == the key that signed this pack" — is a **direct equality, no registry indirection**. This is deliberate synergy with §4, where that check is now confirmed to be **Permagent's** to enforce (Spectral's `import_pack` is crypto-agnostic and cannot). The peer registry (§3.4) still holds each identity's X25519 enc-key + cert + verified/pinned state, keyed by this same 32-byte id.
+- **Legacy / migration (ratified):** `None` is Spectral's absent-author tag. Pre-identity rows (the old single-user `"default"` world) were never shareable → on bootstrap they **stay `Local` with `author = None`, untouched** — Spectral confirms legacy-row no-touch holds. Only new `Shared` writes carry the 32-byte `author_id`. Spectral hashes the bytes (present-tag `1‖32`) into `object_hash`; convergence is unaffected.
 
 ### 3.3 Establishing + verifying identities (invite + key exchange)
 
@@ -217,11 +218,11 @@ Design points, each defending a specific attack:
 - **Anti-splicing:** the signature and the AEAD `aad` both bind **`realm_id` + `epoch`**, so a malicious relay cannot replay realm R1's pack into realm R2's channel, nor a stale epoch's pack as current.
 - **The authorship-forgery invariant (state this explicitly — it is what makes `(key, author)` trustworthy):**
 
-  > **A pack signed by member X may only *add* objects whose `author == X`.** On `import_pack`, the recipient rejects any added object whose embedded author ≠ the verified pack signer. (Tombstones are the sole cross-author exception — governed by §7.)
+  > **A pack signed by member X may only *add* objects whose `author == X`.** **Permagent enforces this in `open_pack`, *before* handing plaintext to Spectral** — rejecting any added object whose embedded 32-byte author ≠ the verified pack signer's Ed25519 key. (Tombstones + control objects are the cross-author exceptions — governed by §7 / §3.5.)
 
-  This is why a malicious teammate cannot forge *your* memories: they can seal packs, but any object they add is constrained to *their own* authorship, and cross-author adds are dropped at merge-validation.
+  **Seam correction (Spectral reply §4):** Spectral's `import_pack` is **crypto-agnostic — it has no signer concept and does NOT re-check authorship.** The invariant holds **iff Permagent enforces it pre-`import_pack`.** Because `author_id` *is* the verify key (§3.2), the check is a direct equality against the key that just verified the pack signature — no lookup. We do **not** request Spectral's optional "pass the verified signer into `import_pack`" API; Permagent owns this check, keeping Spectral's layer cleanly crypto-free. This is why a malicious teammate cannot forge *your* memories: they can seal packs, but every object they add is constrained to their own authorship, and cross-author adds are dropped by **our** validation before Spectral ever sees them.
 - **Granularity:** sign at **pack** level for v1 (simpler; the invariant above already prevents cross-author injection). Per-object signatures are a hardening option for non-repudiation and are noted, not required.
-- **Recipient trust flow:** verify `sig` against pinned `ed25519_pub` for `sender` → check `epoch` is ≥ the member's current epoch and `realm_id` matches the channel → AEAD-decrypt → hand plaintext to Spectral `import_pack` → merge-validation enforces the authorship invariant. Any failure → reject, do not re-index.
+- **Recipient trust flow:** verify `sig` against pinned `ed25519_pub` for `sender` → check `epoch` ≥ the member's current epoch and `realm_id` matches the channel → AEAD-decrypt → **enforce embedded-author == verified-signer for every added object (Permagent, ours)** → hand the validated plaintext to Spectral `import_pack` (which converges on `object_hash`; it does not and need not re-check authorship). Any failure → reject, do not re-index.
 
 ---
 
@@ -311,7 +312,7 @@ Tailscale is excellent for the **intra-user** leg (multi-device) — one person,
 - **Sees:** a per-realm **routing tag**, a per-realm pseudonymous **sender/recipient tag**, **ciphertext size**, **timing**, and **IP**.
   - **Routing-tag honesty (RT-10):** a truly *rotating/blinded* tag requires recipients to re-derive the new tag without the relay computing it — i.e. `tag[epoch] := KDF(realm_key[epoch], "route")`. That works, but couples tag rotation to epoch rotation, so a tag change itself signals "membership/epoch changed" to the relay. So do not overclaim: **v1 ships a stable pseudonymous tag with linkability as an acknowledged residual**; KDF-blinded per-epoch tags are a v2 hardening that trades linkability for a membership-change timing signal.
 - **Does NOT see:** any plaintext; memory content; key material.
-  - **Count-hiding is narrower than it looks (RT-9):** per-object counts are hidden *within a single sealed pack*, but Spectral's **have/want hash-manifest** negotiation (§6.4) exchanges per-object hash lists. If those manifests transit the relay — even E2E-encrypted to the peer — their **sizes** re-leak approximate object counts and sync cadence. Honest claim: *content and exact counts are hidden; approximate object volume is inferable from manifest and pack sizes.* Pin this down with Spectral once the manifest wire-format is fixed (§10.2).
+  - **Count-hiding is narrower than it looks — and it's OUR job (RT-9, resolved w/ Spectral §3a):** Spectral's `enumerate(wing_id)` returns a **sorted plaintext `Vec<hash>`** and defines **no transport** — moving/padding it is entirely Permagent's. So the manifest's plaintext **length is the exact live object count** and its entries are the object hashes. Honest claim: *content is hidden; approximate object volume + sync cadence leak from manifest and pack sizes unless Permagent pads.* **v2 hardening (ours, not Spectral's):** pad the manifest to size buckets / batch on a schedule in our transport wrap. v1 ships the true list and discloses the residual.
 - **Residual leak:** approximate **volume/activity** from sizes + timing, and — from stable tags + IP + timing — an approximate **team social graph (RT-11):** the relay can cluster which pseudonyms co-occur in which realms and, via IP/timing intersection, partially de-pseudonymize them. §2.2's "partial membership" leak is therefore real and must not be undersold. **v2 hardening:** pad packs to size buckets / batch on a schedule / cover traffic / blinded tags (RT-10).
 - **Freshness vs. availability against a *malicious* relay:** the OR-Set is a CRDT, so **reorder/delay/replay are safe for convergence** (adds/tombstones commute; replay of a known element is a no-op). The residual attacks are **withholding** (member misses updates) and **downgrade** (serve a stale keyring). Downgrade is defended by **monotonic admin-signed epochs** (members never accept an epoch < their current). Withholding is an **availability** attack — non-goal to prevent cryptographically; mitigated by P2P cross-check + multiple relays.
 
@@ -383,10 +384,14 @@ The **sovereignty-router's Phase-0 is landing separately** and will decide **whe
 
 ## 10. Dependencies & coordination points
 
-1. **Spectral — `author_id` format.** Spectral owns `(key, author)`; the exact on-wire `author_id` encoding (§3.2) must be agreed jointly, plus the migration of legacy `"default"` rows (they stay `Local`).
-2. **Spectral — realm/pack surface not yet integrated.** `export_pack` / `import_pack` / `realm` / OR-Set / tombstone appear **nowhere** in the Permagent tree at pin `bd68467b`. This spec assumes the *contract* (plaintext packs in/out, structural export-gate, view-scoping recall with spreading-on); wiring is pending a pin bump. Track it.
-3. **Sovereignty-router — `sovereign` flag storage (§8.3).** Landing separately; reconcile so one source of truth drives both enforcement points. Do not duplicate the flag.
-4. **`auth.rs` fill (§3.4).** The identity keypair + peer registry + membership live here; the bearer `daemon_token` in `middleware/auth.rs` stays as-is (orthogonal, device-pairing).
+**Spectral round-trip status (reply 2026-07-19, `docs/proposals/spectral-federation-coordination.md`):** G1 **ruled (A)** — control objects (genesis / admin_chain_link / realm_keyring) live in a **Permagent-owned parallel grow-only set keyed by `realm_id`, beside the pack, never in Spectral's memory tables.** Their `Pack` stays `{ wing_id, objects, tombstones }`. Guarantees A + B hold in v1 (property-tested); §3b confirmed by construction. The authorship-invariant seam is **ours** (§4, resolved above).
+
+1. **Spectral — `author_id`: RATIFIED (§3.2).** `author = Option<[u8;32]>`, 32 opaque bytes = the raw Ed25519 public key; `None` = legacy/unsigned (stays `Local`, untouched). Send Spectral the exact encoding to close the loop; their only requirement (identity = full 32 bytes, opaque) is met.
+2. **Spectral — PIN BUMP required (was blocking, now available).** `export_pack`/`import_pack`/`realm` landed in Spectral **#199** and were **hardened in #207**. ⚠️ **The relay was BROKEN at our pin `bd68467b`** — an imported object could never be re-exported (synthetic local key + `supersedes: None` → integrity re-hash never matched → dropped), so `A→B→C` relay silently failed. Since **our control-plane replication (A) rides that same relay**, we **must bump past `bd68467b` to #207** (Spectral main; confirm the exact rev once #207 merges — it read OPEN on 2026-07-19). #207 also fixes silent-drop-on-key-collision and wing-scoped tombstones.
+3. **Terminology map.** Spectral's sync layer calls the shared-set id **`wing_id`** (`share(mem_key, wing_id)`, `shared_wing_members.wing_id`); recall exposes it as **`RealmScope`**. **Our `realm_id` ≡ their `wing_id`.** Align on this in wiring; Spectral may unify to `realm_id` later.
+4. **Spectral — have/want primitive reuse (their open Q3).** Permagent will **reuse Spectral's generic content-addressed have/want + relay primitive** for the control-set (rather than mirror it) — it inherits #207's relay round-trip correctness we'd otherwise have to re-derive. Requesting they factor it out generically (over hashes, no memory semantics).
+5. **Sovereignty-router — `sovereign` flag storage (§8.3).** Landed (#765). Reconcile so one source of truth drives both enforcement points. Do not duplicate the flag.
+6. **`auth.rs` fill (§3.4).** The identity keypair + peer registry + membership live here; the bearer `daemon_token` in `middleware/auth.rs` stays as-is (orthogonal, device-pairing).
 
 ---
 
