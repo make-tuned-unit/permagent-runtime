@@ -215,15 +215,29 @@ async fn gmail_callback(Query(params): Query<HashMap<String, String>>) -> impl I
         ));
     }
 
-    // Update config.yaml
-    let _ = upsert_gmail_config(true);
-
-    // Clean up pending file
+    // Clean up pending file — the OAuth exchange itself is complete.
     let _ = std::fs::remove_file(&creds_path);
 
-    Html(
-        "<html><body><h2>Gmail connected!</h2><p>You can close this tab and return to Permagent.</p></body></html>".into()
-    )
+    // Update config.yaml. Enabling the extension is PART of "connected": a
+    // failed upsert must not render the success page (the token is stored,
+    // but the integration is not live — the page says so honestly).
+    Html(callback_result_page(upsert_gmail_config(true)))
+}
+
+/// Final page for the OAuth callback after the token was stored: success only
+/// if the config upsert also succeeded. On failure the page is honest — the
+/// token stays stored (that part worked), but the integration was not enabled.
+fn callback_result_page(config_result: Result<(), String>) -> String {
+    match config_result {
+        Ok(()) => {
+            "<html><body><h2>Gmail connected!</h2><p>You can close this tab and return to Permagent.</p></body></html>".into()
+        }
+        Err(e) => format!(
+            "<html><body><h2>Almost connected</h2>\
+             <p>Your Google token was saved, but enabling the Gmail integration in Permagent's config failed: {e}</p>\
+             <p>Your token is stored safely — open Permagent and retry the Gmail connection to finish enabling it.</p></body></html>"
+        ),
+    }
 }
 
 /// DELETE /integrations/gmail — revoke and remove tokens
@@ -257,7 +271,14 @@ async fn gmail_disconnect() -> Result<Json<serde_json::Value>, (StatusCode, Stri
         )
     })?;
 
-    let _ = upsert_gmail_config(false);
+    // Disabling the extension is part of "disconnected" — a failed upsert
+    // must not report success (the config would still list gmail as enabled).
+    upsert_gmail_config(false).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Token removed, but disabling the Gmail integration in config failed: {e}"),
+        )
+    })?;
 
     Ok(Json(serde_json::json!({
         "provider": "gmail",
@@ -288,12 +309,18 @@ async fn list_integrations() -> Json<Vec<IntegrationStatus>> {
 // ---- Config helpers ----
 
 fn upsert_gmail_config(enabled: bool) -> Result<(), String> {
+    upsert_gmail_config_at(&config_path(), enabled)
+}
+
+/// Path-parameterized core of the config upsert so the failure branches (the
+/// honest-error contract of the callback/disconnect routes) are unit-testable
+/// without touching the real `~/.permagent/config.yaml`.
+fn upsert_gmail_config_at(path: &std::path::Path, enabled: bool) -> Result<(), String> {
     use permagent::agents::extension::Envs;
     use permagent::config::extensions::ExtensionEntry;
     use permagent::config::gmail_oauth;
     use permagent::config::{ExtensionConfig, DEFAULT_EXTENSION_TIMEOUT};
 
-    let path = config_path();
     let mut doc: serde_yaml::Value = if path.exists() {
         let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
         serde_yaml::from_str(&content)
@@ -350,4 +377,79 @@ fn upsert_gmail_config(enabled: bool) -> Result<(), String> {
     let yaml = serde_yaml::to_string(&doc).map_err(|e| e.to_string())?;
     std::fs::write(&path, yaml).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── upsert_gmail_config_at: the failure branches the routes now surface ──
+
+    #[test]
+    fn upsert_fails_when_config_root_is_not_a_mapping() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, "- just\n- a\n- list\n").unwrap();
+
+        let err = upsert_gmail_config_at(&path, true).unwrap_err();
+        assert!(err.contains("not a mapping"), "unexpected error: {err}");
+        // The broken file is left untouched — no partial write on failure.
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "- just\n- a\n- list\n"
+        );
+    }
+
+    #[test]
+    fn upsert_fails_when_extensions_section_is_not_a_mapping() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, "extensions: \"nope\"\n").unwrap();
+
+        let err = upsert_gmail_config_at(&path, true).unwrap_err();
+        assert!(err.contains("extensions is not a mapping"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn upsert_fails_when_config_dir_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("no-such-dir").join("config.yaml");
+
+        assert!(upsert_gmail_config_at(&path, true).is_err());
+    }
+
+    #[test]
+    fn upsert_writes_a_gmail_entry_with_the_requested_enabled_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+
+        upsert_gmail_config_at(&path, true).unwrap();
+        let doc: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(doc["extensions"]["gmail"]["enabled"], serde_yaml::Value::Bool(true));
+
+        upsert_gmail_config_at(&path, false).unwrap();
+        let doc: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(doc["extensions"]["gmail"]["enabled"], serde_yaml::Value::Bool(false));
+    }
+
+    // ── callback page honesty: a failed config-enable must not claim success ──
+
+    #[test]
+    fn callback_page_is_success_only_when_the_config_upsert_succeeded() {
+        let page = callback_result_page(Ok(()));
+        assert!(page.contains("Gmail connected!"));
+    }
+
+    #[test]
+    fn callback_page_renders_an_honest_error_when_enabling_failed() {
+        let page = callback_result_page(Err("disk full".to_string()));
+        // Never the success claim…
+        assert!(!page.contains("Gmail connected!"));
+        // …but an honest account: enable failed, the token itself is stored.
+        assert!(page.contains("Almost connected"));
+        assert!(page.contains("disk full"));
+        assert!(page.contains("token was saved"));
+    }
 }
