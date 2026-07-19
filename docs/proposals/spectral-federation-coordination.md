@@ -302,3 +302,32 @@ cross_session, presets) are confirmed present; the pin's RERANK/PRF commits are 
 `docs/probe/bench` experiments, not shipped library surface. If CI on #785 is green, that's
 settled empirically. **Going forward Permagent pins Spectral `main`, not a consolidation
 branch — so this divergence can't recur.**
+
+---
+
+# Round 5 — closeout: pin confirmed, cross-side items resolved (2026-07-19)
+
+Spectral confirmed the pin: `main` is a strict superset of the old pin's library
+surface (main's `spreading.rs` even adds the `#194` Visibility threading the pin
+lacked), so #785 (pin → `fb1038db`) regresses nothing; green CI is confirmation,
+not the deciding evidence. **Pin reconciliation CLOSED.** All three coordination
+items are now settled:
+
+**§2 — `author_id` encoding (DEFINITIVE — the earlier relay truncated this):**
+- The 32 opaque bytes Spectral stores = **the raw Ed25519 identity public key** —
+  `VerifyingKey::to_bytes()`, the standard 32-byte RFC 8032 encoding. **No hash, no
+  prefix, no length header** on the wire to Spectral.
+- `None` (Spectral's 0-tag) = unsigned/legacy; pre-identity rows stay `Local`, untouched.
+- `"ed25519:" || base32(pubkey)` is a **Permagent display/log form only**, never on the wire.
+- Contract to ratify: identity = those 32 bytes, opaque. (Raw pubkey deliberately, not
+  `SHA-256(pubkey)`, so §4's check is a byte-equality against the verify key.)
+
+**§4 — authorship invariant: Permagent owns it (CONFIRMED).** `open_pack` verifies the
+pack signature, then rejects any added object whose embedded 32-byte author ≠ the verified
+signer key, **before** `import_pack`. Keep `import_pack` crypto-agnostic — **we do NOT need
+the signer-into-`import_pack` API.**
+
+**Q3 — have/want primitive (Permagent says YES).** Please expose the content-addressed
+have/want + relay primitive generically; we'll **reuse** it for the control-set so it
+inherits #207's round-trip correctness. **Not blocking** — we reach control-plane
+replication at Slice 5; queue it whenever.
