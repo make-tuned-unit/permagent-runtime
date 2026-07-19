@@ -8,7 +8,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { getApiBaseUrl } from '../../../lib/api';
+import { eventsWsUrl } from '../../../lib/api';
 import { wireEventType } from '../../../lib/wireEvent';
 import { decisionsClient } from './client';
 import { emitActivity } from '../../../lib/emitActivity';
@@ -61,11 +61,14 @@ export function useDecisions() {
     let closed = false;
     const mountedAt = Date.now();
 
-    const connect = () => {
+    const connect = async () => {
       if (closed) return;
-      const base = getApiBaseUrl().replace(/^http/, 'ws');
+      // Daemon token rides the WS query (C1/C2 auth); re-check `closed` after
+      // the await so a token load racing unmount never opens an orphan socket.
+      const url = await eventsWsUrl();
+      if (closed) return;
       try {
-        ws = new WebSocket(`${base}/events`);
+        ws = new WebSocket(url);
       } catch {
         return;
       }

@@ -430,7 +430,7 @@ impl Agent {
         };
 
         self.apply_recipe_components(recipe.response.clone(), true)
-            .await;
+            .await?;
 
         let prompt = [recipe.instructions.as_deref(), recipe.prompt.as_deref()]
             .into_iter()

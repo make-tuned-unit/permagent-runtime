@@ -53,15 +53,15 @@ pub async fn henry_approve_on_verifier_pass(
         decisions::answer_decision(pool, decision_id, &answer, decisions::ACTOR_HENRY).await?;
 
     let (effect, effect_error) = match henry_approve_effect(pool, &decision, proof).await {
-        Ok(effect) => (effect, None),
+        Ok((effect, warning)) => {
+            if let Some(ref w) = warning {
+                record_effect_error(pool, &decision, w).await;
+            }
+            (effect, warning)
+        }
         Err(e) => {
             let msg = e.to_string();
-            let _ = decisions::record_effect_outcome(
-                pool,
-                &decision,
-                &format!("effect_error: {}", msg),
-            )
-            .await;
+            record_effect_error(pool, &decision, &msg).await;
             (None, Some(msg))
         }
     };
@@ -73,19 +73,39 @@ pub async fn henry_approve_on_verifier_pass(
     })
 }
 
+/// Audit-record an effect failure/warning. Last resort on this spine: if the
+/// audit write itself fails, that is logged rather than discarded.
+async fn record_effect_error(pool: &Pool<Sqlite>, decision: &Decision, error: &str) {
+    if let Err(audit_err) =
+        decisions::record_effect_outcome(pool, decision, &format!("effect_error: {}", error)).await
+    {
+        tracing::error!(
+            decision_id = %decision.id,
+            "henry-policy effect error could not be audit-recorded: {} (original error: {})",
+            audit_err,
+            error
+        );
+    }
+}
+
 /// The gated effect of a Henry-approved `approve_review`: Review → Complete
 /// through the guard, then dependent promotion. Other kinds record only.
+///
+/// Returns `(effect, warning)` — the warning carries a dependent-promotion
+/// failure that happened AFTER the approval committed; it surfaces in
+/// [`HenryApproval::effect_error`] and the audit log instead of being
+/// discarded (bug-sweep wave 1).
 async fn henry_approve_effect(
     pool: &Pool<Sqlite>,
     decision: &Decision,
     proof: DecisionProof,
-) -> Result<Option<String>, GuardError> {
+) -> Result<(Option<String>, Option<String>), GuardError> {
     if decision.kind != "approve_review" {
-        return Ok(None);
+        return Ok((None, None));
     }
     let goal_id = match decision.goal_id.as_deref() {
         Some(g) => g,
-        None => return Ok(None),
+        None => return Ok((None, None)),
     };
     goal_transition::advance_goal_checked(
         pool,
@@ -99,11 +119,15 @@ async fn henry_approve_effect(
         },
     )
     .await?;
-    if let Some(ref project_id) = decision.project_id {
-        let _ = goal_transition::promote_eligible_dependents(pool, project_id).await;
-    }
-    Ok(Some(
-        "goal approved: Review → Complete (henry-policy, verifier pass)".to_string(),
+    let warning = match decision.project_id.as_deref() {
+        Some(project_id) => {
+            goal_transition::promote_eligible_dependents_or_warn(pool, project_id, goal_id).await
+        }
+        None => None,
+    };
+    Ok((
+        Some("goal approved: Review → Complete (henry-policy, verifier pass)".to_string()),
+        warning,
     ))
 }
 

@@ -4,10 +4,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 fn secrets_dir() -> PathBuf {
-    dirs::home_dir()
-        .expect("home dir required")
-        .join(".permagent")
-        .join("secrets")
+    permagent::config::paths::Paths::data_dir().join("secrets")
 }
 
 fn config_path() -> PathBuf {
@@ -19,16 +16,12 @@ fn config_path() -> PathBuf {
 
 fn ensure_secrets_dir() -> Result<()> {
     let dir = secrets_dir();
-    if !dir.exists() {
-        std::fs::create_dir_all(&dir).context("Failed to create ~/.permagent/secrets/")?;
-        // Set permissions to 700 on the secrets directory
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
-        }
-        // Write .gitignore
-        let gitignore = dir.join(".gitignore");
+    // Created 0700 from the start and re-enforced on every call, so a
+    // pre-existing loose directory gets tightened rather than trusted.
+    permagent::config::secure_fs::ensure_private_dir(&dir)
+        .context("Failed to create ~/.permagent/secrets/")?;
+    let gitignore = dir.join(".gitignore");
+    if !gitignore.exists() {
         std::fs::write(&gitignore, "*.json\n*.yaml\n")
             .context("Failed to write secrets .gitignore")?;
     }
@@ -113,6 +106,14 @@ fn upsert_config_integration(provider: &str, enabled: bool) -> Result<()> {
 
 /// Remove an integration's tokens and mark it disabled in config.yaml
 fn remove_integration_tokens(provider: &str) -> Result<bool> {
+    if provider == "gmail" {
+        // Keyring-first (also removes any legacy plaintext file).
+        let existed = permagent::config::gmail_oauth::load_token().is_some();
+        permagent::config::gmail_oauth::delete_token()
+            .context("Failed to remove Gmail token from secret storage")?;
+        return Ok(existed);
+    }
+
     let token_file = secrets_dir().join(format!("{}_token.json", provider));
     let existed = token_file.exists();
     if existed {
@@ -164,7 +165,12 @@ pub async fn handle_integrations_list() -> Result<()> {
             .and_then(|v| v.as_str())
             .map(PathBuf::from);
 
-        let token_exists = token_path.as_ref().map(|p| p.exists()).unwrap_or(false);
+        let token_exists = if provider == "gmail" {
+            // Keyring-first (legacy file checked/migrated as a fallback).
+            permagent::config::gmail_oauth::token_present()
+        } else {
+            token_path.as_ref().map(|p| p.exists()).unwrap_or(false)
+        };
 
         let status = if enabled && token_exists {
             "connected"
@@ -288,30 +294,26 @@ async fn connect_gmail() -> Result<()> {
     let token_response =
         exchange_google_code(&auth_code, &client_id, &client_secret, &redirect_uri).await?;
 
-    // Save tokens
-    let token_path = secrets_dir().join("gmail_token.json");
+    // Save token keyring-first. Include client credentials + token_uri so the
+    // Gmail MCP extension can refresh the access token itself.
     let token_json = serde_json::json!({
-        "access_token": token_response.access_token,
+        "token": token_response.access_token,
         "refresh_token": token_response.refresh_token,
         "token_type": token_response.token_type,
         "expires_in": token_response.expires_in,
-        "scope": scopes,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "scopes": [scopes],
     });
-    std::fs::write(&token_path, serde_json::to_string_pretty(&token_json)?)
-        .context("Failed to write gmail_token.json")?;
-
-    // Set file permissions to 600
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o600))?;
-    }
+    permagent::config::gmail_oauth::store_token(&serde_json::to_string_pretty(&token_json)?)
+        .context("Failed to store Gmail token")?;
 
     // Update config.yaml
     upsert_config_integration("gmail", true)?;
 
     println!("Gmail connected successfully!");
-    println!("Token stored at: {}", token_path.display());
+    println!("Token stored in the system keyring.");
     Ok(())
 }
 
@@ -369,7 +371,7 @@ async fn connect_slack() -> Result<()> {
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
 
-    // Save token
+    // Save token — atomic write, 0600 from the first byte.
     let token_path = secrets_dir().join("slack_token.json");
     let token_json = serde_json::json!({
         "access_token": token,
@@ -377,14 +379,11 @@ async fn connect_slack() -> Result<()> {
         "user": user,
         "scopes": "chat:write,channels:read,search:read,reminders:write",
     });
-    std::fs::write(&token_path, serde_json::to_string_pretty(&token_json)?)
-        .context("Failed to write slack_token.json")?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o600))?;
-    }
+    permagent::config::secure_fs::write_private_file(
+        &token_path,
+        serde_json::to_string_pretty(&token_json)?.as_bytes(),
+    )
+    .context("Failed to write slack_token.json")?;
 
     // Update config.yaml
     upsert_config_integration("slack", true)?;

@@ -110,6 +110,14 @@ pub fn routes(state: Arc<AppState>) -> Router {
         // modern /api surface (also what the vite dev proxy forwards).
         .route("/api/system_info", get(system_info))
         .route("/api/tailnet/status", get(tailnet_status))
+        .with_state(state)
+}
+
+/// Bearer-protected: the diagnostics zip bundles daemon logs, config.yaml and
+/// system info for an arbitrary session id — an exfiltration surface when
+/// public (C2-class). Registered under the protected router in `routes::configure`.
+pub fn protected_routes(state: Arc<AppState>) -> Router {
+    Router::new()
         .route("/diagnostics/{session_id}", get(diagnostics))
         .with_state(state)
 }

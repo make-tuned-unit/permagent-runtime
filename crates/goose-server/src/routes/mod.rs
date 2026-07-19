@@ -58,7 +58,7 @@ use std::sync::Arc;
 use axum::{middleware, Router};
 use tower_http::services::{ServeDir, ServeFile};
 
-use crate::middleware::auth::require_bearer_token;
+use crate::middleware::auth::{require_bearer_token, require_token_header_or_query};
 
 /// Configure all routes, applying bearer token middleware to protected endpoints.
 pub fn configure(state: Arc<crate::state::AppState>) -> Router {
@@ -66,8 +66,9 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
     let mut public = Router::new()
         .merge(status::routes(state.clone()))
         .merge(version::routes(state.clone()))
+        // `/events` WS: token-validated inside its upgrade handler (bearer
+        // header for native clients, `?token=` for browsers), like `/voice`.
         .merge(events::routes(state.clone()))
-        .merge(session_events::routes(state.clone()))
         // Browser content bridge: unauthenticated, localhost-only.
         // Called by the in-process MCP tool (no access to daemon token).
         .merge(browser_content::routes(state.clone()))
@@ -76,6 +77,17 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         // Voice WebSocket: does its own token validation via query param
         // (WebSocket upgrade can't use the Bearer middleware).
         .merge(voice::routes(state.clone()));
+
+    // ── Session control plane (C1/C2): token-required, header OR ?token= ──
+    // `/sessions/{id}/reply|cancel` (agent invocation) and the per-session
+    // SSE stream. The SSE consumer is a browser `EventSource`, which cannot
+    // set an Authorization header, so this group accepts `?token=` as the
+    // header-equivalent — validated by the same fail-closed, constant-time
+    // core as the bearer middleware. Applied at composition (not inside
+    // session_events.rs) so the auth story lives in one place.
+    let session_control = session_events::routes(state.clone()).layer(
+        middleware::from_fn_with_state(state.clone(), require_token_header_or_query),
+    );
 
     // ── Debug: env-gated panic-injection endpoint (durability #560 dogfood) ──
     // Mounts ONLY when PERMAGENT_DEBUG_PANIC_ENDPOINT=1, so the route does not
@@ -102,6 +114,10 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
 
     // ── Protected routes (bearer token required) ──
     let mut protected = Router::new()
+        // Session diagnostics zip (logs + config + system info): bearer-only —
+        // its only HTTP consumers hold the token (the CLI builds diagnostics
+        // in-process, not over HTTP).
+        .merge(status::protected_routes(state.clone()))
         .merge(backup::routes(state.clone()))
         .merge(reply::routes(state.clone()))
         .merge(activity::routes(state.clone()))
@@ -156,11 +172,20 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
 
     protected = protected.layer(middleware::from_fn_with_state(state, require_bearer_token));
 
-    // Outermost layer so the access log sees every request's final status,
-    // including 401s produced by the bearer middleware above.
-    public.merge(protected).layer(middleware::from_fn(
-        crate::middleware::access_log::http_access_log,
-    ))
+    // Origin guard over EVERYTHING (public + protected): a remote web page in
+    // the user's browser must not be able to reach the daemon cross-origin,
+    // token or not. Native/no-Origin clients pass. Access log stays outermost
+    // so it sees every request's final status, including the 401/403s produced
+    // by the auth and origin layers above.
+    public
+        .merge(protected)
+        .merge(session_control)
+        .layer(middleware::from_fn(
+            crate::middleware::origin_guard::require_allowed_origin,
+        ))
+        .layer(middleware::from_fn(
+            crate::middleware::access_log::http_access_log,
+        ))
 }
 
 /// Deliberate panic on the request path, to exercise the panic circuit-breaker

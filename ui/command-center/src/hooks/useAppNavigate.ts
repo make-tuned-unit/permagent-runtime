@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { getApiBaseUrl } from '../lib/api';
+import { eventsWsUrl } from '../lib/api';
 import { wireEventType } from '../lib/wireEvent';
 import { appendTraceRecord, claimTraceEventId, globalFrameToRecord } from '../lib/traceEvents';
 import { useCommandCenter, navigateToTool } from '../lib/store';
@@ -303,16 +303,19 @@ export function useAppNavigate() {
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let disposed = false;
 
-    function connect() {
+    async function connect() {
       if (disposed) return;
-      const base = getApiBaseUrl().replace(/^http/, 'ws');
+      // Daemon token rides the WS query (C1/C2 auth) — await it, then re-check
+      // disposal so a token load racing unmount never opens an orphan socket.
+      const url = await eventsWsUrl();
+      if (disposed) return;
       // Per-connection replay epoch: captured fresh on every (re)connect. The
       // daemon's server-side replay marker is authoritative when present; this
       // epoch is the fallback so unmarked frames — an older daemon's replay
       // burst, or anything emitted while we were disconnected — are recorded
       // but never acted on (see shouldActOnFrame).
       const connectionEpoch = Date.now();
-      ws = new WebSocket(`${base}/events`);
+      ws = new WebSocket(url);
 
       ws.onmessage = (ev) => {
         try {

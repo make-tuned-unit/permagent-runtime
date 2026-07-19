@@ -13,7 +13,7 @@
  */
 
 import { useEffect, useRef } from 'react';
-import { getApiBaseUrl } from './api';
+import { eventsWsUrl } from './api';
 import { wireEventType } from './wireEvent';
 
 export function useGoalEvents(onGoalChange: () => void) {
@@ -26,11 +26,14 @@ export function useGoalEvents(onGoalChange: () => void) {
     let closed = false;
     const mountedAt = Date.now();
 
-    const connect = () => {
+    const connect = async () => {
       if (closed) return;
-      const base = getApiBaseUrl().replace(/^http/, 'ws');
+      // Daemon token rides the WS query (C1/C2 auth); re-check `closed` after
+      // the await so a token load racing unmount never opens an orphan socket.
+      const url = await eventsWsUrl();
+      if (closed) return;
       try {
-        ws = new WebSocket(`${base}/events`);
+        ws = new WebSocket(url);
       } catch {
         return;
       }

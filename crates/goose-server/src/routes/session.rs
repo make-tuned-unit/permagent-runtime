@@ -275,7 +275,7 @@ async fn update_session_user_recipe_values(
                     message: format!("Failed to get agent: {}", status),
                     status,
                 })?;
-            if let Some(prompt) = apply_recipe_to_agent(&agent, &recipe, false).await {
+            if let Some(prompt) = apply_recipe_to_agent(&agent, &recipe, false).await? {
                 agent
                     .extend_system_prompt("recipe".to_string(), prompt)
                     .await;

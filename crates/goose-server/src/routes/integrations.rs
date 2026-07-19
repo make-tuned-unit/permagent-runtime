@@ -15,10 +15,7 @@ const GMAIL_SCOPES: &str = "https://www.googleapis.com/auth/gmail.readonly";
 const CALLBACK_PORT: u16 = 8095;
 
 fn secrets_dir() -> std::path::PathBuf {
-    dirs::home_dir()
-        .expect("home dir required")
-        .join(".permagent")
-        .join("secrets")
+    permagent::config::paths::Paths::data_dir().join("secrets")
 }
 
 fn config_path() -> std::path::PathBuf {
@@ -29,17 +26,10 @@ fn config_path() -> std::path::PathBuf {
 }
 
 fn ensure_secrets_dir() -> Result<(), String> {
-    let dir = secrets_dir();
-    if !dir.exists() {
-        std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create secrets dir: {e}"))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
-                .map_err(|e| format!("Failed to set secrets dir permissions: {e}"))?;
-        }
-    }
-    Ok(())
+    // Created 0700 from the start and re-enforced on every call, so a
+    // pre-existing loose directory gets tightened rather than trusted.
+    permagent::config::secure_fs::ensure_private_dir(&secrets_dir())
+        .map_err(|e| format!("Failed to create secrets dir: {e}"))
 }
 
 // ---- Request / Response types ----
@@ -101,25 +91,25 @@ async fn gmail_connect(
         urlencoding::encode(GMAIL_SCOPES),
     );
 
-    // Store credentials temporarily for the callback to use
+    // Store credentials temporarily for the callback to use. Written
+    // atomically with 0600 permissions from the first byte (contains the
+    // OAuth client secret); removed again once the callback completes.
     let creds_path = secrets_dir().join("gmail_pending_oauth.json");
     let creds_json = serde_json::json!({
         "client_id": req.client_id,
         "client_secret": req.client_secret,
         "redirect_uri": redirect_uri,
     });
-    std::fs::write(&creds_path, serde_json::to_string(&creds_json).unwrap()).map_err(|e| {
+    permagent::config::secure_fs::write_private_file(
+        &creds_path,
+        serde_json::to_string(&creds_json).unwrap().as_bytes(),
+    )
+    .map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to store pending creds: {e}"),
         )
     })?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&creds_path, std::fs::Permissions::from_mode(0o600));
-    }
 
     Ok(Json(GmailConnectResponse {
         auth_url,
@@ -204,8 +194,8 @@ async fn gmail_callback(Query(params): Query<HashMap<String, String>>) -> impl I
         }
     };
 
-    // Save token
-    let token_path = secrets_dir().join("gmail_token.json");
+    // Save token keyring-first (file fallback is atomic + 0600 and only used
+    // when the secret store rejects the write).
     let token_json = serde_json::json!({
         "token": token.access_token,
         "refresh_token": token.refresh_token,
@@ -217,19 +207,12 @@ async fn gmail_callback(Query(params): Query<HashMap<String, String>>) -> impl I
         "scopes": [GMAIL_SCOPES],
     });
 
-    if let Err(e) = std::fs::write(
-        &token_path,
-        serde_json::to_string_pretty(&token_json).unwrap(),
+    if let Err(e) = permagent::config::gmail_oauth::store_token(
+        &serde_json::to_string_pretty(&token_json).unwrap(),
     ) {
         return Html(format!(
             "<html><body><h2>Failed to save token</h2><p>{e}</p></body></html>"
         ));
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o600));
     }
 
     // Update config.yaml
@@ -245,30 +228,34 @@ async fn gmail_callback(Query(params): Query<HashMap<String, String>>) -> impl I
 
 /// DELETE /integrations/gmail — revoke and remove tokens
 async fn gmail_disconnect() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let token_path = secrets_dir().join("gmail_token.json");
-    let existed = token_path.exists();
+    // Keyring-first (migrates any legacy plaintext file on read).
+    let stored = permagent::config::gmail_oauth::load_token();
+    let existed = stored.is_some();
 
-    if existed {
-        // Attempt to revoke the token with Google
-        if let Ok(data) = std::fs::read_to_string(&token_path) {
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&data) {
-                if let Some(token) = parsed["token"].as_str() {
-                    let client = reqwest::Client::new();
-                    let _ = client
-                        .post("https://oauth2.googleapis.com/revoke")
-                        .form(&[("token", token)])
-                        .send()
-                        .await;
-                }
+    if let Some(data) = stored {
+        // Attempt to revoke the token with Google. Server-issued tokens use
+        // the "token" field; CLI-issued ones historically used "access_token".
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&data) {
+            let token = parsed["token"]
+                .as_str()
+                .or_else(|| parsed["access_token"].as_str());
+            if let Some(token) = token {
+                let client = reqwest::Client::new();
+                let _ = client
+                    .post("https://oauth2.googleapis.com/revoke")
+                    .form(&[("token", token)])
+                    .send()
+                    .await;
             }
         }
-        std::fs::remove_file(&token_path).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to remove token: {e}"),
-            )
-        })?;
     }
+
+    permagent::config::gmail_oauth::delete_token().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to remove token: {e}"),
+        )
+    })?;
 
     let _ = upsert_gmail_config(false);
 
@@ -281,7 +268,7 @@ async fn gmail_disconnect() -> Result<Json<serde_json::Value>, (StatusCode, Stri
 
 /// GET /integrations — list all integration statuses
 async fn list_integrations() -> Json<Vec<IntegrationStatus>> {
-    let gmail_token = secrets_dir().join("gmail_token.json").exists();
+    let gmail_token = permagent::config::gmail_oauth::token_present();
     let slack_token = secrets_dir().join("slack_token.json").exists();
 
     Json(vec![
@@ -301,6 +288,11 @@ async fn list_integrations() -> Json<Vec<IntegrationStatus>> {
 // ---- Config helpers ----
 
 fn upsert_gmail_config(enabled: bool) -> Result<(), String> {
+    use permagent::agents::extension::Envs;
+    use permagent::config::extensions::ExtensionEntry;
+    use permagent::config::gmail_oauth;
+    use permagent::config::{ExtensionConfig, DEFAULT_EXTENSION_TIMEOUT};
+
     let path = config_path();
     let mut doc: serde_yaml::Value = if path.exists() {
         let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
@@ -327,19 +319,33 @@ fn upsert_gmail_config(enabled: bool) -> Result<(), String> {
         .as_mapping_mut()
         .ok_or("extensions is not a mapping")?;
 
+    // Build a schema-valid extension entry (the previous hand-rolled mapping
+    // was missing `name`/`args` and was skipped as malformed at load time).
+    // The OAuth token is injected at spawn time from the keyring via
+    // `env_keys`; `GMAIL_TOKEN_PATH` remains only as a transitional fallback
+    // for tokens that have not been migrated yet.
+    let legacy_token_path = gmail_oauth::legacy_token_path().display().to_string();
+    let entry = ExtensionEntry {
+        enabled,
+        config: ExtensionConfig::Stdio {
+            name: "gmail".to_string(),
+            description: "Read-only Gmail access (OAuth)".to_string(),
+            cmd: "permagent-gmail-mcp".to_string(),
+            args: vec![],
+            envs: Envs::new(HashMap::from([(
+                "GMAIL_TOKEN_PATH".to_string(),
+                legacy_token_path,
+            )])),
+            env_keys: vec![gmail_oauth::GMAIL_OAUTH_TOKEN_KEY.to_string()],
+            timeout: Some(DEFAULT_EXTENSION_TIMEOUT),
+            bundled: None,
+            available_tools: vec![],
+        },
+    };
+
     let gmail_key = serde_yaml::Value::String("gmail".into());
-    let token_path = secrets_dir().join("gmail_token.json").display().to_string();
-
-    let mut entry = serde_yaml::Mapping::new();
-    entry.insert("type".into(), "stdio".into());
-    entry.insert("cmd".into(), "permagent-gmail-mcp".into());
-    entry.insert("enabled".into(), serde_yaml::Value::Bool(enabled));
-
-    let mut envs = serde_yaml::Mapping::new();
-    envs.insert("GMAIL_TOKEN_PATH".into(), token_path.into());
-    entry.insert("envs".into(), serde_yaml::Value::Mapping(envs));
-
-    extensions.insert(gmail_key, serde_yaml::Value::Mapping(entry));
+    let entry_value = serde_yaml::to_value(&entry).map_err(|e| e.to_string())?;
+    extensions.insert(gmail_key, entry_value);
 
     let yaml = serde_yaml::to_string(&doc).map_err(|e| e.to_string())?;
     std::fs::write(&path, yaml).map_err(|e| e.to_string())?;
