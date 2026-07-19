@@ -546,25 +546,31 @@ impl Agent {
         self.frontend_tools.lock().await.get(name).cloned()
     }
 
-    pub async fn add_final_output_tool(&self, response: Response) {
-        let mut final_output_tool = self.final_output_tool.lock().await;
-        let created_final_output_tool = FinalOutputTool::new(response);
+    /// Install the recipe final-output tool. Fails (instead of panicking the
+    /// daemon) when the recipe's `response.json_schema` is missing, not a
+    /// non-empty JSON object, or fails JSON Schema meta-validation.
+    pub async fn add_final_output_tool(&self, response: Response) -> anyhow::Result<()> {
+        let created_final_output_tool = FinalOutputTool::new(response)?;
         let final_output_system_prompt = created_final_output_tool.system_prompt();
+        let mut final_output_tool = self.final_output_tool.lock().await;
         *final_output_tool = Some(created_final_output_tool);
+        drop(final_output_tool);
         self.extend_system_prompt("final_output".to_string(), final_output_system_prompt)
             .await;
+        Ok(())
     }
 
     pub async fn apply_recipe_components(
         &self,
         response: Option<Response>,
         include_final_output: bool,
-    ) {
+    ) -> anyhow::Result<()> {
         if include_final_output {
             if let Some(response) = response {
-                self.add_final_output_tool(response).await;
+                self.add_final_output_tool(response).await?;
             }
         }
+        Ok(())
     }
 
     /// Dispatch a single tool call to the appropriate client
@@ -2747,7 +2753,7 @@ mod tests {
             })),
         };
 
-        agent.add_final_output_tool(response).await;
+        agent.add_final_output_tool(response).await?;
 
         let tools = agent.list_tools("test-session-id", None).await;
         let final_output_tool = tools
@@ -2769,6 +2775,37 @@ mod tests {
         let final_output_tool_system_prompt =
             final_output_tool_ref.as_ref().unwrap().system_prompt();
         assert!(system_prompt.contains(&final_output_tool_system_prompt));
+        Ok(())
+    }
+
+    /// A recipe with a bad `response.json_schema` must surface as an error,
+    /// never a panic, and must leave no half-installed final-output tool
+    /// behind (bug-sweep wave 1: the old panic here crash-cycled the daemon).
+    #[tokio::test]
+    async fn test_add_final_output_tool_rejects_bad_schema() -> Result<()> {
+        let agent = Agent::new();
+
+        for bad in [
+            None,
+            Some(serde_json::json!(true)),
+            Some(serde_json::json!({})),
+            Some(serde_json::json!({"type": 42})),
+        ] {
+            let result = agent
+                .apply_recipe_components(Some(Response { json_schema: bad }), true)
+                .await;
+            assert!(result.is_err(), "bad schema must be rejected");
+        }
+
+        assert!(
+            agent.final_output_tool.lock().await.is_none(),
+            "no final-output tool may be installed after a rejected schema"
+        );
+        let tools = agent.list_tools("test-session-id", None).await;
+        assert!(
+            !tools.iter().any(|t| t.name == FINAL_OUTPUT_TOOL_NAME),
+            "tool listing must not contain the final-output tool"
+        );
         Ok(())
     }
 

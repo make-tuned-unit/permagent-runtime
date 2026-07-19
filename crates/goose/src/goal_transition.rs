@@ -1011,6 +1011,37 @@ pub async fn promote_eligible_dependents(
     Ok(promoted)
 }
 
+/// [`promote_eligible_dependents`] for the post-approval spine: a failure is
+/// converted into a logged warning string instead of being discarded (bug-sweep
+/// wave 1 — both approve paths used `let _ =`, leaving dependent goals blocked
+/// with no cause and no trace). The approval itself has already committed, so
+/// the caller surfaces the warning (response `effect_error` / audit note)
+/// WITHOUT failing the approval.
+pub async fn promote_eligible_dependents_or_warn(
+    pool: &Pool<Sqlite>,
+    project_id: &str,
+    approved_goal_id: &str,
+) -> Option<String> {
+    match promote_eligible_dependents(pool, project_id).await {
+        Ok(_) => None,
+        Err(e) => {
+            let warning = format!(
+                "dependent promotion failed for project {} after approving goal {}: {} — \
+                 dependent goals may remain blocked in Triage until the next approval in \
+                 the project re-runs promotion",
+                project_id, approved_goal_id, e
+            );
+            tracing::error!(
+                goal_id = %approved_goal_id,
+                project_id = %project_id,
+                "{}",
+                warning
+            );
+            Some(warning)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1556,5 +1587,59 @@ mod tests {
             .unwrap();
         assert_eq!(promoted, 0, "parked goals must not auto-promote");
         assert_eq!(state_of(&pool, &goal.id).await, "triage");
+    }
+
+    // ── promote_eligible_dependents_or_warn (bug-sweep wave 1) ──────────────
+
+    /// Success path: no warning, and the eligible dependent actually moved —
+    /// the approval spine keeps working exactly as before.
+    #[tokio::test]
+    async fn promote_or_warn_success_promotes_and_returns_none() {
+        let pool = test_pool().await;
+        let dep = goal_in_state(&pool, "complete", 0).await;
+        let goal = goal_in_state(&pool, "triage", 0).await;
+
+        let mut meta = goal.metadata_json.as_object().cloned().unwrap();
+        meta.insert("depends_on".to_string(), serde_json::json!([dep.id]));
+        let meta_str = serde_json::to_string(&serde_json::Value::Object(meta)).unwrap();
+        sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+            .bind(&meta_str)
+            .bind(&goal.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let warning =
+            promote_eligible_dependents_or_warn(&pool, PERSONAL_PROJECT_ID, &dep.id).await;
+        assert!(warning.is_none(), "healthy promotion must not warn");
+        assert_eq!(state_of(&pool, &goal.id).await, "ready");
+    }
+
+    /// Failure path: a DB-level promotion failure becomes a warning string
+    /// carrying the project and approved-goal ids — never an unwind, never a
+    /// discarded Result. (Simulated by dropping the table promotion reads.)
+    #[tokio::test]
+    async fn promote_or_warn_failure_returns_warning_with_ids() {
+        let pool = test_pool().await;
+        // Ensure schema exists, then break exactly what promotion needs.
+        crate::cards::seed_goal_columns(&pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE board_columns")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let warning =
+            promote_eligible_dependents_or_warn(&pool, PERSONAL_PROJECT_ID, "goal-approved-1")
+                .await
+                .expect("broken DB must surface as a warning");
+        assert!(warning.contains(PERSONAL_PROJECT_ID), "{}", warning);
+        assert!(warning.contains("goal-approved-1"), "{}", warning);
+        assert!(
+            warning.contains("dependent promotion failed"),
+            "{}",
+            warning
+        );
     }
 }

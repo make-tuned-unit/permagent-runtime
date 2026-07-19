@@ -270,23 +270,44 @@ async fn start_agent(
         resolve_extensions_for_new_session(recipe_extensions, extension_overrides);
 
     let mut extension_data = session.extension_data.clone();
+    let extension_names: Vec<String> = extensions_to_use.iter().map(|e| e.name()).collect();
     let extensions_state = EnabledExtensionsState::new(extensions_to_use);
     if let Err(e) = extensions_state.to_extension_data(&mut extension_data) {
-        tracing::warn!("Failed to initialize session with extensions: {}", e);
-    } else {
-        manager
-            .update(&session.id)
-            .extension_data(extension_data.clone())
-            .apply()
-            .await
-            .map_err(|err| {
-                error!("Failed to save initial extension state: {}", err);
-                ErrorResponse {
-                    message: format!("Failed to save initial extension state: {}", err),
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                }
-            })?;
+        // The session would start WITHOUT the tools the recipe promised —
+        // fail loudly instead of silently degrading (bug-sweep wave 1).
+        error!(
+            "Failed to initialize session with extensions [{}]: {}",
+            extension_names.join(", "),
+            e
+        );
+        if let Err(cleanup_err) = manager.delete_session(&session.id).await {
+            tracing::warn!(
+                "Failed to clean up session {} after extension init failure: {}",
+                session.id,
+                cleanup_err
+            );
+        }
+        return Err(ErrorResponse {
+            message: format!(
+                "Failed to initialize session extensions ({}): {}",
+                extension_names.join(", "),
+                e
+            ),
+            status: StatusCode::BAD_REQUEST,
+        });
     }
+    manager
+        .update(&session.id)
+        .extension_data(extension_data.clone())
+        .apply()
+        .await
+        .map_err(|err| {
+            error!("Failed to save initial extension state: {}", err);
+            ErrorResponse {
+                message: format!("Failed to save initial extension state: {}", err),
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+            }
+        })?;
 
     if let Some(recipe) = original_recipe {
         let mut update = manager.update(&session.id).recipe(Some(recipe.clone()));
@@ -486,7 +507,7 @@ async fn update_from_session(
         .await
         {
             Ok(Some(recipe)) => {
-                if let Some(prompt) = apply_recipe_to_agent(&agent, &recipe, true).await {
+                if let Some(prompt) = apply_recipe_to_agent(&agent, &recipe, true).await? {
                     agent
                         .extend_system_prompt("recipe".to_string(), prompt)
                         .await;
@@ -843,7 +864,7 @@ async fn restart_agent_internal(
         .await
         {
             Ok(Some(recipe)) => {
-                if let Some(prompt) = apply_recipe_to_agent(&agent, &recipe, true).await {
+                if let Some(prompt) = apply_recipe_to_agent(&agent, &recipe, true).await? {
                     agent
                         .extend_system_prompt("recipe".to_string(), prompt)
                         .await;
@@ -1349,4 +1370,82 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/agent/set_container", post(set_container))
         .route("/agent/stop", post(stop_agent))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use serial_test::serial;
+    use tower::ServiceExt;
+
+    async fn start_agent_response(
+        app: &Router,
+        json_schema: serde_json::Value,
+    ) -> (StatusCode, String) {
+        let body = serde_json::json!({
+            "working_dir": "/tmp",
+            "recipe": {
+                "version": "1.0.0",
+                "title": "Bad Schema Recipe",
+                "description": "bug-sweep wave 1 regression",
+                "instructions": "do the thing",
+                "response": { "json_schema": json_schema }
+            }
+        });
+        let request = Request::builder()
+            .uri("/agent/start")
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&bytes).to_string())
+    }
+
+    /// A recipe with a bad `response.json_schema` must be a 4xx at session
+    /// creation — and the daemon must survive to serve the next request. The
+    /// old behavior was a panic in `FinalOutputTool::new` (or per-turn in
+    /// `tool()` for schema `true`), which the panic breaker escalated into a
+    /// daemon exit — a scheduled bad recipe crash-cycled it unattended.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn bad_recipe_schema_is_4xx_and_daemon_survives() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard =
+            env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(tmp.path().to_str().unwrap()))]);
+        let state = AppState::new(true).await.unwrap();
+        let app = routes(state);
+
+        for bad in [
+            serde_json::json!(true),
+            serde_json::json!({}),
+            serde_json::json!({"type": 42}),
+            serde_json::json!(null),
+        ] {
+            let (status, body) = start_agent_response(&app, bad.clone()).await;
+            assert_eq!(
+                status,
+                StatusCode::BAD_REQUEST,
+                "schema {:?} must be rejected with 400, got {}: {}",
+                bad,
+                status,
+                body
+            );
+            assert!(
+                body.contains("json_schema"),
+                "error must name json_schema: {}",
+                body
+            );
+        }
+
+        // The daemon is still alive and serving after every rejection.
+        let (status, _) = start_agent_response(&app, serde_json::json!(true)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
 }

@@ -32,23 +32,37 @@ async fn scan_handler(
 ) -> Result<Json<ScanResponse>, StatusCode> {
     let result = storage_health::run_scan().await;
 
-    // Write findings to the standard findings path for UI consumption
+    // Write findings to the standard findings path for UI consumption.
+    // Write-then-respond: a scan whose findings never hit disk would show the
+    // user an empty findings list with no error (bug-sweep wave 1), so a
+    // failed write is a 500, and the write is atomic (temp + rename).
     let findings_dir = {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
         std::path::PathBuf::from(home).join(".permagent/automation/findings")
     };
-    let _ = std::fs::create_dir_all(&findings_dir);
-    let findings_path = findings_dir.join(format!("{}.json", result.run_id));
 
     // Convert ScanFinding to the same shape findings.rs expects
     let findings_file = serde_json::json!({
         "run_id": result.run_id,
         "findings": result.findings,
     });
-    let _ = std::fs::write(
-        &findings_path,
-        serde_json::to_string_pretty(&findings_file).unwrap_or_default(),
-    );
+    let json = serde_json::to_string_pretty(&findings_file).map_err(|e| {
+        tracing::error!(
+            "Failed to serialize scan findings for run {}: {}",
+            result.run_id,
+            e
+        );
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    super::findings::atomic_write_json(&findings_dir, &format!("{}.json", result.run_id), &json)
+        .map_err(|e| {
+            tracing::error!(
+                "Failed to persist scan findings for run {}: {}",
+                result.run_id,
+                e
+            );
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     let categories = result
         .categories

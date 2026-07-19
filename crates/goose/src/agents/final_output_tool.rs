@@ -1,4 +1,5 @@
 use crate::agents::tool_execution::ToolCallResult;
+use crate::recipe::validate_recipe::validate_response_json_schema;
 use crate::recipe::Response;
 use indoc::formatdoc;
 use rmcp::model::{CallToolRequestParams, Content, ErrorCode, ErrorData, Tool, ToolAnnotations};
@@ -16,23 +17,45 @@ pub struct FinalOutputTool {
 }
 
 impl FinalOutputTool {
-    pub fn new(response: Response) -> Self {
-        if response.json_schema.is_none() {
-            panic!("Cannot create FinalOutputTool: json_schema is required");
-        }
-        let schema = response.json_schema.as_ref().unwrap();
-
-        if let Some(obj) = schema.as_object() {
-            if obj.is_empty() {
-                panic!("Cannot create FinalOutputTool: empty json_schema is not allowed");
-            }
-        }
-
-        jsonschema::meta::validate(schema).unwrap();
-        Self {
+    /// Build the final-output tool from a recipe `response` block.
+    ///
+    /// This must NEVER panic on any input: a bad recipe schema used to panic
+    /// here (and per-turn in [`Self::tool`]), which fed the crash breaker and
+    /// could crash-cycle the daemon on a scheduled recipe. The schema must be
+    /// present, a non-empty JSON object, and meta-valid; anything else is an
+    /// error the caller surfaces to the user.
+    pub fn new(response: Response) -> anyhow::Result<Self> {
+        let schema = response.json_schema.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("recipe response.json_schema invalid: json_schema is required")
+        })?;
+        validate_response_json_schema(schema)
+            .map_err(|e| anyhow::anyhow!("recipe response.json_schema invalid: {}", e))?;
+        Ok(Self {
             response,
             final_output: None,
-        }
+        })
+    }
+
+    /// Pretty-printed schema for prompts. `new` guarantees the schema exists;
+    /// the fallback is purely defensive (the `response` field is public) and
+    /// can never panic.
+    fn schema_pretty(&self) -> String {
+        self.response
+            .json_schema
+            .as_ref()
+            .and_then(|s| serde_json::to_string_pretty(s).ok())
+            .unwrap_or_else(|| "{}".to_string())
+    }
+
+    /// The schema as a JSON object for the tool definition. `new` guarantees a
+    /// non-empty object; the fallback is defensive and can never panic.
+    fn schema_object(&self) -> serde_json::Map<String, Value> {
+        self.response
+            .json_schema
+            .as_ref()
+            .and_then(|s| s.as_object())
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub fn tool(&self) -> Tool {
@@ -56,18 +79,12 @@ impl FinalOutputTool {
             When validation fails, you'll receive:
             - Specific validation errors
             - The expected format
-        "#, serde_json::to_string_pretty(self.response.json_schema.as_ref().unwrap()).unwrap()};
+        "#, self.schema_pretty()};
 
         Tool::new(
             FINAL_OUTPUT_TOOL_NAME.to_string(),
             instructions,
-            self.response
-                .json_schema
-                .as_ref()
-                .unwrap()
-                .as_object()
-                .unwrap()
-                .clone(),
+            self.schema_object(),
         )
         .annotate(
             ToolAnnotations::with_title("Final Output".to_string())
@@ -88,17 +105,19 @@ impl FinalOutputTool {
             {}
 
             ----
-        "#, serde_json::to_string_pretty(self.response.json_schema.as_ref().unwrap()).unwrap()}
+        "#, self.schema_pretty()}
     }
 
     async fn validate_json_output(&self, output: &Value) -> Result<Value, String> {
-        let compiled_schema =
-            match jsonschema::validator_for(self.response.json_schema.as_ref().unwrap()) {
-                Ok(schema) => schema,
-                Err(e) => {
-                    return Err(format!("Internal error: Failed to compile schema: {}", e));
-                }
-            };
+        let Some(schema) = self.response.json_schema.as_ref() else {
+            return Err("Internal error: final output schema is missing".to_string());
+        };
+        let compiled_schema = match jsonschema::validator_for(schema) {
+            Ok(schema) => schema,
+            Err(e) => {
+                return Err(format!("Internal error: Failed to compile schema: {}", e));
+            }
+        };
 
         let validation_errors: Vec<String> = compiled_schema
             .iter_errors(output)
@@ -111,7 +130,7 @@ impl FinalOutputTool {
             Err(format!(
                 "Validation failed:\n{}\n\nExpected format:\n{}\n\nPlease correct your output to match the expected JSON schema and try again.",
                 validation_errors.join("\n"),
-                serde_json::to_string_pretty(self.response.json_schema.as_ref().unwrap()).unwrap_or_else(|_| "Invalid schema".to_string())
+                self.schema_pretty()
             ))
         }
     }
@@ -142,9 +161,10 @@ impl FinalOutputTool {
         }
     }
 
-    // Formats the parsed JSON as a single line string so its easy to extract from the output
+    // Formats the parsed JSON as a single line string so its easy to extract
+    // from the output. `Value`'s `Display` is infallible compact JSON.
     fn parsed_final_output_string(parsed_json: Value) -> String {
-        serde_json::to_string(&parsed_json).unwrap()
+        parsed_json.to_string()
     }
 }
 
@@ -177,27 +197,60 @@ mod tests {
         })
     }
 
-    #[test]
-    #[should_panic(expected = "Cannot create FinalOutputTool: json_schema is required")]
-    fn test_new_with_missing_schema() {
-        let response = Response { json_schema: None };
-        FinalOutputTool::new(response);
+    fn expect_invalid(json_schema: Option<Value>, expected_fragment: &str) {
+        let err = FinalOutputTool::new(Response { json_schema })
+            .err()
+            .expect("constructor must reject the schema, not panic");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("recipe response.json_schema invalid"),
+            "error must be recognizable as a schema problem: {}",
+            msg
+        );
+        assert!(
+            msg.contains(expected_fragment),
+            "error {:?} must mention {:?}",
+            msg,
+            expected_fragment
+        );
     }
 
     #[test]
-    #[should_panic(expected = "Cannot create FinalOutputTool: empty json_schema is not allowed")]
-    fn test_new_with_empty_schema() {
-        let response = Response {
-            json_schema: Some(json!({})),
-        };
-        FinalOutputTool::new(response);
+    fn test_new_with_missing_schema_errors() {
+        expect_invalid(None, "json_schema is required");
     }
 
     #[test]
-    #[should_panic]
-    fn test_new_with_invalid_schema() {
-        let response = Response {
-            json_schema: Some(json!({
+    fn test_new_with_empty_schema_errors() {
+        expect_invalid(Some(json!({})), "empty");
+    }
+
+    #[test]
+    fn test_new_with_boolean_schema_errors() {
+        // `true` IS a valid JSON Schema (meta-validation passes) but is not an
+        // object — this used to panic on EVERY TURN in `tool()`, taking the
+        // daemon down via the panic breaker.
+        expect_invalid(Some(json!(true)), "JSON object");
+        expect_invalid(Some(json!(false)), "JSON object");
+    }
+
+    #[test]
+    fn test_new_with_non_object_schema_errors() {
+        expect_invalid(Some(json!([1, 2])), "JSON object");
+        expect_invalid(Some(json!("string")), "JSON object");
+        expect_invalid(Some(json!(42)), "JSON object");
+    }
+
+    #[test]
+    fn test_new_with_garbage_schema_errors() {
+        // `type` must be a string/array per the meta-schema.
+        expect_invalid(Some(json!({"type": 42})), "");
+    }
+
+    #[test]
+    fn test_new_with_invalid_type_names_errors() {
+        expect_invalid(
+            Some(json!({
                 "type": "invalid_type",
                 "properties": {
                     "message": {
@@ -205,8 +258,20 @@ mod tests {
                     }
                 }
             })),
-        };
-        FinalOutputTool::new(response);
+            "",
+        );
+    }
+
+    #[test]
+    fn test_new_with_valid_schema_succeeds_and_tool_is_panic_free() {
+        let tool = FinalOutputTool::new(Response {
+            json_schema: Some(create_complex_test_schema()),
+        })
+        .expect("valid schema must construct");
+        // `tool()` used to unwrap per turn; it must be panic-free now.
+        let t = tool.tool();
+        assert_eq!(t.name, FINAL_OUTPUT_TOOL_NAME);
+        assert!(tool.system_prompt().contains("final_output"));
     }
 
     #[tokio::test]
@@ -226,7 +291,7 @@ mod tests {
             })),
         };
 
-        let mut tool = FinalOutputTool::new(response);
+        let mut tool = FinalOutputTool::new(response).unwrap();
         let tool_call =
             CallToolRequestParams::new(FINAL_OUTPUT_TOOL_NAME).with_arguments(object!({
                 "message": "Hello"  // Missing required "count" field
@@ -246,7 +311,7 @@ mod tests {
             json_schema: Some(create_complex_test_schema()),
         };
 
-        let mut tool = FinalOutputTool::new(response);
+        let mut tool = FinalOutputTool::new(response).unwrap();
         let tool_call =
             CallToolRequestParams::new(FINAL_OUTPUT_TOOL_NAME).with_arguments(object!({
                 "user": {
