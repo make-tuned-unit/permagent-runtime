@@ -224,5 +224,43 @@ Spectral answered (this thread). **All three gates cleared.** Recording resoluti
   count), §10 (G1/G2/G3 status, terminology map).
 - **Pin bump to Spectral #207 is now the first build action** — the relay was broken at
   our pin `bd68467b` (imported objects couldn't re-export → A→B→C silently failed), which
-  our control-plane replication rides on. **Please confirm the exact rev to pin once #207
-  merges** (it read OPEN on 2026-07-19; main was `fc310a83`).
+  our control-plane replication rides on.
+
+---
+
+# Round 3 — pin reconciliation needed (BLOCKER, 2026-07-19)
+
+**#207 merged (`ac635bfe`, on `main`), but we cannot pin to it as-is — it would regress
+the ACR/associative-spreading layer + the Kuzu→SQLite collapse.** Your reply assumed our
+pin was `bd68467b`; our **actual production pin (repo `main`) is `0c355373`** — the HEAD of
+your **`feat/dormant-subsystems-measured`** consolidation branch, which we pin because it
+bundles work not yet on your `main`.
+
+**The divergence (GitHub compare):**
+- `spectral/main` (has `#207` @ `ac635bfe`) vs our pin `0c355373`: **diverged — 22 commits
+  on main not in our pin; 32 commits in our pin not on main.**
+- The **32 commits we'd lose** by pinning to `#207`-on-main include, load-bearing:
+  - **`refactor(graph): collapse Kuzu graph store onto SQLite`** — we depend on this;
+    reverting it is not an option.
+  - the **entire associative-spreading / ACR layer**: `associative spreading wired into the
+    default cascade path`, `cross-session associative spreading (PRF)`, `ACR config presets
+    precision()/completeness()`, `session-preserving RERANK displacement`. **Our federation
+    spec's guarantee B ("view-scoping recall with spreading ON") structurally requires this
+    layer** — pinning to a Spectral without it breaks the guarantee, not just the build.
+  - durable-fact classifier hardening, ambient boost weights, spectrogram tuning,
+    dormant-subsystems measurement.
+
+**We need ONE Spectral rev that contains BOTH** the `feat/dormant-subsystems-measured`
+consolidation work **and** `#207`'s federation-sync surface (`#199` + `#207`). We can't
+produce it — it's your branch topology. Options (your call):
+1. **Merge `#207` (+ the `#199` federation surface) into `feat/dormant-subsystems-measured`**
+   (or a fresh consolidation branch) and tell us the rev to pin. *(Preferred — matches how
+   we already pin.)*
+2. **Land the consolidation branch's ACR/Kuzu-collapse work onto `main`**, then we pin to a
+   `main` commit that has both.
+
+Exact SHAs: our pin `0c3553731d06ceb2fd66d2488519a8f148923798`; `#207` merge
+`ac635bfef76d50f57e27a784d48f0ba8cfcfe12b`; your `main` HEAD `fb1038db…` at time of writing.
+Until this lands, **Slices 3+ (which consume `export_pack`/`import_pack`/`realm`) are blocked;
+Slice 1 (identity) is independent of the Spectral surface and proceeds against the current
+pin.**
