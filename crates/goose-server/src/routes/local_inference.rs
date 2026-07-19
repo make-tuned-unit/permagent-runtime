@@ -128,6 +128,7 @@ async fn ensure_featured_models_in_registry() -> Result<(), ErrorResponse> {
                             "https://huggingface.co/{}/resolve/main/{}",
                             pending.repo_id, filename
                         ),
+                        sha256: None,
                     }
                 }
             };
@@ -198,7 +199,11 @@ async fn ensure_featured_models_in_registry() -> Result<(), ErrorResponse> {
             });
             if !dominated_by_active {
                 tracing::info!(model_id = %model_id, "Auto-downloading vision encoder for existing model");
-                if let Err(e) = dm.download_model(download_id, url, path, None).await {
+                let expected_sha256 = mmproj_expected_sha256(&model_id).await;
+                if let Err(e) = dm
+                    .download_model(download_id, url, path, expected_sha256, None)
+                    .await
+                {
                     tracing::warn!(model_id = %model_id, error = %e, "Failed to start mmproj download");
                 }
             }
@@ -206,6 +211,14 @@ async fn ensure_featured_models_in_registry() -> Result<(), ErrorResponse> {
     }
 
     Ok(())
+}
+
+/// Expected SHA-256 for a featured model's mmproj vision encoder, from the
+/// HuggingFace API's LFS metadata. `None` when unavailable (the download then
+/// relies on the HTTPS + host-allowlist checks alone).
+async fn mmproj_expected_sha256(model_id: &str) -> Option<String> {
+    let spec = featured_mmproj_spec(model_id)?;
+    hf_models::fetch_expected_sha256(spec.repo, spec.filename).await
 }
 
 #[utoipa::path(
@@ -461,10 +474,18 @@ pub async fn download_hf_model(
     };
 
     let dm = get_download_manager();
-    let all_files: Vec<(String, std::path::PathBuf)> = resolved
+    // Carry each file's HF LFS sha256 into the download so the bytes are
+    // verified before the model is promoted into the models dir.
+    let all_files: Vec<permagent::download_manager::DownloadFile> = resolved
         .files
         .iter()
-        .map(|f| (f.download_url.clone(), models_dir.join(&f.filename)))
+        .map(|f| {
+            permagent::download_manager::DownloadFile::new(
+                f.download_url.clone(),
+                models_dir.join(&f.filename),
+                f.sha256.clone(),
+            )
+        })
         .collect();
 
     dm.download_model_sharded(
@@ -478,10 +499,12 @@ pub async fn download_hf_model(
 
     if let Some((mmproj_path, mmproj_url)) = mmproj_path {
         if !mmproj_path.exists() {
+            let expected_sha256 = mmproj_expected_sha256(&model_id).await;
             dm.download_model(
                 format!("{}-mmproj", model_id),
                 mmproj_url,
                 mmproj_path,
+                expected_sha256,
                 None,
             )
             .await
