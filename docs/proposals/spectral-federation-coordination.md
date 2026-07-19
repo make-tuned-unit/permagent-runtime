@@ -264,3 +264,41 @@ Exact SHAs: our pin `0c3553731d06ceb2fd66d2488519a8f148923798`; `#207` merge
 Until this lands, **Slices 3+ (which consume `export_pack`/`import_pack`/`realm`) are blocked;
 Slice 1 (identity) is independent of the Spectral surface and proceeds against the current
 pin.**
+
+> **⚠️ RETRACTED — Round 3's premise was WRONG (see Round 4).** Spectral pushed back
+> correctly. The "32 load-bearing commits main lacks" was computed from **commit-graph
+> ancestry**, which counts distinct SHAs — misleading when the same work reaches `main`
+> via a parallel PR sequence (#186–#209). A **content** check shows `main` already has the
+> spreading/ACR layer and the Kuzu-collapse. There is no regression; `main` is a superset.
+
+---
+
+# Round 4 — correction: align on Spectral `main` (2026-07-19)
+
+**Round 3 was wrong; Spectral was right.** I conflated commit-graph divergence with feature
+divergence. Content verification against Spectral `main`:
+
+- `crates/spectral-graph/src/spreading.rs` **is on main** — 386 lines (LARGER than our pin's
+  331), with `cross_session` spreading + ACR `precision()`/`completeness()` presets (the
+  exact ones named). Main is not an earlier cut; it's ahead.
+- **Kuzu-collapse is on main** — no `kuzu_store.rs`, no kuzu dep, `graph_store.rs` present.
+- **Regression scan** (files present on our pin, absent on main): only `kuzu_store.rs` +
+  graph `schema.rs` — both intended casualties of the Kuzu→SQLite collapse, not recall
+  regressions. Nothing in the spreading/ACR surface was lost.
+- Main additionally carries federation (#199/#207), hardening (#189/#190/#194), latency
+  (#191/#192) and fixes (#205–#209) that the **frozen** dormant branch (2026-07-15) lacks.
+
+**Resolution — no branch-merge gymnastics needed.** Permagent pins directly to **Spectral
+`main` HEAD (`fb1038db`)** and **retires `feat/dormant-subsystems-measured` as a pin source.**
+Permagent PR **#785** does the bump; `cargo update -p spectral` resolved all `spectral-*`
+crates cleanly, and **CI compiles/tests the whole tree against Spectral `main` as the
+definitive equivalence gate** — if any API the Permagent tree consumes existed *only* on the
+dormant branch, CI names it precisely (a far smaller, exact reconciliation list than "32
+commits", if it exists at all).
+
+**One residual worth a Spectral eye** (you flagged it): confirm `main`'s spreading internals
+are functionally equivalent to the pin's later tuning — the *library* features (spreading,
+cross_session, presets) are confirmed present; the pin's RERANK/PRF commits are largely
+`docs/probe/bench` experiments, not shipped library surface. If CI on #785 is green, that's
+settled empirically. **Going forward Permagent pins Spectral `main`, not a consolidation
+branch — so this divergence can't recur.**
