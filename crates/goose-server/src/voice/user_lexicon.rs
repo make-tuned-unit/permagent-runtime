@@ -180,8 +180,8 @@ mod tests {
 
         let handles: Vec<_> = words
             .iter()
-            .cloned()
             .map(|word| {
+                let word = word.clone();
                 std::thread::spawn(move || {
                     save(
                         &word,
