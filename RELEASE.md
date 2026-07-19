@@ -17,18 +17,21 @@ verifies, and installs it, then relaunches. So the *first* install is a website
 arm64 prebuilts and `ort` has no darwin-x64 prebuilt, so there is no honest
 universal build today. The workflow builds `aarch64-apple-darwin`.
 
-## ⚠️ Known blocker before shipping to strangers
+## First-run daemon behavior
 
-**A fresh Mac currently gets no backend.** The app bundles `permagentd` at
-`Contents/MacOS/permagentd` but never launches it — `src-tauri/src/daemon.rs`
-only *waits* for a daemon that launchd manages via
-`~/Library/LaunchAgents/ai.permagent.daemon.plist`, and that plist is only ever
-installed by the `permagent setup` CLI (which DMG users never run). On a
-machine that hasn't run the CLI, the app opens, waits 10 s, and renders a UI
-with every request to `127.0.0.1:3001` failing. First-run daemon wiring
-(app-side sidecar spawn, or app-side install of a launchd plist pointing into
-the bundle) must land before the download link goes on the website. Releasing
-to *your own* machines (which have run setup) works today.
+On a fresh Mac (no daemon on `127.0.0.1:3001` and no
+`~/Library/LaunchAgents/ai.permagent.daemon.plist`), the app **spawns the
+bundled `permagentd` sidecar itself** (`src-tauri/src/daemon.rs`) with the
+same args/env the launchd plist uses, and waits for it to become healthy.
+Output goes to `~/.permagent/logs/daemon-sidecar.log`; failures surface in
+the window title. The child dies with the app (SIGTERM on exit) — meaning
+**daemon-side scheduled jobs stop when the app closes**. Machines that ran
+`permagent setup` keep their launchd-managed daemon: if the plist exists or
+the port answers, the app never spawns (launchd stays the single spawner —
+double-spawn caused the historical KeepAlive crash loop). A persistent
+LaunchAgent installed by the app (survives app quit, starts at login) is the
+long-term consumer behavior, deliberately deferred: it needs consent +
+uninstall UX.
 
 ## One-time setup (in this order)
 

@@ -274,20 +274,21 @@ fn main() {
             // called from JS on mount. NOT done here — the WKWebView is not
             // fully initialized during did_finish_launching.
             Ok(())
-        })
-        .on_window_event(|window, event| {
-            // Only stop daemon when the main window closes, not the chat window
-            if let tauri::WindowEvent::Destroyed = event {
-                if window.label() == "main" {
-                    let handle = window.app_handle().clone();
-                    daemon::stop_daemon(&handle);
-                }
-            }
         });
 
     let builder = menu::attach_menu(builder);
 
     builder
-        .run(tauri::generate_context!())
-        .expect("error while running Permagent");
+        .build(tauri::generate_context!())
+        .expect("error while running Permagent")
+        .run(|app_handle, event| {
+            // Kill the spawned daemon sidecar (if any) when the APP exits —
+            // not when the main window closes (the chat window may still be
+            // open and using it). tauri-plugin-shell's own Exit hook only
+            // kills JS-spawned children, so this is the only kill path for
+            // our Rust-side spawn. No-op for launchd/user-managed daemons.
+            if let tauri::RunEvent::Exit = event {
+                daemon::stop_daemon(app_handle);
+            }
+        });
 }

@@ -183,6 +183,8 @@ jobs:
           touch binaries/libsherpa-onnx-c-api.dylib binaries/libonnxruntime.1.24.4.dylib binaries/libonnxruntime.dylib
       - name: Check shell crate
         run: cargo check --locked --manifest-path ui/desktop/src-tauri/Cargo.toml
+      - name: Test shell crate
+        run: cargo test --locked --manifest-path ui/desktop/src-tauri/Cargo.toml
 
   lint:
     runs-on: ubuntu-latest
