@@ -5,6 +5,14 @@
 > torn apart by the most security-sophisticated person in the room before a line of
 > crypto is written.
 >
+> **Rev 2 (2026-07-19):** incorporates an adversarial red-team (findings **RT-1…RT-11**,
+> marked inline). The load-bearing addition is **§3.5 — realm genesis + admin-chain (the
+> root of trust)**, which RT-1 found missing and on which §5 (keyring trust) and §7
+> (tombstone authz) silently depended. Crypto corrections: **§4/§9 rule AES-GCM out**
+> (RT-6); **§5.4 rewrites rotation** as fresh-random-with-tiebreak + an
+> eventual-consistency caveat (RT-2/RT-4); **§3.3** requires a *verified* wrap-target
+> (RT-5). New open decisions **OD-6** (identity recovery) and **OD-7** (admin threshold).
+>
 > **Scope split (the boundary is crypto-agnostic):**
 > - **Spectral owns** the *plaintext* memory-object layer: the `realm` axis
 >   (`Local` never exports vs `Shared(id)` replicates), content-addressed
@@ -101,6 +109,7 @@ This is the crux a buyer will probe. **Do not conflate these.**
 | **Removed teammate** | ✓ **only what they already synced+decrypted** (non-goal to claw back) | historic only | stale epoch keys only | historic | **Cannot decrypt epoch ≥ N+1** (realm-key rotation on removal, §5). Can still reach the relay but receives only undecryptable ciphertext. |
 | **Network attacker (passive + active MITM)** | ✗ | what the relay sees, at most | ✗ | ✗ | Transport is TLS/WireGuard; even a broken transport yields only the same ciphertext the relay holds (E2E). Active MITM on first key exchange defended by **OOB fingerprint verification** (§3.3). |
 | **Compromised / stolen device** | ✓ **for that user** (game over locally) | ✓ | ✓ **that device's keys** | ✓ | Mitigations: `keyring` + disk encryption (guarantee C); **rotation cuts the blast radius** — rekeying realms after a known compromise cuts the attacker off *going forward* (same mechanism as member removal). |
+| **Compromised *admin* key (RT-3)** | ✓ their realms | ✓ | that admin's | ✓ **+ can rewrite it** | **Realm-takeover class:** one admin key can rotate the realm and re-wrap to attacker-controlled members, exclude legitimate members (DoS), or admin-quarantine content. Mitigations: the **admin-chain (§3.5) makes every admin action a signed, visible, disputable event** — no *silent* takeover; **rotate the admin out via the chain** once detected; optional **M-of-N** on admin-set changes for the enterprise tier (OD-7). |
 | **Curious platform operator (us / relay host)** | ✗ | same as HBC relay | ✗ **we never hold realm or private keys — they are client-side only** | partial routing tags | The "we can't read your shared memories even under subpoena" property. Client trust anchor = open source + reproducible builds. |
 
 ### 2.3 Explicit non-goals (state these plainly — they are correctness, not gaps)
@@ -147,7 +156,7 @@ The hard problem is **key authenticity** — Alice must know Bob's pubkey is *Bo
    ```
    Delivered out-of-band (the same way a pairing URL is shared today — "treat it like a password").
 2. **Response.** The invitee returns their signed key bundle `{author_id, ed25519_pub, x25519_pub+cert}`.
-3. **TOFU + optional OOB verification.** Both sides **pin** each other's Ed25519 key on first contact (like `known_hosts` / the cert fingerprint). The UI surfaces a short **safety number** (a hash of the two identity keys, Signal-style) that the two humans can compare over an existing trusted channel (a phone call) to defeat an active MITM on the invite. Pinning is mandatory; OOB comparison is offered and encouraged.
+3. **TOFU pin + a *verified* wrap-target (RT-5).** Both sides **pin** each other's Ed25519 key on first contact (like `known_hosts` / the cert fingerprint) — mandatory. A short **safety number** (a hash of the two identity keys, Signal-style) is surfaced for humans to compare over an existing trusted channel (a phone call). **But pinning-for-display is not sufficient to receive a realm key.** An admin **MUST NOT wrap `realm_key` to an X25519 key that is unverified** — otherwise a malicious relay can substitute the invitee's key on the in-band *response* leg and get itself wrapped into the realm (the response channel is the soft underbelly the optional-OOB design left open). "Verified" means *either* (a) the human safety-number comparison succeeded, *or* (b) the adding admin binds the member's `{ed25519_pub, x25519_pub+cert}` into the **signed admin-chain link that adds them (§3.5)** — an in-band vouch rooted in the OOB-trusted `realm_id`. A substituted key fails both the safety number and the admin vouch, so it never receives a wrap.
 
 ### 3.4 How this extends `auth.rs` and the multi-device model
 
@@ -155,6 +164,36 @@ The hard problem is **key authenticity** — Alice must know Bob's pubkey is *Bo
 - **Layers cleanly under `middleware/auth.rs`:** the bearer `daemon_token` still gates "may this client drive this hub" (unchanged, device-pairing). The new identity layer answers the orthogonal "*who* authored this shared object / *who* may I wrap a key to." Two independent questions, two mechanisms.
 - **Devices inherit identity from their hub** — no per-device federation keys, per §1.
 - **Keep the public Forum/chiti-ID identity separate** (§0): chiti-ID = *public presence* in the Forum; the Ed25519 `author_id` = *private realm membership + authorship*. A peer may *display* their agent-SBT as a badge, but membership and signatures never depend on it.
+
+### 3.5 Realm genesis + the admin-chain — the root of trust (RT-1)
+
+**The gap the red-team found:** the keyring is "admin-signed" (§5.2) and tombstone-override needs a recognized admin set (§7), but §3–§5 never said *how a member verifies a signature came from a **legitimate** admin of this realm* rather than from an attacker who merely asserts adminship. TOFU (§3.3) pins the *inviter*; the keyring signer may be a *different* admin the joiner has never seen. Without a per-realm root of trust, a forged keyring is indistinguishable from a real one. This section supplies that spine. (Lineage: Matrix `room_id`, Keybase team sigchain.)
+
+**Genesis object — a self-certifying realm id:**
+```
+genesis     := { founding_admin: {author_id, ed25519_pub}, realm_nonce, created_meta }
+realm_id    := "realm:" || base32( SHA-256( founding_admin.ed25519_pub || realm_nonce ) )
+genesis_sig := Ed25519_sign(founding_admin_id_sk, genesis)
+```
+Because `realm_id` **is** the hash of the founder's key (+ nonce), the realm id certifies its own genesis: no attacker can craft a different genesis that hashes to the same `realm_id`. The genesis object is content-addressed and replicates like any other object through the untrusted relay — tampering changes the hash and is rejected.
+
+**Admin-chain — who is an admin *now*:** admin-set changes are an append-only, hash-linked log rooted at genesis:
+```
+link     := { prev: <hash of previous link | genesis>, op: Add|Remove,
+              subject: author_id, subject_keys?: {ed25519_pub, x25519_pub+cert},
+              by: <admin author_id>, seq, at_meta }
+link_sig := Ed25519_sign(by_id_sk, link)
+```
+Every member independently **replays the chain from genesis** to derive the current admin set. A link is valid only if `by ∈ admin-set-as-of-prev`; the founding admin is the sole admin at genesis. This buys three things at once:
+- **RT-3 transparency:** every admin action is a signed, visible, disputable event — no *silent* takeover.
+- **RT-5 vouching:** an Add link may carry `subject_keys`, letting the adding admin attest a new member's identity in-band (rooted in the OOB-trusted `realm_id`).
+- **§7's open question answered:** "who anoints admins?" → the founding admin at genesis, extended by signed chain links.
+
+**Everything downstream reduces to the chain:**
+- **Keyring trust (§5.2):** a keyring is accepted only if its signer ∈ the admin set derived at that epoch. A keyring signed by a non-admin key is dropped at merge-validation, exactly like a forged authored object (§4).
+- **Invite trust (§3.3):** the `capability: <admin-signed grant>` is verified against the same derived admin set; the invitee pins the founder key *from the self-certifying genesis*, so trust no longer depends on having met the specific inviting admin.
+
+**What remains strictly OOB:** the `realm_id` itself must reach the joiner over a trusted channel (it rides the invite — "treat like a password"). Given one authentic `realm_id`, the entire admin set and every keyring signature become verifiable with **no further OOB steps** — collapsing the O(N²) pairwise-verification burden (RT-5) to "trust the realm-id you were invited with."
 
 ---
 
@@ -172,7 +211,7 @@ sealed_pack    := { realm_id, epoch, sender: author_id, nonce, ct,
 
 Design points, each defending a specific attack:
 
-- **AEAD cipher:** **XChaCha20-Poly1305** (192-bit nonce → random nonces are safe with no counter bookkeeping; misuse-resistant; widely audited). AES-256-GCM (available in `aws-lc-rs`, hardware-accelerated) is an acceptable alternative *only* with strict nonce discipline. **Recommend XChaCha20-Poly1305.**
+- **AEAD cipher:** **XChaCha20-Poly1305 — and only this (RT-6).** Its 192-bit nonce makes independently-chosen random nonces collision-safe with no counter bookkeeping. That matters *specifically because* every realm member shares one `realm_key[epoch]` and seals **independently, with zero cross-member nonce coordination.** AES-256-GCM (in `aws-lc-rs`, hardware-accelerated) is therefore **ruled out here** — not merely "used with care": its 96-bit random nonce across many uncoordinated senders × many packs is a birthday-bound reuse risk, and GCM nonce reuse is catastrophic (authentication-key recovery, i.e. loss of *both* confidentiality and integrity). "Strict nonce discipline" is unachievable across independent senders sharing a key, so GCM's acceleration is not worth a footgun that voids the guarantee.
 - **Confidentiality + integrity of content:** the AEAD. The relay/network see only `ct`.
 - **Sender authentication — the property the AEAD alone does NOT give you.** Every realm member holds `realm_key`, so AEAD integrity proves "*some* member sealed this," not *which*. The **Ed25519 signature** over `(realm_id, epoch, nonce, ct)` binds the pack to a specific `author_id`, verified against the pinned key **before** decryption.
 - **Anti-splicing:** the signature and the AEAD `aad` both bind **`realm_id` + `epoch`**, so a malicious relay cannot replay realm R1's pack into realm R2's channel, nor a stale epoch's pack as current.
@@ -199,7 +238,7 @@ For each member M with certified X25519 pubkey `x_M`:
 ```
 wrap_M[epoch] := HPKE_seal(x_M, realm_key[epoch], info = { realm_id, epoch })
 ```
-The set `{ wrap_M[epoch] }` for all members is a **realm-keyring object**, itself replicated through the *same untrusted relay* — it is ciphertext; only the holder of `x_M`'s secret can unwrap. The keyring object is **admin-signed** and carries the monotonic `epoch` so members can't be silently downgraded.
+The set `{ wrap_M[epoch] }` for all members is a **realm-keyring object**, itself replicated through the *same untrusted relay* — it is ciphertext; only the holder of `x_M`'s secret can unwrap. The keyring object is **admin-signed — accepted only if its signer ∈ the admin set derived from the admin-chain (§3.5)** — and carries the monotonic `epoch` so members can't be silently downgraded.
 
 - **Why flat wrapping, not a tree:** N is 2–10. Flat wrapping is **O(N)** per rotation and trivially auditable. **We do not need MLS/TreeKEM's `log N` machinery for v1** — it is named as the scale-out path (§Open Decisions) if teams ever get large.
 - **Wrapping primitive:** **HPKE (RFC 9180: X25519-HKDF-SHA256 + ChaCha20-Poly1305)** — the modern, standardized sealed-box. (libsodium-style `crypto_box_seal` is an equivalent fallback.)
@@ -210,15 +249,20 @@ The set `{ wrap_M[epoch] }` for all members is a **realm-keyring object**, itsel
 2. **History access is a policy knob:** to give the new member the retained shared history (usually *desired* for a team knowledge base), also wrap **all currently-live epochs** to them. To withhold history, wrap only `current`.
 3. Publish the updated admin-signed keyring. **No key rotation is required on add** (adding a reader doesn't compromise past keys for existing members).
    - Recommend: **wrap all live epochs on add** (read-the-history default), configurable per realm.
+   - **Blast-radius trade (RT-7) — price it, don't hide it:** wrapping all live epochs means the relay holds, for every member, wraps of *every historical epoch key*. One stolen X25519 secret (device theft) then unwraps the realm's **entire retained history** straight from relay-held ciphertext — guarantee **C** (disk encryption of the keyring at rest) becomes the *only* thing between a stolen laptop and the whole past. Keep the knob, but state it: history-withholding realms (wrap only `current`) bound a compromise to the current epoch. Optional hardening: don't persist fetched historical wraps on the relay once a member has unwrapped them locally.
 
 ### 5.4 Member REMOVE / REVOCATION — **rotate the realm key** (forward-looking)
 
 The crux. To ensure a removed member cannot read **future** shared memories:
 
-1. Admin generates **`realm_key[N+1]`** (new epoch).
+1. Admin generates **`realm_key[N+1]`** as **fresh randomness** (new epoch).
 2. Re-wraps `realm_key[N+1]` to **every remaining member** (NOT the removed one) → new admin-signed keyring at epoch `N+1`.
 3. All subsequent packs are sealed under epoch `N+1`.
 4. The removed member still holds `realm_key[≤N]` **and any plaintext they already synced** — **this is not clawed back** (non-goal #2, stated honestly). They keep reaching the relay but get only epoch-`N+1` ciphertext they cannot unwrap.
+
+**RT-2 — fresh-random, with a deterministic tiebreak (do NOT derive from the old key).** The new key MUST be fresh random. The tempting shortcut `realm_key[N+1] := KDF(realm_key[N], …)` is **forbidden**: the removed member holds `realm_key[N]` and would derive `N+1` too, silently voiding the revocation. Fresh randomness then creates a *convergence* hazard — with ≥2 admins (§5.6), two concurrent removals mint two **different** random keys both labelled epoch `N+1`, a hard fork (members with keyring-A can't decrypt packs sealed under key-B). Resolve deterministically: **epoch identity is `(counter, keyring_content_hash)`** — `counter` drives the monotonic downgrade check (§6.5), and when two keyrings share a `counter`, the **lowest content-hash wins** and every member seals under that canonical winner. The "losing" admin observes the winner and, if its intended removal wasn't included, **re-rotates to `N+2`** on top of it — non-overlapping removals *compose by chaining rotations*, never fork. (No shared randomness, no identity tiebreak needed — purely the content-addressed hash both admins can compute.)
+
+**RT-4 — revocation is cryptographic, but its *cutover* is eventually-consistent.** Confidentiality of epoch `N+1` rests on not wrapping to the removed member — correct, and independent of the hostile relay. But the switchover is **not atomic**: until every writer has received the epoch-`N+1` keyring, some still seal under `N`, which the removed member holds. A relay **colluding with the removed member** can throttle keyring delivery to prolong that window. Mitigation: (i) writers **refuse to seal under an epoch older than the newest admin-signed keyring they have seen from *any* peer** (P2P cross-check shrinks the window); (ii) state honestly that revocation is *forward-looking and eventually-consistent, bounded by keyring propagation* — not instantaneous. The monotonic-epoch rule defends *downgrade*; this rule defends *delay*.
 
 **The trust boundary a buyer will push on:** revocation confidentiality rests **entirely on not wrapping `realm_key[N+1]` to the removed member's pubkey** — *not* on the relay refusing them service. We assume the relay is hostile and may hand the removed member every byte; it does them no good without the wrap. That is the correct E2E posture: confidentiality is in the cryptography, not in an access-control list on an untrusted server.
 
@@ -239,6 +283,7 @@ Rotation requires *someone with the rotate capability* to be online to generate 
 
 - **Long-lived private keys** (Ed25519 identity, X25519 recipient) → **OS `keyring`** (the existing pattern), never a flat file.
 - **Realm keys** (symmetric, per-epoch) → the encrypted secrets store / `~/.permagent/secrets/` at `0600` (the `daemon_token` precedent), or keyring if per-realm entries are acceptable. Their confidentiality also leans on guarantee **C** (disk encryption).
+- **Continuity / recovery (RT-8) — an open decision (OD-6), not silently assumed.** The Ed25519 identity lives *only* in the hub's keyring (satellites hold no federation keys, §1). A **dead** device — not even compromised — loses the identity permanently: a new device is a new `author_id`, orphaning every object the old identity authored (nothing can `supersedes:` them) and forcing re-invitation to every realm. Backup is attack surface; no backup is catastrophic loss for a *years-of-Brain* product. The recommended path (OD-6): an **admin-chain re-attestation** link that re-binds a *fresh* identity to the same person — no old-secret recovery, no new secret-at-rest — with passphrase-sealed export as an advanced opt-in.
 
 ---
 
@@ -263,9 +308,11 @@ Tailscale is excellent for the **intra-user** leg (multi-device) — one person,
 
 ### 6.5 What the relay sees, precisely (the honest metadata disclosure)
 
-- **Sees:** an opaque per-realm **routing tag** (recommend a *rotating/blinded* tag, not a stable realm-id, to limit long-term linkability), a per-realm pseudonymous **sender/recipient tag**, **ciphertext size**, **timing**, and **IP**.
-- **Does NOT see:** any plaintext; per-object counts (hidden inside one sealed pack); memory content; key material.
-- **Residual leak:** approximate **volume/activity** from sizes + timing. **v2 hardening:** pad packs to size buckets / batch on a schedule / cover traffic.
+- **Sees:** a per-realm **routing tag**, a per-realm pseudonymous **sender/recipient tag**, **ciphertext size**, **timing**, and **IP**.
+  - **Routing-tag honesty (RT-10):** a truly *rotating/blinded* tag requires recipients to re-derive the new tag without the relay computing it — i.e. `tag[epoch] := KDF(realm_key[epoch], "route")`. That works, but couples tag rotation to epoch rotation, so a tag change itself signals "membership/epoch changed" to the relay. So do not overclaim: **v1 ships a stable pseudonymous tag with linkability as an acknowledged residual**; KDF-blinded per-epoch tags are a v2 hardening that trades linkability for a membership-change timing signal.
+- **Does NOT see:** any plaintext; memory content; key material.
+  - **Count-hiding is narrower than it looks (RT-9):** per-object counts are hidden *within a single sealed pack*, but Spectral's **have/want hash-manifest** negotiation (§6.4) exchanges per-object hash lists. If those manifests transit the relay — even E2E-encrypted to the peer — their **sizes** re-leak approximate object counts and sync cadence. Honest claim: *content and exact counts are hidden; approximate object volume is inferable from manifest and pack sizes.* Pin this down with Spectral once the manifest wire-format is fixed (§10.2).
+- **Residual leak:** approximate **volume/activity** from sizes + timing, and — from stable tags + IP + timing — an approximate **team social graph (RT-11):** the relay can cluster which pseudonyms co-occur in which realms and, via IP/timing intersection, partially de-pseudonymize them. §2.2's "partial membership" leak is therefore real and must not be undersold. **v2 hardening:** pad packs to size buckets / batch on a schedule / cover traffic / blinded tags (RT-10).
 - **Freshness vs. availability against a *malicious* relay:** the OR-Set is a CRDT, so **reorder/delay/replay are safe for convergence** (adds/tombstones commute; replay of a known element is a no-op). The residual attacks are **withholding** (member misses updates) and **downgrade** (serve a stale keyring). Downgrade is defended by **monotonic admin-signed epochs** (members never accept an epoch < their current). Withholding is an **availability** attack — non-goal to prevent cryptographically; mitigated by P2P cross-check + multiple relays.
 
 ---
@@ -277,7 +324,7 @@ A tombstone is just another OR-Set object; "unauthorized" tombstones are stopped
 - **Author retracts own memory — always allowed.** A pack signed by X may tombstone X's own objects. Uncontroversial and always on.
 - **Admin/scope-owner retracts *others'* memory — a policy choice.** Options:
   - **(a) Author-only (strictest):** only the author can tombstone their object. Clean, censorship-proof — but a realm can't remove a departed/rogue member's content.
-  - **(b) Admin-override:** realm admin(s) may tombstone anyone's object (moderation / cleaning up a departed member). The tombstone must be **admin-signed**, and all members must recognize the admin set (which then needs its own management — who anoints admins?).
+  - **(b) Admin-override:** realm admin(s) may tombstone anyone's object (moderation / cleaning up a departed member). The tombstone must be **admin-signed**, verified against the admin set **derived from the admin-chain (§3.5) — which is where "who anoints admins?" is now answered:** the founding admin at genesis, extended by signed chain links.
   - **(c) Hybrid (recommended):** author-only for normal retraction **+** an admin **"quarantine"** that is itself a *visible, disputable* OR-Set object (transparent moderation, not silent deletion). Preserves the E2E principle that no one silently rewrites your authored history, while giving realms a real remove-a-departed-member story.
 
 **Recommendation: v1 = hybrid (author-only retraction + transparent admin-quarantine).** Enforced by recipients accepting a tombstone only if its signer ∈ `{ object's author } ∪ { realm admins }`, with quarantine surfaced in the UI rather than applied silently.
@@ -324,7 +371,7 @@ The **sovereignty-router's Phase-0 is landing separately** and will decide **whe
 |---|---|---|
 | Identity signing | **Ed25519** | Fast, small, ubiquitous; `author_id` + pack sigs. |
 | Key agreement / wrapping | **X25519** via **HPKE (RFC 9180)** | Standardized sealed-box; `crypto_box_seal` is an equivalent fallback. |
-| Pack AEAD | **XChaCha20-Poly1305** | 192-bit nonce → safe random nonces, no counter bookkeeping. AES-256-GCM (in `aws-lc-rs`) acceptable *with* strict nonce discipline. |
+| Pack AEAD | **XChaCha20-Poly1305** (only — RT-6) | 192-bit nonce → safe random nonces with **no cross-member coordination**. AES-256-GCM is **ruled out**: one shared key + many uncoordinated senders → 96-bit-nonce birthday reuse = catastrophic GCM failure. |
 | KDF | **HKDF-SHA-256** | Standard; already inside HPKE. |
 | Safety number / fingerprint | **SHA-256 truncation, Signal-style** | Reuses the `tls.rs` fingerprint-pinning mental model. |
 | CSPRNG | **`rand` 0.10** (already in-tree) | Same source as `daemon_token`. |
@@ -357,7 +404,7 @@ The **sovereignty-router's Phase-0 is landing separately** and will decide **whe
 
 ### OD-3. Key-rotation / revocation mechanism
 - **Tradeoff:** Flat per-member wrapping = O(N) rotations, dead-simple, auditable — but O(N) work per membership change. MLS/TreeKEM = O(log N) + post-compromise security, but heavy machinery for tiny teams.
-- **Recommendation:** **Epoch'd realm key + flat HPKE per-member wrapping; rotate on every removal, wrap-all-live-epochs on add, optional periodic bump.** Flag the **offline-admin** wrinkle → **≥2 admins per realm.** Defer **MLS/OpenMLS** to a large-team future. (§5)
+- **Recommendation:** **Epoch'd realm key + flat HPKE per-member wrapping; rotate on every removal, wrap-all-live-epochs on add, optional periodic bump.** Flag the **offline-admin** wrinkle → **≥2 admins per realm.** Defer **MLS/OpenMLS** to a large-team future. **Rotation uses fresh-random keys (never derived from the old key — that would leak to the removed member) with a content-hash tiebreak so concurrent admin rotations converge instead of forking (RT-2); revocation is forward-looking + eventually-consistent, bounded by keyring propagation (RT-4).** (§5)
 
 ### OD-4. Who-may-tombstone-whom
 - **Tradeoff:** Author-only = censorship-proof but can't remove a departed member's content. Admin-override = moderation power but needs a managed admin set and risks silent history rewrites in an E2E system.
@@ -367,14 +414,23 @@ The **sovereignty-router's Phase-0 is landing separately** and will decide **whe
 - **Tradeoff:** Tailscale = free WireGuard identity/encryption/ACLs, already shipping for multi-device — but two people are on two tailnets (needs node-sharing), couples both to Tailscale accounts, and can't serve offline members. Purpose-built app-level E2E over a dumb relay = network-agnostic, offline-capable, no third-party account dependency — but we build/run relay infrastructure.
 - **Recommendation:** **Purpose-built app-level E2E over a dumb relay for the general cross-person case; Tailscale as an opportunistic fast-path only** (intra-user multi-device stays Tailscale as today). Cross-person federation must **not** *require* both parties to share a tailnet. (§6.2–6.4)
 
+### OD-6. Identity continuity / key recovery (RT-8)
+- **Tradeoff:** No backup ⇒ a dead hub permanently loses the federation identity (orphaned authorship + re-invite to every realm). Backup ⇒ new attack surface for the one key that anchors everything.
+- **Recommendation:** **Admin-chain re-attestation first** — a realm admin signs a chain link (§3.5) re-binding the person's *new* identity key, recovering membership without recovering the old secret and adding no secret-at-rest. **Offer passphrase-sealed identity export** (Ed25519+X25519 under an Argon2id-stretched passphrase, stored where the user chooses, never auto-uploaded) as an advanced opt-in. Genuinely a product decision. (§5.7)
+
+### OD-7. Admin authority — single-admin vs. M-of-N (RT-3)
+- **Tradeoff:** Any single admin key is a realm-takeover single point of failure (rotate everyone out, re-wrap to attacker, malicious quarantine). M-of-N threshold on admin-set changes removes the single point but adds coordination cost and machinery for tiny teams.
+- **Recommendation:** **v1 = single-admin actions made transparent + disputable via the admin-chain (§3.5); ≥2 admins for availability (§5.6).** Offer **M-of-N on admin-set changes** as an enterprise-tier hardening — do not block v1 on it. The chain ensures no takeover is *silent*; the threshold (later) ensures none is *unilateral*. (§2.2, §5.6)
+
 ---
 
 ## Appendix — what filling `auth.rs` looks like (design sketch, not code)
 
 - **Identity module:** generate-or-load `{ed25519, x25519}` from `keyring`; expose `author_id`; sign/verify helpers.
 - **Peer registry:** persisted `author_id → {ed25519_pub, x25519_pub+cert, verified: bool, pinned_at}` — TOFU pin on first contact, `verified` set when OOB safety number is confirmed.
-- **Realm state:** `realm_id → {members: Set<author_id>, admins: Set<author_id>, current_epoch, keyring, routing_tag}`.
+- **Realm genesis + admin-chain (§3.5):** the self-certifying `genesis` object (`realm_id = hash(founder_pub || nonce)`) + the append-only signed `admin-chain`. `admins` is **derived** by replaying the chain, not stored as ground truth; `verify_keyring`/`verify_invite`/`verify_admin_tombstone` all reduce to "signer ∈ derived admin set."
+- **Realm state:** `realm_id → {genesis, admin_chain, members: Set<author_id>, current_epoch: (counter, keyring_hash), keyring, routing_tag}` — `admins` derived from `admin_chain` (§3.5).
 - **Seal/open pipeline (§4):** `seal_pack(realm_id, plaintext) -> sealed_pack`; `open_pack(sealed_pack) -> plaintext` (verify sig → check epoch/realm → AEAD-open → hand to Spectral `import_pack`, which enforces the authorship invariant at merge).
-- **Membership ops (§5):** `add_member`, `remove_member` (→ rotate), `rotate` (→ new epoch, re-wrap remaining, publish admin-signed keyring).
+- **Membership ops (§5):** `add_member` (wrap live epochs + admin-chain Add link vouching keys, §3.5/RT-5), `remove_member` (→ admin-chain Remove link + rotate, fresh-random + content-hash tiebreak, RT-2), `rotate` (→ new epoch, re-wrap remaining, publish admin-signed keyring), `reattest_member` (recovery, OD-6).
 - Untouched: `middleware/auth.rs` bearer `daemon_token` (device-pairing) stays exactly as-is.
 ```
