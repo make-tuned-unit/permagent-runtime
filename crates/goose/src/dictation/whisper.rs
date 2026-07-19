@@ -50,6 +50,12 @@ pub struct WhisperModel {
     pub size_mb: u32,
     /// Download URL from HuggingFace
     pub url: &'static str,
+    /// Expected SHA-256 of the model file (lowercase hex). Any code that
+    /// fetches `url` MUST pass this to the DownloadManager so the GGUF is
+    /// verified before candle's native parser ever sees it. Digests verified
+    /// 2026-07 against both the HF API LFS metadata and the repos' raw LFS
+    /// pointer files.
+    pub sha256: &'static str,
     /// Description
     pub description: &'static str,
 }
@@ -59,24 +65,28 @@ const MODELS: &[WhisperModel] = &[
         id: "tiny",
         size_mb: 40,
         url: "https://huggingface.co/oxide-lab/whisper-tiny-GGUF/resolve/main/model-tiny-q80.gguf",
+        sha256: "52deb0fdcbb9c36b4d570e35f5a65a5ad4275ccdb85e7a06e81a8b05b3743c9d",
         description: "Fastest, ~2-3x realtime on CPU (5-10x with GPU)",
     },
     WhisperModel {
         id: "base",
         size_mb: 78,
         url: "https://huggingface.co/oxide-lab/whisper-base-GGUF/resolve/main/whisper-base-q8_0.gguf",
+        sha256: "7073e51db7ab02b38cc4fceeac39adc2d7a19beb98badf66aa708f4f0ac71aa9",
         description: "Good balance, ~1.5-2x realtime on CPU (4-8x with GPU)",
     },
     WhisperModel {
         id: "small",
         size_mb: 247,
         url: "https://huggingface.co/oxide-lab/whisper-small-GGUF/resolve/main/whisper-small-q8_0.gguf",
+        sha256: "26d317490c2eb1b06ab36c28a13a0cf6fedb04e019d43fbe80bdec37b71cebf4",
         description: "High accuracy, ~0.8-1x realtime on CPU (3-5x with GPU)",
     },
     WhisperModel {
         id: "medium",
         size_mb: 777,
         url: "https://huggingface.co/oxide-lab/whisper-medium-GGUF/resolve/main/whisper-medium-q8_0.gguf",
+        sha256: "abb06070a461de884f8e1c3aea68576ede3d1ff924388811fbbb5c875eb7740a",
         description: "Highest accuracy, ~0.5x realtime on CPU (2-4x with GPU)",
     },
 ];
@@ -1197,5 +1207,30 @@ mod tests {
     #[test_case("Really? Yes! Ok.", vec!["Really? ", "Yes! ", "Ok."] ; "mixed punctuation")]
     fn test_split_into_sentences(input: &str, expected: Vec<&str>) {
         assert_eq!(split_into_sentences(input), expected);
+    }
+
+    /// Every entry in the model table must have a downloadable-by-policy URL
+    /// and a well-formed digest pin — a malformed entry would brick that
+    /// model's install path at runtime.
+    #[test]
+    fn test_model_table_urls_and_digests_are_valid() {
+        for model in available_models() {
+            crate::download_manager::validate_download_url(model.url)
+                .unwrap_or_else(|e| panic!("model '{}' URL rejected: {e}", model.id));
+            assert_eq!(
+                model.sha256.len(),
+                64,
+                "model '{}' sha256 must be 64 hex chars",
+                model.id
+            );
+            assert!(
+                model
+                    .sha256
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+                "model '{}' sha256 must be lowercase hex",
+                model.id
+            );
+        }
     }
 }
