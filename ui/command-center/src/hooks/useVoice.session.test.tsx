@@ -17,8 +17,7 @@
  *   - idle no-op: with voice off, a session switch opens nothing.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import React from 'react';
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
 
@@ -118,7 +117,7 @@ function Host({ sessionId }: { sessionId?: string }) {
 
 let container: HTMLDivElement;
 let root: Root;
-let warnSpy: ReturnType<typeof vi.spyOn>;
+let warnSpy: MockInstance;
 
 function render(sessionId?: string) {
   act(() => root.render(<Host sessionId={sessionId} />));

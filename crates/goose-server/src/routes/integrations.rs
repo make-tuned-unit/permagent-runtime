@@ -407,7 +407,10 @@ mod tests {
         std::fs::write(&path, "extensions: \"nope\"\n").unwrap();
 
         let err = upsert_gmail_config_at(&path, true).unwrap_err();
-        assert!(err.contains("extensions is not a mapping"), "unexpected error: {err}");
+        assert!(
+            err.contains("extensions is not a mapping"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -426,12 +429,18 @@ mod tests {
         upsert_gmail_config_at(&path, true).unwrap();
         let doc: serde_yaml::Value =
             serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(doc["extensions"]["gmail"]["enabled"], serde_yaml::Value::Bool(true));
+        assert_eq!(
+            doc["extensions"]["gmail"]["enabled"],
+            serde_yaml::Value::Bool(true)
+        );
 
         upsert_gmail_config_at(&path, false).unwrap();
         let doc: serde_yaml::Value =
             serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(doc["extensions"]["gmail"]["enabled"], serde_yaml::Value::Bool(false));
+        assert_eq!(
+            doc["extensions"]["gmail"]["enabled"],
+            serde_yaml::Value::Bool(false)
+        );
     }
 
     // ── callback page honesty: a failed config-enable must not claim success ──
