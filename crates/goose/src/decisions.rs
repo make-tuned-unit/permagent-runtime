@@ -24,7 +24,43 @@ pub const ACTOR_HENRY: &str = "henry-policy";
 pub const ACTOR_SYSTEM: &str = "system";
 
 const VALID_ACTORS: &[&str] = &[ACTOR_JESSE, ACTOR_HENRY, ACTOR_SYSTEM];
-const VALID_ANSWERS: &[&str] = &["approve", "reject", "choice", "input"];
+// `edit` = approve-with-edits: an acceptance that ALSO carries a revised draft
+// in `answer_input` (the original lives in `payload.draft`). The delta is
+// captured as Brain training by `decision_inbox::learn` (edit-as-training).
+const VALID_ANSWERS: &[&str] = &["approve", "reject", "choice", "input", "edit"];
+
+// ── Inbox-service process flag ──────────────────────────────────────────────
+
+/// Whether THIS process serves the Decision Inbox answer path (the daemon's
+/// `routes/decisions.rs` over the process-wide `AgentManager`).
+///
+/// Filing a `tool_approval` decision is only honest when answering it can
+/// reach the parked waiter — and the answer path resolves agents through the
+/// AgentManager of the process that serves the routes. A CLI session, an
+/// example binary, or any other out-of-process population parks in a process
+/// the answer path can never reach; a card filed from there is undeliverable
+/// by construction (a zombie the user can "answer" to no effect). Those
+/// populations keep their own answer surface (e.g. the CLI terminal prompt)
+/// and must not file.
+static PROCESS_SERVES_INBOX: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Mark this process as the one serving the Decision Inbox answer path.
+/// Called exactly once by the daemon at `AppState` assembly (goose-server),
+/// right where the decision routes and the shared `AgentManager` are wired.
+///
+/// Process-wide and irreversible. NEVER call this from `permagent` lib unit
+/// tests: they share one test binary, and flipping the flag would poison the
+/// flag-unset assertions (the CLI-population tests). Integration test binaries
+/// (`tests/*.rs`) each get their own process and may set it freely.
+pub fn mark_process_serves_inbox() {
+    PROCESS_SERVES_INBOX.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// See [`mark_process_serves_inbox`]. Gates `tool_approval` decision filing.
+pub fn process_serves_inbox() -> bool {
+    PROCESS_SERVES_INBOX.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 // ── Typed payloads (S2) ─────────────────────────────────────────────────────
 
@@ -104,6 +140,12 @@ pub struct AutomationProposalPayload {
     pub occurrence_count: u64,
     #[serde(default)]
     pub exemplars: Vec<String>,
+    /// The agent-drafted proposal text shown to the user, carried so an
+    /// approve-with-edits (`answer='edit'`) can diff it against the user's
+    /// revision (edit-as-training, `decision_inbox::learn`). Optional: the
+    /// anti-nag flywheel and plain approve/reject never read it.
+    #[serde(default)]
+    pub draft: Option<String>,
 }
 
 /// One proposed field in an `enrichment_proposal` (#495 slice 4). The
@@ -172,6 +214,34 @@ fn validate_enrichment_payload(p: &EnrichmentProposalPayload) -> Result<(), Stri
         }
     }
     Ok(())
+}
+
+/// Payload for `kind='tool_approval'` — an agent turn parked on a needs-approval
+/// tool call (GOOSE_MODE `approve`/`smart_approve`). The park lives either on a
+/// `ToolConfirmationRouter` oneshot (core tool loop) or inside an
+/// ActionRequired-routing provider's own pending map (claude-code / ACP
+/// subprocess `can_use_tool` parks). Answering this decision approve/reject
+/// delivers the confirmation back to that exact parked await through
+/// `Agent::handle_confirmation` — provider first, router fallback — (see
+/// `crates/goose-server/src/routes/decisions.rs::deliver_tool_confirmation`),
+/// so approve runs the tool and reject skips it. `session_id` + `request_id`
+/// are the routing keys: `session_id` selects the per-session Agent, `request_id`
+/// is the key the parked waiter registered.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolApprovalPayload {
+    /// The chat session whose turn is parked awaiting this confirmation.
+    pub session_id: String,
+    /// The tool-call request id the `ToolConfirmationRouter` is keyed on.
+    pub request_id: String,
+    /// Tool the assistant wants to run (e.g. `developer__shell`).
+    pub tool_name: String,
+    /// Arguments the tool was called with, shown to the approver.
+    #[serde(default)]
+    pub arguments: serde_json::Value,
+    /// Optional note from tool inspection (e.g. a prompt-injection finding).
+    #[serde(default)]
+    pub security_message: Option<String>,
 }
 
 // ── Decision rows ───────────────────────────────────────────────────────────
@@ -282,6 +352,7 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
         "risk_gate",
         "automation_proposal",
         "enrichment_proposal",
+        "tool_approval",
     ]
     .contains(&req.kind.as_str())
     {
@@ -331,6 +402,9 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
                 Err(e) => Err(e.to_string()),
             }
         }
+        "tool_approval" => serde_json::from_value::<ToolApprovalPayload>(req.payload.clone())
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
         _ => unreachable!("kind validated above"),
     };
     payload_result.map_err(|e| format!("payload failed schema for kind '{}': {}", req.kind, e))
@@ -493,6 +567,103 @@ pub async fn supersede_open_decisions_for_goal(
     .await
     .map_err(|e| e.to_string())?;
     Ok(res.rows_affected())
+}
+
+/// Close a single OPEN decision as `superseded`: it was resolved through
+/// another channel, so the inbox card is moot. Used when the legacy
+/// `/action-required/tool-confirmation` prompt answers a request that also has
+/// a mirrored `tool_approval` inbox card — leaving that card open would be a
+/// zombie whose later answer could do nothing.
+///
+/// `superseded` (not `answered`) because nobody answered it HERE: the tier
+/// gate in [`answer_decision`] rightly refuses a system-actor answer on a
+/// Tier-2 row, and `expired` would claim a timeout that never happened. The
+/// honest `note` lands in `answer_note` and in a hash-chained audit row
+/// (`acted_by='system'`, outcome `superseded: <note>`), so history shows what
+/// really resolved it.
+///
+/// Returns `Ok(false)` when the decision was not open (already answered,
+/// expired, superseded, or unknown) — a benign no-op for racing resolvers.
+pub async fn supersede_decision(
+    pool: &Pool<Sqlite>,
+    decision_id: &str,
+    note: &str,
+) -> Result<bool, String> {
+    let decision = match get_decision(pool, decision_id).await? {
+        Some(d) => d,
+        None => return Ok(false),
+    };
+
+    // BEGIN IMMEDIATE for the same reason as `record_effect_outcome`:
+    // append_audit_tx reads the audit-chain head before its INSERT, and that
+    // read→write upgrade hits an un-retryable BUSY if a concurrent writer
+    // commits in between.
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Atomic open → superseded: zero rows means someone resolved it first.
+    let res = sqlx::query(
+        "UPDATE decisions SET status = 'superseded', answer_note = ?, resolved_at = ? \
+         WHERE id = ? AND status = 'open'",
+    )
+    .bind(note)
+    .bind(now_timestamp())
+    .bind(decision_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    if res.rows_affected() == 0 {
+        // Dropping the tx rolls back (nothing was written).
+        return Ok(false);
+    }
+
+    append_audit_tx(
+        &mut tx,
+        decision_id,
+        decision.goal_id.as_deref(),
+        ACTOR_SYSTEM,
+        decision.tier,
+        &format!("superseded: {}", note),
+        None,
+    )
+    .await?;
+
+    tx.commit().await.map_err(|e| e.to_string())?;
+
+    // Same live signal an answer emits — the card leaves the inbox now, not on
+    // the next poll. Consumers key on the event type (refresh), not the answer.
+    crate::events::emit(crate::events::decision_resolved(
+        decision_id,
+        &decision.kind,
+        "superseded",
+        ACTOR_SYSTEM,
+        decision.tier,
+    ));
+
+    Ok(true)
+}
+
+/// Find the open `tool_approval` decision whose payload carries `request_id`
+/// (the `ToolConfirmationRouter` key), if any. Lets the legacy per-tool
+/// prompt locate the mirrored inbox card it is about to make moot.
+pub async fn find_open_tool_approval_by_request_id(
+    pool: &Pool<Sqlite>,
+    request_id: &str,
+) -> Result<Option<Decision>, String> {
+    let row = sqlx::query(&format!(
+        "SELECT {} FROM decisions \
+         WHERE kind = 'tool_approval' AND status = 'open' \
+           AND json_extract(payload_json, '$.request_id') = ? \
+         ORDER BY created_at DESC LIMIT 1",
+        DECISION_COLUMNS
+    ))
+    .bind(request_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(row.as_ref().map(row_to_decision))
 }
 
 // ── Inbox queries (Lane L4 contract) ────────────────────────────────────────
@@ -723,7 +894,7 @@ pub async fn answer_decision(
     }
     if !VALID_ANSWERS.contains(&answer.answer.as_str()) {
         return Err(AnswerError::Invalid(format!(
-            "answer must be one of approve|reject|choice|input, got '{}'",
+            "answer must be one of approve|reject|choice|input|edit, got '{}'",
             answer.answer
         )));
     }
@@ -784,6 +955,12 @@ pub async fn answer_decision(
             if answer.answer == "input" && answer.input_text.as_deref().unwrap_or("").is_empty() {
                 return Err(AnswerError::Invalid(
                     "answer 'input' requires input_text".to_string(),
+                ));
+            }
+            // approve-with-edits carries the revised draft in input_text.
+            if answer.answer == "edit" && answer.input_text.as_deref().unwrap_or("").is_empty() {
+                return Err(AnswerError::Invalid(
+                    "answer 'edit' requires input_text (the revised draft)".to_string(),
                 ));
             }
         }
@@ -963,7 +1140,13 @@ pub async fn record_effect_outcome(
     decision: &Decision,
     outcome: &str,
 ) -> Result<(), String> {
-    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    // BEGIN IMMEDIATE: append_audit_tx reads the audit-chain head before its
+    // INSERT, so this write-back would hit an un-retryable BUSY lock-upgrade if a
+    // concurrent writer commits in between; take the write lock up front.
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| e.to_string())?;
     append_audit_tx(
         &mut tx,
         &decision.id,
@@ -1104,6 +1287,226 @@ mod tests {
         );
         assert!(d.payload.get("error").is_some());
         assert!(d.payload.get("raw").is_some());
+    }
+
+    fn valid_tool_approval() -> NewDecision {
+        NewDecision {
+            kind: "tool_approval".to_string(),
+            headline: Some("Approve tool call: developer__shell".to_string()),
+            detail: Some("The assistant wants to run 'developer__shell'".to_string()),
+            payload: serde_json::json!({
+                "session_id": "sess-1",
+                "request_id": "req-1",
+                "tool_name": "developer__shell",
+                "arguments": {"command": "ls -la"},
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_approval_created_at_tier2_fail_closed() {
+        let pool = test_pool().await;
+        let d = create_decision(&pool, valid_tool_approval()).await.unwrap();
+        assert_eq!(d.kind, "tool_approval");
+        // No seeded risk_policy class for tool_approval → fail-closed to Tier 2,
+        // so only 'jesse' (the human) can answer it — never henry-policy/system.
+        assert_eq!(d.tier, 2);
+        assert_eq!(d.status, "open");
+        // Routing keys round-trip through the stored payload.
+        assert_eq!(
+            d.payload.get("request_id").and_then(|v| v.as_str()),
+            Some("req-1")
+        );
+        assert_eq!(
+            d.payload.get("session_id").and_then(|v| v.as_str()),
+            Some("sess-1")
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_approval_missing_routing_keys_is_malformed() {
+        let pool = test_pool().await;
+        let mut req = valid_tool_approval();
+        // Missing request_id + tool_name violates the typed payload schema.
+        req.payload = serde_json::json!({"session_id": "sess-1"});
+        let d = create_decision(&pool, req).await.unwrap();
+        assert_eq!(d.kind, "malformed");
+        assert_eq!(d.tier, 2);
+        assert_eq!(
+            d.payload.get("original_kind").and_then(|v| v.as_str()),
+            Some("tool_approval")
+        );
+    }
+
+    // ── Supersede (single decision, legacy-prompt desync fix) ──
+
+    fn tool_approval_with_request_id(request_id: &str) -> NewDecision {
+        let mut req = valid_tool_approval();
+        req.payload = serde_json::json!({
+            "session_id": "sess-1",
+            "request_id": request_id,
+            "tool_name": "developer__shell",
+            "arguments": {"command": "ls -la"},
+        });
+        req
+    }
+
+    /// The legacy-prompt path: an open tool_approval closes as `superseded`
+    /// (never `answered` — nobody answered it here) with the honest note on the
+    /// row AND on a hash-chained audit row, so it leaves the inbox and still
+    /// shows up in history with what really resolved it.
+    #[tokio::test]
+    async fn supersede_decision_closes_open_row_with_audited_note() {
+        let pool = test_pool().await;
+        let d = create_decision(&pool, valid_tool_approval()).await.unwrap();
+
+        let note = "answered via the legacy per-tool prompt";
+        assert!(supersede_decision(&pool, &d.id, note).await.unwrap());
+
+        let after = get_decision(&pool, &d.id).await.unwrap().unwrap();
+        assert_eq!(after.status, "superseded");
+        assert_eq!(after.answer, None, "superseded is not an answer");
+        assert_eq!(after.acted_by, None, "no human/policy actor answered it");
+        assert_eq!(after.answer_note.as_deref(), Some(note));
+        assert!(after.resolved_at.is_some());
+
+        // Audit row: system actor, outcome carries the note.
+        let (acted_by, outcome): (String, String) = sqlx::query_as(
+            "SELECT acted_by, outcome FROM decision_audit WHERE decision_id = ? \
+             ORDER BY seq DESC LIMIT 1",
+        )
+        .bind(&d.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(acted_by, ACTOR_SYSTEM);
+        assert_eq!(outcome, format!("superseded: {}", note));
+
+        // It left the open inbox.
+        assert!(list_open_decisions(&pool)
+            .await
+            .unwrap()
+            .iter()
+            .all(|i| i.decision.id != d.id));
+
+        // And it can no longer be answered — the zombie card is dead for real.
+        let err = answer_decision(
+            &pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, AnswerError::AlreadyResolved(ref s) if s == "superseded"),
+            "expected AlreadyResolved(superseded), got {:?}",
+            err
+        );
+    }
+
+    /// Racing resolvers: superseding a non-open or unknown decision is a benign
+    /// no-op that writes no audit row.
+    #[tokio::test]
+    async fn supersede_decision_is_noop_when_not_open() {
+        let pool = test_pool().await;
+
+        // Unknown id.
+        assert!(!supersede_decision(&pool, "no-such-id", "note")
+            .await
+            .unwrap());
+
+        // Already answered via the inbox (inbox-first, legacy-second).
+        let d = create_decision(&pool, valid_tool_approval()).await.unwrap();
+        answer_decision(
+            &pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let audit_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM decision_audit")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        assert!(!supersede_decision(&pool, &d.id, "note").await.unwrap());
+
+        let after = get_decision(&pool, &d.id).await.unwrap().unwrap();
+        assert_eq!(after.status, "answered", "answered row must be untouched");
+        assert_eq!(after.answer.as_deref(), Some("approve"));
+        let audit_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM decision_audit")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(audit_before, audit_after, "no-op must not write audit rows");
+    }
+
+    /// Superseded decisions stay visible in history via their audit row (the
+    /// history query joins decision_audit; a status flip alone would vanish).
+    #[tokio::test]
+    async fn superseded_decision_appears_in_history() {
+        let pool = test_pool().await;
+        let d = create_decision(&pool, valid_tool_approval()).await.unwrap();
+        supersede_decision(&pool, &d.id, "answered via the legacy per-tool prompt")
+            .await
+            .unwrap();
+
+        let items = decision_history(&pool, 50, None).await.unwrap();
+        let item = items
+            .iter()
+            .find(|i| i.decision.id == d.id)
+            .expect("superseded decision must appear in history");
+        assert_eq!(item.audit_acted_by, ACTOR_SYSTEM);
+        assert!(item.outcome.starts_with("superseded:"), "{}", item.outcome);
+    }
+
+    #[tokio::test]
+    async fn find_open_tool_approval_by_request_id_matches_open_only() {
+        let pool = test_pool().await;
+        let d1 = create_decision(&pool, tool_approval_with_request_id("req-A"))
+            .await
+            .unwrap();
+        let d2 = create_decision(&pool, tool_approval_with_request_id("req-B"))
+            .await
+            .unwrap();
+
+        let found = find_open_tool_approval_by_request_id(&pool, "req-A")
+            .await
+            .unwrap()
+            .expect("open req-A must be found");
+        assert_eq!(found.id, d1.id);
+
+        // Unknown request_id → none.
+        assert!(find_open_tool_approval_by_request_id(&pool, "req-Z")
+            .await
+            .unwrap()
+            .is_none());
+
+        // Once superseded it is no longer a candidate; req-B is untouched.
+        supersede_decision(&pool, &d1.id, "answered via the legacy per-tool prompt")
+            .await
+            .unwrap();
+        assert!(find_open_tool_approval_by_request_id(&pool, "req-A")
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            find_open_tool_approval_by_request_id(&pool, "req-B")
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            d2.id
+        );
     }
 
     #[tokio::test]
@@ -1425,6 +1828,114 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(answered.answer_choice_id.as_deref(), Some("blue"));
+    }
+
+    // ── approve-with-edits (edit-as-training) ──
+
+    fn draft_proposal() -> NewDecision {
+        NewDecision {
+            kind: "automation_proposal".to_string(),
+            project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+            headline: Some("Automate your morning git sync?".to_string()),
+            detail: Some("You've run `git status && git pull` 3 times.".to_string()),
+            payload: serde_json::json!({
+                "normalized_command": "git status && git pull",
+                "occurrence_count": 3,
+                "exemplars": ["git status && git pull"],
+                "draft": "git status && git pull",
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn draft_field_is_accepted_not_coerced_to_malformed() {
+        let pool = test_pool().await;
+        let d = create_decision(&pool, draft_proposal()).await.unwrap();
+        assert_eq!(
+            d.kind, "automation_proposal",
+            "payload.draft must not trip deny_unknown_fields"
+        );
+        assert_eq!(
+            d.payload["draft"],
+            serde_json::json!("git status && git pull")
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_answer_stores_revised_input_and_is_accepted() {
+        let pool = test_pool().await;
+        let d = create_decision(&pool, draft_proposal()).await.unwrap();
+
+        let ans = DecisionAnswer {
+            answer: "edit".to_string(),
+            input_text: Some("git status && git pull --rebase".to_string()),
+            ..Default::default()
+        };
+        let (answered, proof) = answer_decision(&pool, &d.id, &ans, ACTOR_JESSE)
+            .await
+            .unwrap();
+        assert_eq!(answered.status, "answered");
+        assert_eq!(answered.answer.as_deref(), Some("edit"));
+        assert_eq!(
+            answered.answer_input.as_deref(),
+            Some("git status && git pull --rebase"),
+            "the revised draft is stored in answer_input"
+        );
+        // The original draft is untouched in the payload — the delta is diffable.
+        assert_eq!(
+            answered.payload["draft"],
+            serde_json::json!("git status && git pull")
+        );
+        assert_eq!(proof.answer(), "edit");
+    }
+
+    #[tokio::test]
+    async fn edit_answer_requires_input_text() {
+        let pool = test_pool().await;
+        let d = create_decision(&pool, draft_proposal()).await.unwrap();
+        // An edit with no revision has nothing to accept or learn.
+        let ans = DecisionAnswer {
+            answer: "edit".to_string(),
+            ..Default::default()
+        };
+        let err = answer_decision(&pool, &d.id, &ans, ACTOR_JESSE)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AnswerError::Invalid(_)),
+            "edit without input_text must be Invalid: {:?}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_answer_rejected_on_choice_kind() {
+        let pool = test_pool().await;
+        let req = NewDecision {
+            kind: "choice".to_string(),
+            headline: Some("Pick a colour for the new room".to_string()),
+            detail: Some("technical context".to_string()),
+            payload: serde_json::json!({
+                "question": "Which colour?",
+                "options": [
+                    {"id": "red", "label": "Red"},
+                    {"id": "blue", "label": "Blue"}
+                ]
+            }),
+            ..Default::default()
+        };
+        let d = create_decision(&pool, req).await.unwrap();
+        // You pick a choice; you don't edit it.
+        let ans = DecisionAnswer {
+            answer: "edit".to_string(),
+            input_text: Some("purple".to_string()),
+            ..Default::default()
+        };
+        let err = answer_decision(&pool, &d.id, &ans, ACTOR_JESSE)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AnswerError::Invalid(_)));
     }
 
     // ── S3: audit hash chain ──

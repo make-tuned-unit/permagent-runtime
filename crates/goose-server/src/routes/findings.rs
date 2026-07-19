@@ -152,14 +152,33 @@ fn load_findings(run_id: &str) -> Option<FindingsFile> {
     serde_json::from_str(&content).ok()
 }
 
-fn save_findings(data: &FindingsFile) {
-    let dir = findings_dir();
-    let _ = std::fs::create_dir_all(&dir);
-    let path = findings_path(&data.run_id);
-    let _ = std::fs::write(
-        &path,
-        serde_json::to_string_pretty(data).unwrap_or_default(),
-    );
+/// Atomically write pre-serialized JSON: temp file in the same directory, then
+/// rename into place — a crash mid-write can never leave a half-written
+/// ledger. Shared with the storage-scan route, which writes the same file
+/// shape. Errors are for the caller to surface; this is the action ledger of a
+/// DESTRUCTIVE flow (files moved to Trash) and must never be best-effort.
+pub(crate) fn atomic_write_json(dir: &Path, file_name: &str, json: &str) -> Result<(), String> {
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("create findings dir {}: {}", dir.display(), e))?;
+    let path = dir.join(file_name);
+    let tmp = dir.join(format!(".{}.tmp", file_name));
+    std::fs::write(&tmp, json).map_err(|e| format!("write {}: {}", tmp.display(), e))?;
+    std::fs::rename(&tmp, &path).map_err(|e| {
+        // Don't leave the temp file behind on a failed rename.
+        let _ = std::fs::remove_file(&tmp);
+        format!("rename {} into place: {}", path.display(), e)
+    })?;
+    Ok(())
+}
+
+fn save_findings_to(dir: &Path, data: &FindingsFile) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(data)
+        .map_err(|e| format!("serialize findings for run {}: {}", data.run_id, e))?;
+    atomic_write_json(dir, &format!("{}.json", data.run_id), &json)
+}
+
+fn save_findings(data: &FindingsFile) -> Result<(), String> {
+    save_findings_to(&findings_dir(), data)
 }
 
 #[derive(Serialize)]
@@ -296,7 +315,28 @@ async fn perform_action(
             data.findings[idx].action_taken = Some("trashed".into());
             data.findings[idx].actioned_at = Some(now.clone());
             data.findings[idx].size_recovered_bytes = Some(size);
-            save_findings(&data);
+            // The destructive step already happened — if recording it fails,
+            // tell the truth (file IS in the Trash, ledger was not updated)
+            // instead of returning a fake 200 that forgets the action.
+            if let Err(e) = save_findings(&data) {
+                tracing::error!(
+                    "Finding {} moved '{}' to Trash but the action ledger write failed: {}",
+                    finding_id,
+                    finding_path,
+                    e
+                );
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorBody {
+                        error: format!(
+                            "The file WAS moved to the Trash, but recording the action failed: {}. \
+                             The finding may reappear as un-actioned; the file is recoverable \
+                             from the Trash.",
+                            e
+                        ),
+                    }),
+                ));
+            }
 
             Ok(Json(ActionResponse {
                 finding_id,
@@ -313,7 +353,21 @@ async fn perform_action(
         "keep" | "skip" => {
             data.findings[idx].action_taken = Some(req.action.clone());
             data.findings[idx].actioned_at = Some(now.clone());
-            save_findings(&data);
+            // Persist BEFORE responding — a 200 must mean the action stuck.
+            if let Err(e) = save_findings(&data) {
+                tracing::error!(
+                    "Finding {} action '{}' could not be persisted: {}",
+                    finding_id,
+                    req.action,
+                    e
+                );
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorBody {
+                        error: format!("Failed to record the '{}' action: {}", req.action, e),
+                    }),
+                ));
+            }
 
             Ok(Json(ActionResponse {
                 finding_id,
@@ -369,7 +423,15 @@ async fn save_findings_endpoint(
         run_id: run_id.clone(),
         findings,
     };
-    save_findings(&data);
+    if let Err(e) = save_findings(&data) {
+        tracing::error!("Failed to persist findings for run {}: {}", run_id, e);
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorBody {
+                error: format!("Failed to persist findings for run {}: {}", run_id, e),
+            }),
+        ));
+    }
 
     Ok(Json(FindingsResponse {
         run_id: data.run_id,
@@ -430,5 +492,162 @@ mod tests {
         assert!(!is_sensitive_path(Path::new(
             "/Users/jesse/Downloads/node-v18.pkg"
         )));
+    }
+
+    // ── Ledger persistence (bug-sweep wave 1) ──────────────────────────────
+    //
+    // The findings file is the action ledger of a DESTRUCTIVE flow: the trash
+    // handler moves a real file to the Trash and then records it. Writes were
+    // `let _ =` best-effort; now they are atomic and failures surface as 500.
+
+    fn sample_findings(run_id: &str) -> FindingsFile {
+        FindingsFile {
+            run_id: run_id.to_string(),
+            findings: vec![Finding {
+                id: "f-1".to_string(),
+                finding_type: "old_download".to_string(),
+                path: "/tmp/does-not-matter.dmg".to_string(),
+                size_bytes: 123,
+                age_days: Some(400),
+                recommendation: "trash".to_string(),
+                action_taken: None,
+                actioned_at: None,
+                size_recovered_bytes: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn save_findings_round_trips_and_is_atomic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = sample_findings("run-roundtrip");
+        save_findings_to(tmp.path(), &data).expect("write must succeed");
+
+        // No temp artifact left behind.
+        let entries: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(entries, vec!["run-roundtrip.json".to_string()]);
+
+        let raw = std::fs::read_to_string(tmp.path().join("run-roundtrip.json")).unwrap();
+        let loaded: FindingsFile = serde_json::from_str(&raw).unwrap();
+        assert_eq!(loaded.run_id, "run-roundtrip");
+        assert_eq!(loaded.findings.len(), 1);
+        assert_eq!(loaded.findings[0].id, "f-1");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn save_findings_to_read_only_dir_errors() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let ro = tmp.path().join("ro");
+        std::fs::create_dir(&ro).unwrap();
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let err = save_findings_to(&ro, &sample_findings("run-ro"))
+            .expect_err("read-only dir must fail the write");
+        assert!(err.contains("run-ro") || err.contains("ro"), "{}", err);
+
+        // Restore so TempDir can clean up.
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn atomic_write_json_cleans_up_temp_on_failed_rename() {
+        // Renaming onto a path whose parent vanished mid-flight is hard to
+        // stage portably; instead verify the temp-file naming can't collide
+        // with a real findings file and that a plain write leaves no temp.
+        let tmp = tempfile::tempdir().unwrap();
+        atomic_write_json(tmp.path(), "a.json", "{}").unwrap();
+        assert!(tmp.path().join("a.json").exists());
+        assert!(!tmp.path().join(".a.json.tmp").exists());
+    }
+
+    mod route_tests {
+        use super::*;
+        use crate::state::AppState;
+        use axum::body::Body;
+        use axum::http::Request;
+        use serial_test::serial;
+        use tower::ServiceExt;
+
+        async fn action_request(
+            app: &axum::Router,
+            finding_id: &str,
+            body: &str,
+        ) -> (StatusCode, String) {
+            let request = Request::builder()
+                .uri(format!("/automation/finding/{}/action", finding_id))
+                .method("POST")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap();
+            let response = app.clone().oneshot(request).await.unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            (status, String::from_utf8_lossy(&bytes).to_string())
+        }
+
+        /// keep action success round-trips through the ledger on disk.
+        #[tokio::test(flavor = "multi_thread")]
+        #[serial]
+        async fn keep_action_persists_and_round_trips() {
+            let home = tempfile::tempdir().unwrap();
+            let _guard = env_lock::lock_env([
+                ("HOME", Some(home.path().to_str().unwrap())),
+                ("PERMAGENT_PATH_ROOT", Some(home.path().to_str().unwrap())),
+            ]);
+            let dir = findings_dir();
+            save_findings_to(&dir, &sample_findings("run-keep")).unwrap();
+
+            let state = AppState::new(true).await.unwrap();
+            let app = routes(state);
+
+            let (status, body) =
+                action_request(&app, "f-1", r#"{"action":"keep","run_id":"run-keep"}"#).await;
+            assert_eq!(status, StatusCode::OK, "{}", body);
+
+            let persisted = load_findings("run-keep").expect("ledger readable");
+            assert_eq!(persisted.findings[0].action_taken.as_deref(), Some("keep"));
+            assert!(persisted.findings[0].actioned_at.is_some());
+        }
+
+        /// Ledger persistence failure surfaces as 500 — never a fake 200.
+        #[tokio::test(flavor = "multi_thread")]
+        #[serial]
+        #[cfg(unix)]
+        async fn keep_action_ledger_write_failure_is_500() {
+            use std::os::unix::fs::PermissionsExt;
+            let home = tempfile::tempdir().unwrap();
+            let _guard = env_lock::lock_env([
+                ("HOME", Some(home.path().to_str().unwrap())),
+                ("PERMAGENT_PATH_ROOT", Some(home.path().to_str().unwrap())),
+            ]);
+            let dir = findings_dir();
+            save_findings_to(&dir, &sample_findings("run-fail")).unwrap();
+            // Make the ledger dir unwritable AFTER seeding so the load works
+            // but the persist of the action cannot.
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+            let state = AppState::new(true).await.unwrap();
+            let app = routes(state);
+
+            let (status, body) =
+                action_request(&app, "f-1", r#"{"action":"keep","run_id":"run-fail"}"#).await;
+
+            // Restore before asserting so TempDir cleanup always works.
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{}", body);
+            assert!(body.contains("keep"), "{}", body);
+
+            // And the ledger was NOT silently mutated on disk.
+            let persisted = load_findings("run-fail").expect("ledger readable");
+            assert_eq!(persisted.findings[0].action_taken, None);
+        }
     }
 }

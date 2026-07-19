@@ -161,7 +161,14 @@ impl ContextBuilder {
             let recognition_ctx = spectral::graph::RecognitionContext::empty()
                 .with_persona(crate::config::agent_identity::DEFAULT_PERSONA_KEY);
             // Called from spawn_blocking context — use raw handle.
-            match brain.recall_cascade(&q, &recognition_ctx, &Default::default()) {
+            // Cascade config defaults to a no-op except `spread`, resolved from
+            // the PERMAGENT_ACR_MODE toggle (OFF by default). Same resolver as
+            // the SafeBrain::recall_cascade wrapper, so every path agrees.
+            let cascade_config = spectral::graph::cascade_layers::CascadePipelineConfig {
+                spread: crate::brain_handle::acr_spread_config(),
+                ..Default::default()
+            };
+            match brain.recall_cascade(&q, &recognition_ctx, &cascade_config) {
                 Ok(result) => result
                     .merged_hits
                     .into_iter()
@@ -369,6 +376,12 @@ pub fn render_ambient_context(digest: &Digest) -> String {
     )
 }
 
+/// One human-readable line per event for the `<recent_activity>` digest the
+/// agent sees every turn. Every variant MUST render a real sentence — the
+/// match is deliberately exhaustive (no `_` arm), so adding an event type
+/// without deciding its summary is a compile error, and the
+/// `every_event_type_renders_a_human_summary` test rejects Debug-formatted
+/// arm bodies. Style: short, no trailing period (matches the digest lines).
 fn render_event_summary(event: &ActivityEvent) -> String {
     match event.event_type {
         ActivityEventType::FileEdited => {
@@ -465,9 +478,238 @@ fn render_event_summary(event: &ActivityEvent) -> String {
                 None => "A terminal process exited".to_string(),
             }
         }
-        _ => format!("{:?}", event.event_type),
+        ActivityEventType::BrowserFormSubmitted => {
+            let url = event
+                .payload
+                .get("url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            format!("Submitted a form on {}", url)
+        }
+        ActivityEventType::BrowserSessionStarted => "Opened a browser session".to_string(),
+        ActivityEventType::BrowserSessionEnded => "Closed a browser session".to_string(),
+        ActivityEventType::TerminalSessionStarted => "Opened a terminal session".to_string(),
+        ActivityEventType::TerminalSessionEnded => "Closed a terminal session".to_string(),
+        ActivityEventType::ProjectOpened => {
+            let name = event
+                .payload
+                .get("project_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            format!("Opened project {}", name)
+        }
+        ActivityEventType::FileOpened => {
+            let path = event
+                .payload
+                .get("path")
+                .and_then(|v| v.as_str())
+                .or_else(|| event.payload.get("file_path").and_then(|v| v.as_str()))
+                .unwrap_or("?");
+            format!("Opened file {}", path)
+        }
+        ActivityEventType::SkillExecuted => {
+            let name = event
+                .payload
+                .get("skill_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            match event.payload.get("status").and_then(|v| v.as_str()) {
+                Some(status) => format!("Ran skill '{}' ({})", name, status),
+                None => format!("Ran skill '{}'", name),
+            }
+        }
+        ActivityEventType::IntegrationTokenRefreshed => {
+            let provider = event
+                .payload
+                .get("provider")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            format!("Refreshed the {} integration token", provider)
+        }
+        ActivityEventType::AgentContextProbed => "Agent probed ambient context".to_string(),
+        ActivityEventType::StarterRecipeUpgraded => {
+            let starter = event
+                .payload
+                .get("starter_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            format!("Upgraded starter automation '{}'", starter)
+        }
+        ActivityEventType::GoalEscalated => {
+            let title = event
+                .payload
+                .get("goal_title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let model = event
+                .payload
+                .get("model")
+                .and_then(|v| v.as_str())
+                .unwrap_or("a stronger model");
+            format!("Goal '{}' escalated to {}", title, model)
+        }
+        ActivityEventType::PersonaConfigured => {
+            match event.payload.get("persona_name").and_then(|v| v.as_str()) {
+                Some(name) => format!("Configured agent identity (persona '{}')", name),
+                None => "Configured agent identity in Settings".to_string(),
+            }
+        }
+        ActivityEventType::DecisionResolved => {
+            let resolution = event
+                .payload
+                .get("resolution")
+                .and_then(|v| v.as_str())
+                .unwrap_or("resolved");
+            match event.payload.get("headline").and_then(|v| v.as_str()) {
+                Some(headline) => format!("Resolved decision '{}' ({})", headline, resolution),
+                None => format!("Resolved a Decision Inbox item ({})", resolution),
+            }
+        }
+        ActivityEventType::DevicesPaired => {
+            match event.payload.get("device_name").and_then(|v| v.as_str()) {
+                Some(name) => format!("Paired device '{}' to this hub", name),
+                None => "Paired a device to this hub".to_string(),
+            }
+        }
+        ActivityEventType::PairingLinkCopied => "Copied a device-pairing link".to_string(),
+        ActivityEventType::WebSearchPerformed => {
+            let query = event
+                .payload
+                .get("query")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            format!("Searched the web for '{}'", query)
+        }
+        ActivityEventType::DictationCompleted => "Dictated a message by voice".to_string(),
+        ActivityEventType::WorldViewOpened => "Opened the World view".to_string(),
+        ActivityEventType::InboxOpened => "Opened the Inbox".to_string(),
+        ActivityEventType::GrowOpened => "Opened the Grow tab".to_string(),
+        ActivityEventType::BrainOpened => "Opened the Brain view".to_string(),
     }
 }
 
 // Brain-dependent tests have been moved to crates/permagent-brain-tests/
 // to avoid V8 libc++abi symbol collision on Linux. See issue #190.
+// `render_event_summary` is pure (no Brain), so its guard lives here.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::activity::SourceSurface;
+
+    /// Every variant the activity bus can carry. The exhaustive match in
+    /// `render_event_summary` makes forgetting an arm a compile error; keep
+    /// this list in step when that match forces you to add one, so the
+    /// no-Debug guard below covers the new variant too.
+    fn all_event_types() -> Vec<ActivityEventType> {
+        use ActivityEventType::*;
+        vec![
+            ChatTurnStarted,
+            ChatTurnCompleted,
+            BrowserNavigated,
+            BrowserFormSubmitted,
+            BrowserSessionStarted,
+            BrowserSessionEnded,
+            TerminalCommandStarted,
+            TerminalCommandCompleted,
+            TerminalSessionStarted,
+            TerminalSessionEnded,
+            TerminalProcessExited,
+            ProjectSelected,
+            ProjectOpened,
+            FileOpened,
+            FileEdited,
+            SkillExecuted,
+            IntegrationTokenRefreshed,
+            AgentContextProbed,
+            AutomationJobStarted,
+            AutomationJobCompleted,
+            AutomationJobFailed,
+            StarterRecipeUpgraded,
+            GoalEscalated,
+            PersonaConfigured,
+            DecisionResolved,
+            DevicesPaired,
+            PairingLinkCopied,
+            WebSearchPerformed,
+            DictationCompleted,
+            WorldViewOpened,
+            InboxOpened,
+            GrowOpened,
+            BrainOpened,
+        ]
+    }
+
+    /// The 4th-consumer honesty guard (#763 follow-up): the agent's ambient
+    /// `<recent_activity>` digest must never show a raw Debug enum name like
+    /// `PersonaConfigured` — every event renders as a human sentence, even
+    /// with an empty payload (the fallback branches).
+    #[test]
+    fn every_event_type_renders_a_human_summary() {
+        for event_type in all_event_types() {
+            let debug_name = format!("{:?}", event_type);
+            let event = ActivityEvent::new(event_type, SourceSurface::Agent, serde_json::json!({}));
+            let summary = render_event_summary(&event);
+            assert!(
+                !summary.is_empty(),
+                "{debug_name} must render a non-empty summary"
+            );
+            assert!(
+                !summary.contains(&debug_name),
+                "{debug_name} leaked its Debug enum name into the agent digest: {summary:?}"
+            );
+        }
+    }
+
+    /// Spot-check that the new arms actually use their payload fields (not just
+    /// static strings), mirroring the ingestion render text.
+    #[test]
+    fn new_event_summaries_use_payload_fields() {
+        let search = ActivityEvent::new(
+            ActivityEventType::WebSearchPerformed,
+            SourceSurface::Agent,
+            serde_json::json!({ "query": "rust async traits", "backend": "venice" }),
+        );
+        assert_eq!(
+            render_event_summary(&search),
+            "Searched the web for 'rust async traits'"
+        );
+
+        let persona = ActivityEvent::new(
+            ActivityEventType::PersonaConfigured,
+            SourceSurface::Settings,
+            serde_json::json!({ "persona_name": "Henry" }),
+        );
+        assert_eq!(
+            render_event_summary(&persona),
+            "Configured agent identity (persona 'Henry')"
+        );
+
+        let decision = ActivityEvent::new(
+            ActivityEventType::DecisionResolved,
+            SourceSurface::Dashboard,
+            serde_json::json!({ "resolution": "approved", "headline": "Rotate API keys" }),
+        );
+        assert_eq!(
+            render_event_summary(&decision),
+            "Resolved decision 'Rotate API keys' (approved)"
+        );
+
+        // The pairing pair: completion is a real claim, the link copy is not.
+        let paired = ActivityEvent::new(
+            ActivityEventType::DevicesPaired,
+            SourceSurface::Settings,
+            serde_json::json!({}),
+        );
+        assert_eq!(render_event_summary(&paired), "Paired a device to this hub");
+        let copied = ActivityEvent::new(
+            ActivityEventType::PairingLinkCopied,
+            SourceSurface::Settings,
+            serde_json::json!({}),
+        );
+        assert_eq!(
+            render_event_summary(&copied),
+            "Copied a device-pairing link"
+        );
+    }
+}

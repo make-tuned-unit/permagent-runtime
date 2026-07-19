@@ -193,6 +193,16 @@ impl Default for SessionEventBus {
     }
 }
 
+/// Frees the session's single request slot if the reply task dies without
+/// reaching its normal terminal path, and — because subscribers otherwise have
+/// no way to learn the turn is dead — publishes a terminal `Error` frame so the
+/// chat UI settles instead of showing "Agent is responding…" forever (C1).
+///
+/// Contract: every reply-task exit that publishes its own terminal frame
+/// (`Finish`, or an explicit `Error` on an early return) must call `disarm()`
+/// (plus `cleanup_request`) before returning; an ARMED drop therefore always
+/// means "died un-finished" (panic or a missed exit path), and the drop frame
+/// is never a duplicate of a real terminal.
 pub struct RequestGuard {
     bus: std::sync::Arc<SessionEventBus>,
     request_id: String,
@@ -218,9 +228,25 @@ impl Drop for RequestGuard {
         if !self.disarmed {
             let bus = self.bus.clone();
             let request_id = self.request_id.clone();
-            tokio::spawn(async move {
-                bus.cleanup_request(&request_id).await;
-            });
+            // `try_current` (not a bare `tokio::spawn`) keeps this Drop
+            // panic-free even when it runs off-runtime (e.g. runtime teardown)
+            // — a panicking Drop during an unwind would abort the process.
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    // Free the slot BEFORE announcing the death, so a client
+                    // that reacts to the Error by re-sending never races a
+                    // stale slot into a 400 "already has an active request".
+                    bus.cleanup_request(&request_id).await;
+                    bus.publish(
+                        Some(request_id),
+                        MessageEvent::Error {
+                            error: "The agent stopped unexpectedly before finishing this reply."
+                                .to_string(),
+                        },
+                    )
+                    .await;
+                });
+            }
         }
     }
 }
@@ -324,6 +350,52 @@ mod tests {
         // Should return false since it was cleaned up
         let cancelled = bus.cancel_request("req-1").await;
         assert!(!cancelled);
+    }
+
+    #[tokio::test]
+    async fn test_request_guard_armed_drop_publishes_terminal_error_and_frees_slot() {
+        let bus = std::sync::Arc::new(SessionEventBus::new());
+        bus.register_request("req-dead".to_string()).await;
+
+        // Dropped WITHOUT disarm — simulates a reply task that died (panic or
+        // missed exit path) before publishing its terminal frame.
+        drop(RequestGuard::new(bus.clone(), "req-dead".to_string()));
+
+        // The drop handler runs on a spawned task; poll until it lands.
+        let mut slot_freed = false;
+        let mut error_published = false;
+        for _ in 0..100 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            slot_freed = bus.active_request_ids().await.is_empty();
+            let (replay, _, _rx) = bus.subscribe(None).await.unwrap();
+            error_published = replay.iter().any(|e| {
+                e.request_id.as_deref() == Some("req-dead")
+                    && matches!(&e.event, MessageEvent::Error { .. })
+            });
+            if slot_freed && error_published {
+                break;
+            }
+        }
+        assert!(slot_freed, "armed drop must free the request slot");
+        assert!(
+            error_published,
+            "armed drop must publish a terminal Error frame so the UI settles"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_request_guard_disarmed_drop_publishes_nothing() {
+        let bus = std::sync::Arc::new(SessionEventBus::new());
+        let mut guard = RequestGuard::new(bus.clone(), "req-ok".to_string());
+        guard.disarm();
+        drop(guard);
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let (replay, _, _rx) = bus.subscribe(None).await.unwrap();
+        assert!(
+            replay.is_empty(),
+            "disarmed drop must not publish a spurious Error after a real terminal"
+        );
     }
 
     #[tokio::test]

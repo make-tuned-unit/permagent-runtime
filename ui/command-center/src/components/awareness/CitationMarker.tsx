@@ -1,6 +1,9 @@
 import { useState } from 'react';
 import type { ProbedMemoryRef, RecalledMemoryRef } from '../../lib/store';
-import { font, ease } from '../../styles/tokens';
+import { useCommandCenter } from '../../lib/store';
+import type { BrainMemoryTarget } from '../brain/brainMemoryFocus';
+import { probedFocusTarget, recalledFocusTarget } from './citationFocus';
+import { font, ease, type ThemeColors } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 interface Props {
@@ -10,9 +13,19 @@ interface Props {
 
 export function CitationMarker({ probed, recalled }: Props) {
   const { colors } = useTheme();
+  const focusBrainMemory = useCommandCenter(s => s.focusBrainMemory);
   const [expanded, setExpanded] = useState(false);
   const total = probed.length + recalled.length;
   if (total === 0) return null;
+
+  // Close the "see-but-can't-touch" loop: a cited memory deep-links into the
+  // Brain via the shared focus seam (#753), graph-preferred with a preview
+  // fallback so a fresh, not-yet-in-graph memory still opens. Collapse the
+  // popover on the way out (focusBrainMemory switches to the Brain workspace).
+  const open = (target: BrainMemoryTarget) => {
+    focusBrainMemory(target);
+    setExpanded(false);
+  };
 
   return (
     <div style={{ position: 'relative', display: 'inline-block' }}>
@@ -53,7 +66,15 @@ export function CitationMarker({ probed, recalled }: Props) {
             </div>
           )}
           {probed.map((m, i) => (
-            <div key={m.id || i} style={{ padding: '4px 12px', borderBottom: `1px solid ${colors.border}` }}>
+            <button
+              key={m.id || i}
+              type="button"
+              onClick={() => open(probedFocusTarget(m))}
+              title="Open in Brain"
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = colors.purpleSoft; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+              style={memoryRowStyle(colors)}
+            >
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
                 <span style={{ fontSize: 10, fontFamily: font.mono, color: colors.cyan }}>
                   {m.relevance.toFixed(2)}
@@ -63,11 +84,13 @@ export function CitationMarker({ probed, recalled }: Props) {
                     {m.wing}
                   </span>
                 )}
+                <span style={{ flex: 1 }} />
+                <OpenArrow color={colors.purple} />
               </div>
               <div style={{ fontSize: 11, fontFamily: font.body, color: colors.textMuted, lineHeight: 1.3 }}>
                 {m.content_summary}
               </div>
-            </div>
+            </button>
           ))}
           {recalled.length > 0 && (
             <div style={{ padding: '4px 12px 2px', fontSize: 9, fontWeight: 600, fontFamily: font.display, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
@@ -75,17 +98,53 @@ export function CitationMarker({ probed, recalled }: Props) {
             </div>
           )}
           {recalled.map((m, i) => (
-            <div key={m.id || i} style={{ padding: '4px 12px', borderBottom: `1px solid ${colors.border}` }}>
-              <div style={{ fontSize: 10, fontFamily: font.mono, color: colors.purple, marginBottom: 2 }}>
-                score: {m.signal_score.toFixed(2)}
+            <button
+              key={m.id || i}
+              type="button"
+              onClick={() => open(recalledFocusTarget(m))}
+              title="Open in Brain"
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = colors.purpleSoft; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+              style={memoryRowStyle(colors)}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                <span style={{ fontSize: 10, fontFamily: font.mono, color: colors.purple }}>
+                  score: {m.signal_score.toFixed(2)}
+                </span>
+                <span style={{ flex: 1 }} />
+                <OpenArrow color={colors.purple} />
               </div>
               <div style={{ fontSize: 11, fontFamily: font.body, color: colors.textMuted, lineHeight: 1.3 }}>
                 {m.content_summary}
               </div>
-            </div>
+            </button>
           ))}
         </div>
       )}
     </div>
+  );
+}
+
+/** Shared style for a clickable citation row (each opens its memory in Brain). */
+function memoryRowStyle(colors: ThemeColors): React.CSSProperties {
+  return {
+    display: 'block', width: '100%', textAlign: 'left',
+    background: 'transparent', border: 'none', borderBottom: `1px solid ${colors.border}`,
+    padding: '4px 12px', cursor: 'pointer', color: 'inherit', fontFamily: font.body,
+    transition: `background 120ms ${ease.out}`,
+  };
+}
+
+/** "Open ↗" affordance — signals the row deep-links into the Brain. */
+function OpenArrow({ color }: { color: string }) {
+  return (
+    <svg
+      width="11" height="11" viewBox="0 0 24 24" fill="none"
+      stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"
+      aria-hidden style={{ flexShrink: 0, opacity: 0.75 }}
+    >
+      <line x1="7" y1="17" x2="17" y2="7" />
+      <polyline points="7 7 17 7 17 17" />
+    </svg>
   );
 }

@@ -371,7 +371,19 @@ impl SummonClient {
         });
     }
 
-    fn create_load_tool(&self) -> Tool {
+    /// The full tool SUPERSET this extension can expose. `list_tools` is
+    /// genuinely dynamic — `delegate` is hidden from subagent sessions so they
+    /// cannot recurse — but it SELECTS from this list, so a tool absent here
+    /// cannot ship at all. That makes this the drift-proof inventory for the
+    /// self-knowledge completeness guard (the main-session view, which is
+    /// where the `permagent_self` brief renders). A constructed-client test in
+    /// `self_knowledge::tests` additionally asserts a real `list_tools` run
+    /// for a non-subagent session returns exactly these names.
+    pub(crate) fn all_possible_tools() -> Vec<Tool> {
+        vec![Self::create_load_tool(), Self::create_delegate_tool()]
+    }
+
+    fn create_load_tool() -> Tool {
         let schema = serde_json::json!({
             "type": "object",
             "properties": {
@@ -403,7 +415,7 @@ impl SummonClient {
         )
     }
 
-    fn create_delegate_tool(&self) -> Tool {
+    fn create_delegate_tool() -> Tool {
         let schema = serde_json::json!({
             "type": "object",
             "properties": {
@@ -1303,44 +1315,94 @@ impl SummonClient {
         Ok(task_config)
     }
 
+    /// The workflow role a delegate's worker persona plays, for cost routing.
+    /// `None` when there is no persona or it yields no role signal — dispatch then
+    /// stays single-model. See `cost_router::role_map::derive_role`.
+    fn role_for_persona(worker_persona: Option<&str>) -> Option<crate::cost_router::WorkflowRole> {
+        let key = worker_persona?;
+        let config = crate::config::agent_identity::load_agent_config();
+        config.workers.get(key).and_then(|w| w.routing_role())
+    }
+
     async fn resolve_provider(
         &self,
         params: &DelegateParams,
         recipe: &Recipe,
         session: &crate::session::Session,
     ) -> Result<Arc<dyn crate::providers::base::Provider>, anyhow::Error> {
-        let provider_name = params
-            .provider
-            .clone()
-            .or_else(|| {
-                recipe
-                    .settings
-                    .as_ref()
-                    .and_then(|s| s.goose_provider.clone())
-            })
-            .or_else(|| {
+        // The objective role→model layer (#730 wiring). If the delegate carries a
+        // worker persona whose workflow role has a CONFIGURED model, route to it —
+        // slotted after an explicit param / recipe setting, before the
+        // GOOSE_SUBAGENT_* fallback. Unset ⇒ `None` ⇒ fall through to the current
+        // single-model behaviour (parent/session model). It is NEVER a baked-in
+        // vendor default: the tier-pack Opus/Sonnet/Haiku is not reachable from
+        // here — nothing configured means nothing changes.
+        let role = Self::role_for_persona(params.worker_persona.as_deref());
+        let role_model = role.and_then(crate::cost_router::role_model);
+
+        let recipe_provider = recipe
+            .settings
+            .as_ref()
+            .and_then(|s| s.goose_provider.clone());
+
+        // Resolve a CONSISTENT (provider, model) target across the precedence
+        // chain. This never crosses a provider chosen at one level with a model
+        // that belongs to a different provider (the cross-provider 404 in
+        // robustness-audit F5.2), and it falls back off an explicitly-selected
+        // provider whose key is unconfigured (the keyless mid-task dispatch error)
+        // — both to the fully-consistent inherited session pair, with a warning.
+        let target = reconcile_subagent_target(
+            (params.provider.clone(), params.model.clone()),
+            (
+                recipe_provider.clone(),
+                recipe.settings.as_ref().and_then(|s| s.goose_model.clone()),
+            ),
+            (
+                role_model.as_ref().map(|rm| rm.provider.clone()),
+                role_model.as_ref().map(|rm| rm.model.clone()),
+            ),
+            (
                 Config::global()
                     .get_param::<String>("GOOSE_SUBAGENT_PROVIDER")
-                    .ok()
-            })
-            .or_else(|| session.provider_name.clone())
-            .ok_or_else(|| anyhow::anyhow!("No provider configured"))?;
+                    .ok(),
+                Config::global()
+                    .get_param::<String>("GOOSE_SUBAGENT_MODEL")
+                    .ok(),
+            ),
+            session.provider_name.clone(),
+            &|p| crate::cost_router::is_provider_configured(p),
+        )?;
+        if let Some(warning) = &target.warning {
+            tracing::warn!(target: "permagentd::brain", "{}", warning);
+        }
+        let provider_name = target.provider.clone();
+
+        // The role provider was applied only when no explicit param/recipe named
+        // one AND the final provider is actually the role's (i.e. we did not fall
+        // back off it) — the gate for the cache guard below.
+        let role_provider_applied = params.provider.is_none()
+            && recipe_provider.is_none()
+            && role_model
+                .as_ref()
+                .is_some_and(|rm| rm.provider == provider_name);
 
         let mut model_config = session.model_config.clone().map(Ok).unwrap_or_else(|| {
             crate::model::ModelConfig::new("default")
                 .map(|c| c.with_canonical_limits(&provider_name))
         })?;
 
-        if let Some(model) = &params.model {
-            model_config.model_name = model.clone();
-        } else if let Some(model) = recipe
-            .settings
-            .as_ref()
-            .and_then(|s| s.goose_model.as_ref())
-        {
-            model_config.model_name = model.clone();
-        } else if let Ok(model) = Config::global().get_param::<String>("GOOSE_SUBAGENT_MODEL") {
-            model_config.model_name = model;
+        // Apply the reconciled model. `InheritSession` keeps the session model;
+        // `Explicit` overrides it; `ProviderDefault` builds a fresh config on the
+        // explicit provider's default rather than borrow the session's foreign model.
+        match target.model {
+            SubagentModel::InheritSession => {}
+            SubagentModel::Explicit(model) => {
+                model_config.model_name = model;
+            }
+            SubagentModel::ProviderDefault => {
+                model_config = crate::model::ModelConfig::new("default")?
+                    .with_canonical_limits(&provider_name);
+            }
         }
 
         if let Some(temp) = params.temperature {
@@ -1349,7 +1411,33 @@ impl SummonClient {
             model_config = model_config.with_temperature(Some(temp));
         }
 
-        providers::create(&provider_name, model_config, Vec::new()).await
+        let provider = providers::create(&provider_name, model_config, Vec::new()).await?;
+
+        // Live cache guard (#730): a cache-heavy role (orchestrate/edit) routed by
+        // the role map to a provider without prompt caching forfeits the
+        // warm-prefix saving that makes the loop cheap. Warn — only when the role
+        // map is what selected this provider (an explicit param/recipe override is
+        // the operator's deliberate call, not something to second-guess).
+        if let Some(role) = role {
+            let supports_cache = provider.supports_cache_control().await;
+            if crate::cost_router::cache_guard_should_warn(
+                role,
+                role_provider_applied,
+                supports_cache,
+            ) {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    "cost-router cache guard: cache-heavy role '{}' routed to provider '{}' \
+                     which has no prompt caching — this loop can't keep a warm cache; prefer a \
+                     caching provider for the {} role",
+                    role.as_str(),
+                    provider_name,
+                    role.as_str()
+                );
+            }
+        }
+
+        Ok(provider)
     }
 
     fn resolve_max_turns(&self, session: &crate::session::Session) -> usize {
@@ -1579,10 +1667,13 @@ impl McpClientTrait for SummonClient {
             .map(|s| s.session_type == SessionType::SubAgent)
             .unwrap_or(false);
 
-        let mut tools = vec![self.create_load_tool()];
+        // Select from the guarded superset so a tool that is not in
+        // `all_possible_tools()` cannot ship at all (mirrors ext_manager).
+        let mut tools = Self::all_possible_tools();
 
-        if !is_subagent {
-            tools.push(self.create_delegate_tool());
+        if is_subagent {
+            // Subagents must not recurse into further delegation.
+            tools.retain(|t| t.name.as_ref() != "delegate");
         }
 
         Ok(ListToolsResult {
@@ -1698,6 +1789,165 @@ impl McpClientTrait for SummonClient {
     }
 }
 
+/// Pure subagent PROVIDER precedence: explicit param → recipe setting → role map
+/// → `GOOSE_SUBAGENT_PROVIDER` → inherited session provider. The objective role
+/// layer (#730) slots after the recipe setting and before the env fallback; first
+/// present wins. Extracted from `resolve_provider` so the precedence is
+/// unit-testable without building a live session.
+fn resolve_subagent_provider(
+    param: Option<String>,
+    recipe: Option<String>,
+    role: Option<String>,
+    subagent_env: Option<String>,
+    session: Option<String>,
+) -> Option<String> {
+    param.or(recipe).or(role).or(subagent_env).or(session)
+}
+
+/// Pure subagent MODEL precedence: explicit param → recipe setting → role map →
+/// `GOOSE_SUBAGENT_MODEL`. `None` ⇒ keep the inherited session model — the
+/// single-model fallback, NEVER a baked-in vendor default. First present wins.
+fn resolve_subagent_model(
+    param: Option<String>,
+    recipe: Option<String>,
+    role: Option<String>,
+    subagent_env: Option<String>,
+) -> Option<String> {
+    param.or(recipe).or(role).or(subagent_env)
+}
+
+/// A model decision for a resolved subagent provider, kept CONSISTENT with it.
+#[derive(Debug, PartialEq)]
+enum SubagentModel {
+    /// Keep the inherited session model unchanged (the provider is the session's).
+    InheritSession,
+    /// Use this explicit model — declared for, or on, the resolved provider.
+    Explicit(String),
+    /// Use the resolved provider's DEFAULT model: an explicit provider was chosen
+    /// without a model of its own, so borrowing the session's (foreign) model would
+    /// 404. Never the session model.
+    ProviderDefault,
+}
+
+/// A consistent subagent dispatch target: a provider and a model that belongs to
+/// it, plus an optional operator-facing warning emitted when we fell back.
+#[derive(Debug, PartialEq)]
+struct SubagentTarget {
+    provider: String,
+    model: SubagentModel,
+    warning: Option<String>,
+}
+
+/// Resolve a CONSISTENT subagent (provider, model) target across the precedence
+/// sources — param → recipe → role → `GOOSE_SUBAGENT_*` → session — closing the
+/// two robustness-audit F5.2 gaps that surface only mid-task:
+///
+/// - **Cross-provider model (404):** a provider chosen at one precedence level is
+///   never paired with a model that belongs to a different provider. An explicitly
+///   selected provider WITHOUT a model of its own resolves to that provider's
+///   default ([`SubagentModel::ProviderDefault`]) — not the session's foreign
+///   model (an Ollama model id sent to Anthropic, or a Claude id to Ollama).
+/// - **Keyless provider:** an explicitly selected provider whose key is not
+///   configured (e.g. a leftover `GOOSE_SUBAGENT_PROVIDER`) falls back to the
+///   fully-consistent session pair rather than a keyless dispatch failure.
+///
+/// The provider/model precedence itself is unchanged (it reuses
+/// [`resolve_subagent_provider`] / [`resolve_subagent_model`]); this only adds the
+/// consistency + key reconciliation on top. Pure over an `is_provider_configured`
+/// predicate (the live wrapper passes [`crate::cost_router::is_provider_configured`]),
+/// so it is unit-testable without a registry or network.
+fn reconcile_subagent_target(
+    param: (Option<String>, Option<String>),
+    recipe: (Option<String>, Option<String>),
+    role: (Option<String>, Option<String>),
+    env: (Option<String>, Option<String>),
+    session_provider: Option<String>,
+    is_provider_configured: &impl Fn(&str) -> bool,
+) -> Result<SubagentTarget, anyhow::Error> {
+    let provider = resolve_subagent_provider(
+        param.0.clone(),
+        recipe.0.clone(),
+        role.0.clone(),
+        env.0.clone(),
+        session_provider.clone(),
+    )
+    .ok_or_else(|| anyhow::anyhow!("No provider configured"))?;
+
+    // The first explicit model override across the sources, in precedence order.
+    let explicit_model = || {
+        resolve_subagent_model(
+            param.1.clone(),
+            recipe.1.clone(),
+            role.1.clone(),
+            env.1.clone(),
+        )
+    };
+
+    // The highest-precedence source that named a provider, carrying the model THAT
+    // source declared. Outer `None` ⇒ no explicit provider ⇒ inherited session.
+    let winner_own_model: Option<Option<String>> = if param.0.is_some() {
+        Some(param.1.clone())
+    } else if recipe.0.is_some() {
+        Some(recipe.1.clone())
+    } else if role.0.is_some() {
+        Some(role.1.clone())
+    } else if env.0.is_some() {
+        Some(env.1.clone())
+    } else {
+        None
+    };
+
+    let is_session = session_provider.as_deref() == Some(provider.as_str());
+
+    // An explicitly-selected FOREIGN provider whose key is unconfigured → fall back
+    // to the consistent session pair (or error if there is no session to fall to).
+    if winner_own_model.is_some() && !is_session && !is_provider_configured(&provider) {
+        return match session_provider {
+            Some(session) => Ok(SubagentTarget {
+                warning: Some(format!(
+                    "subagent provider '{provider}' was selected but its API key is not configured \
+                     — falling back to the session provider '{session}' to avoid a keyless mid-task \
+                     dispatch failure"
+                )),
+                provider: session,
+                model: SubagentModel::InheritSession,
+            }),
+            None => Err(anyhow::anyhow!(
+                "subagent provider '{provider}' was selected but its API key is not configured, and \
+                 there is no session provider to fall back to"
+            )),
+        };
+    }
+
+    let model = match winner_own_model {
+        // No explicit provider → session provider; apply any explicit model override.
+        None => explicit_model()
+            .map(SubagentModel::Explicit)
+            .unwrap_or(SubagentModel::InheritSession),
+        // Explicit provider that declared its own model → consistent by construction.
+        Some(Some(m)) => SubagentModel::Explicit(m),
+        // Explicit provider == session provider, no own model → inherit / override.
+        Some(None) if is_session => explicit_model()
+            .map(SubagentModel::Explicit)
+            .unwrap_or(SubagentModel::InheritSession),
+        // Explicit FOREIGN provider, no own model → ITS default, never the session's.
+        Some(None) => SubagentModel::ProviderDefault,
+    };
+
+    let warning = matches!(model, SubagentModel::ProviderDefault).then(|| {
+        format!(
+            "subagent provider '{provider}' was selected without a model — using that provider's \
+             default model instead of the session model (which belongs to a different provider)"
+        )
+    });
+
+    Ok(SubagentTarget {
+        provider,
+        model,
+        warning,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1713,6 +1963,218 @@ mod tests {
             session_manager: Arc::new(crate::session::SessionManager::instance()),
             session: None,
         }
+    }
+
+    // ── Role-router precedence (#730 wiring) ─────────────────────────────────
+    // These exercise the pure precedence the role layer slots into, without a
+    // live session. `s` is a terse Option<String> helper.
+    fn s(v: &str) -> Option<String> {
+        Some(v.to_string())
+    }
+
+    #[test]
+    fn role_model_applies_when_no_param_or_recipe_names_one() {
+        // Nothing explicit, a role mapping present → the role's model/provider win.
+        assert_eq!(
+            resolve_subagent_model(None, None, s("gpt-5.6"), s("subagent-fallback")),
+            s("gpt-5.6"),
+            "the role model must be used when no param/recipe overrides it"
+        );
+        assert_eq!(
+            resolve_subagent_provider(None, None, s("openai"), s("anthropic"), s("session")),
+            s("openai"),
+        );
+    }
+
+    #[test]
+    fn explicit_param_and_recipe_outrank_the_role_layer() {
+        // An explicit delegate param wins over the role map…
+        assert_eq!(
+            resolve_subagent_model(s("param-model"), None, s("role-model"), None),
+            s("param-model"),
+        );
+        // …and a recipe setting wins over the role map when no param is given.
+        assert_eq!(
+            resolve_subagent_model(None, s("recipe-model"), s("role-model"), None),
+            s("recipe-model"),
+        );
+        assert_eq!(
+            resolve_subagent_provider(None, s("recipe-prov"), s("role-prov"), s("env"), s("sess")),
+            s("recipe-prov"),
+        );
+    }
+
+    #[test]
+    fn role_layer_outranks_the_env_subagent_fallback() {
+        // The role map is a HIGHER precedence than GOOSE_SUBAGENT_* — the whole
+        // point: a configured role routes even when a subagent env default exists.
+        assert_eq!(
+            resolve_subagent_model(None, None, s("role-model"), s("GOOSE_SUBAGENT_MODEL")),
+            s("role-model"),
+        );
+    }
+
+    #[test]
+    fn unset_role_falls_through_to_single_model_not_a_baked_default() {
+        // THE load-bearing guarantee at the dispatch precedence: with NO role
+        // mapping (role = None), model resolution falls through to the env/session
+        // fallback — and when that too is absent, `None` means "keep the inherited
+        // session model". At no point does a tier-pack default (Opus/Sonnet/Haiku)
+        // enter: it is not in the precedence chain at all.
+        //
+        // No role, no env → None ⇒ caller keeps the session model.
+        assert_eq!(resolve_subagent_model(None, None, None, None), None);
+        // No role, but an env subagent default → that env value (still the user's
+        // choice), never a vendor pack.
+        assert_eq!(
+            resolve_subagent_model(None, None, None, s("user-env-default")),
+            s("user-env-default"),
+        );
+        // Provider likewise falls through to the inherited session provider.
+        assert_eq!(
+            resolve_subagent_provider(None, None, None, None, s("session-provider")),
+            s("session-provider"),
+        );
+        // Prove the negative directly: the pack default model is NEVER produced by
+        // the precedence when nothing configures the role.
+        let pack_default = crate::cost_router::packs::ModelPacks::default().hard.model;
+        assert_eq!(pack_default.as_str(), "claude-opus-4-8"); // the baked pack exists…
+        assert_ne!(
+            resolve_subagent_model(None, None, None, s("user-env-default")),
+            Some(pack_default),
+            "unset role must not route to the tier-pack default"
+        );
+    }
+
+    // ── Subagent target consistency (robustness-audit F5.2) ──────────────────
+    // The reconciliation layer over the precedence chain: it must never cross a
+    // provider from one source with a foreign model, and must fall back off a
+    // keyless explicit provider. Pure, so an `is_provider_configured` closure
+    // stands in for the registry.
+    fn configured_all(_: &str) -> bool {
+        true
+    }
+    fn none() -> (Option<String>, Option<String>) {
+        (None, None)
+    }
+
+    /// THE finding: a `provider` override WITHOUT a `model` must NOT keep the
+    /// session's (foreign) model — that is the cross-provider 404. It resolves to
+    /// the override provider's default instead.
+    #[test]
+    fn provider_override_without_model_does_not_pair_a_foreign_model() {
+        let target = reconcile_subagent_target(
+            (s("ollama"), None), // param: provider override, no model
+            none(),
+            none(),
+            none(),
+            s("anthropic"), // session runs a claude model on anthropic
+            &configured_all,
+        )
+        .unwrap();
+        assert_eq!(target.provider, "ollama");
+        assert_eq!(
+            target.model,
+            SubagentModel::ProviderDefault,
+            "an override provider without a model must use ITS default, not the session's foreign model"
+        );
+        assert!(target.warning.is_some(), "the fallback must be surfaced");
+    }
+
+    /// The second F5.2 case: a leftover `GOOSE_SUBAGENT_PROVIDER` whose key is not
+    /// configured falls back to the consistent session pair instead of a keyless
+    /// mid-task dispatch failure.
+    #[test]
+    fn unconfigured_explicit_provider_falls_back_to_the_session_pair() {
+        let target = reconcile_subagent_target(
+            none(),
+            none(),
+            none(),
+            (s("minimax"), None), // GOOSE_SUBAGENT_PROVIDER, no key
+            s("anthropic"),
+            &|p| p == "anthropic", // only the session provider is configured
+        )
+        .unwrap();
+        assert_eq!(target.provider, "anthropic");
+        assert_eq!(target.model, SubagentModel::InheritSession);
+        assert!(target
+            .warning
+            .as_deref()
+            .unwrap()
+            .contains("key is not configured"));
+    }
+
+    /// #731 role routing is preserved: a role names BOTH provider and model, so the
+    /// consistent pair is used as-is (no fallback, no warning).
+    #[test]
+    fn role_provider_and_model_stay_a_consistent_pair() {
+        let target = reconcile_subagent_target(
+            none(),
+            none(),
+            (s("openai"), s("gpt-5.6")),
+            none(),
+            s("anthropic"),
+            &configured_all,
+        )
+        .unwrap();
+        assert_eq!(target.provider, "openai");
+        assert_eq!(target.model, SubagentModel::Explicit("gpt-5.6".to_string()));
+        assert!(target.warning.is_none());
+    }
+
+    /// No overrides → inherit the exact session (provider, model) pair unchanged.
+    #[test]
+    fn no_overrides_inherits_the_session_pair() {
+        let target = reconcile_subagent_target(
+            none(),
+            none(),
+            none(),
+            none(),
+            s("anthropic"),
+            &configured_all,
+        )
+        .unwrap();
+        assert_eq!(target.provider, "anthropic");
+        assert_eq!(target.model, SubagentModel::InheritSession);
+        assert!(target.warning.is_none());
+    }
+
+    /// A model-only override (no provider) stays on the session provider — that is
+    /// consistent, so it is NOT downgraded to a fallback.
+    #[test]
+    fn model_only_override_applies_to_the_session_provider() {
+        let target = reconcile_subagent_target(
+            (None, s("claude-opus-4-8")),
+            none(),
+            none(),
+            none(),
+            s("anthropic"),
+            &configured_all,
+        )
+        .unwrap();
+        assert_eq!(target.provider, "anthropic");
+        assert_eq!(
+            target.model,
+            SubagentModel::Explicit("claude-opus-4-8".to_string())
+        );
+        assert!(target.warning.is_none());
+    }
+
+    /// An explicit provider that supplies its own model is used directly.
+    #[test]
+    fn explicit_provider_with_its_own_model_is_used_as_is() {
+        let target = reconcile_subagent_target(
+            (s("openai"), s("gpt-5.6")),
+            none(),
+            none(),
+            none(),
+            s("anthropic"),
+            &configured_all,
+        )
+        .unwrap();
+        assert_eq!(target.provider, "openai");
+        assert_eq!(target.model, SubagentModel::Explicit("gpt-5.6".to_string()));
+        assert!(target.warning.is_none());
     }
 
     #[test]

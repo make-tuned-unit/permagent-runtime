@@ -74,19 +74,31 @@ fn load_disabled_starters() -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub fn record_starter_deletion(starter_id: &str) {
+/// Record a deleted starter in the tombstone file so it is not re-seeded on
+/// the next boot. The write is atomic (temp + rename) and failures propagate:
+/// a swallowed error here meant a deleted starter automation silently
+/// resurrected on reboot (bug-sweep wave 1).
+pub fn record_starter_deletion(starter_id: &str) -> Result<(), String> {
     let path = disabled_starters_path();
     let mut disabled = load_disabled_starters();
-    if !disabled.contains(&starter_id.to_string()) {
-        disabled.push(starter_id.to_string());
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(
-            &path,
-            serde_json::to_string_pretty(&disabled).unwrap_or_default(),
-        );
+    if disabled.contains(&starter_id.to_string()) {
+        return Ok(());
     }
+    disabled.push(starter_id.to_string());
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("tombstone path {} has no parent", path.display()))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| format!("create dir {}: {}", parent.display(), e))?;
+    let json = serde_json::to_string_pretty(&disabled)
+        .map_err(|e| format!("serialize disabled starters: {}", e))?;
+    let tmp = parent.join(".disabled_starters.json.tmp");
+    std::fs::write(&tmp, &json).map_err(|e| format!("write {}: {}", tmp.display(), e))?;
+    std::fs::rename(&tmp, &path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("rename tombstone into place {}: {}", path.display(), e)
+    })?;
+    Ok(())
 }
 
 /// Install starter recipes that don't already exist and haven't been disabled,
@@ -400,6 +412,53 @@ mod tests {
                 .unwrap_or_else(|e| panic!("starter '{}' failed to parse: {e}", s.id));
             assert!(!recipe.title.is_empty(), "{} has empty title", s.id);
         }
+    }
+
+    // ── record_starter_deletion tombstone (bug-sweep wave 1) ────────────────
+
+    #[test]
+    fn record_starter_deletion_persists_and_dedupes() {
+        let home = TempDir::new().unwrap();
+        let _guard = env_lock::lock_env([("HOME", Some(home.path().to_str().unwrap()))]);
+
+        record_starter_deletion("storage-insights").unwrap();
+        assert_eq!(
+            load_disabled_starters(),
+            vec!["storage-insights".to_string()]
+        );
+
+        // Duplicate is a no-op, second id appends; no temp artifact remains.
+        record_starter_deletion("storage-insights").unwrap();
+        record_starter_deletion("git-steward").unwrap();
+        assert_eq!(
+            load_disabled_starters(),
+            vec!["storage-insights".to_string(), "git-steward".to_string()]
+        );
+        let dir = disabled_starters_path();
+        let dir = dir.parent().unwrap();
+        assert!(!dir.join(".disabled_starters.json.tmp").exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn record_starter_deletion_surfaces_write_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = TempDir::new().unwrap();
+        let _guard = env_lock::lock_env([("HOME", Some(home.path().to_str().unwrap()))]);
+
+        // Pre-create the automation dir read-only so the tombstone write fails.
+        let dir = disabled_starters_path();
+        let dir = dir.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let err = record_starter_deletion("storage-insights")
+            .expect_err("read-only tombstone dir must surface as an error, not a silent drop");
+        assert!(err.contains("disabled_starters"), "{}", err);
+
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Nothing was recorded — the caller keeps the schedule and can retry.
+        assert!(load_disabled_starters().is_empty());
     }
 
     #[test]

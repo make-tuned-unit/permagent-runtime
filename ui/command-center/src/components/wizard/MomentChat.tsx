@@ -60,7 +60,9 @@ export function MomentChat({ persona, onComplete }: Props) {
               background: isSpeaking ? colors.cyan : colors.success,
             }} />
             <span style={{ fontFamily: font.body, fontSize: 11, color: colors.textMuted }}>
-              {isSpeaking ? 'Speaking...' : 'Online'}
+              {/* "Typing", not "Speaking" — this greeting is typed on screen;
+                  no audio plays here (2026-07 wiring audit). */}
+              {isSpeaking ? 'Typing...' : 'Online'}
             </span>
           </div>
         </div>

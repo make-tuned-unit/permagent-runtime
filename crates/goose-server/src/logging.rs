@@ -93,6 +93,19 @@ fn default_env_filter() -> EnvFilter {
         // ("WAL checkpoint ok") were in the trap.
         .add_directive("durability=info".parse().unwrap())
         .add_directive("steward=info".parse().unwrap())
+        // #746: the onboarding coach logs its once-a-day teach offer and its
+        // usage/teachable updates under this target; without the directive the
+        // INFO lines fall below the WARN floor (the #580 trap).
+        .add_directive("onboarding=info".parse().unwrap())
+        // Learning playbook: the synthesis worker logs its ON/OFF startup state
+        // and per-project distillation, and the decompose consultation logs when
+        // it injects hints (the A/B-observable signal). Without the directive
+        // both fall below the WARN floor (the #580 trap).
+        .add_directive("playbook=info".parse().unwrap())
+        // Sovereignty: the egress-audit writer logs its failure modes (audit
+        // row write failed / no db pool) under this target — an unlogged cloud
+        // call is a lying audit, so these lines must never be dropped (#580).
+        .add_directive("sovereignty=info".parse().unwrap())
         .add_directive(LevelFilter::WARN.into())
 }
 

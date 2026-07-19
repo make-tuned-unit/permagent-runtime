@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
-import { FiPlus, FiTrash2, FiMessageSquare } from 'react-icons/fi';
+import { FiPlus, FiTrash2, FiMessageSquare, FiX } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
 import { api } from '../../lib/api';
 import { font } from '../../styles/tokens';
@@ -55,7 +55,18 @@ function EditableName({ value, onSave }: { value: string; onSave: (name: string)
       value={draft}
       onChange={e => setDraft(e.target.value)}
       onBlur={commit}
-      onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') { setDraft(value); setEditing(false); } }}
+      onKeyDown={e => {
+        if (e.key === 'Enter') commit();
+        if (e.key === 'Escape') {
+          // C5: cancel ONLY the rename — without stopPropagation the overlay's
+          // window-level Escape handler also fires and closes the whole
+          // surface on the same keypress (the confirmDelete guard is the
+          // sibling pattern; editing state lives here, so stop the event).
+          e.stopPropagation();
+          setDraft(value);
+          setEditing(false);
+        }
+      }}
       onClick={e => e.stopPropagation()}
       className="bg-transparent outline-none w-full"
       style={{ borderBottom: `1px solid ${colors.cyan}80`, color: colors.text }}
@@ -63,23 +74,48 @@ function EditableName({ value, onSave }: { value: string; onSave: (name: string)
   );
 }
 
-export function SessionsList() {
+/**
+ * Sessions history. Browse / switch / rename / delete past conversations.
+ * Hosted as the `activePanel:'sessions'` overlay — when hosted as an overlay,
+ * `onClose` is provided so it offers a Close button + Escape to dismiss back to
+ * the chat (mirrors SkillsPanel/InboxPanel). Selecting a session loads it into
+ * the chat dock so the conversation is immediately visible.
+ */
+export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
   const { colors } = useTheme();
   const sessions = useCommandCenter(s => s.sessions);
+  const sessionsError = useCommandCenter(s => s.sessionsError);
   const chatSessionId = useCommandCenter(s => s.chatSessionId);
   const loadSessions = useCommandCenter(s => s.loadSessions);
   const switchToSession = useCommandCenter(s => s.switchToSession);
   const deleteSession = useCommandCenter(s => s.deleteSession);
   const renameSession = useCommandCenter(s => s.renameSession);
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
+  const openChatDock = useCommandCenter(s => s.openChatDock);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
   useEffect(() => { loadSessions(); }, [loadSessions]);
+
+  // Overlay dismissal — Escape closes back to chat, but only when hosted as an
+  // overlay (onClose provided). If a delete confirmation is open, Escape clears
+  // that first instead of dismissing the whole surface.
+  useEffect(() => {
+    if (!onClose) return;
+    const h = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      if (confirmDelete) setConfirmDelete(null);
+      else onClose();
+    };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [onClose, confirmDelete]);
 
   const handleNewSession = async () => {
     try {
       const session = await api.createSession();
       await switchToSession(session.id);
+      openChatDock();
       setActivePanel('chat');
     } catch (e) {
       console.error('Failed to create session:', e);
@@ -88,6 +124,7 @@ export function SessionsList() {
 
   const handleSelect = async (sessionId: string) => {
     await switchToSession(sessionId);
+    openChatDock();
     setActivePanel('chat');
   };
 
@@ -108,19 +145,51 @@ export function SessionsList() {
         >
           Sessions
         </span>
-        <button
-          onClick={handleNewSession}
-          className="flex items-center gap-1 text-[10px] transition px-2 py-1 rounded"
-          style={{ fontFamily: font.mono, color: colors.cyan }}
-          onMouseEnter={e => { e.currentTarget.style.opacity = '0.8'; e.currentTarget.style.backgroundColor = colors.cyanSoft; }}
-          onMouseLeave={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.backgroundColor = 'transparent'; }}
-        >
-          <FiPlus size={12} /> New
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={handleNewSession}
+            className="flex items-center gap-1 text-[10px] transition px-2 py-1 rounded"
+            style={{ fontFamily: font.mono, color: colors.cyan }}
+            onMouseEnter={e => { e.currentTarget.style.opacity = '0.8'; e.currentTarget.style.backgroundColor = colors.cyanSoft; }}
+            onMouseLeave={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.backgroundColor = 'transparent'; }}
+          >
+            <FiPlus size={12} /> New
+          </button>
+          {onClose && (
+            <button
+              onClick={onClose}
+              title="Close (Esc)"
+              className="flex items-center justify-center transition p-1 rounded"
+              style={{ color: colors.textMuted }}
+              onMouseEnter={e => { e.currentTarget.style.color = colors.text; e.currentTarget.style.backgroundColor = colors.border; }}
+              onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; e.currentTarget.style.backgroundColor = 'transparent'; }}
+            >
+              <FiX size={14} />
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        {sessions.length === 0 && (
+        {/* C6 (#568 empty-body lesson, mirrors MemoriesPanel): a failed load is
+            NOT "no sessions yet" — surface the failure inline with a retry. */}
+        {sessionsError && (
+          <div
+            className="flex flex-col items-center justify-center h-full text-xs gap-2 p-4 text-center"
+            style={{ fontFamily: font.mono }}
+          >
+            <span style={{ color: colors.danger }}>Couldn't load sessions — the daemon may be unreachable.</span>
+            <button
+              onClick={() => loadSessions()}
+              className="hover:underline"
+              style={{ color: colors.cyan, fontWeight: 600 }}
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
+        {!sessionsError && sessions.length === 0 && (
           <div
             className="flex flex-col items-center justify-center h-full text-xs gap-2 p-4 text-center"
             style={{ fontFamily: font.mono, color: colors.textMuted }}

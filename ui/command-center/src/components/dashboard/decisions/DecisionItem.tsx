@@ -27,12 +27,13 @@ import type { ReactNode } from 'react';
 import { font, radius, ease } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import type { AnswerBody, Decision } from './types';
-import { choiceOptions, recommendedChoiceId } from './types';
+import { choiceOptions, recommendedChoiceId, draftText } from './types';
 import type { AnswerResult } from './useDecisions';
 import { EvidenceDigest } from './EvidenceDigest';
 import { formatAge } from './format';
 import { usePersona } from '../../settings/useSettings';
 import { useCommandCenter } from '../../../lib/store';
+import { toast } from '../../../lib/notifications';
 
 interface Props {
   decision: Decision;
@@ -77,10 +78,34 @@ function effectTextFor(kind: string, answer: 'approve' | 'reject', agentName: st
       ? `Confirm approve — ${agentName} will save these details to the person's profile (your manual entries stay protected).`
       : 'Confirm reject — nothing is written to the profile.';
   }
+  if (kind === 'tool_approval') {
+    return answer === 'approve'
+      ? `Confirm approve — ${agentName} will run this tool and continue the turn.`
+      : `Confirm reject — ${agentName} will skip this tool and continue the turn.`;
+  }
   // malformed and anything unknown: recorded only, no state change.
   return answer === 'approve'
     ? 'Confirm — this is recorded for the audit trail; nothing else changes.'
     : 'Confirm reject — this is recorded for the audit trail; nothing else changes.';
+}
+
+/**
+ * Full tool-call arguments carried by a tool_approval payload, pretty-printed
+ * for display. The `detail` line above holds only a clipped preview (marked
+ * "[truncated — N more chars]" when clipped, tool_execution.rs); informed
+ * consent requires the WHOLE thing be inspectable before approving. Untrusted
+ * (S2): rendered as plain text only. Null when absent or unserializable.
+ * Exported for tests.
+ */
+export function toolArgumentsText(d: Decision): string | null {
+  if (d.kind !== 'tool_approval' || !d.payload) return null;
+  const raw = (d.payload as { arguments?: unknown }).arguments;
+  if (raw === undefined || raw === null) return null;
+  try {
+    return JSON.stringify(raw, null, 2) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCancelGoal }: Props) {
@@ -96,14 +121,19 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
   const [note, setNote] = useState('');
   const [inputOpen, setInputOpen] = useState(false);
   const [inputText, setInputText] = useState('');
+  const [editOpen, setEditOpen] = useState(false);
+  const [editText, setEditText] = useState('');
   const [evidenceOpen, setEvidenceOpen] = useState(false);
+  const [argsOpen, setArgsOpen] = useState(false);
   const [cancelErr, setCancelErr] = useState<string | null>(null);
+  const [answerErr, setAnswerErr] = useState<string | null>(null);
   const conflictTimer = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => () => clearTimeout(conflictTimer.current), []);
 
   const submit = async (p: PendingAnswer) => {
     setSubmitting(true);
+    setAnswerErr(null);
     try {
       const body: AnswerBody = { ...p.body, note: note.trim() ? note.trim() : undefined };
       const result = await onAnswer(d.id, body);
@@ -111,10 +141,18 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
         setConflict(true);
         setPending(null);
         conflictTimer.current = setTimeout(onConflictSettled, 1600);
+      } else if (result.effect_error) {
+        // Partial failure: the answer committed but the gated effect didn't
+        // apply. The item leaves the list on refresh, so surface via toast
+        // (2026-07 wiring audit — this used to vanish silently).
+        toast('Answer recorded — but the follow-through failed', result.effect_error);
       }
       // On success the refreshed list drops this item; nothing else to do.
-    } catch {
-      setSubmitting(false); // network error: return to confirm state, stale data stays
+    } catch (e) {
+      // Network / server error: stay on the confirm row and SAY so — the old
+      // silent revert was indistinguishable from a dead button.
+      setAnswerErr(e instanceof Error ? e.message : 'The answer didn\'t send — try again.');
+      setSubmitting(false);
       return;
     }
     setSubmitting(false);
@@ -125,12 +163,18 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
   const isChoice = d.kind === 'choice';
   const isApprovalLike =
     d.kind === 'approve_review' || d.kind === 'risk_gate' || d.kind === 'malformed' ||
-    d.kind === 'enrichment_proposal';
+    d.kind === 'enrichment_proposal' || d.kind === 'automation_proposal' ||
+    d.kind === 'tool_approval';
+  // The agent's original draft, when this decision carries one (payload.draft):
+  // enables "approve with edits" — revise the text, then accept (answer='edit').
+  const draft = draftText(d);
   const options = choiceOptions(d);
   const recommendedId = recommendedChoiceId(d);
   const recommended = options.find(o => o.id === recommendedId) ?? null;
   // L2 digest lives on the goal card; only goal-bound reviews can have one.
   const hasEvidence = d.kind === 'approve_review' && !!d.goal_id && !!d.project_id;
+  // Full tool-call arguments (tool_approval) — the detail above may be clipped.
+  const toolArgs = toolArgumentsText(d);
 
   return (
     <div data-testid={`decision-${d.id}`} style={{
@@ -191,6 +235,36 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
         </div>
       )}
 
+      {/* Full tool-call arguments (tool_approval) — the detail above holds a
+          clipped preview; what gets approved must be inspectable in full.
+          S2: plain text in a <pre>; nothing is interpreted or linked. */}
+      {toolArgs && (
+        <div>
+          <button
+            onClick={() => setArgsOpen(o => !o)}
+            style={{
+              marginTop: 6, background: 'none', border: 'none', padding: 0,
+              color: argsOpen ? colors.cyan : colors.textDim,
+              fontSize: 11, fontFamily: font.body, cursor: 'pointer',
+              transition: reduceMotion ? 'none' : `color 150ms ${ease.out}`,
+            }}
+          >
+            {argsOpen ? 'Hide full arguments ▾' : 'Show full arguments ▸'}
+          </button>
+          {argsOpen && (
+            <pre style={{
+              margin: '6px 0 0', borderRadius: radius.sm,
+              background: colors.codeBg, padding: '10px 12px',
+              fontFamily: font.mono, fontSize: 11, lineHeight: 1.6,
+              color: colors.textMuted, maxHeight: 240, overflow: 'auto',
+              whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
+            }}>
+              {toolArgs}
+            </pre>
+          )}
+        </div>
+      )}
+
       {/* Recommendation chip — only when the daemon marked a default option */}
       {recommended && (
         <div style={{ marginTop: 8 }}>
@@ -227,7 +301,12 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
           <Btn variant="primary" disabled={submitting} onClick={() => submit(pending)}>
             {submitting ? 'Sending…' : pending.confirmLabel}
           </Btn>
-          <Btn disabled={submitting} onClick={() => setPending(null)}>Cancel</Btn>
+          <Btn disabled={submitting} onClick={() => { setPending(null); setAnswerErr(null); }}>Cancel</Btn>
+          {answerErr && (
+            <span role="alert" style={{ fontSize: 11, color: colors.danger, flexBasis: '100%' }}>
+              Couldn't send: {answerErr}
+            </span>
+          )}
         </div>
       ) : inputOpen ? (
         /* Freeform answer (unblock) — travels as answer='input' */
@@ -262,6 +341,43 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
             <Btn onClick={() => setInputOpen(false)}>Cancel</Btn>
           </div>
         </div>
+      ) : editOpen ? (
+        /* Approve-with-edits — revise the agent's draft, then accept. Travels as
+           answer='edit': the daemon keeps the revision AND learns the
+           draft→revision delta (edit-as-training, decision_inbox/learn.rs). */
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 6 }}>
+            Revise the draft, then accept — your version becomes the answer and {agentName} learns the change.
+          </div>
+          <textarea
+            value={editText}
+            onChange={e => setEditText(e.target.value)}
+            rows={4}
+            style={{
+              width: '100%', boxSizing: 'border-box', resize: 'vertical',
+              borderRadius: radius.md, border: `1px solid ${colors.border}`,
+              background: colors.inputBg, color: colors.text,
+              fontFamily: font.body, fontSize: 12, padding: '8px 10px', outline: 'none',
+            }}
+          />
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <Btn
+              variant="primary"
+              disabled={!editText.trim()}
+              onClick={() => {
+                setEditOpen(false);
+                setPending({
+                  body: { answer: 'edit', input_text: editText.trim() },
+                  confirmLabel: 'Confirm accept',
+                  effectText: `Confirm accept — ${agentName} will use your edited version and learn from the change.`,
+                });
+              }}
+            >
+              Accept edited
+            </Btn>
+            <Btn onClick={() => setEditOpen(false)}>Cancel</Btn>
+          </div>
+        </div>
       ) : (
         /* Action row per kind (A4): binary approvals get Approve/Reject/Add note
            only; option chips appear only on choice-kind decisions. */
@@ -289,6 +405,14 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
                 Reject
               </Btn>
             </>
+          )}
+
+          {/* Approve-with-edits — only when the decision carries an editable
+              draft (payload.draft). Revise, then accept as answer='edit'. */}
+          {draft && (
+            <Btn onClick={() => { setEditText(draft); setEditOpen(true); }}>
+              Edit &amp; accept
+            </Btn>
           )}
 
           {isChoice && options.map(opt => (

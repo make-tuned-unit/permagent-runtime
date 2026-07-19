@@ -24,6 +24,19 @@ impl ToolConfirmationRouter {
         rx
     }
 
+    /// True while at least one turn is parked on a live confirmation waiter.
+    ///
+    /// Used as a busy signal (e.g. by the AgentManager LRU eviction guard):
+    /// evicting an agent whose router holds a live waiter would orphan the
+    /// parked turn — the eventual Decision-Inbox answer would be delivered to
+    /// a freshly recreated agent with no waiter. Prunes closed senders first
+    /// so an aborted turn can't pin its session as busy forever.
+    pub async fn has_live_waiter(&self) -> bool {
+        let mut pending = self.pending.lock().await;
+        pending.retain(|_, sender| !sender.is_closed());
+        !pending.is_empty()
+    }
+
     pub async fn deliver(&self, request_id: String, confirmation: PermissionConfirmation) -> bool {
         if let Some(tx) = self.pending.lock().await.remove(&request_id) {
             if tx.send(confirmation).is_err() {
@@ -104,6 +117,43 @@ mod tests {
         let _rx2 = router.register("req_2".to_string()).await;
         assert_eq!(router.pending.lock().await.len(), 1); // only req_2 remains
         assert!(router.pending.lock().await.contains_key("req_2"));
+    }
+
+    #[tokio::test]
+    async fn test_has_live_waiter_reflects_registration_and_delivery() {
+        let router = ToolConfirmationRouter::new();
+        assert!(!router.has_live_waiter().await, "empty router is not busy");
+
+        let rx = router.register("req_1".to_string()).await;
+        assert!(router.has_live_waiter().await, "registered waiter is live");
+
+        assert!(
+            router
+                .deliver("req_1".to_string(), test_confirmation())
+                .await
+        );
+        assert!(
+            !router.has_live_waiter().await,
+            "delivered waiter no longer counts as busy"
+        );
+        drop(rx);
+    }
+
+    #[tokio::test]
+    async fn test_has_live_waiter_prunes_closed_senders() {
+        let router = ToolConfirmationRouter::new();
+        let rx = router.register("req_1".to_string()).await;
+        drop(rx); // turn aborted — the waiter is dead
+
+        assert!(
+            !router.has_live_waiter().await,
+            "a dropped receiver must not pin the router as busy"
+        );
+        assert_eq!(
+            router.pending.lock().await.len(),
+            0,
+            "stale entry is pruned by the busy probe"
+        );
     }
 
     #[tokio::test]

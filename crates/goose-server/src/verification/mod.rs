@@ -294,6 +294,7 @@ pub async fn run_for_goal_with_cfg(
         &vr,
         &cfg,
         worker_tokens(pool, &meta).await,
+        worker_cost_usd(pool, &meta).await,
         &started_at,
     );
 
@@ -447,6 +448,7 @@ fn aggregate_record(
     vr: &VerifierRun,
     cfg: &verifier::VerifierConfig,
     tokens: Option<i64>,
+    ledger_cost_usd: Option<f64>,
     started_at: &str,
 ) -> VerificationRecord {
     let any_check_not_pass = check_results.iter().any(|r| r.status != CheckStatus::Pass);
@@ -522,6 +524,7 @@ fn aggregate_record(
     let finished_at = chrono::Utc::now().to_rfc3339();
 
     let costs = digest::build_costs(
+        ledger_cost_usd,
         tokens,
         cfg.usd_per_1k_tokens,
         meta.get("worker_session_id")
@@ -957,6 +960,25 @@ async fn worker_tokens(
     .ok()
     .flatten()
     .flatten()
+}
+
+/// Authoritative worker cost (USD) from the session's O(1) cost rollup — the sum
+/// of the per-call `cost_ledger`, each entry folded by the one canonical
+/// `cost_of`. `None` when there is no ledger cost for the worker session (older
+/// sessions, or an unpriced model), in which case the digest falls back to the
+/// blended token-rate estimate.
+async fn worker_cost_usd(
+    pool: &Pool<Sqlite>,
+    meta: &serde_json::Map<String, serde_json::Value>,
+) -> Option<f64> {
+    let session_id = meta.get("worker_session_id")?.as_str()?;
+    sqlx::query_scalar::<_, Option<f64>>("SELECT accumulated_cost_usd FROM sessions WHERE id = ?")
+        .bind(session_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .flatten()
 }
 
 // ── Persistence (L1 contract: one atomic update, verification key only) ─────

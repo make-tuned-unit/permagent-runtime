@@ -1,0 +1,20 @@
+id: fizzbuzz
+title: FizzBuzz function
+category: classic
+max_turns: 25
+test: [python3, check.py]
+# The oracle imports the agent's deliverable module; declare it so the
+# import-discipline validation allows it (see crates/permagent-eval/README.md).
+deliverables: [fizzbuzz]
+prompt: |
+  In this directory, create a file `fizzbuzz.py` that defines a function:
+
+      def fizzbuzz(n: int) -> str
+
+  For a positive integer n, return:
+    - "FizzBuzz" if n is divisible by both 3 and 5,
+    - "Fizz"     if n is divisible by 3 (but not 5),
+    - "Buzz"     if n is divisible by 5 (but not 3),
+    - otherwise the number itself as a string, e.g. fizzbuzz(7) == "7".
+
+  Do not print anything; just return the string.

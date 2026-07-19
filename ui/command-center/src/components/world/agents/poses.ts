@@ -5,6 +5,13 @@
 
 import { STATE, type AgentHudState } from '../shared/palette';
 
+/**
+ * Engagement — the locomotion layer's discrete "body situation". Lives here
+ * (not motion.ts) so pure pose logic stays import-light: motion.ts pulls THREE
+ * + hall geometry, which node-side unit tests must never load.
+ */
+export type Engagement = 'none' | 'seated' | 'standing' | 'tending';
+
 export const BONE_NAMES = [
   'root',
   'spine',
@@ -148,3 +155,29 @@ export const TRANSITION_S = 0.8;
 /** Error visor flicker: 2Hz for 3s then steady dim. */
 export const ERROR_FLICKER_HZ = 2;
 export const ERROR_FLICKER_S = 3;
+
+/**
+ * THE state→body mapping (bible §4) — real HUD state + engagement in, pose out.
+ * Pure and total so it can be unit-tested as the world's load-bearing truth
+ * function (extracted from AgentCharacterV2's frame loop, behavior unchanged):
+ *
+ *   • tending engagement shows only when the HUD makes no stronger claim —
+ *     working/error always take the body (real work for the user wins).
+ *   • working displays seatedWork/standWork only once actually engaged at an
+ *     anchor; while still walking to the seat it reads as alert (available).
+ *   • error is the slump wherever the agent stands.
+ */
+export function resolvePose(hud: AgentHudState, engaged: Engagement): PoseKey {
+  if (engaged === 'tending' && hud !== 'working' && hud !== 'error') return 'tending';
+  if (hud === 'working') {
+    return engaged === 'seated' ? 'seatedWork' : engaged === 'standing' ? 'standWork' : 'available';
+  }
+  if (hud === 'error') return 'error';
+  if (hud === 'available') return 'available';
+  return 'idle';
+}
+
+/** The visual register for a resolved pose/state (tending overrides HUD color). */
+export function resolveVisual(hud: AgentHudState, pose: PoseKey): StateVisual {
+  return pose === 'tending' ? TENDING_VISUAL : STATE_VISUALS[hud];
+}

@@ -7,6 +7,7 @@ import { Mobius } from '../mobius/Mobius';
 import { BrainScene, type TypeFilters } from './BrainScene';
 import { useBrainData, type GraphMemory, type GraphEntity } from './useBrainData';
 import { BrainList } from './BrainList';
+import { resolveFocusedMemory, deriveMemoryTitle } from './brainMemoryFocus';
 
 type ViewMode = 'graph' | 'list';
 
@@ -25,7 +26,14 @@ const TOPIC_SUB_FILTERS: { key: keyof TypeFilters; label: string; shape: string 
 const TOPIC_KEYS: (keyof TypeFilters)[] = ['tool', 'location', 'organization', 'concept'];
 
 interface HoverInfo { id: string; kind: string; label: string; note: string; x: number; y: number }
-interface SelectedInfo { id: string; kind: string; label: string; note: string; data: any }
+interface SelectedInfo {
+  id: string; kind: string; label: string; note: string; data: any;
+  /** True when a focus deep-link resolved via the caller's PREVIEW rather than
+      the live graph (fresh writes aren't in the graph until the Librarian
+      enriches them; preview text may be a truncated content_summary). The side
+      panel badges it so a snapshot never masquerades as the whole memory. */
+  preview?: boolean;
+}
 
 export function BrainView() {
   const { gradient, colors, theme } = useTheme();
@@ -64,6 +72,38 @@ export function BrainView() {
   const selectEntity = useCallback((ent: GraphEntity) => {
     setSelected({ id: ent.id, kind: ent.type, label: ent.name, note: ent.note, data: ent });
   }, []);
+
+  // Select a memory through the same channel (mirrors selectEntity + the list
+  // row's onSelect shape, so the side panel renders identically). `viaPreview`
+  // marks a preview-resolved focus (P4) so the panel can badge it honestly.
+  const selectMemory = useCallback((mem: GraphMemory, viaPreview = false) => {
+    setSelected({ id: mem.id, kind: 'memory', label: deriveMemoryTitle(mem), note: mem.text.slice(0, 120), data: mem, preview: viaPreview });
+  }, []);
+
+  // Brain-loop deep-link (#587-adjacent): focus the memory a product surface
+  // asked to surface. Graph-preferred (real recency/chips); the caller's preview
+  // is the fallback when the memory isn't in the current graph — fresh,
+  // description-less writes are excluded from the graph's default view until the
+  // Librarian enriches them, so a just-created note/code memory needs the
+  // preview to render at all.
+  const pendingBrainMemory = useCommandCenter(s => s.pendingBrainMemory);
+  const clearPendingBrainMemory = useCommandCenter(s => s.clearPendingBrainMemory);
+  useEffect(() => {
+    if (!pendingBrainMemory) return;
+    const resolution = resolveFocusedMemory(pendingBrainMemory, data?.memories ?? []);
+    if (resolution.kind === 'none') {
+      // No graph hit and no preview. If the graph hasn't loaded yet, wait — it
+      // may still carry the memory. Once loaded, best-effort seed the search
+      // with the key rather than strand the click, then stop retrying.
+      if (data) {
+        if (pendingBrainMemory.key) setSearch(pendingBrainMemory.key);
+        clearPendingBrainMemory();
+      }
+      return;
+    }
+    selectMemory(resolution.memory, resolution.kind === 'preview');
+    clearPendingBrainMemory();
+  }, [pendingBrainMemory, data, selectMemory, clearPendingBrainMemory]);
 
   // Project entities link out to their real workspace: resolve the graph
   // entity to a project by name/slug, and offer "Open project" instead of a
@@ -401,12 +441,26 @@ export function BrainView() {
               fontSize: 18, cursor: 'pointer',
             }}>×</button>
 
-            {/* Type label */}
-            <span style={{
-              fontFamily: font.mono, fontSize: 10, fontWeight: 600,
-              color: colors.cyan, textTransform: 'uppercase', letterSpacing: '0.1em',
-            }}>
-              {selected.kind === 'memory' ? 'MEMORY' : (selected.data as GraphEntity)?.type?.toUpperCase() || selected.kind.toUpperCase()}
+            {/* Type label (+ P4 honesty badge: a preview-resolved memory is the
+                caller's snapshot — possibly a truncated content_summary — not
+                the enriched graph copy; styled like the field-provenance chip) */}
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              <span style={{
+                fontFamily: font.mono, fontSize: 10, fontWeight: 600,
+                color: colors.cyan, textTransform: 'uppercase', letterSpacing: '0.1em',
+              }}>
+                {selected.kind === 'memory' ? 'MEMORY' : (selected.data as GraphEntity)?.type?.toUpperCase() || selected.kind.toUpperCase()}
+              </span>
+              {selected.kind === 'memory' && selected.preview && (
+                <span
+                  title="Preview from the surface you came from — not yet enriched into the Brain graph; the text may be truncated."
+                  style={{
+                    fontFamily: font.mono, fontSize: 8, padding: '1px 5px', borderRadius: 3,
+                    color: colors.warning, border: `1px solid ${colors.warning}`,
+                    textTransform: 'uppercase', letterSpacing: '0.08em',
+                  }}
+                >preview — not in graph yet</span>
+              )}
             </span>
 
             {/* Name / title */}
@@ -565,11 +619,13 @@ export function BrainView() {
                       </div>
                     )}
                   </div>
-                  {/* Pinned stats footer */}
-                  <div style={{ flexShrink: 0, display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, borderTop: `1px solid ${colors.borderHi}`, paddingTop: 12 }}>
+                  {/* Pinned stats footer. "last recalled" removed (2026-07
+                      wiring audit): it fabricated concrete recall dates
+                      ("3 days ago") from the same age bucket recency already
+                      shows — the backend tracks no recall timestamp. */}
+                  <div style={{ flexShrink: 0, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, borderTop: `1px solid ${colors.borderHi}`, paddingTop: 12 }}>
                     <Stat label="reinforcement" value={`${Math.round(mem.weight * 100)}%`} />
                     <Stat label="recency" value={recencyLabel(mem.age)} />
-                    <Stat label="last recalled" value={mem.age < 0.1 ? 'today' : mem.age < 0.3 ? '3 days ago' : '2 weeks ago'} />
                   </div>
                 </div>
               );

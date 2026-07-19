@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Hardened-runtime entitlements. These only take effect once the bundle
+	     is code-signed with the Apple Developer ID (notarization enables the
+	     hardened runtime); an unsigned build ignores them. -->
+
+	<!-- permagentd embeds V8 (pctx_code_mode → deno_core → v8): JIT pages and
+	     rusty_v8's executable-memory mapping are killed by the hardened
+	     runtime without these two. -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+
+	<!-- Push-to-talk dictation: the webview captures the mic (getUserMedia).
+	     Under the hardened runtime, mic access needs this entitlement on top
+	     of Info.plist's NSMicrophoneUsageDescription. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
+</plist>

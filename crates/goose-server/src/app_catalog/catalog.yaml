@@ -21,7 +21,7 @@ tabs:
     affords:
       - Run a scheduled recipe on-demand
       - View next run time for each scheduled recipe
-      - (Skills section coming in PR 1.6.B)
+      - See saved skills in the Learned section; open one to view it in the Skills library
       - (Insights section coming in PR 1.6.C)
     suggest_when:
       - User asks about scheduled tasks, recipes, skills, or automation
@@ -98,3 +98,82 @@ tabs:
       - User asks "what's happening" or wants a summary
       - User asks about customizing their home view
     customizable_layout: true
+
+  - name: Grow
+    tool_type: grow
+    panel_type: workspace
+    description: >-
+      The Grow tab is a per-project go-to-market workspace — strategy pillars
+      (audience, positioning, channels), a content calendar of drafted posts,
+      and a growth/analytics view.
+    affords:
+      - Think through audience, positioning, and channels for a project
+      - Draft launch posts and outreach in the user's voice
+      - Review a content calendar and growth signals
+    suggest_when:
+      - User wants to take a project to market, plan a launch, or draft a post
+      - User asks about audience, growth, or content for a project
+    customizable_layout: false
+
+  - name: Inbox
+    tool_type: inbox
+    panel_type: overlay
+    description: >-
+      The Downloads inbox lists files that landed in Permagent's intake folder
+      (~/.permagent/inbox) via the in-app browser download flow — filename,
+      source, size, and when each arrived.
+    affords:
+      - Review files downloaded into Permagent
+      - See where each file came from and when it arrived
+    suggest_when:
+      - User asks where a downloaded file went or wants to see their inbox
+      - User downloaded something in the in-app browser
+    customizable_layout: false
+
+  - name: Skills
+    tool_type: skills
+    panel_type: overlay
+    description: >-
+      The Skills Library is where the user's saved skills live — the reusable
+      task recipes the agent learns when the user repeats a task and saves it.
+      Each skill is a portable SKILL.md folder the user can search, open, edit,
+      or delete.
+    affords:
+      - Browse and search saved skills
+      - Open a skill to view its steps, usage count, and run history
+      - Edit or delete a saved skill
+    suggest_when:
+      - User asks what skills you have saved or learned
+      - User wants to view, edit, or remove a specific skill
+    customizable_layout: false
+
+  - name: Sessions
+    tool_type: sessions
+    panel_type: overlay
+    description: >-
+      The Sessions history lists the user's past conversations — each with its
+      title and when it was last active — so they can reopen an earlier chat and
+      pick up where they left off, or rename and delete old ones.
+    affords:
+      - Browse past conversations by recency
+      - Reopen a past session back into the chat dock
+      - Rename or delete old sessions
+    suggest_when:
+      - User asks to return to or find an earlier conversation
+      - User wants to review, rename, or clean up past sessions
+    customizable_layout: false
+
+  - name: Trace
+    tool_type: trace
+    panel_type: overlay
+    description: >-
+      The Execution trace shows the runtime's most recent events live from the
+      running system's event streams — timestamped tool calls, worker activity,
+      navigations, and lifecycle signals as they happen.
+    affords:
+      - Watch recent runtime events in real time
+      - Inspect what the system just did under the hood
+    suggest_when:
+      - User wants to see the raw event stream or debug what just happened
+      - User asks what the system is doing right now at a low level
+    customizable_layout: false

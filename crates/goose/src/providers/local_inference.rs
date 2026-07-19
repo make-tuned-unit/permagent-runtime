@@ -1,3 +1,4 @@
+mod grammar;
 pub mod hf_models;
 mod inference_emulated_tools;
 mod inference_engine;
@@ -511,6 +512,12 @@ impl Provider for LocalInferenceProvider {
 
     fn get_model_config(&self) -> ModelConfig {
         self.model_config.clone()
+    }
+
+    /// In-process llama.cpp inference — always local; data never leaves the
+    /// machine.
+    fn data_locality(&self) -> crate::sovereignty::DataLocality {
+        crate::sovereignty::DataLocality::Local
     }
 
     async fn fetch_supported_models(&self) -> Result<Vec<String>, ProviderError> {

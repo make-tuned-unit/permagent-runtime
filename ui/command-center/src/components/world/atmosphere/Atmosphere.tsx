@@ -11,8 +11,10 @@ import { DOME_HEIGHT } from '../constants';
 import { getReduceMotion } from '../../../styles/tokens';
 import { tickAmbience, getAmbienceLevel, setAmbienceFrozen } from './ambience';
 import { startWorldSignals } from './worldSignals';
+import { getTimeOfDay, startTimeOfDay } from './timeOfDay';
 import { MouthShaft } from './MouthShaft';
 import { Water } from './Water';
+import { NightAmbience } from './NightAmbience';
 
 // Bible §1 light formula: one warm key (shadows), one cool fill (no shadows),
 // near-black ambient 0.08. These are the established §1 colors — they are
@@ -54,6 +56,12 @@ function SignalBinder() {
   return null;
 }
 
+/** Starts the real-clock time-of-day sampler (30s cadence, never per frame). */
+function TimeBinder() {
+  useEffect(() => startTimeOfDay(), []);
+  return null;
+}
+
 /**
  * DEV-ONLY: stash the live three.js scene on window so the CDP evidence harness
  * can run the light census (count PointLight/DirectionalLight, shadow casters) on
@@ -74,12 +82,45 @@ function SceneCensusHook() {
 // Bible §1: one warm key + one cool fill + near-black ambient. Exactly one
 // shadow caster scene-wide; shadow map 2048 (drops to 1024 only if the budget
 // demands). Zone re-aims land as a follow-up once W1's blockouts merge.
+//
+// TIME OF DAY (atmosphere/timeOfDay — the REAL local clock): the key's color
+// temperature and all three intensities damp toward the current hour's
+// keyframes. Midday IS the §1 baseline; night cools and dims the same lights
+// rather than adding any — light count and the single shadow caster are
+// untouched. The per-frame work is three scalar damps + one color damp (zero
+// allocation); it stays active under reduceMotion because an hours-scale
+// lighting drift is not motion.
+const _keyTarget = new THREE.Color(LIGHT.key);
+let _lastKeyHex = '';
+
 function Lighting() {
+  const keyRef = useRef<THREE.DirectionalLight>(null);
+  const fillRef = useRef<THREE.DirectionalLight>(null);
+  const ambientRef = useRef<THREE.AmbientLight>(null);
+
+  useFrame((_, dt) => {
+    const tod = getTimeOfDay();
+    const key = keyRef.current;
+    const fill = fillRef.current;
+    const ambient = ambientRef.current;
+    if (!key || !fill || !ambient) return;
+    if (tod.keyColor !== _lastKeyHex) {
+      _lastKeyHex = tod.keyColor;
+      _keyTarget.set(tod.keyColor);
+    }
+    const k = Math.min(1, dt * 0.8);
+    key.color.lerp(_keyTarget, k);
+    key.intensity = THREE.MathUtils.damp(key.intensity, tod.keyIntensity, 0.8, dt);
+    fill.intensity = THREE.MathUtils.damp(fill.intensity, tod.fillIntensity, 0.8, dt);
+    ambient.intensity = THREE.MathUtils.damp(ambient.intensity, tod.ambientIntensity, 0.8, dt);
+  });
+
   return (
     <>
-      <ambientLight intensity={0.08} color={LIGHT.ambient} />
+      <ambientLight ref={ambientRef} intensity={0.08} color={LIGHT.ambient} />
       {/* Warm key light from above-and-to-the-side — the single shadow caster */}
       <directionalLight
+        ref={keyRef}
         position={[12, DOME_HEIGHT + 8, 8]}
         intensity={1.6}
         color={LIGHT.key}
@@ -95,7 +136,7 @@ function Lighting() {
         shadow-camera-bottom={-20}
       />
       {/* Cool fill light from opposite side — prevents pure black shadows */}
-      <directionalLight position={[-10, DOME_HEIGHT, -6]} intensity={0.25} color={LIGHT.fill} />
+      <directionalLight ref={fillRef} position={[-10, DOME_HEIGHT, -6]} intensity={0.25} color={LIGHT.fill} />
       {/* NOTE: the old oculus uplight pointLight was removed here. The world's
           light now comes from the Mesh portal far above — MouthShaft's single
           cold key light replaces this warm uplight, so the atmosphere lane's
@@ -123,9 +164,12 @@ function Starfield({ reduceMotion }: { reduceMotion: boolean }) {
   }, []);
 
   useFrame((_, delta) => {
-    if (reduceMotion) return;
     if (ref.current) {
-      ref.current.rotation.y += delta * 0.01;
+      // Stars pale toward midday, deepen at night (real clock — not motion,
+      // so this runs under reduceMotion too).
+      const mat = ref.current.material as THREE.PointsMaterial;
+      mat.opacity = THREE.MathUtils.damp(mat.opacity, 0.65 * getTimeOfDay().starOpacity, 0.8, delta);
+      if (!reduceMotion) ref.current.rotation.y += delta * 0.01;
     }
   });
 
@@ -381,12 +425,16 @@ export function Atmosphere() {
     <>
       <AmbienceTicker reduceMotion={reduceMotion} />
       <SignalBinder />
+      <TimeBinder />
       {import.meta.env.DEV && <SceneCensusHook />}
       <Lighting />
       <Starfield reduceMotion={reduceMotion} />
       <OrbitalArcs reduceMotion={reduceMotion} />
       <LightShaft reduceMotion={reduceMotion} />
       <DustMotes reduceMotion={reduceMotion} />
+      {/* Night layers — nebula band + grove fireflies (real clock × real
+          Brain-maturity gates; see NightAmbience.tsx). */}
+      <NightAmbience />
 
       {/* Atmosphere detail pass — all bind to REAL signals or render dormant;
           none add a shadow caster; the Mesh portal adds exactly one cold point

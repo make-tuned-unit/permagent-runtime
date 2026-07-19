@@ -43,7 +43,7 @@ pub const BRAIN_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
             },
             crate::agents::self_knowledge::TeachingStep {
                 title: "Prove it remembers",
-                body: "Ask them to tell you one durable fact about themselves, save it to memory, then recall it back — unlike an ordinary chatbot, you will still know it tomorrow and in every future session.",
+                body: "Ask them to tell you one durable fact about themselves; it is written to your Brain automatically — memory is captured by ingestion, the Reader, notes, and consolidation, never by a save tool you call — then recall it back with search_memory: unlike an ordinary chatbot, you will still know it tomorrow and in every future session.",
                 open_surface: None,
                 confirm: Some(crate::agents::self_knowledge::ConfirmCheck::MemoryRecallable(
                     "the fact they just told you about themselves",
@@ -157,10 +157,13 @@ impl SafeBrain {
             .map_err(Into::into)
     }
 
-    /// Recall via the integrated cascade pipeline with default config.
+    /// Recall via the integrated cascade pipeline.
     ///
-    /// All existing callers pass `Default::default()` for the cascade config,
-    /// so this wrapper hardcodes it. Returns merged hits with signal scores.
+    /// Uses `CascadePipelineConfig::default()` for every layer except `spread`
+    /// (associative recall), which is resolved from the `PERMAGENT_ACR_MODE`
+    /// toggle via [`acr_spread_config`]. ACR is experimental and **OFF by
+    /// default**, so unless the A/B toggle is set this behaves exactly as before.
+    /// Returns merged hits with signal scores.
     pub async fn recall_cascade(
         &self,
         query: &str,
@@ -169,12 +172,15 @@ impl SafeBrain {
         let brain = self.inner.clone();
         let query = query.to_string();
         let context = context.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            brain.recall_cascade(&query, &context, &Default::default())
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("brain task panicked: recall_cascade: {e}"))?
-        .map_err(anyhow::Error::from)?;
+        let config = spectral::graph::cascade_layers::CascadePipelineConfig {
+            spread: acr_spread_config(),
+            ..Default::default()
+        };
+        let result =
+            tokio::task::spawn_blocking(move || brain.recall_cascade(&query, &context, &config))
+                .await
+                .map_err(|e| anyhow::anyhow!("brain task panicked: recall_cascade: {e}"))?
+                .map_err(anyhow::Error::from)?;
         Ok(CascadeHits {
             merged_hits: result.merged_hits,
         })
@@ -288,7 +294,7 @@ impl SafeBrain {
         let brain = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             use spectral::core::entity_id::entity_id;
-            use spectral::graph::kuzu_store::Entity;
+            use spectral::graph::graph_store::Entity;
 
             let id = entity_id("person", &canonical);
             let store = brain.store();
@@ -367,7 +373,7 @@ impl SafeBrain {
         let project_name = project_name.to_string();
         tokio::task::spawn_blocking(move || {
             use spectral::graph::canonicalize::Canonicalizer;
-            use spectral::graph::kuzu_store::{Entity, Triple};
+            use spectral::graph::graph_store::{Entity, Triple};
 
             let person_id: spectral::core::entity_id::EntityId = person_id_hex
                 .parse()
@@ -772,9 +778,85 @@ impl std::fmt::Debug for SafeBrain {
     }
 }
 
+// ── Associative recall (ACR) toggle ──────────────────────────────────────────
+//
+// ACR = local, embedding-free associative recall in Spectral's cascade: FTS
+// finds seeds, then spreading activation over co-occurrence links reaches
+// memories that share no words with the query. It is experimental and its
+// accuracy is unvalidated, so it ships OFF by default (a pure no-op) and is
+// flipped only for an A/B via the `PERMAGENT_ACR_MODE` env toggle — no recompile.
+// The single resolver below is applied at EVERY cascade-construction site so all
+// recall paths honor the toggle consistently.
+
+/// Resolve the ACR spreading config from the `PERMAGENT_ACR_MODE` env toggle.
+///
+/// | `PERMAGENT_ACR_MODE`             | result                                        |
+/// |----------------------------------|-----------------------------------------------|
+/// | unset / `off` / empty / unknown  | `AssocSpreadConfig::default()` — `SpreadMode::Off` (no-op) |
+/// | `precision`                      | `AssocSpreadConfig::precision()` — `Rerank`, session-safe, ~constant context |
+/// | `completeness`                   | `AssocSpreadConfig::completeness()` — `Combined` |
+///
+/// OFF by default: with the toggle unset the cascade behaves exactly as before.
+pub(crate) fn acr_spread_config() -> spectral::graph::spreading::AssocSpreadConfig {
+    resolve_acr_spread(std::env::var("PERMAGENT_ACR_MODE").ok().as_deref())
+}
+
+/// The recognized shapes of `PERMAGENT_ACR_MODE`. `Unrecognized` carries the
+/// offending (trimmed, lowercased) value so the resolver can name it in a warning.
+#[derive(Debug, PartialEq, Eq)]
+enum AcrMode {
+    Off,
+    Precision,
+    Completeness,
+    Unrecognized(String),
+}
+
+/// Classify a raw `PERMAGENT_ACR_MODE` value (trimmed, case-insensitive). Pure and
+/// unit-testable without touching process-global env. Unset, empty/whitespace, and
+/// `off` are [`AcrMode::Off`]; a non-empty value that matches none of the accepted
+/// keywords is [`AcrMode::Unrecognized`] — a likely typo in an A/B arm.
+fn classify_acr_mode(raw: Option<&str>) -> AcrMode {
+    match raw.map(|s| s.trim().to_ascii_lowercase()) {
+        None => AcrMode::Off,
+        Some(v) => match v.as_str() {
+            "" | "off" => AcrMode::Off,
+            "precision" => AcrMode::Precision,
+            "completeness" => AcrMode::Completeness,
+            _ => AcrMode::Unrecognized(v),
+        },
+    }
+}
+
+/// Pure env-value → [`spectral::graph::spreading::AssocSpreadConfig`] mapping.
+///
+/// Split out from [`acr_spread_config`] so resolution is unit-testable without
+/// mutating process-global env (which would race under parallel `cargo test`).
+/// Unrecognized/empty values fall through to `Off` (fail-safe) rather than
+/// panicking, so a typo in the A/B toggle can never silently alter retrieval — but
+/// an unrecognized NON-empty value now emits a `warn!` naming the accepted values,
+/// so a misspelled A/B arm can't silently masquerade as "ACR has no effect".
+fn resolve_acr_spread(raw: Option<&str>) -> spectral::graph::spreading::AssocSpreadConfig {
+    use spectral::graph::spreading::AssocSpreadConfig;
+    match classify_acr_mode(raw) {
+        AcrMode::Precision => AssocSpreadConfig::precision(),
+        AcrMode::Completeness => AssocSpreadConfig::completeness(),
+        AcrMode::Off => AssocSpreadConfig::default(),
+        AcrMode::Unrecognized(value) => {
+            tracing::warn!(
+                target: "permagentd::brain",
+                "PERMAGENT_ACR_MODE='{}' is not a recognized value — expected one of \
+                 off / precision / completeness; associative recall stays OFF (no effect)",
+                value
+            );
+            AssocSpreadConfig::default()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use spectral::graph::spreading::SpreadMode;
 
     /// Verify that Clone shares the same underlying Arc (cheap clone).
     #[test]
@@ -784,5 +866,100 @@ mod tests {
         // is Clone. The actual sharing is guaranteed by Arc semantics.
         fn assert_clone<T: Clone>() {}
         assert_clone::<SafeBrain>();
+    }
+
+    // ── Associative recall (ACR) env-toggle resolution ───────────────────────
+    // Exercises the pure resolver with string inputs (no process-env mutation,
+    // so no #[serial] / no races). Covers the off-by-default no-op contract and
+    // both opt-in presets.
+
+    #[test]
+    fn acr_unset_off_empty_and_garbage_resolve_to_off() {
+        for raw in [
+            None,
+            Some("off"),
+            Some(""),
+            Some("   "),
+            Some("nonsense"),
+            Some("OFF"),
+        ] {
+            assert_eq!(
+                resolve_acr_spread(raw).mode,
+                SpreadMode::Off,
+                "raw {raw:?} must resolve to Off (fail-safe)"
+            );
+        }
+    }
+
+    /// The warn-path classifier: an unrecognized NON-empty value (a typo'd A/B
+    /// arm) is flagged as `Unrecognized` — which drives the `warn!` — while unset,
+    /// empty/whitespace, explicit `off`, and the two presets are NOT flagged.
+    /// Unrecognized still resolves to the Off config (fail-safe behavior kept).
+    #[test]
+    fn acr_classify_flags_unrecognized_but_not_off_or_presets() {
+        // Flagged: likely typos, carrying the trimmed+lowercased offending value.
+        assert_eq!(
+            classify_acr_mode(Some("presicion")),
+            AcrMode::Unrecognized("presicion".to_string())
+        );
+        assert_eq!(
+            classify_acr_mode(Some("  GARBAGE ")),
+            AcrMode::Unrecognized("garbage".to_string())
+        );
+        // NOT flagged: the fail-safe / valid inputs.
+        assert_eq!(classify_acr_mode(None), AcrMode::Off);
+        assert_eq!(classify_acr_mode(Some("")), AcrMode::Off);
+        assert_eq!(classify_acr_mode(Some("   ")), AcrMode::Off);
+        assert_eq!(classify_acr_mode(Some("OFF")), AcrMode::Off);
+        assert_eq!(classify_acr_mode(Some("precision")), AcrMode::Precision);
+        assert_eq!(
+            classify_acr_mode(Some("completeness")),
+            AcrMode::Completeness
+        );
+        // An unrecognized value still resolves to Off (behavior unchanged).
+        assert_eq!(resolve_acr_spread(Some("presicion")).mode, SpreadMode::Off);
+    }
+
+    #[test]
+    fn acr_precision_resolves_to_rerank_preset() {
+        assert_eq!(
+            resolve_acr_spread(Some("precision")).mode,
+            SpreadMode::Rerank
+        );
+        // whitespace/case tolerant, still fail-safe
+        assert_eq!(
+            resolve_acr_spread(Some("  Precision ")).mode,
+            SpreadMode::Rerank
+        );
+    }
+
+    #[test]
+    fn acr_completeness_resolves_to_combined_preset() {
+        assert_eq!(
+            resolve_acr_spread(Some("completeness")).mode,
+            SpreadMode::Combined
+        );
+        assert_eq!(
+            resolve_acr_spread(Some("COMPLETENESS")).mode,
+            SpreadMode::Combined
+        );
+    }
+
+    #[test]
+    fn default_pipeline_config_carries_off_spread() {
+        // The cascade config built with the toggle unset carries Off — the
+        // wiring is a pure no-op by default (identical to pre-ACR behavior).
+        let cfg = spectral::graph::cascade_layers::CascadePipelineConfig {
+            spread: resolve_acr_spread(None),
+            ..Default::default()
+        };
+        assert_eq!(cfg.spread.mode, SpreadMode::Off);
+        // Guard against an upstream default flip silently enabling ACR under us.
+        assert_eq!(
+            spectral::graph::cascade_layers::CascadePipelineConfig::default()
+                .spread
+                .mode,
+            SpreadMode::Off
+        );
     }
 }

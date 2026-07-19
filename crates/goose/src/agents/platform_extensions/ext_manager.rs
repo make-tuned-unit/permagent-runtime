@@ -265,9 +265,20 @@ impl ExtensionManagerClient {
         }
     }
 
+    /// The full tool SUPERSET this extension can expose, in exposure order.
+    /// `get_tools` is *dynamic* — `list_resources`/`read_resource` appear only
+    /// when the extension manager supports resources, `search_memory` only when
+    /// the Brain is loaded — but it SELECTS from this list by name, so a tool
+    /// that is not constructed here cannot ship at all. That makes this the
+    /// drift-proof inventory for the self-knowledge completeness guard
+    /// (`self_knowledge::tests::tool_descriptions_name_every_callable_tool`):
+    /// add a tool here (the only place one can be added) and CI fails until the
+    /// registry `description` names it. A constructed-client test also asserts
+    /// a real `list_tools` run returns exactly the ungated prefix of this list,
+    /// and that the gated remainder matches the three gate consts.
     #[allow(clippy::too_many_lines)]
-    async fn get_tools(&self) -> Vec<Tool> {
-        let mut tools = vec![
+    pub(crate) fn all_possible_tools() -> Vec<Tool> {
+        vec![
             Tool::new(
                 SEARCH_AVAILABLE_EXTENSIONS_TOOL_NAME.to_string(),
                 "Searches for additional extensions available to help complete tasks.
@@ -311,15 +322,9 @@ impl ExtensionManagerClient {
                 Some(false),
                 Some(false),
             )),
-        ];
-
-        if let Some(weak_ref) = &self.context.extension_manager {
-            if let Some(extension_manager) = weak_ref.upgrade() {
-                if extension_manager.supports_resources().await {
-                    tools.extend([
-                        Tool::new(
-                            LIST_RESOURCES_TOOL_NAME.to_string(),
-                            indoc! {r#"
+            Tool::new(
+                LIST_RESOURCES_TOOL_NAME.to_string(),
+                indoc! {r#"
             List resources from an extension(s).
 
             Resources allow extensions to share data that provide context to LLMs, such as
@@ -327,23 +332,23 @@ impl ExtensionManagerClient {
             in the provided extension, and returns a list for the user to browse. If no extension
             is provided, the tool will search all extensions for the resource.
         "#}.to_string(),
-                            Arc::new(
-                                serde_json::to_value(schema_for!(ListResourcesParams))
-                                    .expect("Failed to serialize schema")
-                                    .as_object()
-                                    .expect("Schema must be an object")
-                                    .clone()
-                            ),
-                        ).annotate(ToolAnnotations::from_raw(
-                            Some("List resources".to_string()),
-                            Some(true),
-                            Some(false),
-                            Some(false),
-                            Some(false),
-                        )),
-                        Tool::new(
-                            READ_RESOURCE_TOOL_NAME.to_string(),
-                            indoc! {r#"
+                Arc::new(
+                    serde_json::to_value(schema_for!(ListResourcesParams))
+                        .expect("Failed to serialize schema")
+                        .as_object()
+                        .expect("Schema must be an object")
+                        .clone()
+                ),
+            ).annotate(ToolAnnotations::from_raw(
+                Some("List resources".to_string()),
+                Some(true),
+                Some(false),
+                Some(false),
+                Some(false),
+            )),
+            Tool::new(
+                READ_RESOURCE_TOOL_NAME.to_string(),
+                indoc! {r#"
             Read a resource from an extension.
 
             Resources allow extensions to share data that provide context to LLMs, such as
@@ -351,63 +356,90 @@ impl ExtensionManagerClient {
             resource URI in the provided extension, and reads in the resource content. If no extension
             is provided, the tool will search all extensions for the resource.
         "#}.to_string(),
-                            Arc::new(
-                                serde_json::to_value(schema_for!(ReadResourceParams))
-                                    .expect("Failed to serialize schema")
-                                    .as_object()
-                                    .expect("Schema must be an object")
-                                    .clone()
-                            ),
-                        ).annotate(ToolAnnotations::from_raw(
-                            Some("Read a resource".to_string()),
-                            Some(true),
-                            Some(false),
-                            Some(false),
-                            Some(false),
-                        )),
-                    ]);
+                Arc::new(
+                    serde_json::to_value(schema_for!(ReadResourceParams))
+                        .expect("Failed to serialize schema")
+                        .as_object()
+                        .expect("Schema must be an object")
+                        .clone()
+                ),
+            ).annotate(ToolAnnotations::from_raw(
+                Some("Read a resource".to_string()),
+                Some(true),
+                Some(false),
+                Some(false),
+                Some(false),
+            )),
+            Tool::new(
+                SEARCH_MEMORY_TOOL_NAME.to_string(),
+                "Search your long-term memory (Brain) for information about a topic. \
+                 Returns the most relevant memories matching the query. Use this when you \
+                 need to recall facts, events, preferences, or context that you've learned \
+                 from past conversations and observations. The query should be a natural \
+                 language phrase describing what you're looking for."
+                    .to_string(),
+                Arc::new(
+                    serde_json::json!({
+                        "type": "object",
+                        "required": ["query"],
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Natural language search query for memories"
+                            }
+                        }
+                    })
+                    .as_object()
+                    .expect("Schema must be an object")
+                    .clone(),
+                ),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Search memories".to_string()),
+                Some(true),
+                Some(false),
+                Some(false),
+                Some(false),
+            )),
+        ]
+    }
+
+    /// The gated tail of [`Self::all_possible_tools`]: everything after the
+    /// always-exposed prefix, each present only when its availability gate is
+    /// open. Kept next to `get_tools` so the gate logic and the inventory
+    /// cannot silently diverge — the constructed-client test asserts the split.
+    /// Test-only consumer, so `#[cfg(test)]` keeps it out of the shipped build.
+    #[cfg(test)]
+    pub(crate) const GATED_TOOL_NAMES: &[&str] = &[
+        LIST_RESOURCES_TOOL_NAME,
+        READ_RESOURCE_TOOL_NAME,
+        SEARCH_MEMORY_TOOL_NAME,
+    ];
+
+    async fn get_tools(&self) -> Vec<Tool> {
+        let mut names = vec![
+            SEARCH_AVAILABLE_EXTENSIONS_TOOL_NAME,
+            MANAGE_EXTENSIONS_TOOL_NAME,
+        ];
+
+        if let Some(weak_ref) = &self.context.extension_manager {
+            if let Some(extension_manager) = weak_ref.upgrade() {
+                if extension_manager.supports_resources().await {
+                    names.push(LIST_RESOURCES_TOOL_NAME);
+                    names.push(READ_RESOURCE_TOOL_NAME);
                 }
             }
         }
 
         // search_memory — active memory search via Brain recall (available when Brain is loaded)
         if super::get_global_brain().is_some() {
-            tools.push(
-                Tool::new(
-                    SEARCH_MEMORY_TOOL_NAME.to_string(),
-                    "Search your long-term memory (Brain) for information about a topic. \
-                     Returns the most relevant memories matching the query. Use this when you \
-                     need to recall facts, events, preferences, or context that you've learned \
-                     from past conversations and observations. The query should be a natural \
-                     language phrase describing what you're looking for."
-                        .to_string(),
-                    Arc::new(
-                        serde_json::json!({
-                            "type": "object",
-                            "required": ["query"],
-                            "properties": {
-                                "query": {
-                                    "type": "string",
-                                    "description": "Natural language search query for memories"
-                                }
-                            }
-                        })
-                        .as_object()
-                        .expect("Schema must be an object")
-                        .clone(),
-                    ),
-                )
-                .annotate(ToolAnnotations::from_raw(
-                    Some("Search memories".to_string()),
-                    Some(true),
-                    Some(false),
-                    Some(false),
-                    Some(false),
-                )),
-            );
+            names.push(SEARCH_MEMORY_TOOL_NAME);
         }
 
-        tools
+        Self::all_possible_tools()
+            .into_iter()
+            .filter(|t| names.iter().any(|n| t.name.as_ref() == *n))
+            .collect()
     }
 }
 

@@ -12,9 +12,12 @@ interface ProviderRowState {
   enabled: boolean;
   input: string;
   busy: boolean;
+  /** Last save/toggle failure — rendered inline (2026-07 wiring audit: the
+   *  old console-only error made a failed key save look like a stuck form). */
+  error: string;
 }
 
-const blank = (): ProviderRowState => ({ configured: false, enabled: false, input: '', busy: false });
+const blank = (): ProviderRowState => ({ configured: false, enabled: false, input: '', busy: false, error: '' });
 
 /**
  * Generic "Search & tools" credential section — the bridge from #226/#352,
@@ -56,7 +59,7 @@ export function SearchToolsSection() {
   const saveKey = async (p: SearchProvider) => {
     const value = rows[p.id].input.trim();
     if (!value) return;
-    patch(p.id, { busy: true });
+    patch(p.id, { busy: true, error: '' });
     try {
       // Store the key as a keychain secret, then register (and enable) the MCP
       // connector — it reads the key back through env_keys.
@@ -64,19 +67,23 @@ export function SearchToolsSection() {
       patch(p.id, { input: '', configured: true, enabled: true });
     } catch (e) {
       console.error('Failed to save search key:', e);
+      patch(p.id, { error: `Couldn't save the key: ${e instanceof Error ? e.message : String(e)}` });
     } finally {
       patch(p.id, { busy: false });
     }
   };
 
   const toggleEnabled = async (p: SearchProvider, on: boolean) => {
-    patch(p.id, { busy: true, enabled: on });
+    patch(p.id, { busy: true, enabled: on, error: '' });
     try {
       // Keep the entry (preserves config); just flip its enabled flag.
       await api.addExtension(await buildSearchExtensionQuery(p, on));
     } catch (e) {
       console.error('Failed to toggle search provider:', e);
-      patch(p.id, { enabled: !on });
+      patch(p.id, {
+        enabled: !on,
+        error: `Couldn't ${on ? 'enable' : 'disable'} ${p.displayName}: ${e instanceof Error ? e.message : String(e)}`,
+      });
     } finally {
       patch(p.id, { busy: false });
     }
@@ -144,6 +151,11 @@ export function SearchToolsSection() {
                 <FiExternalLink size={11} /> Get key
               </button>
             </div>
+            {r.error && (
+              <div role="alert" className="text-[11px] mt-2" style={{ fontFamily: font.body, color: colors.danger }}>
+                {r.error}
+              </div>
+            )}
           </div>
         );
       })}

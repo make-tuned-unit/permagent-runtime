@@ -234,16 +234,12 @@ impl SkillsClient {
 
         Ok(Self { info, working_dir })
     }
-}
 
-#[async_trait]
-impl McpClientTrait for SkillsClient {
-    async fn list_tools(
-        &self,
-        _session_id: &str,
-        _next_cursor: Option<String>,
-        _cancellation_token: CancellationToken,
-    ) -> Result<ListToolsResult, Error> {
+    /// The full, static tool inventory. Extracted from `list_tools` so the
+    /// self-knowledge completeness guard derives its inventory from the REAL
+    /// list — add a tool here and CI fails until the registry `description`
+    /// names it.
+    pub(crate) fn get_tools() -> Vec<Tool> {
         let schema = serde_json::json!({
             "type": "object",
             "required": ["name"],
@@ -255,7 +251,7 @@ impl McpClientTrait for SkillsClient {
             }
         });
 
-        let tool = Tool::new(
+        vec![Tool::new(
             "load_skill",
             "Load a skill's full content into your context so you can follow its instructions.\n\n\
              Skills are listed in your system instructions. When you need to use one, \
@@ -265,10 +261,20 @@ impl McpClientTrait for SkillsClient {
              - load_skill(name: \"my-skill/template.md\") → Loads a supporting file"
                 .to_string(),
             schema.as_object().unwrap().clone(),
-        );
+        )]
+    }
+}
 
+#[async_trait]
+impl McpClientTrait for SkillsClient {
+    async fn list_tools(
+        &self,
+        _session_id: &str,
+        _next_cursor: Option<String>,
+        _cancellation_token: CancellationToken,
+    ) -> Result<ListToolsResult, Error> {
         Ok(ListToolsResult {
-            tools: vec![tool],
+            tools: Self::get_tools(),
             next_cursor: None,
             meta: None,
         })

@@ -44,7 +44,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::librarian::call_ollama_streaming;
+use super::librarian::call_ollama_streaming_pooled;
 use super::librarian_state;
 use crate::brain_handle::{GraphEntitySnapshot, OntologyEntityResolution, SafeBrain};
 
@@ -889,8 +889,7 @@ pub async fn run_entity_sweep(brain: &SafeBrain, model: &str) -> Result<SweepSum
                 item.project_row.as_ref(),
                 active,
             );
-            match call_ollama_streaming(
-                &crate::config::ollama_host(),
+            match call_ollama_streaming_pooled(
                 ENTITY_SYSTEM_PROMPT,
                 &prompt,
                 model,

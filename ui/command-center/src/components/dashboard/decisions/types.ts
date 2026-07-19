@@ -30,6 +30,7 @@ export type DecisionKind =
   | 'risk_gate'
   | 'automation_proposal'
   | 'enrichment_proposal'
+  | 'tool_approval'
   | 'malformed';
 
 /** One selectable option (decisions.rs:71-74 — {id, label} only). */
@@ -89,7 +90,11 @@ export interface DecisionsResponse {
   oldest_pending_at: string | null;
 }
 
-export type AnswerKind = 'approve' | 'reject' | 'choice' | 'input';
+// 'edit' = approve-with-edits: an acceptance that carries the user's revised
+// draft in input_text (the original is in payload.draft). The daemon stores it
+// as answer='edit' and learns the draft→revision delta (edit-as-training,
+// crates/goose/src/decision_inbox/learn.rs).
+export type AnswerKind = 'approve' | 'reject' | 'choice' | 'input' | 'edit';
 
 /**
  * UI-side answer body. The client maps to the wire's camelCase
@@ -236,6 +241,19 @@ export function recommendedChoiceId(d: Decision): string | null {
 }
 
 /**
+ * The agent's original draft for an editable decision (payload.draft). Present
+ * on draft-carrying kinds (e.g. automation_proposal); null otherwise. When
+ * present, the item offers "approve with edits": the user revises this text and
+ * accepts (answer='edit'), and the daemon learns the draft→revision delta
+ * (edit-as-training, decision_inbox/learn.rs).
+ */
+export function draftText(d: Decision): string | null {
+  if (!d.payload) return null;
+  const raw = (d.payload as { draft?: unknown }).draft;
+  return typeof raw === 'string' && raw.trim() ? raw : null;
+}
+
+/**
  * Plain-language record of a resolved decision for history rows. Verb mapping
  * from the answer enum only (approve|reject|choice|input — decisions.rs:27);
  * free text (note, option labels, input) is appended verbatim.
@@ -244,6 +262,7 @@ export function resolutionText(d: Decision, agentName = 'Aria'): string {
   const verb =
     d.answer === 'approve' ? 'Approved'
     : d.answer === 'reject' ? 'Rejected'
+    : d.answer === 'edit' ? 'Accepted with edits'
     : d.answer === 'choice' ? `Chose "${d.answer_choice_id ?? 'an option'}"`
     : d.answer === 'input' ? 'Answered with a written reply'
     : 'Resolved';

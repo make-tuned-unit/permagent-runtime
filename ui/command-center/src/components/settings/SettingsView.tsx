@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
-import { api, apiFetch, loadDaemonToken } from '../../lib/api';
+import { emitActivity } from '../../lib/emitActivity';
+import { api, apiFetch, loadDaemonToken, type SovereigntyStatus, type EgressLogEntry } from '../../lib/api';
 import { font, ease, setTheme as setThemeFn, setMobiusGlow, setIdleAnim, setShowHeroMobius, setDensity as setDensityFn, setReduceMotion as setReduceMotionFn, type ThemePref, type IdleAnim, type UIDensity } from '../../styles/tokens';
 import { useTheme as useThemeHook } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
@@ -11,6 +12,8 @@ import {
 import { ProvidersSection } from './ProvidersSection';
 import { SearchToolsSection } from './SearchToolsSection';
 import { usePersona } from './useSettings';
+import { resolveSettingsSection } from './sections';
+import { trustEnvOverrideNotice } from './autonomy';
 import { VoicePicker } from '../voice/VoicePicker';
 import { H1, Section, Row, TextInput, Chip, Toggle, Slider, Kbd, SaveButton } from './atoms';
 
@@ -83,6 +86,7 @@ const CATEGORIES = [
     { key: 'appearance',  label: 'Appearance',       icon: 'M12 3a9 9 0 100 18 9 9 0 000-18zM12 3v18M3 12h18' },
     { key: 'shortcuts',   label: 'Shortcuts',        icon: 'M4 6h16v12H4zM8 10h.01M12 10h.01M16 10h.01M7 14h10' },
     { key: 'data',        label: 'Data & privacy',   icon: 'M12 2l9 4v6c0 5-4 9-9 10-5-1-9-5-9-10V6l9-4zM9 12l2 2 4-4' },
+    { key: 'sovereignty', label: 'Sovereignty',      icon: 'M7 11V7a5 5 0 0110 0v4M5 11h14v9H5zM12 15v2' },
   ]},
 ];
 
@@ -280,51 +284,122 @@ function MemoryPanel() {
   );
 }
 
+// Only `auto` and `chat` are selectable here today. Per-tool confirmations
+// now route to the Decision Inbox (#760) and parked turns are answerable
+// there — but NEW selection of `approve`/`smart_approve` stays blocked until
+// the trust-chain re-enable gate (eviction ordering, sub-session mode
+// inheritance, effective-mode visibility) fully lands. Still surface them if
+// a user is already there (e.g. via env or old YAML), so they can switch back.
+const SELECTABLE_TRUST_MODES = new Set(['auto', 'chat']);
+
 function AutonomyPanel() {
   const { colors } = useThemeHook();
   // Trust level is REAL (2026-07-10 audit): it reads/writes the daemon's
   // GOOSE_MODE, which gates tool-call approval in the agent loop.
   const [trust, setTrust] = useState<string | null>(null);
+  // What the daemon ACTUALLY runs (env var overrides YAML). Diverges from
+  // `trust` when GOOSE_MODE is set in the daemon's environment — the buttons
+  // below write YAML, which the env silently wins over.
+  const [effectiveTrust, setEffectiveTrust] = useState<string | null>(null);
+  const [trustError, setTrustError] = useState<string | null>(null);
   useEffect(() => {
     api.getConfig().then(cfg => {
       const mode = (cfg.config as Record<string, unknown>)?.GOOSE_MODE;
-      setTrust(typeof mode === 'string' ? mode : 'smart_approve');
-    }).catch(() => setTrust('smart_approve'));
+      // Daemon default is GooseMode::Auto (crates/goose/src/config/goose_mode.rs) —
+      // when GOOSE_MODE is unset the agent runs in `auto`, so reflect that here
+      // instead of `smart_approve` (which is a hanging mode and no longer newly
+      // selectable). Showing `smart_approve` as "active" used to lure users into
+      // clicking it and hanging their turn.
+      setTrust(typeof mode === 'string' ? mode : 'auto');
+      const eff = cfg.effective_goose_mode;
+      setEffectiveTrust(typeof eff === 'string' && eff !== '' ? eff : null);
+    }).catch(() => setTrust('auto'));
   }, []);
   const saveTrust = (mode: string) => {
+    // Defense in depth: the hanging modes are also disabled in the UI below, but
+    // never write one from a fresh selection even if a click slips through.
+    if (!SELECTABLE_TRUST_MODES.has(mode)) return;
+    const prev = trust;
     setTrust(mode);
-    api.upsertConfig('GOOSE_MODE', mode).catch(() => {});
+    setTrustError(null);
+    // Revert + surface on failure (2026-07 wiring audit): the old swallowed
+    // catch left the UI showing a trust level the daemon never accepted.
+    api.upsertConfig('GOOSE_MODE', mode).catch(err => {
+      setTrust(prev);
+      setTrustError(`Couldn't save trust level: ${err instanceof Error ? err.message : String(err)}`);
+    });
   };
   const [confirms, setConfirms] = useState([true, true, true, true, false]);
   const [perSession, setPerSession] = useState(5);
   const [perDay, setPerDay] = useState(20);
   const trustLevels = [
-    { v: 'approve', l: 'Tight', d: 'Ask before every tool call' },
-    { v: 'smart_approve', l: 'Default', d: 'Ask only for sensitive tool calls' },
-    { v: 'auto', l: 'Loose', d: 'Approve tool calls automatically' },
+    { v: 'auto', l: 'Automatic', d: 'Run tool calls without asking (default)' },
     { v: 'chat', l: 'Chat only', d: 'No tool calls at all' },
+    { v: 'approve', l: 'Ask every time', d: 'Confirm before every tool call' },
+    { v: 'smart_approve', l: 'Smart approve', d: 'Confirm only sensitive calls' },
   ];
   const confirmItems = ['Sending email or messages', 'Spending money', 'Deleting files or records', 'Pushing to main / production', 'Reading sensitive memory'];
   return (
     <div>
       <H1 sub="How much your agent can do without checking in. Higher autonomy = faster, but more rope."><>Autonomy &amp; guardrails<PreviewBadge /></></H1>
       <Section title="Default autonomy" sub="Live — this writes the daemon's tool-approval mode (GOOSE_MODE) and applies to new turns.">
+        {trustError && (
+          <div style={{ fontSize: 12, color: colors.danger, padding: '4px 0 8px' }}>{trustError}</div>
+        )}
+        {(() => {
+          // Env-override honesty (re-enable-gate epic part B): with GOOSE_MODE
+          // set in the daemon's environment, these buttons write YAML the env
+          // silently wins over. Say so instead of highlighting a mode the
+          // daemon isn't running.
+          const envNotice = trustEnvOverrideNotice(effectiveTrust, trust);
+          return envNotice ? (
+            <div style={{ marginBottom: 10, padding: '10px 14px', borderRadius: 10, background: `${colors.warning}1A`, border: `1px solid ${colors.warning}55`, color: colors.text, fontSize: 12, lineHeight: 1.5 }}>
+              {envNotice}
+            </div>
+          ) : null;
+        })()}
         <Row label="Trust level" hint="How tool calls are approved.">
           <div style={{ display: 'flex', gap: 6 }}>
-            {trustLevels.map(opt => (
-              <button key={opt.v} onClick={() => saveTrust(opt.v)} style={{
-                padding: 12, borderRadius: 10, cursor: 'pointer',
-                background: trust === opt.v ? colors.cyanSoft : colors.bgDeeper,
-                border: trust === opt.v ? `1px solid ${colors.borderHi}` : `1px solid ${colors.border}`,
-                color: colors.text, textAlign: 'left', flex: 1, fontFamily: font.body,
-                opacity: trust === null ? 0.5 : 1,
-              }}>
-                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4, color: trust === opt.v ? colors.cyan : colors.text }}>{opt.l}</div>
-                <div style={{ fontSize: 11, color: colors.textMuted }}>{opt.d}</div>
-              </button>
-            ))}
+            {trustLevels.map(opt => {
+              const current = trust === opt.v;
+              const locked = !SELECTABLE_TRUST_MODES.has(opt.v);
+              return (
+                <button key={opt.v} disabled={locked} onClick={() => saveTrust(opt.v)}
+                  title={locked ? 'Locked while the approval pipeline is hardened — approval prompts route to the Decision Inbox' : undefined}
+                  style={{
+                    padding: 12, borderRadius: 10, cursor: locked ? 'not-allowed' : 'pointer',
+                    background: current ? colors.cyanSoft : colors.bgDeeper,
+                    border: current ? `1px solid ${colors.borderHi}` : `1px solid ${colors.border}`,
+                    color: colors.text, textAlign: 'left', flex: 1, fontFamily: font.body,
+                    opacity: trust === null ? 0.5 : locked && !current ? 0.55 : 1,
+                  }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, marginBottom: 4 }}>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: current ? colors.cyan : colors.text }}>{opt.l}</span>
+                    {locked && (
+                      <span style={{ fontSize: 9, fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', color: colors.textMuted, border: `1px solid ${colors.border}`, borderRadius: 999, padding: '1px 6px' }}>Soon</span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 11, color: colors.textMuted }}>{opt.d}</div>
+                </button>
+              );
+            })}
           </div>
         </Row>
+        <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 10, lineHeight: 1.5 }}>
+          Per-tool approval (Ask every time / Smart approve) is temporarily
+          locked here while the approval pipeline is hardened. Approval prompts
+          already land in the <strong>Decision Inbox</strong> on your Dashboard —
+          these modes become selectable once the re-enable gate ships.
+        </div>
+        {trust !== null && !SELECTABLE_TRUST_MODES.has(trust) && (
+          <div style={{ marginTop: 10, padding: '10px 14px', borderRadius: 10, background: `${colors.warning}1A`, border: `1px solid ${colors.warning}55`, color: colors.text, fontSize: 12, lineHeight: 1.5 }}>
+            You're on a per-tool-approval mode: tool calls pause until you
+            approve them in the <strong>Decision Inbox</strong> on your
+            Dashboard. If a turn seems stuck, answer the pending approval
+            there. Prefer not to approve per-tool? Switch to{' '}
+            <strong>Automatic</strong> or <strong>Chat only</strong> above.
+          </div>
+        )}
       </Section>
       <PreviewNotice />
       <Section title="Always confirm before…">
@@ -431,6 +506,7 @@ function ModelsPanel({ goto }: PanelProps) {
   const [schedule, setSchedule] = useState<LibSchedule | null>(null);
   const [saving, setSaving] = useState(false);
   const [runningNow, setRunningNow] = useState(false);
+  const [libError, setLibError] = useState<string | null>(null);
 
   // Poll Ollama status while panel is visible
   useEffect(() => {
@@ -453,16 +529,30 @@ function ModelsPanel({ goto }: PanelProps) {
 
   const handleScheduleChange = async (patch: Partial<LibSchedule>) => {
     if (!schedule) return;
+    const prev = schedule;
     const next = { ...schedule, ...patch };
     setSchedule(next);
     setSaving(true);
-    try { await api.setLibrarianSchedule(next); } catch { /* */ }
+    setLibError(null);
+    try {
+      await api.setLibrarianSchedule(next);
+    } catch (err) {
+      // Revert + surface (2026-07 wiring audit): the swallowed catch left the
+      // panel showing a schedule the daemon never persisted.
+      setSchedule(prev);
+      setLibError(`Couldn't save the Librarian schedule: ${err instanceof Error ? err.message : String(err)}`);
+    }
     setSaving(false);
   };
 
   const handleRunNow = async () => {
     setRunningNow(true);
-    try { await api.runLibrarianNow(); } catch { /* */ }
+    setLibError(null);
+    try {
+      await api.runLibrarianNow();
+    } catch (err) {
+      setLibError(`Couldn't start the Librarian: ${err instanceof Error ? err.message : String(err)}`);
+    }
     setRunningNow(false);
     // Refresh status to show model as loaded
     api.getOllamaStatus().then(setOllama).catch(() => {});
@@ -519,6 +609,9 @@ function ModelsPanel({ goto }: PanelProps) {
       {/* ── Librarian Schedule ───────────────────────────────────── */}
       {schedule && (
         <Section title="Librarian schedule">
+          {libError && (
+            <div style={{ fontSize: 12, color: colors.danger, padding: '4px 0 8px' }}>{libError}</div>
+          )}
           <Row label="Enabled" hint="Run the Librarian on a daily schedule to describe memories.">
             <Toggle on={schedule.enabled} onChange={v => handleScheduleChange({ enabled: v })} />
           </Row>
@@ -674,22 +767,49 @@ function AppearancePanel() {
   );
 }
 
+/** The REAL keyboard map (2026-07 wiring audit). The old list was fictional —
+ *  it showed a command palette on ⌘K, G-key navigation, ⌘P pause and more,
+ *  none of which exist. Every binding below is implemented; keep this in sync
+ *  with the keydown handlers it cites. */
+export const SHORTCUT_GROUPS: Array<{ g: string; items: Array<[string, string[]]> }> = [
+  { g: 'Global', items: [
+    ['Open or close Settings', ['⌘', ',']],
+    ['Close Settings', ['Esc']],
+    ['Switch workspace 1–5', ['⌘', '1–5']],
+  ]},
+  { g: 'Chat', items: [
+    ['Send message', ['↵']],
+    ['New line', ['⇧', '↵']],
+  ]},
+  { g: 'Terminal', items: [
+    ['New terminal tab', ['⌘', 'T']],
+    ['Close terminal tab', ['⌘', 'W']],
+    ['Clear terminal', ['⌘', 'K']],
+  ]},
+  { g: 'Browser', items: [
+    ['New browser tab', ['⌘', 'T']],
+    ['Close browser tab', ['⌘', 'W']],
+    ['Focus address bar', ['⌘', 'L']],
+    ['Reload page', ['⌘', 'R']],
+    ['Zoom in / out', ['⌘', '+ / −']],
+    ['Reset zoom', ['⌘', '0']],
+  ]},
+  { g: 'Projects', items: [
+    ['Save note', ['⌘', '↵']],
+  ]},
+];
+
 function ShortcutsPanel() {
   const { colors } = useThemeHook();
-  const groups = [
-    { g: 'Global', items: [['Open command palette', ['⌘', 'K']], ['Quick task', ['⌘', 'N']], ['Toggle sidebar', ['⌘', 'B']], ['Search everything', ['⌘', '/']]] },
-    { g: 'Navigation', items: [['Go to Home', ['G', 'H']], ['Go to Automate', ['G', 'W']], ['Go to Build', ['G', 'B']], ['Go to Brain', ['G', 'M']]] },
-    { g: 'Build', items: [['Send message', ['⌘', '↵']], ['Insert tool', ['⌘', 'T']], ['Pause agent', ['⌘', 'P']], ['Take over', ['⌘', '.']]] },
-  ];
   return (
     <div>
-      <H1 sub="The current keyboard map. Rebinding is coming — these are reference-only today."><>Shortcuts<PreviewBadge /></></H1>
-      {groups.map(grp => (
+      <H1 sub="The current keyboard map — every binding listed here works today. Rebinding is coming later.">Shortcuts</H1>
+      {SHORTCUT_GROUPS.map(grp => (
         <Section key={grp.g} title={grp.g}>
           {grp.items.map(([l, keys]) => (
-            <div key={l as string} style={{ display: 'flex', alignItems: 'center', padding: '12px 0', borderTop: `1px solid ${colors.border}` }}>
-              <span style={{ fontSize: 13, flex: 1 }}>{l as string}</span>
-              <div style={{ display: 'flex', gap: 4 }}>{(keys as string[]).map((k, i) => <Kbd key={i}>{k}</Kbd>)}</div>
+            <div key={l} style={{ display: 'flex', alignItems: 'center', padding: '12px 0', borderTop: `1px solid ${colors.border}` }}>
+              <span style={{ fontSize: 13, flex: 1 }}>{l}</span>
+              <div style={{ display: 'flex', gap: 4 }}>{keys.map((k, i) => <Kbd key={i}>{k}</Kbd>)}</div>
             </div>
           ))}
         </Section>
@@ -727,11 +847,97 @@ function DataPanel() {
 
 // ── Panel router ─────────────────────────────────────────────────────
 
+/** Sovereignty — the data boundary. The toggle writes the daemon's global
+ *  sovereign flag (enforced fail-closed at the provider choke point); the
+ *  egress log shows every cloud inference call this machine has made or
+ *  blocked. Live end-to-end (2026-07 sovereignty-router build). */
+function SovereigntyPanel() {
+  const { colors } = useThemeHook();
+  const [status, setStatus] = useState<SovereigntyStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [log, setLog] = useState<EgressLogEntry[] | null>(null);
+
+  const refreshLog = useCallback(() => {
+    api.getEgressLog(100).then(setLog).catch(() => setLog([]));
+  }, []);
+
+  useEffect(() => {
+    api.getSovereignty().then(setStatus).catch(() => setError('Could not load sovereignty status.'));
+    refreshLog();
+  }, [refreshLog]);
+
+  const save = (patch: { enabled?: boolean; capturePrompts?: boolean }) => {
+    setError(null);
+    // Optimistic; the daemon echoes the authoritative status back.
+    setStatus(s => (s ? {
+      enabled: patch.enabled ?? s.enabled,
+      capturePrompts: patch.capturePrompts ?? s.capturePrompts,
+      localProviderAvailable: s.localProviderAvailable,
+    } : s));
+    api.setSovereignty(patch)
+      .then(status => { setStatus(status); refreshLog(); })
+      .catch(err => setError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`));
+  };
+
+  return (
+    <div>
+      <H1 sub="Make the data boundary real. With sovereign mode on, every model call stays on this machine — cloud providers are refused (fail-closed), not just deprioritized.">Sovereignty</H1>
+
+      {error && (
+        <div style={{ fontSize: 12, color: colors.danger, padding: '4px 0 8px' }}>{error}</div>
+      )}
+
+      <Section title="Sovereign mode" sub="Live — writes the daemon's global sovereign flag, enforced at the provider choke point for every session.">
+        <Row label="Local-only inference" hint="Block all cloud providers. Nothing leaves this machine for inference.">
+          <Toggle on={!!status?.enabled} onChange={v => save({ enabled: v })} />
+        </Row>
+        {status?.enabled && !status.localProviderAvailable && (
+          <div style={{ fontSize: 12, color: colors.warning, padding: '2px 0 8px' }}>
+            No local provider (Ollama or local-inference) is registered — with sovereign mode on, inference will be refused until one is available.
+          </div>
+        )}
+        <Row label="Capture full prompts in the audit log" hint="Off by default — only a SHA-256 hash is stored. On records the full prompt text locally.">
+          <Toggle on={!!status?.capturePrompts} onChange={v => save({ capturePrompts: v })} />
+        </Row>
+      </Section>
+
+      <Section title="Egress log" sub="Everything that has left this machine for cloud inference, and when — newest first. BLOCKED means sovereign mode refused it.">
+        <Row label="Cloud inference calls" hint={`${log?.length ?? 0} recorded`}>
+          <button
+            onClick={refreshLog}
+            style={{
+              fontSize: 12, padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
+              background: colors.surfaceHi, color: colors.text, border: `1px solid ${colors.border}`,
+            }}
+          >Refresh</button>
+        </Row>
+        {log && log.length === 0 && (
+          <div style={{ fontSize: 12, color: colors.textDim, padding: '6px 0' }}>
+            Nothing has left this machine yet.
+          </div>
+        )}
+        {log?.map(e => (
+          <Row
+            key={e.id}
+            label={`${e.provider} · ${e.model}`}
+            hint={`${new Date(e.ts).toLocaleString()} · ${e.kind}${e.sessionId ? ' · ' + e.sessionId : ''} · ${e.contentHash.slice(0, 12)}…`}
+          >
+            <span style={{ fontSize: 11, fontWeight: 600, color: e.blocked ? colors.danger : colors.textDim }}>
+              {e.blocked ? 'BLOCKED' : 'sent'}
+            </span>
+          </Row>
+        ))}
+      </Section>
+    </div>
+  );
+}
+
 const PANELS: Record<string, (props: PanelProps) => JSX.Element> = {
   agent: PersonaPanel, profile: ProfilePanel, preferences: PreferencesPanel,
   memory: MemoryPanel, autonomy: AutonomyPanel, tools: ToolsPanel,
   models: ModelsPanel, keys: KeysPanel, devices: DevicesPanel, search: SearchPanel,
   appearance: AppearancePanel, shortcuts: ShortcutsPanel, data: DataPanel,
+  sovereignty: SovereigntyPanel,
 };
 
 /** Devices — hub-and-spoke pairing (MULTI_DEVICE.md). The hub (this machine)
@@ -846,6 +1052,14 @@ function DevicesPanel() {
                   navigator.clipboard.writeText(pairingUrl).then(() => {
                     setCopied(true);
                     setTimeout(() => setCopied(false), 1600);
+                    // Copying the pairing URL is deliberate engagement with the
+                    // Devices feature — but it is *intent*, not a completed
+                    // pairing, so this stays Ephemeral (never a Brain memory).
+                    // The real `devices_paired` signal is emitted by the new
+                    // device itself when it opens this URL and captures the
+                    // token (see reportDevicePaired in lib/api.ts). No token in
+                    // the payload (the URL is a bearer secret).
+                    emitActivity('pairing_link_copied', 'settings');
                   });
                 }}
               >{copied ? 'Copied ✓' : 'Copy'}</button>
@@ -868,7 +1082,18 @@ function DevicesPanel() {
 
 export function SettingsView() {
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
-  const [section, setSection] = useState('agent');
+  const pendingSettingsSection = useCommandCenter(s => s.pendingSettingsSection);
+  const setPendingSettingsSection = useCommandCenter(s => s.setPendingSettingsSection);
+  const [section, setSection] = useState<string>(() => resolveSettingsSection(pendingSettingsSection));
+
+  // Honor an agent/voice deep-link (Settings → <pane>): when the store carries a
+  // pending section, jump to that pane and consume it so it only fires once.
+  useEffect(() => {
+    if (pendingSettingsSection) {
+      setSection(resolveSettingsSection(pendingSettingsSection));
+      setPendingSettingsSection(null);
+    }
+  }, [pendingSettingsSection, setPendingSettingsSection]);
 
   const dismiss = useCallback(() => setActivePanel('chat'), [setActivePanel]);
   useEffect(() => {

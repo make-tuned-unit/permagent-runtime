@@ -27,7 +27,7 @@ interface Props {
 
 export function DecisionInbox({ inbox, onClose }: Props) {
   const { colors, reduceMotion } = useTheme();
-  const { data, loading } = inbox;
+  const { data, loading, error } = inbox;
   const { data: persona } = usePersona();
   const agentName = persona?.display_name ?? 'Aria';
   const [view, setView] = useState<'list' | 'history'>('list');
@@ -128,6 +128,28 @@ export function DecisionInbox({ inbox, onClose }: Props) {
           ) : loading && !data ? (
             <div style={{ padding: '48px 18px', textAlign: 'center', fontSize: 12, color: colors.textDim }}>
               Checking with {agentName}…
+            </div>
+          ) : error && !data ? (
+            /* Cold load failure — must NOT read as the "No decisions needed"
+               all-clear (2026-07 wiring audit D4): a dead daemon looked
+               identical to a clear inbox. */
+            <div style={{ padding: '48px 18px', textAlign: 'center' }}>
+              <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: 4 }}>
+                Couldn't reach the decision inbox.
+              </div>
+              <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 14 }}>
+                This is a connection problem, not an empty inbox.
+              </div>
+              <button
+                onClick={() => inbox.refresh()}
+                style={{
+                  fontFamily: font.body, fontSize: 12, fontWeight: 600, color: colors.cyan,
+                  background: 'none', border: `1px solid ${colors.borderHi}`, borderRadius: 8,
+                  padding: '5px 14px', cursor: 'pointer',
+                }}
+              >
+                Retry
+              </button>
             </div>
           ) : total === 0 ? (
             <div style={{ padding: '48px 18px', textAlign: 'center' }}>

@@ -2,16 +2,15 @@
 // Moved verbatim from WorldFurniture.tsx in the bible §5 skeleton split (W1).
 // Raised ring walkway high on the columns with built-in bookshelf walls.
 
-import { useMemo } from 'react';
 import * as THREE from 'three';
 import { COLORS } from '../../constants';
 import {
   useMarbleMat,
   useDarkStoneMat,
-  useWoodMat,
   ReadingDesk,
   ArmChair,
 } from '../../props/legacy/WorldFurniture';
+import { MezzanineBookWall } from '../../props/MezzanineBookWall';
 
 export const MEZZ_HEIGHT = 10;       // raised high so ground floor breathes
 export const MEZZ_INNER_R = 12.5;
@@ -20,7 +19,6 @@ const MEZZ_MID_R = (MEZZ_INNER_R + MEZZ_OUTER_R) / 2;
 
 const STAIR_GAP_CENTER = Math.PI * 0.375; // between columns 1 and 2 (67.5 deg)
 const STAIR_GAP_HALF = 0.12;           // small opening, ~3.4 units of arc at r=14
-const SHELF_WALL_HEIGHT = 4;
 
 // Walkable spiral-stair descriptor — shared with agent behavior so an agent's climb
 // path matches the rendered steps exactly. The stair winds from the ground (t=0, at
@@ -146,95 +144,11 @@ function Staircase() {
   );
 }
 
-// Continuous built-in bookshelf wall on the INNER edge of the ring.
-// CylinderGeometry angles match world-space. RingGeometry needs conversion.
-function BookshelfWall() {
-  const wood = useWoodMat();
-  const darkStone = useDarkStoneMat();
-
-  // Cylinder: world-space angles directly
-  const cylStart = STAIR_GAP_CENTER + STAIR_GAP_HALF;
-  const cylLength = Math.PI * 2 - STAIR_GAP_HALF * 2;
-  // Ring geometry: needs mirrored angles
-  const rStart = ringAngle(STAIR_GAP_CENTER) + STAIR_GAP_HALF;
-  const rLength = Math.PI * 2 - STAIR_GAP_HALF * 2;
-
-  const wallR = MEZZ_INNER_R + 0.05;
-  const shelfR = MEZZ_INNER_R + 0.35;
-  const shelfCount = 5;
-  const shelfDepth = 0.3;
-
-  // Books use world-space angles (positioned with cos/sin)
-  const bookRows = useMemo(() => {
-    const rows: { angle: number; shelfY: number; width: number; height: number; hue: number }[] = [];
-    const booksPerShelf = 80;
-    for (let s = 0; s < shelfCount; s++) {
-      const shelfY = 0.15 + s * (SHELF_WALL_HEIGHT / shelfCount);
-      for (let b = 0; b < booksPerShelf; b++) {
-        // Distribute books around the ring in world-space, skipping stair gap
-        const angle = ((b / booksPerShelf) * Math.PI * 2);
-        if (isInStairGap(angle)) continue;
-        rows.push({
-          angle,
-          shelfY,
-          width: 0.06 + Math.random() * 0.04,
-          height: 0.4 + Math.random() * 0.3,
-          hue: (s * 50 + b * 17) % 360,
-        });
-      }
-    }
-    return rows;
-  }, []);
-
-  return (
-    <group position-y={MEZZ_HEIGHT + 0.01}>
-      {/* Back wall — cylinder uses world-space angles */}
-      <mesh position-y={SHELF_WALL_HEIGHT / 2} material={darkStone}>
-        <cylinderGeometry args={[wallR, wallR, SHELF_WALL_HEIGHT, 64, 1, true,
-          cylStart, cylLength]} />
-      </mesh>
-
-      {/* Horizontal shelf planks — ring geometry needs converted angles */}
-      {Array.from({ length: shelfCount + 1 }, (_, i) => {
-        const y = i * (SHELF_WALL_HEIGHT / shelfCount);
-        return (
-          <mesh key={`shelf-${i}`} position-y={y} rotation-x={-Math.PI / 2}>
-            <ringGeometry args={[wallR, shelfR, 64, 1, rStart, rLength]} />
-            <primitive object={wood} attach="material" />
-          </mesh>
-        );
-      })}
-
-      {/* Vertical dividers — world-space positions */}
-      {Array.from({ length: 48 }, (_, i) => {
-        const angle = (i / 48) * Math.PI * 2;
-        if (isInStairGap(angle)) return null;
-        const midR = (wallR + shelfR) / 2;
-        const x = Math.cos(angle) * midR;
-        const z = Math.sin(angle) * midR;
-        return (
-          <mesh key={`div-${i}`} position={[x, SHELF_WALL_HEIGHT / 2, z]} rotation-y={-angle}>
-            <boxGeometry args={[0.04, SHELF_WALL_HEIGHT, shelfDepth]} />
-            <primitive object={wood} attach="material" />
-          </mesh>
-        );
-      })}
-
-      {/* Books — world-space positions */}
-      {bookRows.map((book, i) => {
-        const bookR = wallR + shelfDepth * 0.4;
-        const x = Math.cos(book.angle) * bookR;
-        const z = Math.sin(book.angle) * bookR;
-        return (
-          <mesh key={`book-${i}`} position={[x, book.shelfY + book.height / 2, z]} rotation-y={-book.angle}>
-            <boxGeometry args={[book.width, book.height, 0.18]} />
-            <meshStandardMaterial color={`hsl(${book.hue}, 35%, 30%)`} roughness={0.8} />
-          </mesh>
-        );
-      })}
-    </group>
-  );
-}
+// The bookshelf wall is the instanced MezzanineBookWall (props/): the legacy
+// per-mesh wall drew ~443 individual meshes (1 wall + planks + dividers +
+// ~390 books); the instanced replacement renders the identical silhouette —
+// same radii, height, stair gap, varied spines via the 8-tone bookRamp — in
+// 12 draw calls. This was the last big un-instanced mass in the hall.
 
 function MezzanineLibraryContents() {
   return (
@@ -290,7 +204,7 @@ export function MezzanineLibrary() {
     <group>
       <MezzanineRing />
       <Staircase />
-      <BookshelfWall />
+      <MezzanineBookWall />
       <MezzanineLibraryContents />
     </group>
   );

@@ -195,6 +195,16 @@ export function AutomateView() {
   const loadProposals = useCommandCenter(s => s.loadProposals);
   const saveProposal = useCommandCenter(s => s.saveProposal);
   const dismissProposal = useCommandCenter(s => s.dismissProposal);
+  const setActivePanel = useCommandCenter(s => s.setActivePanel);
+  const setSelectedSkillId = useCommandCenter(s => s.setSelectedSkillId);
+
+  // Open a saved skill in the full Skills Library overlay (master list +
+  // SkillDetailPanel) with it preselected — turns the read-only Learned cards
+  // into a real path into the library.
+  const openSkill = useCallback((id: string) => {
+    setSelectedSkillId(id);
+    setActivePanel('skills');
+  }, [setSelectedSkillId, setActivePanel]);
 
   // Persist Installed collapse state
   const toggleInstalledExpanded = useCallback((val: boolean) => {
@@ -332,26 +342,43 @@ export function AutomateView() {
       fetchJobs();
     }
   };
+  // Shared failure surface for the schedule mutations (2026-07 wiring audit):
+  // the old bare `catch {}` made every failed POST look like success — Btn's
+  // resolve path flashed "✓ Paused/Deleted/…" even on a 4xx/5xx. Show the
+  // failure on the same banner Run Now uses, and RE-THROW so Btn reverts to
+  // idle instead of faking success.
+  const failAction = (id: string, verb: string, err: unknown): never => {
+    const name = jobNameMap.get(id) || id;
+    const msg = err instanceof Error ? err.message : String(err);
+    setRunError(`Couldn't ${verb} "${name}": ${msg}`);
+    setTimeout(() => setRunError(null), 8000);
+    throw err;
+  };
   const handlePause = async (id: string) => {
     setActionState(`${id}:pause`, 'loading');
-    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/pause`, { method: 'POST' }); } catch {}
+    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/pause`, { method: 'POST' }); }
+    catch (err) { failAction(id, 'pause', err); }
   };
   const handleUnpause = async (id: string) => {
     setActionState(`${id}:unpause`, 'loading');
-    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/unpause`, { method: 'POST' }); } catch {}
+    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/unpause`, { method: 'POST' }); }
+    catch (err) { failAction(id, 'resume', err); }
   };
   const handleDelete = async (id: string) => {
     const name = jobNameMap.get(id) || id;
     if (!confirm(`Delete "${name}"? This can't be undone.`)) return;
     setActionState(`${id}:delete`, 'loading');
-    try { await apiFetch<unknown>(`/schedule/delete/${encodeURIComponent(id)}`, { method: 'DELETE' }); } catch {}
+    try { await apiFetch<unknown>(`/schedule/delete/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
+    catch (err) { failAction(id, 'delete', err); }
   };
   const handleKill = async (id: string) => {
-    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/kill`, { method: 'POST' }); fetchJobs(); } catch {}
+    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/kill`, { method: 'POST' }); fetchJobs(); }
+    catch (err) { failAction(id, 'stop', err); }
   };
   const handleResetToDefault = async (id: string) => {
     setActionState(`${id}:reset`, 'loading');
-    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/reset_to_default`, { method: 'POST' }); } catch {}
+    try { await apiFetch<unknown>(`/schedule/${encodeURIComponent(id)}/reset_to_default`, { method: 'POST' }); }
+    catch (err) { failAction(id, 'reset', err); }
   };
 
   // Callback for Btn to signal animation complete — clears mount guard + refreshes data
@@ -556,11 +583,22 @@ export function AutomateView() {
                   const tierFg = tier === 'MASTERED' ? colors.warning : tier === 'TRUSTED' ? colors.success : colors.purpleBright;
                   const dotColor = tier === 'MASTERED' ? colors.warning : tier === 'TRUSTED' ? colors.success : (skill.status === 'active' ? colors.purpleBright : colors.textDim);
                   return (
-                    <div key={skill.id} style={{
-                      padding: '16px 20px', borderRadius: radius.lg,
-                      background: colors.surface, border: `1px solid ${colors.border}`,
-                      transition: 'border-color 150ms',
-                    }}>
+                    <div
+                      key={skill.id}
+                      onClick={() => openSkill(skill.id)}
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Open ${skill.name} in the skills library`}
+                      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openSkill(skill.id); } }}
+                      onMouseEnter={e => { e.currentTarget.style.borderColor = colors.borderHi; }}
+                      onMouseLeave={e => { e.currentTarget.style.borderColor = colors.border; }}
+                      onFocus={e => { e.currentTarget.style.borderColor = colors.borderHi; e.currentTarget.style.boxShadow = `0 0 0 2px ${colors.cyanGlow}`; }}
+                      onBlur={e => { e.currentTarget.style.borderColor = colors.border; e.currentTarget.style.boxShadow = 'none'; }}
+                      style={{
+                        padding: '16px 20px', borderRadius: radius.lg, cursor: 'pointer', outline: 'none',
+                        background: colors.surface, border: `1px solid ${colors.border}`,
+                        transition: 'border-color 150ms, box-shadow 150ms',
+                      }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
                         <div style={{ width: 8, height: 8, borderRadius: '50%', background: dotColor }} />
                         <div style={{ fontSize: 14, fontWeight: 600, fontFamily: font.display, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{skill.name}</div>
@@ -946,6 +984,13 @@ function ExtensionDetail({ ext }: { ext: ExtensionInfo }) {
 
 function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string }; displayName: string }) {
   const { colors } = useTheme();
+  const switchToSession = useCommandCenter(s => s.switchToSession);
+  const openChatDock = useCommandCenter(s => s.openChatDock);
+  // A run's id IS its session id — open the full conversation in the chat dock.
+  const openConversation = useCallback(() => {
+    switchToSession(run.id).catch(err => console.error('[automate] open session failed:', err));
+    openChatDock();
+  }, [switchToSession, openChatDock, run.id]);
   const [reportText, setReportText] = useState<string | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [actionInFlight, setActionInFlight] = useState<string | null>(null);
@@ -1003,9 +1048,26 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
   return (
     <>
       <div style={{ fontSize: 18, fontWeight: 600, fontFamily: font.display, marginBottom: 4 }}>{displayName}</div>
-      <div style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono, marginBottom: 16, fontVariantNumeric: 'tabular-nums' }}>
+      <div style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono, marginBottom: 12, fontVariantNumeric: 'tabular-nums' }}>
         {new Date(run.createdAt).toLocaleString()} &middot; {run.messageCount} msgs &middot; {run.totalTokens ?? 0} tokens
       </div>
+      <button
+        onClick={openConversation}
+        title="Open this run's full conversation in chat"
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6, marginBottom: 20,
+          padding: '5px 12px', borderRadius: radius.sm,
+          background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
+          color: colors.cyan, fontSize: 12, fontWeight: 600, fontFamily: font.body, cursor: 'pointer',
+        }}
+        onMouseEnter={e => { e.currentTarget.style.filter = 'brightness(1.12)'; }}
+        onMouseLeave={e => { e.currentTarget.style.filter = 'none'; }}
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+        </svg>
+        Open conversation
+      </button>
       {loading ? (
         <div style={{ fontSize: 12, color: colors.textDim }}>Loading results...</div>
       ) : findings.length > 0 ? (

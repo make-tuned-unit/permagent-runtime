@@ -51,7 +51,7 @@ use crate::security::security_inspector::SecurityInspector;
 use crate::session::extension_data::{EnabledExtensionsState, ExtensionState};
 use crate::session::{Session, SessionManager};
 use crate::tool_inspection::ToolInspectionManager;
-use crate::tool_monitor::RepetitionInspector;
+use crate::tool_monitor::{assess_monologue, LoopAction, ProgressMonitor};
 use crate::utils::is_token_cancelled;
 use regex::Regex;
 use rmcp::model::{
@@ -63,7 +63,14 @@ use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, warn};
 
-const DEFAULT_MAX_TURNS: u32 = 1000;
+// Runaway-loop safety (non-negotiable B), signal S7: the interactive turn
+// budget is the last-resort backstop that ALWAYS bounds a loop. It was 1000 —
+// at ~$0.05/turn that is ~$50 before it trips, far too loose to be a real
+// guard. Lowered to 50 (dispatched subagents already cap at 25). The
+// ProgressMonitor (S1–S5) catches most loops far earlier and more precisely;
+// this cap is the floor. Overridable per-session (`max_turns`) or via
+// `GOOSE_MAX_TURNS` for the rare legitimately-long autonomous run.
+const DEFAULT_MAX_TURNS: u32 = 50;
 const COMPACTION_THINKING_TEXT: &str = "goose is compacting the conversation...";
 
 /// Context needed for the reply function
@@ -141,6 +148,13 @@ pub struct Agent {
     pub(super) provider: SharedProvider,
     pub config: AgentRunnerConfig,
     pub(super) current_goose_mode: Mutex<GooseMode>,
+    /// True for agents with no interactive approver (scheduled-recipe jobs).
+    /// A headless agent must NEVER park on tool approval — nobody exists to
+    /// answer, so a park is a permanent hang — and must NEVER file a
+    /// `tool_approval` Decision-Inbox row. Instead, approval-required tools
+    /// are auto-DENIED with a recorded skip (already always-allowed tools run
+    /// normally). See `tool_execution.rs` for both enforcement points.
+    pub(super) headless: std::sync::atomic::AtomicBool,
 
     pub extension_manager: Arc<ExtensionManager>,
     pub(super) final_output_tool: Arc<Mutex<Option<FinalOutputTool>>>,
@@ -228,11 +242,13 @@ impl Agent {
             GoosePlatform::GooseCli => ExtensionManagerCapabilities { mcpui: false },
         };
         let session_manager = Arc::clone(&config.session_manager);
+        let session_manager_for_inspectors = Arc::clone(&config.session_manager);
         let permission_manager = Arc::clone(&config.permission_manager);
         Self {
             provider: provider.clone(),
             config,
             current_goose_mode: Mutex::new(initial_mode),
+            headless: std::sync::atomic::AtomicBool::new(false),
             extension_manager: Arc::new(ExtensionManager::new(
                 provider.clone(),
                 session_manager,
@@ -250,6 +266,7 @@ impl Agent {
             tool_inspection_manager: Self::create_tool_inspection_manager(
                 permission_manager,
                 provider.clone(),
+                session_manager_for_inspectors,
             ),
             container: Mutex::new(None),
         }
@@ -259,6 +276,7 @@ impl Agent {
     fn create_tool_inspection_manager(
         permission_manager: Arc<PermissionManager>,
         provider: SharedProvider,
+        session_manager: Arc<SessionManager>,
     ) -> ToolInspectionManager {
         let mut tool_inspection_manager = ToolInspectionManager::new();
 
@@ -275,8 +293,14 @@ impl Agent {
             provider,
         )));
 
-        // Add repetition inspector (lower priority - basic repetition checking)
-        tool_inspection_manager.add_inspector(Box::new(RepetitionInspector::new(None)));
+        // Runaway-loop safety (non-negotiable B): the ProgressMonitor replaces
+        // the old exact-consecutive RepetitionInspector and is ENABLED BY
+        // DEFAULT. It detects stalls (S1–S4) over a rolling per-session window,
+        // blocks the offending call (L1), and — with the session manager for
+        // pool access — escalates a stuck goal worker to the Decision Inbox
+        // (L3), preserving its work.
+        tool_inspection_manager
+            .add_inspector(Box::new(ProgressMonitor::new(Some(session_manager))));
 
         tool_inspection_manager
     }
@@ -416,6 +440,7 @@ impl Agent {
         request_to_response_map: &mut HashMap<String, Message>,
         cancel_token: Option<tokio_util::sync::CancellationToken>,
         session: &Session,
+        inspection_results: &[crate::tool_inspection::InspectionResult],
     ) -> Result<Vec<(String, ToolStream)>> {
         let mut tool_futures: Vec<(String, ToolStream)> = Vec::new();
 
@@ -448,20 +473,45 @@ impl Agent {
             }
         }
 
-        Self::handle_denied_tools(permission_check_result, request_to_response_map);
+        Self::handle_denied_tools(
+            permission_check_result,
+            request_to_response_map,
+            inspection_results,
+        );
         Ok(tool_futures)
+    }
+
+    /// A ProgressMonitor block (L1/L3) carries an actionable "try a different
+    /// approach" reason. Surface it to the model in place of the generic
+    /// declined text so it can self-correct — the whole point of the L1 nudge.
+    /// Every other denial keeps `DECLINED_RESPONSE`.
+    fn progress_monitor_block_reason(
+        request_id: &str,
+        inspection_results: &[crate::tool_inspection::InspectionResult],
+    ) -> Option<String> {
+        inspection_results
+            .iter()
+            .find(|r| {
+                r.tool_request_id == request_id
+                    && r.inspector_name == crate::tool_monitor::PROGRESS_MONITOR_NAME
+                    && r.action == crate::tool_inspection::InspectionAction::Deny
+            })
+            .map(|r| r.reason.clone())
     }
 
     fn handle_denied_tools(
         permission_check_result: &PermissionCheckResult,
         request_to_response_map: &mut HashMap<String, Message>,
+        inspection_results: &[crate::tool_inspection::InspectionResult],
     ) {
         for request in &permission_check_result.denied {
             if let Some(response) = request_to_response_map.get_mut(&request.id) {
+                let text = Self::progress_monitor_block_reason(&request.id, inspection_results)
+                    .unwrap_or_else(|| DECLINED_RESPONSE.to_string());
                 response.add_tool_response_with_metadata(
                     request.id.clone(),
                     Ok(CallToolResult::error(vec![rmcp::model::Content::text(
-                        DECLINED_RESPONSE,
+                        text,
                     )])),
                     request.metadata.as_ref(),
                 );
@@ -496,25 +546,31 @@ impl Agent {
         self.frontend_tools.lock().await.get(name).cloned()
     }
 
-    pub async fn add_final_output_tool(&self, response: Response) {
-        let mut final_output_tool = self.final_output_tool.lock().await;
-        let created_final_output_tool = FinalOutputTool::new(response);
+    /// Install the recipe final-output tool. Fails (instead of panicking the
+    /// daemon) when the recipe's `response.json_schema` is missing, not a
+    /// non-empty JSON object, or fails JSON Schema meta-validation.
+    pub async fn add_final_output_tool(&self, response: Response) -> anyhow::Result<()> {
+        let created_final_output_tool = FinalOutputTool::new(response)?;
         let final_output_system_prompt = created_final_output_tool.system_prompt();
+        let mut final_output_tool = self.final_output_tool.lock().await;
         *final_output_tool = Some(created_final_output_tool);
+        drop(final_output_tool);
         self.extend_system_prompt("final_output".to_string(), final_output_system_prompt)
             .await;
+        Ok(())
     }
 
     pub async fn apply_recipe_components(
         &self,
         response: Option<Response>,
         include_final_output: bool,
-    ) {
+    ) -> anyhow::Result<()> {
         if include_final_output {
             if let Some(response) = response {
-                self.add_final_output_tool(response).await;
+                self.add_final_output_tool(response).await?;
             }
         }
+        Ok(())
     }
 
     /// Dispatch a single tool call to the appropriate client
@@ -1009,12 +1065,37 @@ impl Agent {
         self.extension_manager.get_extension_configs().await
     }
 
-    /// Handle a confirmation response for a tool request
+    /// Mark this agent as headless: no interactive approver exists for it
+    /// (scheduled-recipe jobs). Approval-required tools are auto-denied with a
+    /// recorded skip instead of parking, and no `tool_approval` decision is
+    /// ever filed. Deliberately explicit — headlessness is a property of how
+    /// the agent is RUN (set by the runner that owns it), never an accident of
+    /// mode defaults.
+    pub fn set_headless(&self, headless: bool) {
+        self.headless
+            .store(headless, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether this agent runs without an interactive approver. See
+    /// [`Agent::set_headless`].
+    pub fn is_headless(&self) -> bool {
+        self.headless.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Handle a confirmation response for a tool request.
+    ///
+    /// Returns whether a live waiter actually received it: `true` when the
+    /// provider's ActionRequired routing consumed the confirmation or a parked
+    /// tool call was unblocked through the `ToolConfirmationRouter`; `false`
+    /// when nobody was waiting (the turn was cancelled, the daemon restarted,
+    /// or the request was already answered through another channel) — in that
+    /// case the confirmation had no effect and callers reporting an effect to
+    /// the user must say so instead of claiming the tool ran.
     pub async fn handle_confirmation(
         &self,
         request_id: String,
         confirmation: PermissionConfirmation,
-    ) {
+    ) -> bool {
         let provider = self.provider.lock().await.clone();
         if let Some(provider) = provider.as_ref() {
             if provider.permission_routing() == PermissionRouting::ActionRequired
@@ -1022,16 +1103,19 @@ impl Agent {
                     .handle_permission_confirmation(&request_id, &confirmation)
                     .await
             {
-                return;
+                return true;
             }
         }
-        if !self
+        let delivered = self
             .tool_confirmation_router
             .deliver(request_id, confirmation)
-            .await
-        {
+            .await;
+        if !delivered {
+            // Kept for callers that ignore the return value (CLI session loop):
+            // the router already warn!-ed with the request_id.
             error!("Failed to deliver confirmation");
         }
+        delivered
     }
 
     pub async fn supports_action_required_permissions(&self) -> bool {
@@ -1338,6 +1422,12 @@ impl Agent {
             });
             let mut compaction_attempts = 0;
             let mut last_assistant_text = String::new();
+            // S5 monologue guard (runaway-loop safety): consecutive no-tool
+            // turns that produced no NEW conclusion (same text as the prior
+            // no-tool turn). Reset whenever a tool actually runs.
+            let mut prev_monologue_text = String::new();
+            let mut consecutive_monologue_turns = 0u32;
+            let mut monologue_nudged = false;
 
             loop {
                 if is_token_cancelled(&cancel_token) {
@@ -1361,6 +1451,14 @@ impl Agent {
                     );
                     break;
                 }
+
+                // TODO(S8): $-budget pre-turn stop. Once the cost ledger from
+                // PR #714 lands (in CI, unmerged), add the pre-turn spend check
+                // HERE beside S7: read the session's accumulated $-spend and, if
+                // it exceeds the configured cap, escalate to the Decision Inbox
+                // and pause — never a silent overspend. Deferred until the ledger
+                // exists (the ProgressMonitor S1–S5 and the S7 turn cap already
+                // bound a loop in the meantime).
 
                 let conversation_with_moim = super::moim::inject_moim(
                     &session_config.id,
@@ -1417,6 +1515,20 @@ impl Agent {
                             }
 
                             if let Some(response) = response {
+                                // Provider-side permission parks (claude-code /
+                                // ACP subprocesses in approve/smart_approve):
+                                // the provider has yielded an ActionRequired
+                                // tool confirmation and is now parked on its own
+                                // oneshot awaiting handle_permission_confirmation.
+                                // Bridge the park into the Decision Inbox — or
+                                // auto-deny it when this agent is headless —
+                                // BEFORE the event reaches the client, mirroring
+                                // the core-park filing order. Best-effort: never
+                                // breaks the turn; the legacy action_required
+                                // event below still flows either way.
+                                self.bridge_provider_action_required(&response, &session_config.id)
+                                    .await;
+
                                 let ToolCategorizeResult {
                                     frontend_requests,
                                     remaining_requests,
@@ -1522,6 +1634,7 @@ impl Agent {
                                         &mut request_to_response_map,
                                         cancel_token.clone(),
                                         &session,
+                                        &inspection_results,
                                     ).await?;
 
                                     {
@@ -1839,7 +1952,24 @@ impl Agent {
                     }
                 }
 
+                // S5 monologue guard: a tool ran this turn → reset the counter.
+                if !no_tools_called {
+                    consecutive_monologue_turns = 0;
+                    monologue_nudged = false;
+                    prev_monologue_text.clear();
+                }
+
                 if no_tools_called {
+                    // S5: count consecutive no-tool turns that reached no NEW
+                    // conclusion (identical assistant text). A turn that says
+                    // something new resets the run to 1.
+                    if !last_assistant_text.is_empty() && last_assistant_text == prev_monologue_text {
+                        consecutive_monologue_turns += 1;
+                    } else {
+                        consecutive_monologue_turns = 1;
+                    }
+                    prev_monologue_text = last_assistant_text.clone();
+
                     // Lock, extract state, drop guard before branching — handle_retry_logic
                     // also locks final_output_tool and tokio::sync::Mutex is not reentrant.
                     let final_output = {
@@ -1850,6 +1980,26 @@ impl Agent {
                     match final_output {
                         Some(None) => {
                             warn!("Final output tool has not been called yet. Continuing agent loop.");
+                            // S5 nudge (L1, 0 human cost): the loop is about to
+                            // continue but the model keeps monologuing without
+                            // acting. Add a one-time hint alongside the
+                            // continuation so it self-corrects.
+                            if !monologue_nudged
+                                && matches!(
+                                    assess_monologue(consecutive_monologue_turns),
+                                    LoopAction::Nudge(_)
+                                )
+                            {
+                                monologue_nudged = true;
+                                let nudge = Message::user().with_text(
+                                    "You have replied several times without calling a tool or \
+                                     reaching a new conclusion. Either call the final-output tool \
+                                     with your answer now, take a concrete action, or state \
+                                     plainly what is blocking you.",
+                                );
+                                messages_to_add.push(nudge.clone());
+                                yield AgentEvent::Message(nudge);
+                            }
                             let message = Message::user().with_text(FINAL_OUTPUT_CONTINUATION_MESSAGE);
                             messages_to_add.push(message.clone());
                             yield AgentEvent::Message(message);
@@ -2495,7 +2645,7 @@ mod tests {
             Some(provider.clone() as Arc<dyn crate::providers::base::Provider>);
 
         // Known request_id → provider handles it, confirmation_router NOT called
-        agent
+        let delivered = agent
             .handle_confirmation(
                 "known".to_string(),
                 PermissionConfirmation {
@@ -2504,6 +2654,7 @@ mod tests {
                 },
             )
             .await;
+        assert!(delivered, "provider-consumed confirmation must report true");
         assert_eq!(provider.handled.lock().await.len(), 1);
 
         // Unknown request_id → provider returns false, falls through to confirmation_router
@@ -2512,7 +2663,7 @@ mod tests {
             .tool_confirmation_router
             .register("unknown".to_string())
             .await;
-        agent
+        let delivered = agent
             .handle_confirmation(
                 "unknown".to_string(),
                 PermissionConfirmation {
@@ -2521,6 +2672,7 @@ mod tests {
                 },
             )
             .await;
+        assert!(delivered, "router-delivered confirmation must report true");
         assert_eq!(provider.handled.lock().await.len(), 2);
         // Verify the fallthrough went to confirmation_router
         let conf = rx.await.unwrap();
@@ -2536,7 +2688,7 @@ mod tests {
             .tool_confirmation_router
             .register("any".to_string())
             .await;
-        agent
+        let delivered = agent
             .handle_confirmation(
                 "any".to_string(),
                 PermissionConfirmation {
@@ -2545,9 +2697,47 @@ mod tests {
                 },
             )
             .await;
+        assert!(delivered);
 
         let conf = rx.await.unwrap();
         assert_eq!(conf.permission, crate::permission::Permission::AllowOnce);
+    }
+
+    /// A confirmation with no live waiter (turn cancelled, daemon restarted, or
+    /// already answered elsewhere) must report `false` — the honesty signal the
+    /// Decision Inbox effect message depends on.
+    #[tokio::test]
+    async fn test_handle_confirmation_reports_no_waiter() {
+        let agent = Agent::new();
+
+        // Nothing registered at all.
+        let delivered = agent
+            .handle_confirmation(
+                "never-registered".to_string(),
+                PermissionConfirmation {
+                    principal_type: PrincipalType::Tool,
+                    permission: crate::permission::Permission::AllowOnce,
+                },
+            )
+            .await;
+        assert!(!delivered, "no registered waiter must report false");
+
+        // Registered but the awaiting task is gone (receiver dropped).
+        let rx = agent
+            .tool_confirmation_router
+            .register("cancelled-turn".to_string())
+            .await;
+        drop(rx);
+        let delivered = agent
+            .handle_confirmation(
+                "cancelled-turn".to_string(),
+                PermissionConfirmation {
+                    principal_type: PrincipalType::Tool,
+                    permission: crate::permission::Permission::AllowOnce,
+                },
+            )
+            .await;
+        assert!(!delivered, "dropped receiver must report false");
     }
 
     #[tokio::test]
@@ -2563,7 +2753,7 @@ mod tests {
             })),
         };
 
-        agent.add_final_output_tool(response).await;
+        agent.add_final_output_tool(response).await?;
 
         let tools = agent.list_tools("test-session-id", None).await;
         let final_output_tool = tools
@@ -2588,6 +2778,37 @@ mod tests {
         Ok(())
     }
 
+    /// A recipe with a bad `response.json_schema` must surface as an error,
+    /// never a panic, and must leave no half-installed final-output tool
+    /// behind (bug-sweep wave 1: the old panic here crash-cycled the daemon).
+    #[tokio::test]
+    async fn test_add_final_output_tool_rejects_bad_schema() -> Result<()> {
+        let agent = Agent::new();
+
+        for bad in [
+            None,
+            Some(serde_json::json!(true)),
+            Some(serde_json::json!({})),
+            Some(serde_json::json!({"type": 42})),
+        ] {
+            let result = agent
+                .apply_recipe_components(Some(Response { json_schema: bad }), true)
+                .await;
+            assert!(result.is_err(), "bad schema must be rejected");
+        }
+
+        assert!(
+            agent.final_output_tool.lock().await.is_none(),
+            "no final-output tool may be installed after a rejected schema"
+        );
+        let tools = agent.list_tools("test-session-id", None).await;
+        assert!(
+            !tools.iter().any(|t| t.name == FINAL_OUTPUT_TOOL_NAME),
+            "tool listing must not contain the final-output tool"
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_tool_inspection_manager_has_all_inspectors() -> Result<()> {
         let agent = Agent::new();
@@ -2596,8 +2817,8 @@ mod tests {
         let inspector_names = agent.tool_inspection_manager.inspector_names();
 
         assert!(
-            inspector_names.contains(&"repetition"),
-            "Tool inspection manager should contain repetition inspector"
+            inspector_names.contains(&crate::tool_monitor::PROGRESS_MONITOR_NAME),
+            "Tool inspection manager should contain the progress monitor (runaway-loop guard)"
         );
         assert!(
             inspector_names.contains(&"permission"),

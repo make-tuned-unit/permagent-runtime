@@ -8,19 +8,25 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { getApiBaseUrl } from '../../../lib/api';
+import { eventsWsUrl } from '../../../lib/api';
 import { wireEventType } from '../../../lib/wireEvent';
 import { decisionsClient } from './client';
+import { emitActivity } from '../../../lib/emitActivity';
 import type { AnswerBody, Decision, DecisionsResponse, HistoryItem } from './types';
 import { DecisionConflictError } from './types';
 
 export type AnswerResult =
-  | { ok: true; decision: Decision; effect: string | null }
+  | { ok: true; decision: Decision; effect: string | null; effect_error: string | null }
   | { ok: false; conflict: true };
 
 export function useDecisions() {
   const [data, setData] = useState<DecisionsResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  // True when the last fetch failed AND we have nothing to show. With stale
+  // data on screen the poll failure stays silent (useDashboard pattern), but
+  // a cold failure must NOT render as the "No decisions needed" all-clear
+  // (2026-07 wiring audit).
+  const [error, setError] = useState(false);
   const showAllRef = useRef(false);
   const intervalRef = useRef<ReturnType<typeof setInterval>>();
 
@@ -30,7 +36,14 @@ export function useDecisions() {
         showAllRef.current ? { all: true } : undefined,
       );
       setData(result);
-    } catch { /* ignore — stale data stays, matching useDashboard */ }
+      setError(false);
+    } catch {
+      // Stale data stays (matching useDashboard); flag only the cold failure.
+      setData(prev => {
+        if (prev === null) setError(true);
+        return prev;
+      });
+    }
     setLoading(false);
   }, []);
 
@@ -48,11 +61,14 @@ export function useDecisions() {
     let closed = false;
     const mountedAt = Date.now();
 
-    const connect = () => {
+    const connect = async () => {
       if (closed) return;
-      const base = getApiBaseUrl().replace(/^http/, 'ws');
+      // Daemon token rides the WS query (C1/C2 auth); re-check `closed` after
+      // the await so a token load racing unmount never opens an orphan socket.
+      const url = await eventsWsUrl();
+      if (closed) return;
       try {
-        ws = new WebSocket(`${base}/events`);
+        ws = new WebSocket(url);
       } catch {
         return;
       }
@@ -100,8 +116,23 @@ export function useDecisions() {
     async (id: string, body: AnswerBody): Promise<AnswerResult> => {
       try {
         const outcome = await decisionsClient.answer(id, body);
+        // The user answered a decision — genuine engagement with the Decision
+        // Inbox. Report it so the onboarding coach stops offering to teach it.
+        emitActivity('decision_resolved', 'dashboard', {
+          decision_id: id,
+          resolution: body.answer,
+          headline: outcome.decision.headline,
+        });
         await fetchDecisions();
-        return { ok: true, decision: outcome.decision, effect: outcome.effect };
+        // effect_error rides through (2026-07 wiring audit): the daemon
+        // reports "answer committed but the gated effect failed" — dropping
+        // it made partial failures invisible.
+        return {
+          ok: true,
+          decision: outcome.decision,
+          effect: outcome.effect,
+          effect_error: outcome.effect_error,
+        };
       } catch (e) {
         if (e instanceof DecisionConflictError) {
           return { ok: false, conflict: true };
@@ -118,5 +149,5 @@ export function useDecisions() {
     return items;
   }, []);
 
-  return { data, loading, refresh: fetchDecisions, showAll, answer, loadHistory };
+  return { data, loading, error, refresh: fetchDecisions, showAll, answer, loadHistory };
 }

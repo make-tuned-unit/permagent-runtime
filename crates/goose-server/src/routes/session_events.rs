@@ -3,7 +3,7 @@ use crate::routes::reply::{get_token_state, track_tool_telemetry, MessageEvent};
 use crate::session_event_bus::RequestGuard;
 use crate::state::AppState;
 use axum::{
-    extract::{DefaultBodyLimit, Path, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{self, HeaderMap},
     response::IntoResponse,
     routing::{get, post},
@@ -64,6 +64,17 @@ pub struct SessionReplyResponse {
 #[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct CancelRequest {
     pub request_id: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
+pub struct CancelResponse {
+    /// True when a live request was found and its cancellation was triggered —
+    /// a terminal `Finish { reason: "stop" }` will follow on the SSE stream.
+    /// False when there was nothing to cancel (unknown/stale request_id, e.g.
+    /// the turn already finished or the daemon restarted): no terminal frame
+    /// will ever arrive for that id, so the client must reconcile its own
+    /// streaming state instead of waiting for one.
+    pub cancelled: bool,
 }
 
 // ── SSE Event Stream Response ───────────────────────────────────────────
@@ -174,11 +185,25 @@ fn serialize_session_event(seq: u64, request_id: Option<&str>, event: &MessageEv
 
 // ── GET /sessions/{id}/events ───────────────────────────────────────────
 
+/// Query parameters for the SSE endpoint. `last_event_id` mirrors the
+/// `Last-Event-ID` header for EventSource clients, which cannot set request
+/// headers when they construct a fresh connection (the browser only sends the
+/// header on its own automatic reconnects — not on the manual
+/// close-and-reconnect the store's backoff loop performs).
+#[derive(Debug, Deserialize)]
+pub struct SessionEventsQuery {
+    pub last_event_id: Option<String>,
+}
+
 #[utoipa::path(
     get,
     path = "/sessions/{id}/events",
     params(
         ("id" = String, Path, description = "Session ID"),
+        ("last_event_id" = Option<String>, Query,
+         description = "Resume event replay after this sequence number. \
+                        Query-param mirror of the Last-Event-ID header for \
+                        EventSource clients that cannot set headers."),
     ),
     responses(
         (status = 200, description = "SSE event stream",
@@ -190,6 +215,7 @@ fn serialize_session_event(seq: u64, request_id: Option<&str>, event: &MessageEv
 pub async fn session_events(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
+    Query(query): Query<SessionEventsQuery>,
     headers: HeaderMap,
 ) -> Result<SseEventStream, axum::http::StatusCode> {
     // Validate the session exists before creating an event bus.
@@ -199,10 +225,15 @@ pub async fn session_events(
         .await
         .map_err(|_| axum::http::StatusCode::NOT_FOUND)?;
 
+    // Header wins over the query param: on a browser-native auto-reconnect the
+    // header carries a fresher cursor than the URL captured at construction.
+    // Both parse leniently — a malformed cursor degrades to a full replay
+    // rather than a 400 on the streaming endpoint.
     let last_event_id: Option<u64> = headers
         .get("Last-Event-ID")
         .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse().ok());
+        .and_then(|s| s.parse().ok())
+        .or_else(|| query.last_event_id.as_deref().and_then(|s| s.parse().ok()));
 
     let bus = state.get_or_create_event_bus(&session_id).await;
 
@@ -232,21 +263,24 @@ pub async fn session_events(
     tokio::spawn(async move {
         let bus = task_bus;
 
-        // Notify the client about any in-flight requests BEFORE replay
-        // so it can register event handlers before replayed events arrive.
-        // Emitted without an SSE `id:` field so it doesn't regress the
-        // client's Last-Event-ID cursor.
+        // Notify the client about in-flight requests BEFORE replay so it can
+        // register event handlers before replayed events arrive. ALWAYS
+        // emitted — an EMPTY list is the "nothing is running" reconciliation
+        // signal (C1): after a daemon restart mid-turn there is no terminal
+        // Finish/Error anywhere (fresh bus, empty replay buffer), and without
+        // this frame a reconnecting client that still believes a turn is live
+        // stays wedged on "Agent is responding…" forever. Emitted without an
+        // SSE `id:` field so it doesn't regress the client's Last-Event-ID
+        // cursor.
         let active_ids = bus.active_request_ids().await;
-        if !active_ids.is_empty() {
-            let event = MessageEvent::ActiveRequests {
-                request_ids: active_ids,
-            };
-            let json_str = serde_json::to_string(&serde_json::to_value(&event).unwrap_or_default())
-                .unwrap_or_default();
-            let frame = format!("data: {}\n\n", json_str);
-            if tx.send(frame).await.is_err() {
-                return;
-            }
+        let event = MessageEvent::ActiveRequests {
+            request_ids: active_ids,
+        };
+        let json_str = serde_json::to_string(&serde_json::to_value(&event).unwrap_or_default())
+            .unwrap_or_default();
+        let frame = format!("data: {}\n\n", json_str);
+        if tx.send(frame).await.is_err() {
+            return;
         }
 
         // Send replayed events
@@ -349,48 +383,6 @@ pub async fn session_reply(
         .await
         .map_err(|_| ErrorResponse::not_found(format!("Session {} not found", session_id)))?;
 
-    // Sync session provider/model with current global config so stale
-    // sessions (created under a previous provider) pick up the user's
-    // latest Settings choice.
-    {
-        let config = permagent::config::Config::global();
-        let current_provider = config.get_goose_provider().ok();
-        let current_model = config.get_goose_model().ok();
-
-        let provider_stale = current_provider.is_some()
-            && current_provider.as_deref() != session_data.provider_name.as_deref();
-        let model_stale = current_model.is_some()
-            && current_model.as_deref()
-                != session_data
-                    .model_config
-                    .as_ref()
-                    .map(|m| m.model_name.as_str());
-
-        if provider_stale || model_stale {
-            let mut update = state.session_manager().update(&session_id);
-            if let Some(ref provider) = current_provider {
-                update = update.provider_name(provider.clone());
-            }
-            if let Some(ref model_name) = current_model {
-                if let Ok(mc) = permagent::model::ModelConfig::new(model_name) {
-                    update = update.model_config(mc);
-                }
-            }
-            if let Err(e) = update.apply().await {
-                tracing::warn!("Failed to sync session provider: {}", e);
-            } else {
-                tracing::info!(
-                    "Synced session {} provider {:?} -> {:?}",
-                    session_id,
-                    session_data.provider_name,
-                    current_provider
-                );
-                // Evict cached agent so it gets recreated with the new provider
-                let _ = state.agent_manager.remove_session(&session_id).await;
-            }
-        }
-    }
-
     let session_start = std::time::Instant::now();
 
     // Activity: chat turn started
@@ -426,6 +418,75 @@ pub async fn session_reply(
         .map_err(|_| {
             ErrorResponse::bad_request("Session already has an active request. Cancel it first.")
         })?;
+
+    // Sync session provider/model with current global config so stale
+    // sessions (created under a previous provider) pick up the user's
+    // latest Settings choice.
+    //
+    // Ordering matters (re-enable-gate epic part B): this must run AFTER
+    // `try_register_request`. It evicts the cached agent, and doing that
+    // before the active-request check orphaned a live parked/running turn —
+    // the turn kept running on the unreachable Arc while a later
+    // Decision-Inbox answer reached a freshly recreated agent with no waiter.
+    // A session with an active bus request now 400s above with the agent
+    // intact, and the swap is deferred to its next idle turn.
+    {
+        let config = permagent::config::Config::global();
+        let current_provider = config.get_goose_provider().ok();
+        let current_model = config.get_goose_model().ok();
+
+        let provider_stale = current_provider.is_some()
+            && current_provider.as_deref() != session_data.provider_name.as_deref();
+        let model_stale = current_model.is_some()
+            && current_model.as_deref()
+                != session_data
+                    .model_config
+                    .as_ref()
+                    .map(|m| m.model_name.as_str());
+
+        // Holding the bus request slot rules out a concurrent interactive
+        // turn, but not turns the bus can't see: an orchestrator-driven turn
+        // (registered cancel token on the AgentManager — evicting would cancel
+        // it) or a turn parked on a tool-confirmation waiter (e.g. driven via
+        // the gateway). Defer the whole sync in those cases — skipping only
+        // the eviction would persist the new provider in session metadata and
+        // make the session look non-stale on the next turn, so the live agent
+        // would never pick up the swap.
+        let busy_outside_bus = state.agent_manager.is_session_busy(&session_id).await
+            || state
+                .agent_manager
+                .session_has_pending_confirmation(&session_id)
+                .await;
+
+        if (provider_stale || model_stale) && busy_outside_bus {
+            tracing::info!(
+                session_id = %session_id,
+                "Deferring provider/model sync: session has a live turn outside the event bus"
+            );
+        } else if provider_stale || model_stale {
+            let mut update = state.session_manager().update(&session_id);
+            if let Some(ref provider) = current_provider {
+                update = update.provider_name(provider.clone());
+            }
+            if let Some(ref model_name) = current_model {
+                if let Ok(mc) = permagent::model::ModelConfig::new(model_name) {
+                    update = update.model_config(mc);
+                }
+            }
+            if let Err(e) = update.apply().await {
+                tracing::warn!("Failed to sync session provider: {}", e);
+            } else {
+                tracing::info!(
+                    "Synced session {} provider {:?} -> {:?}",
+                    session_id,
+                    session_data.provider_name,
+                    current_provider
+                );
+                // Evict cached agent so it gets recreated with the new provider
+                let _ = state.agent_manager.remove_session(&session_id).await;
+            }
+        }
+    }
 
     let user_message = request.user_message;
 
@@ -480,6 +541,10 @@ pub async fn session_reply(
                     },
                 )
                 .await;
+                // This Error IS the terminal frame — disarm so the guard's
+                // armed-drop handler doesn't publish a duplicate one.
+                _guard.disarm();
+                task_bus.cleanup_request(&task_request_id).await;
                 return;
             }
         };
@@ -499,6 +564,9 @@ pub async fn session_reply(
                     },
                 )
                 .await;
+                // Terminal frame published — disarm (see above).
+                _guard.disarm();
+                task_bus.cleanup_request(&task_request_id).await;
                 return;
             }
         };
@@ -685,6 +753,9 @@ pub async fn session_reply(
                     },
                 )
                 .await;
+                // Terminal frame published — disarm (see above).
+                _guard.disarm();
+                task_bus.cleanup_request(&task_request_id).await;
                 return;
             }
         };
@@ -891,20 +962,25 @@ pub async fn session_reply(
     ),
     request_body = CancelRequest,
     responses(
-        (status = 200, description = "Cancellation accepted"),
+        (status = 200, description = "Honest cancel result", body = CancelResponse),
     )
 )]
 pub async fn session_cancel(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
     Json(request): Json<CancelRequest>,
-) -> axum::http::StatusCode {
-    let bus = match state.get_event_bus(&session_id).await {
-        Some(bus) => bus,
-        None => return axum::http::StatusCode::NOT_FOUND,
+) -> Json<CancelResponse> {
+    // Always 200 with an honest body. "No bus for this session" and "bus has
+    // no such request" both mean the same thing to the caller — nothing is
+    // running, nothing was cancelled, and no terminal frame is coming — so
+    // they share `cancelled: false` rather than an ambiguous 404 (which the
+    // client cannot distinguish from a wrong URL, and which previously hid
+    // behind an unconditional 200 that lied about cancelling nothing).
+    let cancelled = match state.get_event_bus(&session_id).await {
+        Some(bus) => bus.cancel_request(&request.request_id).await,
+        None => false,
     };
-    bus.cancel_request(&request.request_id).await;
-    axum::http::StatusCode::OK
+    Json(CancelResponse { cancelled })
 }
 
 // ── Route registration ──────────────────────────────────────────────────

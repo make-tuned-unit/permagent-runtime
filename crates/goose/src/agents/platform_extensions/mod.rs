@@ -1,6 +1,7 @@
 pub mod analyze;
 pub mod app_conductor;
 pub mod apps;
+pub mod best_of_n_adapter;
 pub mod browser;
 pub mod chatrecall;
 #[cfg(feature = "code-mode")]
@@ -128,28 +129,50 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: browser::EXTENSION_NAME,
                 display_name: "Browser",
-                description: "Drive and read the web: open any site in the in-app browser \
-                              (open_website), fetch a public page's readable text without a tab \
-                              (read_webpage), and read the page the user currently has open \
-                              (read_browser_content)",
+                description: "Drive, read, and act on the web: open any site in the in-app \
+                              browser (open_website), fetch a public page's readable text without \
+                              a tab (read_webpage), read the page the user currently has open \
+                              (read_browser_content), list a page's interactive elements as \
+                              stable refs (get_page_snapshot), and click, type, or select on them \
+                              (act_on_page)",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
                 why_it_matters:
                     "When the user says 'go to BBC and read me the homepage', open_website shows \
                      it to them and read_webpage gives you the text to read aloud — no pasting, \
-                     no guessing. read_browser_content covers whatever tab they already have open.",
-                teaching: &[crate::agents::self_knowledge::TeachingStep {
-                    title: "Browse together",
-                    body: "Offer it live: open a site the user cares about with open_website, \
-                           then read_webpage the same URL and give them the highlights out \
-                           loud. Works by voice too — this is the hands-free news flow.",
-                    open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
-                        tab: "Build",
-                        section: Some("browser"),
-                    }),
-                    confirm: None,
-                }],
+                     no guessing. read_browser_content covers whatever tab they already have \
+                     open. And when they need something DONE on a page — fill a form, click a \
+                     button, pick an option — get_page_snapshot lists the interactive elements \
+                     and act_on_page clicks, types, or selects, so you drive the page instead of \
+                     only reading it. open_website also opens a LOCAL dev server \
+                     (http://localhost:PORT) in the browser, so after you build or scaffold an \
+                     app you can show the user the running result — the coding last mile.",
+                teaching: &[
+                    crate::agents::self_knowledge::TeachingStep {
+                        title: "Browse together",
+                        body: "Offer it live: open a site the user cares about with open_website, \
+                               then read_webpage the same URL and give them the highlights out \
+                               loud. Works by voice too — this is the hands-free news flow.",
+                        open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                            tab: "Build",
+                            section: Some("browser"),
+                        }),
+                        confirm: None,
+                    },
+                    crate::agents::self_knowledge::TeachingStep {
+                        title: "Act on the page, don't just read it",
+                        body: "When a page needs DOING — a search box, a form, a button — call \
+                               get_page_snapshot to see the interactive elements as numbered \
+                               refs, then act_on_page with a ref to click, type, or select. Take \
+                               a fresh snapshot after each act; the page may have changed.",
+                        open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                            tab: "Build",
+                            section: Some("browser"),
+                        }),
+                        confirm: None,
+                    },
+                ],
                 client_factory: |ctx| Box::new(browser::BrowserClient::new(ctx).unwrap()),
             },
         );
@@ -226,7 +249,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: todo::EXTENSION_NAME,
                 display_name: "Todo",
                 description:
-                    "Enable a todo list for the agent so it can keep track of what it is doing",
+                    "Keep a persistent todo list of what you are doing — one tool (todo_write) overwrites its entire content, and it survives across turns and compaction",
                 default_enabled: true,
                 unprefixed_tools: false,
                 hidden: false,
@@ -242,7 +265,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: apps::EXTENSION_NAME,
                 display_name: "Apps",
                 description:
-                    "Create and manage custom Permagent apps through chat. Apps are HTML/CSS/JavaScript and run in sandboxed windows.",
+                    "Create and manage custom Permagent apps through chat — see what exists (list_apps), generate a new app from a description (create_app), improve one from feedback (iterate_app), or remove one (delete_app). Apps are HTML/CSS/JavaScript and run in sandboxed windows",
                 default_enabled: true,
                 unprefixed_tools: false,
                 hidden: false,
@@ -259,7 +282,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: chatrecall::EXTENSION_NAME,
                 display_name: "Chat Recall",
                 description:
-                    "Search past conversations and load session summaries for contextual memory",
+                    "Search past conversations and load session summaries for contextual memory, in one tool (chatrecall): search mode takes keywords, load mode returns a session's first and last messages",
                 default_enabled: false,
                 unprefixed_tools: false,
                 hidden: false,
@@ -276,7 +299,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: ext_manager::EXTENSION_NAME,
                 display_name: "Extension Manager",
                 description:
-                    "Enable extension management tools for discovering, enabling, and disabling extensions",
+                    "Search your long-term Brain memory to recall facts and context (search_memory), discover other extensions you can turn on (search_available_extensions), enable or disable them (manage_extensions), and list or read the resources an extension exposes (list_resources, read_resource)",
                 default_enabled: true,
                 unprefixed_tools: false,
                 hidden: false,
@@ -292,7 +315,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: summon::EXTENSION_NAME,
                 display_name: "Summon",
-                description: "Load knowledge and delegate tasks to subagents",
+                description: "Load knowledge into your context — subrecipes, recipes, agents, and background-task results (load) — and delegate tasks to subagents that run independently, in parallel or in the background (delegate)",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
@@ -308,7 +331,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: summarize::EXTENSION_NAME,
                 display_name: "Summarize",
-                description: "Load files/directories and get an LLM summary in a single call",
+                description: "Load files/directories and get an LLM summary in a single call (summarize)",
                 default_enabled: false,
                 unprefixed_tools: false,
                 hidden: false,
@@ -325,7 +348,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: code_execution::EXTENSION_NAME,
                 display_name: "Code Mode",
-                description: "Make extension calls through code execution, saving tokens",
+                description: "Make extension calls through code execution, saving tokens: discover callable functions (list_functions, get_function_details) and run many calls in one script (execute_typescript, execute_bash) — which of these are exposed depends on the configured disclosure mode",
                 default_enabled: false,
                 unprefixed_tools: true,
                 hidden: false,
@@ -349,7 +372,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: developer::EXTENSION_NAME,
                 display_name: "Developer",
-                description: "Write and edit files, and execute shell commands",
+                description: "Write and edit files (write, edit), execute shell commands (shell), list a directory tree with line counts (tree), search file contents for a summarized, token-efficient view of matches (search), and run the project's build/test checks for a structured PASS/FAIL (verify)",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
@@ -366,13 +389,35 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: orchestrator::EXTENSION_NAME,
                 display_name: "Orchestrator",
                 description:
-                    "Orchestrate work across agent sessions: list, view, start, message, interrupt, and stop agents; dispatch roadmap goals to worker agents; and surface decisions in the Decision Inbox for supervised approval",
+                    "Orchestrate work across agent sessions: list, view, start, message, and interrupt them (list_sessions, view_session, start_agent, send_message, interrupt_agent); inspect available workers (list_workers, check_worker); plan objectives and dispatch roadmap goals to worker agents (decompose_roadmap, create_roadmap, goal_advance, goal_status, pause_roadmap, resume_roadmap); and surface decisions in the Decision Inbox for supervised approval (escalate)",
                 default_enabled: true,
                 unprefixed_tools: false,
                 hidden: false,
                 why_it_matters:
                     "Run multi-agent work — dispatch goals, track roadmaps, and steer other sessions when one agent is not enough — escalating decisions to the user for approval rather than acting unsupervised.",
-                teaching: &[],
+                teaching: &[
+                    crate::agents::self_knowledge::TeachingStep {
+                        title: "Give me acceptance criteria",
+                        body: "Tell the user that when they hand you a goal's acceptance \
+                               criteria — 'the project builds', 'GET /health returns 200', \
+                               'docs/guide.md exists', 'no TODO remains in src/lib.rs' — you \
+                               compile the mechanically-checkable ones into checks the daemon \
+                               runs in the goal's worktree before it can be approved. Ask for \
+                               criteria in that measurable, verifiable shape.",
+                        open_surface: None,
+                        confirm: None,
+                    },
+                    crate::agents::self_knowledge::TeachingStep {
+                        title: "Proof, not a claim",
+                        body: "Make the point out loud: with acceptance criteria you verify a \
+                               goal is actually done — the goal cannot pass review until its \
+                               checks pass — rather than just relaying that a worker reported \
+                               success. Offer to add a checkable criterion to a real goal so \
+                               they see it enforced.",
+                        open_surface: None,
+                        confirm: None,
+                    },
+                ],
                 client_factory: |ctx| Box::new(orchestrator::OrchestratorClient::new(ctx).unwrap()),
             },
         );
@@ -399,12 +444,12 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: skills::EXTENSION_NAME,
                 display_name: "Skills",
-                description: "Discover and provide skill instructions from filesystem and builtins",
+                description: "Discover skills stored as portable SKILL.md folders (the open agentskills.io standard) from the filesystem and builtins, and load one's full instructions into your context (load_skill)",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
                 why_it_matters:
-                    "Pull in proven step-by-step procedures instead of improvising a workflow.",
+                    "Pull in proven step-by-step procedures instead of improvising a workflow. Skills are portable SKILL.md folders compatible with Claude Code, Cursor, Codex, and the broader agent ecosystem, so learned capability moves in and out without lock-in.",
                 teaching: &[],
                 client_factory: |ctx| Box::new(skills::SkillsClient::new(ctx).unwrap()),
             },
@@ -432,12 +477,12 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: app_conductor::EXTENSION_NAME,
                 display_name: "App Conductor",
-                description: "Navigate the user to tabs and views AND act within them — open/close/detach the chat dock, show/hide the Build tab's browser and terminal panes — in the Permagent app",
+                description: "Navigate the user to tabs and views in the Permagent app (navigate_app), act within them — open/close/detach the chat dock, show/hide the Build tab's browser and terminal panes (app_action) — and carry them the last mile past a tab to a specific item: a goal's detail or a project's Grow planner (open_item)",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
                 why_it_matters:
-                    "Drive the app for the user — take them to the right view and operate it — instead of telling them where to click.",
+                    "Drive the app for the user — take them to the right view, operate it, and open the specific goal or project view they mean — instead of telling them where to click.",
                 teaching: &[],
                 client_factory: |ctx| {
                     Box::new(app_conductor::AppConductorClient::new(ctx).unwrap())
@@ -451,12 +496,16 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: recipe_author::EXTENSION_NAME,
                 display_name: "Recipe Author",
                 description:
-                    "Create, list, and manage scheduled automations and saved skills through chat",
+                    "Create, list, run, pause, and delete scheduled automations (create_recipe, list_recipes, run_recipe, pause_recipe, delete_recipe) and save or list reusable skills (save_skill, list_skills) through chat",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
                 why_it_matters:
-                    "Turn a repeatable task into a saved automation or schedule the user can rely on.",
+                    "Turn a repeatable task into a saved automation or schedule the user can rely on. \
+                     Saved skills are written as portable SKILL.md folders (the open agentskills.io \
+                     standard, shared with Claude Code, Cursor, and Codex); the ones that prove useful \
+                     are promoted to the front of what you reach for, and ones that never fire retire \
+                     themselves, so the skill library stays honest.",
                 teaching: &[],
                 client_factory: |ctx| {
                     Box::new(recipe_author::RecipeAuthorClient::new(ctx).unwrap())
@@ -470,7 +519,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: storage_health::EXTENSION_NAME,
                 display_name: "Storage Health",
                 description:
-                    "Scan the filesystem for storage cleanup opportunities — dev caches, app caches, stale downloads, and large files",
+                    "Scan the filesystem for storage cleanup opportunities (scan_storage_health) — dev caches, app caches, stale downloads, and large files",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
@@ -506,7 +555,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: people::EXTENSION_NAME,
                 display_name: "People",
                 description:
-                    "Create people, associate them with projects, and enrich a person's professional details — creating mints a durable graph entity plus a CRM directory row in one deterministic step; enrichment researches structured fields and files a review-gated Decision Inbox proposal",
+                    "Create people and associate them with projects (create_person, associate_person_with_project) — minting a durable graph entity plus a CRM directory row in one deterministic step — and enrich a person's professional details: enrich_person returns a research briefing, you research with your web tools, and propose_enrichment files the findings as a review-gated Decision Inbox proposal",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
@@ -523,7 +572,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: project_manager::EXTENSION_NAME,
                 display_name: "Project Manager",
                 description:
-                    "Create, list, update, and delete projects — named workspaces with paths, URLs, and metadata",
+                    "Manage projects — named workspaces with paths, URLs, and metadata — including create, update, delete, list, and fuzzy-resolve (project_create, project_update, project_delete, project_list, project_resolve); run a project's Kanban board by creating, moving, deleting, and listing cards (card_create, card_move, card_delete, card_list) and adding or removing columns (column_create, column_delete); summarize the board across projects (board_summary); and open a project-rooted terminal in the Build tab (project_launch)",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,

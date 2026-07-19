@@ -1,37 +1,14 @@
 import { create } from 'zustand';
 import { api, apiFetch, extractText, extractThinking, fileToBase64, readerIngest } from './api';
-import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload } from './api';
+import { emitActivity, type ActivityEventName, type ActivitySourceSurface } from './emitActivity';
+import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload, TokenState } from './api';
+import { costFromFrame } from './costMeter';
+import { appendTraceRecord, sessionFrameToRecord } from './traceEvents';
 import { startEventPruning } from './eventBus';
 import type { ProjectPerson } from '../components/projects/types';
+import type { BrainMemoryTarget } from '../components/brain/brainMemoryFocus';
 
 // --- Types ---
-
-export interface TaskState {
-  id: string;
-  title: string | null;
-  status: string;
-  automation_id: string | null;
-  created_at: string | null;
-  updated_at: string;
-}
-
-export interface ServiceHealthState {
-  service: string;
-  status: string;
-  last_check: string;
-  latency_ms: number;
-}
-
-export interface ReceiptState {
-  id: string;
-  run_id: string;
-  step_id: string | null;
-  model: string;
-  input_tokens: number;
-  output_tokens: number;
-  cost_usd: number;
-  recorded_at: string;
-}
 
 export interface EventRecord {
   id: string;
@@ -129,7 +106,7 @@ export type PermagentEventType =
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 
-export type ActivePanel = 'chat' | 'skills' | 'events' | 'settings' | 'sessions' | 'terminal' | 'browser';
+export type ActivePanel = 'chat' | 'skills' | 'events' | 'settings' | 'sessions' | 'terminal' | 'browser' | 'inbox' | 'trace';
 
 // ── Workspace types ──
 
@@ -178,6 +155,10 @@ export interface ProviderInfo {
   configKeys: Array<{ name: string; required: boolean; secret: boolean; description?: string }>;
   isConfigured: boolean;
   isDefault: boolean;
+  /** Registry classification: "Preferred" | "Builtin" | "Declarative" | "Custom".
+   *  "Custom" marks a user-defined provider (added via the custom-provider flow),
+   *  which is the only type that can be removed from the UI. */
+  providerType: string;
 }
 
 interface CommandCenterStore {
@@ -206,12 +187,7 @@ interface CommandCenterStore {
   setDefaultProvider: (name: string, model: string) => Promise<void>;
 
   // --- Operational state ---
-  tasks: TaskState[];
-  serviceHealth: ServiceHealthState[];
-  receipts: ReceiptState[];
   events: EventRecord[];
-  spendToday: number;
-  spendMonth: number;
 
   // --- Agent identity ---
   agentName: string;
@@ -220,13 +196,37 @@ interface CommandCenterStore {
   // --- Chat state ---
   chatMessages: ChatMessage[];
   chatSessionId: string | null;
+  /** Non-null when the last loadSessionMessages failed transiently (daemon
+   *  hiccup, network) — the #568-lesson surface: MessageList renders it inline
+   *  with a Retry instead of the old silent catch that disowned the session.
+   *  Null while loading and after a successful load. */
+  sessionLoadError: string | null;
   addChatMessage: (msg: ChatMessage) => void;
   _streamingMessageId: string | null;
+  /** request_id of the in-flight reply turn (client-generated in api.sendReply,
+   *  re-adopted from the daemon's ActiveRequests SSE event on reconnect). The
+   *  Stop button's cancel target; null when idle. */
+  _activeRequestId: string | null;
   _pendingContext: { probed_memories: ProbedMemoryRef[]; recalled_memories: RecalledMemoryRef[] } | null;
 
   // --- SSE streaming ---
   isStreaming: boolean;
+  /**
+   * Latest token + cost state from the SSE stream — updated on every Message /
+   * Finish frame (each carries `token_state`). The always-on Build meter reads
+   * this; it is the live, single-sourced $ with no extra endpoint.
+   */
+  liveTokens: TokenState | null;
   sendMessage: (text: string, files?: File[]) => Promise<void>;
+  /** Interrupt the in-flight turn: POST /sessions/{id}/cancel with the active
+   *  request_id. Returns true when the daemon confirmed a live request was
+   *  cancelled (a terminal Finish follows on SSE and settles the UI); false
+   *  when there was nothing to cancel — locally idle, the request_id hasn't
+   *  landed yet, or the daemon answered {cancelled:false} (stale id: the turn
+   *  already ended or the daemon restarted), in which case streaming state is
+   *  reconciled to idle here because no terminal frame will ever arrive.
+   *  Throws if the cancel POST itself fails (agent still alive). */
+  stopStreaming: () => Promise<boolean>;
   /**
    * Decision Inbox deep-link (#303): open a fresh chat session seeded with a
    * decision's context and a context-aware opening turn. Set transiently while
@@ -271,7 +271,7 @@ interface CommandCenterStore {
   setSelectedSkillId: (id: string | null) => void;
   loadSkills: () => Promise<void>;
   deleteSkill: (id: string) => Promise<void>;
-  updateSkill: (id: string, updates: Partial<SkillState>) => Promise<void>;
+  updateSkill: (id: string, updates: Partial<SkillState>) => Promise<boolean>;
 
   // --- Skill proposals ---
   pendingSkillProposal: SkillProposal | null;
@@ -284,6 +284,10 @@ interface CommandCenterStore {
 
   // --- Sessions state ---
   sessions: SessionState[];
+  /** True when the last loadSessions() failed — lets SessionsList show an
+      inline error + retry instead of the lying "No sessions yet" empty state
+      (#568 empty-body lesson; mirrors providersError). */
+  sessionsError: boolean;
   loadSessions: () => Promise<void>;
 
   // --- Event filters ---
@@ -292,7 +296,6 @@ interface CommandCenterStore {
 
   // --- Actions ---
   loadEvents: (params?: { type?: string; limit?: number }) => Promise<void>;
-  loadSnapshot: () => Promise<void>;
   loadSessionMessages: (sessionId: string) => Promise<void>;
   handleSessionEvent: (data: SSEEvent) => void;
   clearEvents: () => void;
@@ -300,6 +303,21 @@ interface CommandCenterStore {
   // --- Project navigation (from agent/voice) ---
   pendingProjectNavigation: string | null;
   setPendingProjectNavigation: (id: string | null) => void;
+
+  // --- Brain-loop: "View in Brain" deep-link (surface a specific memory) ---
+  // Product surfaces that write into the Brain (Projects Memories panel, Notes,
+  // Codebase index) close the loop by focusing the memory they created back in
+  // the Brain view. focusBrainMemory stashes the target + navigates to the Brain
+  // (the 'memory' tool); BrainView consumes it (graph-preferred, preview
+  // fallback) and opens that memory's side panel. Reusable by any future caller
+  // that has a memory id/key (e.g. the operator last-mile).
+  pendingBrainMemory: BrainMemoryTarget | null;
+  focusBrainMemory: (target: BrainMemoryTarget) => void;
+  clearPendingBrainMemory: () => void;
+
+  // --- Settings deep-link (from agent/voice: "Settings → <pane>") ---
+  pendingSettingsSection: string | null;
+  setPendingSettingsSection: (section: string | null) => void;
 
   // --- Project terminal launch (from agent: project_launch event) ---
   pendingTerminalLaunch: { rootPath: string; label: string; command?: string } | null;
@@ -310,9 +328,12 @@ interface CommandCenterStore {
   // --- In-app browser navigation (chat links, agent tour #353) ---
   pendingBrowserUrl: string | null;
   // Grow deep-link (2026-07-11): Projects → 'Grow this project' sets this, the
-  // Grow tab reads it to preselect the project.
+  // Grow tab reads it to preselect the project. GrowView consumes-then-clears
+  // via setOpenGrowForProject(null) (the pendingProjectNavigation pattern) so
+  // a one-shot deep link can't re-select that project on every later Grow visit.
   openGrowForProject: string | null;
   growProject: (projectId: string) => void;
+  setOpenGrowForProject: (id: string | null) => void;
   openInBrowser: (url: string) => void;
   clearPendingBrowserUrl: () => void;
 
@@ -346,8 +367,15 @@ interface CommandCenterStore {
   _eventSource: EventSource | null;
   _reconnectTimer: ReturnType<typeof setTimeout> | null;
   _reconnectAttempts: number;
+  /** SSE cursor: the last `id:` seen on the stream. Sent back to the daemon as
+   *  `?last_event_id=` on reconnect so the replay resumes instead of repeating
+   *  the whole buffer (duplicate deltas/error bubbles — P1). */
   _lastEventId: string | null;
-  connectSession: (sessionId: string) => void;
+  /** Which session `_lastEventId` belongs to — sequence numbers are per-session,
+   *  so a cursor must never leak across a session switch. */
+  _lastEventSessionId: string | null;
+  /** Async: awaits the daemon token before opening the SSE (C1/C2 auth). */
+  connectSession: (sessionId: string) => Promise<void>;
   disconnectSession: () => void;
   ensureSession: () => Promise<string | null>;
 }
@@ -355,6 +383,11 @@ interface CommandCenterStore {
 const MAX_EVENTS_BUFFER = 1000;
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
+
+/** Guards the async gap in connectSession (awaiting the daemon token before
+ *  constructing the EventSource): a newer connect/disconnect bumps the epoch,
+ *  and a stale in-flight connect aborts instead of opening a duplicate SSE. */
+let _sseConnectEpoch = 0;
 
 /** Pull a toolRequest's name/args, tolerating the daemon's tool_result_serde
  *  wrapper `{ status, value:{ name, arguments } }` as well as a flat shape.
@@ -443,6 +476,19 @@ function daemonMsgToChat(
   };
 }
 
+/**
+ * Surfaces that emit no activity of their own — a `<tool>_opened` engagement
+ * signal is emitted when the user navigates to the workspace hosting them, so
+ * the onboarding coach knows they've used it. Keyed by the workspace's primary
+ * tool (`brain` is the `memory` tool). Tools already instrumented by their own
+ * events (build/terminal/browser/projects/etc.) are intentionally absent.
+ */
+const OPEN_EVENT_BY_TOOL: Partial<Record<ToolType, { event: ActivityEventName; surface: ActivitySourceSurface }>> = {
+  world: { event: 'world_view_opened', surface: 'world' },
+  memory: { event: 'brain_opened', surface: 'brain' },
+  grow: { event: 'grow_opened', surface: 'grow' },
+};
+
 /** Extract the primary tool type from a workspace layout tree. */
 function primaryToolType(node: LayoutNode): ToolType | null {
   if (node.type === 'panel') return node.tool;
@@ -527,8 +573,19 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   },
 
   switchWorkspace: (workspaceId: string) => {
+    // Re-selecting the already-active workspace (a re-click, or a daemon-driven
+    // AppNavigate to the tab the user is on) is a no-op — in particular it must
+    // not re-emit an "opened" engagement event for a view that never closed.
+    if (get().activeWorkspaceId === workspaceId) return;
     set({ activeWorkspaceId: workspaceId });
     api.setActiveWorkspace(workspaceId).catch(() => {});
+    // Report engagement for surfaces that emit nothing themselves. Boot sets
+    // activeWorkspaceId directly (not via this action), so this only fires on a
+    // real user/agent navigation, never on initial load.
+    const ws = get().workspaces.find(w => w.id === workspaceId);
+    const tool = ws ? primaryToolType(ws.layoutJson) : null;
+    const open = tool ? OPEN_EVENT_BY_TOOL[tool] : undefined;
+    if (open) emitActivity(open.event, open.surface);
   },
 
   updateWorkspaceLayout: (workspaceId: string, layoutJson: LayoutNode) => {
@@ -566,6 +623,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
           configKeys: p.metadata.config_keys,
           isConfigured: p.is_configured,
           isDefault: p.is_default ?? false,
+          providerType: p.provider_type,
         })),
       });
     } catch {
@@ -584,18 +642,14 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   },
 
   // State
-  tasks: [],
-  serviceHealth: [],
-  receipts: [],
   events: [],
-  spendToday: 0,
-  spendMonth: 0,
 
   // Chat
   chatMessages: [],
   chatSessionId: (() => {
     try { return localStorage.getItem('permagent-chat-session-id'); } catch { return null; }
   })(),
+  sessionLoadError: null,
   _streamingMessageId: null,
   _pendingContext: null,
   discussSeedDecisionId: null,
@@ -613,6 +667,8 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
   // Streaming
   isStreaming: false,
+  liveTokens: null,
+  _activeRequestId: null,
 
   /**
    * Ensure a session exists. Creates one via POST /api/sessions if needed.
@@ -752,13 +808,16 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     const appContext = buildAppContext(get());
 
     try {
-      // Fire-and-forget: events arrive on SSE channel
-      await api.sendReply(sessionId, outgoingText, images, appContext);
+      // Fire-and-forget: the turn streams on the SSE channel. Capture the
+      // request_id it returns so the Stop button can cancel THIS turn.
+      const { request_id } = await api.sendReply(sessionId, outgoingText, images, appContext);
+      set({ _activeRequestId: request_id });
     } catch (err) {
       console.error('[send] api.sendReply FAILED:', err);
       set(s => ({
         isStreaming: false,
         _streamingMessageId: null,
+        _activeRequestId: null,
         chatMessages: [...s.chatMessages, {
           id: `msg-${Date.now()}-err`,
           role: 'system' as const,
@@ -767,6 +826,40 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         }],
       }));
     }
+  },
+
+  /**
+   * Interrupt the in-flight turn. POSTs /sessions/{id}/cancel with the active
+   * request_id and acts on the daemon's HONEST answer:
+   *
+   * {cancelled:true} — a live request's token was cancelled; the daemon
+   * publishes a terminal Finish { reason: "stop" }, so the UI settles on the
+   * normal stream path (the Finish handler flips isStreaming off + rehydrates
+   * the transcript). That same Finish is when the daemon frees the session's
+   * single request slot, so we deliberately keep isStreaming true until it
+   * lands — resetting early would let the next send race the slot (400
+   * "already has an active request").
+   *
+   * {cancelled:false} — the daemon knows nothing about that request_id (the
+   * turn already ended, or the daemon restarted and the request evaporated).
+   * NO terminal frame is ever coming for it, so waiting would wedge the
+   * composer + spin the Stop button forever — reconcile to idle right here.
+   *
+   * If the POST itself throws the agent is still alive, so we propagate rather
+   * than lie that it stopped (the caller re-enables Stop to allow a retry).
+   * Returns false when nothing was cancelled — including the brief window
+   * after a send where isStreaming is already true but the request_id hasn't
+   * come back yet — so the caller can drop its "stopping" affordance.
+   */
+  stopStreaming: async () => {
+    const { chatSessionId, _activeRequestId, isStreaming } = get();
+    if (!isStreaming || !chatSessionId || !_activeRequestId) return false;
+    const { cancelled } = await api.cancelReply(chatSessionId, _activeRequestId);
+    if (!cancelled) {
+      set({ isStreaming: false, _streamingMessageId: null, _activeRequestId: null });
+      return false;
+    }
+    return true;
   },
 
   /**
@@ -787,7 +880,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       return;
     }
     get().disconnectSession();
-    set({ chatSessionId: sessionId, chatMessages: [], isStreaming: false, _streamingMessageId: null });
+    set({ chatSessionId: sessionId, chatMessages: [], isStreaming: false, _streamingMessageId: null, _activeRequestId: null });
     try { localStorage.setItem('permagent-chat-session-id', sessionId); } catch { /* */ }
     get().connectSession(sessionId);
     get().setActivePanel('chat');
@@ -803,10 +896,17 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
   switchToSession: async (sessionId: string) => {
     get().disconnectSession();
-    set({ chatSessionId: sessionId, chatMessages: [], isStreaming: false, _streamingMessageId: null });
+    set({ chatSessionId: sessionId, chatMessages: [], isStreaming: false, _streamingMessageId: null, _activeRequestId: null });
     try { localStorage.setItem('permagent-chat-session-id', sessionId); } catch { /* */ }
     await get().loadSessionMessages(sessionId);
-    get().connectSession(sessionId);
+    // A 404 inside loadSessionMessages disowns the id (the session is gone);
+    // don't open an SSE channel to a session the store no longer owns — the
+    // reconnect loop keys off chatSessionId and would die silently (C8).
+    // Transient failures KEEP the id (inline error + retry), so we still
+    // connect: the turn stream works even while history is unloaded.
+    if (get().chatSessionId === sessionId) {
+      get().connectSession(sessionId);
+    }
   },
 
   deleteSession: async (sessionId: string) => {
@@ -868,8 +968,10 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       set(s => ({
         skills: s.skills.map(sk => sk.id === id ? { ...sk, ...updated } : sk),
       }));
+      return true;
     } catch (e) {
       console.error('Failed to update skill:', e);
+      return false;
     }
   },
 
@@ -954,6 +1056,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
   // Sessions
   sessions: [],
+  sessionsError: false,
   loadSessions: async () => {
     // #341 instrumentation: time fetch+parse vs the map+store-commit (which
     // triggers the React re-render of the session list). The map projects away
@@ -971,18 +1074,29 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
           updated_at: s.updated_at,
           message_count: s.message_count,
         })),
+        sessionsError: false,
       });
       console.info(
         `[session-perf] loadSessions fetch+parse=${(tFetched - t0).toFixed(1)}ms ` +
           `map+set=${(performance.now() - tFetched).toFixed(1)}ms count=${sessions.length}`,
       );
     } catch {
-      set({ sessions: [] });
+      // Daemon unreachable ≠ "no sessions yet" — flag the failure so the list
+      // renders an inline error + retry instead of the empty state (#568).
+      set({ sessions: [], sessionsError: true });
     }
   },
 
-  /** Load messages from a session's conversation history. Handles 404 gracefully. */
+  /** Load messages from a session's conversation history.
+   *
+   *  Failure honesty (C8): only a 404 — the session genuinely no longer
+   *  exists — disowns the stored session id. Every other failure (daemon
+   *  hiccup, network) is transient: the id is KEPT and the error surfaces
+   *  inline via sessionLoadError (MessageList renders it with a Retry —
+   *  the #568 lesson), instead of silently discarding a working session and
+   *  leaving connectSession running against a disowned id. */
   loadSessionMessages: async (sessionId: string) => {
+    set({ sessionLoadError: null });
     try {
       const session = await api.getSession(sessionId);
       if (session.conversation && session.conversation.length > 0) {
@@ -990,11 +1104,20 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         const msgs = session.conversation.map((m, i) => daemonMsgToChat(m, i, sessionId, responses));
         set({ chatMessages: msgs });
       }
-    } catch {
-      // Session may not exist (404) — clear stale ID and start fresh
-      console.warn('Session not found, will create new on next message');
-      set({ chatMessages: [], chatSessionId: null });
-      try { localStorage.removeItem('permagent-chat-session-id'); } catch { /* */ }
+    } catch (err) {
+      if ((err as { status?: number }).status === 404) {
+        // Session no longer exists — clear the stale ID and start fresh.
+        console.warn('Session not found, will create new on next message');
+        set({ chatMessages: [], chatSessionId: null });
+        try { localStorage.removeItem('permagent-chat-session-id'); } catch { /* */ }
+      } else {
+        console.error('Failed to load session messages:', err);
+        set({
+          sessionLoadError: err instanceof Error && err.message
+            ? err.message
+            : 'Could not reach the agent',
+        });
+      }
     }
   },
 
@@ -1008,31 +1131,49 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     // Events come through per-session SSE; no separate REST endpoint
   },
 
-  loadSnapshot: async () => {
-    try {
-      const snapshot = await api.getStateSnapshot();
-      const spendToday = snapshot.spend?.today_usd ?? 0;
-      const spendMonth = snapshot.spend?.month_usd ?? 0;
-      const serviceHealth = (snapshot.service_health || []).map(h => ({ ...h }));
-
-      set({
-        tasks: (snapshot.tasks || []).map(t => ({ ...t, title: t.title || null })),
-        serviceHealth,
-        receipts: (snapshot.receipts || []).map(r => ({ ...r })),
-        spendToday,
-        spendMonth,
-      });
-    } catch {
-      set({
-        tasks: [], serviceHealth: [], receipts: [],
-        spendToday: 0, spendMonth: 0,
-      });
-    }
-  },
-
   /** Handle a per-session SSE event (Message, Error, Finish from reply stream) */
   handleSessionEvent: (data: SSEEvent) => {
+    // Every Message/Finish frame carries live token + cost state. Capture it so
+    // the Build meter reflects real spend the instant a frame lands. Uses the
+    // same extractor the meter test drives, so the SSE→meter path is proven.
+    const ts = costFromFrame(data);
+    if (ts) set({ liveTokens: ts });
+
     switch (data.type) {
+      case 'ActiveRequests': {
+        // On EVERY (re)connect the daemon lists this session's in-flight
+        // requests — the truth signal in both directions (C1/C4):
+        //
+        // Non-empty ⇒ a turn IS live server-side. Adopt the id AND flip
+        // isStreaming on, so a window that attached mid-turn (reload, detached
+        // dock) shows an honest composer + Stop button instead of an idle
+        // input whose send would 400 ("already has an active request").
+        // try_register_request enforces a single active request, so the first
+        // id is the Stop target. _streamingMessageId is left alone: if this
+        // window started the turn its placeholder keeps streaming; a freshly
+        // attached window has none and settles on the Finish rehydrate (the
+        // StreamingIndicator covers the meantime).
+        //
+        // EMPTY ⇒ the daemon says nothing is running. If we believe a turn is
+        // live, it died without a terminal frame (daemon restart mid-turn:
+        // fresh bus, empty replay — no Finish/Error is ever coming) — clear
+        // streaming state or the composer stays "Agent is responding…"
+        // forever. Sole exception: while our own reply POST is still in
+        // flight (isStreaming set, request_id not yet returned) the server
+        // may simply not have registered the request yet — don't let a
+        // racing reconnect kill a turn that is being born.
+        const ids = (data as { type: string; request_ids?: string[] }).request_ids;
+        if (ids && ids.length > 0) {
+          set({ _activeRequestId: ids[0], isStreaming: true });
+        } else {
+          const { isStreaming, _activeRequestId } = get();
+          const replyPostInFlight = isStreaming && !_activeRequestId;
+          if (!replyPostInFlight) {
+            set({ isStreaming: false, _streamingMessageId: null, _activeRequestId: null });
+          }
+        }
+        break;
+      }
       case 'Message': {
         const msg = (data as { type: string; message: DaemonMessage }).message;
         if (msg.role === 'assistant') {
@@ -1057,20 +1198,9 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
           }
         }
 
-        // Also push to trace events
-        const record: EventRecord = {
-          id: `sse-${Date.now()}`,
-          timestamp: new Date().toISOString(),
-          source: 'permagentd',
-          event_type: 'Message',
-          severity: 'info',
-          run_id: null,
-          task_id: null,
-          agent_id: null,
-          correlation_id: null,
-          payload: data as unknown as Record<string, unknown>,
-        };
-        set(s => ({ events: [record, ...s.events].slice(0, MAX_EVENTS_BUFFER) }));
+        // Trace recording moved to the connectSession funnel (es.onmessage →
+        // sessionFrameToRecord): every frame type is recorded there with its
+        // real type (tool_call/Message/Error/Finish), not just Message rows.
         break;
       }
       case 'Error': {
@@ -1078,6 +1208,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         set(s => ({
           isStreaming: false,
           _streamingMessageId: null,
+          _activeRequestId: null,
           chatMessages: [...s.chatMessages, {
             id: `msg-${Date.now()}-err`,
             role: 'system' as const,
@@ -1088,7 +1219,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         break;
       }
       case 'Finish': {
-        set({ isStreaming: false, _streamingMessageId: null });
+        set({ isStreaming: false, _streamingMessageId: null, _activeRequestId: null });
         // Reload proposals + skills after each reply completes — the agent may
         // have created a skill (save_skill) or a new proposal may have fired.
         get().loadProposals();
@@ -1130,6 +1261,20 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   pendingProjectNavigation: null,
   setPendingProjectNavigation: (id) => set({ pendingProjectNavigation: id }),
 
+  // Brain-loop "View in Brain" deep-link. Stash the target, then switch to the
+  // Brain workspace; BrainView consumes pendingBrainMemory on mount/refresh, so
+  // the focus still resolves if the Brain view was not yet open (mirrors the
+  // pendingBrowserUrl / pendingTerminalLaunch seams).
+  pendingBrainMemory: null,
+  focusBrainMemory: (target) => {
+    set({ pendingBrainMemory: target });
+    navigateToTool('memory');
+  },
+  clearPendingBrainMemory: () => set({ pendingBrainMemory: null }),
+
+  pendingSettingsSection: null,
+  setPendingSettingsSection: (section) => set({ pendingSettingsSection: section }),
+
   pendingTerminalLaunch: null,
   setPendingTerminalLaunch: (launch) => set({ pendingTerminalLaunch: launch }),
 
@@ -1140,6 +1285,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   pendingBrowserUrl: null,
   openGrowForProject: null,
   growProject: (projectId) => { set({ openGrowForProject: projectId }); navigateToTool('grow'); },
+  setOpenGrowForProject: (id) => set({ openGrowForProject: id }),
   buildTerminalHidden: false,
   buildBrowserHidden: false,
   // Never allow both hidden: hiding one re-shows the other.
@@ -1181,8 +1327,10 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   _reconnectTimer: null,
   _reconnectAttempts: 0,
   _lastEventId: null,
+  _lastEventSessionId: null,
 
-  connectSession: (sessionId: string) => {
+  connectSession: async (sessionId: string) => {
+    const epoch = ++_sseConnectEpoch;
     const state = get();
     // Close existing connection
     if (state._eventSource) {
@@ -1192,15 +1340,27 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       clearTimeout(state._reconnectTimer);
     }
 
+    // The SSE cursor is per-session (sequence numbers restart on every bus):
+    // reset it when this connection targets a different session than the one
+    // the cursor was recorded against.
+    if (state._lastEventSessionId !== sessionId) {
+      set({ _lastEventId: null, _lastEventSessionId: sessionId });
+    }
+
     set({ connectionStatus: 'connecting' });
     startEventPruning();
 
-    const url = api.sessionEventsUrl(sessionId);
+    // Resume the replay after the last event we processed (P1): EventSource
+    // can't set the Last-Event-ID header on this manual reconnect, so the
+    // cursor rides a query param. First connect (null cursor) replays all.
+    // The daemon token rides the query too (C1/C2 auth) — awaiting it opens
+    // an async gap, so re-check the epoch before constructing the stream.
+    const url = await api.sessionEventsUrl(sessionId, get()._lastEventId);
+    if (epoch !== _sseConnectEpoch) return; // superseded while awaiting the token
     const es = new EventSource(url);
 
     es.onopen = () => {
       set({ connectionStatus: 'connected', _reconnectAttempts: 0 });
-      get().loadSnapshot();
       get().loadSkills();
       get().loadProposals();
       get().loadWorkspaces();
@@ -1214,6 +1374,12 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
       try {
         const data = JSON.parse(ev.data) as SSEEvent;
+        // Trace (C3): record the frame with its REAL type — tool-bearing
+        // Message frames become tool_call rows, Error/Finish are the turn's
+        // lifecycle signals; streaming text deltas coalesce into one row.
+        // This is the single production entry point for session frames.
+        const rec = sessionFrameToRecord(data);
+        if (rec) set(s => ({ events: appendTraceRecord(s.events, rec, MAX_EVENTS_BUFFER) }));
         get().handleSessionEvent(data);
       } catch {
         // Ignore malformed events
@@ -1237,6 +1403,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   },
 
   disconnectSession: () => {
+    _sseConnectEpoch++; // cancel any connect still awaiting the daemon token
     const { _eventSource, _reconnectTimer } = get();
     if (_reconnectTimer) clearTimeout(_reconnectTimer);
     if (_eventSource) _eventSource.close();

@@ -32,6 +32,24 @@ pub const WORLD_VIEW_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         teaching: &[],
     };
 
+/// Self-knowledge descriptor for the Execution trace surface — a live view over
+/// this same event bus. Lets the agent point the user at the raw event stream to
+/// inspect what the runtime is doing. Static: editorial, no live status claim.
+/// Reachable as an overlay (no seeded workspace hosts it) — the agent opens it
+/// via `navigate_app("Trace")`.
+pub const TRACE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "trace",
+        display_name: "Execution trace",
+        category: crate::agents::self_knowledge::FeatureCategory::Surface,
+        what_it_does:
+            "A live, chronological readout of the runtime's most recent events straight off the running system's event streams — each entry a timestamp and event type as tool calls, worker activity, navigations, and lifecycle signals fire in real time. It reflects the whole running system and needs no session id",
+        why_it_matters:
+            "It is the low-level, in-the-moment 'what is the system doing right now' view for inspecting or debugging behavior as it happens — distinct from the Activity timeline, which is the curated, durable record of what your agents did; when the user wants to watch the raw event stream or see what just fired under the hood, bring them here",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        teaching: &[],
+    };
+
 /// Buffer size for the broadcast channel and replay buffer (Section I risk mitigation).
 const EVENT_BUFFER_SIZE: usize = 1000;
 
@@ -194,6 +212,19 @@ pub struct PermagentEvent {
     pub event_type: PermagentEventType,
     pub timestamp: DateTime<Utc>,
     pub payload: Value,
+    /// Server-side replay marker (#770 follow-up). `Some(true)` ONLY on frames
+    /// a WebSocket handler re-delivers from its replay buffer on (re)connect;
+    /// `None` everywhere else, which serializes to *no field at all* — live
+    /// frames stay byte-identical to the pre-marker wire, and older clients
+    /// simply ignore the extra key on replayed ones.
+    ///
+    /// Never set by emitters: replayedness is a property of one *delivery*,
+    /// not of the event (the same buffered event replays to a reconnecting
+    /// client while another client received it live), so [`emit`] traffic and
+    /// the buffer always carry `None` and the `/events` route stamps its own
+    /// clone per delivery via [`PermagentEvent::into_replayed`].
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub replayed: Option<bool>,
 }
 
 impl PermagentEvent {
@@ -204,7 +235,16 @@ impl PermagentEvent {
             event_type,
             timestamp: Utc::now(),
             payload,
+            replayed: None,
         }
+    }
+
+    /// Stamp this delivery as a buffer replay (see the `replayed` field doc).
+    /// Consumes and returns the event so replay loops can mark their owned
+    /// clone inline without touching the buffered original.
+    pub fn into_replayed(mut self) -> Self {
+        self.replayed = Some(true);
+        self
     }
 }
 
@@ -234,6 +274,7 @@ pub enum PermagentEventType {
     SkillProposed,
     SkillSaved,
     SkillTriggered,
+    SkillRetired,
     // Session / Chat
     MessageReceived,
     StreamChunk,
@@ -252,11 +293,22 @@ pub enum PermagentEventType {
     /// The agent asked the in-app browser to open a URL (#567). The frontend
     /// bridge listens and routes it to the Build tab's browser.
     BrowserNavigateRequested,
+    /// The agent asked for a snapshot of the open page's interactive elements
+    /// (#649). The frontend bridge injects the grounding script and POSTs the
+    /// stamped a11y refs back.
+    BrowserSnapshotRequested,
+    /// The agent asked to act on a ref — click / type / select (#649). Payload
+    /// carries the ref, action and value; the frontend performs it and POSTs a
+    /// fresh snapshot back.
+    BrowserActRequested,
     // App navigation (chat agent → frontend)
     AppNavigate,
     // App action — act WITHIN a surface, not just navigate to it (chat agent →
     // frontend): toggle a Build pane, open/close/detach the chat dock, etc.
     AppAction,
+    // App open-item — the last mile past a tab: open a SPECIFIC item by id (chat
+    // agent → frontend): a goal's detail modal, a project's Grow planner, etc.
+    AppOpenItem,
     // Project terminal launch (chat agent → frontend Build tab)
     ProjectLaunch,
     // Goal lifecycle (create / transition / park / requeue / failure / delete)
@@ -491,6 +543,18 @@ pub fn skill_triggered(skill_id: &str, execution_id: &str, trigger_type: &str) -
     )
 }
 
+/// A saved skill was auto-archived by the retirement sweep for never firing
+/// within the grace window.
+pub fn skill_retired(skill_id: &str, name: &str) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::SkillRetired,
+        serde_json::json!({
+            "skill_id": skill_id,
+            "name": name,
+        }),
+    )
+}
+
 pub fn message_received(session_id: &str, role: &str, content_preview: &str) -> PermagentEvent {
     PermagentEvent::new(
         PermagentEventType::MessageReceived,
@@ -615,6 +679,31 @@ pub fn app_action(
     )
 }
 
+/// Emitted when the chat agent wants to open a SPECIFIC item — the last mile
+/// past a tab. Sibling to [`app_action`]: the daemon never touches the DOM; the
+/// frontend dispatcher catches this and calls the matching store seam that
+/// already backs the human button (goal → `openGoalDetail`, grow →
+/// `growProject`). `kind` is validated against the app_conductor item catalog
+/// before this is emitted, so the frontend can trust it. `card_id` is only set
+/// for kinds that need a second id (a goal's card); `project_id` is required for
+/// every kind.
+pub fn app_open_item(
+    kind: &str,
+    project_id: &str,
+    card_id: Option<&str>,
+    reason: &str,
+) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::AppOpenItem,
+        serde_json::json!({
+            "kind": kind,
+            "project_id": project_id,
+            "card_id": card_id,
+            "reason": reason,
+        }),
+    )
+}
+
 /// Emitted when the chat agent asks the frontend to open a project-aware
 /// terminal in the Build tab. Mirrors [`app_navigate`]: the agent does not
 /// spawn the PTY directly — the command-center catches this and calls the
@@ -672,6 +761,50 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"type\":\"daemon_started\""));
         assert!(json.contains("\"version\":\"0.1.0\""));
+    }
+
+    /// The replay-marker wire contract (#770 follow-up): a plain (emitted /
+    /// live) event serializes with NO `replayed` key at all — byte-compatible
+    /// with the pre-marker wire — while a delivery stamped via
+    /// `into_replayed` carries `"replayed":true`. Deserializing legacy JSON
+    /// without the field yields `None` (older daemons / stored frames).
+    #[test]
+    fn replay_marker_wire_contract() {
+        let event = daemon_started("0.1.0", "/tmp/config.yaml", "/tmp/spectral.db");
+        assert_eq!(event.replayed, None, "constructors must never pre-mark");
+        let live_json = serde_json::to_string(&event).unwrap();
+        assert!(
+            !live_json.contains("replayed"),
+            "live frame must omit the marker entirely: {live_json}"
+        );
+
+        let marked = event.clone().into_replayed();
+        let replay_json = serde_json::to_string(&marked).unwrap();
+        assert!(
+            replay_json.contains("\"replayed\":true"),
+            "replayed delivery must carry the marker: {replay_json}"
+        );
+
+        // Legacy frames (no field) still deserialize; the marker reads None.
+        let legacy: PermagentEvent = serde_json::from_str(&live_json).unwrap();
+        assert_eq!(legacy.replayed, None);
+        let roundtrip: PermagentEvent = serde_json::from_str(&replay_json).unwrap();
+        assert_eq!(roundtrip.replayed, Some(true));
+    }
+
+    /// The buffer stores what `emit` produced — never a pre-marked frame — so
+    /// every subscriber's replay decision is its own (marking is per delivery,
+    /// in the route, not global state).
+    #[test]
+    fn buffer_never_stores_marked_frames() {
+        let event = daemon_started("0.1.0", "/test-replay-buf", "/test-replay-buf");
+        let id = event.id.clone();
+        emit(event);
+        let stored = buffered_events()
+            .into_iter()
+            .find(|e| e.id == id)
+            .expect("emitted event present in buffer");
+        assert_eq!(stored.replayed, None);
     }
 
     #[test]

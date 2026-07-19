@@ -1,8 +1,12 @@
-//! App Conductor — lets the chat agent navigate the user to UI tabs/views.
+//! App Conductor — lets the chat agent drive the app's UI for the user.
 //!
-//! Exposes one tool: `navigate_app`. When called, it validates the tab name
-//! against the app catalog, emits an `AppNavigate` event on the global bus,
-//! and returns a confirmation to the agent.
+//! Exposes three tools: `navigate_app` (go to a tab, optionally a sub-view),
+//! `app_action` (act within a surface — open/close/detach the chat dock,
+//! show/hide the Build tab's browser and terminal panes), and `open_item`
+//! (carry the user the last mile to a specific item — a goal's detail or a
+//! project's Grow planner). Each validates its input against a catalog
+//! (tab catalog / `ACTION_CATALOG` / `ITEM_CATALOG`), emits the matching
+//! event on the global bus, and returns a confirmation to the agent.
 
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
@@ -53,6 +57,23 @@ struct AppActionParams {
     reason: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct OpenItemParams {
+    /// The kind of item to open. Valid: "goal" (a goal card's detail modal) or
+    /// "grow" (a project's Grow planner).
+    kind: String,
+    /// The project the item belongs to — REQUIRED for every kind. Get it from
+    /// project_resolve (or project_list).
+    project_id: String,
+    /// The goal card's id — REQUIRED when kind is "goal", ignored otherwise. Get
+    /// it from board_summary or card_list (a card with card_type "goal").
+    #[serde(default)]
+    card_id: Option<String>,
+    /// Human-readable explanation shown in chat (e.g. "Opening the goal so you
+    /// can see its checklist and evidence").
+    reason: String,
+}
+
 /// The catalog of surface → actions the agent may drive. This is the single
 /// source of truth the tool validates against (mirrors the tab catalog for
 /// `navigate_app`), so an unknown pair is rejected with a helpful list rather
@@ -85,6 +106,58 @@ fn action_is_valid(surface: &str, action: &str) -> bool {
         .any(|(s, actions)| *s == surface && actions.contains(&action))
 }
 
+/// The catalog of item KINDS the agent may open by id — the last-mile seam that
+/// carries the user past a tab to a specific thing. Single source of truth the
+/// `open_item` tool validates against (mirrors `ACTION_CATALOG` for `app_action`),
+/// so an unknown kind is rejected with a helpful list rather than emitting an
+/// event the frontend can't handle. The frontend `dispatchOpenItem` maps these
+/// exact kinds 1:1 to the store seams that already back the human buttons.
+///
+/// Each entry is `(kind, id-fields hint)`. Every kind needs `project_id`; the
+/// hint documents any second id. Only kinds whose ids the agent can RELIABLY
+/// obtain from its own tool-results live here — goal cards come from
+/// `board_summary`/`card_list` and the project id from `project_resolve`, so both
+/// are reachable. (Decision/person/memory seams exist but are intentionally
+/// absent: the agent has no reliable way to reference their ids today — see the
+/// tool description.)
+const ITEM_CATALOG: &[(&str, &str)] = &[("goal", "project_id + card_id"), ("grow", "project_id")];
+
+fn item_kinds_list() -> String {
+    ITEM_CATALOG
+        .iter()
+        .map(|(kind, ids)| format!("{} (needs {})", kind, ids))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn item_is_valid(kind: &str) -> bool {
+    ITEM_CATALOG.iter().any(|(k, _)| *k == kind)
+}
+
+/// The `open_item` success text — honest about the fire-and-forget contract.
+/// The tool validates only the kind and id PRESENCE, then emits to the app
+/// bus: it cannot confirm an app window is connected or that the ids are
+/// current, so the text must not claim the item is open. (The old "Opening
+/// {kind}." read as confirmed success to the agent while a stale id showed
+/// the user an error modal — or, with no app window, nothing at all.)
+fn open_item_result_text(
+    kind: &str,
+    project_id: &str,
+    card_id: Option<&str>,
+    reason: &str,
+) -> String {
+    let ids = match card_id {
+        Some(card) if !card.is_empty() => format!("{} (card {})", project_id, card),
+        _ => project_id.to_string(),
+    };
+    format!(
+        "Sent the open request for {} {} to the app. If the app isn't open or \
+         the id is stale, nothing will change on screen — project_resolve / \
+         board_summary / card_list give current ids. {}",
+        kind, ids, reason
+    )
+}
+
 fn schema<T: JsonSchema>() -> JsonObject {
     let mut obj = serde_json::to_value(schema_for!(T))
         .map(|v| v.as_object().unwrap().clone())
@@ -112,9 +185,16 @@ impl AppConductorClient {
                 "Drive the Permagent app for the user. Use navigate_app to take \
                  them to a specific tab or view. Use app_action to operate a \
                  surface once there — open/close/detach the chat dock, or \
-                 show/hide the Build tab's browser and terminal panes. Prefer \
-                 doing it over describing it: these tools are the only way to \
-                 actually change what the user sees.",
+                 show/hide the Build tab's browser and terminal panes. Use \
+                 open_item to carry them the LAST MILE past a tab to a specific \
+                 thing — a goal's detail (open_item kind \"goal\" with its \
+                 project_id + card_id) or a project's Grow planner (open_item \
+                 kind \"grow\" with its project_id). Resolve the ids first with \
+                 your other tools (project_resolve for the project id, \
+                 board_summary / card_list for a goal card id), then open \
+                 the item so the user lands ON it rather than hunting for it. \
+                 Prefer doing it over describing it: these tools are the only way \
+                 to actually change what the user sees.",
             );
         Ok(Self { info, context })
     }
@@ -206,19 +286,65 @@ impl AppConductorClient {
             args.action, args.surface, args.reason
         ))]))
     }
+
+    async fn handle_open_item(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> std::result::Result<CallToolResult, String> {
+        let args: OpenItemParams = arguments
+            .map(|obj| serde_json::from_value(serde_json::Value::Object(obj)))
+            .transpose()
+            .map_err(|e| format!("Invalid arguments: {}", e))?
+            .ok_or_else(|| "Missing arguments".to_string())?;
+
+        if !item_is_valid(&args.kind) {
+            return Err(format!(
+                "I can't open a \"{}\". Openable items are: {}",
+                args.kind,
+                item_kinds_list()
+            ));
+        }
+
+        // Goal is the one kind that needs a second id; reject early with a
+        // pointer to where the agent gets it rather than emitting an event the
+        // goal-detail modal can't act on.
+        if args.kind == "goal" && args.card_id.as_deref().unwrap_or("").is_empty() {
+            return Err(
+                "Opening a goal needs its card_id (a card_type \"goal\" card from \
+                 board_summary / card_list) alongside the project_id."
+                    .to_string(),
+            );
+        }
+
+        // Emit to the global bus; the frontend dispatcher calls the matching
+        // store seam (the same one the human button uses). Like app_action there
+        // is no voice speak-then-act intercept — opening an item is instantaneous
+        // and doesn't compete with narration.
+        crate::events::emit(crate::events::app_open_item(
+            &args.kind,
+            &args.project_id,
+            args.card_id.as_deref(),
+            &args.reason,
+        ));
+
+        Ok(CallToolResult::success(vec![Content::text(
+            open_item_result_text(
+                &args.kind,
+                &args.project_id,
+                args.card_id.as_deref(),
+                &args.reason,
+            ),
+        )]))
+    }
 }
 
-// ── MCP trait implementation ────────────────────────────────────────────────
-
-#[async_trait]
-impl McpClientTrait for AppConductorClient {
-    async fn list_tools(
-        &self,
-        _session_id: &str,
-        _next_cursor: Option<String>,
-        _cancel_token: CancellationToken,
-    ) -> std::result::Result<ListToolsResult, Error> {
-        let tools = vec![
+impl AppConductorClient {
+    /// The full, static tool inventory. Extracted from `list_tools` so the
+    /// self-knowledge completeness guard derives its inventory from the REAL
+    /// list — add a tool here and CI fails until the registry `description`
+    /// names it.
+    pub(crate) fn get_tools() -> Vec<Tool> {
+        vec![
             Tool::new(
                 "navigate_app".to_string(),
                 "Navigate the user to a specific tab, optionally drilling into a \
@@ -245,10 +371,40 @@ impl McpClientTrait for AppConductorClient {
                     .to_string(),
                 schema::<AppActionParams>(),
             ),
-        ];
+            Tool::new(
+                "open_item".to_string(),
+                "Carry the user the LAST MILE — open a SPECIFIC item, not just its \
+                 tab. Like navigate_app/app_action, calling this is the only way to \
+                 actually open the item; describing it does nothing.\n\n\
+                 Valid kinds: \"goal\" — open a goal card's detail (checklist, \
+                 evidence, decisions); pass project_id AND card_id. \"grow\" — open \
+                 a project's Grow planner; pass project_id.\n\n\
+                 Get the ids from your own tools first: project_resolve → \
+                 project_id; board_summary or card_list → a card_type \
+                 \"goal\" card's id. This sends the open request to the app but \
+                 cannot confirm the open: a stale or guessed id (or no app \
+                 window) changes nothing on screen, so always use CURRENT ids \
+                 from those tools. (To open a project's Kanban/Overview instead, \
+                 use navigate_app to the Projects tab with state { project_id }.)"
+                    .to_string(),
+                schema::<OpenItemParams>(),
+            ),
+        ]
+    }
+}
 
+// ── MCP trait implementation ────────────────────────────────────────────────
+
+#[async_trait]
+impl McpClientTrait for AppConductorClient {
+    async fn list_tools(
+        &self,
+        _session_id: &str,
+        _next_cursor: Option<String>,
+        _cancel_token: CancellationToken,
+    ) -> std::result::Result<ListToolsResult, Error> {
         Ok(ListToolsResult {
-            tools,
+            tools: Self::get_tools(),
             next_cursor: None,
             meta: None,
         })
@@ -264,6 +420,7 @@ impl McpClientTrait for AppConductorClient {
         let result = match name {
             "navigate_app" => self.handle_navigate(&ctx.session_id, arguments).await,
             "app_action" => self.handle_action(arguments).await,
+            "open_item" => self.handle_open_item(arguments).await,
             _ => Err(format!("Unknown tool: {}", name)),
         };
 
@@ -307,5 +464,66 @@ mod tests {
         assert!(listed.contains("chat →"));
         assert!(listed.contains("build →"));
         assert!(listed.contains("hide_browser"));
+    }
+
+    #[test]
+    fn valid_item_kinds_accepted() {
+        assert!(item_is_valid("goal"));
+        assert!(item_is_valid("grow"));
+    }
+
+    #[test]
+    fn unknown_item_kinds_rejected() {
+        // Seams that exist but the agent can't reliably feed an id for are
+        // intentionally NOT in the catalog — they must be rejected here.
+        assert!(!item_is_valid("decision"));
+        assert!(!item_is_valid("person"));
+        assert!(!item_is_valid("memory"));
+        assert!(!item_is_valid("project")); // "grow" is the project kind, not this
+        assert!(!item_is_valid(""));
+    }
+
+    #[test]
+    fn item_kinds_list_names_every_kind_and_its_ids() {
+        let listed = item_kinds_list();
+        assert!(listed.contains("goal (needs project_id + card_id)"));
+        assert!(listed.contains("grow (needs project_id)"));
+    }
+
+    #[test]
+    fn open_item_result_is_honest_about_delivery() {
+        // The tool only emits a bus event — it cannot verify the id or that an
+        // app window is listening. The success text must say "request sent",
+        // never claim the item is open, and point at the id-refresh tools.
+        let text = open_item_result_text("grow", "p1", None, "You asked to plan growth.");
+        assert!(text.starts_with("Sent the open request for grow p1"));
+        assert!(!text.contains("Opening"), "must not claim the item is open");
+        assert!(text.contains("isn't open"));
+        assert!(text.contains("stale"));
+        assert!(text.contains("project_resolve"));
+        assert!(
+            text.ends_with("You asked to plan growth."),
+            "reason must survive at the end (the established result shape)"
+        );
+    }
+
+    #[test]
+    fn open_item_result_names_both_ids_for_goal() {
+        let text = open_item_result_text("goal", "p1", Some("c9"), "r");
+        assert!(text.contains("goal p1 (card c9)"));
+        // Empty card_id (grow, or a goal caught by earlier validation) must not
+        // render a dangling "(card )".
+        let text = open_item_result_text("grow", "p1", Some(""), "r");
+        assert!(!text.contains("(card"));
+    }
+
+    #[test]
+    fn item_catalog_matches_frontend_dispatcher_one_to_one() {
+        // The ITEM_CATALOG ↔ useAppNavigate `dispatchOpenItem` map is 1:1 (mirrors
+        // the ACTION_CATALOG invariant). If a kind is added/removed here without
+        // updating the dispatcher (or vice versa), the agent emits an event the
+        // frontend silently drops. Keep this list in lockstep with dispatchOpenItem.
+        let kinds: Vec<&str> = ITEM_CATALOG.iter().map(|(k, _)| *k).collect();
+        assert_eq!(kinds, vec!["goal", "grow"]);
     }
 }

@@ -174,6 +174,74 @@ pub const BUILD_TAB_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         teaching: &[],
     };
 
+/// Self-knowledge descriptor for the **Permagent coding harness** (#719/#720) —
+/// the third Build-tab launch option, beside the Claude and Codex CLIs, that
+/// runs Permagent's OWN internal agent loop (`permagent run --recipe
+/// permagent-coding`) configured for software engineering. Co-located with
+/// [`BUILD_TAB_FEATURE`] because the Build tab is where the user launches it;
+/// aggregated by `crate::agents::self_knowledge::SURFACE_DESCRIPTORS`. Static —
+/// the capability is described without claiming a live session status. The
+/// bundled sub-capabilities (reliable edit tool #711, structured search #718,
+/// ranked-tags repo-map #712, and tiered routing + cost meter — see
+/// [`crate::cost_router`]) are indexed inside this one descriptor rather than as
+/// standalone surfaces: they are the harness's internals, not independent views
+/// the user opens.
+pub const CODING_HARNESS_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "coding_harness",
+        display_name: "Permagent coding harness",
+        category: crate::agents::self_knowledge::FeatureCategory::Surface,
+        what_it_does:
+            "Permagent's own internal coding agent, launched from the Build tab as the third \
+             option beside the Claude and Codex CLIs — it runs your own agent loop (permagent run \
+             --recipe permagent-coding) configured for software engineering, not an external \
+             tool. It is provider-agnostic (it uses whichever model the operator configured) and \
+             cost-optimized: it bundles a reliable edit tool that tolerates whitespace drift and \
+             refuses any edit that would introduce a syntax error, a token-efficient structured \
+             search, the analyze code-structure tool, and a ranked-tags repo-map auto-loaded into \
+             its context for cheap orientation, and it verifies its own work by building and \
+             running tests; on a substantive change, once its own tests pass an independent, \
+             different-model reviewer adversarially checks the diff — for correctness, security, \
+             spec-fit, and test-integrity — before it calls the work done, all under \
+             runaway-loop safety and a live cost meter always on",
+        why_it_matters:
+            "It is the answer when the user says 'build this with the Permagent harness': you \
+             launch it from the Build tab and it codes with your own loop, keeping the expensive \
+             main reasoning on one stable model while offloading mechanical, latency-tolerant \
+             sub-work to cheaper tiers — down to a free local model — and escalating a sub-task \
+             only when the cheap tier stumbles, so it is economical without you managing any of \
+             it. Reach for it, not a one-shot shell, whenever the user wants Permagent itself to \
+             write, edit, or fix code in a project: open the Build tab, launch the Permagent \
+             option, and let it work in the terminal where the user can watch and take over",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        teaching: &[
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Launch the harness from the Build tab",
+                body: "Take the user to the Build tab and point out the third launch option on a \
+                       project's chip — 'Permagent', beside Claude and Codex. Explain that unlike \
+                       those two (which drive external CLIs), this one runs Permagent's own \
+                       coding loop locally, provider-agnostic and cost-optimized, and opens in \
+                       the same project-aware terminal so they can watch and take over.",
+                open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                    tab: "Build",
+                    section: None,
+                }),
+                confirm: None,
+            },
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Hand it a task, let it verify itself",
+                body: "Offer to build something small end-to-end with it — 'write a simple \
+                       game', fix a failing test, add a function. Explain what it will do on its \
+                       own: read a repo-map for orientation, search and analyze before editing, \
+                       make the smallest change, then build and run tests to verify — routing the \
+                       cheap mechanical steps to cheaper models while the hard reasoning stays on \
+                       a strong one, all under runaway-loop safety and a live cost meter.",
+                open_surface: None,
+                confirm: None,
+            },
+        ],
+    };
+
 /// Self-knowledge descriptor for the Grow tab — the per-project go-to-market
 /// workspace. Static surface; teaching steps drive onboarding. Closes the
 /// coverage gap where Henry could not describe or guide the user to Grow.
@@ -264,17 +332,19 @@ pub const PROJECT_WORKSPACE_FEATURE: crate::agents::self_knowledge::FeatureDescr
             "The Projects tab where each project opens into a workspace with two lenses, toggled \
              in shared chrome: an Overview dashboard (summary, key facts, links, live task \
              status, the People panel with person profile cards, the Documents hub with an \
-             in-app viewer for PDFs/images/markdown, and a Notes panel) and the Kanban board of \
+             in-app viewer for PDFs/images/markdown, a Notes panel, and a Memories panel that \
+             lists what your Brain has learned about the project — each with a 'View in Brain' \
+             deep-link that focuses that memory in the Brain view) and the Kanban board of \
              goal and to-do cards. A document dropped into a project is extracted and indexed \
              into your Brain and associated with that project; notes the user writes on a \
              project are indexed into your Brain the same way — both recallable and \
-             Librarian-enriched, scoped to the project. A project switcher drives both lenses \
-             from the same selected project",
+             Librarian-enriched, scoped to the project, and both surface back in the Memories \
+             panel. A project switcher drives both lenses from the same selected project",
         why_it_matters:
             "It is the user's at-a-glance home for a project — what it is, its links, and the live \
              state of its work. Because dropped documents and written notes land in your Brain \
              scoped to the project, you can recall a project's files and notes by content without \
-             the user re-pasting them. Reach for the project tools (list_projects, board_summary) \
+             the user re-pasting them. Reach for the project tools (project_list, board_summary) \
              to read or change what this surface shows; the Overview is the summary view, the \
              Kanban the working board",
         state_source: crate::agents::self_knowledge::StateSource::Static,
@@ -1065,7 +1135,7 @@ impl ProjectManagerClient {
         ))])
     }
 
-    fn get_tools() -> Vec<Tool> {
+    pub(crate) fn get_tools() -> Vec<Tool> {
         let create_schema = serde_json::to_value(schema_for!(ProjectCreateParams)).unwrap();
         let update_schema = serde_json::to_value(schema_for!(ProjectUpdateParams)).unwrap();
         let delete_schema = serde_json::to_value(schema_for!(ProjectDeleteParams)).unwrap();

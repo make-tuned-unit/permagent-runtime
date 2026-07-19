@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '../../lib/api';
+import { emitActivity } from '../../lib/emitActivity';
 
 export interface PersonaData {
   first_name: string;
@@ -46,6 +47,9 @@ export function usePersona() {
         voice_id: update.voice_id !== undefined ? update.voice_id : data.voice_id,
       };
       await api.putIdentity(payload);
+      // The user configured their agent's identity — genuine engagement with
+      // the persona feature, so the coach stops offering to teach it.
+      emitActivity('persona_configured', 'settings', { persona_name: payload.first_name });
       await load();
     } catch {
       setError('Failed to save persona');

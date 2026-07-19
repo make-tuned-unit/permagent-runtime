@@ -11,7 +11,7 @@ use crate::state::AppState;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use permagent::skills;
@@ -83,6 +83,25 @@ pub struct SkillDetailResponse {
 #[serde(rename_all = "camelCase")]
 pub struct DismissSkillRequest {
     argument_shape_hash: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateSkillRequest {
+    name: Option<String>,
+    description: Option<String>,
+}
+
+/// Execution-history row. Serialized snake_case to match the panel's parser
+/// (`SkillExecutionHistory.tsx`), which reads `started_at`/`completed_at`/
+/// `error_message`.
+#[derive(Serialize)]
+pub struct SkillExecutionResponse {
+    id: String,
+    status: String,
+    started_at: String,
+    completed_at: Option<String>,
+    error_message: Option<String>,
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
@@ -247,6 +266,80 @@ async fn list_proposals_handler(
     ))
 }
 
+async fn update_skill_handler(
+    State(state): State<Arc<AppState>>,
+    Path(skill_id): Path<String>,
+    Json(req): Json<UpdateSkillRequest>,
+) -> Result<Json<SkillDetailResponse>, StatusCode> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let updated = skills::update_skill(
+        &pool,
+        &skill_id,
+        req.name.as_deref(),
+        req.description.as_deref(),
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if !updated {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    // Return the persisted skill so the client reflects exactly what was stored.
+    let detail = skills::get_skill(&pool, &skill_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    Ok(Json(SkillDetailResponse {
+        id: detail.id,
+        name: detail.name,
+        description: detail.description,
+        tool_used: detail.tool_used,
+        definition_json: detail.definition_json,
+        trigger_type: detail.trigger_type,
+        trigger_value: detail.trigger_value,
+        status: detail.status,
+        version: detail.version,
+        source_task_id: detail.source_task_id,
+        created_at: detail.created_at,
+        updated_at: detail.updated_at,
+    }))
+}
+
+async fn list_executions_handler(
+    State(state): State<Arc<AppState>>,
+    Path(skill_id): Path<String>,
+) -> Result<Json<Vec<SkillExecutionResponse>>, StatusCode> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let execs = skills::list_skill_executions(&pool, &skill_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(
+        execs
+            .into_iter()
+            .map(|e| SkillExecutionResponse {
+                id: e.id,
+                status: e.status,
+                started_at: e.started_at,
+                completed_at: e.completed_at,
+                error_message: e.error_message,
+            })
+            .collect(),
+    ))
+}
+
 // ── Router ───────────────────────────────────────────────────────────────────
 
 pub fn routes(state: Arc<AppState>) -> Router {
@@ -256,6 +349,11 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/permagent/skills/dismiss", post(dismiss_skill_handler))
         .route("/permagent/skills/proposals", get(list_proposals_handler))
         .route("/permagent/skills/{skill_id}", get(get_skill_handler))
+        .route("/permagent/skills/{skill_id}", put(update_skill_handler))
         .route("/permagent/skills/{skill_id}", delete(delete_skill_handler))
+        .route(
+            "/permagent/skills/{skill_id}/executions",
+            get(list_executions_handler),
+        )
         .with_state(state)
 }

@@ -11,14 +11,21 @@
 // useSyncExternalStore hook for React.
 
 import { useSyncExternalStore } from 'react';
-import { apiFetch, getApiBaseUrl } from '../../../lib/api';
-import { wireEventType } from '../../../lib/wireEvent';
+import { apiFetch } from '../../../lib/api';
+import { subscribeWorldEvents } from '../shared/worldEvents';
 
 export interface ActiveGoalLite {
   id: string;
   title: string;
   /** 'ready' | 'in_progress' (the ACTIVE_BINDINGS set). */
   state: string;
+  /**
+   * Owning project id. Already returned by /api/goals/active (the dashboard's
+   * In-Flight cards use it), it was simply dropped from this lite shape. Carried
+   * through so a goal plaque can address the goal-detail modal via the existing
+   * openGoalDetail(project_id, id) seam — a click-through, not just a label.
+   */
+  project_id?: string;
 }
 
 interface GoalActivityState {
@@ -48,33 +55,17 @@ async function refetch(): Promise<void> {
 }
 
 let started = false;
-let socket: WebSocket | null = null;
-
-function connect(): void {
-  try {
-    socket = new WebSocket(`${getApiBaseUrl().replace(/^http/, 'ws')}/events`);
-    socket.onmessage = (msg) => {
-      try {
-        const evt = JSON.parse(msg.data as string);
-        if (wireEventType(evt) === 'goal_state_changed') void refetch();
-      } catch {
-        /* non-JSON frame — ignore */
-      }
-    };
-    socket.onclose = () => {
-      socket = null;
-      setTimeout(connect, 5000);
-    };
-  } catch {
-    setTimeout(connect, 5000);
-  }
-}
 
 export function ensureGoalActivity(): void {
   if (started) return;
   started = true;
   void refetch();
-  connect();
+  // Live wire: the shared world socket (shared/worldEvents — one connection
+  // for every world consumer). Refetch is idempotent, so replayed frames are
+  // harmless triggers; the API stays the source of truth.
+  subscribeWorldEvents((evt) => {
+    if (evt.type === 'goal_state_changed') void refetch();
+  });
   // Backstop poll — the socket is the live wire; this catches missed frames.
   setInterval(() => void refetch(), 60_000);
 }

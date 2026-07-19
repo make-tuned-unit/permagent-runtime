@@ -47,8 +47,12 @@ pub fn get_all_recipes_manifests() -> Result<Vec<RecipeManifest>> {
     let recipes_with_path = list_local_recipes()?;
     let mut recipe_manifests_with_path = Vec::new();
     for (file_path, mut recipe) in recipes_with_path {
-        let Ok(last_modified) = fs::metadata(file_path.clone())
-            .map(|m| chrono::DateTime::<chrono::Utc>::from(m.modified().unwrap()).to_rfc3339())
+        // `modified()` can fail independently of `metadata()` (platform /
+        // filesystem dependent) — chain it instead of unwrapping inside the
+        // map, which escaped the surrounding `let Ok … else` and panicked.
+        let Ok(last_modified) = fs::metadata(&file_path)
+            .and_then(|m| m.modified())
+            .map(|m| chrono::DateTime::<chrono::Utc>::from(m).to_rfc3339())
         else {
             continue;
         };
@@ -179,14 +183,24 @@ pub async fn build_recipe_with_parameter_values(
     Ok(recipe)
 }
 
+/// Apply recipe components (final-output tool) to the agent and return the
+/// recipe instructions. A recipe whose `response.json_schema` is invalid is a
+/// 400 — previously this panicked the daemon at run time.
 pub async fn apply_recipe_to_agent(
     agent: &Arc<Agent>,
     recipe: &Recipe,
     include_final_output_tool: bool,
-) -> Option<String> {
+) -> Result<Option<String>, ErrorResponse> {
     agent
         .apply_recipe_components(recipe.response.clone(), include_final_output_tool)
-        .await;
+        .await
+        .map_err(|err| {
+            error!("Recipe response schema rejected: {}", err);
+            ErrorResponse {
+                message: err.to_string(),
+                status: StatusCode::BAD_REQUEST,
+            }
+        })?;
 
-    recipe.instructions.as_ref().cloned()
+    Ok(recipe.instructions.as_ref().cloned())
 }

@@ -355,7 +355,18 @@ async fn check_version_skew() -> CheckResult {
 
 async fn check_websocket() -> CheckResult {
     let port = read_daemon_port();
-    let url = format!("ws://127.0.0.1:{port}/events");
+    // /events requires the daemon token (C1/C2 auth plane); ride it on the
+    // query string the same way browser clients do. Hex token — URL-safe.
+    let (url, token_note) = match crate::commands::daemon::load_daemon_token() {
+        Ok(token) => (
+            format!("ws://127.0.0.1:{port}/events?token={token}"),
+            "token sent",
+        ),
+        Err(_) => (
+            format!("ws://127.0.0.1:{port}/events"),
+            "NO TOKEN (daemon_token.json unreadable)",
+        ),
+    };
 
     match tokio_tungstenite::connect_async(&url).await {
         Ok(_) => CheckResult {
@@ -367,8 +378,12 @@ async fn check_websocket() -> CheckResult {
         Err(e) => CheckResult {
             name: "websocket".into(),
             status: CheckStatus::Fail,
-            detail: format!("WebSocket upgrade failed: {e}"),
-            remediation: Some("Ensure daemon is running: `permagent restart`".into()),
+            detail: format!("WebSocket upgrade failed ({token_note}): {e}"),
+            remediation: Some(
+                "Ensure daemon is running: `permagent restart`. A 401 means the daemon \
+                 token in ~/.permagent/secrets/daemon_token.json does not match."
+                    .into(),
+            ),
         },
     }
 }

@@ -2,9 +2,19 @@
 //!
 //! Upgrades to WebSocket, streams all [`PermagentEvent`]s as JSON.
 //! Supports event replay via `{"resume_from": "<event_id>"}` on connect.
+//!
+//! Replay honesty (#770 follow-up): every frame re-delivered from the replay
+//! buffer — the full-buffer backfill on a plain connect AND the `resume_from`
+//! replay — is stamped `"replayed": true` server-side (`into_replayed`), so
+//! clients can tell history from a live instruction without inferring it from
+//! timestamps. Live frames omit the field entirely (byte-identical to the
+//! pre-marker wire). What gets buffered/replayed is unchanged — frames are
+//! only *marked*.
 
 use axum::{
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
+    extract::{Query, State},
+    http::HeaderMap,
     response::IntoResponse,
     routing::get,
     Router,
@@ -14,14 +24,31 @@ use permagent::events;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
-pub fn routes(_state: Arc<crate::state::AppState>) -> Router {
-    // Event bus is global — no AppState needed for the handler itself.
-    // We accept state for consistency with other route modules.
-    Router::new().route("/events", get(ws_handler))
+use crate::middleware::auth::{bearer_token, validate_daemon_token, TokenQuery};
+
+pub fn routes(state: Arc<crate::state::AppState>) -> Router {
+    // The event bus itself is global; AppState is needed only to validate the
+    // daemon token on upgrade.
+    Router::new()
+        .route("/events", get(ws_handler))
+        .with_state(state)
 }
 
-async fn ws_handler(ws: WebSocketUpgrade) -> impl IntoResponse {
-    ws.on_upgrade(handle_socket)
+/// Token-gated upgrade (C2 launch audit): the bus carries live agent/session
+/// activity, so the upgrade requires the daemon token — via the bearer header
+/// (native clients: the CLI's `activity tail`) or `?token=` (browser
+/// `WebSocket` cannot set headers). Validated fail-closed and constant-time
+/// (`middleware::auth`) BEFORE the upgrade completes: without a valid token
+/// the handshake gets 401/503 instead of 101.
+async fn ws_handler(
+    State(state): State<Arc<crate::state::AppState>>,
+    Query(query): Query<TokenQuery>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Result<impl IntoResponse, axum::http::StatusCode> {
+    let provided = bearer_token(&headers).or(query.token.as_deref());
+    validate_daemon_token(&state, provided)?;
+    Ok(ws.on_upgrade(handle_socket))
 }
 
 async fn handle_socket(socket: WebSocket) {
@@ -54,7 +81,8 @@ async fn handle_socket(socket: WebSocket) {
                     resume_id
                 );
                 for event in replay_events {
-                    if let Ok(json) = serde_json::to_string(&event) {
+                    // Buffer re-delivery → stamp the replay marker.
+                    if let Ok(json) = serde_json::to_string(&event.into_replayed()) {
                         if sender.send(Message::Text(json.into())).await.is_err() {
                             return; // Client disconnected
                         }
@@ -75,10 +103,11 @@ async fn handle_socket(socket: WebSocket) {
             }
         }
     } else {
-        // No resume requested — send all buffered events
+        // No resume requested — send all buffered events, each stamped as a
+        // replay so the client never mistakes backfill for a live instruction.
         let buffered = events::buffered_events();
         for event in buffered {
-            if let Ok(json) = serde_json::to_string(&event) {
+            if let Ok(json) = serde_json::to_string(&event.into_replayed()) {
                 if sender.send(Message::Text(json.into())).await.is_err() {
                     return;
                 }

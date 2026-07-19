@@ -3,6 +3,10 @@ import { useCommandCenter } from './lib/store';
 import { useTheme } from './styles/useTheme';
 import { Sidebar } from './components/sidebar/Sidebar';
 import { SettingsView } from './components/settings/SettingsView';
+import { InboxPanel } from './components/inbox/InboxPanel';
+import { SkillsPanel } from './components/skills/SkillsPanel';
+import { SessionsList } from './components/sessions/SessionsList';
+import { ExecutionTrace } from './components/trace/ExecutionTrace';
 import { WorkspaceRenderer } from './components/workspaces/WorkspaceRenderer';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { WizardShell } from './components/wizard/WizardShell';
@@ -29,6 +33,20 @@ function MainContent() {
   const workspacesLoaded = useCommandCenter(s => s.workspacesLoaded);
 
   const showSettings = activePanel === 'settings';
+  const showInbox = activePanel === 'inbox';
+  // Skills Library renders as a labeled overlay (mirrors inbox) so accepting a
+  // skill proposal — which sets activePanel:'skills' — lands on a real surface
+  // instead of a blank/unchanged screen. Also the target of navigate_app("Skills").
+  const showSkills = activePanel === 'skills';
+  // Session history renders as a labeled overlay (mirrors skills/inbox) so a user
+  // can browse/switch/rename/delete past conversations. Reached from the sidebar
+  // "Sessions" row; selecting a session loads it into the chat dock.
+  const showSessions = activePanel === 'sessions';
+  // Execution trace renders as a labeled overlay (mirrors sessions/skills/inbox).
+  // ExecutionTrace reads the global `events` buffer and needs no session id, so a
+  // global overlay is the honest entry point. Reached from the sidebar "Trace" row.
+  const showTrace = activePanel === 'trace';
+  const setActivePanel = useCommandCenter(s => s.setActivePanel);
 
   if (!workspacesLoaded) {
     return (
@@ -38,7 +56,7 @@ function MainContent() {
     );
   }
 
-  if (!activeWorkspaceId && !showSettings) {
+  if (!activeWorkspaceId && !showSettings && !showInbox && !showSkills && !showSessions && !showTrace) {
     return (
       <div className="flex h-full items-center justify-center text-dark-muted text-xs font-mono">
         No workspaces available
@@ -56,11 +74,31 @@ function MainContent() {
           <SettingsView />
         </div>
       )}
+      {showInbox && (
+        <div className="absolute inset-0 z-10">
+          <InboxPanel />
+        </div>
+      )}
+      {showSkills && (
+        <div className="absolute inset-0 z-10">
+          <SkillsPanel onClose={() => setActivePanel('chat')} />
+        </div>
+      )}
+      {showSessions && (
+        <div className="absolute inset-0 z-10">
+          <SessionsList onClose={() => setActivePanel('chat')} />
+        </div>
+      )}
+      {showTrace && (
+        <div className="absolute inset-0 z-10">
+          <ExecutionTrace onClose={() => setActivePanel('chat')} />
+        </div>
+      )}
       {workspaces.map(ws => (
         <div
           key={ws.id}
           className="absolute inset-0"
-          style={{ display: (!showSettings && ws.id === activeWorkspaceId) ? 'block' : 'none' }}
+          style={{ display: (!showSettings && !showInbox && !showSkills && !showSessions && !showTrace && ws.id === activeWorkspaceId) ? 'block' : 'none' }}
         >
           <ErrorBoundary surface="the workspace">
             <WorkspaceRenderer workspaceId={ws.id} />

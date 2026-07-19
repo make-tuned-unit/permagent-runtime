@@ -3,7 +3,8 @@
  * Aligned with the actual permagentd endpoints.
  */
 
-import type { ProjectDocument, ProjectNote } from '../components/projects/types';
+import type { ProjectDocument, ProjectNote, ProjectMemory } from '../components/projects/types';
+import type { ActivityEventName } from './emitActivity';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 const API_BASE_URL = (
@@ -20,6 +21,50 @@ let _daemonTokenPromise: Promise<string | null> | null = null;
 
 const BROWSER_TOKEN_KEY = 'permagent-daemon-token';
 
+/** UUID v4 that also works on insecure origins (a plain-HTTP tailnet page is
+ *  not a secure context, so `crypto.randomUUID` may be absent there —
+ *  `crypto.getRandomValues` is available everywhere). */
+function uuidV4(): string {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40; // version 4
+  b[8] = (b[8] & 0x3f) | 0x80; // RFC 4122 variant
+  const hex = Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/** Report genuine pairing completion to the daemon's authenticated
+ *  `POST /activity/emit` (`devices_paired`, Always tier → a real Brain memory).
+ *
+ *  This runs on the *companion* device the moment it captures the hub token —
+ *  the true completion seam. The token rides the URL's `#` fragment, which the
+ *  browser never sends to the server, so the daemon has no server-side way to
+ *  observe a pairing; this authenticated self-report is how it learns. It is
+ *  self-proving: the request bears the just-captured token, so an invalid or
+ *  rotated-away token is rejected by the auth middleware and can never mint
+ *  the event. Fire-and-forget (pairing itself has already succeeded), and the
+ *  body never includes the token. The hub-side "Copy" button emits only
+ *  `pairing_link_copied` (Ephemeral) — intent, not completion. */
+function reportDevicePaired(token: string): void {
+  const eventType: ActivityEventName = 'devices_paired';
+  try {
+    fetch(`${API_BASE_URL}/activity/emit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        event_id: uuidV4(),
+        event_type: eventType,
+        source_surface: 'settings',
+        timestamp: new Date().toISOString(),
+        payload: {},
+        tier: 'always', // canonical; the daemon re-derives the tier server-side anyway
+      }),
+    }).catch(() => { /* best-effort awareness signal */ });
+  } catch {
+    /* best-effort awareness signal */
+  }
+}
+
 /** #366: browser-context pairing. A device opening
  *  http://<hub>:3001/ui/#token=<daemon_token> captures the token once into
  *  localStorage (and scrubs it from the URL so it never lingers in history).
@@ -29,10 +74,16 @@ function browserToken(): string | null {
     const frag = new URLSearchParams(window.location.hash.replace(/^#/, ''));
     const fromUrl = frag.get('token');
     if (fromUrl) {
+      const previous = localStorage.getItem(BROWSER_TOKEN_KEY);
       localStorage.setItem(BROWSER_TOKEN_KEY, fromUrl);
       frag.delete('token');
       const rest = frag.toString();
       history.replaceState(null, '', window.location.pathname + window.location.search + (rest ? `#${rest}` : ''));
+      // A pairing URL was actually opened here and its credential captured —
+      // the real `devices_paired` moment. Only report a credential this device
+      // did not already hold, so a history re-open of the same URL never
+      // re-claims a pairing.
+      if (fromUrl !== previous) reportDevicePaired(fromUrl);
     }
     return localStorage.getItem(BROWSER_TOKEN_KEY);
   } catch {
@@ -57,6 +108,18 @@ export function loadDaemonToken(): Promise<string | null> {
 
 // Kick off token loading immediately so it's ready when needed.
 loadDaemonToken();
+
+/** URL for the global `/events` WebSocket, daemon token attached (`?token=`).
+ *  The browser WebSocket API cannot set an Authorization header, so the token
+ *  rides the query string — same contract as the `/voice` WS, validated
+ *  server-side by the same fail-closed constant-time core (C1/C2 auth).
+ *  Async: waits for the token (Tauri IPC on first call) so the first
+ *  connection attempt is already authenticated. */
+export async function eventsWsUrl(): Promise<string> {
+  const token = await loadDaemonToken();
+  const base = getApiBaseUrl().replace(/^http/, 'ws');
+  return token ? `${base}/events?token=${encodeURIComponent(token)}` : `${base}/events`;
+}
 
 // --- Daemon types ---
 
@@ -157,15 +220,40 @@ export interface SSEPingEvent {
   type: 'Ping';
 }
 
-export type SSEEvent = SSEMessageEvent | SSEErrorEvent | SSEFinishEvent | SSEPingEvent | { type: string; [key: string]: unknown };
+/** Sent at the start of an SSE stream listing the session's in-flight
+ *  request_ids so a (re)connecting client can reattach — the Stop button reads
+ *  it to recover the cancel target after an EventSource reconnect mid-turn. */
+export interface SSEActiveRequestsEvent {
+  type: 'ActiveRequests';
+  request_ids: string[];
+}
 
+export type SSEEvent = SSEMessageEvent | SSEErrorEvent | SSEFinishEvent | SSEActiveRequestsEvent | SSEPingEvent | { type: string; [key: string]: unknown };
+
+/**
+ * Live per-frame token + cost state. Rides every SSE MessageEvent frame
+ * (`token_state`). NOTE: the daemon serializes this struct `rename_all =
+ * "camelCase"`, so the fields are camelCase here (the enclosing `token_state`
+ * key itself stays snake_case). Every cost figure is single-sourced from the
+ * per-call cost ledger via the canonical `cost_of`.
+ */
 export interface TokenState {
-  input_tokens: number;
-  output_tokens: number;
-  total_tokens: number;
-  accumulated_input_tokens: number;
-  accumulated_output_tokens: number;
-  accumulated_total_tokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  accumulatedInputTokens: number;
+  accumulatedOutputTokens: number;
+  accumulatedTotalTokens: number;
+  /** Cost of the most recent provider turn (USD). */
+  costUsd: number;
+  /** Running session cost (USD) — the one authoritative number. */
+  accumulatedCostUsd: number;
+  /** Running dollars saved by cache reads — the "cache saved $X" signal. */
+  cacheSavingsUsd: number;
+  /** Percent of the context window in use, or null when the limit is unknown. */
+  contextPercent: number | null;
+  /** Active model name. */
+  model: string;
 }
 
 export interface Skill {
@@ -184,7 +272,27 @@ export interface Skill {
 }
 
 export interface PermagentConfig {
+  /** YAML-file (+ defaults) config values. Env-blind by design — an env var
+   *  can override any of these at the daemon without appearing here. */
+  config?: Record<string, unknown>;
+  /** GOOSE_MODE as the daemon actually resolves it (env var overrides YAML;
+   *  backend ConfigResponse.effective_goose_mode). Snake_case mode value.
+   *  Absent on daemons that predate the re-enable-gate epic part B. */
+  effective_goose_mode?: string;
   [key: string]: unknown;
+}
+
+/** Wire shape for POST/PUT /config/custom-providers (backend
+ *  UpdateCustomProviderRequest). A custom provider is a user-defined
+ *  OpenAI/Anthropic/Ollama-compatible endpoint not in the built-in catalog. */
+export interface CustomProviderPayload {
+  engine: 'openai_compatible' | 'anthropic_compatible' | 'ollama_compatible';
+  display_name: string;
+  api_url: string;
+  api_key: string;
+  models: string[];
+  supports_streaming?: boolean;
+  requires_auth?: boolean;
 }
 
 export interface PermagentEvent {
@@ -447,6 +555,45 @@ export interface ExtensionQuery {
   };
 }
 
+/** One file in the Downloads inbox (metadata row; bytes live on disk).
+ *  Mirrors `permagent::inbox::InboxFile` — serde serializes `Option<T>` as null. */
+export interface InboxFile {
+  id: string;
+  filename: string;
+  original_url: string | null;
+  content_type: string | null;
+  size_bytes: number | null;
+  disk_path: string;
+  status: string;
+  project_id: string | null;
+  created_at: string;
+}
+
+/** Sovereign-mode status (GET/POST /api/security/sovereignty). */
+export interface SovereigntyStatus {
+  /** When on, all cloud inference is blocked (fail-closed) and audited. */
+  enabled: boolean;
+  /** Whether the egress log captures full prompts (vs a hash only). */
+  capturePrompts: boolean;
+  /** Whether a local provider (`local`/`ollama`) is registered to serve work. */
+  localProviderAvailable: boolean;
+}
+
+/** One row of the cloud-egress audit log (GET /api/security/egress-log). */
+export interface EgressLogEntry {
+  id: string;
+  ts: string;
+  provider: string;
+  model: string;
+  sessionId: string | null;
+  projectId: string | null;
+  kind: string;
+  /** True if this cloud call was blocked by sovereign mode. */
+  blocked: boolean;
+  contentHash: string;
+  prompt: string | null;
+}
+
 export const api = {
   // Health
   getHealth: () => apiFetch<{ status: string }>('/status'),
@@ -506,7 +653,10 @@ export const api = {
     images?: Array<{ data: string; mime_type: string }>,
     appContext?: AppContextPayload,
   ): Promise<{ request_id: string }> => {
-    const requestId = crypto.randomUUID();
+    // uuidV4, not crypto.randomUUID: companion devices reach the hub over
+    // plain-HTTP tailnet URLs (insecure origin), where randomUUID is undefined
+    // and a raw call would make every chat send throw.
+    const requestId = uuidV4();
     const userMessage = buildUserMessage(text, images);
     const contentTypes = userMessage.content.map(c => (c as { type: string }).type);
     console.log('[api-reply] POST /sessions/' + sessionId + '/reply',
@@ -531,9 +681,39 @@ export const api = {
     return result;
   },
 
-  /** Build the SSE URL for per-session events. */
-  sessionEventsUrl: (sessionId: string): string =>
-    `${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/events`,
+  /**
+   * Interrupt an in-flight turn via POST /sessions/{id}/cancel. Always 200
+   * with an HONEST body: `{cancelled:true}` means a live request's token was
+   * cancelled and a terminal Finish { reason: "stop" } will follow on the SSE
+   * channel (the UI settles on the normal stream path); `{cancelled:false}`
+   * means there was nothing to cancel (stale/unknown request_id — the turn
+   * already ended, or the daemon restarted), so NO terminal frame is coming
+   * and the caller must reconcile streaming state itself. apiFetch still
+   * throws on transport/server errors (agent may be alive — don't pretend it
+   * stopped).
+   */
+  cancelReply: (sessionId: string, requestId: string) =>
+    apiFetch<{ cancelled: boolean }>(`/sessions/${encodeURIComponent(sessionId)}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ request_id: requestId }),
+    }),
+
+  /** Build the SSE URL for per-session events. `lastEventId` resumes the
+   *  server replay after that sequence number (P1): EventSource cannot set the
+   *  Last-Event-ID header on the manual close-and-reconnect the store's
+   *  backoff loop performs, so the cursor rides a query param the daemon
+   *  reads as its header-equivalent. The daemon token rides the query too
+   *  (EventSource cannot set Authorization either — C1/C2 auth); async so the
+   *  first connect is already authenticated once the token loads. */
+  sessionEventsUrl: async (sessionId: string, lastEventId?: string | null): Promise<string> => {
+    const token = await loadDaemonToken();
+    const base = `${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/events`;
+    const params = new URLSearchParams();
+    if (lastEventId) params.set('last_event_id', lastEventId);
+    if (token) params.set('token', token);
+    const qs = params.toString();
+    return qs ? `${base}?${qs}` : base;
+  },
 
   // Identity
   getIdentity: () => apiFetch<{
@@ -605,6 +785,22 @@ export const api = {
       method: 'DELETE',
     }),
 
+  // ── Sovereignty / data boundary ──────────────────────────────────────
+  /** Current sovereign-mode status. */
+  getSovereignty: () =>
+    apiFetch<SovereigntyStatus>('/api/security/sovereignty'),
+
+  /** Toggle sovereign mode and/or full-prompt capture; returns new status. */
+  setSovereignty: (body: { enabled?: boolean; capturePrompts?: boolean }) =>
+    apiFetch<SovereigntyStatus>('/api/security/sovereignty', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  /** Recent cloud-egress audit entries (everything that has left this machine). */
+  getEgressLog: (limit = 100) =>
+    apiFetch<EgressLogEntry[]>(`/api/security/egress-log?limit=${limit}`),
+
   // Providers
   getProviders: () =>
     apiFetch<Array<{
@@ -640,6 +836,34 @@ export const api = {
       throw new Error(err.message || `HTTP ${response.status}`);
     }
   },
+
+  /** Validate a provider against its current stored config: confirms the daemon
+   *  can construct it (registered + required secrets present + well-formed URL /
+   *  headers). Resolves on success; rejects with the daemon's reason on failure.
+   *  Note: this is a config/constructibility check, not a guaranteed live API
+   *  round-trip for every provider. POST /config/check_provider returns an empty
+   *  200 body on success — apiFetch handles that (returns undefined). */
+  checkProvider: (provider: string): Promise<void> =>
+    apiFetch<void>('/config/check_provider', {
+      method: 'POST',
+      body: JSON.stringify({ provider }),
+    }),
+
+  /** Create a user-defined custom provider (writes a declarative provider
+   *  definition + stores its API key, then hot-registers it). The new provider
+   *  then appears in getProviders() tagged provider_type "Custom". Returns the
+   *  generated provider name (id). */
+  createCustomProvider: (payload: CustomProviderPayload): Promise<{ provider_name: string }> =>
+    apiFetch<{ provider_name: string }>('/config/custom-providers', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  /** Remove a user-defined custom provider by its id (the provider `name`). */
+  removeCustomProvider: (id: string): Promise<string> =>
+    apiFetch<string>(`/config/custom-providers/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
 
   // Skills CRUD
   getSkills: () => apiFetch<Skill[]>('/permagent/skills').catch(() => [] as Skill[]),
@@ -792,6 +1016,15 @@ export const api = {
       { method: 'DELETE', headers: authHeaders() },
     ),
 
+  // ── Project memories (the Brain-loop read side, #587-adjacent) ─────────────
+
+  /** List the Brain memories associated with a project, resolved from the LIVE
+   *  Brain, newest association first. This is the read-back the Memories panel
+   *  and the panels' "View in Brain" links resolve their keys against — every
+   *  note / document / code-index write auto-associates, so they all appear. */
+  listProjectMemories: (projectId: string) =>
+    apiFetch<ProjectMemory[]>(`/api/projects/${encodeURIComponent(projectId)}/memories`),
+
   // ── Project notes (freeform notes indexed into the Brain) ──────────────────
 
   /** List a project's notes, newest first. */
@@ -812,6 +1045,28 @@ export const api = {
       `${API_BASE_URL}/api/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}`,
       { method: 'DELETE', headers: authHeaders() },
     ),
+
+  // ── Project code index (parse a codebase into the Brain, #471) ─────────────
+
+  /** Index a project's codebase into the Brain: the backend parses the code at
+   *  the project's root_path into a durable, project-scoped code map memory (the
+   *  "code understanding" keystone). Returns a small summary. On failure the
+   *  backend answers with a plain-text reason (no root_path, unreadable path,
+   *  Brain unavailable) — surfaced here as the thrown error message. */
+  indexProjectCode: async (
+    projectId: string,
+  ): Promise<{ indexed: boolean; files: number; memoryKey: string }> => {
+    if (!_daemonToken) await loadDaemonToken();
+    const response = await fetch(
+      `${API_BASE_URL}/api/projects/${encodeURIComponent(projectId)}/index-code`,
+      { method: 'POST', headers: authHeaders() },
+    );
+    if (!response.ok) {
+      const msg = await response.text().catch(() => '');
+      throw new Error(msg || `HTTP ${response.status}`);
+    }
+    return response.json();
+  },
 
   /** Install the bundled dictation model on first run: the daemon copies the
    *  bundled Whisper model into the data dir (once) and points
@@ -849,13 +1104,10 @@ export const api = {
     return resp.json() as Promise<{ text: string }>;
   },
 
-  // State snapshot (stubbed until daemon implements)
-  getStateSnapshot: () => Promise.resolve({
-    tasks: [] as Array<{ id: string; title: string | null; status: string; automation_id: string | null; created_at: string | null; updated_at: string }>,
-    service_health: [] as Array<{ service: string; status: string; last_check: string; latency_ms: number }>,
-    receipts: [] as Array<{ id: string; run_id: string; step_id: string | null; model: string; input_tokens: number; output_tokens: number; cost_usd: number; recorded_at: string }>,
-    spend: { today_usd: 0, month_usd: 0 },
-  }),
+  // Downloads inbox (#392/#393) — files that landed in ~/.permagent/inbox via the
+  // in-app browser download flow. Lists metadata rows newest-first. Recording a
+  // row (POST) is driven by the desktop download bridge, not the UI.
+  getInbox: () => apiFetch<InboxFile[]>('/api/inbox'),
 
   /** Fetch with daemon Bearer token auth (for /activity/* endpoints). */
   fetchAuthed: async (endpoint: string, options?: RequestInit): Promise<Response> => {

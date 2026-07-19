@@ -29,6 +29,17 @@
 //! (e.g. scheduler job count, librarian phase). [`StateSource::Static`] features
 //! render editorial-only — we describe what they are without claiming a live
 //! status we cannot cheaply observe. This avoids over-claiming.
+//!
+//! ## Onboarding (agent-led teaching)
+//!
+//! Two submodules turn this inventory into an active teaching loop:
+//! [`usage`] tracks which capabilities the user has actually engaged (fed by the
+//! existing activity bus), and [`teachable`] is the curated set of features the
+//! agent can walk the user through — each mapped to a real navigable surface.
+//! `inventory − used` is the "learn next" list.
+
+pub mod teachable;
+pub mod usage;
 
 use std::fmt::Write as _;
 
@@ -136,13 +147,33 @@ pub static WORKER_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::steward::SELF_KNOWLEDGE_FEATURE,
     crate::initiative::SELF_KNOWLEDGE_FEATURE,
     crate::echo::SELF_KNOWLEDGE_FEATURE,
+    usage::ONBOARDING_COACH_FEATURE,
+    // Render-gated (see `worker_descriptor_visible`): hidden from the brief
+    // while `PERMAGENT_PLAYBOOK_ENABLED` is off, so this experimental, unproven
+    // capability does not enter every user's Henry until deliberately enabled.
+    crate::playbook::PLAYBOOK_SYNTHESIS_FEATURE,
 ];
+
+/// Whether a worker descriptor should be rendered into the `permagent_self`
+/// brief. Almost all are always visible; a flag-gated, experimental worker is
+/// hidden until its flag is on, so the capability the agent can DESCRIBE is
+/// exactly the one it can DO — and, with the flag off, the brief is byte-for-
+/// byte identical to before the descriptor existed (the canonical snapshots
+/// stay unchanged; a dedicated test covers the enabled rendering).
+fn worker_descriptor_visible(d: &FeatureDescriptor) -> bool {
+    if d.id == crate::playbook::PLAYBOOK_FEATURE_ID {
+        return crate::playbook::is_enabled();
+    }
+    true
+}
 
 /// Deterministic guardrails the agent operates under. Co-located with the
 /// safety-core module that enforces each one.
 pub static GUARD_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::steward::secret_scan::SELF_KNOWLEDGE_FEATURE,
     crate::session::crash_capture::DURABILITY_FEATURE,
+    crate::tool_monitor::SELF_KNOWLEDGE_FEATURE,
+    crate::sovereignty::SELF_KNOWLEDGE_FEATURE,
 ];
 
 /// User-facing surfaces. Each entry is a `const` co-located with its module.
@@ -161,6 +192,13 @@ pub static SURFACE_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::activity_journal::TIMELINE_FEATURE,
     crate::scheduler::RUN_ROSTER_FEATURE,
     crate::agents::platform_extensions::project_manager::GROW_FEATURE,
+    crate::agents::platform_extensions::analyze::CODEBASE_INDEX_FEATURE,
+    crate::agents::platform_extensions::project_manager::CODING_HARNESS_FEATURE,
+    crate::cost_router::COST_OPTIMIZER_FEATURE,
+    crate::mesh::MESH_FEATURE,
+    crate::skills::SKILLS_FEATURE,
+    crate::session::SESSIONS_FEATURE,
+    crate::events::TRACE_FEATURE,
 ];
 
 /// Tool ids that are described under another category and therefore skipped in
@@ -311,6 +349,11 @@ impl SelfKnowledgeBuilder {
         )
         .ok();
         for d in WORKER_DESCRIPTORS {
+            // Flag-gated workers are omitted from the brief while disabled — off
+            // is a byte-for-byte no-op (see `worker_descriptor_visible`).
+            if !worker_descriptor_visible(d) {
+                continue;
+            }
             let live = self.worker_live_state(d);
             match live {
                 Some(state) => writeln!(
@@ -509,6 +552,10 @@ mod tests {
         "git_steward",
         "initiative",
         "watcher",
+        "onboarding_coach",
+        // In the registry always (so `find_descriptor` resolves it); its render
+        // into the brief is flag-gated (see `worker_descriptor_visible`).
+        "playbook",
     ];
     /// Every known surface id must have exactly one descriptor.
     const KNOWN_SURFACE_IDS: &[&str] = &[
@@ -526,6 +573,13 @@ mod tests {
         "timeline",
         "run_roster",
         "grow",
+        "codebase",
+        "coding_harness",
+        "cost_optimizer",
+        "mesh",
+        "skills",
+        "sessions",
+        "trace",
     ];
     /// The Phase-2-v1 lesson set — each must resolve to a descriptor with steps.
     const V1_LESSON_IDS: &[&str] = &["reader", "brain", "scheduler", "persona"];
@@ -561,7 +615,12 @@ mod tests {
     /// constraint he is subject to.
     #[test]
     fn guardrails_have_descriptors_and_render() {
-        const KNOWN_GUARD_IDS: &[&str] = &["credential_commit_guard", "durability_supervision"];
+        const KNOWN_GUARD_IDS: &[&str] = &[
+            "credential_commit_guard",
+            "durability_supervision",
+            "runaway_loop_guard",
+            "sovereignty_guard",
+        ];
         for id in KNOWN_GUARD_IDS {
             let n = GUARD_DESCRIPTORS.iter().filter(|d| d.id == *id).count();
             assert_eq!(n, 1, "guard id {id:?} must have exactly one descriptor");
@@ -583,6 +642,12 @@ mod tests {
         .build();
         assert!(brief.contains("## Guardrails you operate under"));
         assert!(brief.contains("**Credential commit guard**"));
+        // The sovereignty guard renders unconditionally (always-visible, like
+        // every guard): the agent must be able to describe the boundary — and
+        // recognize a `[sovereign]` refusal — even when the mode is off, and
+        // sovereignty is per-context, so there is no single bit to gate on.
+        assert!(brief.contains("**Sovereignty guard**"));
+        assert!(brief.contains("[sovereign]"));
     }
 
     #[test]
@@ -671,6 +736,66 @@ mod tests {
         assert!(brief.contains("**Persona"));
         // Queryable scheduler state merged in.
         assert!(brief.contains("3 job(s) scheduled"));
+    }
+
+    /// B1 render-gate: the flag-gated Decision Playbook worker is HIDDEN from the
+    /// brief when `PERMAGENT_PLAYBOOK_ENABLED` is off. This is why the canonical
+    /// prompt_manager snapshots stay byte-for-byte unchanged — off is a no-op.
+    /// (Pins config to an empty temp root, like the snapshot tests, so the flag
+    /// is the only variable.)
+    #[test]
+    fn playbook_descriptor_hidden_when_flag_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().display().to_string();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(root.as_str())),
+            ("PERMAGENT_PATH_ROOT", Some(root.as_str())),
+            ("PERMAGENT_PLAYBOOK_ENABLED", None::<&str>),
+        ]);
+
+        let brief = SelfKnowledgeBuilder {
+            agent_display_name: "Aria".to_string(),
+            scheduled_job_count: None,
+            dispatchable_workers: Vec::new(),
+        }
+        .build();
+
+        assert!(
+            !brief.contains("Decision Playbook"),
+            "playbook descriptor must be hidden from the brief when the flag is off"
+        );
+    }
+
+    /// B1 enabled rendering: when `PERMAGENT_PLAYBOOK_ENABLED` is on, the Decision
+    /// Playbook worker renders in the brief with its hints-with-provenance
+    /// framing — so the capability the agent can DO is exactly the one it can
+    /// DESCRIBE. The dedicated guard the coordinator asked for.
+    #[test]
+    fn playbook_descriptor_shown_when_flag_on() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().display().to_string();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(root.as_str())),
+            ("PERMAGENT_PATH_ROOT", Some(root.as_str())),
+            ("PERMAGENT_PLAYBOOK_ENABLED", Some("1")),
+        ]);
+
+        let brief = SelfKnowledgeBuilder {
+            agent_display_name: "Aria".to_string(),
+            scheduled_job_count: None,
+            dispatchable_workers: Vec::new(),
+        }
+        .build();
+
+        assert!(
+            brief.contains("**Decision Playbook**"),
+            "playbook descriptor must render in the brief when the flag is on"
+        );
+        // The rendered copy must carry the non-authoritative, provenance framing.
+        assert!(
+            brief.contains("provenance"),
+            "the rendered playbook descriptor must convey hints-with-provenance"
+        );
     }
 
     #[test]
@@ -768,13 +893,627 @@ mod tests {
         assert_eq!(names, sorted);
     }
 
+    /// The coding harness and its cost optimizer are discoverable in
+    /// self-knowledge: findable by id, rendered into the brief, and carrying
+    /// authored teaching steps so the agent can describe, launch, and GUIDE the
+    /// user through them. This is the capstone of the coding-harness workstream
+    /// (#719/#720) — the agent must KNOW the harness exists and how to use it,
+    /// not just that a Build tab exists.
+    #[test]
+    fn coding_harness_capabilities_are_discoverable_and_teachable() {
+        for (id, display) in [
+            ("coding_harness", "Permagent coding harness"),
+            ("cost_optimizer", "Cost optimizer"),
+        ] {
+            let d = find_descriptor(id)
+                .unwrap_or_else(|| panic!("{id:?} must be discoverable via find_descriptor"));
+            assert_eq!(d.display_name, display);
+            assert_eq!(d.category, FeatureCategory::Surface);
+            assert!(
+                !d.teaching.is_empty(),
+                "{id:?} must carry teaching steps so the agent can guide the user"
+            );
+            let lesson = lesson_for(id).expect("lesson_for must render a known feature");
+            assert!(lesson.contains("Step 1"), "{id:?} lesson must have steps");
+        }
+
+        let brief = SelfKnowledgeBuilder {
+            agent_display_name: "Aria".to_string(),
+            scheduled_job_count: None,
+            dispatchable_workers: Vec::new(),
+        }
+        .build();
+        // The harness + cost optimizer render under Surfaces and self-describe
+        // their headline properties, so the agent can answer "build this with
+        // the Permagent harness" knowing what it is and how to launch it.
+        assert!(brief.contains("**Permagent coding harness**"));
+        assert!(brief.contains("**Cost optimizer**"));
+        assert!(brief.contains("provider-agnostic"));
+        assert!(brief.contains("launched from the Build tab"));
+        // The agent can now describe the independent adversarial reviewer gate:
+        // after its own tests pass, a different-model reviewer checks the diff
+        // before it calls the work done.
+        assert!(
+            brief.contains("different-model reviewer adversarially checks the diff"),
+            "the coding-harness self-knowledge must describe the independent reviewer gate"
+        );
+    }
+
+    /// Tokenize a capability description into whole identifier tokens (split on
+    /// any non-`[A-Za-z0-9_]` char, lowercased). A tool counts as "named" only
+    /// if its name is one of these tokens — so `search` is not satisfied by
+    /// "research" nor `tree` by "street".
+    fn description_tokens(desc: &str) -> std::collections::HashSet<String> {
+        desc.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .filter(|t| !t.is_empty())
+            .map(|t| t.to_ascii_lowercase())
+            .collect()
+    }
+
+    /// Every tool in `tools` that `desc` fails to name (empty == complete). The
+    /// single checker BOTH the guard and its meta-test run through, so the
+    /// meta-test genuinely exercises the guard's logic.
+    fn tools_not_named_in(desc: &str, tools: &[String]) -> Vec<String> {
+        let toks = description_tokens(desc);
+        tools
+            .iter()
+            .filter(|t| !toks.contains(&t.to_ascii_lowercase()))
+            .cloned()
+            .collect()
+    }
+
+    /// The registry `description` (== `what_it_does`) for a platform extension,
+    /// looked up by its `def.name`.
+    fn platform_extension_description(ext_name: &str) -> &'static str {
+        PLATFORM_EXTENSIONS
+            .values()
+            .find(|d| d.name == ext_name)
+            .unwrap_or_else(|| panic!("extension {ext_name:?} missing from PLATFORM_EXTENSIONS"))
+            .description
+    }
+
+    /// The statically-derivable tool inventory for every brief-visible
+    /// extension, keyed by `PlatformExtensionDef.name`. Each inventory comes
+    /// from the extension's REAL tool constructor — the same code `list_tools`
+    /// serves — so adding a tool anywhere makes the completeness guard fail
+    /// until the registry `description` names it:
+    ///
+    /// - Most extensions expose a static `get_tools()` (`list_tools` returns it
+    ///   verbatim) — fully drift-proof.
+    /// - **Extension Manager** gates tools at runtime (resources support, Brain
+    ///   loaded) but `get_tools` *selects from* `all_possible_tools()` by name,
+    ///   so a tool absent there cannot ship at all; the superset is the
+    ///   inventory. `dynamic_tool_inventories_match_constructed_clients` below
+    ///   pins the gate split against a real constructed run.
+    /// - **Summon** hides `delegate` from subagent sessions; the superset
+    ///   (`all_possible_tools()` = the main-session view, where the brief
+    ///   renders) is the inventory, pinned by the same constructed-client test.
+    /// - **Code Mode** varies by disclosure mode; `all_possible_tools()` is the
+    ///   union of every mode's `tools_for_disclosure`, so a tool added to any
+    ///   branch lands here automatically.
+    fn extension_tool_inventories() -> Vec<(&'static str, Vec<String>)> {
+        use crate::agents::platform_extensions::{
+            analyze, app_conductor, apps, browser, chatrecall, developer, ext_manager, listen,
+            orchestrator, people, project_manager, pronunciation, recipe_author, skills,
+            storage_health, summarize, summon, todo,
+        };
+
+        fn names(tools: Vec<rmcp::model::Tool>) -> Vec<String> {
+            tools.iter().map(|t| t.name.to_string()).collect()
+        }
+
+        let mut inventories = vec![
+            (
+                analyze::EXTENSION_NAME,
+                names(analyze::AnalyzeClient::get_tools()),
+            ),
+            (
+                app_conductor::EXTENSION_NAME,
+                names(app_conductor::AppConductorClient::get_tools()),
+            ),
+            (
+                apps::EXTENSION_NAME,
+                names(apps::AppsManagerClient::get_tools()),
+            ),
+            (
+                browser::EXTENSION_NAME,
+                names(browser::BrowserClient::get_tools()),
+            ),
+            (
+                chatrecall::EXTENSION_NAME,
+                names(chatrecall::ChatRecallClient::get_tools()),
+            ),
+            (
+                developer::EXTENSION_NAME,
+                names(developer::DeveloperClient::get_tools()),
+            ),
+            (
+                ext_manager::EXTENSION_NAME,
+                names(ext_manager::ExtensionManagerClient::all_possible_tools()),
+            ),
+            (
+                listen::EXTENSION_NAME,
+                names(listen::ListenClient::get_tools()),
+            ),
+            (
+                orchestrator::EXTENSION_NAME,
+                names(orchestrator::OrchestratorClient::get_tools()),
+            ),
+            (
+                people::EXTENSION_NAME,
+                names(people::PeopleClient::get_tools()),
+            ),
+            (
+                project_manager::EXTENSION_NAME,
+                names(project_manager::ProjectManagerClient::get_tools()),
+            ),
+            (
+                pronunciation::EXTENSION_NAME,
+                names(pronunciation::PronunciationClient::get_tools()),
+            ),
+            (
+                recipe_author::EXTENSION_NAME,
+                names(recipe_author::RecipeAuthorClient::get_tools()),
+            ),
+            (
+                skills::EXTENSION_NAME,
+                names(skills::SkillsClient::get_tools()),
+            ),
+            (
+                storage_health::EXTENSION_NAME,
+                names(storage_health::StorageHealthClient::get_tools()),
+            ),
+            (
+                summarize::EXTENSION_NAME,
+                names(summarize::SummarizeClient::get_tools()),
+            ),
+            (
+                summon::EXTENSION_NAME,
+                names(summon::SummonClient::all_possible_tools()),
+            ),
+            (todo::EXTENSION_NAME, names(todo::TodoClient::get_tools())),
+        ];
+
+        #[cfg(feature = "code-mode")]
+        inventories.push((
+            crate::agents::platform_extensions::code_execution::EXTENSION_NAME,
+            names(crate::agents::platform_extensions::code_execution::CodeExecutionClient::all_possible_tools()),
+        ));
+
+        inventories
+    }
+
+    /// Brief-visible extensions with NO callable tools — exempt from the
+    /// tool-naming contract because there is nothing to name. Each entry
+    /// carries its reason here; `dynamic_tool_inventories_match_constructed_clients`
+    /// asserts the claim against a real constructed client.
+    ///
+    /// - `tom` (Top Of Mind) injects context via `get_moim`; its `list_tools`
+    ///   returns an empty vec.
+    const NO_TOOL_EXTENSIONS: &[&str] = &[crate::agents::platform_extensions::tom::EXTENSION_NAME];
+
+    /// **Self-knowledge completeness (structural guard).** Every tool an
+    /// extension can actually expose must be *named* in that extension's
+    /// registry `description` — otherwise the tool renders into no named line
+    /// of the `permagent_self` brief and the agent cannot know it exists. This
+    /// closes the gap the descriptor contract left open:
+    /// `PlatformExtensionDef::descriptor` copies `description` verbatim into
+    /// `what_it_does`, so coverage was guaranteed at *extension* granularity
+    /// but never at *tool* granularity — an extension could ship a tool its
+    /// blurb never mentions and every test stayed green. Shipping an
+    /// undescribed tool now fails the build.
+    ///
+    /// **Generality is enforced, not hoped for:** the case table is
+    /// [`extension_tool_inventories`], and a completeness meta-check asserts it
+    /// covers every brief-visible extension in `PLATFORM_EXTENSIONS` — so
+    /// registering a new extension (or un-hiding one) without adding its
+    /// inventory here is itself a red build, in both directions.
+    #[test]
+    fn tool_descriptions_name_every_callable_tool() {
+        let inventories = extension_tool_inventories();
+
+        // ── The naming contract itself ──
+        let mut gaps = Vec::new();
+        for (ext_name, tools) in &inventories {
+            assert!(
+                !tools.is_empty(),
+                "{ext_name}: empty tool inventory — test wiring is broken"
+            );
+            let desc = platform_extension_description(ext_name);
+            for missing in tools_not_named_in(desc, tools) {
+                gaps.push(format!(
+                    "{ext_name}: tool `{missing}` is callable but its description never names it"
+                ));
+            }
+        }
+        assert!(
+            gaps.is_empty(),
+            "self-knowledge completeness gap — an extension ships a tool its \
+             description never names, so the agent cannot know the tool exists. \
+             Name each missing tool in its `PlatformExtensionDef.description`:\n{}",
+            gaps.join("\n")
+        );
+
+        // ── Meta-check: the guard covers EVERY brief-visible extension ──
+        // The brief's Tools section renders every non-hidden registry entry
+        // except those described under another category, so exactly that set
+        // must have an inventory (or a documented no-tools exemption).
+        let covered: std::collections::HashSet<&str> =
+            inventories.iter().map(|(name, _)| *name).collect();
+        for def in PLATFORM_EXTENSIONS.values() {
+            if def.hidden
+                || TOOL_IDS_RENDERED_ELSEWHERE.contains(&def.name)
+                || NO_TOOL_EXTENSIONS.contains(&def.name)
+            {
+                continue;
+            }
+            assert!(
+                covered.contains(def.name),
+                "extension {:?} renders into the brief's Tools section but has no tool \
+                 inventory registered in extension_tool_inventories() — add its \
+                 get_tools()-derived case so its blurb is held to the naming contract",
+                def.name
+            );
+        }
+        // …and inversely: every case must be a real, registered extension, so a
+        // rename/removal cannot leave a stale case silently asserting nothing.
+        for (ext_name, _) in &inventories {
+            assert!(
+                PLATFORM_EXTENSIONS.values().any(|d| d.name == *ext_name),
+                "extension_tool_inventories() lists {ext_name:?} which is not in \
+                 PLATFORM_EXTENSIONS — remove or fix the stale case"
+            );
+        }
+    }
+
+    /// **Test-of-the-test.** Proves the completeness guard above actually has
+    /// teeth: it must REPORT a gap when a description omits a tool, not silently
+    /// pass. Pinned on the highest-priority case — Extension Manager owns
+    /// `search_memory` (Brain recall), the exact tool whose omission the r1
+    /// guard was built to catch. If a future refactor neutered
+    /// `tool_descriptions_name_every_callable_tool` into a no-op, this fails.
+    #[test]
+    fn completeness_guard_catches_a_dropped_search_memory() {
+        use crate::agents::platform_extensions::ext_manager;
+
+        let inventory: Vec<String> = ext_manager::ExtensionManagerClient::all_possible_tools()
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(
+            inventory.iter().any(|t| t == "search_memory"),
+            "ext_manager::all_possible_tools() must include search_memory (the tool this guard enforces)"
+        );
+
+        // The REAL, shipped Extension Manager description names every tool.
+        let real = platform_extension_description(ext_manager::EXTENSION_NAME);
+        assert!(
+            tools_not_named_in(real, &inventory).is_empty(),
+            "the real Extension Manager description must name every tool in all_possible_tools()"
+        );
+
+        // The pre-fix blurb (which never named search_memory) MUST be flagged —
+        // the exact regression the guard exists to prevent. This is the
+        // "verify it RED-builds if search_memory is dropped" check, run in CI.
+        let pre_fix_blurb =
+            "Enable extension management tools for discovering, enabling, and disabling extensions";
+        let missing = tools_not_named_in(pre_fix_blurb, &inventory);
+        assert!(
+            missing.iter().any(|t| t == "search_memory"),
+            "guard is a no-op: a description dropping search_memory was not flagged (missing: {missing:?})"
+        );
+    }
+
+    /// **RED-build proof for round 2's headline case.** The r1 guard held its
+    /// "no undescribed tool ships" property for only 3 extensions — proven when
+    /// App Conductor's `open_item` shipped undescribed with everything green.
+    /// This pins that exact regression: an App Conductor blurb that stops
+    /// naming `open_item` (the pre-r2 registry text, verbatim) must be flagged.
+    #[test]
+    fn completeness_guard_catches_a_dropped_open_item() {
+        use crate::agents::platform_extensions::app_conductor;
+
+        let inventory: Vec<String> = app_conductor::AppConductorClient::get_tools()
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert_eq!(
+            inventory,
+            vec!["navigate_app", "app_action", "open_item"],
+            "app_conductor's real tool list changed — update this pin deliberately"
+        );
+
+        let real = platform_extension_description(app_conductor::EXTENSION_NAME);
+        assert!(
+            tools_not_named_in(real, &inventory).is_empty(),
+            "the real App Conductor description must name every tool"
+        );
+
+        // The pre-r2 blurb: describes all three capabilities, names zero tools.
+        let pre_fix_blurb = "Navigate the user to tabs and views, act within them — \
+             open/close/detach the chat dock, show/hide the Build tab's browser and terminal \
+             panes — and carry them the last mile past a tab to a specific item: a goal's \
+             detail or a project's Grow planner, in the Permagent app";
+        let missing = tools_not_named_in(pre_fix_blurb, &inventory);
+        assert!(
+            missing.iter().any(|t| t == "open_item"),
+            "guard is a no-op: a description dropping open_item was not flagged (missing: {missing:?})"
+        );
+    }
+
+    /// **Dynamic-inventory ground truth.** For the extensions whose `list_tools`
+    /// is genuinely dynamic, the static superset the guard uses must match an
+    /// actually-constructed client run — otherwise the superset could drift
+    /// from reality and the guard would assert against fiction.
+    ///
+    /// - **Summon**: a non-subagent session sees exactly `all_possible_tools()`
+    ///   (`load` + `delegate`). Residual: a tool exposed ONLY to subagent
+    ///   sessions would escape this check — none exists today.
+    /// - **Extension Manager**: with no extension manager and no Brain, a real
+    ///   run returns exactly the ungated prefix of `all_possible_tools()`, and
+    ///   the gated remainder is exactly `GATED_TOOL_NAMES`. Residual: the
+    ///   resources/Brain gates are not flipped on here (that needs a live
+    ///   resource-capable ExtensionManager / the process-global Brain), but
+    ///   `get_tools` *selects from* `all_possible_tools()` by name, so even a
+    ///   gated tool cannot ship without being in the guarded superset.
+    /// - **Top Of Mind**: backs the `NO_TOOL_EXTENSIONS` exemption — a real
+    ///   run returns no tools.
+    #[tokio::test]
+    async fn dynamic_tool_inventories_match_constructed_clients() {
+        use crate::agents::mcp_client::McpClientTrait;
+        use crate::agents::platform_extensions::{
+            ext_manager, summon, tom, PlatformExtensionContext,
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().display().to_string();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(root.as_str())),
+            ("PERMAGENT_PATH_ROOT", Some(root.as_str())),
+        ]);
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: std::sync::Arc::new(crate::session::SessionManager::new(
+                tmp.path().to_path_buf(),
+            )),
+            session: None,
+        };
+        let cancel = tokio_util::sync::CancellationToken::new();
+
+        // Summon: an unknown session id is not a subagent → the full superset.
+        let summon_client = summon::SummonClient::new(context.clone()).expect("summon constructs");
+        let listed: Vec<String> = summon_client
+            .list_tools("not-a-real-session", None, cancel.clone())
+            .await
+            .expect("summon list_tools")
+            .tools
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        let superset: Vec<String> = summon::SummonClient::all_possible_tools()
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert_eq!(
+            listed, superset,
+            "summon's main-session list_tools must equal all_possible_tools() — \
+             a tool was added to one but not the other"
+        );
+
+        // Extension Manager: ungated prefix + gated tail == the full superset.
+        let ext_client = ext_manager::ExtensionManagerClient::new(context.clone())
+            .expect("ext_manager constructs");
+        let listed: Vec<String> = ext_client
+            .list_tools("not-a-real-session", None, cancel.clone())
+            .await
+            .expect("ext_manager list_tools")
+            .tools
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        let all: Vec<String> = ext_manager::ExtensionManagerClient::all_possible_tools()
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        let gated: Vec<String> = ext_manager::ExtensionManagerClient::GATED_TOOL_NAMES
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            listed.as_slice(),
+            &all[..all.len() - gated.len()],
+            "with no gates open, a real run must return exactly the ungated prefix \
+             of all_possible_tools()"
+        );
+        assert_eq!(
+            &all[listed.len()..],
+            gated.as_slice(),
+            "the gated tail of all_possible_tools() must be exactly GATED_TOOL_NAMES — \
+             a gated tool was added to one but not the other"
+        );
+
+        // Top Of Mind: genuinely tool-less (the NO_TOOL_EXTENSIONS exemption).
+        let tom_client = tom::TomClient::new(context).expect("tom constructs");
+        let listed = tom_client
+            .list_tools("not-a-real-session", None, cancel)
+            .await
+            .expect("tom list_tools");
+        assert!(
+            listed.tools.is_empty(),
+            "tom is exempted as tool-less but a real run returned tools: {:?} — \
+             remove the exemption and name them in its description",
+            listed
+                .tools
+                .iter()
+                .map(|t| t.name.to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Maximal `[A-Za-z0-9_]` runs in `text` that look like tool names:
+    /// all-lowercase, at least one underscore, starting with a letter. This is
+    /// deliberately narrow — single-word tool names (`load`, `verify`, …) are
+    /// indistinguishable from prose and are NOT validated (documented residual);
+    /// uppercase tokens (env vars like `PERMAGENT_MOIM_MESSAGE_TEXT`) are
+    /// excluded.
+    fn tool_shaped_tokens(text: &str) -> Vec<String> {
+        text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .filter(|t| {
+                t.contains('_')
+                    && t.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+                    && t.chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            })
+            .map(|t| t.to_string())
+            .collect()
+    }
+
+    /// Real, callable tools that exist OUTSIDE the statically-enumerable
+    /// platform-extension universe, so descriptor prose may legitimately name
+    /// them. Every entry needs a justification:
+    ///
+    /// - `web_search`: registered by the connected search provider (Brave or
+    ///   Tavily) when one is configured — the Audience Listening fall-through
+    ///   and the Web search surface descriptor reference it, and the surface
+    ///   copy already states its conditionality ("when one is connected its
+    ///   search tools appear in your tool list").
+    const KNOWN_DYNAMIC_TOOLS: &[&str] = &["web_search"];
+
+    /// Snake_case prose tokens that are NOT tools (parameter names, config
+    /// keys, …). EMPTY by design — current descriptor prose contains none, and
+    /// keeping it empty forces every new snake_case token to be either a real
+    /// tool or an explicit, justified entry here.
+    const NON_TOOL_PROSE_TOKENS: &[&str] = &[];
+
+    /// Every tool name that exists in the runtime: the statically-derived
+    /// per-extension inventories, hidden-but-real extensions (Git Steward),
+    /// the two platform tools registered directly in `agent.rs`, and the
+    /// documented dynamic extras.
+    fn real_tool_inventory() -> std::collections::HashSet<String> {
+        let mut inv: std::collections::HashSet<String> = extension_tool_inventories()
+            .into_iter()
+            .flat_map(|(_, tools)| tools)
+            .collect();
+        inv.extend(
+            crate::agents::platform_extensions::steward::StewardClient::get_tools()
+                .iter()
+                .map(|t| t.name.to_string()),
+        );
+        inv.insert(
+            crate::agents::platform_tools::manage_schedule_tool()
+                .name
+                .to_string(),
+        );
+        inv.insert(
+            crate::agents::platform_tools::load_feature_lesson_tool()
+                .name
+                .to_string(),
+        );
+        inv.extend(KNOWN_DYNAMIC_TOOLS.iter().map(|s| s.to_string()));
+        inv
+    }
+
+    /// **Phantom-tool guard.** Rendered descriptor prose — `what_it_does`,
+    /// `why_it_matters`, and teaching steps, across ALL registries including
+    /// surfaces — must never name a tool that does not exist. This is the class
+    /// the `list_projects` phantom escaped through: the Projects-workspace
+    /// surface told the agent to reach for a tool whose real name is
+    /// `project_list`, and no guard scanned surface prose at all. Now every
+    /// tool-shaped token (see [`tool_shaped_tokens`] — backticked or bare) must
+    /// be a real tool from [`real_tool_inventory`], an entry in
+    /// [`KNOWN_DYNAMIC_TOOLS`], or an explicitly-classified non-tool in
+    /// [`NON_TOOL_PROSE_TOKENS`].
+    ///
+    /// Out of scope (documented residuals): single-word tool names cannot be
+    /// told apart from prose, and tool *descriptions* themselves are not
+    /// scanned (the model reads those alongside the real tool list, which
+    /// self-corrects a phantom there; descriptor prose renders into the brief
+    /// with no such correction).
+    #[test]
+    fn descriptor_prose_names_only_real_tools() {
+        let inventory = real_tool_inventory();
+
+        let platform: Vec<FeatureDescriptor> = PLATFORM_EXTENSIONS
+            .values()
+            .map(|d| d.descriptor())
+            .collect();
+        let sources: [(&str, &[FeatureDescriptor]); 4] = [
+            ("platform_extension", platform.as_slice()),
+            ("worker", WORKER_DESCRIPTORS),
+            ("guard", GUARD_DESCRIPTORS),
+            ("surface", SURFACE_DESCRIPTORS),
+        ];
+
+        let mut phantoms = Vec::new();
+        for (kind, descriptors) in sources {
+            for d in descriptors {
+                let mut fields: Vec<(String, &str)> = vec![
+                    ("what_it_does".to_string(), d.what_it_does),
+                    ("why_it_matters".to_string(), d.why_it_matters),
+                ];
+                for (i, step) in d.teaching.iter().enumerate() {
+                    fields.push((format!("teaching[{i}].title"), step.title));
+                    fields.push((format!("teaching[{i}].body"), step.body));
+                }
+                for (field, text) in fields {
+                    for token in tool_shaped_tokens(text) {
+                        if !inventory.contains(&token)
+                            && !NON_TOOL_PROSE_TOKENS.contains(&token.as_str())
+                        {
+                            phantoms.push(format!(
+                                "{kind} descriptor {:?} field `{field}` names `{token}`, \
+                                 which is not a real tool",
+                                d.id
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            phantoms.is_empty(),
+            "descriptor prose names nonexistent tool(s) — fix the name to the real \
+             tool, or (if it is a real dynamic tool) add it to KNOWN_DYNAMIC_TOOLS \
+             with justification, or (if it is not a tool) classify it in \
+             NON_TOOL_PROSE_TOKENS:\n{}",
+            phantoms.join("\n")
+        );
+    }
+
+    /// **Test-of-the-test for the phantom guard.** The exact historical
+    /// phantom — `list_projects` in the Projects-workspace surface prose —
+    /// must be flagged by the scanner, and the real neighboring tool name
+    /// (`board_summary`) must not. If the tokenizer or inventory ever loosens
+    /// into a no-op, this fails.
+    #[test]
+    fn phantom_guard_catches_the_list_projects_phantom() {
+        let inventory = real_tool_inventory();
+        // The pre-fix PROJECT_WORKSPACE_FEATURE prose, verbatim.
+        let pre_fix = "Reach for the project tools (list_projects, board_summary) \
+             to read or change what this surface shows";
+        let flagged: Vec<String> = tool_shaped_tokens(pre_fix)
+            .into_iter()
+            .filter(|t| !inventory.contains(t) && !NON_TOOL_PROSE_TOKENS.contains(&t.as_str()))
+            .collect();
+        assert_eq!(
+            flagged,
+            vec!["list_projects".to_string()],
+            "the scanner must flag exactly the phantom (list_projects) and accept \
+             the real tool (board_summary)"
+        );
+    }
+
     /// **Branding guard (systems fix).** No user-facing capability string may
     /// leak the upstream `goose` fork name. Every field that renders into the
     /// self-knowledge brief and the capability cards — `display_name`,
     /// `what_it_does`, `why_it_matters` — is scanned case-insensitively across
     /// all descriptor registries (platform extensions, workers, guards,
     /// surfaces). A re-introduced "goose" in card copy or the brief fails the
-    /// build instead of shipping.
+    /// build instead of shipping. The scan also covers the two out-of-registry
+    /// platform tools (`manage_schedule`, `load_feature_lesson`) registered
+    /// directly in `agent.rs` rather than via PLATFORM_EXTENSIONS — their
+    /// user-facing name/description is exactly where a leak previously hid.
     ///
     /// In scope: rendered card/brief copy only. OUT of scope (never reaches
     /// these strings): the internal crate name `goose`, directory paths, and
@@ -818,6 +1557,28 @@ mod tests {
                 }
             }
         }
+
+        // Out-of-registry platform tools: `manage_schedule` and
+        // `load_feature_lesson` are pushed straight into the tool list in
+        // `agent.rs`, not via PLATFORM_EXTENSIONS, so the descriptor scan above
+        // never reaches them. Their user-facing name + description must not leak
+        // the fork name either — this is where the goose-riddled schedule blurb
+        // used to hide, escaping the descriptor-only guard.
+        for tool in [
+            crate::agents::platform_tools::manage_schedule_tool(),
+            crate::agents::platform_tools::load_feature_lesson_tool(),
+        ] {
+            let desc = tool.description.as_deref().unwrap_or_default();
+            for (field, text) in [("name", &*tool.name), ("description", desc)] {
+                if text.to_lowercase().contains("goose") {
+                    leaks.push(format!(
+                        "platform_tool {:?} field `{field}` leaks 'goose': {text:?}",
+                        tool.name
+                    ));
+                }
+            }
+        }
+
         assert!(
             leaks.is_empty(),
             "user-facing 'goose' branding leak(s) found — rebrand to Permagent \

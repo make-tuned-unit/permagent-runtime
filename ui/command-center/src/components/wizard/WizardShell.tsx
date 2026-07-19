@@ -9,6 +9,8 @@ import { MomentMeet } from './MomentMeet';
 import { MomentWebSearch } from './MomentWebSearch';
 import { MomentChat } from './MomentChat';
 import { api, apiFetch } from '../../lib/api';
+import { stashWizardIntent } from '../../lib/wizardIntent';
+import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 interface Persona {
@@ -66,7 +68,12 @@ export function WizardShell({ onComplete }: Props) {
     setStep(6);
   };
 
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
   const handleComplete = async () => {
+    setSaving(true);
+    setSaveError(null);
     try {
       // Save persona to backend
       const body = {
@@ -85,8 +92,17 @@ export function WizardShell({ onComplete }: Props) {
       // Mark wizard complete
       await api.upsertConfig('wizard_complete', true);
     } catch (e) {
+      // Surfaced (2026-07 wiring audit): the old catch logged to the console
+      // and completed anyway — persona silently lost AND wizard_complete never
+      // written, so the whole wizard reappeared on next launch unexplained.
       console.error('Failed to save persona:', e);
+      setSaveError(e instanceof Error ? e.message : String(e));
+      setSaving(false);
+      return;
     }
+    // Hand the stated intent to the first chat composer (one-shot).
+    stashWizardIntent(intent);
+    setSaving(false);
     onComplete();
   };
 
@@ -132,6 +148,39 @@ export function WizardShell({ onComplete }: Props) {
           </div>
         ))}
       </div>
+
+      {/* Save failure: honest, recoverable — never a silent loss. */}
+      {saveError && (
+        <div style={{
+          position: 'absolute', left: '50%', bottom: 28, transform: 'translateX(-50%)',
+          display: 'flex', alignItems: 'center', gap: 12, maxWidth: 560,
+          padding: '10px 16px', borderRadius: 10, zIndex: 10,
+          background: colors.bgDeeper, border: `1px solid ${colors.danger}66`,
+          fontFamily: font.body, fontSize: 12, color: colors.text,
+        }}>
+          <span style={{ color: colors.danger }}>
+            Couldn't save your setup ({saveError}).
+          </span>
+          <button
+            onClick={handleComplete}
+            disabled={saving}
+            style={{
+              fontFamily: font.body, fontSize: 12, fontWeight: 600, color: colors.cyan,
+              background: 'none', border: `1px solid ${colors.borderHi}`, borderRadius: 8,
+              padding: '4px 12px', cursor: saving ? 'default' : 'pointer', flexShrink: 0,
+            }}
+          >{saving ? 'Retrying…' : 'Retry'}</button>
+          <button
+            onClick={() => { stashWizardIntent(intent); onComplete(); }}
+            title="Enter the app anyway — your persona choices may not be saved and setup may reappear next launch"
+            style={{
+              fontFamily: font.body, fontSize: 12, color: colors.textMuted,
+              background: 'none', border: 'none', cursor: 'pointer',
+              textDecoration: 'underline', flexShrink: 0,
+            }}
+          >Continue anyway</button>
+        </div>
+      )}
     </div>
   );
 }

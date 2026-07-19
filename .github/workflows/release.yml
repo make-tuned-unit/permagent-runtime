@@ -3,8 +3,10 @@
 # Release, and every installed app self-updates on next launch.
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# TO CUT A RELEASE (the whole job Jesse does):
-#     npm --prefix ui/desktop version 1.32.0   # bump, or edit tauri.conf version
+# TO CUT A RELEASE (the whole job Jesse does), see RELEASE.md for the checklist:
+#     edit ui/desktop/src-tauri/tauri.conf.json  "version": "1.32.0"   # source of truth
+#     (mirror the bump in ui/desktop/package.json + ui/desktop/src-tauri/Cargo.toml,
+#      then `cargo update -p permagent-app --manifest-path ui/desktop/src-tauri/Cargo.toml`)
 #     git commit -am "chore(release): 1.32.0" && git push
 #     git tag v1.32.0 && git push origin v1.32.0
 # That tag triggers this. Nothing else to do.
@@ -17,8 +19,20 @@
 #   APPLE_SIGNING_IDENTITY             "Developer ID Application: Name (TEAMID)"
 #   APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID   for notarization
 # Until the Apple secrets exist the build still runs UNSIGNED (usable via
-# right-click-open); the updater signing is independent and only needs the
-# TAURI_SIGNING_* pair.
+# right-click-open). The TAURI_SIGNING_* pair is NOT optional: with
+# bundle.createUpdaterArtifacts enabled, `tauri build` hard-fails without the
+# private key — so even a dry run needs the updater keypair secret set.
+#
+# Dry runs: workflow_dispatch with dry_run builds everything but publishes
+# nothing (the bundle is attached as a workflow artifact instead). Running
+# workflow_dispatch ON A TAG with dry_run=false re-publishes that tag's
+# release — the recovery path if a release run failed after the build.
+#
+# APPLE SILICON ONLY (deliberate): the sidecar staging is single-arch, the
+# sherpa-onnx/onnxruntime dylibs we bundle are arm64 prebuilts, and ort has no
+# darwin-x64 prebuilt — a `universal-apple-darwin` build would either fail
+# (sidecar named for the wrong triple) or ship an Intel half that crashes on
+# launch. Revisit only with a real x86_64 daemon build.
 # ─────────────────────────────────────────────────────────────────────────────
 
 name: Release
@@ -47,35 +61,166 @@ jobs:
     # Pinned to macos-15 for the same reason CI is (#616 — llama-cpp-sys +
     # macos-26 cold-build break); the release must build the daemon sidecar.
     runs-on: macos-15
-    timeout-minutes: 90
+    # Cold release-profile build of the full daemon workspace (llama-cpp, kuzu,
+    # candle, v8, sherpa) + the Tauri shell can exceed 90 minutes; rust-cache
+    # brings warm runs way down.
+    timeout-minutes: 150
+    env:
+      # True only when this run should publish a GitHub Release: a tag push, or
+      # a workflow_dispatch re-run ON a tag without dry_run.
+      PUBLISH: ${{ github.ref_type == 'tag' && !inputs.dry_run }}
     steps:
       - uses: actions/checkout@v7
+
+      # Fail in seconds, not after an hour of compiling, on the config errors
+      # that would otherwise waste the whole run or (worse) publish a bundle
+      # that can never self-update.
+      - name: Preflight
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+        run: |
+          conf=ui/desktop/src-tauri/tauri.conf.json
+
+          # createUpdaterArtifacts makes `tauri build` sign the updater bundle;
+          # without the private key it hard-fails — even on a dry run.
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY secret is not set. Generate the updater keypair first (RELEASE.md, step 1) — the build cannot produce updater artifacts without it."
+            exit 1
+          fi
+
+          if [ "$PUBLISH" = "true" ]; then
+            # The tag must match the bundle version or installed apps see a
+            # latest.json version that never matches what they got.
+            v="$(jq -r .version "$conf")"
+            if [ "v$v" != "$GITHUB_REF_NAME" ]; then
+              echo "::error::tauri.conf.json version ($v) does not match tag ($GITHUB_REF_NAME). Bump the version, commit, re-tag."
+              exit 1
+            fi
+            # A published app with a placeholder pubkey can NEVER self-update —
+            # every install would be a manual re-download forever.
+            pk="$(jq -r '.plugins.updater.pubkey' "$conf")"
+            if [ "$pk" = "REPLACE_WITH_TAURI_SIGNER_PUBLIC_KEY" ]; then
+              echo "::error::plugins.updater.pubkey is still the placeholder. Paste the public key from 'tauri signer generate' (RELEASE.md, step 1) before publishing."
+              exit 1
+            fi
+          fi
+
+          if [ -n "$APPLE_CERTIFICATE" ]; then
+            echo "Apple signing secrets present — bundle will be code-signed (+ notarized if APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID are set)."
+          else
+            echo "::warning::Apple signing secrets absent — bundle will be UNSIGNED (right-click → Open on first launch)."
+          fi
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: aarch64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
 
       - uses: actions/setup-node@v6
         with:
           node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            ui/desktop/package-lock.json
+            ui/command-center/package-lock.json
+
+      # Stage sherpa-onnx prebuilt libs OUTSIDE the cargo target dir — same
+      # pitfall ci.yml documents: rust-cache prunes the in-target prebuilt dir
+      # while restoring fingerprints as fresh, leaving a stale -L path and a
+      # "unable to find library -lsherpa-onnx-c-api" link failure on warm runs.
+      # It also gives us a guaranteed dylib source for the bundle (below).
+      - name: Resolve sherpa-onnx prebuilt lib paths
+        shell: bash
+        run: |
+          stem="sherpa-onnx-v${SHERPA_ONNX_VERSION}-osx-arm64-shared-lib"
+          echo "SHERPA_ONNX_STEM=${stem}" >> "$GITHUB_ENV"
+          echo "SHERPA_ONNX_LIB_DIR=${HOME}/sherpa-onnx-prebuilt/${stem}/lib" >> "$GITHUB_ENV"
+
+      - name: Cache sherpa-onnx prebuilt libs
+        id: sherpa-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/sherpa-onnx-prebuilt
+          key: sherpa-onnx-v${{ env.SHERPA_ONNX_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Download sherpa-onnx prebuilt libs
+        if: steps.sherpa-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          mkdir -p "${HOME}/sherpa-onnx-prebuilt"
+          curl -fsSL --retry 3 \
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/v${SHERPA_ONNX_VERSION}/${SHERPA_ONNX_STEM}.tar.bz2" \
+            | tar xj -C "${HOME}/sherpa-onnx-prebuilt"
+          ls "${SHERPA_ONNX_LIB_DIR}"
+
+      - name: Build daemon (sidecar binary)
+        run: cargo build --release --locked --bin permagentd
 
       # The bundle embeds the daemon as a sidecar + the MCP runtime + the local
-      # Whisper dictation model. This is the existing `build:all` chain minus the
-      # final tauri build (tauri-action does that): icons → command-center UI →
-      # daemon → sidecar → mcp-runtime → whisper-model.
+      # Whisper dictation model. build:icons is intentionally NOT run: the app
+      # icons are committed (generating them needs Pillow, absent on runners).
       - name: Stage sidecar + resources
         working-directory: ui/desktop
         run: |
           npm ci
-          npm run build:icons
           npm run build:ui
-          npm run build:daemon
           npm run build:sidecar
           npm run build:mcp-runtime
           npm run build:whisper-model
+
+      # copy-sidecar.sh only WARNS when the dylibs it expects in target/release
+      # are missing (a build-layout change would otherwise ship a daemon that
+      # crashes on load). Backfill from the staged prebuilts, then hard-verify
+      # everything tauri.conf.json references actually exists and links only
+      # against paths that exist on a stranger's Mac.
+      - name: Verify staged bundle inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin_dir=ui/desktop/src-tauri/binaries
+          daemon="$bin_dir/permagentd-aarch64-apple-darwin"
+
+          # Backfill dylibs from the sherpa prebuilt staging if the cargo build
+          # didn't drop them into target/release (mirrors copy-sidecar.sh's
+          # install-name fix so sherpa finds onnxruntime next to itself).
+          for dylib in libsherpa-onnx-c-api.dylib libonnxruntime.1.24.4.dylib libonnxruntime.dylib; do
+            if [ ! -f "$bin_dir/$dylib" ] && [ -f "$SHERPA_ONNX_LIB_DIR/$dylib" ]; then
+              cp "$SHERPA_ONNX_LIB_DIR/$dylib" "$bin_dir/$dylib"
+              echo "Backfilled $dylib from sherpa prebuilts"
+            fi
+          done
+          if [ -f "$bin_dir/libsherpa-onnx-c-api.dylib" ]; then
+            install_name_tool -change \
+              "@rpath/libonnxruntime.1.24.4.dylib" \
+              "@loader_path/libonnxruntime.1.24.4.dylib" \
+              "$bin_dir/libsherpa-onnx-c-api.dylib" 2>/dev/null || true
+          fi
+
+          # Everything tauri.conf.json names (externalBin + macOS.frameworks +
+          # resources) must exist, or the bundle is broken/unbuildable.
+          test -x "$daemon" || { echo "::error::sidecar missing: $daemon"; exit 1; }
+          file "$daemon" | grep -q arm64 || { echo "::error::sidecar is not arm64"; exit 1; }
+          for f in libsherpa-onnx-c-api.dylib libonnxruntime.1.24.4.dylib libonnxruntime.dylib; do
+            test -f "$bin_dir/$f" || { echo "::error::dylib missing: $bin_dir/$f (referenced by tauri.conf.json macOS.frameworks)"; exit 1; }
+          done
+          test -x ui/desktop/src-tauri/resources/mcp-runtime/node || { echo "::error::mcp-runtime node binary missing"; exit 1; }
+          test -f ui/desktop/src-tauri/resources/whisper/whisper-base-q8_0.gguf || { echo "::error::whisper model missing"; exit 1; }
+          test -f ui/command-center/dist/index.html || { echo "::error::frontend dist missing"; exit 1; }
+
+          # No load command may point at a path that only exists on this runner
+          # (absolute paths into $HOME, homebrew, or the target dir). Allowed:
+          # system libs and relative @rpath/@loader_path/@executable_path.
+          for bin in "$daemon" "$bin_dir"/*.dylib; do
+            bad="$(otool -L "$bin" | tail -n +2 | awk '{print $1}' \
+              | grep -Ev '^(/usr/lib|/System|@rpath|@loader_path|@executable_path)' || true)"
+            if [ -n "$bad" ]; then
+              echo "::error::$bin links against runner-local paths:"; echo "$bad"; exit 1
+            fi
+          done
+          echo "Bundle inputs verified."
 
       - name: Build, sign, and publish the bundle
         uses: tauri-apps/tauri-action@v0
@@ -93,16 +238,46 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: ui/desktop
-          tagName: ${{ github.ref_name }}
+          # Empty tagName = build-only (no release touched): dry runs, and any
+          # workflow_dispatch from a branch.
+          tagName: ${{ env.PUBLISH == 'true' && github.ref_name || '' }}
           releaseName: 'Permagent ${{ github.ref_name }}'
           releaseBody: |
             Automated release. Installed apps self-update on next launch.
 
             First install: download the `.dmg`, drag Permagent to Applications.
             (Until notarization is configured, right-click → Open the first time.)
-          releaseDraft: ${{ inputs.dry_run || false }}
+          releaseDraft: false
           prerelease: false
-          # Emit the updater manifest (latest.json) alongside the bundle so the
-          # app's endpoint resolves it.
-          includeUpdaterJson: true
-          args: --target universal-apple-darwin
+          # Emit + upload the updater manifest (latest.json) alongside the
+          # bundle so the app's endpoint resolves it.
+          uploadUpdaterJson: true
+          # Must match the triple copy-sidecar.sh staged the daemon for (the
+          # runner is arm64; see the APPLE SILICON ONLY note above).
+          args: --target aarch64-apple-darwin
+
+      # The website's "Download for macOS" button needs an evergreen URL, but
+      # the dmg asset name embeds the version. Re-upload a stable-named copy:
+      #   https://github.com/make-tuned-unit/permagent-runtime/releases/latest/download/Permagent.dmg
+      - name: Publish stable-named DMG
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          dmg="$(ls ui/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/Permagent_*.dmg)"
+          cp "$dmg" Permagent.dmg
+          gh release upload "$GITHUB_REF_NAME" Permagent.dmg --clobber
+
+      # Build-only runs (dry_run / dispatch from a branch): attach the bundle
+      # as a workflow artifact so it can be downloaded and smoke-tested.
+      - name: Attach bundle as workflow artifact
+        if: env.PUBLISH != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: permagent-bundle-${{ github.run_number }}
+          path: |
+            ui/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+            ui/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.tar.gz
+            ui/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.sig
+          if-no-files-found: error

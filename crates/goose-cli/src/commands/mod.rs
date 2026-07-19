@@ -6,6 +6,7 @@ pub mod doctor;
 pub mod gateway;
 pub mod info;
 pub mod integrations;
+pub mod packs;
 pub mod project;
 pub mod recipe;
 pub mod schedule;

@@ -1,12 +1,19 @@
 import { useEffect, useState, useMemo } from 'react';
-import { FiLoader, FiZap, FiSearch, FiGrid, FiList } from 'react-icons/fi';
+import { FiLoader, FiZap, FiSearch, FiGrid, FiList, FiX } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { SkillCard } from './SkillCard';
 import { SkillDetailPanel } from './SkillDetailPanel';
 
-export function SkillsPanel() {
+/**
+ * Full Skills Library. Reused as a workspace tool (no chrome) and as the
+ * `activePanel:'skills'` overlay — when hosted as an overlay, `onClose` is
+ * provided so the surface offers a Close button + Escape to dismiss back to the
+ * workspace (mirrors InboxPanel; a workspace host passes nothing and shows no
+ * Close affordance).
+ */
+export function SkillsPanel({ onClose }: { onClose?: () => void } = {}) {
   const { colors } = useTheme();
   const skills = useCommandCenter(s => s.skills);
   const skillsLoading = useCommandCenter(s => s.skillsLoading);
@@ -20,6 +27,15 @@ export function SkillsPanel() {
   useEffect(() => {
     loadSkills();
   }, [loadSkills]);
+
+  // Overlay dismissal — Escape closes back to the workspace, but only when
+  // hosted as an overlay (onClose provided).
+  useEffect(() => {
+    if (!onClose) return;
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); onClose(); } };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [onClose]);
 
   const filtered = useMemo(() => {
     if (!search.trim()) return skills;
@@ -69,6 +85,19 @@ export function SkillsPanel() {
             >
               {viewMode === 'list' ? <FiGrid size={13} /> : <FiList size={13} />}
             </button>
+            {onClose && (
+              <button
+                onClick={onClose}
+                className="rounded p-1 hover:bg-white/5 transition"
+                style={{ color: colors.textMuted }}
+                onMouseEnter={e => { e.currentTarget.style.color = colors.text; }}
+                onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
+                title="Close (Esc)"
+                aria-label="Close skills library"
+              >
+                <FiX size={14} />
+              </button>
+            )}
           </div>
         </div>
 

@@ -253,6 +253,13 @@ pub struct InternalSubagentEngine {
     pub extensions: Vec<ExtensionConfig>,
     /// `(system_prompt_block, display_name)` prepended to the subagent prompt.
     pub persona_override: Option<(String, String)>,
+    /// The workflow role the selected worker plays (for the live cache guard).
+    /// `None` when the worker yields no role signal.
+    pub role: Option<crate::cost_router::WorkflowRole>,
+    /// The role's CONFIGURED provider+model (#730 wiring). `Some` ⇒ route the goal
+    /// to it; `None` ⇒ clone the parent session's model — the single-model
+    /// fallback, never a baked-in vendor default.
+    pub model_override: Option<crate::cost_router::RoleModel>,
 }
 
 #[async_trait]
@@ -271,14 +278,51 @@ impl GoalEngine for InternalSubagentEngine {
 
         let session_id = subagent_session.id.clone();
 
-        let model_config = self.provider.get_model_config();
-        let task_provider = providers::create(
-            self.provider.get_name(),
-            model_config,
-            self.extensions.clone(),
-        )
-        .await
-        .map_err(|e| format!("Failed to create provider for goal dispatch: {}", e))?;
+        // Route this goal to its workflow role's CONFIGURED model (#730 wiring)
+        // when the orchestrator resolved one; otherwise clone the parent session's
+        // provider+model — the single-model fallback, never a baked-in default.
+        let (provider_name, model_config) = match &self.model_override {
+            Some(rm) => {
+                let mc = crate::model::ModelConfig::new(&rm.model)
+                    .map(|c| c.with_canonical_limits(&rm.provider))
+                    .map_err(|e| {
+                        format!(
+                            "Failed to build model config for role model {}/{}: {}",
+                            rm.provider, rm.model, e
+                        )
+                    })?;
+                (rm.provider.clone(), mc)
+            }
+            None => (
+                self.provider.get_name().to_string(),
+                self.provider.get_model_config(),
+            ),
+        };
+        let task_provider =
+            providers::create(&provider_name, model_config, self.extensions.clone())
+                .await
+                .map_err(|e| format!("Failed to create provider for goal dispatch: {}", e))?;
+
+        // Live cache guard: a cache-heavy role routed by the role map to a
+        // non-caching provider forfeits the warm-prefix saving. Fires only when the
+        // role map selected this provider (not the parent-model fallback).
+        if let Some(role) = self.role {
+            let supports_cache = task_provider.supports_cache_control().await;
+            if crate::cost_router::cache_guard_should_warn(
+                role,
+                self.model_override.is_some(),
+                supports_cache,
+            ) {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    "cost-router cache guard: cache-heavy role '{}' routed to provider '{}' \
+                     which has no prompt caching — prefer a caching provider for the {} role",
+                    role.as_str(),
+                    provider_name,
+                    role.as_str()
+                );
+            }
+        }
 
         let task_config = TaskConfig::new(
             task_provider,
@@ -430,7 +474,7 @@ impl GoalEngine for ExternalCliEngine {
 /// Returns the worktree path. The worktree is intentionally *not* removed on
 /// completion — its commits are the work product the Decision Inbox review
 /// points to.
-async fn create_goal_worktree(
+pub(crate) async fn create_goal_worktree(
     repo: &Path,
     baseline: &str,
     run_id: &str,

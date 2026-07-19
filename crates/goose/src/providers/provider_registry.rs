@@ -75,7 +75,10 @@ impl ProviderEntry {
     ) -> Result<Arc<dyn Provider>> {
         let default_model = &self.metadata.default_model;
         let model_config = self.normalize_model_config(ModelConfig::new(default_model.as_str())?);
-        (self.constructor)(model_config, extensions).await
+        let provider = (self.constructor)(model_config, extensions).await?;
+        // Single sovereignty choke point: every provider the factory mints is
+        // wrapped so all inference egress passes through the data boundary.
+        Ok(crate::providers::sovereign_guard::SovereignGuardProvider::wrap(provider))
     }
 
     pub async fn create(
@@ -84,7 +87,9 @@ impl ProviderEntry {
         extensions: Vec<ExtensionConfig>,
     ) -> Result<Arc<dyn Provider>> {
         let model = self.normalize_model_config(model);
-        (self.constructor)(model, extensions).await
+        let provider = (self.constructor)(model, extensions).await?;
+        // Single sovereignty choke point: see `create_with_default_model`.
+        Ok(crate::providers::sovereign_guard::SovereignGuardProvider::wrap(provider))
     }
 }
 

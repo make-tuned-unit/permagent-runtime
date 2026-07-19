@@ -263,13 +263,19 @@ export async function fetchFromChain(): Promise<IdentityResult> {
 
 // ── hydrate (merge) ──────────────────────────────────────────────────
 
-// Default fallback values — used only when both sources return nothing
+// Fallback scaffolding — the merge base, and all that remains when BOTH the
+// chitin service and the on-chain read fail. The verification-claiming fields
+// (status, soulValid) MUST stay honest here: they are only ever true/sealed
+// when a live source actually asserts them (fetchFromChain sets soulValid from
+// a real ownerOf match; parseChitin* from a reported value). Previously these
+// defaulted to sealed/true, so an offline machine displayed a fully "verified"
+// soul built entirely from constants (2026-07 wiring audit — misleading state).
 const DEFAULTS: IdentityState = {
   did: 'did:chitin:henry-malcolm',
   name: 'Hank',
   avatarUrl: 'https://arweave.net/Y-PzbKKdNBzsaNO5lD-U2lHUDEuW0psyXabWQLLHk7M',
-  status: 'sealed',
-  soulValid: true,
+  status: 'unverified',
+  soulValid: false,
   lastVerifiedAt: null,
   alignmentScore: null,
   chronicleCount: 0,

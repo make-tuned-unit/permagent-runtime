@@ -11,6 +11,7 @@ import { AddCardPicker } from './AddCardPicker';
 import { DashboardOverflowMenu } from './DashboardOverflowMenu';
 import { ResetConfirmModal } from './ResetConfirmModal';
 import { Echo } from './Echo';
+import { LearnNext } from './LearnNext';
 import { useState, useCallback, useRef, useMemo } from 'react';
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
@@ -263,6 +264,11 @@ export function Dashboard() {
           Renders itself only when there's a genuinely dormant thread and it
           hasn't shown recently; otherwise nothing. Hidden while arranging cards. */}
       {!isEditMode && <Echo />}
+
+      {/* Learn next — the onboarding coach surfaces one capability the user
+          hasn't tried yet and offers to have the agent teach it. Renders only
+          when there's a genuinely unused feature; hidden while arranging cards. */}
+      {!isEditMode && <LearnNext />}
 
       {/* CSS Grid — reflows natively with the container, no JS width measurement */}
       <div

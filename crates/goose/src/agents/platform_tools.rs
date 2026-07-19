@@ -5,23 +5,35 @@ pub const PLATFORM_MANAGE_SCHEDULE_TOOL_NAME: &str = "platform__manage_schedule"
 
 pub const PLATFORM_LOAD_FEATURE_LESSON_TOOL_NAME: &str = "platform__load_feature_lesson";
 
-/// Tour teaching tool: fetch one feature's step-by-step lesson on demand (so the
-/// per-turn prompt stays lean). Also marks the tour as engaged so the first-run
-/// offer stops. See the `tour` builtin skill for how to run the loop.
+/// Teaching tool: fetch one capability's lesson on demand (so the per-turn
+/// prompt stays lean), open its real surface, and mark it taught. Use it to
+/// onboard the user into anything they haven't tried — whether they ask
+/// ("teach me something new", "what haven't I used?") or you offer. Marks the
+/// tour engaged so the first-run offer stops. See the `tour` builtin skill for
+/// how to run a multi-feature loop.
 pub fn load_feature_lesson_tool() -> Tool {
     Tool::new(
         PLATFORM_LOAD_FEATURE_LESSON_TOOL_NAME.to_string(),
         indoc! {r#"
-            Load the guided-tour lesson for one capability, as step-by-step
-            instructions you deliver conversationally (open the surface via
-            navigate_app, then confirm the user acted before moving on).
+            Load the teaching lesson for one capability, as step-by-step
+            instructions you deliver conversationally: explain what it does and
+            why it matters, open its surface via navigate_app when the lesson
+            says to, then confirm the user acted before moving on. Calling this
+            marks the capability as taught, so it drops off the user's
+            "haven't tried yet" list.
 
-            Pass `feature_id` = one of: "reader", "brain", "scheduler", "persona".
+            Pass `feature_id` = a capability id you want to teach. The classic
+            first-run set is "reader", "brain", "scheduler", "persona", but any
+            capability from your self-knowledge inventory works (e.g. "projects",
+            "build", "decision_inbox", "voice", "web_search", "devices",
+            "run_roster", "world_view"). If the id isn't teachable, the tool
+            returns the list of teachable capabilities.
+
             Pass `feature_id` = "decline" if the user does NOT want a tour — this
             stops future tour offers and returns no lesson.
 
-            Calling this tool marks the tour as engaged, so the one-time first-run
-            offer will not appear again.
+            Calling this tool also marks the tour as engaged, so the one-time
+            first-run offer will not appear again.
         "#}
         .to_string(),
         object!({
@@ -30,7 +42,7 @@ pub fn load_feature_lesson_tool() -> Tool {
             "properties": {
                 "feature_id": {
                     "type": "string",
-                    "description": "Feature to teach (reader|brain|scheduler|persona), or \"decline\" to stop tour offers."
+                    "description": "Capability id to teach (e.g. reader|brain|scheduler|persona|projects|build|decision_inbox|voice|web_search|devices|run_roster|world_view), or \"decline\" to stop tour offers."
                 }
             }
         }),
@@ -48,18 +60,18 @@ pub fn manage_schedule_tool() -> Tool {
     Tool::new(
         PLATFORM_MANAGE_SCHEDULE_TOOL_NAME.to_string(),
         indoc! {r#"
-            Manage goose's internal scheduled recipe execution.
+            Manage Permagent's internal scheduled recipe execution.
 
             Actions:
-            - "list": List all goose scheduled jobs
-            - "create": Create a new goose scheduled job from a recipe file
-            - "run_now": Execute a goose scheduled job immediately
-            - "pause": Pause a goose scheduled job
-            - "unpause": Resume a paused goose scheduled job
-            - "delete": Remove a goose scheduled job
-            - "kill": Terminate a currently running goose scheduled job
-            - "inspect": Get details about a running goose scheduled job
-            - "sessions": List execution history for a goose scheduled job
+            - "list": List all scheduled jobs
+            - "create": Create a new scheduled job from a recipe file
+            - "run_now": Execute a scheduled job immediately
+            - "pause": Pause a scheduled job
+            - "unpause": Resume a paused scheduled job
+            - "delete": Remove a scheduled job
+            - "kill": Terminate a currently running scheduled job
+            - "inspect": Get details about a running scheduled job
+            - "sessions": List execution history for a scheduled job
             - "session_content": Get the full content (messages) of a specific session
         "#}
         .to_string(),

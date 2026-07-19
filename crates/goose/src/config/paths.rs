@@ -66,4 +66,14 @@ impl Paths {
     pub fn brain_ontology() -> PathBuf {
         Self::brain_dir().join("ontology.toml")
     }
+
+    /// Directory holding the user's skills as portable `SKILL.md` folders (the
+    /// open agentskills.io standard). This is the source-of-truth store the
+    /// `skills` platform extension already discovers as a global skills dir, and
+    /// the target the auto-skills loop writes learned skills into. Skills here
+    /// are portable in and out of Claude Code, Cursor, Codex, and any other
+    /// agentskills.io-compatible client.
+    pub fn skills_dir() -> PathBuf {
+        Self::base_dir().join("skills")
+    }
 }

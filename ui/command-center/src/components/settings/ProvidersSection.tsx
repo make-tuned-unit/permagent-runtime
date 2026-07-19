@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
-import { FiCheck, FiSettings, FiStar } from 'react-icons/fi';
+import { FiCheck, FiPlus, FiSettings, FiStar, FiTrash2 } from 'react-icons/fi';
+import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import type { ProviderInfo } from '../../lib/store';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { AddCustomProviderModal } from './AddCustomProviderModal';
 import { ConfigureProviderModal } from './ConfigureProviderModal';
 
 export function ProvidersSection() {
@@ -13,6 +15,8 @@ export function ProvidersSection() {
   const loadProviders = useCommandCenter(s => s.loadProviders);
   const setDefaultProvider = useCommandCenter(s => s.setDefaultProvider);
   const [configuring, setConfiguring] = useState<ProviderInfo | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [removing, setRemoving] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   // loadProviders never rejects (it sets providersError internally), so `.finally`
@@ -24,9 +28,35 @@ export function ProvidersSection() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Only user-defined ("Custom") providers can be removed — built-in ones have
+  // no on-disk definition to delete.
+  const handleRemove = useCallback(async (p: ProviderInfo) => {
+    if (!confirm(`Remove custom provider "${p.displayName}"? This deletes its saved configuration.`)) return;
+    setRemoving(p.name);
+    try {
+      await api.removeCustomProvider(p.name);
+      await loadProviders();
+    } catch (e) {
+      console.error('Failed to remove custom provider:', e);
+    } finally {
+      setRemoving(null);
+    }
+  }, [loadProviders]);
+
   return (
     <div className="space-y-3">
-      <p className="text-xs" style={{ fontFamily: font.body, color: colors.textMuted }}>Configure LLM providers and API keys. The default provider is used for new chat sessions.</p>
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-xs" style={{ fontFamily: font.body, color: colors.textMuted }}>Configure LLM providers and API keys. The default provider is used for new chat sessions.</p>
+        <button
+          onClick={() => setAdding(true)}
+          className="flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded transition shrink-0"
+          style={{ border: `1px solid ${colors.cyan}4D`, color: colors.cyan }}
+          onMouseEnter={e => { e.currentTarget.style.backgroundColor = colors.cyanSoft; }}
+          onMouseLeave={e => { e.currentTarget.style.backgroundColor = ''; }}
+        >
+          <FiPlus size={11} /> Add custom provider
+        </button>
+      </div>
 
       {providers.length === 0 && loading && (
         <div className="text-xs py-4 text-center" style={{ fontFamily: font.mono, color: colors.textMuted }}>Loading providers...</div>
@@ -118,6 +148,18 @@ export function ProvidersSection() {
                 Set as default
               </button>
             )}
+            {p.providerType === 'Custom' && (
+              <button
+                onClick={() => handleRemove(p)}
+                disabled={removing === p.name}
+                className="flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded transition disabled:opacity-50 ml-auto"
+                style={{ border: `1px solid ${colors.danger}4D`, color: colors.danger }}
+                onMouseEnter={e => { e.currentTarget.style.backgroundColor = `${colors.danger}1A`; }}
+                onMouseLeave={e => { e.currentTarget.style.backgroundColor = ''; }}
+              >
+                <FiTrash2 size={11} /> {removing === p.name ? 'Removing…' : 'Remove'}
+              </button>
+            )}
           </div>
         </div>
       ))}
@@ -126,6 +168,12 @@ export function ProvidersSection() {
         <ConfigureProviderModal
           provider={configuring}
           onClose={() => { setConfiguring(null); loadProviders(); }}
+        />
+      )}
+
+      {adding && (
+        <AddCustomProviderModal
+          onClose={() => { setAdding(false); loadProviders(); }}
         />
       )}
     </div>

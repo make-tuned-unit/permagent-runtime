@@ -1,6 +1,8 @@
 pub mod edit;
+pub mod search;
 pub mod shell;
 pub mod tree;
+pub mod verify;
 
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
@@ -14,11 +16,13 @@ use rmcp::model::{
     ServerCapabilities, Tool, ToolAnnotations,
 };
 use schemars::{schema_for, JsonSchema};
+use search::{SearchParams, SearchTool};
 use serde_json::Value;
 use shell::{shell_display_name, ShellOutput, ShellParams, ShellTool};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tree::{TreeParams, TreeTool};
+use verify::{VerifyParams, VerifyTool};
 
 pub static EXTENSION_NAME: &str = "developer";
 
@@ -27,6 +31,8 @@ pub struct DeveloperClient {
     shell_tool: Arc<ShellTool>,
     edit_tools: Arc<EditTools>,
     tree_tool: Arc<TreeTool>,
+    search_tool: Arc<SearchTool>,
+    verify_tool: Arc<VerifyTool>,
 }
 
 fn developer_instructions() -> &'static str {
@@ -40,9 +46,10 @@ fn developer_instructions() -> &'static str {
             cost the user money.
 
             For editing software, prefer the flow of using tree to understand the codebase structure
-            and file sizes. When you need to search, prefer findstr or Select-String (via shell).
-            Then use type or Get-Content to gather the context you need, always reading before
-            editing. Use write and edit to efficiently make changes. Test and verify as appropriate.
+            and file sizes. When you need to search, use the search tool - it returns summarized,
+            token-efficient matches grouped by file and respects .gitignore. Then use type or
+            Get-Content to gather the context you need, always reading before editing. Use write and
+            edit to efficiently make changes. Test and verify as appropriate.
         "}
     } else {
         indoc! {"
@@ -54,9 +61,10 @@ fn developer_instructions() -> &'static str {
             cost the user money.
 
             For editing software, prefer the flow of using tree to understand the codebase structure
-            and file sizes. When you need to search, prefer rg which correctly respects gitignored
-            content. Then use cat or sed to gather the context you need, always reading before editing.
-            Use write and edit to efficiently make changes. Test and verify as appropriate.
+            and file sizes. When you need to search, use the search tool - it returns summarized,
+            token-efficient matches grouped by file and respects .gitignore (drop to rg via shell for
+            raw matches). Then use cat or sed to gather the context you need, always reading before
+            editing. Use write and edit to efficiently make changes. Test and verify as appropriate.
         "}
     }
 }
@@ -72,6 +80,8 @@ impl DeveloperClient {
             shell_tool: Arc::new(ShellTool::new()?),
             edit_tools: Arc::new(EditTools::new()),
             tree_tool: Arc::new(TreeTool::new()),
+            search_tool: Arc::new(SearchTool::new()),
+            verify_tool: Arc::new(VerifyTool::new()),
         })
     }
 
@@ -108,7 +118,7 @@ impl DeveloperClient {
             )),
             Tool::new(
                 "edit".to_string(),
-                "Edit a file by finding and replacing text. The before text must match exactly and uniquely. Use empty after text to delete.".to_string(),
+                "Edit a file by replacing `before` with `after` (use an empty `after` to delete). Matching tries exact text first, then falls back to whitespace- and indentation-insensitive matching, applying the first unique match; ambiguous or absent matches return an actionable error instead of guessing. For supported languages, an edit that would introduce a new syntax error is rejected and the file left unchanged.".to_string(),
                 Self::schema::<FileEditParams>(),
             )
             .annotate(ToolAnnotations::from_raw(
@@ -149,6 +159,30 @@ impl DeveloperClient {
                 Some(false),
                 Some(true),
                 Some(false),
+            )),
+            Tool::new(
+                "search".to_string(),
+                "Search file contents by regex and get a SUMMARIZED result instead of every raw match: hits grouped by file, a per-file match count, the top matches per file (line number + a whitespace-collapsed context line), capped across files, with a trailing count of whatever was omitted. Broad queries stay token-cheap. Respects .gitignore. Prefer this for exploring a codebase; drop to `rg` via the shell tool only when you need every raw match. Params: pattern (regex, required); path (dir/file, default working dir); glob (e.g. \"*.rs\"); file_type (ripgrep type, e.g. \"rust\"); max_per_file (default 5); max_files (default 20).".to_string(),
+                Self::schema::<SearchParams>(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Search".to_string()),
+                Some(true),
+                Some(false),
+                Some(true),
+                Some(false),
+            )),
+            Tool::new(
+                "verify".to_string(),
+                "Run this project's checks (build/test) and get a structured PASS/FAIL. Auto-detects the project type from its marker files - Cargo.toml -> `cargo test`; go.mod -> `go build`/`go test`; package.json -> the package manager's build/test scripts; a Python marker -> `pytest`; a Makefile with a test/check target -> `make test` - and runs them fail-fast. On failure it returns the failing command, its exit code, and the FULL captured errors (not a truncated tail) so you can fix them, then re-verify. Use this to verify your work before declaring a task done. Params: command (optional - an explicit check command to run instead of auto-detecting, e.g. \"cargo clippy -- -D warnings\"); path (dir to verify, default working dir); timeout_secs (per-check, default 600; 0 disables). There is no built-in retry counter: repeated identical failures are bounded by the runaway-loop guard, so if a couple of focused fixes don't clear it, stop and ask the user.".to_string(),
+                Self::schema::<VerifyParams>(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Verify".to_string()),
+                Some(false),
+                Some(true),
+                Some(false),
+                Some(true),
             )),
         ]
     }
@@ -203,6 +237,20 @@ impl McpClientTrait for DeveloperClient {
                 ))
                 .with_priority(0.0)])),
             },
+            "search" => match Self::parse_args::<SearchParams>(arguments) {
+                Ok(params) => Ok(self.search_tool.search_with_cwd(params, working_dir).await),
+                Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Error: {error}"
+                ))
+                .with_priority(0.0)])),
+            },
+            "verify" => match Self::parse_args::<VerifyParams>(arguments) {
+                Ok(params) => Ok(self.verify_tool.verify_with_cwd(params, working_dir).await),
+                Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Error: {error}"
+                ))
+                .with_priority(0.0)])),
+            },
             _ => Ok(CallToolResult::error(vec![Content::text(format!(
                 "Error: Unknown tool: {name}"
             ))
@@ -230,7 +278,10 @@ mod tests {
             .map(|t| t.name.to_string())
             .collect();
 
-        assert_eq!(names, vec!["write", "edit", "shell", "tree"]);
+        assert_eq!(
+            names,
+            vec!["write", "edit", "shell", "tree", "search", "verify"]
+        );
     }
 
     fn test_context(data_dir: std::path::PathBuf) -> PlatformExtensionContext {
@@ -318,5 +369,29 @@ mod tests {
         let observed = std::fs::canonicalize(first_text(&result)).unwrap();
         let expected = std::fs::canonicalize(&cwd).unwrap();
         assert_eq!(observed, expected);
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn developer_client_dispatches_verify_with_working_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let client = DeveloperClient::new(test_context(temp.path().join("sessions"))).unwrap();
+        let cwd = temp.path().join("workspace");
+        fs::create_dir_all(&cwd).unwrap();
+
+        let ctx = ToolCallContext::new("session".to_owned(), Some(cwd.clone()), None);
+        // An explicit command exercises the dispatch + execution path without
+        // needing a real toolchain installed.
+        let result = client
+            .call_tool(
+                &ctx,
+                "verify",
+                Some(object!({ "command": "exit 0" })),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false));
+        assert!(first_text(&result).starts_with("PASS"));
     }
 }

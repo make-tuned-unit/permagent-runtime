@@ -588,6 +588,39 @@ async fn configure_session_prompts(
             .await;
     }
 
+    // Auto-inject a token-budgeted repo-map (ranked-tags codebase map, #712) into
+    // the coding harness's context. Gated to the coding recipe so ordinary CLI
+    // sessions don't pay a whole-repo parse; the budget is retunable via
+    // PERMAGENT_CODING_REPO_MAP_TOKENS (0 disables). It lands as a stable prompt
+    // extra in the cache-stable `RepoMap` prefix position (see
+    // permagent::cost_router::cache). The working dir is already the session's
+    // root at this point (build_session set it before calling us), so cwd is the
+    // repo to map.
+    if session_config
+        .recipe
+        .as_ref()
+        .map(crate::recipes::builtin_recipes::is_coding_harness_recipe)
+        .unwrap_or(false)
+    {
+        let budget = config
+            .get_param::<usize>("PERMAGENT_CODING_REPO_MAP_TOKENS")
+            .unwrap_or(1024);
+        if budget > 0 {
+            if let Ok(root) = std::env::current_dir() {
+                if let Some(block) =
+                    permagent::agents::platform_extensions::analyze::repo_map::coding_context_block(
+                        &root, budget,
+                    )
+                {
+                    session
+                        .agent
+                        .extend_system_prompt("repo_map".to_string(), block)
+                        .await;
+                }
+            }
+        }
+    }
+
     let system_prompt_file: Option<String> = config.get_param("GOOSE_SYSTEM_PROMPT_FILE_PATH").ok();
     if let Some(ref path) = system_prompt_file {
         let override_prompt = std::fs::read_to_string(path).unwrap_or_else(|e| {
@@ -632,9 +665,13 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
 
     let recipe = session_config.recipe.as_ref();
 
-    agent
+    if let Err(e) = agent
         .apply_recipe_components(recipe.and_then(|r| r.response.clone()), true)
-        .await;
+        .await
+    {
+        output::render_error(&format!("Invalid recipe: {}", e));
+        process::exit(1);
+    }
 
     let session_id =
         resolve_session_id(&session_config, &session_manager, agent.config.goose_mode).await;

@@ -1,5 +1,7 @@
+import { useCallback } from 'react';
 import { font, radius } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
+import { useCommandCenter } from '../../../lib/store';
 import { SectionTitle, StatusIcon } from '../atoms';
 import type { RecentSession } from '../useDashboard';
 
@@ -19,6 +21,16 @@ interface Props {
 
 export function RecentCard({ items }: Props) {
   const { colors } = useTheme();
+  const switchToSession = useCommandCenter(s => s.switchToSession);
+  const openChatDock = useCommandCenter(s => s.openChatDock);
+
+  // A recent item's id IS a session id (dashboard.rs builds it from sessions).
+  // Open it in the chat dock so the past conversation is immediately visible.
+  const openSession = useCallback((id: string) => {
+    switchToSession(id).catch(err => console.error('[recent] open session failed:', err));
+    openChatDock();
+  }, [switchToSession, openChatDock]);
+
   return (
     <div style={{
       height: '100%', boxSizing: 'border-box',
@@ -43,7 +55,7 @@ export function RecentCard({ items }: Props) {
       ) : (
         <div style={{ flex: 1, overflow: 'auto' }}>
           {items.map((item, i) => (
-            <ActivityItem key={item.id} item={item} isLast={i === items.length - 1} />
+            <ActivityItem key={item.id} item={item} isLast={i === items.length - 1} onOpen={openSession} />
           ))}
         </div>
       )}
@@ -51,7 +63,7 @@ export function RecentCard({ items }: Props) {
   );
 }
 
-function ActivityItem({ item, isLast }: { item: RecentSession; isLast: boolean }) {
+function ActivityItem({ item, isLast, onOpen }: { item: RecentSession; isLast: boolean; onOpen: (id: string) => void }) {
   const { colors } = useTheme();
   const statusColor: Record<string, string> = {
     completed: colors.success,
@@ -59,9 +71,21 @@ function ActivityItem({ item, isLast }: { item: RecentSession; isLast: boolean }
     awaiting_input: colors.cyan,
   };
   return (
-    <div style={{
+    <div
+      onClick={() => onOpen(item.id)}
+      role="button"
+      tabIndex={0}
+      aria-label={`Open conversation: ${item.title}`}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(item.id); } }}
+      onMouseEnter={e => { e.currentTarget.style.background = colors.border; }}
+      onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+      onFocus={e => { e.currentTarget.style.background = colors.border; e.currentTarget.style.boxShadow = `0 0 0 2px ${colors.cyanGlow}`; }}
+      onBlur={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.boxShadow = 'none'; }}
+      style={{
       display: 'flex', alignItems: 'center', gap: 16, padding: '14px 18px',
       borderBottom: isLast ? 'none' : `1px solid ${colors.border}`,
+      cursor: 'pointer', borderRadius: radius.sm, outline: 'none',
+      background: 'transparent', transition: 'background 100ms, box-shadow 100ms',
     }}>
       <StatusIcon state={item.state} />
       <div style={{ flex: 1, minWidth: 0 }}>

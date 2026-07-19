@@ -30,8 +30,14 @@ DAEMON_PID=$!
 # Give it time to bind
 sleep 2
 
+# /events requires the daemon token on upgrade (C1/C2 auth plane); the daemon
+# just wrote it under its path root. Ride it on the query string like browser
+# clients (the token is hex — URL-safe).
+TOKEN_FILE="${PERMAGENT_PATH_ROOT:-$HOME/.permagent}/secrets/daemon_token.json"
+TOKEN=$(python3 -c 'import sys,json; print(json.load(open(sys.argv[1]))["token"])' "$TOKEN_FILE")
+
 echo "==> Connecting to ws://$HOST:$PORT/events (5s timeout)..."
-EVENTS=$(timeout 5 websocat -1 "ws://$HOST:$PORT/events" 2>/dev/null || true)
+EVENTS=$(timeout 5 websocat -1 "ws://$HOST:$PORT/events?token=$TOKEN" 2>/dev/null || true)
 
 echo "==> First event received:"
 echo "$EVENTS" | head -1

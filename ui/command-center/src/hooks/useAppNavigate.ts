@@ -1,12 +1,35 @@
 import { useEffect, useRef } from 'react';
-import { getApiBaseUrl } from '../lib/api';
+import { eventsWsUrl } from '../lib/api';
 import { wireEventType } from '../lib/wireEvent';
+import { appendTraceRecord, claimTraceEventId, globalFrameToRecord } from '../lib/traceEvents';
 import { useCommandCenter, navigateToTool } from '../lib/store';
 import type { ActivePanel } from '../lib/store';
 import { createChatWindow } from '../lib/chatWindow';
 import { useTheme } from '../styles/useTheme';
+// The world view's replay classifier — the one in-repo source of truth for
+// "did this /events frame arrive live, or in the daemon's replay buffer?".
+// Prefers the daemon's server-side `"replayed": true` marker, with the
+// per-epoch timestamp heuristic as the fallback for unmarked frames.
+import { frameReplayed } from '../components/world/shared/worldEvents';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+
+/** Payload of an `app_navigate` frame (daemon WS bus and cross-window Tauri event). */
+type NavigatePayload = {
+  tool_type?: string;
+  panel_type?: string;
+  section?: string;
+  state?: { project_id?: string };
+  reason?: string;
+};
+
+/** Payload of a `project_launch` frame (daemon WS bus and cross-window Tauri event). */
+type LaunchPayload = {
+  root_path?: string;
+  label?: string;
+  command?: string | null;
+  reason?: string;
+};
 
 /**
  * Agent-driven app_action: act WITHIN a surface (not just navigate to it).
@@ -43,19 +66,166 @@ function dispatchAppAction(
   if (payload?.reason) showNavigationCue(payload.reason);
 }
 
+/**
+ * Agent-driven open_item: the last mile past a tab — open a SPECIFIC item by id.
+ * Mirrors the daemon's app_conductor ITEM_CATALOG 1:1 (kind is validated
+ * daemon-side before emit), so this only maps known kinds to the store seams
+ * that already back the human buttons (goal → openGoalDetail, grow →
+ * growProject). Both seams self-navigate to their surface, so no extra nav here.
+ * Reads live state imperatively via getState() so the WS callback never goes stale.
+ *
+ * Exported for wiring tests. Keep the handled kinds in lockstep with the Rust
+ * ITEM_CATALOG (app_conductor.rs) — a kind on one side but not the other is a
+ * silently-dropped event.
+ */
+export function dispatchOpenItem(payload: {
+  kind?: string;
+  project_id?: string;
+  card_id?: string;
+  reason?: string;
+}) {
+  const { kind, project_id, card_id } = payload ?? {};
+  if (!kind || !project_id) return;
+  const s = useCommandCenter.getState();
+
+  if (kind === 'goal') {
+    // Goal-detail modal needs both ids; a goal without its card_id is unopenable
+    // (the daemon rejects this too, but guard the direct/cross-window path).
+    if (!card_id) return;
+    s.openGoalDetail(project_id, card_id);
+  } else if (kind === 'grow') {
+    s.growProject(project_id);
+  } else {
+    return; // unknown kind — drop rather than guess
+  }
+
+  if (payload?.reason) showNavigationCue(payload.reason);
+}
+
+// Tool types that a workspace layout can host — the ONLY set the tool-host
+// branch below searches. Overlay-only surfaces (inbox, sessions, trace) are
+// deliberately absent: no seeded workspace hosts them, so their catalog entry
+// carries panel_type:'overlay' and they route through the overlay branch
+// (setActivePanel) instead. Listing 'trace' here made navigate_app("Trace")
+// fall into the tool-host search, which no-ops because nothing hosts it.
 const VALID_TOOL_TYPES = new Set<string>([
-  'chat', 'skills', 'trace', 'world', 'terminal', 'browser', 'memory', 'dashboard', 'build', 'automate', 'projects',
+  'chat', 'skills', 'world', 'terminal', 'browser', 'memory', 'dashboard', 'build', 'automate', 'projects', 'grow',
 ]);
 
 /**
+ * Record a global `/events` frame into the trace buffer (`store.events`) with
+ * its real wire type — the ExecutionTrace's global-bus feed. Before this seam
+ * the trace's only writer was the chat SSE, so it showed the user's own chat
+ * frames while the Trace catalog entry promised the whole running system. The
+ * daemon replays its buffer on every (re)connect, so records are deduped by
+ * envelope id (first connect lands recent history once; reconnect bursts are
+ * dropped). Exported for wiring tests.
+ */
+export function recordGlobalTraceFrame(frame: unknown): void {
+  const rec = globalFrameToRecord(frame);
+  if (!rec || !claimTraceEventId(rec.id)) return;
+  useCommandCenter.setState(s => ({ events: appendTraceRecord(s.events, rec) }));
+}
+
+/**
+ * The wire types the /events handler ACTS on (navigate / act-in-surface /
+ * open-item / launch-terminal) — every other frame is trace-only. One set, so
+ * the replay gate below cannot drift out of sync with the routing.
+ */
+const ACTION_FRAME_TYPES = new Set([
+  'app_navigate', 'app_action', 'app_open_item', 'project_launch',
+]);
+
+/**
+ * Replay honesty for ACTION frames. The daemon's /events socket replays its
+ * whole event buffer (≤1000 frames) on EVERY (re)connect. Without
+ * discrimination, a sleep/wake or daemon-restart reconnect re-delivers an
+ * hours-old `app_navigate` and the UI yanks the user.
+ *
+ * Primary discriminator — the SERVER-SIDE replay marker (via the shared
+ * {@link frameReplayed} classifier): the daemon stamps `"replayed": true` on
+ * every frame it re-delivers from its buffer (full backfill and `resume_from`
+ * replays alike; routes/events.rs), which is authoritative and free of the
+ * clock-skew caveat. A marked frame is never acted on, full stop.
+ *
+ * Fallback for UNMARKED frames — the per-CONNECTION epoch over the daemon's
+ * own timestamps: a frame stamped before THIS connection opened is history,
+ * not a live instruction. The fallback stays load-bearing in two real cases
+ * the marker cannot cover: an older daemon that doesn't mark at all, and
+ * client-side staleness (a live-sent frame delivered only after a sleep/wake
+ * — live at send time, stale by the time this client processes it). This
+ * remains the one deliberate departure from worldEvents' once-per-app epoch:
+ * the world may still animate never-witnessed work after a reconnect; an
+ * action must only fire for a frame emitted while this client was actually
+ * connected.
+ *
+ * Clock-skew caveat (fallback path only, same as worldEvents accepts): server
+ * stamp vs client clock, both failure directions bounded by the skew (NTP:
+ * sub-second) and benign — a live action inside the first skew-window of a
+ * connection is recorded but not acted on; a skew-old action acts, which is
+ * indistinguishable from live. Untimestamped unmarked frames count as live
+ * (the daemon stamps every event; absence means a test/dev frame).
+ *
+ * Exported for wiring tests.
+ */
+export function shouldActOnFrame(event: unknown, connectionEpoch: number): boolean {
+  if (!ACTION_FRAME_TYPES.has(wireEventType(event))) return false;
+  return !frameReplayed(event, connectionEpoch);
+}
+
+/**
+ * Route one parsed /events frame: ALWAYS record it into the trace first
+ * (deduped by envelope id, and a dispatch throw must not lose the record),
+ * then dispatch to a UI action only when {@link shouldActOnFrame} says it is
+ * live for this connection — replayed frames are recorded, never acted on.
+ * Exported for wiring tests.
+ */
+export function routeGlobalFrame(
+  event: unknown,
+  connectionEpoch: number,
+  handlers: {
+    navigate: (payload: NavigatePayload) => void;
+    launch: (payload: LaunchPayload) => void;
+    theme: ReturnType<typeof useTheme>['theme'];
+  },
+): void {
+  recordGlobalTraceFrame(event);
+  if (!shouldActOnFrame(event, connectionEpoch)) return;
+  const payload =
+    (event && typeof event === 'object'
+      ? (event as { payload?: unknown }).payload
+      : undefined) ?? {};
+  switch (wireEventType(event)) {
+    case 'project_launch':
+      handlers.launch(payload as LaunchPayload);
+      break;
+    case 'app_action':
+      dispatchAppAction(payload as Parameters<typeof dispatchAppAction>[0], handlers.theme);
+      break;
+    case 'app_open_item':
+      dispatchOpenItem(payload as Parameters<typeof dispatchOpenItem>[0]);
+      break;
+    case 'app_navigate':
+      handlers.navigate(payload as NavigatePayload);
+      break;
+  }
+}
+
+/**
  * Subscribes to the daemon's global event bus (/events WebSocket).
- * When an AppNavigate event arrives, navigates the UI to the specified tab.
+ * When an AppNavigate event arrives LIVE, navigates the UI to the specified
+ * tab; every frame (nav or not, live or replayed) is also mirrored into the
+ * trace events buffer with its real type via {@link recordGlobalTraceFrame},
+ * so the Execution trace genuinely shows the running system, not just chat
+ * frames. Frames from the daemon's replay-on-(re)connect buffer are recorded
+ * but never acted on — see {@link shouldActOnFrame}.
  */
 export function useAppNavigate() {
   const switchWorkspace = useCommandCenter(s => s.switchWorkspace);
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
   const workspaces = useCommandCenter(s => s.workspaces);
   const setPendingProjectNavigation = useCommandCenter(s => s.setPendingProjectNavigation);
+  const setPendingSettingsSection = useCommandCenter(s => s.setPendingSettingsSection);
   const setPendingTerminalLaunch = useCommandCenter(s => s.setPendingTerminalLaunch);
   const { theme } = useTheme();
 
@@ -70,21 +240,22 @@ export function useAppNavigate() {
   setActivePanelRef.current = setActivePanel;
   const setPendingProjectNavigationRef = useRef(setPendingProjectNavigation);
   setPendingProjectNavigationRef.current = setPendingProjectNavigation;
+  const setPendingSettingsSectionRef = useRef(setPendingSettingsSection);
+  setPendingSettingsSectionRef.current = setPendingSettingsSection;
   const setPendingTerminalLaunchRef = useRef(setPendingTerminalLaunch);
   setPendingTerminalLaunchRef.current = setPendingTerminalLaunch;
 
   // Shared navigation logic — used by both the daemon WS bus and the
   // cross-window Tauri event (the chat window's "Open Brain" button).
-  const navigate = (payload: {
-    tool_type?: string;
-    panel_type?: string;
-    state?: { project_id?: string };
-    reason?: string;
-  }) => {
-    const { tool_type, panel_type, state, reason } = payload ?? {};
+  const navigate = (payload: NavigatePayload) => {
+    const { tool_type, panel_type, section, state, reason } = payload ?? {};
     if (!tool_type) return;
 
     if (panel_type === 'overlay') {
+      // Deep-link into a sub-section (e.g. Settings → Devices). The target
+      // overlay reads pendingSettingsSection on mount. Without this the daemon-
+      // forwarded `section` was dropped and every deep-link fell to the default.
+      if (section) setPendingSettingsSectionRef.current(section);
       setActivePanelRef.current(tool_type as ActivePanel);
     } else if (VALID_TOOL_TYPES.has(tool_type)) {
       // Find workspace containing this tool type
@@ -113,12 +284,7 @@ export function useAppNavigate() {
   // Mirrors the human launch path: switch to the Build workspace, then queue a
   // pending launch that BuildView consumes via its TerminalManager ref
   // (createProjectTab → terminal.rs PTY). The agent never spawns the PTY itself.
-  const launch = (payload: {
-    root_path?: string;
-    label?: string;
-    command?: string | null;
-    reason?: string;
-  }) => {
+  const launch = (payload: LaunchPayload) => {
     const { root_path, label, command, reason } = payload ?? {};
     if (!root_path) return;
     if (!navigateToTool('build')) return;
@@ -137,25 +303,27 @@ export function useAppNavigate() {
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let disposed = false;
 
-    function connect() {
+    async function connect() {
       if (disposed) return;
-      const base = getApiBaseUrl().replace(/^http/, 'ws');
-      ws = new WebSocket(`${base}/events`);
+      // Daemon token rides the WS query (C1/C2 auth) — await it, then re-check
+      // disposal so a token load racing unmount never opens an orphan socket.
+      const url = await eventsWsUrl();
+      if (disposed) return;
+      // Per-connection replay epoch: captured fresh on every (re)connect. The
+      // daemon's server-side replay marker is authoritative when present; this
+      // epoch is the fallback so unmarked frames — an older daemon's replay
+      // burst, or anything emitted while we were disconnected — are recorded
+      // but never acted on (see shouldActOnFrame).
+      const connectionEpoch = Date.now();
+      ws = new WebSocket(url);
 
       ws.onmessage = (ev) => {
         try {
-          const event = JSON.parse(ev.data);
-          const eventType = wireEventType(event);
-          if (eventType === 'project_launch') {
-            launchRef.current(event.payload ?? {});
-            return;
-          }
-          if (eventType === 'app_action') {
-            dispatchAppAction(event.payload ?? {}, themeRef.current);
-            return;
-          }
-          if (eventType !== 'app_navigate') return;
-          navigateRef.current(event.payload ?? {});
+          routeGlobalFrame(JSON.parse(ev.data), connectionEpoch, {
+            navigate: (p) => navigateRef.current(p),
+            launch: (p) => launchRef.current(p),
+            theme: themeRef.current,
+          });
         } catch {
           // Ignore malformed events
         }
@@ -184,6 +352,8 @@ export function useAppNavigate() {
   // Cross-window navigation: the chat webview (a separate window with its own
   // store) can't switch workspaces directly, so its "Open Brain" button emits a
   // global Tauri event that the main window honors via the shared nav logic.
+  // No replay gate here — Tauri events are direct user actions delivered once,
+  // live by construction; only the daemon WS bus replays a buffer.
   useEffect(() => {
     if (!('__TAURI_INTERNALS__' in window)) return;
     let unlisten: (() => void) | undefined;
@@ -191,16 +361,11 @@ export function useAppNavigate() {
     (async () => {
       try {
         const { listen } = await import('@tauri-apps/api/event');
-        const stop = await listen<{
-          tool_type?: string;
-          panel_type?: string;
-          state?: { project_id?: string };
-          reason?: string;
-        }>(
+        const stop = await listen<NavigatePayload>(
           'app_navigate',
           (ev) => navigateRef.current(ev.payload ?? {}),
         );
-        const stopLaunch = await listen<{ root_path?: string; label?: string; command?: string | null; reason?: string }>(
+        const stopLaunch = await listen<LaunchPayload>(
           'project_launch',
           (ev) => launchRef.current(ev.payload ?? {}),
         );
@@ -208,7 +373,11 @@ export function useAppNavigate() {
           'app_action',
           (ev) => dispatchAppAction(ev.payload ?? {}, themeRef.current),
         );
-        const stopBoth = () => { stop(); stopLaunch(); stopAction(); };
+        const stopOpenItem = await listen<{ kind?: string; project_id?: string; card_id?: string; reason?: string }>(
+          'app_open_item',
+          (ev) => dispatchOpenItem(ev.payload ?? {}),
+        );
+        const stopBoth = () => { stop(); stopLaunch(); stopAction(); stopOpenItem(); };
         if (disposed) stopBoth(); else unlisten = stopBoth;
       } catch { /* not in Tauri / event API unavailable */ }
     })();

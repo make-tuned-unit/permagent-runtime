@@ -39,6 +39,10 @@ use tracing::{info, warn};
 /// duplicates. `migrate_v13_to_v14` deletes the redundant EMPTY manual columns
 /// (never one holding cards). Idempotent and base-independent.
 ///
+/// v28 = per-call cost ledger (`cost_ledger`) + O(1) cost-rollup columns on
+/// `sessions` (cost-transparency workstream). New table + PRAGMA-guarded ADD
+/// COLUMNs, additive and base-independent. `migrate_v27_to_v28` applies it.
+///
 /// NOTE on the version drift: this constant intentionally stays at 14 even though
 /// the migration chain now runs to v19 (`migrate_v14_to_v15` … `migrate_v18_to_v19`).
 /// It is the stamp `init_spectral_db` applies to a *fresh* DB — those later steps
@@ -115,6 +119,11 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
             accumulated_total_tokens  INTEGER,
             accumulated_input_tokens  INTEGER,
             accumulated_output_tokens INTEGER,
+            cost_usd                       REAL,
+            accumulated_cost_usd           REAL,
+            accumulated_cache_read_tokens  INTEGER,
+            accumulated_cache_write_tokens INTEGER,
+            accumulated_cache_savings_usd  REAL,
             schedule_id       TEXT,
             recipe_json       TEXT,
             user_recipe_values_json TEXT,
@@ -269,6 +278,7 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
             status            TEXT NOT NULL DEFAULT 'active',
             version           INTEGER NOT NULL DEFAULT 1,
             source_task_id    TEXT REFERENCES tasks(id),
+            skill_path        TEXT,
             created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
             updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
         )",
@@ -688,6 +698,16 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // migrate_v26_to_v27. Purely additive, base-independent.
     apply_activity_journal_schema(pool).await?;
 
+    // Per-call cost ledger + session cost-rollup columns (schema v28). Idempotent;
+    // shared with migrate_v27_to_v28. The ADD COLUMNs below are PRAGMA-guarded, so
+    // they no-op here (fresh installs already got the columns from the sessions
+    // CREATE above) and only fire on existing DBs.
+    apply_cost_ledger_schema(pool).await?;
+
+    // Egress audit log (schema v29, sovereignty). Idempotent; shared with
+    // migrate_v28_to_v29. Append-only, purely additive, base-independent.
+    apply_egress_audit_schema(pool).await?;
+
     info!(
         "Spectral schema v{} initialized successfully",
         SPECTRAL_SCHEMA_VERSION
@@ -985,6 +1005,29 @@ pub async fn apply_project_metadata_column(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
+/// Add the `skills.skill_path` index column: it points each indexed skill at its
+/// on-disk `SKILL.md` folder (the portable agentskills.io source-of-truth). The
+/// DB row is the fast lookup + repetition-detection index; the folder is
+/// authoritative. PRAGMA-guarded and applied by column-existence — NOT gated on
+/// a version stamp — so it is present on any DB regardless of the recorded schema
+/// version (mirrors the recognition-columns safety-net precedent, since the
+/// SPECTRAL_SCHEMA_VERSION const is not bumped for this additive column).
+/// Idempotent.
+pub async fn apply_skill_path_column(pool: &Pool<Sqlite>) -> Result<()> {
+    let has_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('skills') WHERE name = 'skill_path'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if has_column == 0 {
+        sqlx::query("ALTER TABLE skills ADD COLUMN skill_path TEXT")
+            .execute(pool)
+            .await?;
+        info!("Added skills.skill_path column (SKILL.md source-of-truth index)");
+    }
+    Ok(())
+}
+
 /// Migrate an existing database to the project-metadata schema (schema v26).
 ///
 /// A single guarded `ALTER TABLE ... ADD COLUMN`, base-version independent and
@@ -1050,6 +1093,185 @@ pub async fn migrate_v26_to_v27(pool: &Pool<Sqlite>) -> Result<()> {
         .execute(pool)
         .await?;
     info!("Spectral schema migrated to v27 (activity journal)");
+
+    Ok(())
+}
+
+/// Apply the egress-audit schema (schema v29, sovereignty): `egress_audit` —
+/// the always-on, append-only record of every **cloud** inference call the
+/// sovereignty guard sees (blocked or allowed), with a SHA-256 content hash by
+/// default (full prompt only when `sovereign_capture_prompts` is enabled).
+///
+/// Append-only is enforced *at the DB*: `BEFORE UPDATE` / `BEFORE DELETE`
+/// triggers `RAISE(ABORT)` so evidence of a cloud egress can never be quietly
+/// rewritten or deleted — a mutable audit is a lying audit. Purely additive and
+/// base-version independent (`CREATE ... IF NOT EXISTS`), so it applies cleanly
+/// over any earlier base and is safe on every boot. See
+/// [`crate::sovereignty`] for the writer/reader and enforcement policy.
+pub async fn apply_egress_audit_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool.begin().await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS egress_audit (
+            id           TEXT PRIMARY KEY,
+            ts           TEXT NOT NULL,
+            provider     TEXT NOT NULL,
+            model        TEXT NOT NULL,
+            session_id   TEXT,
+            project_id   TEXT,
+            kind         TEXT NOT NULL DEFAULT 'inference',
+            blocked      INTEGER NOT NULL DEFAULT 0,
+            content_hash TEXT NOT NULL,
+            prompt       TEXT
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_egress_audit_ts ON egress_audit(ts DESC)")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS trg_egress_audit_no_update
+            BEFORE UPDATE ON egress_audit
+            BEGIN SELECT RAISE(ABORT, 'egress_audit is append-only'); END",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS trg_egress_audit_no_delete
+            BEFORE DELETE ON egress_audit
+            BEGIN SELECT RAISE(ABORT, 'egress_audit is append-only'); END",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Migrate an existing database to the egress-audit schema (schema v29).
+///
+/// Purely additive and base-version independent; records v29 in
+/// `schema_version`.
+pub async fn migrate_v28_to_v29(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v28 -> v29 (egress audit log)");
+    apply_egress_audit_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (29)")
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Apply the per-call cost-ledger schema (v28, cost-transparency workstream):
+/// `cost_ledger` — one append-only row per provider response — plus the O(1)
+/// cost-rollup columns on `sessions`.
+///
+/// `cost_ledger` is high-frequency numeric telemetry (SUM / GROUP BY over
+/// session, task, provider) and deliberately lives here in the session DB rather
+/// than the activity journal, which is a low-frequency semantic-enrichment log.
+/// Every money column is the output of the single canonical
+/// [`crate::providers::canonical::cost_of`] function, so the ledger, the live
+/// meter, and the verification digest can never disagree. `cost_tier` is a plain
+/// TEXT (no `CHECK` constraint — validated in Rust via `CostTier`) to avoid the
+/// widen-the-constraint-in-two-places footgun.
+///
+/// The `sessions` cost columns are an O(1) running rollup updated inside the
+/// same transaction as each ledger append: `accumulated_cost_usd` (= Σ
+/// `cost_usd`), `cost_usd` (the most recent turn), the cache-read/write token
+/// accumulators, and `accumulated_cache_savings_usd` (the visible "cache saved"
+/// trust signal). The `ALTER`s are PRAGMA-guarded so this is a no-op on fresh
+/// installs (which get the columns from the `sessions` CREATE) and fills them in
+/// on existing DBs. Fully idempotent — safe on every boot and on fresh installs.
+pub async fn apply_cost_ledger_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool.begin().await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS cost_ledger (
+            call_id            TEXT PRIMARY KEY,
+            ts                 TEXT NOT NULL,
+            session_id         TEXT NOT NULL,
+            parent_session_id  TEXT,
+            task_id            TEXT,
+            goal_id            TEXT,
+            subagent_id        TEXT,
+            turn_index         INTEGER,
+            provider           TEXT,
+            model              TEXT,
+            cost_tier          TEXT NOT NULL DEFAULT 'paid_api',
+            is_chargeable      INTEGER NOT NULL DEFAULT 1,
+            is_headless        INTEGER NOT NULL DEFAULT 0,
+            input_tokens       INTEGER NOT NULL DEFAULT 0,
+            output_tokens      INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
+            cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+            input_cost         REAL NOT NULL DEFAULT 0,
+            output_cost        REAL NOT NULL DEFAULT 0,
+            cache_read_cost    REAL NOT NULL DEFAULT 0,
+            cache_write_cost   REAL NOT NULL DEFAULT 0,
+            cost_usd           REAL NOT NULL DEFAULT 0,
+            is_estimated       INTEGER NOT NULL DEFAULT 0
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_cost_ledger_session ON cost_ledger(session_id, ts)",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_cost_ledger_task ON cost_ledger(task_id, ts)")
+        .execute(&mut *tx)
+        .await?;
+
+    // PRAGMA-guarded rollup columns on `sessions` (idempotent ADD COLUMN).
+    for (col, ddl) in [
+        ("cost_usd", "ALTER TABLE sessions ADD COLUMN cost_usd REAL"),
+        (
+            "accumulated_cost_usd",
+            "ALTER TABLE sessions ADD COLUMN accumulated_cost_usd REAL",
+        ),
+        (
+            "accumulated_cache_read_tokens",
+            "ALTER TABLE sessions ADD COLUMN accumulated_cache_read_tokens INTEGER",
+        ),
+        (
+            "accumulated_cache_write_tokens",
+            "ALTER TABLE sessions ADD COLUMN accumulated_cache_write_tokens INTEGER",
+        ),
+        (
+            "accumulated_cache_savings_usd",
+            "ALTER TABLE sessions ADD COLUMN accumulated_cache_savings_usd REAL",
+        ),
+    ] {
+        let has_column: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = ?")
+                .bind(col)
+                .fetch_one(&mut *tx)
+                .await?;
+        if has_column == 0 {
+            sqlx::query(ddl).execute(&mut *tx).await?;
+        }
+    }
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Migrate an existing database to the cost-ledger schema (schema v28).
+///
+/// Additive (CREATE TABLE / INDEX IF NOT EXISTS + PRAGMA-guarded ADD COLUMN) and
+/// base-version independent, so it applies cleanly over any earlier base. Records
+/// v28 in `schema_version`.
+pub async fn migrate_v27_to_v28(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v27 -> v28 (per-call cost ledger)");
+
+    apply_cost_ledger_schema(pool).await?;
+
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (28)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v28 (per-call cost ledger)");
 
     Ok(())
 }
@@ -1616,7 +1838,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS decisions (
             id            TEXT PRIMARY KEY,
             kind          TEXT NOT NULL CHECK (kind IN
-                            ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','malformed')),
+                            ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','tool_approval','malformed')),
             goal_id       TEXT REFERENCES cards(id) ON DELETE SET NULL,
             project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
             tier          INTEGER NOT NULL CHECK (tier IN (0,1,2)),
@@ -1626,7 +1848,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
             rank          REAL,
             status        TEXT NOT NULL DEFAULT 'open'
                           CHECK (status IN ('open','answered','expired','superseded')),
-            answer        TEXT CHECK (answer IN ('approve','reject','choice','input')),
+            answer        TEXT CHECK (answer IN ('approve','reject','choice','input','edit')),
             answer_note   TEXT,
             answer_choice_id TEXT,
             answer_input  TEXT,
@@ -1662,22 +1884,30 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
     }
 
     // Widen the `kind` CHECK to admit 'automation_proposal' (Initiative → Decision
-    // Inbox) and 'enrichment_proposal' (the Enricher, #495 slice 4). SQLite cannot
-    // ALTER a CHECK, so an older table is rebuilt in place. FK-safe: nothing
-    // references `decisions` via a foreign key (decision_audit stores a plain TEXT
-    // id; the complete-guard trigger resolves by name after the rename). Gated on
-    // the newest kind in the constraint text, so it runs at most once — a table
-    // missing 'automation_proposal' also misses 'enrichment_proposal' and this one
-    // rebuild widens for both.
+    // Inbox), 'enrichment_proposal' (the Enricher, #495 slice 4), and 'tool_approval'
+    // (needs-approval tool calls routed to the inbox), AND the `answer` CHECK to
+    // admit 'edit' (approve-with-edits / edit-as-training). SQLite cannot ALTER a
+    // CHECK, so an older table is rebuilt in place. FK-safe: nothing references
+    // `decisions` via a foreign key (decision_audit stores a plain TEXT id; the
+    // complete-guard trigger resolves by name after the rename). Gated on the
+    // widened constraints' marker tokens, so it runs at most once per widening: a
+    // table missing 'enrichment_proposal', the 'edit' answer value, OR 'tool_approval'
+    // is rebuilt to the current DDL, which widens all of them together (an older DB
+    // only ever holds legacy values, all valid under the new CHECK, so the row copy
+    // is lossless).
     let decisions_ddl: Option<String> =
         sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE type='table' AND name='decisions'")
             .fetch_optional(&mut *tx)
             .await?;
     if decisions_ddl
-        .map(|sql| !sql.contains("enrichment_proposal"))
+        .map(|sql| {
+            !sql.contains("enrichment_proposal")
+                || !sql.contains("'edit'")
+                || !sql.contains("tool_approval")
+        })
         .unwrap_or(false)
     {
-        info!("Widening decisions.kind CHECK for 'enrichment_proposal' (in-place rebuild)");
+        info!("Widening decisions kind/answer CHECK constraints (in-place rebuild)");
         // Indexes on the old table are dropped with it; recreated below.
         sqlx::query("DROP INDEX IF EXISTS idx_decisions_open")
             .execute(&mut *tx)
@@ -1685,11 +1915,23 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
         sqlx::query("DROP INDEX IF EXISTS idx_decisions_goal")
             .execute(&mut *tx)
             .await?;
+        // Drop the goal-complete guard trigger before the rename. It references
+        // `decisions` in its WHEN subquery, and modern SQLite (bundled via
+        // rusqlite since #713) re-parses every trigger during
+        // `ALTER TABLE decisions_new RENAME TO decisions`; while `decisions` is
+        // transiently dropped that parse fails with "no such table: decisions"
+        // and aborts the widening. It is recreated (CREATE TRIGGER IF NOT EXISTS)
+        // below, inside this same transaction. Existing DBs already carry this
+        // trigger (co-shipped with the enrichment_proposal widening), so the
+        // 'edit' widening MUST clear it first or it cannot upgrade them.
+        sqlx::query("DROP TRIGGER IF EXISTS trg_goal_complete_guard")
+            .execute(&mut *tx)
+            .await?;
         sqlx::query(
             "CREATE TABLE decisions_new (
                 id            TEXT PRIMARY KEY,
                 kind          TEXT NOT NULL CHECK (kind IN
-                                ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','malformed')),
+                                ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','tool_approval','malformed')),
                 goal_id       TEXT REFERENCES cards(id) ON DELETE SET NULL,
                 project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
                 tier          INTEGER NOT NULL CHECK (tier IN (0,1,2)),
@@ -1699,7 +1941,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
                 rank          REAL,
                 status        TEXT NOT NULL DEFAULT 'open'
                               CHECK (status IN ('open','answered','expired','superseded')),
-                answer        TEXT CHECK (answer IN ('approve','reject','choice','input')),
+                answer        TEXT CHECK (answer IN ('approve','reject','choice','input','edit')),
                 answer_note   TEXT,
                 answer_choice_id TEXT,
                 answer_input  TEXT,
@@ -3061,5 +3303,218 @@ mod inbox_schema_tests {
             .unwrap();
         migrate_v18_to_v19(&fresh).await.unwrap();
         assert_eq!(current_version(&fresh).await, 19);
+    }
+
+    /// approve-with-edits (`answer='edit'`) widening: an existing DB whose
+    /// decisions table predates 'edit' — even one already carrying the widened
+    /// `kind` CHECK — must be rebuilt in place by `apply_decision_inbox_schema`
+    /// so `answer='edit'` is accepted, existing rows copied losslessly, and the
+    /// rebuild idempotent on re-run. This is the migration Phase 0 missed: the
+    /// `answer` column carries a CHECK constraint, so the reused-column design
+    /// still needed a schema widening.
+    #[tokio::test]
+    async fn decisions_answer_check_widens_for_edit_in_place() {
+        let pool = mem_pool().await;
+        init_spectral_db(&pool).await.unwrap();
+
+        // Downgrade decisions to a pre-'edit' shape: the widened `kind` CHECK
+        // (already has enrichment_proposal) but the OLD `answer` CHECK — exactly
+        // the case the broadened rebuild gate must still catch.
+        sqlx::query("DROP TABLE decisions")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE decisions (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL CHECK (kind IN
+                    ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','malformed')),
+                goal_id TEXT REFERENCES cards(id) ON DELETE SET NULL,
+                project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+                tier INTEGER NOT NULL CHECK (tier IN (0,1,2)),
+                headline TEXT NOT NULL CHECK (length(headline) > 0 AND length(headline) <= 80),
+                detail TEXT NOT NULL CHECK (length(detail) > 0),
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                rank REAL,
+                status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','answered','expired','superseded')),
+                answer TEXT CHECK (answer IN ('approve','reject','choice','input')),
+                answer_note TEXT, answer_choice_id TEXT, answer_input TEXT,
+                acted_by TEXT CHECK (acted_by IN ('jesse','henry-policy','system')),
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                resolved_at TEXT,
+                CHECK (status != 'answered'
+                       OR (answer IS NOT NULL AND acted_by IS NOT NULL AND resolved_at IS NOT NULL))
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // A legacy answered row (NULL goal/project → no FK dependency).
+        sqlx::query(
+            "INSERT INTO decisions (id, kind, tier, headline, detail, status, answer, acted_by, resolved_at)
+             VALUES ('d-legacy', 'choice', 2, 'Legacy answered row', 'detail', 'answered',
+                     'choice', 'jesse', '2026-01-01T00:00:00.000Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Precondition: the old CHECK rejects 'edit'.
+        assert!(
+            sqlx::query("UPDATE decisions SET answer='edit' WHERE id='d-legacy'")
+                .execute(&pool)
+                .await
+                .is_err(),
+            "old answer CHECK must reject 'edit' before the widening runs"
+        );
+
+        // The idempotent decision-inbox schema must rebuild to widen `answer`.
+        apply_decision_inbox_schema(&pool).await.unwrap();
+
+        // The constraint now admits 'edit'...
+        let ddl: String = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='decisions'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            ddl.contains("'edit'"),
+            "answer CHECK must be widened to admit 'edit': {ddl}"
+        );
+
+        // ...the legacy row survived the rebuild losslessly...
+        let survived: String =
+            sqlx::query_scalar("SELECT headline FROM decisions WHERE id='d-legacy'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(survived, "Legacy answered row");
+
+        // ...and an edit answer is now accepted by the constraint.
+        sqlx::query(
+            "UPDATE decisions SET answer='edit', answer_input='revised' WHERE id='d-legacy'",
+        )
+        .execute(&pool)
+        .await
+        .expect("widened CHECK must accept answer='edit'");
+
+        // Idempotent: a second run neither errors nor rebuilds away the edit.
+        apply_decision_inbox_schema(&pool).await.unwrap();
+        let still_edit: String =
+            sqlx::query_scalar("SELECT answer FROM decisions WHERE id='d-legacy'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            still_edit, "edit",
+            "the edited row is stable across a re-run"
+        );
+    }
+
+    /// `tool_approval` kind widening: an existing DB that already carries the
+    /// enrichment_proposal + 'edit' widenings but whose `kind` CHECK predates
+    /// 'tool_approval' must still be rebuilt by `apply_decision_inbox_schema`.
+    /// This isolates the new marker token — the other two gate clauses are
+    /// already satisfied, so only the tool_approval clause can trigger the
+    /// rebuild — proving the gate was broadened (not just the DDL).
+    #[tokio::test]
+    async fn decisions_kind_check_widens_for_tool_approval_in_place() {
+        let pool = mem_pool().await;
+        init_spectral_db(&pool).await.unwrap();
+
+        // Downgrade: widened `answer` (has 'edit') and enrichment_proposal in
+        // `kind`, but NO 'tool_approval' — the exact case only the new gate
+        // clause catches.
+        sqlx::query("DROP TABLE decisions")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE decisions (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL CHECK (kind IN
+                    ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','malformed')),
+                goal_id TEXT REFERENCES cards(id) ON DELETE SET NULL,
+                project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+                tier INTEGER NOT NULL CHECK (tier IN (0,1,2)),
+                headline TEXT NOT NULL CHECK (length(headline) > 0 AND length(headline) <= 80),
+                detail TEXT NOT NULL CHECK (length(detail) > 0),
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                rank REAL,
+                status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','answered','expired','superseded')),
+                answer TEXT CHECK (answer IN ('approve','reject','choice','input','edit')),
+                answer_note TEXT, answer_choice_id TEXT, answer_input TEXT,
+                acted_by TEXT CHECK (acted_by IN ('jesse','henry-policy','system')),
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                resolved_at TEXT,
+                CHECK (status != 'answered'
+                       OR (answer IS NOT NULL AND acted_by IS NOT NULL AND resolved_at IS NOT NULL))
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // A legacy row (NULL goal/project → no FK dependency) to prove lossless copy.
+        sqlx::query(
+            "INSERT INTO decisions (id, kind, tier, headline, detail, status)
+             VALUES ('d-legacy', 'choice', 2, 'Legacy open row', 'detail', 'open')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Precondition: the old kind CHECK rejects 'tool_approval'.
+        assert!(
+            sqlx::query(
+                "INSERT INTO decisions (id, kind, tier, headline, detail)
+                 VALUES ('d-ta', 'tool_approval', 2, 'x', 'y')",
+            )
+            .execute(&pool)
+            .await
+            .is_err(),
+            "old kind CHECK must reject 'tool_approval' before the widening runs"
+        );
+
+        // The idempotent decision-inbox schema rebuilds to widen `kind`.
+        apply_decision_inbox_schema(&pool).await.unwrap();
+
+        let ddl: String = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='decisions'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            ddl.contains("tool_approval"),
+            "kind CHECK must be widened to admit 'tool_approval': {ddl}"
+        );
+
+        // Legacy row survived the rebuild losslessly...
+        let survived: String =
+            sqlx::query_scalar("SELECT headline FROM decisions WHERE id='d-legacy'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(survived, "Legacy open row");
+
+        // ...and a tool_approval row is now accepted by the constraint.
+        sqlx::query(
+            "INSERT INTO decisions (id, kind, tier, headline, detail)
+             VALUES ('d-ta', 'tool_approval', 2, 'Approve tool', 'run ls')",
+        )
+        .execute(&pool)
+        .await
+        .expect("widened CHECK must accept kind='tool_approval'");
+
+        // Idempotent: a second run neither errors nor rebuilds it away.
+        apply_decision_inbox_schema(&pool).await.unwrap();
+        let still_there: String = sqlx::query_scalar("SELECT kind FROM decisions WHERE id='d-ta'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(still_there, "tool_approval");
     }
 }

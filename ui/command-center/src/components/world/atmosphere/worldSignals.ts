@@ -27,8 +27,8 @@
 // real network events / polls, never per frame.
 
 import { useSyncExternalStore } from 'react';
-import { apiFetch, getApiBaseUrl } from '../../../lib/api';
-import { wireEventType } from '../../../lib/wireEvent';
+import { apiFetch } from '../../../lib/api';
+import { subscribeWorldEvents } from '../shared/worldEvents';
 
 /** A real Brain entity (formerly projected as a day-one shadow silhouette). */
 export interface SignalEntity {
@@ -113,10 +113,8 @@ const GRAPH_POLL_MS = 60_000; // matches useBrainData's cadence — slow is sacr
 let started = false;
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let decayTimer: ReturnType<typeof setInterval> | undefined;
-let ws: WebSocket | null = null;
-let wsRetry: ReturnType<typeof setTimeout> | undefined;
+let unsubscribeWire: (() => void) | undefined;
 let entityRefreshTimer: ReturnType<typeof setTimeout> | undefined;
-let closed = false;
 
 // Event-driven graph refresh: an entity_added/_updated means the graph changed.
 // Coalesce bursts (one annotation can surface several entities) into a single
@@ -150,25 +148,13 @@ async function pollGraph(): Promise<void> {
   }
 }
 
+// Shared /events wire (shared/worldEvents — one socket for the whole world).
+// Replay skipping is preserved: worldEvents marks buffered history and every
+// binding below only reacts to LIVE events.
 function connectEvents(): void {
-  if (closed) return;
-  const base = getApiBaseUrl().replace(/^http/, 'ws');
-  const mountedAt = Date.now();
-  try {
-    ws = new WebSocket(`${base}/events`);
-  } catch {
-    return;
-  }
-  ws.onmessage = (ev) => {
-    let parsed: { type?: string; event_type?: string; timestamp?: string };
-    try {
-      parsed = JSON.parse(ev.data);
-    } catch {
-      return;
-    }
-    const type = wireEventType(parsed);
-    const ts = Date.parse(parsed.timestamp ?? '');
-    if (Number.isFinite(ts) && ts < mountedAt) return; // skip replayed buffer
+  unsubscribeWire = subscribeWorldEvents((evt) => {
+    if (evt.replayed) return; // skip replayed buffer
+    const type = evt.type;
     if (type === 'memory_added') {
       // Rainfall-on-ingestion: a real new memory. Bump flow + the rain tick, and
       // optimistically reflect the new memory so the spring can rise immediately
@@ -195,11 +181,7 @@ function connectEvents(): void {
       // between real recalls.
       bumpFlow(0.6);
     }
-  };
-  ws.onerror = () => ws?.close();
-  ws.onclose = () => {
-    if (!closed) wsRetry = setTimeout(connectEvents, 3000);
-  };
+  });
 }
 
 /**
@@ -209,7 +191,6 @@ function connectEvents(): void {
 export function startWorldSignals(): () => void {
   if (started || typeof window === 'undefined') return () => {};
   started = true;
-  closed = false;
 
   void pollGraph();
   pollTimer = setInterval(() => void pollGraph(), GRAPH_POLL_MS);
@@ -223,14 +204,12 @@ export function startWorldSignals(): () => void {
   connectEvents();
 
   return () => {
-    closed = true;
     started = false;
     if (pollTimer) clearInterval(pollTimer);
     if (decayTimer) clearInterval(decayTimer);
-    if (wsRetry) clearTimeout(wsRetry);
     if (entityRefreshTimer) clearTimeout(entityRefreshTimer);
-    ws?.close();
-    ws = null;
+    unsubscribeWire?.();
+    unsubscribeWire = undefined;
   };
 }
 

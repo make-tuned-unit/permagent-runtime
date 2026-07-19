@@ -49,7 +49,7 @@ pub const PERSONA_PICKER_FEATURE: crate::agents::self_knowledge::FeatureDescript
                 body: "Open the identity settings so they can give you a name, choose a voice, and hear it audition out loud. Invite them to make it personal.",
                 open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
                     tab: "Settings",
-                    section: Some("identity"),
+                    section: Some("agent"),
                 }),
                 confirm: None,
             },
@@ -248,6 +248,15 @@ pub struct WorkerPersona {
     /// What this worker can do: code_edit, shell, web_search, memory_ops, etc.
     #[serde(default)]
     pub tool_kinds: Vec<String>,
+    /// Optional explicit workflow-role tag for cost routing — one of
+    /// `orchestrate`/`hard` (frontier reasoning), `edit`, `mechanical`, `review`,
+    /// `local`. When set, it overrides the role derived from [`Self::tool_kinds`]
+    /// (see `cost_router::role_map::derive_role`), so the operator can pin which
+    /// configured per-role model a worker's goals route to. Absent → role is
+    /// derived from the tool kinds; if neither yields a role, dispatch stays on
+    /// the single session model (no baked default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_role: Option<String>,
     /// How to check if this worker is available on this machine.
     /// "bin_exists:<name>" | "api_credential:<env_var>" | "model_loaded:<model>" | "always"
     #[serde(default = "default_availability")]
@@ -276,6 +285,7 @@ impl Default for WorkerPersona {
             traits: Vec::new(),
             tone: String::new(),
             tool_kinds: Vec::new(),
+            workflow_role: None,
             availability_check: default_availability(),
             cost_tier: default_cost_tier(),
             engine: WorkerEngineKind::default(),
@@ -291,6 +301,15 @@ impl WorkerPersona {
             self.last_name.as_deref(),
             self.nickname.as_deref(),
         )
+    }
+
+    /// The cost-routing workflow role this worker's work plays — from its explicit
+    /// [`Self::workflow_role`] tag if set, else derived from [`Self::tool_kinds`].
+    /// `None` when neither yields a role, so dispatch stays on the single session
+    /// model. Both dispatch paths (summon's `resolve_provider` and the goal engine)
+    /// route by this. See `cost_router::role_map::derive_role`.
+    pub fn routing_role(&self) -> Option<crate::cost_router::WorkflowRole> {
+        crate::cost_router::derive_role(&self.tool_kinds, self.workflow_role.as_deref())
     }
 
     /// Build the worker persona block for the system prompt.
@@ -392,6 +411,35 @@ pub fn default_roster() -> HashMap<String, WorkerPersona> {
             availability_check: "model_loaded:qwen2.5".to_string(),
             cost_tier: "local_free".to_string(),
             engine: WorkerEngineKind::Pending,
+            ..Default::default()
+        },
+    );
+
+    roster.insert(
+        "reviewer".to_string(),
+        WorkerPersona {
+            first_name: "Reviewer".to_string(),
+            // The adversarial framing is injected into the subagent's system
+            // prompt via `system_prompt_block()` — this IS the reviewer's mandate.
+            role: "Independent adversarial code reviewer — a DIFFERENT engineer than the author. \
+                   After the coding harness's own tests pass, you check the diff to REFUTE it: \
+                   assume a bug until you have checked, and treat the author's reasoning as a \
+                   claim to test, not evidence. Review through five lenses — correctness, \
+                   security, performance, spec-fit, and test-integrity (were tests weakened or \
+                   deleted to pass?). You are READ-ONLY: read and analyze, never edit. Default \
+                   to reject — if you cannot confidently sign off, the verdict is UNCERTAIN, \
+                   not APPROVE"
+                .to_string(),
+            // `review` derives WorkflowRole::Review (cost_router::role_map::derive_role), so a
+            // configured REVIEW role→model routes this delegate to a DIFFERENT-family model;
+            // unset ⇒ it falls back to the main session model (no baked-in vendor default).
+            tool_kinds: vec!["review".to_string()],
+            workflow_role: Some("review".to_string()),
+            // Always runnable: it is an in-process subagent whose model is chosen by the
+            // Review role→model map, not gated on any local binary.
+            availability_check: "always".to_string(),
+            cost_tier: "paid_api".to_string(),
+            engine: WorkerEngineKind::InternalSubagent,
             ..Default::default()
         },
     );
@@ -607,9 +655,61 @@ workers:
     }
 
     #[test]
+    fn routing_role_derives_from_tool_kinds_and_tag() {
+        use crate::cost_router::WorkflowRole;
+        let roster = default_roster();
+        // The coding workers (code_edit) route to the EDIT role's configured model.
+        assert_eq!(
+            roster["claude_code"].routing_role(),
+            Some(WorkflowRole::Edit)
+        );
+        assert_eq!(roster["codex"].routing_role(), Some(WorkflowRole::Edit));
+        // The Librarian (memory_ops, read-only) routes to MECHANICAL.
+        assert_eq!(
+            roster["librarian"].routing_role(),
+            Some(WorkflowRole::Mechanical)
+        );
+        // The Reviewer routes to REVIEW — the cross-vendor critic role.
+        assert_eq!(
+            roster["reviewer"].routing_role(),
+            Some(WorkflowRole::Review)
+        );
+
+        // An explicit workflow_role tag overrides the tool-kind derivation.
+        let tagged = WorkerPersona {
+            tool_kinds: vec!["code_edit".to_string()],
+            workflow_role: Some("review".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(tagged.routing_role(), Some(WorkflowRole::Review));
+
+        // A worker with no role signal → None (dispatch stays single-model).
+        let bare = WorkerPersona {
+            first_name: "Nobody".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(bare.routing_role(), None);
+    }
+
+    #[test]
     fn default_roster_seeds_three_workers_with_engines() {
         let roster = default_roster();
-        assert_eq!(roster.len(), 3, "expected claude_code + codex + librarian");
+        assert_eq!(
+            roster.len(),
+            4,
+            "expected claude_code + codex + librarian + reviewer"
+        );
+
+        // The reviewer: in-process subagent, review-tagged (routes to the Review
+        // role's cross-vendor model), always runnable — no external binary.
+        let reviewer = &roster["reviewer"];
+        assert_eq!(reviewer.engine, WorkerEngineKind::InternalSubagent);
+        assert_eq!(reviewer.availability_check, "always");
+        assert_eq!(
+            reviewer.routing_role(),
+            Some(crate::cost_router::WorkflowRole::Review),
+            "the reviewer must route to the Review role for cross-vendor dispatch"
+        );
 
         // Claude Code: external CLI, prompt token present, gated on the binary.
         match &roster["claude_code"].engine {
@@ -650,7 +750,7 @@ workers:
         if config.workers.is_empty() {
             config.workers = default_roster();
         }
-        assert_eq!(config.workers.len(), 3);
+        assert_eq!(config.workers.len(), 4);
     }
 
     #[test]

@@ -173,6 +173,14 @@ project, onLaunch, onVisit }: {
             onClick={() => onLaunch(project, 'codex')}
           />
           <ActionBtn
+            label="Permagent"
+            disabled={!project.rootPath}
+            tooltip={!project.rootPath
+              ? 'Add a root path to launch a terminal here.'
+              : 'Permagent coding harness — provider-agnostic, cost-optimized'}
+            onClick={() => onLaunch(project, 'permagent run --recipe permagent-coding --interactive')}
+          />
+          <ActionBtn
             label="Visit Site"
             disabled={!project.siteUrl}
             tooltip={!project.siteUrl ? "Add a site URL to open the project's site." : undefined}
