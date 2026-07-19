@@ -322,7 +322,7 @@ fn upsert_gmail_config_at(path: &std::path::Path, enabled: bool) -> Result<(), S
     use permagent::config::{ExtensionConfig, DEFAULT_EXTENSION_TIMEOUT};
 
     let mut doc: serde_yaml::Value = if path.exists() {
-        let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         serde_yaml::from_str(&content)
             .unwrap_or(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
     } else {
@@ -375,7 +375,7 @@ fn upsert_gmail_config_at(path: &std::path::Path, enabled: bool) -> Result<(), S
     extensions.insert(gmail_key, entry_value);
 
     let yaml = serde_yaml::to_string(&doc).map_err(|e| e.to_string())?;
-    std::fs::write(&path, yaml).map_err(|e| e.to_string())?;
+    std::fs::write(path, yaml).map_err(|e| e.to_string())?;
     Ok(())
 }
 
