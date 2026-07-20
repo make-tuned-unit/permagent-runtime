@@ -521,11 +521,18 @@ mod tests {
         assert_eq!(result, DashboardLayout::default_layout(false));
     }
 
+    // Sets PERMAGENT_PATH_ROOT → #[serial] + env_lock guard (standing rule;
+    // the findings.rs/agent.rs pattern). Unserialized, these raced every other
+    // test that resolves paths through the data dir — the trigger of the #792
+    // macos-15 flake. The guard also restores the previous value on drop
+    // instead of blindly removing it.
     #[tokio::test]
+    #[serial_test::serial]
     async fn layout_file_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
         // Point Paths at temp dir
-        std::env::set_var("PERMAGENT_PATH_ROOT", tmp.path());
+        let _guard =
+            env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(tmp.path().to_str().unwrap()))]);
 
         let layout = DashboardLayout {
             cards: vec![DashboardCard {
@@ -544,15 +551,14 @@ mod tests {
         let read_back = tokio::fs::read_to_string(&path).await.unwrap();
         let parsed: DashboardLayout = serde_json::from_str(&read_back).unwrap();
         assert_eq!(parsed, layout);
-
-        // Clean up env var
-        std::env::remove_var("PERMAGENT_PATH_ROOT");
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn missing_file_returns_default() {
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("PERMAGENT_PATH_ROOT", tmp.path());
+        let _guard =
+            env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(tmp.path().to_str().unwrap()))]);
 
         let path = layout_path();
         // File doesn't exist
@@ -562,7 +568,5 @@ mod tests {
             Err(_) => DashboardLayout::default_layout(false),
         };
         assert_eq!(result, DashboardLayout::default_layout(false));
-
-        std::env::remove_var("PERMAGENT_PATH_ROOT");
     }
 }

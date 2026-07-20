@@ -204,7 +204,6 @@ pub fn routes() -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serial_test::serial;
 
     fn bookmark(url: &str) -> Bookmark {
         Bookmark {
@@ -339,53 +338,63 @@ mod tests {
         assert!(validate_tab_sets(&[tab_set("Bad", &["javascript:alert(1)"])]).is_err());
     }
 
-    // ── Persistence (sets PERMAGENT_PATH_ROOT → #[serial], standing rule) ──
+    // ── Persistence ──
+    //
+    // The file helpers take explicit paths, so these tests run against a
+    // tempdir directly — no PERMAGENT_PATH_ROOT mutation, no #[serial], and
+    // immune to any sibling test in the crate redirecting the path root
+    // mid-test (the parallel-test race that flaked CI on macos-15).
 
     #[tokio::test]
-    #[serial]
     async fn bookmarks_file_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("PERMAGENT_PATH_ROOT", tmp.path());
+        let path = tmp.path().join("browser_bookmarks.json");
 
         let file = BookmarksFile {
             bookmarks: vec![bookmark("https://example.com")],
         };
-        write_state(&bookmarks_path(), &file).await.unwrap();
-        let read_back: BookmarksFile = read_state(&bookmarks_path()).await;
+        write_state(&path, &file).await.unwrap();
+        let read_back: BookmarksFile = read_state(&path).await;
         assert_eq!(read_back, file);
         // Atomic write leaves no tmp file behind.
-        assert!(!bookmarks_path().with_extension("json.tmp").exists());
-
-        std::env::remove_var("PERMAGENT_PATH_ROOT");
+        assert!(!path.with_extension("json.tmp").exists());
     }
 
     #[tokio::test]
-    #[serial]
     async fn tab_sets_file_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("PERMAGENT_PATH_ROOT", tmp.path());
+        let path = tmp.path().join("browser_tab_sets.json");
 
         let file = TabSetsFile {
             tab_sets: vec![tab_set("Research", &["https://example.com"])],
         };
-        write_state(&tab_sets_path(), &file).await.unwrap();
-        let read_back: TabSetsFile = read_state(&tab_sets_path()).await;
+        write_state(&path, &file).await.unwrap();
+        let read_back: TabSetsFile = read_state(&path).await;
         assert_eq!(read_back, file);
-
-        std::env::remove_var("PERMAGENT_PATH_ROOT");
     }
 
     #[tokio::test]
-    #[serial]
     async fn missing_files_read_as_empty_defaults() {
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("PERMAGENT_PATH_ROOT", tmp.path());
 
-        let bookmarks: BookmarksFile = read_state(&bookmarks_path()).await;
+        let bookmarks: BookmarksFile = read_state(&tmp.path().join("browser_bookmarks.json")).await;
         assert!(bookmarks.bookmarks.is_empty());
-        let sets: TabSetsFile = read_state(&tab_sets_path()).await;
+        let sets: TabSetsFile = read_state(&tmp.path().join("browser_tab_sets.json")).await;
         assert!(sets.tab_sets.is_empty());
+    }
 
-        std::env::remove_var("PERMAGENT_PATH_ROOT");
+    /// The handlers' real paths resolve inside the data dir under the expected
+    /// file names. Read-only (no env mutation): whatever the ambient path root
+    /// is, only the leaf names are asserted.
+    #[test]
+    fn state_paths_use_expected_file_names() {
+        assert_eq!(
+            bookmarks_path().file_name().unwrap(),
+            "browser_bookmarks.json"
+        );
+        assert_eq!(
+            tab_sets_path().file_name().unwrap(),
+            "browser_tab_sets.json"
+        );
     }
 }
