@@ -1,4 +1,5 @@
 mod agent_state_tick;
+mod analytics;
 mod app_catalog;
 mod automation;
 mod backup;

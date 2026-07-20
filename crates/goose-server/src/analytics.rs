@@ -53,16 +53,6 @@ pub enum AnalyticsProvider {
     Goatcounter,
 }
 
-impl AnalyticsProvider {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            AnalyticsProvider::Plausible => "plausible",
-            AnalyticsProvider::PlausibleV2 => "plausible_v2",
-            AnalyticsProvider::Goatcounter => "goatcounter",
-        }
-    }
-}
-
 /// Per-project connection config — the non-secret part, stored in the
 /// project's `metadata_json` under [`METADATA_KEY`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -466,7 +456,8 @@ mod tests {
             (AnalyticsProvider::Goatcounter, "goatcounter"),
         ] {
             assert_eq!(serde_json::to_value(p).unwrap(), serde_json::json!(s));
-            assert_eq!(p.as_str(), s);
+            let back: AnalyticsProvider = serde_json::from_value(serde_json::json!(s)).unwrap();
+            assert_eq!(back, p);
         }
     }
 
