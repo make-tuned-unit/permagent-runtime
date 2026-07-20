@@ -827,25 +827,10 @@ async fn delete_project_document_handler(
 
 // ── Project notes: freeform notes indexed into the Brain ─────────────────────
 
-/// `source` tag on every memory a note writes. Deliberately NOT
-/// `permagent.activity` (which pruning/consolidation reap) so notes are durable,
-/// and description-less on write so the Librarian claims + enriches them exactly
-/// as it does Reader-ingested documents.
-const NOTE_SOURCE: &str = "permagent.note";
-
 #[derive(Deserialize)]
 struct CreateNoteRequest {
     title: Option<String>,
     body: String,
-}
-
-/// The Brain content for a note: title + body when a title is present, else the
-/// body alone. Mirrors how the Reader stores the full text of a document.
-fn note_memory_content(title: Option<&str>, body: &str) -> String {
-    match title.map(str::trim).filter(|t| !t.is_empty()) {
-        Some(t) => format!("{t}\n\n{body}"),
-        None => body.to_string(),
-    }
 }
 
 /// GET /api/projects/{id}/notes — notes attached to a project, newest first.
@@ -870,26 +855,19 @@ async fn list_project_notes_handler(
 
 /// POST /api/projects/{id}/notes — create a note (`{title?, body}`).
 ///
-/// The row is the durable record; indexing the note's text into the Brain (so it
-/// is recallable + Librarian-enriched, scoped to the project) is best-effort —
-/// the note is returned even if the Brain write fails. The Brain write mirrors
-/// the Reader's `RememberOpts` exactly (a distinct source, Private, and NO
-/// description) so the Librarian claims and enriches notes the same way it does
-/// ingested documents.
+/// Delegates to [`project_notes::create_note_indexed`] — the ONE composed note
+/// path (row insert + best-effort Brain index with the Reader's `RememberOpts`
+/// contract: distinct durable source, Private, NO description + project
+/// association), shared with the `file_to_project` decision effect. The row is
+/// the durable record; the note is returned even if the Brain write fails.
 async fn create_project_note_handler(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(req): Json<CreateNoteRequest>,
 ) -> Result<Json<ProjectNote>, (StatusCode, String)> {
-    let body = req.body.trim();
-    if body.is_empty() {
+    if req.body.trim().is_empty() {
         return Err((StatusCode::BAD_REQUEST, "note body is empty".to_string()));
     }
-    let title = req
-        .title
-        .as_deref()
-        .map(str::trim)
-        .filter(|t| !t.is_empty());
 
     let pool = state
         .session_manager()
@@ -901,56 +879,20 @@ async fn create_project_note_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
         .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
 
-    let note_id = uuid::Uuid::now_v7().to_string();
-    let memory_key = format!("note:{}:{}", project.id, note_id);
+    let note = project_notes::create_note_indexed(
+        &pool,
+        state.brain.as_ref(),
+        &project.id,
+        req.title.as_deref(),
+        &req.body,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(project = %project.id, error = %e, "project note create failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, e)
+    })?;
 
-    // Best-effort Brain index. On success we resolve the memory id and associate
-    // it with the project; the memory_key is recorded on the row regardless (it
-    // is stable/deterministic) so a later reconcile could re-associate. A Brain
-    // failure is logged and skipped — the note still persists and returns.
-    let mut stored_memory_key: Option<&str> = None;
-    if let Some(brain) = state.brain.as_ref() {
-        let content = note_memory_content(title, body);
-        let opts = spectral::RememberOpts {
-            source: Some(NOTE_SOURCE.to_string()),
-            visibility: spectral::Visibility::Private,
-            ..Default::default()
-        };
-        match brain.remember_with(&memory_key, &content, opts).await {
-            Ok(_) => {
-                stored_memory_key = Some(&memory_key);
-                match brain.get_memory_by_key(&memory_key).await {
-                    Ok(Some(mem)) => {
-                        if let Err(e) =
-                            project_association::associate_memory(&pool, &project.id, &mem.id).await
-                        {
-                            tracing::warn!(project = %project.id, note = %note_id, error = %e, "project note brain association failed");
-                        } else {
-                            tracing::info!(project = %project.id, note = %note_id, memory = %mem.id, "project note indexed into brain");
-                        }
-                    }
-                    Ok(None) => {
-                        tracing::warn!(project = %project.id, note = %note_id, key = %memory_key, "project note written but its memory was not found for association")
-                    }
-                    Err(e) => {
-                        tracing::warn!(project = %project.id, note = %note_id, error = %e, "project note memory lookup failed")
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(project = %project.id, note = %note_id, error = %e, "project note brain write failed (note still saved)")
-            }
-        }
-    }
-
-    let note = project_notes::insert_note(&pool, &note_id, &project.id, title, body, stored_memory_key)
-        .await
-        .map_err(|e| {
-            tracing::error!(project = %project.id, note = %note_id, error = %e, "project note insert failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, e)
-        })?;
-
-    tracing::info!(project = %project.id, note = %note_id, "project note created");
+    tracing::info!(project = %project.id, note = %note.id, "project note created");
     Ok(Json(note))
 }
 

@@ -7,12 +7,96 @@
 //! route layer — `memory_key` records the Brain key it was written under — so a
 //! note is recallable and Librarian-enriched just like a dropped document.
 //!
-//! This module owns the DB rows only. Writing the note text to the Brain and
-//! associating the resulting memory with the project is the route layer's job
-//! (it holds the Brain handle), mirroring how `project_documents` keeps disk I/O
-//! in the route layer and the row access here.
+//! This module owns the DB rows plus the ONE composed write path,
+//! [`create_note_indexed`]: row insert + best-effort Brain index + project
+//! association. Both note writers — the HTTP route
+//! (`POST /api/projects/{id}/notes`) and the `file_to_project` decision effect —
+//! go through it, so the note contract (durable non-activity source
+//! [`NOTE_SOURCE`], description-less write, Librarian enrichment) is enforced in
+//! exactly one place.
 
 use sqlx::{Pool, Row, Sqlite};
+
+/// `source` tag on every memory a note writes. Deliberately NOT
+/// `permagent.activity` (which pruning/consolidation reap) so notes are durable,
+/// and description-less on write so the Librarian claims + enriches them exactly
+/// as it does Reader-ingested documents.
+pub const NOTE_SOURCE: &str = "permagent.note";
+
+/// The Brain content for a note: title + body when a title is present, else the
+/// body alone. Mirrors how the Reader stores the full text of a document.
+pub fn note_memory_content(title: Option<&str>, body: &str) -> String {
+    match title.map(str::trim).filter(|t| !t.is_empty()) {
+        Some(t) => format!("{t}\n\n{body}"),
+        None => body.to_string(),
+    }
+}
+
+/// Create a project note through the ONE composed path: insert the durable row,
+/// best-effort index its text into the Brain (distinct durable source, Private,
+/// NO description — the standing Librarian contract), and associate the
+/// resulting memory with the project.
+///
+/// The row is the durable record; a Brain failure is logged and skipped — the
+/// note still persists and is returned (`memory_key` stays `None`). Pass
+/// `brain: None` when no Brain is mounted.
+pub async fn create_note_indexed(
+    pool: &Pool<Sqlite>,
+    brain: Option<&crate::brain_handle::SafeBrain>,
+    project_id: &str,
+    title: Option<&str>,
+    body: &str,
+) -> Result<ProjectNote, String> {
+    let body = body.trim();
+    if body.is_empty() {
+        return Err("note body is empty".to_string());
+    }
+    let title = title.map(str::trim).filter(|t| !t.is_empty());
+
+    let note_id = uuid::Uuid::now_v7().to_string();
+    let memory_key = format!("note:{}:{}", project_id, note_id);
+
+    // Best-effort Brain index. On success we resolve the memory id and associate
+    // it with the project; the memory_key is recorded on the row regardless (it
+    // is stable/deterministic) so a later reconcile could re-associate.
+    let mut stored_memory_key: Option<&str> = None;
+    if let Some(brain) = brain {
+        let content = note_memory_content(title, body);
+        let opts = spectral::RememberOpts {
+            source: Some(NOTE_SOURCE.to_string()),
+            visibility: spectral::Visibility::Private,
+            ..Default::default()
+        };
+        match brain.remember_with(&memory_key, &content, opts).await {
+            Ok(_) => {
+                stored_memory_key = Some(&memory_key);
+                match brain.get_memory_by_key(&memory_key).await {
+                    Ok(Some(mem)) => {
+                        if let Err(e) =
+                            crate::project_association::associate_memory(pool, project_id, &mem.id)
+                                .await
+                        {
+                            tracing::warn!(project = %project_id, note = %note_id, error = %e, "project note brain association failed");
+                        } else {
+                            tracing::info!(project = %project_id, note = %note_id, memory = %mem.id, "project note indexed into brain");
+                        }
+                    }
+                    Ok(None) => {
+                        tracing::warn!(project = %project_id, note = %note_id, key = %memory_key, "project note written but its memory was not found for association")
+                    }
+                    Err(e) => {
+                        tracing::warn!(project = %project_id, note = %note_id, error = %e, "project note memory lookup failed")
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(project = %project_id, note = %note_id, error = %e, "project note brain write failed (note still saved)")
+            }
+        }
+    }
+
+    insert_note(pool, &note_id, project_id, title, body, stored_memory_key).await
+}
 
 /// One project note: the DB row. `memory_key` is the Brain key the note's text
 /// was indexed under (`None` if the Brain write was skipped/failed — the row is
@@ -224,6 +308,40 @@ mod tests {
         // Second delete is a no-op.
         assert!(delete_note(&pool, &proj, "note-1").await.unwrap().is_none());
         assert!(list_notes(&pool, &proj).await.unwrap().is_empty());
+    }
+
+    /// The composed path without a Brain: the row persists (memory_key None),
+    /// trimming applies, and an empty body is refused — the same contract the
+    /// HTTP route enforces, now shared with the file_to_project effect.
+    #[tokio::test]
+    async fn create_note_indexed_brainless_persists_row() {
+        let pool = test_pool().await;
+        let proj = a_project(&pool, "Acme").await;
+
+        let note = create_note_indexed(&pool, None, &proj, Some("  Kickoff  "), "  body text  ")
+            .await
+            .unwrap();
+        assert_eq!(note.title.as_deref(), Some("Kickoff"));
+        assert_eq!(note.body, "body text");
+        assert!(note.memory_key.is_none(), "no Brain -> no memory_key");
+        assert_eq!(list_notes(&pool, &proj).await.unwrap().len(), 1);
+
+        // Empty (whitespace-only) body is refused, and a blank title is None.
+        assert!(create_note_indexed(&pool, None, &proj, None, "   ")
+            .await
+            .is_err());
+        let untitled = create_note_indexed(&pool, None, &proj, Some("   "), "more")
+            .await
+            .unwrap();
+        assert!(untitled.title.is_none());
+    }
+
+    /// note_memory_content mirrors the Reader: title + body, or body alone.
+    #[test]
+    fn note_memory_content_shapes() {
+        assert_eq!(note_memory_content(Some("T"), "b"), "T\n\nb");
+        assert_eq!(note_memory_content(None, "b"), "b");
+        assert_eq!(note_memory_content(Some("  "), "b"), "b");
     }
 
     #[tokio::test]

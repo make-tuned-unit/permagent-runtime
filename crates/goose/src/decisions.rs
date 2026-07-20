@@ -216,6 +216,67 @@ fn validate_enrichment_payload(p: &EnrichmentProposalPayload) -> Result<(), Stri
     Ok(())
 }
 
+/// Payload for `kind='file_to_project'` — the `file_to_project` platform tool
+/// proposes filing content the user is looking at (an email open in the
+/// embedded browser, pasted text) onto a project. Review-gated: the approve
+/// effect creates a project note through the ONE composed note path
+/// ([`crate::project_notes::create_note_indexed`] — durable row, Brain-indexed,
+/// Librarian-enriched) and adds the named people to the project ADDRESS-LESS
+/// (display name only — email/phone can never ride this payload); a reject
+/// records and persists nothing. This decision IS the explicit per-item
+/// override of the "browser reads are never persisted" guarantee: content
+/// only ever persists through this user-approved seam.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileToProjectPayload {
+    /// Resolved project row id — the write target, resolved at proposal time
+    /// so the approve path never re-resolves a fuzzy name.
+    pub project_id: String,
+    /// Project display name at proposal time (for the human reading the inbox).
+    pub project_name: String,
+    /// Optional note title.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// The full text to file as the note body.
+    pub body: String,
+    /// Where the content came from, in plain words (e.g. "email open in the
+    /// embedded browser"). Provenance for the human reviewing the proposal.
+    pub content_origin: String,
+    /// Display names of people to add to the project, ADDRESS-LESS. There is
+    /// deliberately no field for email/phone — the enrichment hard-forbid on
+    /// proposing contact addresses has no exception here.
+    #[serde(default)]
+    pub people: Vec<String>,
+}
+
+/// Structural checks beyond serde for a file_to_project proposal: a non-empty
+/// resolved project id/name and body, and non-empty person names. Failing any
+/// of these stores the request as `kind='malformed'` — never coerced (S2).
+fn validate_file_to_project_payload(p: &FileToProjectPayload) -> Result<(), String> {
+    if p.project_id.trim().is_empty() {
+        return Err("file_to_project requires a resolved project_id".to_string());
+    }
+    if p.project_name.trim().is_empty() {
+        return Err("file_to_project requires the project's display name".to_string());
+    }
+    if p.body.trim().is_empty() {
+        return Err("file_to_project requires a non-empty body".to_string());
+    }
+    if p.content_origin.trim().is_empty() {
+        return Err(
+            "file_to_project requires content_origin (where the content came from)".to_string(),
+        );
+    }
+    for name in &p.people {
+        if name.trim().is_empty() {
+            return Err(
+                "file_to_project people entries must be non-empty display names".to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Payload for `kind='tool_approval'` — an agent turn parked on a needs-approval
 /// tool call (GOOSE_MODE `approve`/`smart_approve`). The park lives either on a
 /// `ToolConfirmationRouter` oneshot (core tool loop) or inside an
@@ -352,6 +413,7 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
         "risk_gate",
         "automation_proposal",
         "enrichment_proposal",
+        "file_to_project",
         "tool_approval",
     ]
     .contains(&req.kind.as_str())
@@ -399,6 +461,12 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
         "enrichment_proposal" => {
             match serde_json::from_value::<EnrichmentProposalPayload>(req.payload.clone()) {
                 Ok(p) => validate_enrichment_payload(&p),
+                Err(e) => Err(e.to_string()),
+            }
+        }
+        "file_to_project" => {
+            match serde_json::from_value::<FileToProjectPayload>(req.payload.clone()) {
+                Ok(p) => validate_file_to_project_payload(&p),
                 Err(e) => Err(e.to_string()),
             }
         }
@@ -1287,6 +1355,78 @@ mod tests {
         );
         assert!(d.payload.get("error").is_some());
         assert!(d.payload.get("raw").is_some());
+    }
+
+    fn valid_file_to_project() -> NewDecision {
+        NewDecision {
+            kind: "file_to_project".to_string(),
+            project_id: None,
+            headline: Some("File an email to \"Acme\"".to_string()),
+            detail: Some("Source: email open in the embedded browser".to_string()),
+            payload: serde_json::json!({
+                "project_id": "proj-1",
+                "project_name": "Acme",
+                "title": "Email from Dana",
+                "body": "Hi — can we move the call to Thursday?",
+                "content_origin": "email open in the embedded browser",
+                "people": ["Dana Example"]
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// The file_to_project kind is accepted with a typed payload and, with no
+    /// seeded risk_policy class, resolves fail-closed to Tier 2.
+    #[tokio::test]
+    async fn file_to_project_created_at_tier2_fail_closed() {
+        let pool = test_pool().await;
+        let d = create_decision(&pool, valid_file_to_project())
+            .await
+            .unwrap();
+        assert_eq!(d.kind, "file_to_project");
+        assert_eq!(
+            d.tier, 2,
+            "unseeded action class must fail closed to Tier 2"
+        );
+        assert_eq!(d.status, "open");
+        assert_eq!(
+            d.payload
+                .get("people")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len()),
+            Some(1)
+        );
+    }
+
+    /// Structural failures (empty body, empty person name) and payload fields
+    /// beyond the schema (e.g. a smuggled email address field) are stored as
+    /// malformed — never coerced. The payload cannot carry addresses at all:
+    /// deny_unknown_fields rejects any such field outright.
+    #[tokio::test]
+    async fn file_to_project_bad_payloads_are_malformed() {
+        let pool = test_pool().await;
+
+        let mut req = valid_file_to_project();
+        req.payload["body"] = serde_json::json!("   ");
+        let d = create_decision(&pool, req).await.unwrap();
+        assert_eq!(d.kind, "malformed");
+
+        let mut req = valid_file_to_project();
+        req.payload["people"] = serde_json::json!(["  "]);
+        let d = create_decision(&pool, req).await.unwrap();
+        assert_eq!(d.kind, "malformed");
+
+        let mut req = valid_file_to_project();
+        req.payload["email"] = serde_json::json!("dana@example.com");
+        let d = create_decision(&pool, req).await.unwrap();
+        assert_eq!(
+            d.kind, "malformed",
+            "address-shaped fields must be rejected"
+        );
+        assert_eq!(
+            d.payload.get("original_kind").and_then(|v| v.as_str()),
+            Some("file_to_project")
+        );
     }
 
     fn valid_tool_approval() -> NewDecision {

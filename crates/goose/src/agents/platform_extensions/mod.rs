@@ -8,6 +8,7 @@ pub mod chatrecall;
 pub mod code_execution;
 pub mod developer;
 pub mod ext_manager;
+pub mod file_to_project;
 pub mod goal_engine;
 pub mod librarian;
 pub mod librarian_atoms;
@@ -546,6 +547,25 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                     "Gates destructive git operations behind human approval so autonomous repo work stays safe.",
                 teaching: &[],
                 client_factory: |ctx| Box::new(steward::StewardClient::new(ctx).unwrap()),
+            },
+        );
+
+        map.insert(
+            file_to_project::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: file_to_project::EXTENSION_NAME,
+                display_name: "File to Project",
+                description:
+                    "File content the user is looking at — an email open in the embedded browser, or text they pasted — onto a project as a review-gated Decision Inbox proposal (file_to_project): on approval it becomes a project note indexed into the Brain, and any named people are added to the project address-less",
+                default_enabled: true,
+                unprefixed_tools: true,
+                hidden: false,
+                why_it_matters:
+                    "When the user says \"file this email against <project>\" or \"save this to <project>\", this is the ONE consent path for persisting what they are viewing — nothing is written until they approve the proposal, and browser reads stay unpersisted otherwise. Never pass email addresses or phone numbers for the people it adds — names only.",
+                teaching: &[],
+                client_factory: |ctx| {
+                    Box::new(file_to_project::FileToProjectClient::new(ctx).unwrap())
+                },
             },
         );
 

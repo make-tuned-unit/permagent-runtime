@@ -30,6 +30,7 @@ export type DecisionKind =
   | 'risk_gate'
   | 'automation_proposal'
   | 'enrichment_proposal'
+  | 'file_to_project'
   | 'tool_approval'
   | 'malformed';
 
