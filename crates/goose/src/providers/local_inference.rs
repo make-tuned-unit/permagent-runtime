@@ -1,19 +1,16 @@
-mod grammar;
 pub mod hf_models;
 mod inference_emulated_tools;
 mod inference_engine;
-mod inference_native_tools;
+mod inference_plain;
 pub mod local_model_registry;
 pub(crate) mod multimodal;
-mod tool_parsing;
 
 use inference_emulated_tools::{
     build_emulator_tool_description, generate_with_emulated_tools, load_tiny_model_prompt,
 };
 use inference_engine::GenerationContext;
 use inference_engine::LoadedModel;
-use inference_native_tools::generate_with_native_tools;
-use tool_parsing::compact_tools_json;
+use inference_plain::generate_plain;
 
 use crate::config::ExtensionConfig;
 use crate::conversation::message::{Message, MessageContent};
@@ -22,7 +19,6 @@ use crate::providers::base::{
     MessageStream, Provider, ProviderDef, ProviderMetadata, ProviderUsage, Usage,
 };
 use crate::providers::errors::ProviderError;
-use crate::providers::formats::openai::format_tools;
 use crate::providers::utils::RequestLog;
 use anyhow::Result;
 use async_stream::try_stream;
@@ -34,7 +30,6 @@ use llama_cpp_2::model::{LlamaChatMessage, LlamaChatTemplate, LlamaModel};
 use llama_cpp_2::{list_llama_ggml_backend_devices, LlamaBackendDeviceType, LogOptions};
 use multimodal::ExtractedImage;
 use rmcp::model::{Role, Tool};
-use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex, Weak};
@@ -214,43 +209,9 @@ pub fn recommend_local_model(runtime: &InferenceRuntime) -> String {
     FEATURED_MODELS[0].spec.to_string()
 }
 
-fn build_openai_messages_json(system: &str, messages: &[Message]) -> String {
-    use crate::providers::formats::openai::format_messages;
-    use crate::providers::utils::ImageFormat;
-
-    let mut arr: Vec<Value> = vec![json!({"role": "system", "content": system})];
-    arr.extend(format_messages(messages, &ImageFormat::OpenAi));
-    strip_image_parts_from_messages(&mut arr);
-    serde_json::to_string(&arr).unwrap_or_else(|_| "[]".to_string())
-}
-
-/// Remove `image_url` content parts from OpenAI-format messages JSON, replacing
-/// each with a text note. This prevents an FFI crash in llama.cpp which does not
-/// accept `image_url` content-part types.
-fn strip_image_parts_from_messages(messages: &mut [Value]) {
-    let mut stripped = false;
-    for msg in messages.iter_mut() {
-        if let Some(content) = msg.get_mut("content").and_then(|c| c.as_array_mut()) {
-            for part in content.iter_mut() {
-                if part.get("type").and_then(|t| t.as_str()) == Some("image_url") {
-                    *part = json!({
-                        "type": "text",
-                        "text": "[Image attached — image input is not supported with the currently selected model]"
-                    });
-                    stripped = true;
-                }
-            }
-        }
-    }
-    if stripped {
-        tracing::warn!("Stripped image content parts from messages — vision encoder not available for this model");
-    }
-}
-
-/// Convert a message into plain text for the emulator path's chat history.
+/// Convert a message into plain text for the chat history.
 ///
-/// This is the emulator-path counterpart of [`format_messages`] used by the native
-/// path. It reconstructs the text-based tool syntax that the emulator prompt teaches
+/// It reconstructs the text-based tool syntax that the emulator prompt teaches
 /// the model:
 ///
 /// - `ToolRequest` with a `"command"` argument → `$ command`
@@ -580,10 +541,12 @@ impl Provider for LocalInferenceProvider {
             model_settings.enable_thinking = false;
         }
 
-        // Use the model's native_tool_calling setting to decide the path.
-        // Featured models have this set explicitly; user-added models default to false.
-        let native_tool_calling = model_settings.native_tool_calling;
-        let use_emulator = !native_tool_calling && !tools.is_empty();
+        // llama-cpp-2 0.1.147 removed the OpenAI-compat chat-template layer
+        // (native tool-calling templates, tool grammars, tool-call parsing —
+        // utilityai/llama-cpp-rs#1037), so ALL requests with tools run through
+        // the text-based emulator, even for models whose `native_tool_calling`
+        // setting is true. Tool-free requests use the plain path.
+        let use_emulator = !tools.is_empty();
         let system_prompt = if use_emulator {
             load_tiny_model_prompt()
         } else {
@@ -617,7 +580,7 @@ impl Provider for LocalInferenceProvider {
 
         let code_mode_enabled = tools.iter().any(|t| t.name == CODE_EXECUTION_TOOL);
 
-        if use_emulator && !tools.is_empty() {
+        if use_emulator {
             let tool_desc = build_emulator_tool_description(tools, code_mode_enabled);
             chat_messages = vec![LlamaChatMessage::new(
                 "system".to_string(),
@@ -640,25 +603,6 @@ impl Provider for LocalInferenceProvider {
                 )?);
             }
         }
-
-        let (full_tools_json, compact_tools) = if !use_emulator && !tools.is_empty() {
-            let full = format_tools(tools)
-                .ok()
-                .and_then(|spec| serde_json::to_string(&spec).ok());
-            let compact = compact_tools_json(tools);
-            (full, compact)
-        } else {
-            (None, None)
-        };
-
-        let oai_messages_json = if model_settings.use_jinja || native_tool_calling {
-            Some(build_openai_messages_json(
-                &system_prompt,
-                effective_messages,
-            ))
-        } else {
-            None
-        };
 
         let model_arc = self.model.clone();
         let runtime = self.runtime.clone();
@@ -745,12 +689,7 @@ impl Provider for LocalInferenceProvider {
             let result = if use_emulator {
                 generate_with_emulated_tools(&mut gen_ctx, code_mode_enabled)
             } else {
-                generate_with_native_tools(
-                    &mut gen_ctx,
-                    &oai_messages_json,
-                    full_tools_json.as_deref(),
-                    compact_tools.as_deref(),
-                )
+                generate_plain(&mut gen_ctx)
             };
 
             if let Err(err) = result {
