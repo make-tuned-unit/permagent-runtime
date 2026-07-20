@@ -295,6 +295,26 @@ export interface CustomProviderPayload {
   requires_auth?: boolean;
 }
 
+// ── Built-in browser bookmarks + saved tab sets (#790) ──
+// Wire shapes mirror routes/browser_state.rs (rename_all = camelCase).
+
+export interface BrowserBookmark {
+  url: string;
+  title: string;
+  createdAt: string;
+}
+
+export interface BrowserSavedTab {
+  url: string;
+  title: string;
+}
+
+export interface BrowserTabSet {
+  name: string;
+  tabs: BrowserSavedTab[];
+  createdAt: string;
+}
+
 export interface PermagentEvent {
   id: string;
   type: string;
@@ -1103,6 +1123,29 @@ export const api = {
     }
     return resp.json() as Promise<{ text: string }>;
   },
+
+  // ── Built-in browser bookmarks + saved tab sets (#790) ──────────────
+  // Daemon-persisted (JSON state files, routes/browser_state.rs) so they
+  // survive app restarts. Full-replace PUT: the UI owns list edits and
+  // persists the whole list each time (mirrors the dashboard-layout PUT).
+
+  getBrowserBookmarks: () =>
+    apiFetch<{ bookmarks: BrowserBookmark[] }>('/api/browser/bookmarks'),
+
+  putBrowserBookmarks: (bookmarks: BrowserBookmark[]) =>
+    apiFetch<{ bookmarks: BrowserBookmark[] }>('/api/browser/bookmarks', {
+      method: 'PUT',
+      body: JSON.stringify({ bookmarks }),
+    }),
+
+  getBrowserTabSets: () =>
+    apiFetch<{ tabSets: BrowserTabSet[] }>('/api/browser/tab-sets'),
+
+  putBrowserTabSets: (tabSets: BrowserTabSet[]) =>
+    apiFetch<{ tabSets: BrowserTabSet[] }>('/api/browser/tab-sets', {
+      method: 'PUT',
+      body: JSON.stringify({ tabSets }),
+    }),
 
   // Downloads inbox (#392/#393) — files that landed in ~/.permagent/inbox via the
   // in-app browser download flow. Lists metadata rows newest-first. Recording a

@@ -7,6 +7,7 @@ pub mod backup;
 pub mod brain;
 pub mod browser_act;
 pub mod browser_content;
+pub mod browser_state;
 pub mod cards;
 pub mod config_management;
 pub mod dashboard;
@@ -136,6 +137,8 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(sampling::routes(state.clone()))
         .merge(features::routes())
         .merge(onboarding::routes())
+        // Built-in browser bookmarks + saved tab sets (#790): small JSON state.
+        .merge(browser_state::routes())
         .merge(skills::routes(state.clone()))
         .merge(integrations::routes(state.clone()))
         .merge(workspaces::routes(state.clone()))

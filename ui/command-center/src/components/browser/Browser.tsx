@@ -12,6 +12,7 @@ import {
   FiGlobe,
 } from 'react-icons/fi';
 import { BrowserTabs, type BrowserTab } from './BrowserTabs';
+import { BookmarksBar } from './BookmarksBar';
 import { CHAT_LAUNCHER_MARGIN } from '../chat/ChatLauncher';
 import { CHAT_DOCK_WIDTH } from '../chat/ChatDock';
 
@@ -705,6 +706,15 @@ export function Browser() {
           <style>{`.browser-url-input::placeholder { color: ${colors.textMuted}; opacity: 0.6; }`}</style>
         </div>
       </div>
+
+      {/* Bookmarks + saved tab sets row (#790) — daemon-persisted state */}
+      <BookmarksBar
+        currentUrl={activeTab?.url ?? ''}
+        currentTitle={activeTab?.label ?? ''}
+        openTabs={tabs}
+        onNavigate={handleNavigate}
+        onOpenInNewTab={handleOpenUrl}
+      />
 
       {/* Content area — the child webview overlays this div */}
       <div ref={containerRef} className="flex-1 min-h-0 relative">
