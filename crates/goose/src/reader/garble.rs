@@ -104,13 +104,6 @@ pub enum TextQuality {
     },
 }
 
-impl TextQuality {
-    /// Convenience predicate.
-    pub fn is_garbled(&self) -> bool {
-        matches!(self, TextQuality::Garbled { .. })
-    }
-}
-
 /// Assess whether extracted text is plausibly real language or extraction
 /// garbage. Fail-open on short/insufficient text (the sparse-text check owns
 /// that), fail-closed on the garble signals.
@@ -291,6 +284,11 @@ mod tests {
         caesar_shift(text, n)
     }
 
+    /// True when [`assess`] flags the text as garbled.
+    fn garbled(text: &str) -> bool {
+        matches!(assess(text), TextQuality::Garbled { .. })
+    }
+
     const ENGLISH: &str = "Wealthie Family Office overview. All rights reserved. \
         Our platform integrates brokerage services with education savings plans, \
         offering families three revenue streams and a partnership model that \
@@ -312,7 +310,7 @@ mod tests {
         for n in 1..26u8 {
             let shifted = shift(ENGLISH, n);
             assert!(
-                assess(&shifted).is_garbled(),
+                garbled(&shifted),
                 "shift +{n} must be detected as garbled: {shifted:.60}"
             );
         }
@@ -321,9 +319,9 @@ mod tests {
     #[test]
     fn observed_uppercase_shift3_is_garbled() {
         // The exact style from #468: uppercased source, shift +3.
-        let garbled = shift(&ENGLISH.to_uppercase(), 3);
-        assert!(garbled.contains("DOO ULJKWV UHVHUYHG"), "fixture sanity");
-        assert!(assess(&garbled).is_garbled());
+        let junk = shift(&ENGLISH.to_uppercase(), 3);
+        assert!(junk.contains("DOO ULJKWV UHVHUYHG"), "fixture sanity");
+        assert!(garbled(&junk));
     }
 
     #[test]
@@ -332,14 +330,14 @@ mod tests {
         let junk = "$OO5LJKWV5HVHUYHG ZHDOWK1H IDP1O RII1FH GHFN SUHVHQWDW1RQ \
             VWUDWHJ PDUNHW V1]H F0PSHW1W1YH ODQGVFDSH SURMHFWHG I1QDQF1DO \
             P0GHO RYHU WKH QHAW I1YH HDUV WKUHH UHYHQXH VWUHDPV";
-        assert!(assess(junk).is_garbled());
+        assert!(garbled(junk));
     }
 
     #[test]
     fn glyph_soup_is_garbled() {
         let soup = "H4x9 qZ2k 8fLp W0mN3 xY7Qr9 KpL2m8 zXcV4b N5mQ8w E2rT6y \
             U9iO3p A7sD1f G4hJ8k L2zX6c V9bN4m Q8wE2r T6yU9i O3pA7s D1fG4h";
-        assert!(assess(soup).is_garbled());
+        assert!(garbled(soup));
     }
 
     #[test]
@@ -347,14 +345,14 @@ mod tests {
         let mojibake = "\u{FFFD}\u{FFFD} he\u{FFFD}lo wor\u{FFFD}d th\u{FFFD}s is \
             bro\u{FFFD}en text \u{FFFD}\u{FFFD} more bro\u{FFFD}en \u{FFFD} stuff \
             here and here \u{FFFD} and more";
-        assert!(assess(mojibake).is_garbled());
+        assert!(garbled(mojibake));
     }
 
     #[test]
     fn unbroken_letter_run_is_garbled() {
         let run = shift(&ENGLISH.replace([' ', '\n'], ""), 3);
         assert!(run.chars().filter(|c| c.is_alphabetic()).count() > 300);
-        assert!(assess(&run).is_garbled());
+        assert!(garbled(&run));
     }
 
     #[test]
