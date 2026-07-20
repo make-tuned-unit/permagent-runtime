@@ -18,7 +18,7 @@ vi.mock('../../../lib/notifications', () => ({ toast: () => undefined }));
 vi.mock('../../settings/useSettings', () => ({ usePersona: () => ({ data: null }) }));
 vi.mock('./client', () => ({ decisionsClient: {} }));
 
-import { toolArgumentsText } from './DecisionItem';
+import { pushedRejectWarning, toolArgumentsText } from './DecisionItem';
 import type { Decision } from './types';
 
 function decision(overrides: Partial<Decision>): Decision {
@@ -78,5 +78,26 @@ describe('toolArgumentsText', () => {
     // Empty-but-present arguments are still shown — "no arguments" is itself
     // information the approver should see.
     expect(toolArgumentsText(decision({ payload: { arguments: {} } }))).toBe('{}');
+  });
+});
+
+describe('pushedRejectWarning (informed reject, #458 §3e)', () => {
+  it('warns when an approve_review goal was already pushed — names the target and says reject will not un-ship it', () => {
+    const text = pushedRejectWarning('approve_review', 'origin/main');
+    expect(text).toContain('origin/main');
+    expect(text).toContain("won't un-ship it");
+    expect(text).toContain('revert');
+  });
+
+  it('stays silent when the work was not pushed (worktree-only evidence)', () => {
+    expect(pushedRejectWarning('approve_review', null)).toBeNull();
+    expect(pushedRejectWarning('approve_review', undefined)).toBeNull();
+    expect(pushedRejectWarning('approve_review', '')).toBeNull();
+  });
+
+  it('applies only to approve_review — never other kinds, even with a push target', () => {
+    expect(pushedRejectWarning('risk_gate', 'origin/main')).toBeNull();
+    expect(pushedRejectWarning('unblock', 'origin/main')).toBeNull();
+    expect(pushedRejectWarning('tool_approval', 'origin/main')).toBeNull();
   });
 });

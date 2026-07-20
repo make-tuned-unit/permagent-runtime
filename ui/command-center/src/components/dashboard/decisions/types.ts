@@ -132,8 +132,11 @@ export interface DecisionHistoryResponse {
 
 // ── L2 evidence digest (verification/digest.rs:24-107, snake_case) ──────────
 // Reached via the goal card: GET /api/projects/{pid}/cards/{gid} →
-// metadataJson.verification.evidence_digest (CardResponse is camelCase,
-// routes/cards.rs:57-73; the verification record itself is snake_case).
+// metadataJson.dispatch_evidence.verdict.evidence_digest — the single
+// canonical evidence record (#466/#458); metadataJson.verification remains a
+// read-only legacy fallback for goals verified before the consolidation.
+// (CardResponse is camelCase, routes/cards.rs:57-73; the record itself is
+// snake_case.)
 
 export interface ChecksSummary {
   passed_count: number;

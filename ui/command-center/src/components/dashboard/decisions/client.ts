@@ -16,8 +16,10 @@
  *  - GET  /api/decisions/history → { items, nextBefore }
  *    (routes/decisions.rs:79-85, 154-164).
  *  - Evidence digest: GET /api/projects/{pid}/cards/{gid} →
- *    metadataJson.verification.evidence_digest (CardResponse camelCase,
- *    routes/cards.rs:57-73; digest schema verification/digest.rs:89-107).
+ *    metadataJson.dispatch_evidence.verdict.evidence_digest — the ONE
+ *    canonical record (#466/#458; legacy metadataJson.verification read only
+ *    as a fallback for pre-consolidation goals). CardResponse camelCase,
+ *    routes/cards.rs:57-73; digest schema verification/digest.rs:89-107.
  */
 
 import { getApiBaseUrl, loadDaemonToken } from '../../../lib/api';
