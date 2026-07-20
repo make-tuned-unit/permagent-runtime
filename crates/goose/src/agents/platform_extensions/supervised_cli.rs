@@ -199,8 +199,9 @@ static COMPLETION_HOOKS: Lazy<Mutex<HashMap<String, oneshot::Sender<SupervisedOu
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Register a completion hook for `session_id`, returning the receiver the
-/// dispatch tracker awaits.
-fn register_completion_hook(session_id: &str) -> oneshot::Receiver<SupervisedOutcome> {
+/// dispatch tracker awaits. `pub(crate)` so S2's registry tests can prove the
+/// parser fulfils the seam end-to-end.
+pub(crate) fn register_completion_hook(session_id: &str) -> oneshot::Receiver<SupervisedOutcome> {
     let (tx, rx) = oneshot::channel();
     if let Ok(mut map) = COMPLETION_HOOKS.lock() {
         map.insert(session_id.to_string(), tx);
@@ -266,6 +267,16 @@ pub async fn launch_watched_session(
     };
     let shell_command =
         compose_supervised_command(SUPERVISED_CLI_DEFAULT_BIN, prompt_file.as_deref(), &[])?;
+
+    // S2 (#428): register with the supervision registry BEFORE the launch
+    // event goes out, so the PTY attach that follows can never hit an unknown
+    // session.
+    super::terminal_supervision::register_session(
+        &session_id,
+        super::terminal_supervision::SupervisedSessionKind::Watched,
+        project_slug,
+        root_path,
+    );
 
     crate::events::emit(crate::events::project_launch(
         root_path,
@@ -344,6 +355,16 @@ impl GoalEngine for SupervisedCliEngine {
         let shell_command = compose_supervised_command(&self.bin, Some(&prompt_file), &git_env)?;
 
         let rx = register_completion_hook(&session_id);
+
+        // S2 (#428): register with the supervision registry BEFORE the launch
+        // event goes out (attach must never race an unknown session). The
+        // session id doubles as the goal's run_id/worker_session_id.
+        super::terminal_supervision::register_session(
+            &session_id,
+            super::terminal_supervision::SupervisedSessionKind::DispatchedGoal,
+            &self.project_slug,
+            &worktree.to_string_lossy(),
+        );
 
         let label = format!("{} · {} (supervised)", self.project_slug, self.bin);
         let reason = format!(
