@@ -1,3 +1,4 @@
+use super::supervised_cli;
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
 use crate::agents::tool_execution::ToolCallContext;
@@ -149,9 +150,24 @@ struct ProjectLaunchParams {
     id_or_slug: String,
     /// Optional command to run in the terminal once it opens (e.g. "claude" to
     /// start Claude Code, "npm run dev", etc). If omitted, an interactive shell
-    /// is opened at the project root with no command.
+    /// is opened at the project root with no command. Mutually exclusive with
+    /// `supervised` — a supervised session composes its own command.
     #[serde(default)]
     command: Option<String>,
+    /// Launch a SUPERVISED Claude Code session (#427) instead of a plain
+    /// command: Claude Code runs in structured stream-json mode with
+    /// permission gates ENABLED, visible in the terminal tab, so its gates can
+    /// be watched (and, in later slices, escalated and answered). Use this
+    /// when the user wants you to run and watch a Claude Code session rather
+    /// than open a plain terminal.
+    #[serde(default)]
+    supervised: Option<bool>,
+    /// Initial instruction for the supervised session — compose a clear,
+    /// self-contained goal prompt from what the user asked. Only used with
+    /// `supervised: true`. If omitted, the session opens idle, waiting for
+    /// input.
+    #[serde(default)]
+    prompt: Option<String>,
 }
 
 /// Self-knowledge descriptor for the Build tab — the project-aware terminal +
@@ -572,6 +588,23 @@ impl ProjectManagerClient {
             .get("command")
             .and_then(|v| v.as_str())
             .filter(|s| !s.trim().is_empty());
+        let supervised = args
+            .get("supervised")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let prompt = args
+            .get("prompt")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty());
+
+        if supervised && command.is_some() {
+            return Err(
+                "`command` and `supervised` are mutually exclusive — a supervised session \
+                 composes its own Claude Code invocation. Drop `command` (put the instruction \
+                 in `prompt` instead)."
+                    .to_string(),
+            );
+        }
 
         let (project, _pool) = self.resolve_project(id_or_slug).await?;
 
@@ -586,6 +619,42 @@ impl ProjectManagerClient {
                     project.name
                 )
             })?;
+
+        // S1 (#427): free-standing SUPERVISED session — the same visible-tab
+        // launch path, but running Claude Code in gate-enabled stream-json
+        // mode via the supervised launcher. No goal card, no worktree.
+        if supervised {
+            let label = format!(
+                "{} · {} (supervised)",
+                project.slug,
+                supervised_cli::SUPERVISED_CLI_DEFAULT_BIN
+            );
+            let reason = format!(
+                "Opening a supervised Claude Code session in {}",
+                project.name
+            );
+            let launch = supervised_cli::launch_watched_session(
+                &root_path,
+                &label,
+                &project.slug,
+                prompt,
+                &reason,
+            )
+            .await?;
+            return Ok(vec![Content::text(format!(
+                "Launched a supervised Claude Code session for \"{}\" at {} (session {}). It is \
+                 running in a visible Build-tab terminal in stream-json mode with permission \
+                 gates enabled{}.",
+                project.name,
+                root_path,
+                launch.session_id,
+                if prompt.is_some() {
+                    " and has been handed the initial prompt"
+                } else {
+                    "; it is idle until it receives input"
+                }
+            ))]);
+        }
 
         let label = match command {
             Some(cmd) => format!("{} · {}", project.slug, cmd),
@@ -605,6 +674,7 @@ impl ProjectManagerClient {
             command,
             &project.slug,
             &reason,
+            None,
         ));
 
         Ok(vec![Content::text(format!(
@@ -1375,6 +1445,11 @@ impl ProjectManagerClient {
 
                 Resolve the project name with project_resolve first if you only have a spoken
                 name. The project must have a root_path set.
+
+                To run a SUPERVISED Claude Code session — visible in the tab, structured
+                stream-json output, permission gates enabled so they can be watched — pass
+                supervised=true (optionally with `prompt` for the initial instruction)
+                instead of command="claude".
             "#}
                 .to_string(),
                 launch_schema.as_object().unwrap().clone(),

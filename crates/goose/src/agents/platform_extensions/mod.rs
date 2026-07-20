@@ -24,6 +24,7 @@ pub mod steward;
 pub mod storage_health;
 pub mod summarize;
 pub mod summon;
+pub mod supervised_cli;
 pub mod todo;
 pub mod tom;
 
