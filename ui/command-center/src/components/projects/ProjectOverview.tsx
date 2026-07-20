@@ -11,6 +11,7 @@ import { DocumentsPanel } from './DocumentsPanel';
 import { NotesPanel } from './NotesPanel';
 import { CodeIndexPanel } from './CodeIndexPanel';
 import { MemoriesPanel } from './MemoriesPanel';
+import { readBrief, readLinks, normalizeUrl, saveProjectSummary, type WorkspaceLink } from './workspaceMeta';
 import type { Project, BoardColumn, Card } from './types';
 
 // ── Project Overview ────────────────────────────────────────────────────────
@@ -23,7 +24,11 @@ import type { Project, BoardColumn, Card } from './types';
 // loop: it reads back the Brain memories this project's own surfaces wrote
 // (notes / documents / indexed code), each deep-linkable into the Brain view.
 
-export function ProjectOverview({ project }: { project: Project }) {
+export function ProjectOverview({ project, onProjectUpdated }: {
+  project: Project;
+  /** Parent refetch after a summary edit persists (ProjectsView.loadProjects). */
+  onProjectUpdated?: () => void;
+}) {
   const { colors, gradient } = useTheme();
   const [columns, setColumns] = useState<BoardColumn[]>([]);
   const [cards, setCards] = useState<Card[]>([]);
@@ -58,7 +63,7 @@ export function ProjectOverview({ project }: { project: Project }) {
       }}>
         {/* LEFT — substance */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
-          <SummaryPanel project={project} />
+          <SummaryPanel project={project} onProjectUpdated={onProjectUpdated} />
           <KeyFactsPanel project={project} />
           <MemoriesPanel project={project} />
           <DocumentsPanel project={project} />
@@ -85,7 +90,7 @@ export function ProjectOverview({ project }: { project: Project }) {
             Grow this project
           </button>
           <PeoplePanel project={project} />
-          <LinksPanel project={project} />
+          <LinksPanel project={project} onProjectUpdated={onProjectUpdated} />
           <TasksPanel
             columns={columns}
             cards={cards}
@@ -99,19 +104,105 @@ export function ProjectOverview({ project }: { project: Project }) {
 
 // ── Left-column panels ──────────────────────────────────────────────────────
 
-function SummaryPanel({ project }: { project: Project }) {
+/**
+ * Summary — name, one-line description, and the long-form brief (#472 residue,
+ * `metadata_json.brief`). Editable in place: Edit swaps the panel body for a
+ * description input + brief textarea, saved through the existing
+ * PATCH /api/projects/:id (no new endpoints). Draft state is initialized on
+ * entering edit mode only, so the 5s projects poll can't clobber typing.
+ */
+function SummaryPanel({ project, onProjectUpdated }: {
+  project: Project;
+  onProjectUpdated?: () => void;
+}) {
   const { colors } = useTheme();
+  const brief = readBrief(project.metadataJson);
+  const [editing, setEditing] = useState(false);
+  const [draftDescription, setDraftDescription] = useState('');
+  const [draftBrief, setDraftBrief] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const startEditing = () => {
+    setDraftDescription(project.description);
+    setDraftBrief(brief);
+    setSaveError(null);
+    setEditing(true);
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await saveProjectSummary(project.id, { description: draftDescription.trim(), brief: draftBrief });
+      setEditing(false);
+      onProjectUpdated?.();
+    } catch (e) {
+      // Keep the draft on screen — a failed save must not eat the user's text.
+      setSaveError(e instanceof Error ? e.message : 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
-    <Panel title="Summary">
+    <Panel
+      title="Summary"
+      action={!editing ? (
+        <button onClick={startEditing} style={panelActionBtn(colors)}>Edit</button>
+      ) : undefined}
+    >
       <div style={{ fontFamily: font.display, fontSize: 18, fontWeight: 600, letterSpacing: '-0.01em' }}>
         {project.name}
       </div>
-      <div style={{
-        fontSize: 12, color: project.description ? colors.textMuted : colors.textDim,
-        marginTop: 6, lineHeight: 1.55,
-      }}>
-        {project.description || 'No description yet.'}
-      </div>
+
+      {editing ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+          <label style={fieldLabel(colors)}>
+            Description
+            <input
+              value={draftDescription}
+              onChange={e => setDraftDescription(e.target.value)}
+              placeholder="One-line description"
+              disabled={saving}
+              style={fieldInput(colors)}
+            />
+          </label>
+          <label style={fieldLabel(colors)}>
+            Brief
+            <textarea
+              value={draftBrief}
+              onChange={e => setDraftBrief(e.target.value)}
+              placeholder="Longer brief — what is this project, the thesis, current direction…"
+              disabled={saving}
+              rows={5}
+              style={{ ...fieldInput(colors), resize: 'vertical', lineHeight: 1.5 }}
+            />
+          </label>
+          <EditControls saving={saving} error={saveError} onSave={save} onCancel={() => setEditing(false)} />
+        </div>
+      ) : (
+        <>
+          <div style={{
+            fontSize: 12, color: project.description ? colors.textMuted : colors.textDim,
+            marginTop: 6, lineHeight: 1.55,
+          }}>
+            {project.description || 'No description yet.'}
+          </div>
+          {brief ? (
+            <div style={{
+              fontSize: 12, color: colors.text, marginTop: 10, lineHeight: 1.6,
+              whiteSpace: 'pre-wrap', borderTop: `1px solid ${colors.border}`, paddingTop: 10,
+            }}>
+              {brief}
+            </div>
+          ) : (
+            <div style={{ fontSize: 11, color: colors.textDim, marginTop: 10 }}>
+              No brief yet — Edit to add one.
+            </div>
+          )}
+        </>
+      )}
     </Panel>
   );
 }
@@ -123,6 +214,9 @@ function KeyFactsPanel({ project }: { project: Project }) {
   const facts: { label: string; value: ReactNode }[] = [
     { label: 'Status', value: <StatusPill status={project.status} /> },
     { label: 'Slug', value: project.slug },
+    // Key dates (#472): created / updated / last opened — all already on the wire.
+    { label: 'Created', value: formatDate(project.createdAt) },
+    { label: 'Updated', value: formatDate(project.updatedAt) },
     { label: 'Last opened', value: formatDate(project.lastOpenedAt) },
   ];
 
@@ -242,22 +336,117 @@ function RootPathRow({ project }: { project: Project }) {
 
 // ── Right-column panels ─────────────────────────────────────────────────────
 
-function LinksPanel({ project }: { project: Project }) {
+/**
+ * Links — website + repository (existing columns) plus social/other links
+ * (#472 residue, `metadata_json.links`). Editable in place through the
+ * existing PATCH /api/projects/:id; custom links merge into the shared
+ * metadata bag without touching foreign keys (see workspaceMeta.ts).
+ */
+function LinksPanel({ project, onProjectUpdated }: {
+  project: Project;
+  onProjectUpdated?: () => void;
+}) {
   const { colors } = useTheme();
   const navigate = useBrowserNavigate();
+  const customLinks = readLinks(project.metadataJson);
+  const [editing, setEditing] = useState(false);
+  const [draftSite, setDraftSite] = useState('');
+  const [draftRepo, setDraftRepo] = useState('');
+  const [draftLinks, setDraftLinks] = useState<WorkspaceLink[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
   const links: { label: string; url: string }[] = [];
   if (project.siteUrl) links.push({ label: 'Website', url: project.siteUrl });
   if (project.repoUrl) links.push({ label: 'Repository', url: project.repoUrl });
+  for (const l of customLinks) links.push({ label: l.label || l.url, url: l.url });
+
+  const startEditing = () => {
+    setDraftSite(project.siteUrl ?? '');
+    setDraftRepo(project.repoUrl ?? '');
+    setDraftLinks(customLinks.map(l => ({ ...l })));
+    setSaveError(null);
+    setEditing(true);
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await saveProjectSummary(project.id, {
+        siteUrl: normalizeUrl(draftSite),
+        repoUrl: normalizeUrl(draftRepo),
+        // Empty-url rows are dropped by the merge; scheme-less urls get https://.
+        links: draftLinks.map(l => ({ label: l.label, url: normalizeUrl(l.url) ?? '' })),
+      });
+      setEditing(false);
+      onProjectUpdated?.();
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (editing) {
+    return (
+      <Panel title="Links">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <label style={fieldLabel(colors)}>
+            Website
+            <input value={draftSite} onChange={e => setDraftSite(e.target.value)}
+              placeholder="example.com" disabled={saving} style={fieldInput(colors)} />
+          </label>
+          <label style={fieldLabel(colors)}>
+            Repository
+            <input value={draftRepo} onChange={e => setDraftRepo(e.target.value)}
+              placeholder="github.com/you/repo" disabled={saving} style={fieldInput(colors)} />
+          </label>
+          <div style={{ ...fieldLabel(colors), display: 'flex', flexDirection: 'column', gap: 6 }}>
+            Other links
+            {draftLinks.map((l, i) => (
+              <div key={i} style={{ display: 'flex', gap: 6 }}>
+                <input value={l.label} placeholder="Label" disabled={saving} aria-label={`Link ${i + 1} label`}
+                  onChange={e => setDraftLinks(ls => ls.map((x, xi) => xi === i ? { ...x, label: e.target.value } : x))}
+                  style={{ ...fieldInput(colors), width: 90, flexShrink: 0 }} />
+                <input value={l.url} placeholder="URL" disabled={saving} aria-label={`Link ${i + 1} URL`}
+                  onChange={e => setDraftLinks(ls => ls.map((x, xi) => xi === i ? { ...x, url: e.target.value } : x))}
+                  style={{ ...fieldInput(colors), flex: 1, minWidth: 0 }} />
+                <button onClick={() => setDraftLinks(ls => ls.filter((_, xi) => xi !== i))}
+                  disabled={saving} aria-label={`Remove link ${i + 1}`}
+                  style={{ ...panelActionBtn(colors), color: colors.textMuted }}>
+                  ✕
+                </button>
+              </div>
+            ))}
+            <button
+              onClick={() => setDraftLinks(ls => [...ls, { label: '', url: '' }])}
+              disabled={saving}
+              style={{ ...panelActionBtn(colors), alignSelf: 'flex-start' }}
+            >
+              + Add link
+            </button>
+          </div>
+          <EditControls saving={saving} error={saveError} onSave={save} onCancel={() => setEditing(false)} />
+        </div>
+      </Panel>
+    );
+  }
 
   return (
-    <Panel title="Links">
+    <Panel
+      title="Links"
+      action={<button onClick={startEditing} style={panelActionBtn(colors)}>Edit</button>}
+    >
       {links.length === 0 ? (
-        <div style={{ fontSize: 11, color: colors.textDim }}>No links yet.</div>
+        <div style={{ fontSize: 11, color: colors.textDim }}>
+          No links yet — Edit to add website, repo, or social links.
+        </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {links.map(link => (
+          {links.map((link, li) => (
             <button
-              key={link.label}
+              key={`${link.label}-${li}`}
               onClick={() => navigate(link.url)}
               style={{
                 display: 'flex', alignItems: 'center', gap: 8, textAlign: 'left',
@@ -367,6 +556,80 @@ function TasksPanel({ columns, cards, onOpenGoal }: {
         </div>
       )}
     </Panel>
+  );
+}
+
+// ── Inline-edit helpers (shared by Summary + Links) ─────────────────────────
+
+type ThemeColors = ReturnType<typeof useTheme>['colors'];
+
+/** Small cyan text-button, matching PeoplePanel's "+ Associate" affordance. */
+function panelActionBtn(colors: ThemeColors): React.CSSProperties {
+  return {
+    fontSize: 11, color: colors.cyan, background: 'none', border: 'none',
+    cursor: 'pointer', fontFamily: font.body, padding: 0,
+  };
+}
+
+function fieldLabel(colors: ThemeColors): React.CSSProperties {
+  return {
+    display: 'flex', flexDirection: 'column', gap: 4,
+    fontSize: 10, fontWeight: 600, color: colors.textDim,
+    textTransform: 'uppercase', letterSpacing: '0.05em',
+  };
+}
+
+function fieldInput(colors: ThemeColors): React.CSSProperties {
+  return {
+    fontSize: 12, fontFamily: font.body, color: colors.text,
+    background: 'rgba(255,255,255,0.04)', border: `1px solid ${colors.border}`,
+    borderRadius: 6, padding: '6px 8px', outline: 'none',
+    textTransform: 'none', letterSpacing: 'normal', fontWeight: 400,
+  };
+}
+
+/** Save/Cancel row + inline error. Errors keep the editor open — a failed
+ *  save must read as a failure, never as a silent success. */
+function EditControls({ saving, error, onSave, onCancel }: {
+  saving: boolean;
+  error: string | null;
+  onSave: () => void;
+  onCancel: () => void;
+}) {
+  const { colors } = useTheme();
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {error && (
+        <div role="alert" style={{ fontSize: 11, color: colors.danger }}>
+          Couldn't save: {error}
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 6 }}>
+        <button
+          onClick={onSave}
+          disabled={saving}
+          style={{
+            padding: '4px 12px', borderRadius: 6, cursor: saving ? 'default' : 'pointer',
+            background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
+            color: colors.cyan, fontSize: 11, fontWeight: 600, fontFamily: font.body,
+            opacity: saving ? 0.6 : 1,
+          }}
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+        <button
+          onClick={onCancel}
+          disabled={saving}
+          style={{
+            padding: '4px 12px', borderRadius: 6, cursor: saving ? 'default' : 'pointer',
+            background: 'none', border: `1px solid ${colors.border}`,
+            color: colors.textMuted, fontSize: 11, fontFamily: font.body,
+          }}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
   );
 }
 

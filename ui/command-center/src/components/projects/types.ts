@@ -10,6 +10,15 @@ export interface Project {
   siteUrl: string | null;
   repoUrl: string | null;
   tags: string[];
+  /**
+   * General project metadata bag (schema v26, camelCase `metadataJson` on the
+   * wire). Shared by multiple features — the Overview's `brief` + `links` keys
+   * (#472) live alongside foreign keys like `build_command` (#456), so writes
+   * must MERGE, never replace blindly (see workspaceMeta.ts).
+   */
+  metadataJson: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
   lastOpenedAt: string;
 }
 

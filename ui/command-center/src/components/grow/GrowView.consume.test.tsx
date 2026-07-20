@@ -49,6 +49,9 @@ const project = (id: string, name: string) => ({
   siteUrl: null,
   repoUrl: null,
   tags: [],
+  metadataJson: {},
+  createdAt: '',
+  updatedAt: '',
   lastOpenedAt: '',
 });
 

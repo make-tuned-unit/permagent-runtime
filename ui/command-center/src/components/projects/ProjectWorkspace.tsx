@@ -13,11 +13,13 @@ import type { Project, ProjectLens } from './types';
 // view. The chrome (back · switcher · toggle) is persistent above both lenses,
 // so neither lens carries its own navigation and they can never desync.
 
-export function ProjectWorkspace({ project, projects, onSwitchProject, onBack }: {
+export function ProjectWorkspace({ project, projects, onSwitchProject, onBack, onProjectUpdated }: {
   project: Project;
   projects: Project[];
   onSwitchProject: (id: string) => void;
   onBack: () => void;
+  /** Parent refetch after an Overview summary edit persists (#472). */
+  onProjectUpdated?: () => void;
 }) {
   const { colors, gradient } = useTheme();
   // VIEW axis — persists across project switches (single source, no reset).
@@ -55,7 +57,7 @@ export function ProjectWorkspace({ project, projects, onSwitchProject, onBack }:
 
       {/* Active lens — both render the SAME selected project */}
       {lens === 'overview'
-        ? <ProjectOverview project={project} />
+        ? <ProjectOverview project={project} onProjectUpdated={onProjectUpdated} />
         : <ProjectKanban project={project} />}
     </div>
   );
