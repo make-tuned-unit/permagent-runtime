@@ -141,17 +141,19 @@ async function exchangeClaim(code: string): Promise<string | null> {
 export function loadDaemonToken(): Promise<string | null> {
   if (_daemonToken) return Promise.resolve(_daemonToken);
   if (!isTauri) {
+    // A claim exchange already in flight (#628): every caller must await IT —
+    // falling through to localStorage here would hand early callers a null
+    // while the fresh token is milliseconds away.
+    if (_daemonTokenPromise) return _daemonTokenPromise;
     // Claim-code pairing (#628) takes precedence: a `#claim=` fragment means
     // this load IS the pairing moment — exchange before falling back to any
     // stored / legacy `#token=` credential.
     const claim = typeof window !== 'undefined' ? pendingClaimCode() : null;
     if (claim) {
-      if (!_daemonTokenPromise) {
-        _daemonTokenPromise = exchangeClaim(claim).then(token => {
-          _daemonToken = token;
-          return token;
-        });
-      }
+      _daemonTokenPromise = exchangeClaim(claim).then(token => {
+        _daemonToken = token;
+        return token;
+      });
       return _daemonTokenPromise;
     }
     _daemonToken = browserToken();
