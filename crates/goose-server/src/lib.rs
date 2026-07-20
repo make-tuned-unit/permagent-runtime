@@ -12,6 +12,7 @@ pub mod backup;
 pub mod brain_ops;
 pub mod configuration;
 pub mod error;
+pub mod federation;
 pub mod middleware;
 pub mod openapi;
 pub mod routes;
