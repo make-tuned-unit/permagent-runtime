@@ -69,6 +69,7 @@ struct MainTabs: View {
         TabView {
             HomeView().tabItem { Label("Home", systemImage: "circle.hexagongrid.fill") }
             ChatView().tabItem { Label("Henry", systemImage: "bubble.left.and.bubble.right.fill") }
+            DictateView().tabItem { Label("Dictate", systemImage: "mic.fill") }
             InboxView().tabItem { Label("Decisions", systemImage: "tray.full.fill") }
                 .badge(session.unread)
             GoalsView().tabItem { Label("In Flight", systemImage: "bolt.fill") }

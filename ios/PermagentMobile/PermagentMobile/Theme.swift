@@ -71,6 +71,35 @@ enum Motion {
     static let ease = Animation.easeOut(duration: 0.22)
     /// Springy, for content arrival (message bubbles, card removal).
     static let spring = Animation.spring(response: 0.34, dampingFraction: 0.82)
+    /// Slow inhale/exhale — live-state pulses (the recording ring). Pair with
+    /// `.repeatForever(autoreverses: true)` at the call site.
+    static let breath = Animation.easeInOut(duration: 1.1)
+}
+
+/// The house primary CTA: ribbon-gradient fill, deep-void label, continuous
+/// radius. One shape for every "do the thing" button (pairing Connect, note
+/// Save) so CTAs read identically across screens.
+struct PrimaryCTA: View {
+    let title: String
+    var systemImage: String? = nil
+    var enabled: Bool = true
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 7) {
+                if let systemImage { Image(systemName: systemImage).font(.subheadline.weight(.semibold)) }
+                Text(title).font(.body.weight(.semibold))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .background(Brand.ribbon.opacity(enabled ? 1 : 0.35))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .foregroundStyle(Brand.deepVoid.opacity(enabled ? 1 : 0.7))
+        }
+        .disabled(!enabled)
+        .animation(Motion.ease, value: enabled)
+    }
 }
 
 /// The house glass card (Glass atom): blur + hairline + soft glow.
