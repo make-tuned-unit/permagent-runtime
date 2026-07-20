@@ -199,6 +199,7 @@ pub static SURFACE_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::skills::SKILLS_FEATURE,
     crate::session::SESSIONS_FEATURE,
     crate::events::TRACE_FEATURE,
+    crate::dictation::MEETING_DICTATION_FEATURE,
 ];
 
 /// Tool ids that are described under another category and therefore skipped in
@@ -580,6 +581,7 @@ mod tests {
         "skills",
         "sessions",
         "trace",
+        "meeting_dictation",
     ];
     /// The Phase-2-v1 lesson set — each must resolve to a descriptor with steps.
     const V1_LESSON_IDS: &[&str] = &["reader", "brain", "scheduler", "persona"];
