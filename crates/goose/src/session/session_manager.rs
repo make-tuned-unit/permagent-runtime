@@ -952,6 +952,13 @@ impl SessionStorage {
                     // (skills::reconcile_skills_to_disk) relies on it. Additive +
                     // idempotent, so SPECTRAL_SCHEMA_VERSION is not bumped.
                     spectral_schema::apply_skill_path_column(&self.pool).await?;
+
+                    // Version-independent: ensure the projects.graph_entity_id
+                    // bridge column exists (#595 — graph identity for
+                    // non-ontology projects; mirrors people.graph_entity_id).
+                    // Additive + idempotent, so SPECTRAL_SCHEMA_VERSION is not
+                    // bumped.
+                    spectral_schema::apply_project_graph_entity_column(&self.pool).await?;
                 } else {
                     info!("Initializing Spectral schema at {:?}", self.db_path);
                     spectral_schema::init_spectral_db(&self.pool).await?;

@@ -52,6 +52,7 @@ pub mod playbook;
 pub mod posthog;
 pub mod project_association;
 pub mod project_documents;
+pub mod project_graph;
 pub mod project_notes;
 pub mod projects;
 pub mod prompt_template;

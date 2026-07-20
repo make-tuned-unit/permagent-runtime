@@ -23,6 +23,13 @@ pub struct Project {
     /// onto code-flavored goals as a `command_exit_zero` completion check;
     /// `build_timeout_secs` (number) — optional timeout for it.
     pub metadata_json: serde_json::Value,
+    /// The project's graph identity: the bare 64-hex content-addressed
+    /// `EntityId` of its Brain graph node (#595; mirrors
+    /// `people.graph_entity_id`, #583). `None` until the project first needs a
+    /// graph identity — filled on person→project associate, either from
+    /// ontology resolution or a runtime mint. Immutable once set
+    /// (fill-if-NULL, [`set_graph_entity_id`]).
+    pub graph_entity_id: Option<String>,
     pub tags: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -44,6 +51,7 @@ fn row_to_project(r: &sqlx::sqlite::SqliteRow) -> Project {
         notes: r.get("notes"),
         metadata_json: serde_json::from_str(&metadata_raw)
             .unwrap_or_else(|_| serde_json::json!({})),
+        graph_entity_id: r.get("graph_entity_id"),
         tags: Vec::new(),
         created_at: r.get("created_at"),
         updated_at: r.get("updated_at"),
@@ -181,7 +189,7 @@ pub async fn create_project(pool: &Pool<Sqlite>, input: CreateProject) -> Result
 
 pub async fn get_project(pool: &Pool<Sqlite>, id: &str) -> Result<Option<Project>, String> {
     let row = sqlx::query(
-        "SELECT id, user_id, slug, name, description, status, root_path, site_url, repo_url, notes, metadata_json, created_at, updated_at, last_opened_at
+        "SELECT id, user_id, slug, name, description, status, root_path, site_url, repo_url, notes, metadata_json, graph_entity_id, created_at, updated_at, last_opened_at
          FROM projects WHERE id = ?",
     )
     .bind(id)
@@ -208,7 +216,7 @@ pub async fn get_project_by_id_or_slug(
         return Ok(Some(p));
     }
     let row = sqlx::query(
-        "SELECT id, user_id, slug, name, description, status, root_path, site_url, repo_url, notes, metadata_json, created_at, updated_at, last_opened_at
+        "SELECT id, user_id, slug, name, description, status, root_path, site_url, repo_url, notes, metadata_json, graph_entity_id, created_at, updated_at, last_opened_at
          FROM projects WHERE user_id = 'default' AND slug = ?",
     )
     .bind(id_or_slug)
@@ -226,13 +234,34 @@ pub async fn get_project_by_id_or_slug(
     }
 }
 
+/// Fill the project's `graph_entity_id` bridge column (#595). Immutable once
+/// set: only a NULL column is filled (mirrors `people_bridge`'s
+/// fill-if-NULL rule for `people.graph_entity_id`), so a project keeps its
+/// original graph identity even if its name later changes. Returns `true` if
+/// the column was filled by this call.
+pub async fn set_graph_entity_id(
+    pool: &Pool<Sqlite>,
+    project_id: &str,
+    graph_entity_id: &str,
+) -> Result<bool, String> {
+    let result = sqlx::query(
+        "UPDATE projects SET graph_entity_id = ? WHERE id = ? AND graph_entity_id IS NULL",
+    )
+    .bind(graph_entity_id)
+    .bind(project_id)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(result.rows_affected() > 0)
+}
+
 pub async fn list_projects(
     pool: &Pool<Sqlite>,
     status_filter: Option<&str>,
 ) -> Result<Vec<Project>, String> {
     let rows = if let Some(status) = status_filter {
         sqlx::query(
-            "SELECT id, user_id, slug, name, description, status, root_path, site_url, repo_url, notes, metadata_json, created_at, updated_at, last_opened_at
+            "SELECT id, user_id, slug, name, description, status, root_path, site_url, repo_url, notes, metadata_json, graph_entity_id, created_at, updated_at, last_opened_at
              FROM projects WHERE user_id = 'default' AND status = ?
              ORDER BY last_opened_at DESC",
         )
@@ -241,7 +270,7 @@ pub async fn list_projects(
         .await
     } else {
         sqlx::query(
-            "SELECT id, user_id, slug, name, description, status, root_path, site_url, repo_url, notes, metadata_json, created_at, updated_at, last_opened_at
+            "SELECT id, user_id, slug, name, description, status, root_path, site_url, repo_url, notes, metadata_json, graph_entity_id, created_at, updated_at, last_opened_at
              FROM projects WHERE user_id = 'default'
              ORDER BY last_opened_at DESC",
         )
