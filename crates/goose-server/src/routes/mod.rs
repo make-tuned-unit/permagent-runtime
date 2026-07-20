@@ -11,6 +11,7 @@ pub mod cards;
 pub mod config_management;
 pub mod dashboard;
 pub mod decisions;
+pub mod devices;
 pub mod dictation;
 pub mod errors;
 pub mod events;
@@ -76,7 +77,11 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(browser_act::routes(state.clone()))
         // Voice WebSocket: does its own token validation via query param
         // (WebSocket upgrade can't use the Bearer middleware).
-        .merge(voice::routes(state.clone()));
+        .merge(voice::routes(state.clone()))
+        // Device pairing claim exchange (#628): the claiming companion has no
+        // credential yet. Codes are 128-bit random, single-use, short-lived;
+        // the origin guard below still fronts it.
+        .merge(devices::public_routes(state.clone()));
 
     // ── Session control plane (C1/C2): token-required, header OR ?token= ──
     // `/sessions/{id}/reply|cancel` (agent invocation) and the per-session
@@ -159,6 +164,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(cards::routes(state.clone()))
         .merge(grow::routes(state.clone()))
         .merge(decisions::routes(state.clone()))
+        .merge(devices::routes(state.clone()))
         .merge(agents::routes(state.clone()))
         // Voice HTTP endpoints — on-demand model downloader + synth primitive
         // (the public `/voice` WS is merged above; these are bearer-protected).

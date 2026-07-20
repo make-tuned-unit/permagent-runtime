@@ -18,12 +18,16 @@ dissolving it:
 - **No sync** → no conflict resolution, no CRDTs, no merge bugs, no
   eventually-consistent Brain. A phone and a laptop looking at the Decision
   Inbox are looking at the same rows on the hub.
-- **No accounts** → "auth" is *device pairing*: the hub's bearer
-  `daemon_token` is the pairing secret. Adding a device = opening the pairing
-  URL (Settings → Devices) once on that device; the token rides the URL
-  fragment, is captured into the device's local storage, and is scrubbed from
-  the URL (`api.ts` `browserToken()`). Removing all devices = rotating the
-  token file on the hub.
+- **No accounts** → "auth" is *device pairing*. Since #628 every companion
+  holds its OWN bearer token from the hub's device registry
+  (`secrets/device_tokens.json`, hashes only): adding a device = Settings →
+  Devices names it and mints a one-time claim code; the pairing URL carries
+  `#claim=<code>`, which the device exchanges on first load for its own token
+  (`api.ts` `exchangeClaim()`), so the URL goes inert after one use. Removing
+  one device = revoking its entry (Settings → Devices), nothing else
+  re-pairs. The hub's own `daemon_token` remains valid (legacy `#token=`
+  URLs still capture, `api.ts` `browserToken()`); rotating that file remains
+  the master kill-switch.
 - **Transport identity/encryption is Tailscale's job.** The tailnet already
   gives every device a stable, WireGuard-encrypted, ACL-able identity. We do
   not rebuild that layer; the bearer token gates the app, the tailnet gates
@@ -38,7 +42,7 @@ Storage and compute follow capability, exactly as directed:
 | Brain / memories / graph | Hub only | Recall and enrichment run next to the model; the data never travels except as query results |
 | Local models (Ollama, Kokoro, sherpa) | Hub | The M4 runs the largest model any device can benefit from |
 | Sessions, projects, decisions, journal | Hub (already single-DB) | Single-writer, no distribution needed |
-| Client devices | Pairing token + UI state only | A lost phone leaks one revocable token, zero data |
+| Client devices | Per-device pairing token + UI state only | A lost phone leaks one individually revocable token (#628), zero data |
 
 **Latency analysis (why thin-client wins):** tailnet RTT is ~1–5 ms on LAN
 and ~10–40 ms over WAN/DERP. Every heavy operation a client asks for —
@@ -55,10 +59,12 @@ satellite** (never a second writable Brain) or the Mesh track (#306).
    IP) in the daemon environment — the `Settings.host` layer already reads it
    (`configuration.rs`). Default stays loopback; exposure is explicit opt-in.
    The bearer middleware protects every real route regardless of bind.
-2. **Pair a device:** Settings → Devices on the hub shows the pairing URL
-   (`http://<magicdns-name>:3001/ui/#token=…`). Any browser on the tailnet —
-   phone, laptop, tablet — becomes a full Permagent client (#366's token
-   bootstrap). The web UI is served by the daemon at `/ui`.
+2. **Pair a device:** Settings → Devices on the hub names the device and
+   mints a one-time pairing URL
+   (`http://<magicdns-name>:3001/ui/#claim=…`, single-use, 10-min expiry —
+   #628). Any browser on the tailnet — phone, laptop, tablet — becomes a
+   full Permagent client with its own revocable token (#366's bootstrap seam,
+   upgraded). The web UI is served by the daemon at `/ui`.
 3. **Biggest-model access from anywhere:** clients talk to the hub daemon, so
    they inherit its models automatically. A second *daemon* (e.g. a laptop
    wanting local tools but hub inference) points its Ollama provider at the

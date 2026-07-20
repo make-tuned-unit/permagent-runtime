@@ -11,6 +11,7 @@ pub mod automation;
 pub mod backup;
 pub mod brain_ops;
 pub mod configuration;
+pub mod device_registry;
 pub mod error;
 pub mod middleware;
 pub mod openapi;

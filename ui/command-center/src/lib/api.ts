@@ -91,9 +91,69 @@ function browserToken(): string | null {
   }
 }
 
+/** #628: claim-code pairing. A device opening
+ *  http://<hub>:3001/ui/#claim=<code> carries a one-time claim code, not a
+ *  token. The code is scrubbed from the URL immediately (same hygiene as
+ *  `#token=`) and exchanged for this device's OWN bearer token via the public
+ *  `POST /pair/claim` — so the pairing URL stops being a forever-secret: after
+ *  one claim (or expiry) it is inert. */
+function pendingClaimCode(): string | null {
+  try {
+    const frag = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+    const code = frag.get('claim');
+    if (!code) return null;
+    frag.delete('claim');
+    const rest = frag.toString();
+    history.replaceState(null, '', window.location.pathname + window.location.search + (rest ? `#${rest}` : ''));
+    return code;
+  } catch {
+    return null;
+  }
+}
+
+/** Exchange a one-time claim code for a fresh per-device token. On success the
+ *  token is persisted like a captured `#token=` credential and the genuine
+ *  `devices_paired` completion is reported (the token is always freshly minted,
+ *  so every successful claim IS a new pairing). On failure (expired/used code,
+ *  hub unreachable) any previously stored credential is kept. */
+async function exchangeClaim(code: string): Promise<string | null> {
+  try {
+    const resp = await fetch(`${API_BASE_URL}/pair/claim`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+    if (!resp.ok) return localStorage.getItem(BROWSER_TOKEN_KEY);
+    const { token } = (await resp.json()) as { token?: string };
+    if (!token) return localStorage.getItem(BROWSER_TOKEN_KEY);
+    localStorage.setItem(BROWSER_TOKEN_KEY, token);
+    reportDevicePaired(token);
+    return token;
+  } catch {
+    try {
+      return localStorage.getItem(BROWSER_TOKEN_KEY);
+    } catch {
+      return null;
+    }
+  }
+}
+
 export function loadDaemonToken(): Promise<string | null> {
   if (_daemonToken) return Promise.resolve(_daemonToken);
   if (!isTauri) {
+    // Claim-code pairing (#628) takes precedence: a `#claim=` fragment means
+    // this load IS the pairing moment — exchange before falling back to any
+    // stored / legacy `#token=` credential.
+    const claim = typeof window !== 'undefined' ? pendingClaimCode() : null;
+    if (claim) {
+      if (!_daemonTokenPromise) {
+        _daemonTokenPromise = exchangeClaim(claim).then(token => {
+          _daemonToken = token;
+          return token;
+        });
+      }
+      return _daemonTokenPromise;
+    }
     _daemonToken = browserToken();
     return Promise.resolve(_daemonToken);
   }
@@ -594,9 +654,49 @@ export interface EgressLogEntry {
   prompt: string | null;
 }
 
+/** One paired companion device (#628). Mirrors the daemon's DeviceView —
+ *  deliberately NO token material: tokens are shown once at claim time only. */
+export interface DeviceInfo {
+  id: string;
+  name: string;
+  /** RFC 3339 creation timestamp. */
+  created: string;
+  /** RFC 3339 timestamp of the last authenticated request, or null if never. */
+  last_seen: string | null;
+  revoked: boolean;
+}
+
 export const api = {
   // Health
   getHealth: () => apiFetch<{ status: string }>('/status'),
+
+  // ── Device registry (#628): per-device pairing tokens ──────────────
+
+  /** All paired devices (revoked included), newest first. Never contains
+   *  token values. */
+  listDevices: () => apiFetch<DeviceInfo[]>('/api/devices'),
+
+  /** Mint a one-time claim code for a device named `name`. The pairing URL is
+   *  `http://<hub>:3001/ui/#claim=<claim_code>`; the code is single-use and
+   *  expires at `expires_at`. */
+  pairDevice: (name: string) =>
+    apiFetch<{ claim_code: string; expires_at: string }>('/api/devices/pair', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+
+  /** Rename a paired device. */
+  renameDevice: (id: string, name: string) =>
+    apiFetch<DeviceInfo>(`/api/devices/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    }),
+
+  /** Revoke a device's token — it stops authenticating immediately. */
+  revokeDevice: (id: string) =>
+    apiFetch<DeviceInfo>(`/api/devices/${encodeURIComponent(id)}/revoke`, {
+      method: 'POST',
+    }),
 
   // Sessions — GET /api/sessions returns { sessions: [...] } (lean SessionSummary)
   // #341 instrumentation: split the client-perceived cost into round-trip
