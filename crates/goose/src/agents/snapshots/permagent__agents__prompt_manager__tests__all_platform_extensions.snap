@@ -122,12 +122,6 @@ Drive the Permagent app for the user. Use navigate_app to take them to a specifi
 apps supports resources.
 ### Instructions
 Use this extension to create, manage, and iterate on custom HTML/CSS/JavaScript apps.
-## audience_listen
-
-
-## browser
-
-
 ## chatrecall
 
 ### Instructions
@@ -291,9 +285,6 @@ similar, use card_create with card_type='standard'. Ask which project
 if not clear from context — default to the active project if the user
 is currently in one, otherwise Personal.
 
-## pronunciation
-
-
 ## recipe_author
 
 ### Instructions
@@ -334,12 +325,6 @@ and writes a recallable Brain memory so the user can later ask what you found.
 
 ### Instructions
 Scan the filesystem for storage cleanup opportunities. Use scan_storage_health when the user asks about disk space, cleanup, or storage. This is the ONLY mechanism for producing storage findings.
-## summarize
-
-
-## summon
-
-
 ## todo
 
 ### Instructions
@@ -356,9 +341,6 @@ Template:
   - [ ] Sub-task
 - [ ] Requirement 2
 - [ ] Another task
-
-## tom
-
 
 
 

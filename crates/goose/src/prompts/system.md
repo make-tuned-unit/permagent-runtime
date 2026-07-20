@@ -18,6 +18,7 @@ active extensions are below. Each of these extensions provides tools that are
 in your tool specification.
 
 {% for extension in extensions %}
+{% if extension.instructions or extension.has_resources %}
 
 ## {{extension.name}}
 
@@ -26,6 +27,7 @@ in your tool specification.
 {% endif %}
 {% if extension.instructions %}### Instructions
 {{extension.instructions}}{% endif %}
+{% endif %}
 {% endfor %}
 
 {% else %}
