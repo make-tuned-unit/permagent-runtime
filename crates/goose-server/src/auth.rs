@@ -627,7 +627,11 @@ mod tests {
         config
             .set_secret(FEDERATION_IDENTITY_SECRET_KEY, &"not an identity blob")
             .unwrap();
-        let err = FederationIdentity::load_or_create_at(&config, NOW).unwrap_err();
+        // No `unwrap_err()`: FederationIdentity deliberately has no Debug.
+        let err = match FederationIdentity::load_or_create_at(&config, NOW) {
+            Ok(_) => panic!("malformed identity blob must not load or regenerate"),
+            Err(e) => e,
+        };
         assert!(
             matches!(err, AuthError::IdentityUnreadable(_)),
             "got {err:?}"
