@@ -1,6 +1,105 @@
-use lopdf::{content::Content as PdfContent, Document, Object};
+use super::text_quality;
+use lopdf::{content::Content as PdfContent, Document, Object, ObjectId};
 use rmcp::model::{Content, ErrorCode, ErrorData};
 use std::{fs, path::Path};
+
+/// Encoding-aware extraction for one page (#468): lopdf's `extract_text_chunks`
+/// tracks the current font (`Tf`) and decodes shown strings through that
+/// font's encoding — ToUnicode CMap, `/Differences`, or base encoding. Falls
+/// back to the legacy raw content-stream walk only when the decoded path
+/// yields nothing; the raw walk's output is garble-gated by the caller.
+fn extract_page_text(doc: &Document, page_num: u32, page_id: ObjectId) -> String {
+    let decoded: String = doc
+        .extract_text_chunks(&[page_num])
+        .into_iter()
+        .filter_map(|chunk| chunk.ok())
+        .collect();
+    if !decoded.trim().is_empty() {
+        return decoded;
+    }
+    extract_page_text_raw(doc, page_id)
+}
+
+/// Legacy raw walk (pre-#468): reads Tj/TJ string operands without applying
+/// font encodings, so custom-encoded fonts come out char-shifted. Last resort
+/// only — the caller runs [`text_quality::assess`] on the final text.
+fn extract_page_text_raw(doc: &Document, page_id: ObjectId) -> String {
+    let mut text = String::new();
+
+    // Try to get text from page contents
+    if let Ok(page_obj) = doc.get_object(page_id) {
+        if let Ok(page_dict) = page_obj.as_dict() {
+            // Try to get text from Contents stream
+            if let Ok(contents) = page_dict.get(b"Contents").and_then(|c| c.as_reference()) {
+                if let Ok(content_obj) = doc.get_object(contents) {
+                    if let Ok(stream) = content_obj.as_stream() {
+                        if let Ok(content_data) = stream.get_plain_content() {
+                            if let Ok(content) = PdfContent::decode(&content_data) {
+                                // Process each operation in the content stream
+                                for operation in content.operations {
+                                    match operation.operator.as_ref() {
+                                        // "Tj" operator: show text
+                                        "Tj" => {
+                                            for operand in operation.operands {
+                                                if let Object::String(ref bytes, _) = operand {
+                                                    if let Ok(s) = std::str::from_utf8(bytes) {
+                                                        text.push_str(s);
+                                                    }
+                                                }
+                                            }
+                                            text.push(' ');
+                                        }
+                                        // "TJ" operator: show text with positioning
+                                        "TJ" => {
+                                            if let Some(Object::Array(ref arr)) =
+                                                operation.operands.first()
+                                            {
+                                                let mut last_was_text = false;
+                                                for element in arr {
+                                                    match element {
+                                                        Object::String(ref bytes, _) => {
+                                                            if let Ok(s) =
+                                                                std::str::from_utf8(bytes)
+                                                            {
+                                                                if last_was_text {
+                                                                    text.push(' ');
+                                                                }
+                                                                text.push_str(s);
+                                                                last_was_text = true;
+                                                            }
+                                                        }
+                                                        Object::Integer(offset) => {
+                                                            // Large negative offsets often indicate word spacing
+                                                            if *offset < -100 {
+                                                                text.push(' ');
+                                                                last_was_text = false;
+                                                            }
+                                                        }
+                                                        Object::Real(offset) => {
+                                                            if *offset < -100.0 {
+                                                                text.push(' ');
+                                                                last_was_text = false;
+                                                            }
+                                                        }
+                                                        _ => {}
+                                                    }
+                                                }
+                                                text.push(' ');
+                                            }
+                                        }
+                                        _ => (), // Ignore other operators
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    text
+}
 
 pub async fn pdf_tool(
     path: &str,
@@ -23,90 +122,27 @@ pub async fn pdf_tool(
             // Iterate over each page in the document
             for (page_num, page_id) in doc.get_pages() {
                 text.push_str(&format!("Page {}:\n", page_num));
-
-                // Try to get text from page contents
-                if let Ok(page_obj) = doc.get_object(page_id) {
-                    if let Ok(page_dict) = page_obj.as_dict() {
-                        // Try to get text from Contents stream
-                        if let Ok(contents) =
-                            page_dict.get(b"Contents").and_then(|c| c.as_reference())
-                        {
-                            if let Ok(content_obj) = doc.get_object(contents) {
-                                if let Ok(stream) = content_obj.as_stream() {
-                                    if let Ok(content_data) = stream.get_plain_content() {
-                                        if let Ok(content) = PdfContent::decode(&content_data) {
-                                            // Process each operation in the content stream
-                                            for operation in content.operations {
-                                                match operation.operator.as_ref() {
-                                                    // "Tj" operator: show text
-                                                    "Tj" => {
-                                                        for operand in operation.operands {
-                                                            if let Object::String(ref bytes, _) =
-                                                                operand
-                                                            {
-                                                                if let Ok(s) =
-                                                                    std::str::from_utf8(bytes)
-                                                                {
-                                                                    text.push_str(s);
-                                                                }
-                                                            }
-                                                        }
-                                                        text.push(' ');
-                                                    }
-                                                    // "TJ" operator: show text with positioning
-                                                    "TJ" => {
-                                                        if let Some(Object::Array(ref arr)) =
-                                                            operation.operands.first()
-                                                        {
-                                                            let mut last_was_text = false;
-                                                            for element in arr {
-                                                                match element {
-                                                                    Object::String(
-                                                                        ref bytes,
-                                                                        _,
-                                                                    ) => {
-                                                                        if let Ok(s) =
-                                                                            std::str::from_utf8(
-                                                                                bytes,
-                                                                            )
-                                                                        {
-                                                                            if last_was_text {
-                                                                                text.push(' ');
-                                                                            }
-                                                                            text.push_str(s);
-                                                                            last_was_text = true;
-                                                                        }
-                                                                    }
-                                                                    Object::Integer(offset) => {
-                                                                        // Large negative offsets often indicate word spacing
-                                                                        if *offset < -100 {
-                                                                            text.push(' ');
-                                                                            last_was_text = false;
-                                                                        }
-                                                                    }
-                                                                    Object::Real(offset) => {
-                                                                        if *offset < -100.0 {
-                                                                            text.push(' ');
-                                                                            last_was_text = false;
-                                                                        }
-                                                                    }
-                                                                    _ => {}
-                                                                }
-                                                            }
-                                                            text.push(' ');
-                                                        }
-                                                    }
-                                                    _ => (), // Ignore other operators
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                text.push_str(&extract_page_text(&doc, page_num, page_id));
                 text.push('\n');
+            }
+
+            // #468 safety gate: a subsetted font without a usable ToUnicode
+            // CMap yields char-shifted junk ("All Rights Reserved" →
+            // "$OO5LJKWV5HVHUYHG"). Surfacing that as a successful extraction
+            // invites the agent to confidently "summarize" noise — fail loud
+            // instead, as an explicit tool error.
+            if let text_quality::TextQuality::Garbled { reason } = text_quality::assess(&text) {
+                return Err(ErrorData::new(
+                    ErrorCode::INTERNAL_ERROR,
+                    format!(
+                        "PDF text extraction FAILED for {path}: the output is unreadable ({reason}). \
+                         This is typically a font-encoding problem (the PDF's embedded font has no \
+                         usable ToUnicode map), so the extracted bytes are NOT the document's real \
+                         text. Do not summarize, analyze, or answer questions from any partial \
+                         output — tell the user the PDF could not be read cleanly."
+                    ),
+                    None,
+                ));
             }
 
             if text.trim().is_empty() {
@@ -432,6 +468,90 @@ mod tests {
             println!("Verifying image file exists: {}", file_path);
             assert!(PathBuf::from(file_path).exists(), "Image file should exist");
         }
+    }
+
+    /// Build a one-page PDF whose shown bytes are char-shifted junk (the #468
+    /// failure shape: glyph codes with no usable ToUnicode map). No font
+    /// resources are declared, so the encoding-aware path yields nothing and
+    /// the raw fallback surfaces the shifted bytes — which the garble gate
+    /// must refuse.
+    fn build_garbled_pdf() -> Vec<u8> {
+        use lopdf::content::{Content as LoContent, Operation};
+        use lopdf::{dictionary, Stream};
+
+        let shifted = super::super::text_quality::caesar_shift(
+            &"Wealthie Family Office overview. All rights reserved. Our platform \
+              integrates brokerage services with education savings plans, offering \
+              families three revenue streams and a partnership model that reaches \
+              schools across the province and provides access to registered \
+              accounts for every student in the program."
+                .to_uppercase(),
+            3,
+        );
+
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let content = LoContent {
+            operations: vec![
+                Operation::new("BT", vec![]),
+                Operation::new("Td", vec![50.into(), 700.into()]),
+                Operation::new("Tj", vec![Object::string_literal(shifted.into_bytes())]),
+                Operation::new("ET", vec![]),
+            ],
+        };
+        let content_id = doc.add_object(Stream::new(
+            dictionary! {},
+            content.encode().expect("encode content"),
+        ));
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "Contents" => content_id,
+        });
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![page_id.into()],
+                "Count" => 1,
+                "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+            }),
+        );
+        let catalog_id = doc.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        });
+        doc.trailer.set("Root", catalog_id);
+
+        let mut bytes = Vec::new();
+        doc.save_to(&mut bytes).expect("save pdf");
+        bytes
+    }
+
+    #[tokio::test]
+    async fn test_garbled_pdf_extraction_fails_loud() {
+        let dir = tempfile::tempdir().unwrap();
+        let pdf_path = dir.path().join("garbled.pdf");
+        fs::write(&pdf_path, build_garbled_pdf()).unwrap();
+        let cache_dir = dir.path().join("cache");
+
+        let result = pdf_tool(pdf_path.to_str().unwrap(), "extract_text", &cache_dir).await;
+
+        let err = result.expect_err("garbled extraction must be an explicit tool error");
+        let msg = err.message.to_string();
+        assert!(
+            msg.contains("PDF text extraction FAILED"),
+            "error must state extraction failed, got: {msg}"
+        );
+        assert!(
+            msg.contains("Do not summarize"),
+            "error must forbid summarizing partial output, got: {msg}"
+        );
+        // The garbled bytes themselves must NOT ride along in the error.
+        assert!(
+            !msg.contains("DOO ULJKWV"),
+            "garbled content must not leak into the error surface: {msg}"
+        );
     }
 
     #[tokio::test]

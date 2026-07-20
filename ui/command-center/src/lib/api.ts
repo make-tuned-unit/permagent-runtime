@@ -400,7 +400,19 @@ export async function readerIngest(file: File): Promise<ReaderDigest> {
     headers,
     body: form,
   });
-  if (!resp.ok) throw new Error(`reader ingest HTTP ${resp.status}`);
+  if (!resp.ok) {
+    // The daemon puts an honest, user-facing reason in the error body (#468):
+    // e.g. "couldn't read this PDF cleanly — text extraction returned
+    // unreadable text (likely a font-encoding issue)". Surface it so the
+    // caller can show WHY the file was refused instead of a bare status code.
+    let detail = '';
+    try {
+      detail = (await resp.text()).trim();
+    } catch {
+      /* body unavailable — fall through to the generic message */
+    }
+    throw new Error(detail || `reader ingest HTTP ${resp.status}`);
+  }
   return resp.json() as Promise<ReaderDigest>;
 }
 

@@ -32,6 +32,7 @@ use std::os::unix::fs::PermissionsExt;
 
 mod docx_tool;
 mod pdf_tool;
+mod text_quality;
 mod xlsx_tool;
 
 mod platform;

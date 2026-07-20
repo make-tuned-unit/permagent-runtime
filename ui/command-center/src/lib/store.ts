@@ -746,8 +746,16 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
           } else {
             // A document the Reader couldn't read — surface it rather than drop
             // it silently (the old behavior). No base64 path for documents.
+            // The daemon's error body carries an honest reason (#468, e.g.
+            // "couldn't read this PDF cleanly — … font-encoding issue");
+            // show it so neither the user nor the agent mistakes a failed
+            // extraction for readable content.
             console.error('[reader] document ingest failed:', f.name, err);
-            digests.push({ name: f.name, summary: '(could not extract text from this file)', recall_query: '' });
+            const reason =
+              err instanceof Error && err.message && !err.message.startsWith('reader ingest HTTP')
+                ? err.message
+                : 'could not extract text from this file';
+            digests.push({ name: f.name, summary: `(extraction failed: ${reason})`, recall_query: '' });
           }
         }
       }
