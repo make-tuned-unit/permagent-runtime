@@ -57,7 +57,9 @@ pub struct ProjectResponse {
     repo_url: Option<String>,
     notes: String,
     /// General project metadata bag (schema v26). Known keys: `build_command`
-    /// / `build_timeout_secs` — the project-level default completion check.
+    /// / `build_timeout_secs` — the project-level default completion check —
+    /// and `publish_sequence` — ordered post-push steps required before a
+    /// change is live (#457).
     metadata_json: serde_json::Value,
     tags: Vec<String>,
     created_at: String,

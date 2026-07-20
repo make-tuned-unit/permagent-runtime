@@ -1,4 +1,5 @@
 use super::goal_engine;
+use super::publish_sequence;
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
 use crate::agents::tool_execution::ToolCallContext;
@@ -326,6 +327,11 @@ impl OrchestratorClient {
                  completion check (the project's configured build_command, else stack detection — \
                  prose goals are never force-checked); the verifier runs the checks in the worker's \
                  worktree and a failing check blocks auto-approval\n\
+                 - Honor per-project publish sequences: a project can declare ordered \
+                 post-push steps (metadata publish_sequence — e.g. seed prod DB, redeploy) \
+                 without which a git push is NOT live; dispatched workers are told the \
+                 remaining steps and the review decision flags 'pushed — publish sequence \
+                 pending'. The daemon does not run these steps automatically yet\n\
                  - Escalate with a typed decision item when blocked, instead of \
                  retrying silently\n\
                  - Give real-time status on what's in flight, stalled, or completed\n\n\
@@ -665,6 +671,15 @@ impl OrchestratorClient {
             .and_then(|s| s.handoff.as_ref())
         {
             instructions = format!("{instructions}\n\n{handoff}");
+        }
+
+        // Publish sequence (#457): when the project declares ordered post-push
+        // steps (`metadata_json.publish_sequence`), tell the worker up front
+        // that a git push is NOT live and what remains — so it never reports
+        // "pushed" as "deployed/live".
+        let publish_steps = publish_sequence::parse_publish_sequence(&project.metadata_json);
+        if let Some(block) = publish_sequence::dispatch_instructions_block(&publish_steps) {
+            instructions = format!("{instructions}\n\n{block}");
         }
 
         // Working dir + baseline commit at dispatch time (recorded beside
@@ -3656,6 +3671,22 @@ pub async fn handle_goal_completion(
                 // pre-existing goals) falls back to the original wording / `{}`.
                 let evidence = card.metadata_json.get("dispatch_evidence");
                 let detail = build_review_detail(card_id, evidence);
+                // Publish sequence (#457): when the project declares ordered
+                // post-push steps, the review decision must say push ≠ live —
+                // the daemon has not run the sequence, so approving does not
+                // make the change user-visible. Best-effort: a project-load
+                // failure only drops the note, never the decision.
+                let detail = match crate::projects::get_project(pool, project_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|p| publish_sequence::parse_publish_sequence(&p.metadata_json))
+                    .as_deref()
+                    .and_then(publish_sequence::review_pending_note)
+                {
+                    Some(note) => format!("{detail}\n\n{note}"),
+                    None => detail,
+                };
                 let payload = match evidence.and_then(format_dispatch_evidence_brief) {
                     Some(proof) => serde_json::json!({ "completion_check": proof }),
                     None => serde_json::json!({}),

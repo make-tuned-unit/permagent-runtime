@@ -21,7 +21,9 @@ pub struct Project {
     /// — ruling 3 in GOAL_COMPLETION_AND_VERIFICATION.md §3d). Known keys:
     /// `build_command` (string) — project build check the orchestrator seeds
     /// onto code-flavored goals as a `command_exit_zero` completion check;
-    /// `build_timeout_secs` (number) — optional timeout for it.
+    /// `build_timeout_secs` (number) — optional timeout for it;
+    /// `publish_sequence` (array) — ordered post-push steps required before a
+    /// change is live (#457; see `platform_extensions::publish_sequence`).
     pub metadata_json: serde_json::Value,
     /// The project's graph identity: the bare 64-hex content-addressed
     /// `EntityId` of its Brain graph node (#595; mirrors
