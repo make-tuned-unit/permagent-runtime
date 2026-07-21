@@ -314,7 +314,7 @@ mod tests {
         let db = tmp.path().join("graph.sqlite");
         let _store = GraphStore::open(&db).unwrap();
         let good = hex::encode(eid("person", "alice").as_bytes());
-        assert!(delete_works_on_triples(&db, "zz-not-hex", &[good.clone()]).is_err());
+        assert!(delete_works_on_triples(&db, "zz-not-hex", std::slice::from_ref(&good)).is_err());
         assert!(delete_works_on_triples(&db, &good, &["abcd".to_string()]).is_err());
     }
 }
