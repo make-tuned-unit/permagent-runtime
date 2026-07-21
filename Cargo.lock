@@ -7441,6 +7441,7 @@ dependencies = [
  "permagent",
  "serde_json",
  "spectral",
+ "sqlx",
  "tempfile",
  "tokio",
  "uuid",

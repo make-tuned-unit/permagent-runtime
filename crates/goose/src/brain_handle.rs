@@ -287,16 +287,52 @@ impl SafeBrain {
         display_name: &str,
         visibility: spectral::Visibility,
     ) -> anyhow::Result<String> {
+        self.create_typed_entity("person", display_name, visibility)
+            .await
+    }
+
+    /// Create (or idempotently return) a **project** node in the graph,
+    /// returning its bare 64-hex `EntityId` — the `projects.graph_entity_id`
+    /// bridge key (#595).
+    ///
+    /// Projects are the second entity type to need runtime creation, widening
+    /// PEOPLE_GRAPH_V1 Decision C's person-only-create rule exactly as that
+    /// ruling anticipated ("generalize when a second entity type needs runtime
+    /// creation"). The surface stays narrow and validated — project-only
+    /// `entity_type`, canonicalized name, empty-after-normalization rejected —
+    /// no arbitrary node injection.
+    ///
+    /// Provenance must be written *before* this call (done by
+    /// [`crate::project_graph::ensure_project_graph_identity`]), so a runtime
+    /// project node can never exist without reconciler-protecting provenance.
+    pub async fn create_project_entity(
+        &self,
+        project_name: &str,
+        visibility: spectral::Visibility,
+    ) -> anyhow::Result<String> {
+        self.create_typed_entity("project", project_name, visibility)
+            .await
+    }
+
+    /// Shared narrow-create body for the two sanctioned runtime entity types
+    /// (person, #583; project, #595). Private — callers go through the typed
+    /// wrappers, which are the whole validated public surface.
+    async fn create_typed_entity(
+        &self,
+        entity_type: &'static str,
+        display_name: &str,
+        visibility: spectral::Visibility,
+    ) -> anyhow::Result<String> {
         let canonical = crate::identity::canonical::graph_canonical(display_name);
         if canonical.is_empty() {
-            anyhow::bail!("cannot create person: name is empty after normalization");
+            anyhow::bail!("cannot create {entity_type}: name is empty after normalization");
         }
         let brain = self.inner.clone();
         tokio::task::spawn_blocking(move || {
             use spectral::core::entity_id::entity_id;
             use spectral::graph::graph_store::Entity;
 
-            let id = entity_id("person", &canonical);
+            let id = entity_id(entity_type, &canonical);
             let store = brain.store();
             // Idempotent: preserve an existing node (and its created_at).
             if let Ok(Some(existing)) = store.get_entity(&id) {
@@ -305,7 +341,7 @@ impl SafeBrain {
             let now = chrono::Utc::now();
             let entity = Entity {
                 id,
-                entity_type: "person".to_string(),
+                entity_type: entity_type.to_string(),
                 canonical,
                 visibility,
                 created_at: now,
@@ -315,11 +351,11 @@ impl SafeBrain {
             };
             store
                 .upsert_entity(&entity)
-                .map_err(|e| anyhow::anyhow!("upsert person entity: {e}"))?;
+                .map_err(|e| anyhow::anyhow!("upsert {entity_type} entity: {e}"))?;
             Ok(hex::encode(entity.id.as_bytes()))
         })
         .await
-        .map_err(|e| anyhow::anyhow!("brain task panicked: create_person_entity: {e}"))?
+        .map_err(|e| anyhow::anyhow!("brain task panicked: create_typed_entity: {e}"))?
     }
 
     /// Look up a graph entity's canonical name by its bare 64-hex `EntityId`.
@@ -344,67 +380,59 @@ impl SafeBrain {
         .map_err(|e| anyhow::anyhow!("brain task panicked: entity_canonical: {e}"))?
     }
 
-    /// Best-effort graph edge for a person→project association (#495 slice 3):
-    /// assert `works_on(person, project)` directly against the store when both
-    /// endpoints are known. The association row (permagent.db `project_people`)
-    /// is the source of truth and the graph is allowed to lag behind it
-    /// (people-in-graph v1, #583) — so an endpoint the graph can't name yet is
-    /// a skip (`Ok(false)`), never a failure of the association itself.
-    ///
-    /// Resolution is deliberate: the person comes from their stored node (the
-    /// `people.graph_entity_id` bridge — mention-resolution would miss
-    /// runtime-created people, whose nodes bypass the in-process
-    /// `runtime_entities` list), and the project from ontology
-    /// canonicalization (alias + case aware). A project absent from the
-    /// ontology has no graph identity yet and is skipped. An ontology-resolved
-    /// project node is materialized on first edge (the ontology is not
-    /// eager-seeded) — a curated entity, so this stays within the
-    /// person-only-create rule for *novel* entities.
-    ///
-    /// Idempotent: an existing `works_on(person, project)` triple short-circuits
-    /// to `Ok(false)`. Returns `Ok(true)` only when a triple was written.
-    pub async fn assert_person_project_edge(
+    /// Resolve a project name against the curated ontology (alias + case
+    /// aware), returning the bare 64-hex `EntityId` — WITHOUT writing anything.
+    /// `None` when the name does not resolve to an ontology `project` entity.
+    /// The pure-read twin of [`Self::materialize_ontology_project`]; used on
+    /// delete paths (#595 disassociate cleanup) that must not create nodes.
+    pub async fn resolve_ontology_project_id(
         &self,
-        person_id_hex: &str,
         project_name: &str,
-    ) -> anyhow::Result<bool> {
+    ) -> anyhow::Result<Option<String>> {
         let brain = self.inner.clone();
-        let person_id_hex = person_id_hex.to_string();
         let project_name = project_name.to_string();
         tokio::task::spawn_blocking(move || {
             use spectral::graph::canonicalize::Canonicalizer;
-            use spectral::graph::graph_store::{Entity, Triple};
+            Ok(
+                match Canonicalizer::new(brain.ontology()).resolve_one(&project_name) {
+                    Some(m) if m.entity_type == "project" => {
+                        Some(hex::encode(m.entity_id.as_bytes()))
+                    }
+                    _ => None,
+                },
+            )
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: resolve_ontology_project_id: {e}"))?
+    }
 
-            let person_id: spectral::core::entity_id::EntityId = person_id_hex
-                .parse()
-                .map_err(|e| anyhow::anyhow!("invalid person entity id hex: {e:?}"))?;
-            let store = brain.store();
-            if store
-                .get_entity(&person_id)
-                .map_err(|e| anyhow::anyhow!("get_entity(person): {e}"))?
-                .is_none()
-            {
-                return Ok(false); // person node lags; nothing to hang the edge on
-            }
+    /// Resolve a project name against the curated ontology and materialize its
+    /// graph node if missing (the ontology is not eager-seeded — #495 slice 3).
+    /// Returns the bare 64-hex `EntityId`, or `None` when the name is not an
+    /// ontology project. A curated entity, so this stays outside the
+    /// runtime-create/provenance machinery: the reconciler owns its lifecycle
+    /// via the ontology id set.
+    pub async fn materialize_ontology_project(
+        &self,
+        project_name: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let brain = self.inner.clone();
+        let project_name = project_name.to_string();
+        tokio::task::spawn_blocking(move || {
+            use spectral::graph::canonicalize::Canonicalizer;
+            use spectral::graph::graph_store::Entity;
 
             let project = match Canonicalizer::new(brain.ontology()).resolve_one(&project_name) {
                 Some(m) if m.entity_type == "project" => m,
-                _ => return Ok(false), // not an ontology project (yet) — graph lags
+                _ => return Ok(None),
             };
-
-            let existing = store
-                .find_triples(Some(&person_id), Some(&project.entity_id), Some("works_on"))
-                .map_err(|e| anyhow::anyhow!("find_triples: {e}"))?;
-            if !existing.is_empty() {
-                return Ok(false);
-            }
-
-            let now = chrono::Utc::now();
+            let store = brain.store();
             if store
                 .get_entity(&project.entity_id)
                 .map_err(|e| anyhow::anyhow!("get_entity(project): {e}"))?
                 .is_none()
             {
+                let now = chrono::Utc::now();
                 store
                     .upsert_entity(&Entity {
                         id: project.entity_id,
@@ -418,6 +446,67 @@ impl SafeBrain {
                     })
                     .map_err(|e| anyhow::anyhow!("upsert project entity: {e}"))?;
             }
+            Ok(Some(hex::encode(project.entity_id.as_bytes())))
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: materialize_ontology_project: {e}"))?
+    }
+
+    /// Best-effort graph edge for a person→project association (#495 slice 3,
+    /// reworked by #595): assert `works_on(person, project)` between two
+    /// *resolved* graph identities. The association row (permagent.db
+    /// `project_people`) is the source of truth and the graph is allowed to lag
+    /// behind it (people-in-graph v1, #583) — so an endpoint whose node the
+    /// graph has not materialized is a skip (`Ok(false)`), never a failure of
+    /// the association itself.
+    ///
+    /// Identity resolution happens *before* this call: the person id comes from
+    /// the `people.graph_entity_id` bridge, the project id from
+    /// [`crate::project_graph::ensure_project_graph_identity`] (ontology-resolved
+    /// or runtime-minted, #595). This method never creates nodes — both
+    /// endpoints must already exist.
+    ///
+    /// Idempotent: an existing `works_on(person, project)` triple short-circuits
+    /// to `Ok(false)`. Returns `Ok(true)` only when a triple was written.
+    pub async fn assert_works_on_edge(
+        &self,
+        person_id_hex: &str,
+        project_id_hex: &str,
+    ) -> anyhow::Result<bool> {
+        let brain = self.inner.clone();
+        let person_id_hex = person_id_hex.to_string();
+        let project_id_hex = project_id_hex.to_string();
+        tokio::task::spawn_blocking(move || {
+            use spectral::graph::graph_store::Triple;
+
+            let person_id: spectral::core::entity_id::EntityId = person_id_hex
+                .parse()
+                .map_err(|e| anyhow::anyhow!("invalid person entity id hex: {e:?}"))?;
+            let project_id: spectral::core::entity_id::EntityId = project_id_hex
+                .parse()
+                .map_err(|e| anyhow::anyhow!("invalid project entity id hex: {e:?}"))?;
+            let store = brain.store();
+            if store
+                .get_entity(&person_id)
+                .map_err(|e| anyhow::anyhow!("get_entity(person): {e}"))?
+                .is_none()
+            {
+                return Ok(false); // person node lags; nothing to hang the edge on
+            }
+            if store
+                .get_entity(&project_id)
+                .map_err(|e| anyhow::anyhow!("get_entity(project): {e}"))?
+                .is_none()
+            {
+                return Ok(false); // project node lags; identity minting failed upstream
+            }
+
+            let existing = store
+                .find_triples(Some(&person_id), Some(&project_id), Some("works_on"))
+                .map_err(|e| anyhow::anyhow!("find_triples: {e}"))?;
+            if !existing.is_empty() {
+                return Ok(false);
+            }
 
             brain
                 .ontology()
@@ -426,12 +515,12 @@ impl SafeBrain {
             store
                 .insert_triple(&Triple {
                     from: person_id,
-                    to: project.entity_id,
+                    to: project_id,
                     predicate: "works_on".to_string(),
                     confidence: 1.0,
                     source_doc_id: None,
                     source_brain_id: *brain.brain_id(),
-                    asserted_at: now,
+                    asserted_at: chrono::Utc::now(),
                     visibility: spectral::Visibility::Private,
                     weight: 1.0,
                 })
@@ -439,7 +528,7 @@ impl SafeBrain {
             Ok(true)
         })
         .await
-        .map_err(|e| anyhow::anyhow!("brain task panicked: assert_person_project_edge: {e}"))?
+        .map_err(|e| anyhow::anyhow!("brain task panicked: assert_works_on_edge: {e}"))?
     }
 
     /// Write a typed field on a graph entity, with provenance. The

@@ -491,6 +491,7 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
             repo_url        TEXT,
             notes           TEXT NOT NULL DEFAULT '',
             metadata_json   TEXT NOT NULL DEFAULT '{}',
+            graph_entity_id TEXT,
             created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
             updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
             last_opened_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -1001,6 +1002,29 @@ pub async fn apply_project_metadata_column(pool: &Pool<Sqlite>) -> Result<()> {
             .execute(pool)
             .await?;
         info!("Added projects.metadata_json column (schema v26)");
+    }
+    Ok(())
+}
+
+/// Add the `projects.graph_entity_id` bridge column (#595 — graph identity for
+/// non-ontology projects). Mirrors `people.graph_entity_id` (#583): the bare
+/// 64-hex content-addressed `EntityId` of the project's graph node, filled when
+/// the project first needs a graph identity (ontology-resolved or
+/// runtime-minted on person→project associate). PRAGMA-guarded and applied by
+/// column-existence — NOT gated on a version stamp (the `apply_skill_path_column`
+/// precedent), so it is present on any DB regardless of the recorded schema
+/// version. Idempotent.
+pub async fn apply_project_graph_entity_column(pool: &Pool<Sqlite>) -> Result<()> {
+    let has_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name = 'graph_entity_id'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if has_column == 0 {
+        sqlx::query("ALTER TABLE projects ADD COLUMN graph_entity_id TEXT")
+            .execute(pool)
+            .await?;
+        info!("Added projects.graph_entity_id column (graph identity bridge, #595)");
     }
     Ok(())
 }
@@ -2789,6 +2813,45 @@ mod people_schema_tests {
         assert_eq!(has_graph_col(&fresh).await, 1);
         migrate_v20_to_v21(&fresh).await.unwrap();
         assert_eq!(has_graph_col(&fresh).await, 1);
+    }
+
+    /// #595: `projects.graph_entity_id` is present on fresh installs (base
+    /// CREATE) and applied by column-existence on older DBs via the
+    /// version-independent `apply_project_graph_entity_column` (the
+    /// `apply_skill_path_column` precedent). Idempotent both ways.
+    #[tokio::test]
+    async fn projects_graph_entity_column_applied_and_idempotent() {
+        async fn has_col(pool: &Pool<Sqlite>) -> i64 {
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name = 'graph_entity_id'",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap()
+        }
+
+        // Fresh install: column present from the base CREATE; the guarded
+        // apply is a clean no-op over it.
+        let fresh = mem_pool().await;
+        init_spectral_db(&fresh).await.unwrap();
+        assert_eq!(has_col(&fresh).await, 1);
+        apply_project_graph_entity_column(&fresh).await.unwrap();
+        assert_eq!(has_col(&fresh).await, 1);
+
+        // Old DB: a projects table WITHOUT the column gains it, idempotently.
+        let old = mem_pool().await;
+        sqlx::query(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY, user_id TEXT NOT NULL DEFAULT 'default',
+                 slug TEXT NOT NULL, name TEXT NOT NULL)",
+        )
+        .execute(&old)
+        .await
+        .unwrap();
+        assert_eq!(has_col(&old).await, 0);
+        apply_project_graph_entity_column(&old).await.unwrap();
+        assert_eq!(has_col(&old).await, 1);
+        apply_project_graph_entity_column(&old).await.unwrap();
+        assert_eq!(has_col(&old).await, 1);
     }
 }
 

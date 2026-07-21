@@ -395,29 +395,44 @@ async fn associate_person_handler(
     .await
     .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
-    // #495 slice 3: mirror the association as a works_on graph edge, best-effort.
-    // The project_people row is the source of truth and the graph may lag behind
-    // it (people-in-graph v1) — a skip or error here is logged, never a request
-    // failure.
+    // #495 slice 3 (+ #595): mirror the association as a works_on graph edge,
+    // best-effort. The project_people row is the source of truth and the graph
+    // may lag behind it (people-in-graph v1) — a skip or error here is logged,
+    // never a request failure. #595 closes the non-ontology gap: the project's
+    // graph identity is resolved (ontology) or minted (runtime, provenance-first)
+    // before the edge is asserted, so Projects-tab projects get the edge too.
     if let Some(brain) = state.brain.as_ref() {
         match permagent::people::get_by_uuid(&pool, &req.entity_uuid).await {
             Ok(Some(person)) => {
                 if let Some(graph_id) = person.graph_entity_id.as_deref() {
-                    match brain
-                        .assert_person_project_edge(graph_id, &project.name)
-                        .await
+                    match permagent::project_graph::ensure_project_graph_identity(
+                        &pool, brain, &project,
+                    )
+                    .await
                     {
-                        Ok(true) => tracing::info!(
-                            project = %project.id, person = %req.entity_uuid,
-                            "graph works_on edge asserted"
-                        ),
-                        Ok(false) => tracing::debug!(
-                            project = %project.id, person = %req.entity_uuid,
-                            "graph works_on edge skipped (graph lagging)"
+                        Ok(Some(project_gid)) => {
+                            match brain.assert_works_on_edge(graph_id, &project_gid).await {
+                                Ok(true) => tracing::info!(
+                                    project = %project.id, person = %req.entity_uuid,
+                                    "graph works_on edge asserted"
+                                ),
+                                Ok(false) => tracing::debug!(
+                                    project = %project.id, person = %req.entity_uuid,
+                                    "graph works_on edge skipped (graph lagging)"
+                                ),
+                                Err(e) => tracing::warn!(
+                                    project = %project.id, person = %req.entity_uuid, error = %e,
+                                    "graph works_on edge assert failed"
+                                ),
+                            }
+                        }
+                        Ok(None) => tracing::debug!(
+                            project = %project.id,
+                            "project has no graph identity (name empty after normalization)"
                         ),
                         Err(e) => tracing::warn!(
-                            project = %project.id, person = %req.entity_uuid, error = %e,
-                            "graph works_on edge assert failed"
+                            project = %project.id, error = %e,
+                            "project graph identity resolution failed"
                         ),
                     }
                 }
@@ -433,6 +448,11 @@ async fn associate_person_handler(
 }
 
 /// DELETE /api/projects/{id}/people/{entity_uuid} — disassociate a person.
+///
+/// #595: also deletes the mirrored `works_on` graph triple, best-effort — the
+/// association row is the source of truth and its deletion never fails on
+/// graph state. The person and project *nodes* are identity, not residue, and
+/// are left in place.
 async fn disassociate_person_handler(
     State(state): State<Arc<AppState>>,
     Path((id, entity_uuid)): Path<(String, String)>,
@@ -442,14 +462,70 @@ async fn disassociate_person_handler(
         .pool_clone()
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let removed = project_association::disassociate_person(&pool, &id, &entity_uuid)
+    // Resolve id-or-slug like the sibling handlers (associate/list), so the
+    // graph cleanup sees the project row; the association delete then uses the
+    // canonical project id.
+    let project = projects::get_project_by_id_or_slug(&pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+    let removed = project_association::disassociate_person(&pool, &project.id, &entity_uuid)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    if removed {
-        Ok(StatusCode::OK)
-    } else {
-        Err((StatusCode::NOT_FOUND, "Association not found".to_string()))
+    if !removed {
+        return Err((StatusCode::NOT_FOUND, "Association not found".to_string()));
     }
+
+    // #595: best-effort works_on residue cleanup. Read-only identity
+    // resolution (never creates nodes on a delete path), then a scoped
+    // triple delete against the graph store.
+    if let Some(brain) = state.brain.as_ref() {
+        match permagent::people::get_by_uuid(&pool, &entity_uuid).await {
+            Ok(Some(person)) => {
+                if let Some(person_gid) = person.graph_entity_id {
+                    let candidates =
+                        permagent::project_graph::project_graph_id_candidates(brain, &project)
+                            .await;
+                    if !candidates.is_empty() {
+                        let graph_db =
+                            permagent::config::paths::Paths::brain_dir().join("graph.sqlite");
+                        let result = tokio::task::spawn_blocking(move || {
+                            permagent::project_graph::delete_works_on_triples(
+                                &graph_db,
+                                &person_gid,
+                                &candidates,
+                            )
+                        })
+                        .await;
+                        match result {
+                            Ok(Ok(n)) if n > 0 => tracing::info!(
+                                project = %project.id, person = %entity_uuid, deleted = n,
+                                "graph works_on edge deleted on disassociate"
+                            ),
+                            Ok(Ok(_)) => tracing::debug!(
+                                project = %project.id, person = %entity_uuid,
+                                "no graph works_on residue to delete"
+                            ),
+                            Ok(Err(e)) => tracing::warn!(
+                                project = %project.id, person = %entity_uuid, error = %e,
+                                "graph works_on edge delete failed"
+                            ),
+                            Err(e) => tracing::warn!(
+                                project = %project.id, person = %entity_uuid, error = %e,
+                                "graph works_on edge delete task panicked"
+                            ),
+                        }
+                    }
+                }
+            }
+            Ok(None) => {} // person already deleted from CRM; nothing to key the cleanup on
+            Err(e) => tracing::warn!(
+                person = %entity_uuid, error = %e,
+                "person lookup for graph cleanup failed"
+            ),
+        }
+    }
+    Ok(StatusCode::OK)
 }
 
 // ── Project association: memories ────────────────────────────────────────────

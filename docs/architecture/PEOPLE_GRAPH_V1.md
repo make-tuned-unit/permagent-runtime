@@ -330,6 +330,13 @@ that is the argument for Decision D (provenance on the Kuzu node).
 | **F** | Mint topology | keep ontology bridge + add graph bridge (union) vs replace with graph-only | **Union.** Graph-only would drop curated persons with no asserted triple (§1.4). |
 | **G** | Ontology↔runtime "promotion" | when a runtime person is later added to `ontology.toml`: (1) no-op (in-ontology never prunes anyway) · (2) rewrite provenance to `ontology` | **(1)** for v1 — behavior is already correct; (2) only if you want the provenance table to reflect current authority for audits. |
 
+> **Decision C addendum (#595):** projects became the anticipated "second entity
+> type" — `create_project_entity` widens the narrow-create surface to
+> project-only (same validation, same provenance-first ordering, same
+> `entity_provenance` protection). See `crates/goose/src/project_graph.rs`.
+> The public surface remains the two typed wrappers; there is still no general
+> `create_entity(type, …)`.
+
 ---
 
 ## 9. Build sequence once ruled (for the follow-up dispatch — not this round)
