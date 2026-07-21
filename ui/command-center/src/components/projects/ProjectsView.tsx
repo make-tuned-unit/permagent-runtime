@@ -144,6 +144,7 @@ export function ProjectsView() {
         projects={projects}
         onSwitchProject={openProject}
         onBack={backToAll}
+        onProjectUpdated={loadProjects}
       />
     );
   }
