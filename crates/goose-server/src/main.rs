@@ -5,6 +5,7 @@ mod backup;
 mod brain_ops;
 mod commands;
 mod configuration;
+mod device_registry;
 mod error;
 mod logging;
 mod middleware;

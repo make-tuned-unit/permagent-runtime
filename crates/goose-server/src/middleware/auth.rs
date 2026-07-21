@@ -288,10 +288,11 @@ mod tests {
         // observable contract anyway.
         let (_dir, reg) = temp_registry();
         let (token, _) = reg.pair("iPad");
-        let truncated = &token[..token.len() - 2];
+        let mut truncated = token.clone();
+        truncated.truncate(token.len() - 2);
         let extended = format!("{token}00");
         assert_eq!(
-            validate_with_devices(Some("master"), &reg, Some(truncated)),
+            validate_with_devices(Some("master"), &reg, Some(truncated.as_str())),
             Err(StatusCode::UNAUTHORIZED),
         );
         assert_eq!(
