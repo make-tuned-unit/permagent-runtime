@@ -38,9 +38,11 @@ WorldView itself):
    (`idle | in_conversation | tool_call`), Librarian via `LibrarianDescribe*` phases, and
    the live agent roster via `/api/agents`. There is **no per-agent working/available/error
    event stream**. → See §9 stop item S1.
-2. **Issue #87 confirmed**: Henry's trim is hardcoded `#00D9FF`, identical to the
-   environment accent `neonCyan` — and the global token cyan is `#00D5FF`, a third
-   near-duplicate. Resolution proposed in §3.
+2. **Issue #87 confirmed** (since resolved): Henry's trim was hardcoded `#00D9FF`,
+   identical to the then-environment accent `neonCyan` — and the global token cyan
+   is `#00D5FF`, a third near-duplicate. Resolved: Henry's trim is `#F0E6D0` (§9 D2),
+   and #193 normalized `neonCyan` to the canonical global `#00D5FF` (tokens
+   `NEON_ACCENT`).
 3. **No instancing anywhere.** Estimated ~500–550 draw calls at full population
    (books alone ~400 meshes; 5 agents ≈ 300 meshes). The 300-DC budget is achievable
    almost entirely by instancing books, columns, railing posts, and agent parts.
@@ -120,7 +122,7 @@ product**: cyan = intelligence, violet = memory.
 |---|---|---|
 | `state.idle` | `#8A94A6` (token textMuted) | Agent trim/aura when idle |
 | `state.working` | `#FFB347` (established neonAmber) | Agent at a station, busy-room ambience |
-| `state.available` | `#00D9FF` (world neonCyan) | Agent alert/ready, steady-state |
+| `state.available` | `#00D5FF` (world neonCyan = global `NEON_ACCENT`, #193) | Agent alert/ready, steady-state |
 | `state.error` | `#FF5D5D` | Error slump/flash. *Not* token danger `#FFB4A2` (too soft to read in fog at distance); HUD panels may keep `#FFB4A2`. |
 
 **No green anywhere in the world.** `success`-green is a UI-chrome token only.
@@ -134,7 +136,7 @@ product**: cyan = intelligence, violet = memory.
 | `darkStone` | `#2A2A3E` | Secondary stone, prop bases |
 | `gunmetal` | `#555B6E` | Agent bodies, mechanisms |
 | `bronze` | `#A08555` | Worn metal accents, chevrons |
-| `neonCyan` | `#00D9FF` | Intelligence accent (circuits, available-state) |
+| `neonCyan` | `#00D5FF` (global `NEON_ACCENT`, #193) | Intelligence accent (circuits, available-state) |
 | `violet` | `#A855CC` (token purpleBright) | **Memory accent — new.** Owns the Brain Archive area + memory-themed props. Currently absent from the world; v2 introduces it as the second emissive identity. |
 | `neonAmber` | `#FFB347` | Working-state, warm library light |
 | `horizonBlue` | `#5599FF` | Stargate/Mesh family only |
@@ -223,7 +225,7 @@ Body language per HUD state, on top of existing identity (trim color, crown for 
 |---|---|---|
 | **idle** | gray `#8A94A6` | Standing, slow ambient sway (existing), occasional weight shift. Visor dim (emissive 0.3). |
 | **working** | amber `#FFB347` | **Seated/engaged at a W2 anchor point**, leaning in; hands toward the work surface; visor bright; small periodic head nods. Walk to station uses existing locomotion. |
-| **available** | cyan `#00D9FF` | Alert stance: straightened spine, head up, visor at full; aura ring at feet breathing slowly. |
+| **available** | cyan `#00D5FF` | Alert stance: straightened spine, head up, visor at full; aura ring at feet breathing slowly. |
 | **error** | red `#FF5D5D` | Distinct silhouette: shoulders dropped, head bowed 20° (the "slump"), visor flickering red at 2Hz for 3s then steady dim red. |
 
 - **State channels** = visor + joint glow rings + cape circuit lines + feet aura. Identity

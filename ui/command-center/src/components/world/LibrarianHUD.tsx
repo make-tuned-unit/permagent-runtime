@@ -29,8 +29,8 @@ interface LibrarianStatus {
 const PHASE_COLORS: Record<LibrarianPhase, { bg: string; text: string; border: string }> = {
   idle: { bg: 'rgba(107, 114, 128, 0.2)', text: '#9CA3AF', border: '#4B5563' },
   warming: { bg: 'rgba(255, 179, 71, 0.15)', text: COLORS.neonAmber, border: '#D97706' },
-  describing: { bg: 'rgba(0, 217, 255, 0.12)', text: COLORS.neonCyan, border: '#0891B2' },
-  batch_complete: { bg: 'rgba(0, 217, 255, 0.12)', text: COLORS.neonCyan, border: '#0891B2' },
+  describing: { bg: 'rgba(0, 213, 255, 0.12)', text: COLORS.neonCyan, border: '#0891B2' },
+  batch_complete: { bg: 'rgba(0, 213, 255, 0.12)', text: COLORS.neonCyan, border: '#0891B2' },
   error: { bg: 'rgba(239, 68, 68, 0.15)', text: '#EF4444', border: '#DC2626' },
 };
 

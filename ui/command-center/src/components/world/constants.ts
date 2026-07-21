@@ -1,11 +1,12 @@
 import type { Vector3Tuple } from 'three';
 import type { StationConfig } from './types';
+import { NEON_ACCENT } from '../../styles/tokens';
 
 // Color palette
 export const COLORS = {
   primaryMarble: '#E8E4DD',
   marbleVeining: '#8B7E6F',
-  neonCyan: '#00D9FF',
+  neonCyan: NEON_ACCENT,
   neonAmber: '#FFB347',
   deepVoid: '#0A0E1A',
   floorGridGlow: '#1A4D5C',
