@@ -45,6 +45,11 @@ interface IdentityStore {
   clear: () => void;
 
   _pollInterval: ReturnType<typeof setInterval> | null;
+  /** Consumers currently holding the shared poll (ref-count). The interval is
+   *  created when the count goes 0→1 and cleared only when it returns to 0,
+   *  so a second consumer unmounting can neither orphan another consumer's
+   *  polling nor duplicate the interval. */
+  _pollRefs: number;
   startPolling: () => void;
   stopPolling: () => void;
 }
@@ -144,10 +149,12 @@ export const useIdentityStore = create<IdentityStore>((set, get) => ({
   },
 
   _pollInterval: null,
+  _pollRefs: 0,
 
   startPolling: () => {
-    const state = get();
-    if (state._pollInterval) return;
+    set({ _pollRefs: get()._pollRefs + 1 });
+    // Already live — this consumer just joins the shared interval.
+    if (get()._pollInterval) return;
 
     // Initial fetch
     get().fetch();
@@ -161,6 +168,11 @@ export const useIdentityStore = create<IdentityStore>((set, get) => ({
   },
 
   stopPolling: () => {
+    // Clamp at zero so a spurious extra stop can never wedge future starts.
+    const refs = Math.max(0, get()._pollRefs - 1);
+    set({ _pollRefs: refs });
+    if (refs > 0) return; // another consumer still needs the poll
+
     const interval = get()._pollInterval;
     if (interval) {
       clearInterval(interval);

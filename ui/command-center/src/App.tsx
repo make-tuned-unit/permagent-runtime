@@ -8,6 +8,7 @@ import { SkillsPanel } from './components/skills/SkillsPanel';
 import { SessionsList } from './components/sessions/SessionsList';
 import { ExecutionTrace } from './components/trace/ExecutionTrace';
 import { WorkspaceRenderer } from './components/workspaces/WorkspaceRenderer';
+import { WorkspaceSaveErrorChip } from './components/workspaces/WorkspaceSaveErrorChip';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { WizardShell } from './components/wizard/WizardShell';
 import { Splash } from './components/splash/Splash';
@@ -294,6 +295,7 @@ function App() {
       <GoalDetailModalHost />
       <NotificationHost />
       <PersonDetailModalHost />
+      <WorkspaceSaveErrorChip />
     </div>
   );
 }

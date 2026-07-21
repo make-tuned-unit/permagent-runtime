@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { FiCheckCircle, FiXCircle, FiClock } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { font } from '../../styles/tokens';
@@ -20,13 +20,30 @@ export function SkillExecutionHistory({ skillId }: SkillExecutionHistoryProps) {
   const { colors } = useTheme();
   const [executions, setExecutions] = useState<Execution[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  // Monotonic request sequence (the useBrainData seqRef / TimelineCard
+  // fetchSeq pattern): a response only lands if no newer skill was selected
+  // since, so a slow stale reply can never clobber the current skill's history.
+  const fetchSeq = useRef(0);
 
   useEffect(() => {
+    const seq = ++fetchSeq.current;
     setLoading(true);
-    api.getSkillExecutions(skillId).then(data => {
-      setExecutions(data);
-      setLoading(false);
-    });
+    setError(null);
+    api.getSkillExecutions(skillId)
+      .then(data => {
+        if (seq !== fetchSeq.current) return; // skill changed mid-flight
+        setExecutions(data);
+        setLoading(false);
+      })
+      .catch(err => {
+        if (seq !== fetchSeq.current) return;
+        // A backend failure is an ERROR, not an empty history — the old
+        // `.catch(() => [])` rendered daemon outages as "No executions yet".
+        setExecutions([]);
+        setError(err instanceof Error ? err.message : 'Could not load executions');
+        setLoading(false);
+      });
   }, [skillId]);
 
   if (loading) {
@@ -51,7 +68,11 @@ export function SkillExecutionHistory({ skillId }: SkillExecutionHistoryProps) {
       >
         Execution History {executions.length > 0 && `(${executions.length})`}
       </label>
-      {executions.length === 0 ? (
+      {error ? (
+        <div className="text-[10px]" style={{ fontFamily: font.mono, color: colors.danger }}>
+          Couldn't load execution history — {error}
+        </div>
+      ) : executions.length === 0 ? (
         <div className="text-[10px]" style={{ fontFamily: font.mono, color: colors.textMuted, opacity: 0.8 }}>No executions yet.</div>
       ) : (
         <div className="space-y-1.5">

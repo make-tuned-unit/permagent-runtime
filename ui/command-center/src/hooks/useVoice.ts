@@ -285,8 +285,15 @@ export function useVoice(options: UseVoiceOptions = {}) {
     }
   }, [setStateAndEmit, emit, playNextChunk, flushNavIfIdle]);
 
+  // Monotonic connect epoch. Each connectSocket call claims a new epoch; a
+  // call that gets superseded while awaiting the daemon token (e.g. the
+  // session switched and a rebind connect started) aborts instead of resuming
+  // and binding a socket to a stale session URL after the newer one.
+  const connectEpochRef = useRef(0);
+
   // --- Core connect ---
   const connectSocket = useCallback(async (): Promise<void> => {
+    const epoch = ++connectEpochRef.current;
     if (wsRef.current) {
       wsRef.current.onclose = null;
       wsRef.current.close();
@@ -301,6 +308,13 @@ export function useVoice(options: UseVoiceOptions = {}) {
       token = await loadDaemonToken();
     } catch (e) {
       console.error('[useVoice] loadDaemonToken failed:', e);
+    }
+
+    // A newer connect started while we awaited the token — it owns the socket
+    // now (and carries the current session_id); creating ours would clobber it
+    // with a stale-session connection.
+    if (epoch !== connectEpochRef.current) {
+      throw new Error('connect superseded by a newer connect');
     }
 
     const base = getApiBaseUrl().replace(/^http/, 'ws');
@@ -375,12 +389,14 @@ export function useVoice(options: UseVoiceOptions = {}) {
     lastActivityRef.current = Date.now();
 
     if (activeRef.current) {
-      if (!connectingRef.current) {
-        connectingRef.current = true;
-        connectSocket()
-          .catch(() => {})
-          .finally(() => { connectingRef.current = false; });
-      }
+      // Even if a connect is already in flight, start a fresh one: the
+      // in-flight attempt may be bound to a stale session URL (session-switch
+      // recovery) or wedged. connectSocket's epoch guard aborts the stale
+      // attempt; its preamble closes any socket it already opened.
+      connectingRef.current = true;
+      connectSocket()
+        .catch(() => {})
+        .finally(() => { connectingRef.current = false; });
     } else {
       if (wsRef.current) {
         wsRef.current.onclose = null;
@@ -411,19 +427,39 @@ export function useVoice(options: UseVoiceOptions = {}) {
     return () => clearInterval(id);
   }, [forceRecover]);
 
-  // Defensive cross-session reset: VoiceButton is never remounted on a new
-  // conversation (only chatSessionId changes), so a wedged 'playing'/'processing'
-  // would otherwise be inherited by the next session. Force-clear it on session
-  // change so a new session is never born with a locked mic — a backstop even if
-  // an unforeseen path leaves the state stuck.
+  // Session rebinding: the socket bakes `session_id` into its URL at connect
+  // time, so a socket that survives a conversation switch keeps routing voice
+  // turns into the PREVIOUS session — push-to-talk in 'ready' after a switch
+  // was landing utterances in the old chat. On ANY session change while a
+  // socket is live (or a connect is in flight), drop whatever is bound to the
+  // old session — loudly, never silently misrouting — and reconnect bound to
+  // the new session. The mic stays acquired; only the socket is rebuilt. When
+  // voice is fully off there is nothing bound to a session and nothing to do.
   const prevSessionRef = useRef(sessionId);
   useEffect(() => {
     if (prevSessionRef.current === sessionId) return;
     prevSessionRef.current = sessionId;
     const s = stateRef.current;
-    if (s === 'processing' || s === 'playing' || s === 'error') {
-      forceRecover('session changed — clearing inherited busy voice state');
+    if (!wsRef.current && !connectingRef.current && s === 'idle') return;
+
+    if (s === 'recording') {
+      // Mid-capture: the frames already streamed to the old session's socket.
+      // Never send 'stop' (that would run the turn against the old session) —
+      // tear the capture down and drop the utterance, visibly.
+      console.warn(
+        '[useVoice] session changed mid-recording — dropping the in-flight utterance rather than sending it to the previous session',
+      );
+      processorRef.current?.disconnect();
+      processorRef.current = null;
+      audioCtxRef.current?.close().catch(() => {});
+      audioCtxRef.current = null;
+      frameCountRef.current = 0;
+    } else if (s === 'processing' || s === 'playing') {
+      console.warn(
+        "[useVoice] session changed mid-turn — dropping the previous session's in-flight reply",
+      );
     }
+    forceRecover('session changed — rebinding voice socket to the new session');
   }, [sessionId, forceRecover]);
 
   // --- Public API ---

@@ -173,6 +173,17 @@ interface CommandCenterStore {
   loadWorkspaces: () => Promise<void>;
   switchWorkspace: (workspaceId: string) => void;
   updateWorkspaceLayout: (workspaceId: string, layoutJson: LayoutNode) => void;
+  /** Set when persisting workspace state (a layout resize, or which workspace
+   *  is active) fails. The local UI keeps the optimistic value, so without
+   *  this latch the app silently lies that the arrangement was saved (the old
+   *  `.catch(() => {})`). Cleared by a later successful save of the same kind
+   *  or an explicit retry. Rendered by WorkspaceSaveErrorChip (the Dashboard
+   *  SaveIndicator pattern, plus a Retry path). */
+  workspaceSaveFailure: { kind: 'layout' | 'active'; workspaceId: string; message: string } | null;
+  /** Re-attempt the failed workspace persistence using the CURRENT state
+   *  (freshest layout / currently-active workspace, not a stale snapshot). */
+  retryWorkspaceSave: () => Promise<void>;
+  dismissWorkspaceSaveFailure: () => void;
 
   // --- Connection state ---
   connectionStatus: ConnectionStatus;
@@ -578,7 +589,25 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     // not re-emit an "opened" engagement event for a view that never closed.
     if (get().activeWorkspaceId === workspaceId) return;
     set({ activeWorkspaceId: workspaceId });
-    api.setActiveWorkspace(workspaceId).catch(() => {});
+    // The switch is applied optimistically (the tab must feel instant); the
+    // persistence result is surfaced honestly instead of the old silent catch.
+    api.setActiveWorkspace(workspaceId)
+      .then(() => {
+        // A later success supersedes a stale unsaved-active failure.
+        if (get().workspaceSaveFailure?.kind === 'active') {
+          set({ workspaceSaveFailure: null });
+        }
+      })
+      .catch((err: unknown) => {
+        console.error('Failed to persist active workspace:', err);
+        set({
+          workspaceSaveFailure: {
+            kind: 'active',
+            workspaceId,
+            message: err instanceof Error ? err.message : String(err),
+          },
+        });
+      });
     // Report engagement for surfaces that emit nothing themselves. Boot sets
     // activeWorkspaceId directly (not via this action), so this only fires on a
     // real user/agent navigation, never on initial load.
@@ -594,8 +623,55 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         w.id === workspaceId ? { ...w, layoutJson } : w
       ),
     }));
-    api.updateWorkspaceLayout(workspaceId, layoutJson).catch(() => {});
+    // Optimistic local update above; a failed save must not pass for a saved
+    // layout (the old `.catch(() => {})` swallowed 5xx AND the raw fetch never
+    // even rejected on one). Failure latches workspaceSaveFailure → retry chip.
+    api.updateWorkspaceLayout(workspaceId, layoutJson)
+      .then(() => {
+        const f = get().workspaceSaveFailure;
+        if (f?.kind === 'layout' && f.workspaceId === workspaceId) {
+          set({ workspaceSaveFailure: null });
+        }
+      })
+      .catch((err: unknown) => {
+        console.error('Failed to persist workspace layout:', err);
+        set({
+          workspaceSaveFailure: {
+            kind: 'layout',
+            workspaceId,
+            message: err instanceof Error ? err.message : String(err),
+          },
+        });
+      });
   },
+
+  workspaceSaveFailure: null,
+
+  retryWorkspaceSave: async () => {
+    const failure = get().workspaceSaveFailure;
+    if (!failure) return;
+    try {
+      if (failure.kind === 'layout') {
+        const ws = get().workspaces.find(w => w.id === failure.workspaceId);
+        if (ws) await api.updateWorkspaceLayout(failure.workspaceId, ws.layoutJson);
+      } else {
+        // Persist whichever workspace is active NOW — the user may have
+        // switched again since the failed save; current truth wins.
+        const active = get().activeWorkspaceId;
+        if (active) await api.setActiveWorkspace(active);
+      }
+      set({ workspaceSaveFailure: null });
+    } catch (err) {
+      set({
+        workspaceSaveFailure: {
+          ...failure,
+          message: err instanceof Error ? err.message : String(err),
+        },
+      });
+    }
+  },
+
+  dismissWorkspaceSaveFailure: () => set({ workspaceSaveFailure: null }),
 
   // Connection
   connectionStatus: 'disconnected',
@@ -761,6 +837,18 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
           );
         } catch (err) {
           console.error('[send] fileToBase64 FAILED:', err);
+          // The message still sends, but WITHOUT these images — say so in the
+          // transcript instead of silently dropping files the user watched
+          // themselves attach.
+          const n = visualImages.length;
+          set(s => ({
+            chatMessages: [...s.chatMessages, {
+              id: `msg-${Date.now()}-imgerr`,
+              role: 'system' as const,
+              content: `Couldn't read ${n} attached image${n === 1 ? '' : 's'} — sending the message without ${n === 1 ? 'it' : 'them'}.`,
+              timestamp: new Date().toISOString(),
+            }],
+          }));
         }
       }
     }
@@ -818,7 +906,9 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         isStreaming: false,
         _streamingMessageId: null,
         _activeRequestId: null,
-        chatMessages: [...s.chatMessages, {
+        // Drop the empty assistant placeholder — nothing will ever stream into
+        // it, and leaving it renders a blank agent bubble above the failure.
+        chatMessages: [...s.chatMessages.filter(m => m.id !== streamMsgId), {
           id: `msg-${Date.now()}-err`,
           role: 'system' as const,
           content: `Failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
@@ -910,17 +1000,24 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   },
 
   deleteSession: async (sessionId: string) => {
+    // api.deleteSession throws on a non-2xx (it used to resolve on a 500, and
+    // the old unconditional clear below then blanked the OPEN conversation for
+    // a session the daemon never deleted). State clears only after a confirmed
+    // delete; failures propagate so the caller can surface them (SessionsList
+    // toasts) without losing the user's open chat.
     try {
       await api.deleteSession(sessionId);
-      const state = get();
-      if (state.chatSessionId === sessionId) {
-        set({ chatSessionId: null, chatMessages: [] });
-        try { localStorage.removeItem('permagent-chat-session-id'); } catch { /* */ }
-      }
-      await get().loadSessions();
     } catch (e) {
       console.error('Failed to delete session:', e);
+      throw e;
     }
+    if (get().chatSessionId === sessionId) {
+      set({ chatSessionId: null, chatMessages: [] });
+      try { localStorage.removeItem('permagent-chat-session-id'); } catch { /* */ }
+    }
+    // loadSessions never throws (it latches sessionsError internally), so a
+    // refresh hiccup here cannot masquerade as a failed delete.
+    await get().loadSessions();
   },
 
   renameSession: async (sessionId: string, name: string) => {

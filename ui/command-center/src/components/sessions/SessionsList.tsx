@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from 'react';
 import { FiPlus, FiTrash2, FiMessageSquare, FiX } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
 import { api } from '../../lib/api';
+import { toast } from '../../lib/notifications';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
@@ -130,7 +131,13 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
 
   const handleDelete = async (sessionId: string) => {
     setConfirmDelete(null);
-    await deleteSession(sessionId);
+    try {
+      await deleteSession(sessionId);
+    } catch (e) {
+      // The daemon refused (or never heard) the delete — the session still
+      // exists and the store kept the open conversation intact; say so.
+      toast("Couldn't delete session", e instanceof Error ? e.message : String(e));
+    }
   };
 
   return (

@@ -1,0 +1,60 @@
+import { useCommandCenter } from '../../lib/store';
+import { font, radius } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
+
+/**
+ * Non-blocking chip for a failed workspace persistence (layout resize or
+ * active-workspace switch). The store keeps the optimistic local value, so
+ * without this the UI would silently lie that the arrangement was saved —
+ * the Dashboard SaveIndicator "Save failed" pattern, plus the Retry path the
+ * dashboard's auto-dismissing label doesn't need (a lost layout save has no
+ * later poll to heal it). Renders nothing while saves are healthy.
+ */
+export function WorkspaceSaveErrorChip() {
+  const { colors } = useTheme();
+  const failure = useCommandCenter(s => s.workspaceSaveFailure);
+  const retry = useCommandCenter(s => s.retryWorkspaceSave);
+  const dismiss = useCommandCenter(s => s.dismissWorkspaceSaveFailure);
+
+  if (!failure) return null;
+
+  const label = failure.kind === 'layout'
+    ? "Couldn't save workspace layout"
+    : "Couldn't save active workspace";
+
+  return (
+    <div
+      style={{
+        position: 'fixed', bottom: 18, left: '50%', transform: 'translateX(-50%)',
+        zIndex: 95, display: 'flex', alignItems: 'center', gap: 10,
+        padding: '6px 12px', borderRadius: radius.md,
+        background: colors.surface, border: `1px solid ${colors.border}`,
+        boxShadow: colors.cardShadow, fontFamily: font.body, fontSize: 11,
+      }}
+      title={failure.message}
+    >
+      <span style={{ color: colors.danger, fontWeight: 500 }}>{label}</span>
+      <button
+        onClick={() => { void retry(); }}
+        style={{
+          border: 'none', background: 'transparent', cursor: 'pointer',
+          padding: 0, color: colors.cyan, fontFamily: font.body,
+          fontSize: 11, fontWeight: 600,
+        }}
+      >
+        Retry
+      </button>
+      <button
+        onClick={dismiss}
+        title="Dismiss"
+        style={{
+          border: 'none', background: 'transparent', cursor: 'pointer',
+          padding: 0, color: colors.textMuted, fontFamily: font.body,
+          fontSize: 11,
+        }}
+      >
+        Dismiss
+      </button>
+    </div>
+  );
+}

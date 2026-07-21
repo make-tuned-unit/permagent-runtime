@@ -629,11 +629,12 @@ export const api = {
   getSession: (id: string) =>
     apiFetch<Session>(`/api/sessions/${encodeURIComponent(id)}`),
 
-  // Delete session — DELETE /api/sessions/{id}
+  // Delete session — DELETE /api/sessions/{id}. apiFetch, not raw fetch: a raw
+  // fetch RESOLVES on a 5xx, so the store treated a failed delete as success
+  // and blanked the open conversation for a session the daemon still has.
   deleteSession: (id: string) =>
-    fetch(`${API_BASE_URL}/api/sessions/${encodeURIComponent(id)}`, {
+    apiFetch<void>(`/api/sessions/${encodeURIComponent(id)}`, {
       method: 'DELETE',
-      headers: authHeaders(),
     }),
 
   // Create session — POST /api/sessions
@@ -887,10 +888,12 @@ export const api = {
       body: JSON.stringify(updates),
     }),
 
+  // No silent `.catch(() => [])` here: a backend failure must reach the
+  // component as an ERROR, not render as an empty "No executions yet" history.
   getSkillExecutions: (skillId: string) =>
     apiFetch<Array<{ id: string; status: string; started_at: string; completed_at?: string; error_message?: string }>>(
       `/permagent/skills/${encodeURIComponent(skillId)}/executions`
-    ).catch(() => []),
+    ),
 
   deleteSkill: (id: string) =>
     apiFetch<{ deleted: boolean }>(`/permagent/skills/${encodeURIComponent(id)}`, { method: 'DELETE' }),
@@ -931,10 +934,11 @@ export const api = {
       body: JSON.stringify({ workspaceId }),
     }),
 
+  // apiFetch, not raw fetch: a raw fetch resolved on a 5xx, so a failed layout
+  // save looked identical to a successful one and the UI silently lied.
   updateWorkspaceLayout: (workspaceId: string, layoutJson: unknown) =>
-    fetch(`${API_BASE_URL}/api/workspaces/${encodeURIComponent(workspaceId)}/layout`, {
+    apiFetch<void>(`/api/workspaces/${encodeURIComponent(workspaceId)}/layout`, {
       method: 'PUT',
-      headers: authHeaders(),
       body: JSON.stringify({ layoutJson }),
     }),
 

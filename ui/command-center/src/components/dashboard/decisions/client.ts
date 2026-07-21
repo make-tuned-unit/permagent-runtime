@@ -67,7 +67,11 @@ async function decisionsFetch<T>(endpoint: string, options?: RequestInit): Promi
     const error = await response.json().catch(() => ({ message: 'Unknown error' }));
     throw new Error(error.message || error.error || `HTTP ${response.status}`);
   }
-  return response.json() as Promise<T>;
+  // Some mutation routes return a bare 2xx with an empty body; response.json()
+  // rejects on empty input, turning those successes into client-side
+  // "failures" (the #561/#568 incident class — same guard as lib/api apiFetch).
+  const text = await response.text();
+  return (text ? JSON.parse(text) : undefined) as T;
 }
 
 export const realDecisionsClient: DecisionsClient = {
