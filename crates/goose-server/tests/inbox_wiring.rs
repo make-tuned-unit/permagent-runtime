@@ -32,9 +32,21 @@ fn post_json(uri: &str, body: serde_json::Value) -> Request<Body> {
         .unwrap()
 }
 
+/// Find one row by id in a `GET /api/inbox` array body.
+fn row_by_id<'a>(listed: &'a serde_json::Value, id: &str) -> Option<&'a serde_json::Value> {
+    listed.as_array()?.iter().find(|r| r["id"] == id)
+}
+
 // #[serial]: mutates the process-global PERMAGENT_PATH_ROOT env var and builds a
 // full AppState, which races other AppState-building tests under parallel cargo
 // test (see the appstate-tests-must-be-serial regression).
+//
+// NOTE on assertions: the session-manager pool behind AppState is process-global,
+// so every #[serial] test in this binary shares ONE accumulating database and
+// the run order differs per platform. Assertions must therefore be id-scoped or
+// baseline-relative — never absolute counts or positional indexing (that
+// exact class of flake went red on CI: macOS ran the routing tests first and
+// "starts empty" saw their rows).
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn post_then_get_inbox_roundtrips_through_router() {
@@ -44,15 +56,10 @@ async fn post_then_get_inbox_roundtrips_through_router() {
     let state = permagent_daemon::state::AppState::new(true).await.unwrap();
     let app = permagent_daemon::routes::inbox::routes(state.clone());
 
-    // Starts empty.
+    // Baseline (the shared DB may already hold rows from sibling tests).
     let resp = app.clone().oneshot(get("/api/inbox")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let listed = body_json(resp).await;
-    assert_eq!(
-        listed.as_array().map(|a| a.len()),
-        Some(0),
-        "inbox starts empty"
-    );
+    let baseline = body_json(resp).await.as_array().map(|a| a.len()).unwrap();
 
     // Record a download via POST (mirrors the desktop download bridge).
     let resp = app
@@ -73,16 +80,21 @@ async fn post_then_get_inbox_roundtrips_through_router() {
     let created = body_json(resp).await;
     assert_eq!(created["filename"], "invoice.pdf");
     assert_eq!(created["status"], "received");
+    let created_id = created["id"].as_str().unwrap().to_string();
 
     // GET now lists it — this is the endpoint the inbox panel calls.
     let resp = app.oneshot(get("/api/inbox")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let listed = body_json(resp).await;
-    let arr = listed.as_array().expect("array body");
-    assert_eq!(arr.len(), 1, "the recorded file must be listed");
-    assert_eq!(arr[0]["filename"], "invoice.pdf");
-    assert_eq!(arr[0]["original_url"], "https://example.com/invoice.pdf");
-    assert_eq!(arr[0]["size_bytes"], 2048);
+    assert_eq!(
+        listed.as_array().map(|a| a.len()),
+        Some(baseline + 1),
+        "exactly the recorded file was added"
+    );
+    let row = row_by_id(&listed, &created_id).expect("the recorded file must be listed");
+    assert_eq!(row["filename"], "invoice.pdf");
+    assert_eq!(row["original_url"], "https://example.com/invoice.pdf");
+    assert_eq!(row["size_bytes"], 2048);
 }
 
 // ── Routing (#395) ─────────────────────────────────────────────────────────
@@ -219,7 +231,8 @@ async fn route_inbox_file_to_each_destination() {
     // The routed file is still listed — routing never deletes from the inbox.
     let resp = app.oneshot(get("/api/inbox")).await.unwrap();
     let listed = body_json(resp).await;
-    assert_eq!(listed.as_array().map(|a| a.len()), Some(1));
+    let row = row_by_id(&listed, &file_id).expect("routed file must still be listed");
+    assert_eq!(row["status"], "routed");
 }
 
 /// Guard rails: unknown file, unknown destination, project-scoped destination
@@ -295,10 +308,8 @@ async fn route_inbox_file_guard_rails() {
     assert_eq!(resp.status(), StatusCode::CONFLICT);
     let resp = app.clone().oneshot(get("/api/inbox")).await.unwrap();
     let listed = body_json(resp).await;
-    assert_eq!(
-        listed[0]["status"], "received",
-        "failed route must not mark"
-    );
+    let ghost = row_by_id(&listed, &ghost_id).expect("ghost row listed");
+    assert_eq!(ghost["status"], "received", "failed route must not mark");
 
     // A traversal disk_path must be refused before touching the filesystem.
     let resp = app
