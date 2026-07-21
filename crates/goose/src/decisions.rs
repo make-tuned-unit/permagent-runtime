@@ -305,6 +305,118 @@ pub struct ToolApprovalPayload {
     pub security_message: Option<String>,
 }
 
+/// Payload for `kind='session_gate'` (S3, #429) — a supervised terminal
+/// Claude Code session (epic #399) is BLOCKED on a `can_use_tool` permission
+/// gate. Filed by the S2 gate parser's bridge
+/// (`agents::platform_extensions::terminal_supervision::bridge_report_to_inbox`)
+/// when a `control_request`/`can_use_tool` line is observed in the session's
+/// PTY output.
+///
+/// Routing keys: `target_session_id` (the supervised loop session, `sup-<uuid>`)
+/// plus `request_id` (the gate's id INSIDE that session — claude numbers them
+/// per-session, so it is NOT globally unique; always match on the pair).
+/// `pty_session_id` is the S5 relay address (`write_to_pty`); S5's effect arm
+/// consumes it. Until S5 lands, answering this decision records the ruling and
+/// returns the exact `control_response` NDJSON line to type into the session's
+/// visible terminal tab (the S1/S2 escape hatch) — see
+/// [`session_gate_relay_line`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionGatePayload {
+    /// Plain-language restatement of what the session is asking.
+    pub question: String,
+    /// The supervised session id (`sup-<uuid>`) the gate belongs to.
+    pub target_session_id: String,
+    /// The Tauri PTY id (`pty-<uuid>`) — the S5 relay address. Absent when the
+    /// gate was parsed before the tee attached the PTY (first-chunk race).
+    #[serde(default)]
+    pub pty_session_id: Option<String>,
+    /// The gate's `control_request` id — the key a `control_response` must echo.
+    pub request_id: String,
+    /// Tool the session wants to run (e.g. `Write`, `Bash`).
+    pub tool_name: String,
+    /// The tool's input object, verbatim from the gate line. S4 classifies it;
+    /// an `allow` answer must echo it back as `updatedInput`.
+    #[serde(default)]
+    pub input: serde_json::Value,
+    /// The gate's tool-use id, echoed back in an `allow` (`toolUseID`).
+    #[serde(default)]
+    pub tool_use_id: Option<String>,
+    /// The answers the gate accepts. Fixed vocabulary today: `allow` / `deny`
+    /// (the `can_use_tool` protocol's two behaviors).
+    pub options: Vec<String>,
+}
+
+/// Structural checks beyond serde for a session gate: non-empty routing keys
+/// and 2..=8 non-empty options (mirrors `choice`). Failing any of these stores
+/// the request as `kind='malformed'` — never coerced (S2).
+fn validate_session_gate_payload(p: &SessionGatePayload) -> Result<(), String> {
+    for (name, value) in [
+        ("question", &p.question),
+        ("target_session_id", &p.target_session_id),
+        ("request_id", &p.request_id),
+        ("tool_name", &p.tool_name),
+    ] {
+        if value.trim().is_empty() {
+            return Err(format!("session_gate requires a non-empty '{name}'"));
+        }
+    }
+    if !(2..=8).contains(&p.options.len()) {
+        return Err(format!(
+            "session_gate requires 2..=8 options, got {}",
+            p.options.len()
+        ));
+    }
+    if p.options.iter().any(|o| o.trim().is_empty()) {
+        return Err("session_gate options must be non-empty".to_string());
+    }
+    Ok(())
+}
+
+/// The exact `control_response` NDJSON line that answers this gate on the
+/// session's stdin — the wire shape the in-repo protocol implementation
+/// (`providers/claude_code.rs`: `ControlResponse` + `PermissionResponse`)
+/// already sends in production:
+///
+/// - allow: `{"type":"control_response","response":{"subtype":"success",
+///   "request_id":…,"response":{"behavior":"allow","updatedInput":{…},
+///   "toolUseID":…}}}`
+/// - deny:  same envelope with `{"behavior":"deny","message":…}`.
+///
+/// Until S5's relay lands, this line is surfaced to the operator to type into
+/// the session's visible terminal tab (whose PTY forwards stdin to the CLI —
+/// the S1 `cat '<file>' -` pipeline). S5 will write the same line through
+/// `write_to_pty` instead.
+pub fn session_gate_relay_line(payload: &SessionGatePayload, allow: bool) -> String {
+    let response = if allow {
+        serde_json::json!({
+            "behavior": "allow",
+            // The protocol echoes the (possibly edited) input back; we echo it
+            // verbatim — nothing here edits tool input.
+            "updatedInput": if payload.input.is_object() {
+                payload.input.clone()
+            } else {
+                serde_json::Value::Object(serde_json::Map::new())
+            },
+            "toolUseID": payload.tool_use_id.clone().unwrap_or_default(),
+        })
+    } else {
+        serde_json::json!({
+            "behavior": "deny",
+            "message": "Denied from the Decision Inbox",
+        })
+    };
+    serde_json::json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": payload.request_id,
+            "response": response,
+        },
+    })
+    .to_string()
+}
+
 // ── Decision rows ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -415,6 +527,7 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
         "enrichment_proposal",
         "file_to_project",
         "tool_approval",
+        "session_gate",
     ]
     .contains(&req.kind.as_str())
     {
@@ -473,6 +586,10 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
         "tool_approval" => serde_json::from_value::<ToolApprovalPayload>(req.payload.clone())
             .map(|_| ())
             .map_err(|e| e.to_string()),
+        "session_gate" => match serde_json::from_value::<SessionGatePayload>(req.payload.clone()) {
+            Ok(p) => validate_session_gate_payload(&p),
+            Err(e) => Err(e.to_string()),
+        },
         _ => unreachable!("kind validated above"),
     };
     payload_result.map_err(|e| format!("payload failed schema for kind '{}': {}", req.kind, e))
@@ -727,6 +844,34 @@ pub async fn find_open_tool_approval_by_request_id(
          ORDER BY created_at DESC LIMIT 1",
         DECISION_COLUMNS
     ))
+    .bind(request_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(row.as_ref().map(row_to_decision))
+}
+
+/// Find the open `session_gate` decision for a gate, addressed by the
+/// (`target_session_id`, `request_id`) PAIR — claude numbers gate request ids
+/// per-session (`perm_1`, `perm_2`, …), so `request_id` alone can collide
+/// across concurrent supervised sessions. Used by the S3 bridge both to
+/// dedupe filing (a re-observed gate line must not double-escalate) and to
+/// locate the card to supersede when the gate resolves outside the inbox
+/// (hand-typed answer, session end).
+pub async fn find_open_session_gate(
+    pool: &Pool<Sqlite>,
+    target_session_id: &str,
+    request_id: &str,
+) -> Result<Option<Decision>, String> {
+    let row = sqlx::query(&format!(
+        "SELECT {} FROM decisions \
+         WHERE kind = 'session_gate' AND status = 'open' \
+           AND json_extract(payload_json, '$.target_session_id') = ? \
+           AND json_extract(payload_json, '$.request_id') = ? \
+         ORDER BY created_at DESC LIMIT 1",
+        DECISION_COLUMNS
+    ))
+    .bind(target_session_id)
     .bind(request_id)
     .fetch_optional(pool)
     .await
@@ -2169,5 +2314,145 @@ mod tests {
             history.iter().any(|h| h.decision.id == low.id),
             "resolved decision must appear in history"
         );
+    }
+
+    // ── session_gate (S3, #429) ──
+
+    fn session_gate_payload_json(session: &str, request: &str) -> serde_json::Value {
+        serde_json::json!({
+            "question": "Allow the session to run Write?",
+            "target_session_id": session,
+            "pty_session_id": "pty-1",
+            "request_id": request,
+            "tool_name": "Write",
+            "input": {"path": "foo.txt", "content": "hello"},
+            "tool_use_id": "tu_1",
+            "options": ["allow", "deny"],
+        })
+    }
+
+    fn valid_session_gate(session: &str, request: &str) -> NewDecision {
+        NewDecision {
+            kind: "session_gate".to_string(),
+            headline: Some("A terminal session is waiting for permission".to_string()),
+            detail: Some("Write {\"path\":\"foo.txt\"}".to_string()),
+            payload: session_gate_payload_json(session, request),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn session_gate_created_at_tier2_fail_closed() {
+        let pool = test_pool().await;
+        let d = create_decision(&pool, valid_session_gate("sup-a", "perm_1"))
+            .await
+            .unwrap();
+        assert_eq!(d.kind, "session_gate");
+        // No seeded risk_policy class for 'session_gate' (S4 adds the
+        // tool→action_class mapping) → fail-closed to Tier 2, human-only.
+        assert_eq!(d.tier, 2);
+        assert_eq!(d.payload["request_id"], "perm_1");
+        assert_eq!(d.payload["target_session_id"], "sup-a");
+    }
+
+    #[tokio::test]
+    async fn session_gate_missing_routing_keys_is_malformed() {
+        let pool = test_pool().await;
+        let mut req = valid_session_gate("sup-a", "perm_1");
+        req.payload = serde_json::json!({
+            "question": "Allow?",
+            "tool_name": "Write",
+            "options": ["allow", "deny"],
+        });
+        let d = create_decision(&pool, req).await.unwrap();
+        assert_eq!(d.kind, "malformed");
+        assert_eq!(
+            d.payload.get("original_kind").and_then(|v| v.as_str()),
+            Some("session_gate")
+        );
+    }
+
+    #[tokio::test]
+    async fn session_gate_with_too_few_options_is_malformed() {
+        let pool = test_pool().await;
+        let mut req = valid_session_gate("sup-a", "perm_1");
+        req.payload["options"] = serde_json::json!(["allow"]);
+        let d = create_decision(&pool, req).await.unwrap();
+        assert_eq!(d.kind, "malformed");
+    }
+
+    /// The finder must match on the (session, request) PAIR: claude's gate ids
+    /// are per-session (`perm_1`, `perm_2`, …), so two concurrent sessions can
+    /// both be blocked on a `perm_1`.
+    #[tokio::test]
+    async fn find_open_session_gate_matches_on_session_and_request_pair() {
+        let pool = test_pool().await;
+        let a = create_decision(&pool, valid_session_gate("sup-a", "perm_1"))
+            .await
+            .unwrap();
+        let b = create_decision(&pool, valid_session_gate("sup-b", "perm_1"))
+            .await
+            .unwrap();
+
+        let found = find_open_session_gate(&pool, "sup-a", "perm_1")
+            .await
+            .unwrap()
+            .expect("open gate for sup-a must be found");
+        assert_eq!(found.id, a.id);
+        let found_b = find_open_session_gate(&pool, "sup-b", "perm_1")
+            .await
+            .unwrap()
+            .expect("open gate for sup-b must be found");
+        assert_eq!(found_b.id, b.id);
+        assert!(find_open_session_gate(&pool, "sup-c", "perm_1")
+            .await
+            .unwrap()
+            .is_none());
+
+        // Superseding closes it for the finder (open-only contract).
+        assert!(supersede_decision(&pool, &a.id, "answered in the terminal")
+            .await
+            .unwrap());
+        assert!(find_open_session_gate(&pool, "sup-a", "perm_1")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    /// The relay line must match the wire shape the in-repo protocol
+    /// implementation (`providers/claude_code.rs`) sends in production.
+    #[test]
+    fn session_gate_relay_line_matches_protocol_wire_shape() {
+        let payload: SessionGatePayload =
+            serde_json::from_value(session_gate_payload_json("sup-a", "perm_1")).unwrap();
+
+        let allow: serde_json::Value =
+            serde_json::from_str(&session_gate_relay_line(&payload, true)).unwrap();
+        assert_eq!(allow["type"], "control_response");
+        assert_eq!(allow["response"]["subtype"], "success");
+        assert_eq!(allow["response"]["request_id"], "perm_1");
+        assert_eq!(allow["response"]["response"]["behavior"], "allow");
+        assert_eq!(
+            allow["response"]["response"]["updatedInput"],
+            serde_json::json!({"path": "foo.txt", "content": "hello"})
+        );
+        assert_eq!(allow["response"]["response"]["toolUseID"], "tu_1");
+
+        let deny: serde_json::Value =
+            serde_json::from_str(&session_gate_relay_line(&payload, false)).unwrap();
+        assert_eq!(deny["response"]["request_id"], "perm_1");
+        assert_eq!(deny["response"]["response"]["behavior"], "deny");
+        assert!(deny["response"]["response"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Denied"));
+
+        // A non-object input must degrade to an empty updatedInput object,
+        // never a type error on the session's stdin.
+        let mut odd = payload.clone();
+        odd.input = serde_json::json!("not-an-object");
+        let allow_odd: serde_json::Value =
+            serde_json::from_str(&session_gate_relay_line(&odd, true)).unwrap();
+        assert!(allow_odd["response"]["response"]["updatedInput"].is_object());
     }
 }
