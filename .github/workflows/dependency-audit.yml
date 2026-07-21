@@ -50,14 +50,14 @@ jobs:
       - uses: actions/checkout@v7
       # https://github.com/EmbarkStudios/cargo-deny-action v2.0.15
       - name: cargo deny (root workspace)
-        uses: EmbarkStudios/cargo-deny-action@91bf2b620e09e18d6eb78b92e7861937469acedb
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25
         with:
           command: check advisories
       # The Tauri shell crate is workspace-excluded with its own Cargo.lock —
       # the root scan does not cover the binary we actually ship in the DMG.
       # Shares the root deny.toml policy.
       - name: cargo deny (tauri shell crate)
-        uses: EmbarkStudios/cargo-deny-action@91bf2b620e09e18d6eb78b92e7861937469acedb
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25
         with:
           command: check advisories
           manifest-path: ui/desktop/src-tauri/Cargo.toml
