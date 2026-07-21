@@ -41,6 +41,11 @@ pub struct AppState {
     /// Loaded from ~/.permagent/secrets/daemon_token.json on startup.
     /// The Tauri shell reads the same file to include the token in requests.
     pub daemon_token: Option<String>,
+    /// Per-device pairing tokens (#628): named companions, last-seen,
+    /// revocation. The bearer middleware accepts the master `daemon_token`
+    /// (the hub's own app — legacy, zero-breakage) OR any non-revoked device
+    /// token from this registry.
+    pub device_registry: Arc<crate::device_registry::DeviceRegistry>,
     /// Activity event ingester — writes Always/Aggregated events to Brain.
     pub activity_ingester: Option<Arc<permagent::activity::ingestion::ActivityIngester>>,
     /// Activity context builder — maintains live state for per-turn digests.
@@ -490,6 +495,11 @@ impl AppState {
         // Load or generate daemon token for /activity/emit auth.
         let daemon_token = load_or_create_daemon_token();
 
+        // Per-device pairing tokens (#628), beside the master token in secrets/.
+        let device_registry = Arc::new(crate::device_registry::DeviceRegistry::load(
+            crate::device_registry::DeviceRegistry::default_path(),
+        ));
+
         // Activity awareness layer: create Ingester + ContextBuilder if Brain is available.
         // Both subscribe to the global event bus via a long-lived tokio task spawned below.
         let (activity_ingester, context_builder) = if let Some(ref brain) = brain {
@@ -710,6 +720,7 @@ impl AppState {
             persona,
             agent_config,
             daemon_token,
+            device_registry,
             activity_ingester,
             context_builder,
             browser_content_bridge: Arc::new(

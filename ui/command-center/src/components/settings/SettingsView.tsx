@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { emitActivity } from '../../lib/emitActivity';
-import { api, apiFetch, loadDaemonToken, type SovereigntyStatus, type EgressLogEntry } from '../../lib/api';
+import { api, apiFetch, type SovereigntyStatus, type EgressLogEntry, type DeviceInfo } from '../../lib/api';
+import { relativeTimeAgo } from '../../lib/time-decay';
 import { font, ease, setTheme as setThemeFn, setMobiusGlow, setIdleAnim, setShowHeroMobius, setDensity as setDensityFn, setReduceMotion as setReduceMotionFn, type ThemePref, type IdleAnim, type UIDensity } from '../../styles/tokens';
 import { useTheme as useThemeHook } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
@@ -940,17 +941,37 @@ const PANELS: Record<string, (props: PanelProps) => JSX.Element> = {
   sovereignty: SovereigntyPanel,
 };
 
-/** Devices — hub-and-spoke pairing (MULTI_DEVICE.md). The hub (this machine)
- *  holds the one Brain; every other device connects to it over the tailnet by
- *  opening the pairing URL once (the token rides the #fragment and is
- *  captured into that device's localStorage — see api.ts browserToken). */
+/** Devices — hub-and-spoke pairing (MULTI_DEVICE.md, #628). The hub (this
+ *  machine) holds the one Brain; every other device connects to it over the
+ *  tailnet by opening a pairing URL once. The URL carries a ONE-TIME claim
+ *  code (`#claim=`) that the new device exchanges for its own token on first
+ *  load (see api.ts pendingClaimCode/exchangeClaim) — so each companion is a
+ *  named, individually revocable entry in the registry below. */
 function DevicesPanel() {
   const { colors } = useThemeHook();
-  const [token, setToken] = useState<string | null>(null);
   const [host, setHost] = useState('your-mac.tailnet-name.ts.net');
   const [copied, setCopied] = useState(false);
   const [tailnet, setTailnet] = useState<{ installed: boolean; running: boolean; magic_dns_name: string | null } | null>(null);
-  useEffect(() => { loadDaemonToken().then(setToken); }, []);
+
+  // ── Device registry (#628) ──
+  const [devices, setDevices] = useState<DeviceInfo[] | null>(null);
+  const [pairName, setPairName] = useState('');
+  const [claim, setClaim] = useState<{ code: string; expiresAt: string } | null>(null);
+  const [pairError, setPairError] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+  const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
+  const loadDevices = useCallback(() => {
+    api.listDevices().then(setDevices).catch(() => setDevices(null));
+  }, []);
+  // Live last-seen: the middleware stamps it on every authenticated device
+  // request; a light poll keeps "last seen 2m ago" honest while the panel is
+  // open.
+  useEffect(() => {
+    loadDevices();
+    const t = setInterval(loadDevices, 30_000);
+    return () => clearInterval(t);
+  }, [loadDevices]);
   // Deterministic detection: when the hub is on a tailnet, the address fills
   // itself — the user types nothing (Jesse's zero-strain rule, 2026-07-11).
   useEffect(() => {
@@ -961,9 +982,9 @@ function DevicesPanel() {
       })
       .catch(() => setTailnet(null));
   }, []);
-  const pairingUrl = token
-    ? `http://${host}:3001/ui/#token=${token}`
-    : null;
+  // The pairing URL carries a one-time claim code — never a bearer token
+  // (#628). It is minted on demand below and goes inert after one use.
+  const pairingUrl = claim ? `http://${host}:3001/ui/#claim=${claim.code}` : null;
   const isHub = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const [detail, setDetail] = useState(0); // progressive disclosure depth
   const [hubUp, setHubUp] = useState<boolean | null>(null);
@@ -1015,7 +1036,74 @@ function DevicesPanel() {
           </p>
         )}
       </Section>
+
+      {/* #628: the device registry — named companions, last-seen, revocation. */}
+      <Section title="Paired devices" sub="Every companion has its own key. Revoking one locks out that device only — nothing else re-pairs.">
+        {devices === null && (
+          <div style={{ fontSize: 12, color: colors.textDim, padding: '6px 0' }}>
+            Device list unavailable — is the daemon reachable?
+          </div>
+        )}
+        {devices?.length === 0 && (
+          <div style={{ fontSize: 12, color: colors.textDim, padding: '6px 0' }}>
+            No devices paired yet. Create a pairing link below.
+          </div>
+        )}
+        {devices?.map(d => (
+          <Row
+            key={d.id}
+            label={d.name}
+            hint={
+              (d.revoked ? 'Revoked · ' : '')
+              + `Paired ${new Date(d.created).toLocaleDateString()}`
+              + ` · ${d.last_seen ? `last seen ${relativeTimeAgo(d.last_seen) || 'just now'}` : 'never seen'}`
+            }
+          >
+            {editingId === d.id ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <TextInput value={editName} onChange={setEditName} placeholder="Device name" />
+                <button
+                  style={ghost(colors)}
+                  onClick={() => {
+                    const name = editName.trim();
+                    if (!name) return;
+                    api.renameDevice(d.id, name)
+                      .then(() => { setEditingId(null); loadDevices(); })
+                      .catch(() => setEditingId(null));
+                  }}
+                >Save</button>
+                <button style={ghost(colors)} onClick={() => setEditingId(null)}>Cancel</button>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                {d.revoked ? (
+                  <span style={{ fontSize: 11, fontWeight: 600, color: colors.danger }}>REVOKED</span>
+                ) : (
+                  <>
+                    <button
+                      style={ghost(colors)}
+                      onClick={() => { setEditingId(d.id); setEditName(d.name); setConfirmRevokeId(null); }}
+                    >Rename</button>
+                    <button
+                      style={{ ...ghost(colors), color: colors.danger, borderColor: `${colors.danger}66` }}
+                      title="This device stops authenticating immediately. Pair it again to restore access."
+                      onClick={() => {
+                        if (confirmRevokeId !== d.id) { setConfirmRevokeId(d.id); return; }
+                        api.revokeDevice(d.id)
+                          .then(() => { setConfirmRevokeId(null); loadDevices(); })
+                          .catch(() => setConfirmRevokeId(null));
+                      }}
+                    >{confirmRevokeId === d.id ? 'Confirm revoke' : 'Revoke'}</button>
+                  </>
+                )}
+              </div>
+            )}
+          </Row>
+        ))}
+      </Section>
+
       <Section title="Pair a device" sub="Live — requires the daemon bound to your tailnet (HOST=0.0.0.0 or your Tailscale IP in the daemon environment) and Tailscale on both devices.">
+
         <Row label="Tailnet" hint={tailnet?.running ? 'Detected — address filled in automatically.' : tailnet?.installed ? 'Tailscale is installed but not connected.' : 'Tailscale not detected on this machine.'}>
           {tailnet?.running ? (
             <span style={{ fontSize: 12, color: colors.cyan }}>● Connected{tailnet.magic_dns_name ? ` — ${tailnet.magic_dns_name}` : ''}</span>
@@ -1038,7 +1126,27 @@ function DevicesPanel() {
         <Row label="Hub address" hint="Your machine's Tailscale MagicDNS name (auto-filled when the tailnet is detected).">
           <TextInput value={host} onChange={setHost} placeholder="my-mac.tailnet-name.ts.net" />
         </Row>
-        <Row label="Pairing URL" hint="Open this on the new device's browser. The token is captured on first load and scrubbed from the URL.">
+        <Row label="Device name" hint="Name the device you are pairing — this is how it appears in the registry above.">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <TextInput value={pairName} onChange={setPairName} placeholder="e.g. iPhone" />
+            <button
+              style={ghost(colors)}
+              onClick={() => {
+                const name = pairName.trim();
+                if (!name) { setPairError('Give the device a name first.'); return; }
+                api.pairDevice(name)
+                  .then(r => { setClaim({ code: r.claim_code, expiresAt: r.expires_at }); setPairError(null); })
+                  .catch(e => { setClaim(null); setPairError(e instanceof Error ? e.message : 'Pairing failed'); });
+              }}
+            >Create pairing link</button>
+          </div>
+        </Row>
+        {pairError && (
+          <div style={{ fontSize: 12, color: colors.danger, padding: '2px 0 6px' }}>{pairError}</div>
+        )}
+        <Row label="Pairing URL" hint={claim
+          ? `Open this on the new device's browser. One-time: it goes inert after first use, and expires ${new Date(claim.expiresAt).toLocaleTimeString()}.`
+          : 'Name the device and create a link — the URL carries a one-time claim code, not a token.'}>
           {pairingUrl ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
               <code style={{
@@ -1056,9 +1164,9 @@ function DevicesPanel() {
                     // Devices feature — but it is *intent*, not a completed
                     // pairing, so this stays Ephemeral (never a Brain memory).
                     // The real `devices_paired` signal is emitted by the new
-                    // device itself when it opens this URL and captures the
-                    // token (see reportDevicePaired in lib/api.ts). No token in
-                    // the payload (the URL is a bearer secret).
+                    // device itself when it claims the code and receives its
+                    // own token (see exchangeClaim in lib/api.ts). No secret
+                    // in the payload.
                     emitActivity('pairing_link_copied', 'settings');
                   });
                 }}
@@ -1066,12 +1174,12 @@ function DevicesPanel() {
             </div>
           ) : (
             <span style={{ fontSize: 12, color: colors.textDim }}>
-              Token unavailable — pairing works from the desktop app on the hub machine.
+              No active pairing link.
             </span>
           )}
         </Row>
-        <Row label="Security" hint="The URL contains this daemon's bearer token — share it only through your own devices. Tailscale encrypts the transport; the token is the pairing secret.">
-          <span style={{ fontSize: 12, color: colors.textMuted }}>Treat the pairing URL like a password.</span>
+        <Row label="Security" hint="The URL carries a one-time claim code — the new device swaps it for its own key on first load, so the link stops being a secret after one use. Each device's key can be revoked above without touching the others.">
+          <span style={{ fontSize: 12, color: colors.textMuted }}>Links are single-use and expire in 10 minutes.</span>
         </Row>
       </Section>
     </div>
