@@ -458,14 +458,39 @@ pub fn load_agent_config() -> AgentConfig {
         AgentConfig::default()
     } else {
         match std::fs::read_to_string(&path) {
-            Ok(content) => serde_yaml::from_str(&content).unwrap_or_default(),
-            Err(_) => AgentConfig::default(),
+            Ok(content) => parse_agent_config(&content),
+            Err(e) => {
+                tracing::warn!(
+                    "Could not read {} ({}); falling back to the default persona",
+                    path.display(),
+                    e
+                );
+                AgentConfig::default()
+            }
         }
     };
     if config.workers.is_empty() {
         config.workers = default_roster();
     }
     config
+}
+
+/// Parse agent.yaml content. A parse failure falls back to defaults but is
+/// LOUD about it — silently reverting to the default persona is exactly what
+/// "my saved persona didn't persist" looks like to the user (#167).
+fn parse_agent_config(content: &str) -> AgentConfig {
+    match serde_yaml::from_str(content) {
+        Ok(config) => config,
+        Err(e) => {
+            tracing::warn!(
+                "agent.yaml did not parse ({}); the saved persona is being \
+                 IGNORED and the default persona used instead. Fix or delete \
+                 the file to clear this.",
+                e
+            );
+            AgentConfig::default()
+        }
+    }
 }
 
 /// Save agent config to ~/.permagent/agent.yaml.
@@ -547,6 +572,45 @@ first_name: Lib
         assert!(persona.tool_kinds.is_empty());
         assert!(persona.role.is_empty());
         assert!(persona.traits.is_empty());
+    }
+
+    // ── Persona save/load round-trip (#167: "save not persisting") ─────
+
+    /// The exact bytes save_agent_config writes must load back to the same
+    /// persona — a serialize/deserialize mismatch here IS the saved-persona-
+    /// silently-reverts-on-restart bug.
+    #[test]
+    fn saved_persona_yaml_round_trips() {
+        let config = AgentConfig {
+            primary: PrimaryPersona {
+                first_name: "Henry".into(),
+                last_name: Some("Permagent".into()),
+                nickname: Some("H".into()),
+                traits: vec!["curious".into(), "direct".into()],
+                tone: "Warm, direct".into(),
+                opening_greeting: "Hey boss!".into(),
+                voice_id: Some("af_heart".into()),
+            },
+            workers: default_roster(),
+        };
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let loaded = parse_agent_config(&yaml);
+        assert_eq!(loaded.primary.first_name, "Henry");
+        assert_eq!(loaded.primary.nickname.as_deref(), Some("H"));
+        assert_eq!(loaded.primary.opening_greeting, "Hey boss!");
+        assert_eq!(loaded.primary.voice_id.as_deref(), Some("af_heart"));
+        assert_eq!(loaded.workers.len(), config.workers.len());
+    }
+
+    /// Corrupt yaml falls back to defaults (loudly, via tracing) instead of
+    /// crashing — pins the documented degradation path.
+    #[test]
+    fn corrupt_agent_yaml_falls_back_to_default() {
+        let loaded = parse_agent_config("primary: [this is: not, valid");
+        assert_eq!(
+            loaded.primary.first_name,
+            PrimaryPersona::default().first_name
+        );
     }
 
     #[test]
