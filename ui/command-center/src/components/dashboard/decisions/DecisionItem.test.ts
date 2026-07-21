@@ -101,3 +101,50 @@ describe('pushedRejectWarning (informed reject, #458 §3e)', () => {
     expect(pushedRejectWarning('tool_approval', 'origin/main')).toBeNull();
   });
 });
+
+// session_gate (S3, #429): a supervised terminal session blocked on a
+// can_use_tool gate. The gated tool input rides payload.input (not
+// payload.arguments) — same informed-consent contract: full input
+// inspectable before ruling.
+function sessionGateDecision(overrides: Partial<Decision>): Decision {
+  return decision({
+    kind: 'session_gate',
+    headline: 'A terminal session wants to run Write',
+    detail: "Supervised session sup-1 is blocked on a can_use_tool gate: Write",
+    payload: {
+      question: 'Allow the session to run Write?',
+      target_session_id: 'sup-1',
+      pty_session_id: 'pty-1',
+      request_id: 'perm_1',
+      tool_name: 'Write',
+      input: { path: 'foo.txt', content: 'hello' },
+      tool_use_id: 'tu_1',
+      options: ['allow', 'deny'],
+    },
+    ...overrides,
+  });
+}
+
+describe('toolArgumentsText — session_gate', () => {
+  it('pretty-prints the full gated tool input from payload.input', () => {
+    expect(toolArgumentsText(sessionGateDecision({}))).toBe(
+      JSON.stringify({ path: 'foo.txt', content: 'hello' }, null, 2),
+    );
+  });
+
+  it('reads input (not arguments) for session_gate, and vice versa', () => {
+    // A session_gate payload without `input` offers nothing, even if a stray
+    // `arguments` key exists (untrusted payload, S2).
+    expect(
+      toolArgumentsText(sessionGateDecision({ payload: { arguments: { a: 1 } } })),
+    ).toBeNull();
+    // Empty-but-present input is still shown — "no input" is information.
+    expect(toolArgumentsText(sessionGateDecision({ payload: { input: {} } }))).toBe('{}');
+  });
+
+  it('tolerates missing or degenerate payloads (untrusted input)', () => {
+    expect(toolArgumentsText(sessionGateDecision({ payload: null }))).toBeNull();
+    expect(toolArgumentsText(sessionGateDecision({ payload: {} }))).toBeNull();
+    expect(toolArgumentsText(sessionGateDecision({ payload: { input: null } }))).toBeNull();
+  });
+});
