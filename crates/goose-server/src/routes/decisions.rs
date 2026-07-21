@@ -189,7 +189,10 @@ async fn answer_decision_handler(
     // so both run; each is a no-op when it does not apply. `tool_approval` is
     // skipped: it is an operational confirmation, not a judgment worth
     // memorializing, and would flood the Brain in approve/smart_approve modes.
-    if decision.kind != "tool_approval" {
+    // `session_gate` is skipped for the same reason today; when S4's
+    // classification lands, per-tool allow/deny rulings become the Fork-2
+    // whitelist signal and ingestion is revisited THERE, with the mapping.
+    if !matches!(decision.kind.as_str(), "tool_approval" | "session_gate") {
         if let Some(brain) = permagent::agents::platform_extensions::get_global_brain() {
             use permagent::decision_inbox::learn;
             if let Err(e) = learn::ingest_answered_decision(&pool, &brain, &decision).await {
@@ -609,6 +612,45 @@ async fn execute_effect(
             Some("file-to-project proposal declined; nothing was persisted".to_string()),
             None,
         )),
+        // Supervised-terminal gate (S3, #429): the ruling is recorded and
+        // audited HERE; the relay that writes it into the session's stdin is
+        // S5 (#431) — deliberately not built yet (the supervision boundary,
+        // gated on Jesse's Fork-2/3 rulings). Until then the effect surfaces
+        // the exact `control_response` line the ruling corresponds to, so the
+        // operator can advance the session through its visible terminal tab
+        // (the S1/S2 escape hatch) without composing protocol JSON by hand.
+        // Honest contract: the session does NOT advance from this answer
+        // alone, and the message says so. The registry's pending gate stays
+        // set until the answer is observed in the PTY stream — at which point
+        // the S3 bridge would supersede this card had it still been open.
+        ("session_gate", Some(ans @ ("approve" | "reject"))) => {
+            let payload: permagent::decisions::SessionGatePayload =
+                serde_json::from_value(decision.payload.clone()).map_err(|e| {
+                    GuardError::Invalid(format!("stored session_gate payload unreadable: {}", e))
+                })?;
+            let allow = ans == "approve";
+            let line = permagent::decisions::session_gate_relay_line(&payload, allow);
+            let ruling = if allow { "allow" } else { "deny" };
+            // An oversized input makes the inline line unusable in a toast;
+            // point at the tab instead of dumping kilobytes.
+            const MAX_INLINE_RELAY_LINE_CHARS: usize = 2000;
+            let effect = if line.chars().count() <= MAX_INLINE_RELAY_LINE_CHARS {
+                format!(
+                    "ruling recorded: {} — the answer relay ships in S5 (#431), so the \
+                     session is still waiting; to advance it now, paste this line into \
+                     its terminal tab: {}",
+                    ruling, line
+                )
+            } else {
+                format!(
+                    "ruling recorded: {} — the answer relay ships in S5 (#431), so the \
+                     session is still waiting; the gate's input is too large to inline \
+                     here — answer it in the session's terminal tab",
+                    ruling
+                )
+            };
+            Ok((Some(effect), None))
+        }
         // Remaining shapes route through L3's resume:auto — `choice` answers
         // and `unblock` answered with input on a PARKED goal make it
         // re-dispatch eligible (Triage → Ready through the guard). Everything
@@ -1208,5 +1250,79 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(outcome, format!("effect_error: {}", NO_WAITER_EFFECT));
+    }
+
+    // ── session_gate answer effect (S3, #429) ──
+    //
+    // The relay into the session's stdin is S5 (#431); until it lands the
+    // effect must be HONEST (the session did not advance) and ACTIONABLE (the
+    // exact control_response line for the terminal-tab escape hatch).
+
+    fn session_gate_new(session: &str, request: &str) -> decisions::NewDecision {
+        decisions::NewDecision {
+            kind: "session_gate".to_string(),
+            headline: Some("A terminal session wants to run Write".to_string()),
+            detail: Some("Write {\"path\":\"foo.txt\"}".to_string()),
+            payload: serde_json::json!({
+                "question": "Allow the session to run Write?",
+                "target_session_id": session,
+                "pty_session_id": "pty-1",
+                "request_id": request,
+                "tool_name": "Write",
+                "input": {"path": "foo.txt", "content": "hello"},
+                "tool_use_id": "tu_1",
+                "options": ["allow", "deny"],
+            }),
+            ..Default::default()
+        }
+    }
+
+    async fn answer_session_gate(
+        pool: &Pool<Sqlite>,
+        answer: &str,
+    ) -> (decisions::Decision, decisions::DecisionProof) {
+        let d = decisions::create_decision(pool, session_gate_new("sup-e2e", "perm_9"))
+            .await
+            .unwrap();
+        assert_eq!(d.kind, "session_gate", "must not be malformed");
+        assert_eq!(d.tier, 2, "unclassified session gates are Tier 2 (S4)");
+        decisions::answer_decision(
+            pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: answer.to_string(),
+                ..Default::default()
+            },
+            decisions::ACTOR_JESSE,
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn session_gate_approve_effect_is_honest_and_carries_the_allow_line() {
+        let pool = memory_pool().await;
+        let (answered, proof) = answer_session_gate(&pool, "approve").await;
+        let (effect, warning) = execute_effect(&pool, &answered, proof).await.unwrap();
+        assert!(warning.is_none());
+        let msg = effect.expect("session_gate answer must report an effect");
+        assert!(msg.contains("ruling recorded: allow"), "{msg}");
+        // Honest: the session has NOT advanced.
+        assert!(msg.contains("still waiting"), "{msg}");
+        // Actionable: the exact protocol line for the terminal-tab hatch.
+        assert!(msg.contains(r#""type":"control_response""#), "{msg}");
+        assert!(msg.contains("perm_9"), "{msg}");
+        assert!(msg.contains(r#""behavior":"allow""#), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn session_gate_reject_effect_carries_the_deny_line() {
+        let pool = memory_pool().await;
+        let (answered, proof) = answer_session_gate(&pool, "reject").await;
+        let (effect, _) = execute_effect(&pool, &answered, proof).await.unwrap();
+        let msg = effect.unwrap();
+        assert!(msg.contains("ruling recorded: deny"), "{msg}");
+        assert!(msg.contains(r#""behavior":"deny""#), "{msg}");
+        assert!(msg.contains("perm_9"), "{msg}");
     }
 }

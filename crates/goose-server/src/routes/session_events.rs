@@ -145,6 +145,29 @@ proposed and why, then ask what their question or concern is. Do not give a gene
     if !d.detail.trim().is_empty() {
         b.push_str(&format!("- Details: {}\n", d.detail.trim()));
     }
+    // S3 (#429): a session_gate decision additionally hydrates the LIVE
+    // supervised-session state from the registry (the DB row is a snapshot
+    // from filing time; the session may have moved on — answered, completed,
+    // died). The #303 context-load itself is reused verbatim; this only adds
+    // the registry's current view for the kinds that have one.
+    if d.kind == "session_gate" {
+        if let Some(target) = d.payload.get("target_session_id").and_then(|v| v.as_str()) {
+            match permagent::agents::platform_extensions::terminal_supervision::session_snapshot(
+                target,
+            ) {
+                Some(snap) => b.push_str(&format!(
+                    "- Live session state: {:?}, {} pending gate(s) (project '{}')\n",
+                    snap.status,
+                    snap.pending_gates.len(),
+                    snap.project_slug,
+                )),
+                None => b.push_str(
+                    "- Live session state: unknown — the session is not in the supervision \
+                     registry (daemon restarted since the gate was filed?)\n",
+                ),
+            }
+        }
+    }
     // Layer 3: structured proof-of-work captured at goal completion, so the
     // review is grounded in ground truth (worktree path, commit SHA, push
     // target, diffstat, worker summary) instead of improvised shell commands
