@@ -7,6 +7,7 @@ import { useEventBus } from '../../lib/eventBus';
 import { useTheme } from '../../styles/useTheme';
 import { getXtermTheme } from './xtermTheme';
 import { onRepaintRegain } from '../../lib/repaintOnRegain';
+import { handlePtyData, type PtyDataPayload, type PtyStreamSink } from './ptyStream';
 
 // ── Tauri API loader (cached, no module-level mutation) ──
 
@@ -157,15 +158,6 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         }
       }
 
-      // Track whether the PTY has echo enabled. When echo is off (password
-      // prompts, ssh), we must NOT local-echo to avoid flashing plaintext.
-      let echoEnabled = true;
-
-      // Pending local echo queue: characters we've already rendered locally.
-      // When the authoritative PTY echo arrives, we strip matching leading
-      // characters to avoid rendering them twice.
-      const pendingEchos: { char: string; time: number }[] = [];
-
       // Coalesced force-flush of the DOM renderer after PTY output. xterm's
       // write schedules a render via requestAnimationFrame; when the main
       // webview is occlusion-throttled (the native browser sibling is forward),
@@ -189,41 +181,25 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         }, 80);
       };
 
-      // Set up PTY data/exit listeners
+      // Set up PTY data/exit listeners.
+      // Render discipline (#573): PTY bytes go to xterm VERBATIM via
+      // handlePtyData — the frontend never injects or strips characters.
+      // See ptyStream.ts for why the #239 local-echo path was removed.
+      const ptySink: PtyStreamSink = {
+        write: (data) => {
+          term.write(data);
+          scheduleFlush();
+        },
+        onCwd: (path) => onCwdChangeRef.current?.(path),
+      };
+
       let unlistenData: (() => void) | null = null;
       let unlistenExit: (() => void) | null = null;
-      let unlistenEcho: (() => void) | null = null;
 
       if (api) {
         unlistenData =
           (await api.listen('pty_data', (e) => {
-            const payload = e.payload as { session_id: string; data: string };
-            if (payload.session_id === sessionIdRef.current) {
-              // Strip leading characters that match pending local echoes
-              // to prevent duplicate rendering. Expire stale entries (>2s).
-              const now = performance.now();
-              while (pendingEchos.length > 0 && now - pendingEchos[0].time > 2000) {
-                pendingEchos.shift();
-              }
-              let output = payload.data;
-              while (pendingEchos.length > 0 && output.length > 0 && output[0] === pendingEchos[0].char) {
-                pendingEchos.shift();
-                output = output.substring(1);
-              }
-              if (output.length > 0) {
-                term.write(output);
-                scheduleFlush();
-              }
-
-              // Parse OSC 7 (CWD reporting) from the full data, not the stripped output
-              const osc7 = payload.data.match(/\x1b\]7;file:\/\/[^/]*([^\x07\x1b]+)/);
-              if (osc7) {
-                try {
-                  const decoded = decodeURIComponent(osc7[1]);
-                  onCwdChangeRef.current?.(decoded);
-                } catch { /* ignore decode errors */ }
-              }
-            }
+            handlePtyData(e.payload as PtyDataPayload, sessionIdRef.current, ptySink);
           })) ?? null;
 
         unlistenExit =
@@ -241,14 +217,6 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
                   project_id: null,
                 }).catch((err: unknown) => console.debug('[activity] terminal_process_exited emission failed:', err));
               }
-            }
-          })) ?? null;
-
-        unlistenEcho =
-          (await api.listen('pty_echo_state', (e) => {
-            const payload = e.payload as { session_id: string; echo_enabled: boolean };
-            if (payload.session_id === sessionIdRef.current) {
-              echoEnabled = payload.echo_enabled;
             }
           })) ?? null;
       }
@@ -285,14 +253,9 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
       });
 
       const onDataDisposable = term.onData((data) => {
-        // Local echo: render printable ASCII immediately for instant feedback.
-        // Gated on PTY ECHO flag — suppressed during password prompts and
-        // other echo-off modes to avoid flashing plaintext.
-        if (echoEnabled && data.length === 1 && data >= ' ' && data <= '~') {
-          term.write(data);
-          pendingEchos.push({ char: data, time: performance.now() });
-        }
-
+        // No local echo: keystrokes are forwarded to the PTY only, and the
+        // authoritative echo comes back through the stream (#573 — a second
+        // writer here corrupted TUI status-line repaints; see ptyStream.ts).
         if (api && sessionIdRef.current) {
           api.invoke('write_to_pty', {
             sessionId: sessionIdRef.current,
@@ -397,7 +360,6 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         onResizeDisposable.dispose();
         unlistenData?.();
         unlistenExit?.();
-        unlistenEcho?.();
         if (resizeTimer) clearTimeout(resizeTimer);
         if (flushTimer) clearTimeout(flushTimer);
         resizeObserver.disconnect();
