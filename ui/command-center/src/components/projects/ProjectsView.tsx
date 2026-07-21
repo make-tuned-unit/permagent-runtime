@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { apiFetch } from '../../lib/api';
+import { insertRoadmapGoal } from '../../lib/roadmapClient';
 import { toast } from '../../lib/notifications';
 import { useGoalEvents } from '../../lib/useGoalEvents';
 import { useCommandCenter } from '../../lib/store';
@@ -560,10 +561,17 @@ export function ProjectKanban({ project }: { project: Project }) {
   const handleAddCard = async (columnId: string) => {
     if (!newCardTitle.trim()) return;
     try {
-      await apiFetch(`/api/projects/${project.id}/cards`, {
-        method: 'POST',
-        body: JSON.stringify({ title: newCardTitle.trim(), columnId }),
-      });
+      const column = columns.find(c => c.id === columnId);
+      if (column?.stateBinding === 'triage') {
+        // #251: adding into Triage inserts a real roadmap goal (validated
+        // dependency wiring, lifecycle metadata) rather than a bare card.
+        await insertRoadmapGoal(project.id, { title: newCardTitle.trim() });
+      } else {
+        await apiFetch(`/api/projects/${project.id}/cards`, {
+          method: 'POST',
+          body: JSON.stringify({ title: newCardTitle.trim(), columnId }),
+        });
+      }
       setNewCardTitle('');
       setAddingCardCol(null);
       loadBoard();

@@ -27,6 +27,11 @@ use crate::goal_state::{validate_transition, GoalAction, GoalState};
 pub const DEFAULT_ATTEMPT_CAP: u64 = 3;
 
 /// Metadata keys that only this guard may write on goal cards.
+///
+/// `depends_on` (#251): the roadmap dependency graph must stay topologically
+/// valid, so edits go through [`set_goal_dependencies`] /
+/// [`detach_goal_from_dependents`] (validated + audited), never a raw
+/// metadata PATCH.
 pub const PROTECTED_GOAL_METADATA_KEYS: &[&str] = &[
     "goal_state",
     "needs_human_attention",
@@ -34,6 +39,7 @@ pub const PROTECTED_GOAL_METADATA_KEYS: &[&str] = &[
     "last_error",
     "budget",
     "completed_at",
+    "depends_on",
 ];
 
 // ── Errors ──────────────────────────────────────────────────────────────────
@@ -1046,6 +1052,349 @@ pub async fn promote_eligible_dependents_or_warn(
     }
 }
 
+// ── Post-creation roadmap editing (#251) ────────────────────────────────────
+
+/// Input for [`insert_roadmap_goal`].
+#[derive(Debug, Default)]
+pub struct NewRoadmapGoal {
+    pub title: String,
+    pub description: Option<String>,
+    pub acceptance_criteria: Vec<String>,
+    pub tags: Vec<String>,
+    /// Card ids of existing goals in the same project this goal depends on.
+    pub depends_on: Vec<String>,
+}
+
+/// Goal states whose dependency wiring may still be edited (#251): a goal that
+/// is already running, under review, or terminal has left the dispatch graph.
+const DEP_EDITABLE_STATES: &[&str] = &["triage", "ready", "failed"];
+
+/// Validate that every id in `deps` names an existing goal card in
+/// `project_id`, is unique, and is not `self_id`. Returns the deduped list.
+async fn validate_dep_ids(
+    pool: &Pool<Sqlite>,
+    project_id: &str,
+    self_id: Option<&str>,
+    deps: &[String],
+) -> Result<Vec<String>, GuardError> {
+    let mut seen: Vec<String> = Vec::new();
+    for dep_id in deps {
+        if seen.iter().any(|d| d == dep_id) {
+            continue; // dedupe silently
+        }
+        if Some(dep_id.as_str()) == self_id {
+            return Err(GuardError::Invalid(
+                "A goal cannot depend on itself".to_string(),
+            ));
+        }
+        let row: Option<(String, String)> =
+            sqlx::query_as("SELECT card_type, project_id FROM cards WHERE id = ?")
+                .bind(dep_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(db_err)?;
+        match row {
+            None => {
+                return Err(GuardError::NotFound(format!(
+                    "Dependency '{}' not found",
+                    dep_id
+                )))
+            }
+            Some((card_type, _)) if card_type != "goal" => {
+                return Err(GuardError::Invalid(format!(
+                    "Dependency '{}' is not a goal card",
+                    dep_id
+                )))
+            }
+            Some((_, dep_project)) if dep_project != project_id => {
+                return Err(GuardError::Invalid(format!(
+                    "Dependency '{}' belongs to a different project",
+                    dep_id
+                )))
+            }
+            Some(_) => {}
+        }
+        seen.push(dep_id.clone());
+    }
+    Ok(seen)
+}
+
+/// Load the project's goal cards as a [`GraphGoal`] set for cycle validation.
+async fn load_goal_graph(
+    pool: &Pool<Sqlite>,
+    project_id: &str,
+) -> Result<Vec<crate::goal_state::GraphGoal>, GuardError> {
+    let cards = crate::cards::list_cards(pool, project_id, Some("goal"), None)
+        .await
+        .map_err(GuardError::Db)?;
+    Ok(cards
+        .into_iter()
+        .map(|c| crate::goal_state::GraphGoal {
+            id: c.id,
+            title: c.title,
+            depends_on: c
+                .metadata_json
+                .get("depends_on")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        })
+        .collect())
+}
+
+/// Guarded write of a goal's `depends_on` metadata + audit append. Internal
+/// helper shared by the roadmap edit operations — callers have already
+/// validated the graph.
+async fn write_depends_on_audited(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    deps: &[String],
+    actor: &str,
+    outcome: &str,
+) -> Result<(), GuardError> {
+    // BEGIN IMMEDIATE: read-then-write, same idiom as the other guards here.
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(db_err)?;
+    let goal = read_goal_tx(&mut tx, card_id).await?;
+    let mut meta = goal.metadata;
+    meta.insert("depends_on".to_string(), serde_json::json!(deps));
+    let meta_str = serde_json::to_string(&serde_json::Value::Object(meta))
+        .map_err(|e| GuardError::Db(e.to_string()))?;
+    sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+        .bind(&meta_str)
+        .bind(card_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    decisions::append_audit_tx(&mut tx, "none", Some(card_id), actor, 0, outcome, None)
+        .await
+        .map_err(GuardError::Db)?;
+    tx.commit().await.map_err(db_err)?;
+    Ok(())
+}
+
+/// Set a goal's dependency edges (#251 reorder/re-parent). Validates that the
+/// goal is still dependency-editable (Triage/Ready/Failed), that every dep is
+/// an existing goal in the same project, and that the FULL project graph stays
+/// acyclic with the new edges — then writes `depends_on` (a protected key;
+/// this module is the legal writer) with an audit record.
+pub async fn set_goal_dependencies(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    deps: &[String],
+    actor: &str,
+) -> Result<(), GuardError> {
+    let card = crate::cards::get_card(pool, card_id)
+        .await
+        .map_err(GuardError::Db)?
+        .ok_or_else(|| GuardError::NotFound(format!("Card '{}' not found", card_id)))?;
+    if card.card_type != "goal" {
+        return Err(GuardError::Invalid(format!(
+            "Card '{}' is type '{}', not 'goal'",
+            card_id, card.card_type
+        )));
+    }
+    let col = crate::cards::get_column(pool, &card.column_id)
+        .await
+        .map_err(GuardError::Db)?
+        .ok_or_else(|| GuardError::NotFound(format!("Column '{}' not found", card.column_id)))?;
+    let binding = col.state_binding.as_deref().unwrap_or("");
+    if !DEP_EDITABLE_STATES.contains(&binding) {
+        return Err(GuardError::Invalid(format!(
+            "Dependencies of goal '{}' cannot be edited in state '{}'. \
+             Editable states: triage, ready, failed.",
+            card.title, binding
+        )));
+    }
+
+    let deps = validate_dep_ids(pool, &card.project_id, Some(card_id), deps).await?;
+
+    // Full-graph cycle check with the proposed edges substituted in.
+    let mut graph = load_goal_graph(pool, &card.project_id).await?;
+    for node in &mut graph {
+        if node.id == card_id {
+            node.depends_on = deps.clone();
+        }
+    }
+    crate::goal_state::validate_goal_graph(&graph)
+        .map_err(|e| GuardError::Invalid(e.to_string()))?;
+
+    write_depends_on_audited(pool, card_id, &deps, actor, "roadmap:set_deps").await?;
+
+    // Same-state emit so live board surfaces refresh their dependency view.
+    crate::events::emit(crate::events::goal_state_changed(
+        card_id,
+        Some(&card.project_id),
+        Some(binding),
+        binding,
+    ));
+    Ok(())
+}
+
+/// Splice a goal out of its roadmap graph (#251 remove): every dependent of
+/// `card_id` inherits `card_id`'s own dependencies instead (deduped, no
+/// self-edges), so the graph stays connected and topologically valid without
+/// the removed node. Returns the number of dependents rewired. The caller
+/// decides what happens to the removed card itself (cancel for non-terminal
+/// goals; terminal cards are left in place).
+pub async fn detach_goal_from_dependents(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    actor: &str,
+) -> Result<u32, GuardError> {
+    let card = crate::cards::get_card(pool, card_id)
+        .await
+        .map_err(GuardError::Db)?
+        .ok_or_else(|| GuardError::NotFound(format!("Card '{}' not found", card_id)))?;
+    if card.card_type != "goal" {
+        return Err(GuardError::Invalid(format!(
+            "Card '{}' is type '{}', not 'goal'",
+            card_id, card.card_type
+        )));
+    }
+    let inherited: Vec<String> = card
+        .metadata_json
+        .get("depends_on")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let graph = load_goal_graph(pool, &card.project_id).await?;
+    let mut rewired = 0u32;
+    for node in &graph {
+        if node.id == card_id || !node.depends_on.iter().any(|d| d == card_id) {
+            continue;
+        }
+        let mut new_deps: Vec<String> = node
+            .depends_on
+            .iter()
+            .filter(|d| *d != card_id)
+            .cloned()
+            .collect();
+        for dep in &inherited {
+            if dep != &node.id && !new_deps.iter().any(|d| d == dep) {
+                new_deps.push(dep.clone());
+            }
+        }
+        write_depends_on_audited(pool, &node.id, &new_deps, actor, "roadmap:detach").await?;
+        rewired += 1;
+    }
+    Ok(rewired)
+}
+
+/// Insert a new goal into an existing roadmap (#251). Dependencies are
+/// validated (existing goals, same project); a brand-new node with only
+/// outgoing edges cannot create a cycle, so no full-graph check is needed.
+/// Root inserts (no deps) and inserts whose deps are all Complete advance
+/// straight to Ready through the guard so auto-dispatch picks them up.
+pub async fn insert_roadmap_goal(
+    pool: &Pool<Sqlite>,
+    project_id: &str,
+    input: NewRoadmapGoal,
+) -> Result<crate::cards::Card, GuardError> {
+    let title = input.title.trim().to_string();
+    if title.is_empty() {
+        return Err(GuardError::Invalid("Goal title must not be empty".into()));
+    }
+    let deps = validate_dep_ids(pool, project_id, None, &input.depends_on).await?;
+
+    crate::cards::seed_goal_columns(pool, project_id)
+        .await
+        .map_err(GuardError::Db)?;
+    let triage_col = crate::cards::get_goal_column(pool, project_id, "triage")
+        .await
+        .map_err(GuardError::Db)?
+        .ok_or_else(|| GuardError::NotFound("Triage column not found".to_string()))?;
+
+    let mut meta = serde_json::Map::new();
+    meta.insert("depends_on".to_string(), serde_json::json!(deps));
+    meta.insert(
+        "goal_state".to_string(),
+        serde_json::Value::String("triage".to_string()),
+    );
+    meta.insert("attempt_count".to_string(), serde_json::json!(0));
+    if !input.tags.is_empty() {
+        meta.insert("tags".to_string(), serde_json::json!(input.tags));
+    }
+    if !input.acceptance_criteria.is_empty() {
+        meta.insert(
+            "acceptance_criteria".to_string(),
+            serde_json::json!(input.acceptance_criteria),
+        );
+    }
+
+    let card = crate::cards::create_card(
+        pool,
+        crate::cards::CreateCard {
+            project_id: project_id.to_string(),
+            title,
+            description: input.description.clone(),
+            card_type: Some("goal".to_string()),
+            column_id: Some(triage_col.id.clone()),
+            created_by: Some("user".to_string()),
+            metadata_json: Some(serde_json::Value::Object(meta)),
+        },
+    )
+    .await
+    .map_err(GuardError::Db)?;
+
+    // Audit the insert (tier-0 system record).
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(db_err)?;
+    decisions::append_audit_tx(
+        &mut tx,
+        "none",
+        Some(&card.id),
+        decisions::ACTOR_JESSE,
+        0,
+        "roadmap:insert",
+        None,
+    )
+    .await
+    .map_err(GuardError::Db)?;
+    tx.commit().await.map_err(db_err)?;
+
+    // Dependency-satisfied inserts become Ready immediately.
+    let mut satisfied = true;
+    for dep_id in &deps {
+        let dep_binding: Option<String> = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT bc.state_binding FROM cards c JOIN board_columns bc ON c.column_id = bc.id
+             WHERE c.id = ?",
+        )
+        .bind(dep_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(db_err)?
+        .flatten();
+        if dep_binding.as_deref() != Some("complete") {
+            satisfied = false;
+            break;
+        }
+    }
+    if satisfied {
+        advance_goal_checked(
+            pool,
+            &card.id,
+            GoalAction::Ready,
+            decisions::ACTOR_SYSTEM,
+            None,
+            TransitionEffects::default(),
+        )
+        .await?;
+    }
+
+    crate::cards::get_card(pool, &card.id)
+        .await
+        .map_err(GuardError::Db)?
+        .ok_or_else(|| GuardError::NotFound("inserted goal vanished".to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1651,6 +2000,172 @@ mod tests {
             .unwrap();
         assert_eq!(promoted, 0, "parked goals must not auto-promote");
         assert_eq!(state_of(&pool, &goal.id).await, "triage");
+    }
+
+    // ── Post-creation roadmap editing (#251) ────────────────────────────────
+
+    #[tokio::test]
+    async fn set_dependencies_validates_and_writes() {
+        let pool = test_pool().await;
+        let dep = goal_in_state(&pool, "triage", 0).await;
+        let goal = goal_in_state(&pool, "triage", 0).await;
+
+        set_goal_dependencies(&pool, &goal.id, std::slice::from_ref(&dep.id), "jesse")
+            .await
+            .unwrap();
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card.metadata_json.get("depends_on"),
+            Some(&serde_json::json!([dep.id]))
+        );
+
+        // A cycle (dep → goal while goal → dep) is rejected.
+        let err = set_goal_dependencies(&pool, &dep.id, std::slice::from_ref(&goal.id), "jesse")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, GuardError::Invalid(_)), "{:?}", err);
+        assert!(err.to_string().contains("cycle"), "{}", err);
+
+        // Self-dependency is rejected.
+        let err = set_goal_dependencies(&pool, &goal.id, std::slice::from_ref(&goal.id), "jesse")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("itself"), "{}", err);
+
+        // A dangling dependency id is rejected.
+        let err = set_goal_dependencies(&pool, &goal.id, &["nope".to_string()], "jesse")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, GuardError::NotFound(_)), "{:?}", err);
+    }
+
+    #[tokio::test]
+    async fn set_dependencies_refused_for_in_progress_goal() {
+        let pool = test_pool().await;
+        let dep = goal_in_state(&pool, "triage", 0).await;
+        let running = goal_in_state(&pool, "in_progress", 1).await;
+        let err = set_goal_dependencies(&pool, &running.id, std::slice::from_ref(&dep.id), "jesse")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, GuardError::Invalid(_)), "{:?}", err);
+        assert!(err.to_string().contains("in_progress"), "{}", err);
+    }
+
+    #[tokio::test]
+    async fn depends_on_is_protected_from_raw_metadata_patch() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "triage", 0).await;
+        let mut meta = goal.metadata_json.as_object().cloned().unwrap();
+        meta.insert("depends_on".to_string(), serde_json::json!(["sneaky"]));
+        let err = crate::cards::update_card(
+            &pool,
+            &goal.id,
+            crate::cards::UpdateCard {
+                metadata_json: Some(serde_json::Value::Object(meta)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("depends_on"), "{}", err);
+    }
+
+    #[tokio::test]
+    async fn detach_splices_dependents_onto_grandparents() {
+        let pool = test_pool().await;
+        // root ← mid ← leaf; removing mid must leave leaf depending on root.
+        let root = goal_in_state(&pool, "triage", 0).await;
+        let mid = goal_in_state(&pool, "triage", 0).await;
+        let leaf = goal_in_state(&pool, "triage", 0).await;
+        set_goal_dependencies(&pool, &mid.id, std::slice::from_ref(&root.id), "jesse")
+            .await
+            .unwrap();
+        set_goal_dependencies(&pool, &leaf.id, std::slice::from_ref(&mid.id), "jesse")
+            .await
+            .unwrap();
+
+        let rewired = detach_goal_from_dependents(&pool, &mid.id, "jesse")
+            .await
+            .unwrap();
+        assert_eq!(rewired, 1, "leaf rewired");
+        let leaf_after = crate::cards::get_card(&pool, &leaf.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            leaf_after.metadata_json.get("depends_on"),
+            Some(&serde_json::json!([root.id]))
+        );
+    }
+
+    #[tokio::test]
+    async fn insert_roadmap_goal_root_becomes_ready_and_dependent_stays_triage() {
+        let pool = test_pool().await;
+        crate::cards::seed_goal_columns(&pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+
+        // Root insert (no deps): straight to Ready for auto-dispatch.
+        let root = insert_roadmap_goal(
+            &pool,
+            PERSONAL_PROJECT_ID,
+            NewRoadmapGoal {
+                title: "Root insert".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(state_of(&pool, &root.id).await, "ready");
+
+        // Dependent insert on an incomplete dep: stays in Triage.
+        let child = insert_roadmap_goal(
+            &pool,
+            PERSONAL_PROJECT_ID,
+            NewRoadmapGoal {
+                title: "Child insert".to_string(),
+                depends_on: vec![root.id.clone()],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(state_of(&pool, &child.id).await, "triage");
+        assert_eq!(
+            child.metadata_json.get("depends_on"),
+            Some(&serde_json::json!([root.id]))
+        );
+
+        // Insert on a COMPLETE dep: becomes Ready immediately.
+        let done = goal_in_state(&pool, "complete", 0).await;
+        let after_done = insert_roadmap_goal(
+            &pool,
+            PERSONAL_PROJECT_ID,
+            NewRoadmapGoal {
+                title: "After done".to_string(),
+                depends_on: vec![done.id.clone()],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(state_of(&pool, &after_done.id).await, "ready");
+
+        // Empty title refused.
+        let err = insert_roadmap_goal(
+            &pool,
+            PERSONAL_PROJECT_ID,
+            NewRoadmapGoal {
+                title: "   ".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, GuardError::Invalid(_)));
     }
 
     // ── promote_eligible_dependents_or_warn (bug-sweep wave 1) ──────────────
