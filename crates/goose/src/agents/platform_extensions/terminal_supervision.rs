@@ -875,28 +875,31 @@ mod tests {
 
     // ── Registry ───────────────────────────────────────────────────────────
 
-    /// Drain the shared bus for events of `event_type` addressed to
-    /// `session_id` (parallel tests share the global bus — always filter).
-    fn drain_events(
-        rx: &mut tokio::sync::broadcast::Receiver<PermagentEvent>,
-        event_type: PermagentEventType,
-        session_id: &str,
-    ) -> Vec<PermagentEvent> {
-        use tokio::sync::broadcast::error::TryRecvError;
-        let mut out = Vec::new();
-        loop {
-            match rx.try_recv() {
-                Ok(ev) => {
-                    if ev.event_type == event_type
-                        && ev.payload["supervised_session_id"] == session_id
-                    {
-                        out.push(ev);
-                    }
-                }
-                Err(TryRecvError::Lagged(_)) => continue,
-                Err(_) => return out,
+    /// Collect THIS session's supervision events from the bus's replay buffer
+    /// into `acc`, deduped by event id (session ids are unique per test, so
+    /// cross-test pollution is impossible).
+    ///
+    /// Deliberately NOT a live `broadcast::Receiver`: under the full parallel
+    /// suite the bus floods >1000 events and a receiver `Lagged` past our
+    /// frames (both CI legs, deterministic). The replay ring holds the last
+    /// 1000 events, and callers scan it immediately after each `ingest_output`
+    /// — eviction would need 1000 events between the emit inside ingest and
+    /// this scan, which is effectively impossible.
+    fn collect_session_events(acc: &mut Vec<PermagentEvent>, session_id: &str) {
+        for ev in crate::events::buffered_events() {
+            if ev.payload["supervised_session_id"] == session_id
+                && !acc.iter().any(|e| e.id == ev.id)
+            {
+                acc.push(ev);
             }
         }
+    }
+
+    fn of_type<'a>(
+        acc: &'a [PermagentEvent],
+        event_type: &PermagentEventType,
+    ) -> Vec<&'a PermagentEvent> {
+        acc.iter().filter(|e| &e.event_type == event_type).collect()
     }
 
     fn unique_id(tag: &str) -> String {
@@ -946,11 +949,12 @@ mod tests {
     #[tokio::test]
     async fn gate_detection_emits_bus_event_and_records_pending() {
         let sid = unique_id("gate");
-        let mut rx = crate::events::subscribe();
+        let mut evs = Vec::new();
         register_session(&sid, SupervisedSessionKind::Watched, "proj", "/tmp/p");
         attach_pty(&sid, "pty-gate-1");
 
         let report = ingest_output(&sid, &format!("{GATE_LINE}\r\n"), false).unwrap();
+        collect_session_events(&mut evs, &sid);
         assert_eq!(report.gates_detected, 1);
         assert_eq!(report.gates_cleared, 0);
         assert!(!report.completed && !report.failed);
@@ -962,9 +966,9 @@ mod tests {
         assert_eq!(snap.pending_gates[0].tool_name, "Write");
 
         // Structured bus event carries everything S3 needs.
-        let evs = drain_events(&mut rx, PermagentEventType::TerminalGateDetected, &sid);
-        assert_eq!(evs.len(), 1);
-        let p = &evs[0].payload;
+        let detected = of_type(&evs, &PermagentEventType::TerminalGateDetected);
+        assert_eq!(detected.len(), 1);
+        let p = &detected[0].payload;
         assert_eq!(p["pty_session_id"], "pty-gate-1");
         assert_eq!(p["project_slug"], "proj");
         assert_eq!(p["session_kind"], "watched");
@@ -976,9 +980,14 @@ mod tests {
 
         // Duplicate gate line (overlapping tee delivery): no double escalation.
         let report = ingest_output(&sid, &format!("{GATE_LINE}\n"), false).unwrap();
+        collect_session_events(&mut evs, &sid);
         assert_eq!(report.gates_detected, 0);
         assert_eq!(session_snapshot(&sid).unwrap().pending_gates.len(), 1);
-        assert!(drain_events(&mut rx, PermagentEventType::TerminalGateDetected, &sid).is_empty());
+        assert_eq!(
+            of_type(&evs, &PermagentEventType::TerminalGateDetected).len(),
+            1,
+            "duplicate line must not re-emit"
+        );
 
         remove_session(&sid);
     }
@@ -986,18 +995,19 @@ mod tests {
     #[tokio::test]
     async fn observed_answer_clears_pending_gate() {
         let sid = unique_id("answer");
-        let mut rx = crate::events::subscribe();
+        let mut evs = Vec::new();
         register_session(&sid, SupervisedSessionKind::Watched, "proj", "/tmp/p");
 
         ingest_output(&sid, &format!("{GATE_LINE}\n"), false).unwrap();
         let report = ingest_output(&sid, &format!("{ANSWER_ECHO_LINE}\n"), false).unwrap();
+        collect_session_events(&mut evs, &sid);
         assert_eq!(report.gates_cleared, 1);
         assert!(session_snapshot(&sid).unwrap().pending_gates.is_empty());
 
-        let evs = drain_events(&mut rx, PermagentEventType::TerminalGateCleared, &sid);
-        assert_eq!(evs.len(), 1);
-        assert_eq!(evs[0].payload["request_id"], "perm_1");
-        assert_eq!(evs[0].payload["reason"], "answered");
+        let cleared = of_type(&evs, &PermagentEventType::TerminalGateCleared);
+        assert_eq!(cleared.len(), 1);
+        assert_eq!(cleared[0].payload["request_id"], "perm_1");
+        assert_eq!(cleared[0].payload["reason"], "answered");
 
         // Answer for a request that was never pending: reported, not cleared.
         let report = ingest_output(&sid, &format!("{ANSWER_ECHO_LINE}\n"), false).unwrap();
@@ -1057,12 +1067,13 @@ mod tests {
     #[tokio::test]
     async fn eof_without_result_fails_session_and_clears_gates() {
         let sid = unique_id("eof");
-        let mut rx = crate::events::subscribe();
+        let mut evs = Vec::new();
         register_session(&sid, SupervisedSessionKind::DispatchedGoal, "proj", "/wt");
         let hook = register_completion_hook(&sid);
 
         ingest_output(&sid, &format!("{GATE_LINE}\n"), false).unwrap();
         let report = ingest_output(&sid, "", true).unwrap();
+        collect_session_events(&mut evs, &sid);
         assert!(report.failed);
         assert_eq!(report.gates_cleared, 1);
 
@@ -1070,9 +1081,9 @@ mod tests {
         assert_eq!(snap.status, SupervisedStatus::Failed);
         assert!(snap.pending_gates.is_empty());
 
-        let evs = drain_events(&mut rx, PermagentEventType::TerminalGateCleared, &sid);
-        assert_eq!(evs.len(), 1);
-        assert_eq!(evs[0].payload["reason"], "session_ended");
+        let cleared = of_type(&evs, &PermagentEventType::TerminalGateCleared);
+        assert_eq!(cleared.len(), 1);
+        assert_eq!(cleared[0].payload["reason"], "session_ended");
 
         match hook.await.unwrap() {
             SupervisedOutcome::Failed { reason } => {
@@ -1094,7 +1105,7 @@ mod tests {
         // the hand-typed answer echo, more work, the final result — delivered
         // in awkward chunk sizes with PTY noise throughout.
         let sid = unique_id("transcript");
-        let mut rx = crate::events::subscribe();
+        let mut evs = Vec::new();
         register_session(&sid, SupervisedSessionKind::DispatchedGoal, "proj", "/wt");
         attach_pty(&sid, "pty-tr-1");
         let hook = register_completion_hook(&sid);
@@ -1102,12 +1113,14 @@ mod tests {
         let transcript = format!(
             "\u{1b}]133;D;0\u{7}\u{1b}]7;file://host/wt\u{7}cat '/tmp/x.ndjson' - | 'claude' -p\r\n{SYSTEM_INIT_LINE}\r\n{ASSISTANT_LINE}\r\n{GATE_LINE}\r\n{ANSWER_ECHO_LINE}\r\n{ASSISTANT_LINE}\r\n{RESULT_LINE}\r\n"
         );
-        // Feed in ugly fixed-size chunks to exercise reassembly.
+        // Feed in ugly fixed-size chunks to exercise reassembly, collecting
+        // our bus frames after every chunk (see `collect_session_events`).
         let bytes: Vec<char> = transcript.chars().collect();
         let mut total = IngestReport::default();
         for chunk in bytes.chunks(97) {
             let s: String = chunk.iter().collect();
             let r = ingest_output(&sid, &s, false).unwrap();
+            collect_session_events(&mut evs, &sid);
             total.gates_detected += r.gates_detected;
             total.gates_cleared += r.gates_cleared;
             total.completed |= r.completed;
@@ -1119,11 +1132,11 @@ mod tests {
         assert!(total.completed);
         assert!(!total.failed);
         assert_eq!(
-            drain_events(&mut rx, PermagentEventType::TerminalGateDetected, &sid).len(),
+            of_type(&evs, &PermagentEventType::TerminalGateDetected).len(),
             1
         );
         assert_eq!(
-            drain_events(&mut rx, PermagentEventType::TerminalGateCleared, &sid).len(),
+            of_type(&evs, &PermagentEventType::TerminalGateCleared).len(),
             1
         );
         match hook.await.unwrap() {
