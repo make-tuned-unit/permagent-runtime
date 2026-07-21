@@ -82,3 +82,18 @@ export function removeRoadmapGoal(
     { method: 'POST' },
   );
 }
+
+/** Per-goal auto-approve opt-in (#252): when enabled, a VERIFIED PASS from
+ *  the L2 verifier auto-approves the goal's Tier-1 Review (henry-policy);
+ *  a FAIL/Uncertain verdict — or a Tier-2 approval dial — still holds in
+ *  Review. Default remains Review-required. */
+export function setGoalAutoApprove(
+  projectId: string,
+  cardId: string,
+  enabled: boolean,
+): Promise<RoadmapCard> {
+  return apiFetch<RoadmapCard>(
+    `/api/projects/${enc(projectId)}/cards/${enc(cardId)}/auto-approve`,
+    { method: 'POST', body: JSON.stringify({ enabled }) },
+  );
+}

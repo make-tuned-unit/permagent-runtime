@@ -10,6 +10,7 @@ import { apiFetch } from './api';
 import {
   insertRoadmapGoal,
   removeRoadmapGoal,
+  setGoalAutoApprove,
   setGoalDependencies,
 } from './roadmapClient';
 
@@ -57,6 +58,19 @@ describe('roadmapClient', () => {
     expect(apiFetchMock).toHaveBeenCalledWith(
       '/api/projects/proj-1/roadmap/goals/g1/remove',
       { method: 'POST' },
+    );
+  });
+
+  it('setGoalAutoApprove POSTs the enabled flag (#252)', async () => {
+    const card = { id: 'g1', metadataJson: { auto_approve: true } };
+    apiFetchMock.mockResolvedValueOnce(card);
+
+    const out = await setGoalAutoApprove('proj-1', 'g1', true);
+
+    expect(out).toBe(card);
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      '/api/projects/proj-1/cards/g1/auto-approve',
+      { method: 'POST', body: JSON.stringify({ enabled: true }) },
     );
   });
 

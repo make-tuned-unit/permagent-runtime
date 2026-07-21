@@ -228,4 +228,63 @@ async fn roadmap_editing_round_trips_through_router() {
         Some(&serde_json::json!([root_id])),
         "child rewired: root2 spliced out, root kept"
     );
+
+    // ── #252: per-goal auto-approve toggle round-trips over HTTP ──
+    let resp = app
+        .clone()
+        .oneshot(req(
+            "POST",
+            &format!(
+                "/api/projects/{}/cards/{}/auto-approve",
+                PERSONAL_PROJECT_ID, child_id
+            ),
+            Some(serde_json::json!({ "enabled": true })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let flagged = body_json(resp).await;
+    assert_eq!(
+        flagged["metadataJson"]["auto_approve"],
+        serde_json::json!(true)
+    );
+    let persisted = cards::get_card(&pool, &child_id).await.unwrap().unwrap();
+    assert_eq!(
+        persisted.metadata_json.get("auto_approve"),
+        Some(&serde_json::json!(true)),
+        "flag persisted on the card"
+    );
+
+    // Raw metadata PATCH touching auto_approve is refused (protected key).
+    let mut sneaky = persisted.metadata_json.as_object().cloned().unwrap();
+    sneaky.insert("auto_approve".to_string(), serde_json::json!(false));
+    let resp = app
+        .clone()
+        .oneshot(req(
+            "PATCH",
+            &format!("/api/projects/{}/cards/{}", PERSONAL_PROJECT_ID, child_id),
+            Some(serde_json::json!({ "metadataJson": serde_json::Value::Object(sneaky) })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let err = body_text(resp).await;
+    assert!(err.contains("auto_approve"), "{err}");
+
+    // Toggle back off through the audited endpoint: flag removed.
+    let resp = app
+        .clone()
+        .oneshot(req(
+            "POST",
+            &format!(
+                "/api/projects/{}/cards/{}/auto-approve",
+                PERSONAL_PROJECT_ID, child_id
+            ),
+            Some(serde_json::json!({ "enabled": false })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let unflagged = body_json(resp).await;
+    assert!(unflagged["metadataJson"].get("auto_approve").is_none());
 }

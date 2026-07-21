@@ -32,6 +32,12 @@ pub const DEFAULT_ATTEMPT_CAP: u64 = 3;
 /// valid, so edits go through [`set_goal_dependencies`] /
 /// [`detach_goal_from_dependents`] (validated + audited), never a raw
 /// metadata PATCH.
+///
+/// `auto_approve` (#252): the per-goal Review-skip opt-in changes the goal's
+/// risk posture, so it may only be set through the audited
+/// [`set_goal_auto_approve`] path (the user-facing HTTP toggle) — never by a
+/// raw metadata PATCH, which the orchestrator's own card tools can reach
+/// (S5: the orchestrator must not be able to loosen its own approval gate).
 pub const PROTECTED_GOAL_METADATA_KEYS: &[&str] = &[
     "goal_state",
     "needs_human_attention",
@@ -40,6 +46,7 @@ pub const PROTECTED_GOAL_METADATA_KEYS: &[&str] = &[
     "budget",
     "completed_at",
     "depends_on",
+    "auto_approve",
 ];
 
 // ── Errors ──────────────────────────────────────────────────────────────────
@@ -1395,6 +1402,66 @@ pub async fn insert_roadmap_goal(
         .ok_or_else(|| GuardError::NotFound("inserted goal vanished".to_string()))
 }
 
+// ── Per-goal auto-approve override (#252) ───────────────────────────────────
+
+/// Set or clear a goal's `auto_approve` flag (#252) — the per-goal opt-in that
+/// lets a VERIFIED PASS skip the manual Review answer (henry-policy answers
+/// the Tier-1 approve_review decision, exactly like the goal-type allow-list
+/// in verifier.json). The flag never blind-completes a goal: a FAIL/Uncertain
+/// verdict or a Tier-2-dialed approval still holds in Review, and the DB
+/// trigger still demands an answered approve decision.
+///
+/// `auto_approve` is a protected metadata key; this audited setter is its only
+/// legal writer (reached from the user-facing HTTP toggle, not from the
+/// orchestrator's card tools).
+pub async fn set_goal_auto_approve(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    enabled: bool,
+    actor: &str,
+) -> Result<(), GuardError> {
+    // BEGIN IMMEDIATE: read-then-write, same idiom as the other guards here.
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(db_err)?;
+    let goal = read_goal_tx(&mut tx, card_id).await?;
+    if goal.card_type != "goal" {
+        return Err(GuardError::Invalid(format!(
+            "Card '{}' is type '{}', not 'goal'",
+            card_id, goal.card_type
+        )));
+    }
+    let mut meta = goal.metadata;
+    if enabled {
+        meta.insert("auto_approve".to_string(), serde_json::Value::Bool(true));
+    } else {
+        meta.remove("auto_approve");
+    }
+    let meta_str = serde_json::to_string(&serde_json::Value::Object(meta))
+        .map_err(|e| GuardError::Db(e.to_string()))?;
+    sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+        .bind(&meta_str)
+        .bind(card_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    decisions::append_audit_tx(
+        &mut tx,
+        "none",
+        Some(card_id),
+        actor,
+        0,
+        if enabled {
+            "auto_approve:enabled"
+        } else {
+            "auto_approve:disabled"
+        },
+        None,
+    )
+    .await
+    .map_err(GuardError::Db)?;
+    tx.commit().await.map_err(db_err)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2166,6 +2233,66 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, GuardError::Invalid(_)));
+    }
+
+    // ── Per-goal auto-approve (#252) ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn auto_approve_setter_round_trips_and_audits() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "triage", 0).await;
+
+        set_goal_auto_approve(&pool, &goal.id, true, "jesse")
+            .await
+            .unwrap();
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card.metadata_json.get("auto_approve"),
+            Some(&serde_json::Value::Bool(true))
+        );
+
+        set_goal_auto_approve(&pool, &goal.id, false, "jesse")
+            .await
+            .unwrap();
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(card.metadata_json.get("auto_approve").is_none());
+
+        let outcomes: Vec<String> = sqlx::query_scalar(
+            "SELECT outcome FROM decision_audit WHERE goal_id = ? ORDER BY seq ASC",
+        )
+        .bind(&goal.id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            outcomes,
+            vec!["auto_approve:enabled", "auto_approve:disabled"]
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_approve_is_protected_from_raw_metadata_patch() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "triage", 0).await;
+        let mut meta = goal.metadata_json.as_object().cloned().unwrap();
+        meta.insert("auto_approve".to_string(), serde_json::json!(true));
+        let err = crate::cards::update_card(
+            &pool,
+            &goal.id,
+            crate::cards::UpdateCard {
+                metadata_json: Some(serde_json::Value::Object(meta)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("auto_approve"), "{}", err);
     }
 
     // ── promote_eligible_dependents_or_warn (bug-sweep wave 1) ──────────────

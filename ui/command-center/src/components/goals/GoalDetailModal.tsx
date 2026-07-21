@@ -22,7 +22,7 @@
 
 import { useEffect, useState } from 'react';
 import { apiFetch } from '../../lib/api';
-import { removeRoadmapGoal, setGoalDependencies } from '../../lib/roadmapClient';
+import { removeRoadmapGoal, setGoalAutoApprove, setGoalDependencies } from '../../lib/roadmapClient';
 import { useCommandCenter } from '../../lib/store';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
@@ -109,6 +109,9 @@ export function GoalDetailModal({
   const [confirmingRemove, setConfirmingRemove] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [removed, setRemoved] = useState(false);
+  // #252 per-goal auto-approve toggle state
+  const [togglingAutoApprove, setTogglingAutoApprove] = useState(false);
+  const [autoApproveError, setAutoApproveError] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -166,6 +169,22 @@ export function GoalDetailModal({
       setDepsError(e instanceof Error ? e.message : 'Saving dependencies failed.');
     } finally {
       setSavingDeps(false);
+    }
+  };
+
+  const autoApprove = meta.auto_approve === true;
+  const autoApproveTogglable = isGoal && !removed && !cancelledState;
+
+  const toggleAutoApprove = async () => {
+    setTogglingAutoApprove(true);
+    setAutoApproveError(null);
+    try {
+      const updated = await setGoalAutoApprove(projectId, cardId, !autoApprove);
+      setCard(prev => (prev ? { ...prev, metadataJson: updated.metadataJson } : prev));
+    } catch (e) {
+      setAutoApproveError(e instanceof Error ? e.message : 'Updating auto-approve failed.');
+    } finally {
+      setTogglingAutoApprove(false);
     }
   };
 
@@ -278,6 +297,49 @@ export function GoalDetailModal({
             ['Created', fmtTime(card.createdAt)],
             ['Updated', fmtTime(card.updatedAt)],
           ]} />
+
+          {/* #252: per-goal auto-approve opt-in — a verified PASS skips the
+              manual Review answer for THIS goal only. Fail-closed: a FAIL or
+              Uncertain verdict (or a Tier-2 approval dial) still holds. */}
+          {isGoal && (
+            <div>
+              <div style={{
+                fontSize: 11, color: colors.textDim, fontFamily: font.mono,
+                textTransform: 'uppercase', letterSpacing: '0.04em',
+              }}>
+                Auto-approve
+              </div>
+              <label style={{
+                marginTop: 6, display: 'flex', alignItems: 'center', gap: 8,
+                fontSize: 12, color: colors.text,
+                cursor: autoApproveTogglable ? 'pointer' : 'default',
+                opacity: autoApproveTogglable ? 1 : 0.6,
+              }}>
+                <input
+                  type="checkbox"
+                  checked={autoApprove}
+                  disabled={!autoApproveTogglable || togglingAutoApprove}
+                  onChange={toggleAutoApprove}
+                />
+                <span>
+                  Skip manual Review when the verifier passes
+                  {togglingAutoApprove ? ' — saving…' : ''}
+                </span>
+              </label>
+              <div style={{ marginTop: 4, fontSize: 11, color: colors.textDim }}>
+                Only a verified pass auto-approves; failures still wait for you.
+              </div>
+              {autoApproveError && (
+                <div style={{
+                  marginTop: 6, fontSize: 12, color: colors.danger,
+                  borderRadius: radius.md, border: `1px solid ${colors.danger}`,
+                  background: colors.danger + '14', padding: '8px 12px',
+                }}>
+                  {autoApproveError}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* #251: roadmap dependency wiring — read view + validated editor. */}
           {isGoal && (

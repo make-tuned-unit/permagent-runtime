@@ -18,6 +18,7 @@
 //!   POST   /api/projects/:project_id/roadmap/goals                        — Insert a goal into the roadmap
 //!   PUT    /api/projects/:project_id/roadmap/goals/:card_id/dependencies  — Set a goal's depends_on (validated)
 //!   POST   /api/projects/:project_id/roadmap/goals/:card_id/remove        — Splice a goal out (rewire dependents, cancel it)
+//!   POST   /api/projects/:project_id/cards/:card_id/auto-approve          — Per-goal auto-approve opt-in (#252)
 
 use crate::state::AppState;
 use axum::{
@@ -666,6 +667,53 @@ async fn remove_roadmap_goal_handler(
     }))
 }
 
+// ── Per-goal auto-approve override (#252) ──────────────────────────────────
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoApproveRequest {
+    enabled: bool,
+}
+
+/// Toggle a goal's `auto_approve` flag: when set, a VERIFIED PASS from the L2
+/// verifier is answered by henry-policy instead of waiting for a manual
+/// Review answer (same single gate as the verifier.json goal-type allow-list;
+/// see verification::auto_approve_allowed). Default remains Review-required;
+/// the flag is a protected metadata key so this audited endpoint — a user
+/// surface, not an orchestrator tool — is its only writer.
+async fn set_auto_approve_handler(
+    State(state): State<Arc<AppState>>,
+    Path((project_id, card_id)): Path<(String, String)>,
+    Json(req): Json<AutoApproveRequest>,
+) -> Result<Json<CardResponse>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let card = cards::get_card(&pool, &card_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Card not found".to_string()))?;
+    if card.project_id != project_id {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "Card does not belong to this project".to_string(),
+        ));
+    }
+
+    goal_transition::set_goal_auto_approve(&pool, &card_id, req.enabled, "jesse")
+        .await
+        .map_err(guard_err)?;
+
+    let updated = cards::get_card(&pool, &card_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Card not found".to_string()))?;
+    Ok(Json(CardResponse::from(updated)))
+}
+
 // ── Route registration ────────────────────────────────────────────────────
 
 /// Unified "in flight" payload: the active-goal list and its count come from a
@@ -738,6 +786,11 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route(
             "/api/projects/{project_id}/roadmap/goals/{card_id}/remove",
             post(remove_roadmap_goal_handler),
+        )
+        // Per-goal auto-approve override (#252)
+        .route(
+            "/api/projects/{project_id}/cards/{card_id}/auto-approve",
+            post(set_auto_approve_handler),
         )
         .with_state(state)
 }

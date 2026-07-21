@@ -312,10 +312,12 @@ pub async fn run_for_goal_with_cfg(
     // ── 6. Auto-approval — OPT-IN, DEFAULT-OFF (L3 policy × this verdict) ──
     // A corrected verifier PASS is ADVISORY: it is recorded as evidence
     // (status + rationale in the digest) and still requires manual approval,
-    // UNLESS the goal's type is explicitly allow-listed in verifier.json
-    // (`auto_approve_goal_types`). With no types designated — the default —
-    // nothing auto-approves, so fixing the diff directory cannot silently turn
-    // on blanket auto-approval. When enabled, Henry answers the goal's open
+    // UNLESS the goal opted in — either its type is allow-listed in
+    // verifier.json (`auto_approve_goal_types`) or the goal itself carries the
+    // user-set `auto_approve` flag (#252, settable only through the audited
+    // protected-metadata path). With neither — the default — nothing
+    // auto-approves, so fixing the diff directory cannot silently turn on
+    // blanket auto-approval. When enabled, Henry answers the goal's open
     // approve_review decision as 'henry-policy' through L1's tier-gated answer
     // path. Failure-tolerant: the verification record stands regardless.
     if record.status == VerdictStatus::Pass {
@@ -326,7 +328,7 @@ pub async fn run_for_goal_with_cfg(
                 target: "permagentd::verification",
                 goal_id = %goal_id,
                 "Verifier PASS recorded as advisory evidence — auto-approve not \
-                 enabled for this goal type; manual approval required"
+                 enabled for this goal; manual approval required"
             );
         }
     }
@@ -335,15 +337,31 @@ pub async fn run_for_goal_with_cfg(
 }
 
 /// The single auto-approval gate. A verified PASS may be auto-approved by
-/// henry-policy ONLY when the goal's `goal_type` (card metadata) appears in the
-/// verifier config's `auto_approve_goal_types` allow-list. An empty allow-list
-/// (the default) or an untyped goal ⇒ never. This is the seam the future
-/// low-risk-type taxonomy plugs into: it will set `goal_type` on the card and
-/// list the earned types here. Until then, every verdict is advisory.
+/// henry-policy ONLY when the goal opted in:
+///   - per goal (#252): the card carries `auto_approve: true` — a protected
+///     metadata key writable only through the audited
+///     `goal_transition::set_goal_auto_approve` path (the user's UI toggle),
+///     never by the orchestrator's own card tools; or
+///   - per type: the goal's `goal_type` (card metadata) appears in the
+///     verifier config's `auto_approve_goal_types` allow-list (the seam the
+///     future low-risk-type taxonomy plugs into).
+///
+/// Neither (the default) ⇒ every verdict is advisory. Note this gate only
+/// selects WHO answers — the answer still runs through L1's tier-gated path,
+/// so a Tier-2-dialed approval refuses henry-policy regardless.
 fn auto_approve_allowed(
     cfg: &verifier::VerifierConfig,
     meta: &serde_json::Map<String, serde_json::Value>,
 ) -> bool {
+    // Per-goal opt-in (#252).
+    if meta
+        .get("auto_approve")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    // Per-type allow-list.
     if cfg.auto_approve_goal_types.is_empty() {
         return false;
     }
@@ -1573,6 +1591,82 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(d_risk_final.status, "open");
+    }
+
+    /// #252: the PER-GOAL auto_approve flag (set only via the audited
+    /// goal_transition::set_goal_auto_approve path) lets a verified PASS
+    /// auto-approve with the DEFAULT (empty) type allow-list — and the pure
+    /// gate honors it independently of goal_type.
+    #[tokio::test]
+    async fn verifier_pass_auto_approves_goal_flagged_auto_approve() {
+        use permagent::decisions::{self, NewDecision};
+
+        // Pure-gate coverage first: flag wins with an empty allow-list; an
+        // unflagged, untyped goal stays advisory.
+        let cfg = verifier::VerifierConfig::default();
+        let mut meta = serde_json::Map::new();
+        assert!(!auto_approve_allowed(&cfg, &meta), "default is advisory");
+        meta.insert("auto_approve".to_string(), serde_json::json!(true));
+        assert!(auto_approve_allowed(&cfg, &meta), "per-goal flag opts in");
+        meta.insert("auto_approve".to_string(), serde_json::json!(false));
+        assert!(
+            !auto_approve_allowed(&cfg, &meta),
+            "explicit false is not an opt-in"
+        );
+
+        let repo = tempfile::tempdir().unwrap();
+        let baseline = init_repo(repo.path());
+        std::fs::write(
+            repo.path().join("src/lib.rs"),
+            "pub fn a() {}\npub fn b() {}\n",
+        )
+        .unwrap();
+
+        let pool = test_pool().await;
+        // No goal_type at all: only the per-goal flag opts this goal in.
+        let goal = make_review_goal_in_columns(
+            &pool,
+            repo.path().to_str().unwrap(),
+            serde_json::json!({
+                "baseline_commit": baseline,
+                "declared_paths": ["src/**"],
+                "auto_approve": true,
+                "completion_checks": [
+                    {"type": "command_exit_zero", "cmd": "true", "timeout_secs": 30}
+                ],
+            }),
+        )
+        .await;
+        let d_review = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(goal.project_id.clone()),
+                headline: Some("Review the finished work on the flagged goal".to_string()),
+                detail: Some("worker reported success".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(d_review.tier, 1);
+
+        let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
+        // DEFAULT config: empty type allow-list. The per-goal flag alone must
+        // carry the auto-approval.
+        let record = run_for_goal_with(&pool, &goal.id, &base_url).await.unwrap();
+        assert_eq!(record.status, VerdictStatus::Pass);
+
+        let d_after = decisions::get_decision(&pool, &d_review.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(d_after.status, "answered");
+        assert_eq!(d_after.acted_by.as_deref(), Some(decisions::ACTOR_HENRY));
+        assert_eq!(d_after.answer.as_deref(), Some("approve"));
+        assert_eq!(state_of(&pool, &goal.id).await, "complete");
     }
 
     /// Redirect (default-off gate): with NO goal types designated — the
