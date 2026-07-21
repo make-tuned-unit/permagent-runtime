@@ -379,7 +379,8 @@ mod tests {
     fn test_longest_suffix_that_prefixes() {
         assert_eq!(longest_suffix_that_prefixes("abc", "</think>"), 0);
         assert_eq!(longest_suffix_that_prefixes("abc<", "</think>"), 1);
-        assert_eq!(longest_suffix_that_prefixes("abc</thin", "</think>"), 7);
+        // "</thin" — 6 bytes — is the longest suffix that prefixes the tag.
+        assert_eq!(longest_suffix_that_prefixes("abc</thin", "</think>"), 6);
         assert_eq!(longest_suffix_that_prefixes("</think", "</think>"), 7);
         assert_eq!(longest_suffix_that_prefixes("", "</think>"), 0);
         // Multibyte buffer content must not panic.
