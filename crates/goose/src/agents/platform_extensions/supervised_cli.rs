@@ -221,10 +221,11 @@ fn drop_completion_hook(session_id: &str) {
 /// already-completed / free-standing session (free-standing sessions register
 /// no hook — nothing tracks their completion in S1).
 ///
-/// PRODUCTION CALLER: S2's stream-json parser, on the session's `type:"result"`
-/// line. In S1 the only callers are tests — a dispatched supervised goal that
-/// nobody completes runs to its wall-clock timeout and PARKS (never a silent
-/// retry), exactly like a hung external worker.
+/// PRODUCTION CALLER: S2's stream-json parser
+/// (`terminal_supervision::ingest_output`), on the session's `type:"result"`
+/// line — or on PTY close without one. A dispatched supervised goal that
+/// nobody completes still runs to its wall-clock timeout and PARKS (never a
+/// silent retry), exactly like a hung external worker.
 pub fn complete_supervised_session(session_id: &str, outcome: SupervisedOutcome) -> bool {
     let tx = match COMPLETION_HOOKS.lock() {
         Ok(mut map) => map.remove(session_id),
