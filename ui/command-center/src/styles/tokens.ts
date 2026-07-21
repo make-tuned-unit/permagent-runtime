@@ -1,5 +1,14 @@
 /** Permagent design tokens — ported from Claude Design handoff (tokens.js) */
 
+/**
+ * THE canonical Permagent neon accent (issue #193, ruled 2026-06-23:
+ * global accent = #00D5FF). Every cyan/neon accent in the app derives from
+ * this constant — never inline a second near-duplicate (a D9 variant was
+ * the historical drift). Non-importable surfaces (index.css fallbacks,
+ * iOS Theme.swift) mirror this value literally.
+ */
+export const NEON_ACCENT = '#00D5FF';
+
 export const color = {
   bg: '#0B1220',
   bgDeeper: '#070B14',
@@ -7,7 +16,7 @@ export const color = {
   surfaceHi: '#262D3F',
   border: 'rgba(255,255,255,0.07)',
   borderHi: 'rgba(0,213,255,0.18)',
-  cyan: '#00D5FF',
+  cyan: NEON_ACCENT,
   cyanSoft: 'rgba(0,213,255,0.14)',
   cyanGlow: 'rgba(0,213,255,0.45)',
   purple: '#8D44AE',

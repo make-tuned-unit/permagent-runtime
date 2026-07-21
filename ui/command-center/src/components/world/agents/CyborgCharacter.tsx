@@ -6,7 +6,7 @@ import * as THREE from 'three';
 const BODY_COLOR = '#555B6E';       // gunmetal — primary surface
 const JOINT_COLOR = '#33363F';      // dark metal — joints, inner segments
 const ACCENT_COLOR = '#A08555';     // worn bronze — shoulder caps, knee plates
-const VISOR_GLOW_FALLBACK = '#00D9FF';
+const VISOR_GLOW_FALLBACK = '#00D5FF'; // canonical neon accent (tokens NEON_ACCENT, issue #193)
 
 interface CyborgProps {
   trimColor?: string;

@@ -3,13 +3,16 @@ import { Canvas } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { CyborgCharacterModel } from './components/world/agents/CyborgCharacter';
+import { AGENT_TRIM } from './components/world/shared/palette';
 
+// Trim colors come from the world palette SOT (Henry's old neon-cyan preset
+// was stale — his trim is warm white-gold since issue #87 resolved).
 const PRESETS = [
-  { label: 'Librarian', trimColor: '#8B7E6F', weathering: 0.4, crown: false },
-  { label: 'Henry', trimColor: '#00D9FF', weathering: 0, crown: true },
-  { label: 'Aria', trimColor: '#FFB347', weathering: 0, crown: false },
-  { label: 'Felix', trimColor: '#FF6B9D', weathering: 0, crown: false },
-  { label: 'Nova', trimColor: '#A78BFA', weathering: 0, crown: false },
+  { label: 'Librarian', trimColor: AGENT_TRIM.librarian, weathering: 0.4, crown: false },
+  { label: 'Henry', trimColor: AGENT_TRIM.henry, weathering: 0, crown: true },
+  { label: 'Aria', trimColor: AGENT_TRIM.aria, weathering: 0, crown: false },
+  { label: 'Felix', trimColor: AGENT_TRIM.felix, weathering: 0, crown: false },
+  { label: 'Nova', trimColor: AGENT_TRIM.nova, weathering: 0, crown: false },
 ];
 
 // URL param ?cam=back for rear view screenshot

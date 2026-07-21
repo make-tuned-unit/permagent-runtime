@@ -403,8 +403,8 @@ function showNavigationCue(reason: string) {
     bottom: '24px',
     left: '50%',
     transform: 'translateX(-50%)',
-    background: 'rgba(0, 217, 255, 0.15)',
-    color: '#00D9FF',
+    background: 'rgba(0, 213, 255, 0.15)',
+    color: '#00D5FF', // canonical neon accent (tokens NEON_ACCENT, issue #193)
     border: '1px solid #0891B2',
     borderRadius: '8px',
     padding: '8px 16px',

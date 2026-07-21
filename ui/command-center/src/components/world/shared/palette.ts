@@ -1,11 +1,15 @@
 // World View palette — single source of truth per WORLD_VIEW_BIBLE.md §2.
 // FROZEN after Phase 0. Lanes import from here; never inline hex in world/**.
+// Neon cyan derives from the global NEON_ACCENT token (issue #193 ruling:
+// one canonical neon #00D5FF — the world's old D9 variant was drift).
+
+import { NEON_ACCENT } from '../../../styles/tokens';
 
 /** HUD COLOR LAW: gray idle, amber working, cyan available, red error. No green. */
 export const STATE = {
   idle: '#8A94A6',
   working: '#FFB347',
-  available: '#00D9FF',
+  available: NEON_ACCENT,
   error: '#FF5D5D',
 } as const;
 
@@ -16,7 +20,7 @@ export const ENV = {
   darkStone: '#2A2A3E',
   gunmetal: '#555B6E',
   bronze: '#A08555',
-  neonCyan: '#00D9FF',
+  neonCyan: NEON_ACCENT,
   /** Memory accent — owns the Brain area and memory-themed props. */
   violet: '#A855CC',
   neonAmber: '#FFB347',

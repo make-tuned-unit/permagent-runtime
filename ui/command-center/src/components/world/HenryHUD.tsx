@@ -32,14 +32,14 @@ const HENRY_TRIM = AGENT_TRIM.henry;
 
 const STATE_COLORS: Record<HenryState, { bg: string; text: string; border: string }> = {
   idle: { bg: 'rgba(107, 114, 128, 0.2)', text: '#9CA3AF', border: '#4B5563' },
-  in_conversation: { bg: 'rgba(0, 217, 255, 0.12)', text: COLORS.neonCyan, border: '#0891B2' },
+  in_conversation: { bg: 'rgba(0, 213, 255, 0.12)', text: COLORS.neonCyan, border: '#0891B2' },
   tool_call: { bg: 'rgba(255, 179, 71, 0.15)', text: COLORS.neonAmber, border: '#D97706' },
 };
 
 // ── Tab definitions ─────────────────────────────────────────────────
 
 const HENRY_TABS: HudTab[] = [
-  { id: 'status', label: 'STATUS', accentColor: '#00D9FF' },
+  { id: 'status', label: 'STATUS', accentColor: COLORS.neonCyan },
   { id: 'identity', label: 'IDENTITY', accentColor: '#4ADE80' },
   { id: 'chat', label: 'CHAT', accentColor: '#FFB347', disabled: true, disabledLabel: 'SOON' },
   { id: 'tools', label: 'TOOLS', accentColor: '#F472B6', disabled: true, disabledLabel: 'SOON' },
