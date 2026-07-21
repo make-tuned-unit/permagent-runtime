@@ -214,6 +214,9 @@ async fn update_session_name(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
+    // #629 multi-client liveness: the other client's sessions list re-reads.
+    permagent::events::emit(permagent::events::session_changed(&session_id, "renamed"));
+
     Ok(StatusCode::OK)
 }
 
@@ -332,6 +335,9 @@ async fn delete_session(
         bus.cancel_all_requests().await;
     }
     state.remove_event_bus(&session_id).await;
+
+    // #629 multi-client liveness: the other client's sessions list re-reads.
+    permagent::events::emit(permagent::events::session_changed(&session_id, "deleted"));
 
     Ok(StatusCode::OK)
 }
@@ -482,6 +488,15 @@ async fn fork_session(
             })?;
     }
 
+    // #629 multi-client liveness: a copy-fork adds a session row the other
+    // client's list must show (truncate-in-place edits history, not the list).
+    if request.copy {
+        permagent::events::emit(permagent::events::session_changed(
+            &target_session_id,
+            "forked",
+        ));
+    }
+
     Ok(Json(ForkResponse {
         session_id: target_session_id,
     }))
@@ -550,6 +565,10 @@ async fn create_session(
         )
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // #629 multi-client liveness: a session started on the phone appears in the
+    // desktop's sessions list without a manual refresh.
+    permagent::events::emit(permagent::events::session_changed(&session.id, "created"));
 
     Ok(Json(session))
 }

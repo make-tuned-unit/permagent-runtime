@@ -171,6 +171,13 @@ interface CommandCenterStore {
   activeWorkspaceId: string | null;
   workspacesLoaded: boolean;
   loadWorkspaces: () => Promise<void>;
+  /**
+   * #629 multi-client liveness: refetch the workspace LIST (layouts, names)
+   * without touching this client's `activeWorkspaceId` — a remote layout edit
+   * must update our arrangement, never yank which workspace we're looking at.
+   * Falls back to the first workspace only if the active one disappeared.
+   */
+  refreshWorkspaces: () => Promise<void>;
   switchWorkspace: (workspaceId: string) => void;
   updateWorkspaceLayout: (workspaceId: string, layoutJson: LayoutNode) => void;
   /** Set when persisting workspace state (a layout resize, or which workspace
@@ -271,6 +278,21 @@ interface CommandCenterStore {
    */
   peopleRev: number;
   bumpPeople: () => void;
+  /**
+   * #629 multi-client liveness: monotonic revision bumped when a
+   * `project_changed` event arrives on /events — the projects list and the
+   * per-project Documents/Memories/Notes panels refetch on it, so a write from
+   * a second device pushes here instead of waiting for a poll (or forever).
+   */
+  projectsRev: number;
+  bumpProjects: () => void;
+  /**
+   * #629: bumped when `identity_changed` arrives — identity consumers
+   * (chat header, world nameplate, settings persona) re-read
+   * /api/agent/identity. `refreshIdentity` also updates `agentName` directly.
+   */
+  identityRev: number;
+  refreshIdentity: () => Promise<void>;
   switchToSession: (sessionId: string) => Promise<void>;
   deleteSession: (sessionId: string) => Promise<void>;
   renameSession: (sessionId: string, name: string) => Promise<void>;
@@ -588,6 +610,32 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     }
   },
 
+  refreshWorkspaces: async () => {
+    try {
+      const workspaces = await api.getWorkspaces();
+      set(s => {
+        const mapped = workspaces.map(w => ({
+          id: w.id,
+          name: w.name,
+          icon: w.icon,
+          sortOrder: w.sortOrder,
+          layoutJson: w.layoutJson as LayoutNode,
+          isDefault: w.isDefault,
+        }));
+        const activeStillExists = mapped.some(w => w.id === s.activeWorkspaceId);
+        return {
+          workspaces: mapped,
+          activeWorkspaceId: activeStillExists
+            ? s.activeWorkspaceId
+            : (mapped.length > 0 ? mapped[0].id : null),
+        };
+      });
+    } catch {
+      // Transient refetch failure: keep the current (possibly stale) layouts —
+      // never blank a working screen over a liveness refresh.
+    }
+  },
+
   switchWorkspace: (workspaceId: string) => {
     // Re-selecting the already-active workspace (a re-click, or a daemon-driven
     // AppNavigate to the tab the user is on) is a no-op — in particular it must
@@ -743,6 +791,17 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   closePersonDetail: () => set({ personDetail: null }),
   peopleRev: 0,
   bumpPeople: () => set(s => ({ peopleRev: s.peopleRev + 1 })),
+  projectsRev: 0,
+  bumpProjects: () => set(s => ({ projectsRev: s.projectsRev + 1 })),
+  identityRev: 0,
+  refreshIdentity: async () => {
+    try {
+      const id = await api.getIdentity();
+      set(s => ({ agentName: id.first_name, identityRev: s.identityRev + 1 }));
+    } catch {
+      // Identity unreachable — keep the current name; consumers stay as-is.
+    }
+  },
 
   addChatMessage: (msg) => set(s => ({ chatMessages: [...s.chatMessages, msg] })),
 

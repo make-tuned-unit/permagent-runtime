@@ -34,6 +34,9 @@ export function MemoriesPanel({ project }: { project: Project }) {
   const [memories, setMemories] = useState<ProjectMemory[]>([]);
   const [status, setStatus] = useState<'loading' | 'error' | 'ready'>('loading');
   const focusBrainMemory = useCommandCenter(s => s.focusBrainMemory);
+  // #629 multi-client liveness: `project_changed` (change=memories) from
+  // another device refetches this association list.
+  const projectsRev = useCommandCenter(s => s.projectsRev);
 
   const load = useCallback(async () => {
     setStatus('loading');
@@ -45,7 +48,7 @@ export function MemoriesPanel({ project }: { project: Project }) {
     }
   }, [project.id]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load, projectsRev]);
 
   // Deep-link into the Brain. The full memory is already in hand, so pass it as
   // the preview: it renders immediately even when the memory isn't in the graph

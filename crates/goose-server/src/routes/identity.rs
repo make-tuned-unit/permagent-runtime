@@ -94,6 +94,10 @@ async fn put_identity(
         response.display_name
     );
 
+    // #629 multi-client liveness: persona/voice edits push to every open client
+    // (chat header, world nameplate, settings) — they re-read /api/agent/identity.
+    permagent::events::emit(permagent::events::identity_changed(&response.display_name));
+
     Ok(Json(response))
 }
 

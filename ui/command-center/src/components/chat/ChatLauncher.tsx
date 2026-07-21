@@ -41,9 +41,13 @@ export function ChatLauncher() {
     };
   }, [chatWindowOpen, setChatLauncherSize]);
 
+  // #629 multi-client liveness: identityRev bumps when `identity_changed`
+  // arrives on /events, so a persona rename on another device relabels the
+  // launcher pill without a reload.
+  const identityRev = useCommandCenter(s => s.identityRev);
   useEffect(() => {
     api.getIdentity().then(id => setAgentName(id.first_name)).catch(() => {});
-  }, []);
+  }, [identityRev]);
 
   // Check if chat window is already open on mount (handles main window reload)
   useEffect(() => {

@@ -35,6 +35,10 @@ export function ProjectsView() {
   const [error, setError] = useState(false);
   const pendingProjectNavigation = useCommandCenter(s => s.pendingProjectNavigation);
   const setPendingProjectNavigation = useCommandCenter(s => s.setPendingProjectNavigation);
+  // #629 multi-client liveness: `project_changed` on /events bumps this, so a
+  // status drag / create / delete from another device pushes instantly instead
+  // of waiting for the 5s poll (which stays as the backstop).
+  const projectsRev = useCommandCenter(s => s.projectsRev);
 
   const loadProjects = useCallback(async () => {
     try {
@@ -61,6 +65,11 @@ export function ProjectsView() {
     window.addEventListener('focus', onFocus);
     return () => { clearInterval(interval); window.removeEventListener('focus', onFocus); };
   }, [loadProjects]);
+
+  // Event-driven refetch (#629): fires only on a real remote mutation.
+  useEffect(() => {
+    if (projectsRev > 0) loadProjects();
+  }, [projectsRev, loadProjects]);
 
   // On first load, restore last-opened project
   useEffect(() => {
