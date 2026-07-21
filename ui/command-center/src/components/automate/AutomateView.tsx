@@ -4,6 +4,14 @@ import { useTheme } from '../../styles/useTheme';
 import { cronToEnglish } from '../../lib/schedule-format';
 import { useCommandCenter } from '../../lib/store';
 import { apiFetch } from '../../lib/api';
+import {
+  formatBytes,
+  sumRunRecovered,
+  sumPendingBytes,
+  recoveryHeadline,
+  lifetimeRecoveryLine,
+  type RecoveryTotals,
+} from '../../lib/cleanupRecovery';
 import { usePersona } from '../settings/useSettings';
 import { RunRoster } from './RunRoster';
 
@@ -131,13 +139,6 @@ function statusInfo(
     default:
       return null;
   }
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
 // Derive a translucent tint from a semantic token so status backgrounds track
@@ -997,6 +998,18 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
+  // Cumulative recovery across ALL runs (issue #242) — derived server-side
+  // from every persisted run ledger, so it survives restarts.
+  const [lifetime, setLifetime] = useState<RecoveryTotals | null>(null);
+
+  const refreshLifetime = useCallback(async () => {
+    try {
+      const totals = await apiFetch<RecoveryTotals>('/automation/recovery/total');
+      setLifetime(totals);
+    } catch {
+      // Non-fatal — the per-run view still works; the all-time line stays hidden.
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -1024,8 +1037,9 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
       // Only an error if we got nothing at all — a partial load still shows a report.
       if (!cancelled) { setLoadError(!reportOk && !findingsOk); setLoading(false); }
     })();
+    void refreshLifetime();
     return () => { cancelled = true; };
-  }, [run.id, reloadTick]);
+  }, [run.id, reloadTick, refreshLifetime]);
 
   const handleAction = async (findingId: string, action: string) => {
     setActionInFlight(findingId);
@@ -1034,6 +1048,8 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
         method: 'POST', body: JSON.stringify({ action, run_id: run.id }),
       });
       setFindings(prev => prev.map(f => f.id === findingId ? { ...f, action_taken: result.action_taken, actioned_at: result.timestamp, size_recovered_bytes: result.size_recovered_bytes ?? null } : f));
+      // The persisted ledger just changed — keep the all-time total live.
+      void refreshLifetime();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[cleanup] Action "${action}" failed for ${findingId}: ${msg}`);
@@ -1042,7 +1058,7 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
     setActionInFlight(null);
   };
 
-  const totalRecovered = findings.filter(f => f.action_taken === 'trashed').reduce((s, f) => s + (f.size_recovered_bytes || 0), 0);
+  const totalRecovered = sumRunRecovered(findings);
   const allActioned = findings.length > 0 && findings.every(f => f.action_taken !== null);
 
   return (
@@ -1072,7 +1088,7 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
         <div style={{ fontSize: 12, color: colors.textDim }}>Loading results...</div>
       ) : findings.length > 0 ? (
         <>
-          <FindingsPanel findings={findings} actionInFlight={actionInFlight} onAction={handleAction} totalRecovered={totalRecovered} allActioned={allActioned} />
+          <FindingsPanel findings={findings} actionInFlight={actionInFlight} onAction={handleAction} totalRecovered={totalRecovered} allActioned={allActioned} lifetime={lifetime} />
           {reportText && <ReportToggle text={reportText} createdAt={run.createdAt} tokens={run.totalTokens} />}
         </>
       ) : reportText ? (
@@ -1241,10 +1257,11 @@ function groupFindings(findings: Finding[]): Map<string, Finding[]> {
 }
 
 function FindingsPanel({
-findings, actionInFlight, onAction, totalRecovered, allActioned }: {
+findings, actionInFlight, onAction, totalRecovered, allActioned, lifetime }: {
   findings: Finding[]; actionInFlight: string | null;
   onAction: (findingId: string, action: string) => Promise<void>;
   totalRecovered: number; allActioned: boolean;
+  lifetime: RecoveryTotals | null;
 }) {
   const { colors } = useTheme();
   const groups = groupFindings(findings);
@@ -1263,7 +1280,8 @@ findings, actionInFlight, onAction, totalRecovered, allActioned }: {
   };
 
   const totalPending = findings.filter(f => !f.action_taken).length;
-  const totalPendingBytes = findings.filter(f => !f.action_taken).reduce((s, f) => s + f.size_bytes, 0);
+  const totalPendingBytes = sumPendingBytes(findings);
+  const lifetimeLine = lifetimeRecoveryLine(lifetime);
 
   return (
     <div style={{ marginTop: 12 }}>
@@ -1273,11 +1291,16 @@ findings, actionInFlight, onAction, totalRecovered, allActioned }: {
         border: `1px solid ${allActioned ? withAlpha(colors.success, 0.25) : colors.borderHi}`,
       }}>
         <div style={{ fontSize: 22, fontWeight: 700, fontFamily: font.display, color: allActioned ? colors.success : colors.text }}>
-          {allActioned ? `${formatBytes(totalRecovered)} recovered` : `${formatBytes(totalPendingBytes)} to clean up`}
+          {recoveryHeadline(allActioned, totalRecovered, totalPendingBytes)}
         </div>
         <div style={{ fontSize: 13, color: colors.textMuted, marginTop: 4 }}>
           {allActioned ? `All ${findings.length} items cleaned.` : `${totalPending} items across ${groups.size} locations.`}
         </div>
+        {lifetimeLine && (
+          <div style={{ fontSize: 12, color: colors.textDim, marginTop: 6, fontVariantNumeric: 'tabular-nums' }}>
+            {lifetimeLine}
+          </div>
+        )}
         {totalPending > 0 && (
           <button onClick={() => setPreviewGroup('__all__')} style={{ marginTop: 14, padding: '12px 32px', borderRadius: radius.md, background: colors.cyan, color: '#000', fontWeight: 700, fontSize: 14, border: 'none', cursor: 'pointer', fontFamily: font.body }}>
             Clean Up All — {formatBytes(totalPendingBytes)}

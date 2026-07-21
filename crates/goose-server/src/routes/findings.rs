@@ -386,6 +386,70 @@ async fn perform_action(
     }
 }
 
+// ── GET /automation/recovery/total ──────────────────────────────────
+//
+// Cumulative recovery accounting (issue #242). The per-run findings files ARE
+// the persisted ledger of every trash action ever taken, so the all-time total
+// is derived by summing them — no separate counter that could drift from the
+// source of truth. Survives app restarts for free because the ledgers do.
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct RecoveryTotalResponse {
+    /// Sum of size_recovered_bytes across ALL runs' trashed findings.
+    pub total_recovered_bytes: u64,
+    /// Number of runs that recovered at least one byte.
+    pub runs_with_recovery: usize,
+    /// Total findings trashed across all runs.
+    pub items_trashed: usize,
+}
+
+/// Sum recovery across every findings ledger in `dir`. Missing dir = zeros
+/// (no cleanup has ever run). Unreadable/foreign files are skipped, not fatal:
+/// one corrupt ledger must not blank the lifetime stat.
+fn sum_recovery(dir: &Path) -> RecoveryTotalResponse {
+    let mut total = RecoveryTotalResponse {
+        total_recovered_bytes: 0,
+        runs_with_recovery: 0,
+        items_trashed: 0,
+    };
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return total,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        // Only real ledgers: skip atomic-write temp files (".<run>.json.tmp")
+        // and anything that isn't .json.
+        if name.starts_with('.') || !name.ends_with(".json") {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(data) = serde_json::from_str::<FindingsFile>(&content) else {
+            continue;
+        };
+        let mut run_bytes = 0u64;
+        for f in &data.findings {
+            if f.action_taken.as_deref() == Some("trashed") {
+                run_bytes += f.size_recovered_bytes.unwrap_or(0);
+                total.items_trashed += 1;
+            }
+        }
+        if run_bytes > 0 {
+            total.runs_with_recovery += 1;
+        }
+        total.total_recovered_bytes += run_bytes;
+    }
+    total
+}
+
+async fn recovery_total(State(_state): State<Arc<AppState>>) -> Json<RecoveryTotalResponse> {
+    Json(sum_recovery(&findings_dir()))
+}
+
 // ── GET /automation/run/:run_id/findings ────────────────────────────
 
 #[derive(Serialize)]
@@ -451,6 +515,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
             "/automation/run/{run_id}/findings",
             get(get_findings).post(save_findings_endpoint),
         )
+        .route("/automation/recovery/total", get(recovery_total))
         .with_state(state)
 }
 
@@ -565,6 +630,103 @@ mod tests {
         assert!(!tmp.path().join(".a.json.tmp").exists());
     }
 
+    // ── Cumulative recovery total (issue #242) ─────────────────────────────
+    //
+    // The lifetime total is derived from ALL persisted run ledgers, not just
+    // the current run — that is the whole bug being pinned here.
+
+    fn write_run_with_recovery(dir: &Path, run_id: &str, recovered: &[u64], pending: usize) {
+        let mut findings: Vec<Finding> = recovered
+            .iter()
+            .enumerate()
+            .map(|(i, bytes)| Finding {
+                id: format!("{}-t{}", run_id, i),
+                finding_type: "old_download".to_string(),
+                path: format!("/tmp/{}-{}.dmg", run_id, i),
+                size_bytes: *bytes,
+                age_days: Some(100),
+                recommendation: "trash".to_string(),
+                action_taken: Some("trashed".to_string()),
+                actioned_at: Some("2026-07-20T00:00:00Z".to_string()),
+                size_recovered_bytes: Some(*bytes),
+            })
+            .collect();
+        for i in 0..pending {
+            findings.push(Finding {
+                id: format!("{}-p{}", run_id, i),
+                finding_type: "old_download".to_string(),
+                path: format!("/tmp/{}-pending-{}.dmg", run_id, i),
+                size_bytes: 999,
+                age_days: None,
+                recommendation: "trash".to_string(),
+                action_taken: None,
+                actioned_at: None,
+                size_recovered_bytes: None,
+            });
+        }
+        save_findings_to(
+            dir,
+            &FindingsFile {
+                run_id: run_id.to_string(),
+                findings,
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn recovery_total_sums_across_runs_not_just_the_latest() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Three separate cleanup runs over time, plus un-actioned leftovers
+        // that must NOT count.
+        write_run_with_recovery(tmp.path(), "run-a", &[100, 50], 1);
+        write_run_with_recovery(tmp.path(), "run-b", &[1000], 0);
+        write_run_with_recovery(tmp.path(), "run-c", &[], 3); // scan only, nothing trashed
+
+        let total = sum_recovery(tmp.path());
+        assert_eq!(
+            total.total_recovered_bytes, 1150,
+            "must be cumulative, not last-run"
+        );
+        assert_eq!(total.runs_with_recovery, 2);
+        assert_eq!(total.items_trashed, 3);
+    }
+
+    #[test]
+    fn recovery_total_missing_dir_is_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        let total = sum_recovery(&tmp.path().join("never-created"));
+        assert_eq!(total.total_recovered_bytes, 0);
+        assert_eq!(total.runs_with_recovery, 0);
+        assert_eq!(total.items_trashed, 0);
+    }
+
+    #[test]
+    fn recovery_total_skips_corrupt_and_temp_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_run_with_recovery(tmp.path(), "run-good", &[42], 0);
+        std::fs::write(tmp.path().join("run-corrupt.json"), "{not json").unwrap();
+        std::fs::write(tmp.path().join(".run-x.json.tmp"), "{}").unwrap();
+        std::fs::write(tmp.path().join("notes.txt"), "ignore me").unwrap();
+
+        let total = sum_recovery(tmp.path());
+        assert_eq!(total.total_recovered_bytes, 42);
+        assert_eq!(total.runs_with_recovery, 1);
+        assert_eq!(total.items_trashed, 1);
+    }
+
+    #[test]
+    fn recovery_total_counts_keep_and_skip_as_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut data = sample_findings("run-kept");
+        data.findings[0].action_taken = Some("keep".to_string());
+        save_findings_to(tmp.path(), &data).unwrap();
+
+        let total = sum_recovery(tmp.path());
+        assert_eq!(total.total_recovered_bytes, 0);
+        assert_eq!(total.items_trashed, 0);
+    }
+
     mod route_tests {
         use super::*;
         use crate::state::AppState;
@@ -614,6 +776,39 @@ mod tests {
             let persisted = load_findings("run-keep").expect("ledger readable");
             assert_eq!(persisted.findings[0].action_taken.as_deref(), Some("keep"));
             assert!(persisted.findings[0].actioned_at.is_some());
+        }
+
+        /// The mounted /automation/recovery/total endpoint reads the real
+        /// findings dir and reports the cross-run cumulative total (#242).
+        #[tokio::test(flavor = "multi_thread")]
+        #[serial]
+        async fn recovery_total_route_reports_cumulative() {
+            let home = tempfile::tempdir().unwrap();
+            let _guard = env_lock::lock_env([
+                ("HOME", Some(home.path().to_str().unwrap())),
+                ("PERMAGENT_PATH_ROOT", Some(home.path().to_str().unwrap())),
+            ]);
+            let dir = findings_dir();
+            write_run_with_recovery(&dir, "run-1", &[10], 0);
+            write_run_with_recovery(&dir, "run-2", &[20, 30], 0);
+
+            let state = AppState::new(true).await.unwrap();
+            let app = routes(state);
+
+            let request = Request::builder()
+                .uri("/automation/recovery/total")
+                .method("GET")
+                .body(Body::empty())
+                .unwrap();
+            let response = app.oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["total_recovered_bytes"], 60);
+            assert_eq!(body["runs_with_recovery"], 2);
+            assert_eq!(body["items_trashed"], 3);
         }
 
         /// Ledger persistence failure surfaces as 500 — never a fake 200.
