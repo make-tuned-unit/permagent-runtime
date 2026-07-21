@@ -287,7 +287,7 @@ function LinksPanel({ project }: { project: Project }) {
 
 /** Lifecycle order for grouping the to-do summary. Manual columns (no state
  *  binding) sort last, in board position order. */
-const STATE_ORDER = ['triage', 'ready', 'in_progress', 'review', 'complete', 'cancelled'];
+const STATE_ORDER = ['triage', 'ready', 'in_progress', 'review', 'complete', 'cancelled', 'failed'];
 
 function TasksPanel({ columns, cards, onOpenGoal }: {
   columns: BoardColumn[];

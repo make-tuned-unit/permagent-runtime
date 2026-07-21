@@ -118,8 +118,9 @@ export interface ProjectMemory {
 /** The implicit Personal project — undeletable, can't change status. */
 export const PERSONAL_ID = '00000000-0000-0000-0000-000000000001';
 
-/** Goal lifecycle states a goal can still be cancelled from (#490). */
-export const CANCELLABLE_STATES = ['triage', 'ready', 'in_progress', 'review'];
+/** Goal lifecycle states a goal can still be cancelled from (#490); Failed
+ *  goals (#250) can be abandoned too. */
+export const CANCELLABLE_STATES = ['triage', 'ready', 'in_progress', 'review', 'failed'];
 
 /** Which Projects-tab lens is showing for the selected project. */
 export type ProjectLens = 'overview' | 'kanban';

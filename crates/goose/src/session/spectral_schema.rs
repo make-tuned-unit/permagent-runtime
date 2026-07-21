@@ -1162,6 +1162,27 @@ pub async fn migrate_v28_to_v29(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
+/// Backfill the Failed goal-lifecycle column (schema v30, #250). Boards seeded
+/// before the Failed column existed lack the target column `park_goal` writes
+/// into once exhausted goals stop re-pooling into Triage. A data fixup — no
+/// DDL — base-version independent and idempotent (insert-where-absent, mirrors
+/// the v16 Cancelled backfill). Records v30.
+pub async fn migrate_v29_to_v30(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v29 -> v30 (backfill Failed column, #250)");
+
+    let added = crate::cards::backfill_failed_column(pool)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    // Hardcoded (v30) per the migration precedent in this file.
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (30)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v30 ({added} Failed columns added)");
+
+    Ok(())
+}
+
 /// Apply the per-call cost-ledger schema (v28, cost-transparency workstream):
 /// `cost_ledger` — one append-only row per provider response — plus the O(1)
 /// cost-rollup columns on `sessions`.
@@ -2966,6 +2987,47 @@ mod inbox_schema_tests {
         assert_eq!(cancelled_again, 1, "no duplicate cancelled column");
     }
 
+    /// migrate_v29_to_v30 (#250) backfills the Failed lifecycle column on a
+    /// pre-existing goal board, stamps v30, and is idempotent.
+    #[tokio::test]
+    async fn migrate_v29_to_v30_backfills_failed_and_stamps() {
+        let pool = mem_pool().await;
+        init_spectral_db(&pool).await.unwrap();
+
+        // Seed the lifecycle columns, then delete the failed one to simulate a
+        // board seeded before #250, and rewind the recorded version to 29.
+        crate::cards::seed_goal_columns(&pool, crate::projects::PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM board_columns WHERE state_binding = 'failed'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (29)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        migrate_v29_to_v30(&pool).await.unwrap();
+
+        assert_eq!(current_version(&pool).await, 30);
+        let failed: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM board_columns WHERE state_binding = 'failed'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(failed, 1, "failed column backfilled exactly once");
+
+        // Idempotent: a second run adds nothing and does not error.
+        migrate_v29_to_v30(&pool).await.unwrap();
+        let failed_again: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM board_columns WHERE state_binding = 'failed'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(failed_again, 1, "no duplicate failed column");
+    }
+
     /// migrate_v16_to_v17 (#502): a board that NEVER held a goal card has only
     /// the legacy manual Backlog/Doing/Done columns and was skipped by every
     /// prior fixup. After v17 it must carry the full canonical lifecycle, with
@@ -3046,7 +3108,8 @@ mod inbox_schema_tests {
                 "in_progress",
                 "review",
                 "complete",
-                "cancelled"
+                "cancelled",
+                "failed"
             ],
             "canonical lifecycle seeded on the never-goal'd board"
         );
@@ -3095,7 +3158,7 @@ mod inbox_schema_tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(state_count, 6, "no duplicate lifecycle columns on re-run");
+        assert_eq!(state_count, 7, "no duplicate lifecycle columns on re-run");
     }
 
     /// migrate_v17_to_v18 (#514): a v10-era DB seeded `risk_policy` before the

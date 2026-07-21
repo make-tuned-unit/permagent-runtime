@@ -134,7 +134,7 @@ async fn henry_approve_effect(
 /// resume:auto for answer shapes L1's `execute_effect` does not cover:
 /// `("choice", "choice")` and `("unblock", "input")` on a PARKED goal.
 ///
-/// Re-dispatch eligibility = Triage → Ready through the guard with
+/// Re-dispatch eligibility = (Failed | Triage) → Ready through the guard with
 /// `needs_human_attention` cleared and the attempt cap extended (same shape
 /// as L1's unblock-approve effect). Returns `Ok(None)` when the decision is
 /// not one of those shapes, has no goal, or the goal is not parked.
@@ -211,7 +211,7 @@ pub async fn resume_answered_decision(
     .await?;
 
     Ok(Some(format!(
-        "goal resumed: Triage → Ready after answered {} decision (re-dispatch eligible)",
+        "goal resumed: unparked to Ready after answered {} decision (re-dispatch eligible)",
         decision.kind
     )))
 }

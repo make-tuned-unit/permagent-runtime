@@ -3,7 +3,11 @@
 //! The goal states: Triage → Ready → InProgress → Review → Complete
 //! with a bounce-back path from Review → InProgress, plus a Cancelled
 //! terminal state reachable from any non-terminal state (the user abandons
-//! the goal — see [`GoalAction::Cancel`]).
+//! the goal — see [`GoalAction::Cancel`]) and a Failed holding state (#250)
+//! where the system parks exhausted goals (budget/timeout/credential block)
+//! so a failure never masquerades as a fresh Triage goal. Failed is not
+//! terminal: answering the goal's `unblock` decision retries it (Failed →
+//! Ready), and the user can cancel it (Failed → Cancelled).
 //!
 //! This module is deliberately free of async, DB, or IO — it's a pure
 //! state machine that can be unit tested without infrastructure.
@@ -23,6 +27,13 @@ pub enum GoalState {
     /// resurrected by resume/reaper. A running worker is killed before the card
     /// lands here.
     Cancelled,
+    /// The system parked the goal after exhausting its budget (attempt cap,
+    /// token budget, wallclock), a dispatch timeout, or a credential block
+    /// (#250). Visibly distinct from Triage so an exhausted goal never reads
+    /// as a fresh, un-triaged one. NOT terminal: approving the goal's open
+    /// `unblock` decision retries it (Failed → Ready with the cap extended),
+    /// and the user can cancel it (Failed → Cancelled).
+    Failed,
 }
 
 impl GoalState {
@@ -35,6 +46,7 @@ impl GoalState {
             "review" => Some(Self::Review),
             "complete" => Some(Self::Complete),
             "cancelled" => Some(Self::Cancelled),
+            "failed" => Some(Self::Failed),
             _ => None,
         }
     }
@@ -48,6 +60,7 @@ impl GoalState {
             Self::Review => "review",
             Self::Complete => "complete",
             Self::Cancelled => "cancelled",
+            Self::Failed => "failed",
         }
     }
 
@@ -78,6 +91,7 @@ impl fmt::Display for GoalState {
             Self::Review => write!(f, "Review"),
             Self::Complete => write!(f, "Complete"),
             Self::Cancelled => write!(f, "Cancelled"),
+            Self::Failed => write!(f, "Failed"),
         }
     }
 }
@@ -165,10 +179,18 @@ pub fn validate_transition(
         (GoalState::InProgress, GoalAction::Review) => Ok(GoalState::Review),
         (GoalState::Review, GoalAction::Approve) => Ok(GoalState::Complete),
         (GoalState::Review, GoalAction::Reject) => Ok(GoalState::InProgress),
-        // Cancel is legal from any non-terminal state (#490). Terminal states
+        // Manual retry of an exhausted goal (#250): unparking (the unblock
+        // decision's approve/input effect) routes Failed → Ready.
+        (GoalState::Failed, GoalAction::Ready) => Ok(GoalState::Ready),
+        // Cancel is legal from any non-terminal state (#490), including a
+        // Failed goal the user chooses to abandon (#250). Terminal states
         // (Complete, Cancelled) fall through to the rejection arm below.
         (
-            GoalState::Triage | GoalState::Ready | GoalState::InProgress | GoalState::Review,
+            GoalState::Triage
+            | GoalState::Ready
+            | GoalState::InProgress
+            | GoalState::Review
+            | GoalState::Failed,
             GoalAction::Cancel,
         ) => Ok(GoalState::Cancelled),
         _ => {
@@ -177,6 +199,7 @@ pub fn validate_transition(
                 GoalState::Ready => "'dispatch' or 'cancel'",
                 GoalState::InProgress => "'review' or 'cancel'",
                 GoalState::Review => "'approve', 'reject', or 'cancel'",
+                GoalState::Failed => "'ready' (retry via the unblock decision) or 'cancel'",
                 GoalState::Complete => "none (terminal state)",
                 GoalState::Cancelled => "none (terminal state)",
             };
@@ -624,6 +647,7 @@ mod tests {
             GoalState::Ready,
             GoalState::InProgress,
             GoalState::Review,
+            GoalState::Failed,
         ] {
             assert_eq!(
                 validate_transition(from, GoalAction::Cancel),
@@ -691,9 +715,44 @@ mod tests {
             GoalState::Review,
             GoalState::Complete,
             GoalState::Cancelled,
+            GoalState::Failed,
         ] {
             assert_eq!(GoalState::from_binding(state.binding()), Some(state));
         }
+    }
+
+    // ── Failed state (#250) ───────────────────────────────────────────
+
+    #[test]
+    fn failed_to_ready_is_the_manual_retry_path() {
+        assert_eq!(
+            validate_transition(GoalState::Failed, GoalAction::Ready),
+            Ok(GoalState::Ready)
+        );
+    }
+
+    #[test]
+    fn failed_rejects_everything_but_ready_and_cancel() {
+        for action in [
+            GoalAction::Dispatch,
+            GoalAction::Review,
+            GoalAction::Approve,
+            GoalAction::Reject,
+        ] {
+            let err = validate_transition(GoalState::Failed, action).unwrap_err();
+            assert!(
+                err.reason.contains("'ready'") && err.reason.contains("'cancel'"),
+                "Failed + {} should name the valid actions: {}",
+                action,
+                err.reason
+            );
+        }
+    }
+
+    #[test]
+    fn failed_is_not_active() {
+        assert!(!GoalState::Failed.is_active());
+        assert!(!GoalState::ACTIVE_BINDINGS.contains(&"failed"));
     }
 
     #[test]

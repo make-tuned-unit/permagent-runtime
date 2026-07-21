@@ -177,7 +177,8 @@ async fn decision_inbox_end_to_end_trace() {
     assert_eq!(decision.goal_id.as_deref(), Some(goal.id.as_str()));
     assert!(decision.rank.is_some(), "curation must have set a rank");
     println!("goal state now: {}", state_of(&pool, &goal.id).await);
-    assert_eq!(state_of(&pool, &goal.id).await, "triage");
+    // #250: parking now lands in the visible Failed column, not Triage.
+    assert_eq!(state_of(&pool, &goal.id).await, "failed");
 
     // ── 3. Jesse answers through L1's answer path ──
     banner("3. answered as jesse (L1 answer path)");

@@ -424,9 +424,13 @@ pub async fn advance_goal_checked(
 
 // ── Audited system paths (park / requeue / failure record) ─────────────────
 
-/// Park a goal: move it to Triage with `needs_human_attention=true` and the
-/// blocking reason in `last_error`. System action (audited, tier 0 semantics:
-/// parking restricts, never advances).
+/// Park a goal: move it to the Failed column (#250) with
+/// `needs_human_attention=true` and the blocking reason in `last_error`.
+/// System action (audited, tier 0 semantics: parking restricts, never
+/// advances). Before #250 exhausted goals were re-pooled into Triage, where a
+/// failure was indistinguishable from a fresh goal; Failed makes exhaustion
+/// visible on the board. The retry path is unchanged: answering the goal's
+/// `unblock` decision unparks it (Failed → Ready through the guard).
 pub async fn park_goal(
     pool: &Pool<Sqlite>,
     card_id: &str,
@@ -449,7 +453,7 @@ pub async fn park_goal(
     let mut meta = goal.metadata;
     meta.insert(
         "goal_state".to_string(),
-        serde_json::Value::String("triage".to_string()),
+        serde_json::Value::String("failed".to_string()),
     );
     meta.insert(
         "needs_human_attention".to_string(),
@@ -462,12 +466,12 @@ pub async fn park_goal(
     let meta_str = serde_json::to_string(&serde_json::Value::Object(meta))
         .map_err(|e| GuardError::Db(e.to_string()))?;
 
-    let triage_col = goal_column_id_tx(&mut tx, &goal.project_id, "triage").await?;
-    let position = next_position_tx(&mut tx, &triage_col).await?;
+    let failed_col = goal_column_id_tx(&mut tx, &goal.project_id, "failed").await?;
+    let position = next_position_tx(&mut tx, &failed_col).await?;
 
     sqlx::query("UPDATE cards SET metadata_json = ?, column_id = ?, position = ? WHERE id = ?")
         .bind(&meta_str)
-        .bind(&triage_col)
+        .bind(&failed_col)
         .bind(position)
         .bind(card_id)
         .execute(&mut *tx)
@@ -484,7 +488,7 @@ pub async fn park_goal(
         card_id,
         Some(&goal.project_id),
         None,
-        "triage",
+        "failed",
     ));
 
     Ok(())
@@ -1441,8 +1445,9 @@ mod tests {
         .await
         .unwrap();
 
-        // Goal is parked, not retried.
-        assert_eq!(state_of(&pool, &goal.id).await, "triage");
+        // Goal is parked in the visible Failed column (#250), not retried and
+        // not re-pooled into Triage.
+        assert_eq!(state_of(&pool, &goal.id).await, "failed");
         let card = crate::cards::get_card(&pool, &goal.id)
             .await
             .unwrap()
@@ -1471,9 +1476,68 @@ mod tests {
             None,
         )
         .await;
-        // park_goal of a triage goal is a triage->triage write; it must not error.
+        // park_goal of an already-failed goal is a failed->failed write; it must not error.
         let again = again.unwrap();
         assert_eq!(again, decision_id, "must not create a duplicate decision");
+    }
+
+    /// #250: the manual-retry path — a parked (Failed) goal advances back to
+    /// Ready through the guard, which is exactly what the answered unblock
+    /// decision's effect runs.
+    #[tokio::test]
+    async fn failed_goal_unparks_to_ready_through_the_guard() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "in_progress", 3).await;
+        exhaust_and_park(
+            &pool,
+            &goal.id,
+            "Guard test goal in in_progress",
+            PERSONAL_PROJECT_ID,
+            BudgetExhaustion::AttemptCap { spent: 3, cap: 3 },
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(state_of(&pool, &goal.id).await, "failed");
+
+        let mut patch = serde_json::Map::new();
+        patch.insert(
+            "needs_human_attention".to_string(),
+            serde_json::json!(false),
+        );
+        let new = advance_goal_checked(
+            &pool,
+            &goal.id,
+            GoalAction::Ready,
+            decisions::ACTOR_SYSTEM,
+            None,
+            TransitionEffects {
+                metadata_patch: patch,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(new, GoalState::Ready);
+        assert_eq!(state_of(&pool, &goal.id).await, "ready");
+    }
+
+    /// #250: a Failed goal can be cancelled (the user abandons the retry).
+    #[tokio::test]
+    async fn failed_goal_can_be_cancelled() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "failed", 3).await;
+        let new = advance_goal_checked(
+            &pool,
+            &goal.id,
+            GoalAction::Cancel,
+            decisions::ACTOR_JESSE,
+            None,
+            TransitionEffects::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(new, GoalState::Cancelled);
     }
 
     #[tokio::test]

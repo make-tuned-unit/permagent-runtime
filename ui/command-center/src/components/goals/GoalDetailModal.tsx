@@ -47,8 +47,9 @@ interface BoardColumn {
   stateBinding?: string | null;
 }
 
-/** Goal lifecycle states a goal can still be cancelled from (mirrors #490). */
-const CANCELLABLE_STATES = ['triage', 'ready', 'in_progress', 'review'];
+/** Goal lifecycle states a goal can still be cancelled from (mirrors #490);
+ *  Failed goals (#250) can be abandoned too. */
+const CANCELLABLE_STATES = ['triage', 'ready', 'in_progress', 'review', 'failed'];
 
 function fmtTime(iso: string): string {
   const t = Date.parse(iso);

@@ -273,9 +273,9 @@ impl OrchestratorClient {
                  Use goal_advance to transition goals (actions: ready, dispatch, review, \
                  approve, reject). Use goal_status to check progress. Use list_workers to \
                  see available workers before dispatching.\n\n\
-                 Goals that exhaust their automatic retry budget move to Triage with \
-                 needs_human_attention=true. Surface these to the user rather than \
-                 retrying silently.\n\n\
+                 Goals that exhaust their automatic retry budget move to the Failed \
+                 column with needs_human_attention=true. Surface these to the user \
+                 rather than retrying silently.\n\n\
                  ESCALATION & DECISIONS: When you or a worker cannot proceed, call the \
                  escalate tool with a typed payload — a one-line specific ask, why you're \
                  blocked, evidence references, and 2-5 options if it's a choice. \
@@ -341,6 +341,9 @@ impl OrchestratorClient {
                  worker is running it is stopped first. Cancelled is terminal — the goal \
                  leaves the active set for good and is never retried or resumed. You cannot \
                  cancel a goal yourself via goal_advance; cancellation is the user's call.\n\
+                 - Failed: the system parked the goal (retry budget exhausted, dispatch \
+                 timeout, or credential block). Not terminal: approving the goal's unblock \
+                 decision retries it (Failed → Ready), and the user can cancel it.\n\
                  The user is in the loop at Review (approve/reject) and when \
                  needs_human_attention fires.\n\n\
                  LIMITS — be honest about these:\n\
@@ -5153,8 +5156,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             col.state_binding.as_deref(),
-            Some("triage"),
-            "L3/L4 must park (work-preserving), never terminal-cancel"
+            Some("failed"),
+            "L3/L4 must park (work-preserving, Failed column #250), never terminal-cancel"
         );
         assert_eq!(
             after.metadata_json.get("needs_human_attention"),
@@ -5254,7 +5257,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             col.state_binding.as_deref(),
-            Some("triage"),
+            Some("failed"),
             "single-model verify-loop parks (no swap)"
         );
         assert_eq!(
@@ -5550,8 +5553,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             col.state_binding.as_deref(),
-            Some("triage"),
-            "Budget exhaustion parks the goal in Triage"
+            Some("failed"),
+            "Budget exhaustion parks the goal in the Failed column (#250)"
         );
         assert_eq!(
             updated
@@ -6032,7 +6035,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Goal is parked: Triage column, needs_human_attention, error recorded.
+        // Goal is parked: Failed column (#250), needs_human_attention, error recorded.
         let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
         let col = cards::get_column(&pool, &updated.column_id)
             .await
@@ -6040,12 +6043,12 @@ mod tests {
             .unwrap();
         assert_eq!(
             col.state_binding.as_deref(),
-            Some("triage"),
-            "Budget exhaustion on resume parks the goal in Triage"
+            Some("failed"),
+            "Budget exhaustion on resume parks the goal in the Failed column (#250)"
         );
         assert_eq!(
             updated.metadata_json.get("goal_state").unwrap().as_str(),
-            Some("triage")
+            Some("failed")
         );
         assert_eq!(
             updated
@@ -6187,8 +6190,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             c2.state_binding.as_deref(),
-            Some("triage"),
-            "card2: attempt 2 → Triage (at cap)"
+            Some("failed"),
+            "card2: attempt 2 → Failed (at cap, #250)"
         );
     }
 
