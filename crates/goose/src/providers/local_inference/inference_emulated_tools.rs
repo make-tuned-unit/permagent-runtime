@@ -17,8 +17,13 @@
 //!   fence tag in prose, the content will be executed. Standard `` ```js `` or
 //!   `` ```python `` fences are not affected.
 //!
-//! These are inherent to text-based tool emulation. Models with native tool-calling
-//! support should use the `inference_native_tools` path instead.
+//! These are inherent to text-based tool emulation.
+//!
+//! Since llama-cpp-2 0.1.147 removed the OpenAI-compat chat-template layer
+//! (utilityai/llama-cpp-rs#1037), this is the ONLY tool-calling path — models
+//! whose GGUF templates support native tool calling also run through the
+//! emulator until an equivalent of the removed layer is reconstructed. Tool-free
+//! chat goes through `inference_plain` instead.
 
 use crate::conversation::message::{Message, MessageContent};
 use crate::providers::errors::ProviderError;
@@ -353,19 +358,14 @@ pub(super) fn generate_with_emulated_tools(
     ctx: &mut GenerationContext<'_>,
     code_mode_enabled: bool,
 ) -> Result<(), ProviderError> {
-    // Use oaicompat variant — its C++ wrapper catches exceptions that would
-    // otherwise abort the process when other native libs disturb the C++ ABI.
+    // llama-cpp-2 0.1.147 removed the oaicompat template wrapper (which also
+    // caught C++ exceptions from foreign-ABI disturbances); render with the
+    // model's chat template via llama.cpp's built-in template engine instead.
+    // `true` = add_generation_prompt (append the assistant opening tag).
     let prompt = ctx
         .loaded
         .model
-        .apply_chat_template_with_tools_oaicompat(
-            &ctx.loaded.template,
-            ctx.chat_messages,
-            None, // no tools for emulated path
-            None, // no json_schema
-            true, // add_generation_prompt
-        )
-        .map(|r| r.prompt)
+        .apply_chat_template(&ctx.loaded.template, ctx.chat_messages, true)
         .map_err(|e| {
             ProviderError::ExecutionError(format!("Failed to apply chat template: {}", e))
         })?;

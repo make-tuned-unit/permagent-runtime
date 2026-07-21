@@ -307,7 +307,9 @@ pub(super) fn create_and_prefill_multimodal<'model>(
     let bitmaps: Vec<MtmdBitmap> = images
         .iter()
         .map(|img| {
-            MtmdBitmap::from_buffer(mtmd_ctx, &img.bytes)
+            // `placeholder: false` (added in llama-cpp-2 0.1.147): decode the
+            // actual pixel data, matching the pre-0.1.147 behavior.
+            MtmdBitmap::from_buffer(mtmd_ctx, &img.bytes, false)
                 .map_err(|e| ProviderError::ExecutionError(format!("Failed to decode image: {e}")))
         })
         .collect::<Result<_, _>>()?;
