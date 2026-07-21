@@ -29,6 +29,10 @@ type LaunchPayload = {
   label?: string;
   command?: string | null;
   reason?: string;
+  /** S1/S2 (#427/#428): loop session id (`sup-<uuid>`) of a SUPERVISED
+   *  stream-json launch. Threaded through to `spawn_pty_session` so the
+   *  Tauri PTY reader tees output to the daemon's gate parser. */
+  supervised_session_id?: string | null;
 };
 
 /**
@@ -285,13 +289,14 @@ export function useAppNavigate() {
   // pending launch that BuildView consumes via its TerminalManager ref
   // (createProjectTab → terminal.rs PTY). The agent never spawns the PTY itself.
   const launch = (payload: LaunchPayload) => {
-    const { root_path, label, command, reason } = payload ?? {};
+    const { root_path, label, command, reason, supervised_session_id } = payload ?? {};
     if (!root_path) return;
     if (!navigateToTool('build')) return;
     setPendingTerminalLaunchRef.current({
       rootPath: root_path,
       label: label || root_path,
       command: command ?? undefined,
+      supervisedSessionId: supervised_session_id ?? undefined,
     });
     if (reason) showNavigationCue(reason);
   };

@@ -42,10 +42,13 @@ interface TerminalProps {
   onCwdChange?: (cwd: string) => void;
   cwd?: string;
   initialCommand?: string;
+  /** S2 (#428): supervised loop session id (`sup-<uuid>`) — passed to
+   *  `spawn_pty_session` so the Rust PTY reader tees output to the daemon. */
+  supervisedSessionId?: string;
   isVisible: boolean;
 }
 
-export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChange, cwd, initialCommand, isVisible }: TerminalProps) {
+export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChange, cwd, initialCommand, supervisedSessionId, isVisible }: TerminalProps) {
   const { theme, colors } = useTheme();
   const containerRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
@@ -58,6 +61,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
   const onCwdChangeRef = useRef(onCwdChange);
   const cwdRef = useRef(cwd);
   const initialCommandRef = useRef(initialCommand);
+  const supervisedSessionIdRef = useRef(supervisedSessionId);
 
   sessionIdRef.current = sessionId;
   onSessionSpawnedRef.current = onSessionSpawned;
@@ -65,6 +69,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
   onCwdChangeRef.current = onCwdChange;
   cwdRef.current = cwd;
   initialCommandRef.current = initialCommand;
+  supervisedSessionIdRef.current = supervisedSessionId;
 
   // ── Single setup effect — runs once on mount, cleans up on unmount ──
   useEffect(() => {
@@ -115,6 +120,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
             cwd: cwdRef.current || null,
             cols,
             rows,
+            supervisedSessionId: supervisedSessionIdRef.current ?? null,
           })) as { session_id: string; cwd: string };
           if (cancelled) return;
           sessionIdRef.current = result.session_id;

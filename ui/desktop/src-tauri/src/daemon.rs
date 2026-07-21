@@ -397,6 +397,12 @@ fn surface_daemon_failure(app: &tauri::AppHandle, detail: &str) {
 /// Returns the token string if available, or an error message.
 #[tauri::command]
 pub async fn get_daemon_token() -> Result<String, String> {
+    read_daemon_token()
+}
+
+/// Synchronous core of [`get_daemon_token`] — also used by the supervised-
+/// session tee (`terminal.rs`), which runs on a plain thread.
+pub fn read_daemon_token() -> Result<String, String> {
     let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
     let token_path = std::path::PathBuf::from(home)
         .join(".permagent")
@@ -406,7 +412,12 @@ pub async fn get_daemon_token() -> Result<String, String> {
     let content = std::fs::read_to_string(&token_path)
         .map_err(|e| format!("Failed to read daemon token: {}", e))?;
 
-    let parsed: serde_json::Value = serde_json::from_str(&content)
+    parse_daemon_token(&content)
+}
+
+/// Extract the `token` field from daemon_token.json content.
+pub fn parse_daemon_token(content: &str) -> Result<String, String> {
+    let parsed: serde_json::Value = serde_json::from_str(content)
         .map_err(|e| format!("Failed to parse daemon token: {}", e))?;
 
     parsed

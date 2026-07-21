@@ -4,7 +4,7 @@ import { Terminal } from './Terminal';
 import { useTheme } from '../../styles/useTheme';
 
 export interface TerminalManagerHandle {
-  createProjectTab: (cwd: string, label: string, initialCommand?: string) => void;
+  createProjectTab: (cwd: string, label: string, initialCommand?: string, supervisedSessionId?: string) => void;
 }
 
 interface TerminalTab {
@@ -13,6 +13,9 @@ interface TerminalTab {
   sessionId: string | null;
   cwd?: string;
   initialCommand?: string;
+  /** S2 (#428): supervised loop session id — makes the spawned PTY tee its
+   *  output to the daemon's gate parser. */
+  supervisedSessionId?: string;
 }
 
 let tabCounter = 0;
@@ -150,11 +153,12 @@ export const TerminalManager = forwardRef<TerminalManagerHandle>(function Termin
     );
   }, []);
 
-  const createProjectTab = useCallback((cwd: string, label: string, initialCommand?: string) => {
+  const createProjectTab = useCallback((cwd: string, label: string, initialCommand?: string, supervisedSessionId?: string) => {
     const tab: TerminalTab = {
       ...createTab(cwd),
       label,
       initialCommand,
+      supervisedSessionId,
     };
     setTabs(prev => [...prev, tab]);
     setActiveTabId(tab.id);
@@ -231,6 +235,7 @@ export const TerminalManager = forwardRef<TerminalManagerHandle>(function Termin
               onCwdChange={(cwd) => handleCwdChange(tab.id, cwd)}
               cwd={tab.cwd}
               initialCommand={tab.initialCommand}
+              supervisedSessionId={tab.supervisedSessionId}
               isVisible={tab.id === activeTabId}
             />
           </div>

@@ -331,9 +331,14 @@ interface CommandCenterStore {
   setPendingSettingsSection: (section: string | null) => void;
 
   // --- Project terminal launch (from agent: project_launch event) ---
-  pendingTerminalLaunch: { rootPath: string; label: string; command?: string } | null;
+  pendingTerminalLaunch: { rootPath: string; label: string; command?: string; supervisedSessionId?: string } | null;
   setPendingTerminalLaunch: (
-    launch: { rootPath: string; label: string; command?: string } | null,
+    launch: {
+      rootPath: string;
+      label: string;
+      command?: string;
+      supervisedSessionId?: string;
+    } | null,
   ) => void;
 
   // --- In-app browser navigation (chat links, agent tour #353) ---
