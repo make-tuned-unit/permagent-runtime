@@ -30,6 +30,7 @@ import type { AnswerBody, Decision } from './types';
 import { choiceOptions, recommendedChoiceId, draftText } from './types';
 import type { AnswerResult } from './useDecisions';
 import { EvidenceDigest } from './EvidenceDigest';
+import { decisionsClient } from './client';
 import { formatAge } from './format';
 import { usePersona } from '../../settings/useSettings';
 import { useCommandCenter } from '../../../lib/store';
@@ -108,6 +109,25 @@ export function toolArgumentsText(d: Decision): string | null {
   }
 }
 
+/**
+ * Informed-reject warning (#458, GOAL_COMPLETION_AND_VERIFICATION.md §3e).
+ * When an approve_review goal's work was already pushed
+ * (`dispatch_evidence.push_target` non-null, captured at completion by
+ * goal_engine.rs), rejecting does NOT un-ship it — the reviewer must know
+ * that before confirming. Pure logic over the canonical evidence record;
+ * exported for tests. Null = no warning applies.
+ */
+export function pushedRejectWarning(
+  kind: string,
+  pushTarget: string | null | undefined,
+): string | null {
+  if (kind !== 'approve_review' || !pushTarget) return null;
+  return (
+    `This work is already on ${pushTarget} — rejecting won't un-ship it. ` +
+    'Rework lands as new commits; undoing the pushed commit needs a revert.'
+  );
+}
+
 export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCancelGoal }: Props) {
   const { colors, reduceMotion } = useTheme();
   const { data: persona } = usePersona();
@@ -127,9 +147,26 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
   const [argsOpen, setArgsOpen] = useState(false);
   const [cancelErr, setCancelErr] = useState<string | null>(null);
   const [answerErr, setAnswerErr] = useState<string | null>(null);
+  // Where the goal's work was pushed (dispatch_evidence.push_target), fetched
+  // from the canonical evidence record for the informed-reject warning (#458).
+  const [pushTarget, setPushTarget] = useState<string | null>(null);
   const conflictTimer = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => () => clearTimeout(conflictTimer.current), []);
+
+  const isReviewWithGoal = d.kind === 'approve_review' && !!d.goal_id && !!d.project_id;
+
+  // Informed reject (#458 §3e): fetch push state up front so the warning is
+  // already in hand when the reviewer reaches the reject confirm step.
+  useEffect(() => {
+    if (!isReviewWithGoal) return;
+    let cancelled = false;
+    decisionsClient
+      .dispatchEvidence(d.project_id!, d.goal_id!)
+      .then(ev => { if (!cancelled) setPushTarget(ev?.push_target ?? null); })
+      .catch(() => { /* evidence absent — no warning, nothing to surface */ });
+    return () => { cancelled = true; };
+  }, [isReviewWithGoal, d.project_id, d.goal_id]);
 
   const submit = async (p: PendingAnswer) => {
     setSubmitting(true);
@@ -172,7 +209,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
   const recommendedId = recommendedChoiceId(d);
   const recommended = options.find(o => o.id === recommendedId) ?? null;
   // L2 digest lives on the goal card; only goal-bound reviews can have one.
-  const hasEvidence = d.kind === 'approve_review' && !!d.goal_id && !!d.project_id;
+  const hasEvidence = isReviewWithGoal;
   // Full tool-call arguments (tool_approval) — the detail above may be clipped.
   const toolArgs = toolArgumentsText(d);
 
@@ -298,6 +335,17 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
           <span style={{ fontSize: 12, color: colors.text, flex: 1, minWidth: 180 }}>
             {pending.effectText}
           </span>
+          {/* Informed reject (#458): the work is already pushed — say so loudly
+              BEFORE the reject is confirmed. Reject stays enabled (advisory). */}
+          {pending.body.answer === 'reject' && pushedRejectWarning(d.kind, pushTarget) && (
+            <span role="alert" style={{
+              flexBasis: '100%', order: -1, fontSize: 12, fontWeight: 600,
+              color: colors.warning, display: 'flex', gap: 6, alignItems: 'baseline',
+            }}>
+              <span aria-hidden="true">⚠</span>
+              {pushedRejectWarning(d.kind, pushTarget)}
+            </span>
+          )}
           <Btn variant="primary" disabled={submitting} onClick={() => submit(pending)}>
             {submitting ? 'Sending…' : pending.confirmLabel}
           </Btn>

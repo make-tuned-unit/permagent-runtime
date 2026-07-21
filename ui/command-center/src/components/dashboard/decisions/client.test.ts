@@ -192,7 +192,30 @@ describe('realDecisionsClient.history', () => {
 });
 
 describe('realDecisionsClient.evidence', () => {
-  it('reads metadataJson.verification.evidence_digest from the goal card', async () => {
+  it('reads the CANONICAL record — dispatch_evidence.verdict.evidence_digest wins over a contradictory legacy verification key (#458)', async () => {
+    // Minimal digests passing the client's shape check. The legacy key carries
+    // the old root_path-computed record; the canonical one is worktree-true.
+    const canonical = {
+      checks_summary: { passed_count: 4, total_count: 4, one_line: 'All 4 checks passed' },
+      verifier_summary: 'worktree-correct verdict',
+    };
+    const legacy = {
+      checks_summary: { passed_count: 0, total_count: 4, one_line: 'checks failed (stale root_path)' },
+      verifier_summary: 'stale root_path verdict',
+    };
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      id: 'g-1', projectId: 'p-1',
+      metadataJson: {
+        dispatch_evidence: { verdict: { evidence_digest: canonical } },
+        verification: { evidence_digest: legacy },
+      },
+    }));
+    const res = await realDecisionsClient.evidence('p-1', 'g-1');
+    expect(res?.verifier_summary).toBe('worktree-correct verdict');
+    expect(res?.checks_summary.one_line).toBe('All 4 checks passed');
+  });
+
+  it('falls back to legacy metadataJson.verification.evidence_digest for pre-consolidation goals', async () => {
     const digest = {
       version: 1,
       goal_id: 'g-1',
@@ -225,6 +248,40 @@ describe('realDecisionsClient.evidence', () => {
   it('returns null on fetch failure (missing card)', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ message: 'not found' }, 404));
     expect(await realDecisionsClient.evidence('p-1', 'g-1')).toBeNull();
+  });
+});
+
+describe('realDecisionsClient.dispatchEvidence', () => {
+  const dispatchEv = {
+    worktree_path: '/tmp/wt/goal-1',
+    baseline_commit: 'abc1234',
+    head_commit: 'def5678',
+    commits: ['def5678 fix: the thing'],
+    diffstat: ' 2 files changed, 10 insertions(+), 3 deletions(-)',
+    files_changed: 2,
+    insertions: 10,
+    deletions: 3,
+    push_target: 'origin/main',
+    worker_summary: 'Did the thing.',
+  };
+
+  it('reads metadataJson.dispatch_evidence including push_target (informed-reject source, #458)', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      id: 'g-1', projectId: 'p-1', metadataJson: { dispatch_evidence: dispatchEv },
+    }));
+    const res = await realDecisionsClient.dispatchEvidence('p-1', 'g-1');
+    expect(fetchMock.mock.calls[0][0]).toBe('http://daemon.test/api/projects/p-1/cards/g-1');
+    expect(res?.push_target).toBe('origin/main');
+    expect(res?.commits).toEqual(['def5678 fix: the thing']);
+  });
+
+  it('returns null when no dispatch evidence exists or the shape is wrong', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ id: 'g-1', projectId: 'p-1', metadataJson: {} }));
+    expect(await realDecisionsClient.dispatchEvidence('p-1', 'g-1')).toBeNull();
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      id: 'g-1', projectId: 'p-1', metadataJson: { dispatch_evidence: { commits: 'not-an-array' } },
+    }));
+    expect(await realDecisionsClient.dispatchEvidence('p-1', 'g-1')).toBeNull();
   });
 });
 
