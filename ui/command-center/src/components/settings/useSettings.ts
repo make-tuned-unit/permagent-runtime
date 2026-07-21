@@ -13,6 +13,35 @@ export interface PersonaData {
   voice_id: string | null;
 }
 
+export type IdentityPayload = Parameters<typeof api.putIdentity>[0];
+
+/**
+ * Build the PUT /api/agent/identity payload from the loaded persona (if any)
+ * merged with the form's edits.
+ *
+ * Issue #167: when the initial load failed, `save()` used to silently no-op
+ * (`if (!data) return`) — the Save button looked live but did nothing, and the
+ * "Failed to load persona" error sat next to it while edits were dropped.
+ * The form's own values are a sufficient payload, so a failed load must not
+ * disable saving. Returns null only when there is no usable first_name at all.
+ */
+export function buildIdentityPayload(
+  data: PersonaData | null,
+  update: Partial<PersonaData>,
+): IdentityPayload | null {
+  const first_name = (update.first_name ?? data?.first_name ?? '').trim();
+  if (!first_name) return null;
+  return {
+    first_name,
+    traits: update.traits ?? data?.traits ?? [],
+    tone: update.tone ?? data?.tone ?? '',
+    opening_greeting: update.opening_greeting ?? data?.opening_greeting ?? '',
+    last_name: update.last_name !== undefined ? update.last_name : (data?.last_name ?? null),
+    nickname: update.nickname !== undefined ? update.nickname : (data?.nickname ?? null),
+    voice_id: update.voice_id !== undefined ? update.voice_id : (data?.voice_id ?? null),
+  };
+}
+
 export function usePersona() {
   const [data, setData] = useState<PersonaData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -32,30 +61,43 @@ export function usePersona() {
 
   useEffect(() => { load(); }, [load]);
 
-  const save = useCallback(async (update: Partial<PersonaData>) => {
-    if (!data) return;
+  /** Retry a failed initial load (shows a spinner again). */
+  const reload = useCallback(async () => {
+    setLoading(true);
+    await load();
+  }, [load]);
+
+  /**
+   * Save persona edits. Returns true only when the daemon persisted them —
+   * callers must not clear their dirty state on false.
+   *
+   * The PUT response IS the fresh persona, so state updates from it directly
+   * instead of a dependent re-GET (#167: a save that succeeded could still
+   * surface "Failed to load persona" and appear to revert).
+   */
+  const save = useCallback(async (update: Partial<PersonaData>): Promise<boolean> => {
     setSaving(true);
     setError(null);
+    const payload = buildIdentityPayload(data, update);
+    if (!payload) {
+      setError('Give your agent a name before saving');
+      setSaving(false);
+      return false;
+    }
     try {
-      const payload = {
-        first_name: update.first_name ?? data.first_name,
-        traits: update.traits ?? data.traits,
-        tone: update.tone ?? data.tone,
-        opening_greeting: update.opening_greeting ?? data.opening_greeting,
-        last_name: update.last_name !== undefined ? update.last_name : data.last_name,
-        nickname: update.nickname !== undefined ? update.nickname : data.nickname,
-        voice_id: update.voice_id !== undefined ? update.voice_id : data.voice_id,
-      };
-      await api.putIdentity(payload);
+      const saved = await api.putIdentity(payload);
+      setData(saved as PersonaData);
       // The user configured their agent's identity — genuine engagement with
       // the persona feature, so the coach stops offering to teach it.
       emitActivity('persona_configured', 'settings', { persona_name: payload.first_name });
-      await load();
+      setSaving(false);
+      return true;
     } catch {
       setError('Failed to save persona');
+      setSaving(false);
+      return false;
     }
-    setSaving(false);
-  }, [data, load]);
+  }, [data]);
 
-  return { data, loading, saving, error, save };
+  return { data, loading, saving, error, save, reload };
 }

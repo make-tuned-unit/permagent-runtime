@@ -722,10 +722,16 @@ export const api = {
     opening_greeting: string; voice_id: string | null;
   }>('/api/agent/identity'),
 
+  // The daemon's PUT response is the full fresh persona (IdentityResponse) —
+  // typed fully so callers can adopt it directly instead of re-GETting (#167).
   putIdentity: (update: {
     first_name: string; last_name?: string | null; nickname?: string | null;
     traits: string[]; tone: string; opening_greeting: string; voice_id?: string | null;
-  }) => apiFetch<{ first_name: string; display_name: string }>('/api/agent/identity', {
+  }) => apiFetch<{
+    first_name: string; last_name: string | null; nickname: string | null;
+    display_name: string; traits: string[]; tone: string;
+    opening_greeting: string; voice_id: string | null;
+  }>('/api/agent/identity', {
     method: 'PUT', body: JSON.stringify(update),
   }),
 

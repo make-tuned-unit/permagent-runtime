@@ -97,7 +97,7 @@ type PanelProps = { goto: (key: string) => void };
 
 function PersonaPanel() {
   const { colors } = useThemeHook();
-  const { data, loading, saving, error, save } = usePersona();
+  const { data, loading, saving, error, save, reload } = usePersona();
   const [name, setName] = useState('');
   const [greeting, setGreeting] = useState('');
   const [tone, setTone] = useState('');
@@ -123,8 +123,10 @@ function PersonaPanel() {
   };
   const handleSave = async () => {
     if (!dirty) return;
-    await save({ first_name: name, opening_greeting: greeting, tone, traits, voice_id: voiceId });
-    setDirty(false);
+    // Only clear dirty when the daemon actually persisted the edits (#167 —
+    // clearing unconditionally made a failed save look successful).
+    const ok = await save({ first_name: name, opening_greeting: greeting, tone, traits, voice_id: voiceId });
+    if (ok) setDirty(false);
   };
 
   if (loading) return <div style={{ color: colors.textDim, fontSize: 13 }}>Loading persona...</div>;
@@ -172,6 +174,20 @@ function PersonaPanel() {
       </Section>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12 }}>
         {error && <span style={{ fontSize: 12, color: colors.danger }}>{error}</span>}
+        {/* Failed initial load: offer a retry instead of leaving a form that
+            reads as broken (#167). Saving still works from the form's values. */}
+        {error === 'Failed to load persona' && !data && (
+          <button
+            onClick={() => { void reload(); }}
+            style={{
+              padding: '6px 14px', borderRadius: 8, cursor: 'pointer',
+              background: 'transparent', border: `1px solid ${colors.border}`,
+              color: colors.textMuted, fontSize: 12, fontFamily: font.body,
+            }}
+          >
+            Retry
+          </button>
+        )}
         <SaveButton onClick={handleSave} disabled={!dirty || saving} saving={saving} />
       </div>
     </div>

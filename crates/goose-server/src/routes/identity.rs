@@ -103,3 +103,83 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/api/agent/identity", put(put_identity))
         .with_state(state)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use serial_test::serial;
+    use tower::ServiceExt;
+
+    async fn body_json(response: axum::response::Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// #167 pin: PUT persists to agent.yaml AND hot-reloads shared state, the
+    /// PUT response is the full fresh persona (the UI adopts it directly), and
+    /// a subsequent GET — same daemon or a fresh boot over the same disk —
+    /// returns the saved values.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn put_identity_persists_and_get_round_trips() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(home.path().to_str().unwrap())),
+            ("PERMAGENT_PATH_ROOT", Some(home.path().to_str().unwrap())),
+        ]);
+
+        let state = AppState::new(true).await.unwrap();
+        let app = routes(state);
+
+        let put = Request::builder()
+            .uri("/api/agent/identity")
+            .method("PUT")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"first_name":"Henry","last_name":null,"nickname":null,
+                    "traits":["direct"],"tone":"warm",
+                    "opening_greeting":"Hey boss!","voice_id":"af_heart"}"#,
+            ))
+            .unwrap();
+        let response = app.clone().oneshot(put).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let saved = body_json(response).await;
+        // The PUT response is the FULL persona — the UI sets state from it
+        // instead of a dependent re-GET.
+        assert_eq!(saved["first_name"], "Henry");
+        assert_eq!(saved["display_name"], "Henry");
+        assert_eq!(saved["opening_greeting"], "Hey boss!");
+        assert_eq!(saved["voice_id"], "af_heart");
+
+        // GET on the live daemon reflects the hot-reloaded persona.
+        let get_req = Request::builder()
+            .uri("/api/agent/identity")
+            .method("GET")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(get_req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let loaded = body_json(response).await;
+        assert_eq!(loaded["first_name"], "Henry");
+        assert_eq!(loaded["opening_greeting"], "Hey boss!");
+
+        // And the persona survives a daemon restart: a FRESH AppState over the
+        // same disk loads the saved values (save-not-persisting is the bug).
+        let state2 = AppState::new(true).await.unwrap();
+        let app2 = routes(state2);
+        let get_req2 = Request::builder()
+            .uri("/api/agent/identity")
+            .method("GET")
+            .body(Body::empty())
+            .unwrap();
+        let response = app2.oneshot(get_req2).await.unwrap();
+        let rebooted = body_json(response).await;
+        assert_eq!(rebooted["first_name"], "Henry");
+        assert_eq!(rebooted["opening_greeting"], "Hey boss!");
+        assert_eq!(rebooted["traits"], serde_json::json!(["direct"]));
+    }
+}
