@@ -91,10 +91,9 @@ pub fn validate_with_devices(
 ) -> Result<AuthPrincipal, StatusCode> {
     let expected = expected_master.ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     let provided = provided.ok_or(StatusCode::UNAUTHORIZED)?;
-    let master_ok = bool::from(subtle::ConstantTimeEq::ct_eq(
-        provided.as_bytes(),
-        expected.as_bytes(),
-    ));
+    // One constant-time compare core for the master token — the same
+    // `validate_token_value` every pre-#628 call path used.
+    let master_ok = validate_token_value(Some(expected), Some(provided)).is_ok();
     // Always run the device scan (constant-time over the whole set inside).
     let device_match = registry.verify(provided);
     if master_ok {
