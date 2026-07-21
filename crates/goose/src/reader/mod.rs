@@ -23,6 +23,7 @@
 //! hardcoded magic. When `is_visual` is true the Reader does NOT ingest; the
 //! caller passes the image to the agent as before.
 
+pub mod garble;
 pub mod pdf;
 pub mod vision_ocr;
 
@@ -297,6 +298,21 @@ async fn extract_document_text(bytes: &[u8], filename: &str, mime: &str) -> anyh
                 filename,
                 "reader: PDF has little/no text layer (likely scanned); per-page OCR is a follow-up"
             );
+        } else if let garble::TextQuality::Garbled { reason } = garble::assess(&text) {
+            // #468 safety gate: extraction produced char-shifted / mojibake
+            // junk (typically a subsetted font with no usable ToUnicode CMap).
+            // Fail loud and ingest NOTHING — a garbled "success" would be
+            // summarized by the local model and confidently relayed by the
+            // agent as if it were the document's real content.
+            tracing::warn!(
+                filename,
+                reason = %reason,
+                "reader: PDF extraction returned garbled text; refusing to ingest"
+            );
+            anyhow::bail!(
+                "couldn't read this PDF cleanly — text extraction returned unreadable text \
+                 (likely a font-encoding issue); refusing to ingest garbled content"
+            );
         }
         Ok(text)
     } else if is_texty(mime, &ext) {
@@ -530,5 +546,141 @@ mod tests {
     fn pdf_extract_on_garbage_is_empty_not_panic() {
         assert_eq!(pdf::extract_pdf_text(b"not a pdf at all"), "");
         assert_eq!(pdf::extract_pdf_text(&[]), "");
+    }
+
+    // ── #468 fixtures: in-memory PDFs built with lopdf ─────────────────────
+
+    /// A paragraph long enough to clear the sparse-text check and give the
+    /// garble detector real signal.
+    const PDF_PARAGRAPH: &str = "Wealthie Family Office overview. All rights \
+        reserved. Our platform integrates brokerage services with education \
+        savings plans, offering families three revenue streams and a \
+        partnership model that reaches schools across the province. The \
+        integration is expected to launch in September and will provide \
+        access to registered accounts for every student in the program.";
+
+    /// Build a one-page PDF showing `text` via a Tj operator. With
+    /// `with_font`, the page declares a standard Type1 font (Helvetica, no
+    /// /Encoding → StandardEncoding), so lopdf's encoding-aware extraction
+    /// decodes it. Without it, the encoding-aware path finds no font and the
+    /// legacy raw walk reads the bytes as-is — the #468 failure shape.
+    fn build_test_pdf(text: &str, with_font: bool) -> Vec<u8> {
+        use lopdf::content::{Content, Operation};
+        use lopdf::{dictionary, Document, Object, Stream};
+
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+
+        let mut operations = vec![Operation::new("BT", vec![])];
+        if with_font {
+            operations.push(Operation::new("Tf", vec!["F1".into(), 12.into()]));
+        }
+        operations.push(Operation::new("Td", vec![50.into(), 700.into()]));
+        operations.push(Operation::new(
+            "Tj",
+            vec![Object::string_literal(text.as_bytes().to_vec())],
+        ));
+        operations.push(Operation::new("ET", vec![]));
+        let content = Content { operations };
+        let content_id = doc.add_object(Stream::new(
+            dictionary! {},
+            content.encode().expect("encode content"),
+        ));
+
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "Contents" => content_id,
+        });
+
+        let mut pages_dict = dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![page_id.into()],
+            "Count" => 1,
+            "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+        };
+        if with_font {
+            let font_id = doc.add_object(dictionary! {
+                "Type" => "Font",
+                "Subtype" => "Type1",
+                "BaseFont" => "Helvetica",
+            });
+            pages_dict.set(
+                "Resources",
+                dictionary! { "Font" => dictionary! { "F1" => font_id } },
+            );
+        }
+        doc.objects
+            .insert(pages_id, lopdf::Object::Dictionary(pages_dict));
+
+        let catalog_id = doc.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        });
+        doc.trailer.set("Root", catalog_id);
+
+        let mut bytes = Vec::new();
+        doc.save_to(&mut bytes).expect("save pdf");
+        bytes
+    }
+
+    #[test]
+    fn pdf_with_standard_font_extracts_readable_text() {
+        // Encoding-aware path: font present → decoded through its encoding.
+        let bytes = build_test_pdf(PDF_PARAGRAPH, true);
+        let text = pdf::extract_pdf_text(&bytes);
+        assert!(
+            text.contains("Wealthie") && text.contains("All rights"),
+            "expected decoded text, got: {text:.80}"
+        );
+        assert_eq!(garble::assess(&text), garble::TextQuality::Readable);
+    }
+
+    #[test]
+    fn fontless_pdf_falls_back_to_raw_walk() {
+        // No font resources → encoding-aware path yields nothing → the legacy
+        // raw walk still recovers whatever bytes the stream shows.
+        let bytes = build_test_pdf(PDF_PARAGRAPH, false);
+        let text = pdf::extract_pdf_text(&bytes);
+        assert!(
+            text.contains("Wealthie"),
+            "raw fallback should surface the stream bytes, got: {text:.80}"
+        );
+    }
+
+    #[tokio::test]
+    async fn garbled_pdf_is_refused_by_document_pipeline() {
+        // The #468 shape end-to-end: a PDF whose shown bytes are char-shifted
+        // (glyph codes without a ToUnicode map). Extraction "succeeds" but the
+        // garble gate must refuse to ingest — never summarize noise.
+        let shifted = garble::caesar_shift(&PDF_PARAGRAPH.to_uppercase(), 3);
+        let bytes = build_test_pdf(&shifted, false);
+
+        // Sanity: extraction really does return the shifted junk…
+        let raw = pdf::extract_pdf_text(&bytes);
+        assert!(raw.contains("DOO ULJKWV"), "fixture sanity: {raw:.80}");
+
+        // …and the pipeline turns that into an explicit failure.
+        let err = extract_document_text(&bytes, "family_office.pdf", "application/pdf")
+            .await
+            .expect_err("garbled extraction must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("couldn't read this PDF cleanly"),
+            "error must be the honest extraction-failed state, got: {msg}"
+        );
+        assert!(
+            msg.contains("font-encoding"),
+            "error should name the likely cause, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn readable_pdf_passes_document_pipeline() {
+        let bytes = build_test_pdf(PDF_PARAGRAPH, true);
+        let text = extract_document_text(&bytes, "family_office.pdf", "application/pdf")
+            .await
+            .expect("readable PDF must extract");
+        assert!(text.contains("Wealthie"));
     }
 }

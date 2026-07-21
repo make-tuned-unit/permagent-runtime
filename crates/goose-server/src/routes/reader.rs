@@ -30,10 +30,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
 async fn ingest_handler(
     State(_state): State<Arc<AppState>>,
     mut multipart: Multipart,
-) -> Result<Json<reader::Digest>, StatusCode> {
+) -> Result<Json<reader::Digest>, (StatusCode, String)> {
     // One file per request — take the first multipart field.
     let Ok(Some(field)) = multipart.next_field().await else {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err((StatusCode::BAD_REQUEST, String::new()));
     };
 
     let filename = field
@@ -44,9 +44,12 @@ async fn ingest_handler(
         .content_type()
         .map(|s| s.to_string())
         .unwrap_or_default();
-    let data = field.bytes().await.map_err(|_| StatusCode::BAD_REQUEST)?;
+    let data = field
+        .bytes()
+        .await
+        .map_err(|_| (StatusCode::BAD_REQUEST, String::new()))?;
     if data.len() > MAX_FILE_SIZE {
-        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+        return Err((StatusCode::PAYLOAD_TOO_LARGE, String::new()));
     }
 
     // Images → Vision OCR (Phase 1); everything else → document extraction
@@ -57,9 +60,13 @@ async fn ingest_handler(
     } else {
         reader::ingest_document(&data, &filename, &mime).await
     };
+    // Ingest failures carry an honest, user-facing reason in the body (#468):
+    // e.g. a font-encoded PDF whose extraction came out garbled must surface
+    // as "couldn't read this PDF cleanly", never as a silent 500 the UI papers
+    // over — and never as a digest the agent would summarize.
     let digest = result.map_err(|e| {
         tracing::warn!("reader: ingest failed for {filename}: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
+        (StatusCode::UNPROCESSABLE_ENTITY, e.to_string())
     })?;
     Ok(Json(digest))
 }
