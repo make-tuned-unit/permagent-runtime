@@ -7,14 +7,22 @@ mirrors `ui/command-center/src/styles/tokens.ts` — keep in lockstep).
 ## v1 surfaces
 Pairing (paste the Settings → Devices URL) · Decisions · In Flight · **Chat
 (live)** — sends to the hub's `POST /reply` and streams Henry's answer over
-SSE, so an ask on the phone runs on the Mac. Live events over the hub's
-`/events` WebSocket; pairing token in the Keychain; zero user data on-device.
+SSE, so an ask on the phone runs on the Mac. **Dictate** — record a note on
+the phone (16 kHz WAV), the HUB transcribes it with its local Whisper
+(`/api/dictation/transcribe` — no cloud STT), you review/edit, confirm
+heuristic to-do proposals, pick a project, and it lands as a project note
+(+ board cards for confirmed to-dos). Live events over the hub's `/events`
+WebSocket; pairing token in the Keychain; zero user data on-device.
 
 ## Building
 Open in Xcode 16+ on a machine with the iOS SDK (the mini): create an iOS App
 project named PermagentMobile pointing at this folder's sources (or
 `xcodegen`/SPM-ify later). Not gated by repo CI yet. Requires the hub daemon
-bound to the tailnet (`HOST=0.0.0.0`).
+bound to the tailnet (`HOST=0.0.0.0`). Target iOS 17+ (`.sensoryFeedback`,
+`AVAudioApplication`). **Info.plist**: set `NSMicrophoneUsageDescription`
+(e.g. "Permagent records your dictated notes; audio is transcribed on your
+own Mac.") — dictation asks for the mic on first use. No speech-recognition
+entitlement is needed: STT happens on the hub, not via Apple's recognizer.
 
 ## The companion model (Jesse's rule 2026-07-11)
 - **Key info at a glance:** the Home tab — hub health, decisions pending,

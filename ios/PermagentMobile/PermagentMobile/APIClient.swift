@@ -8,7 +8,7 @@ struct HubConfig: Codable, Equatable {
     var token: String      // daemon_token (the pairing secret)
 }
 
-enum APIError: Error { case unauthorized, badStatus(Int), notPaired }
+enum APIError: Error { case unauthorized, badStatus(Int), notPaired, dictationUnavailable }
 
 actor APIClient {
     static let shared = APIClient()
@@ -141,6 +141,101 @@ actor APIClient {
                 }
             }
         }
+    }
+}
+
+// ── Dictation → note → to-dos (the phone's capture path) ─────────────────────
+//
+// Three existing hub surfaces, stitched together for capture-on-the-go:
+//   POST /api/dictation/transcribe        — the hub's LOCAL Whisper (multipart WAV)
+//   POST /api/projects/{id}/notes         — the note row + Brain index (the note
+//                                           contract — source/description — is
+//                                           enforced daemon-side)
+//   POST /api/projects/{id}/cards         — confirmed to-dos as board cards
+//
+// The phone records; the hub transcribes. No cloud STT, ever.
+
+/// A project row for the picker (camelCase like every projects/cards route).
+struct ProjectSummary: Decodable, Identifiable, Equatable {
+    let id: String
+    let slug: String
+    let name: String
+    let description: String
+    let status: String
+}
+
+/// A board column (used only to check "does this project have a board at all").
+struct BoardColumn: Decodable, Identifiable {
+    let id: String
+    let name: String
+    let position: Int
+}
+
+/// The created note row (snake_case — ProjectNote has no serde rename).
+struct CreatedNote: Decodable {
+    let id: String
+    let project_id: String
+}
+
+extension APIClient {
+    func projects() async throws -> [ProjectSummary] {
+        try await get("/api/projects", as: [ProjectSummary].self)
+    }
+
+    func columns(projectId: String) async throws -> [BoardColumn] {
+        try await get("/api/projects/\(projectId)/columns", as: [BoardColumn].self)
+    }
+
+    func createNote(projectId: String, title: String?, body: String) async throws -> CreatedNote {
+        struct Req: Encodable { let title: String?; let body: String }
+        return try await post("/api/projects/\(projectId)/notes",
+                              body: Req(title: title, body: body), as: CreatedNote.self)
+    }
+
+    /// One confirmed to-do → a standard card. `columnId` nil lets the daemon
+    /// place it in the project's first column; tagged so its origin is queryable.
+    func createCard(projectId: String, title: String, noteId: String) async throws {
+        struct Meta: Encodable { let source: String; let note_id: String }
+        struct Req: Encodable {
+            let title: String
+            let cardType: String
+            let createdBy: String
+            let metadataJson: Meta
+        }
+        struct Resp: Decodable { let id: String }
+        _ = try await post(
+            "/api/projects/\(projectId)/cards",
+            body: Req(title: title, cardType: "standard", createdBy: "user",
+                      metadataJson: Meta(source: "permagent.note.dictation", note_id: noteId)),
+            as: Resp.self
+        )
+    }
+
+    /// Upload a WAV clip to the hub's local-Whisper transcriber. 503 means the
+    /// hub has no dictation model configured — surfaced as `.dictationUnavailable`
+    /// so the UI can show a setup hint instead of a generic failure.
+    func transcribe(wav: Data) async throws -> String {
+        guard let config else { throw APIError.notPaired }
+        let boundary = "permagent-\(UUID().uuidString)"
+        var req = URLRequest(url: config.baseURL.appendingPathComponent("/api/dictation/transcribe"))
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(config.token)", forHTTPHeaderField: "Authorization")
+        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        var body = Data()
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"audio\"; filename=\"dictation.wav\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: audio/wav\r\n\r\n".data(using: .utf8)!)
+        body.append(wav)
+        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+        req.httpBody = body
+
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse else { throw APIError.badStatus(0) }
+        if http.statusCode == 401 { throw APIError.unauthorized }
+        if http.statusCode == 503 { throw APIError.dictationUnavailable }
+        guard (200..<300).contains(http.statusCode) else { throw APIError.badStatus(http.statusCode) }
+        struct Resp: Decodable { let text: String }
+        return try JSONDecoder().decode(Resp.self, from: data).text
     }
 }
 
