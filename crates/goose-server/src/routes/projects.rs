@@ -1196,17 +1196,33 @@ pub struct CreateStackEntryRequest {
     dashboard_url: Option<String>,
 }
 
+/// Deserialize an `Option<Option<T>>` field so a MISSING key (outer `None`,
+/// "leave unchanged") is distinguished from an explicit JSON `null`
+/// (`Some(None)`, "clear to NULL"). Paired with `#[serde(default)]` for the
+/// missing case. serde's stock `Option<Option<T>>` collapses both a missing
+/// key and an explicit `null` to `None`; this restores the difference the
+/// PATCH clear semantics depend on.
+fn double_option<'de, T, D>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Ok(Some(Option::<T>::deserialize(de)?))
+}
+
 /// Patch body for a stack entry. Single-Option = leave unchanged; the nullable
-/// fields (`identity`, `dashboardUrl`) use double-Option so explicit JSON
-/// `null` clears them (same semantics as `UpdateProjectRequest.siteUrl`).
+/// fields (`identity`, `dashboardUrl`) use double-Option via [`double_option`]
+/// so an explicit JSON `null` clears them (vs. an omitted key = unchanged).
 /// `deny_unknown_fields` for the same no-secrets reason as create.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdateStackEntryRequest {
     service_name: Option<String>,
     category: Option<String>,
+    #[serde(default, deserialize_with = "double_option")]
     identity: Option<Option<String>>,
     notes: Option<String>,
+    #[serde(default, deserialize_with = "double_option")]
     dashboard_url: Option<Option<String>>,
 }
 
