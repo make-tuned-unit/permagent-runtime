@@ -48,6 +48,7 @@ use crate::scheduler_trait::SchedulerTrait;
 use crate::security::adversary_inspector::AdversaryInspector;
 use crate::security::egress_inspector::EgressInspector;
 use crate::security::security_inspector::SecurityInspector;
+use crate::security::write_jail::WriteJailInspector;
 use crate::session::extension_data::{EnabledExtensionsState, ExtensionState};
 use crate::session::{Session, SessionManager};
 use crate::tool_inspection::ToolInspectionManager;
@@ -286,6 +287,13 @@ impl Agent {
 
         // Add adversary inspector (LLM-based review, enabled by ~/.config/goose/adversary.md)
         tool_inspection_manager.add_inspector(Box::new(AdversaryInspector::new(provider.clone())));
+
+        // Write jail (C3): file writes/edits outside the session working dir
+        // (and outside the temp/worktree/config allowlist) require approval,
+        // answered through the Decision Inbox like any other confirmation.
+        tool_inspection_manager.add_inspector(Box::new(WriteJailInspector::new(Some(
+            session_manager.clone(),
+        ))));
 
         // Add permission inspector (medium-high priority)
         tool_inspection_manager.add_inspector(Box::new(PermissionInspector::new(
@@ -705,6 +713,15 @@ impl Agent {
                 ToolCallResult::from(Err(error_data))
             })
         };
+
+        // C3 injection posture (layer 1): results from untrusted-origin tools
+        // (web fetch/reader, browser content bridges, third-party feeds) carry
+        // the data-not-instructions frame before they enter the conversation.
+        // Trusted tools (the user's own files, Brain recall) pass unchanged.
+        let result = crate::security::untrusted_content::apply_untrusted_result_framing(
+            tool_call.name.as_ref(),
+            result,
+        );
 
         // Task logging: completion/failure. The result is a ToolCallResult containing
         // a boxed future, so we log at this point with best-effort output capture.
@@ -2831,6 +2848,10 @@ mod tests {
         assert!(
             inspector_names.contains(&"adversary"),
             "Tool inspection manager should contain adversary inspector"
+        );
+        assert!(
+            inspector_names.contains(&crate::security::write_jail::WRITE_JAIL_INSPECTOR_NAME),
+            "Tool inspection manager should contain the write jail (C3)"
         );
 
         Ok(())

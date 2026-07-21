@@ -4,6 +4,8 @@ pub mod egress_inspector;
 pub mod patterns;
 pub mod scanner;
 pub mod security_inspector;
+pub mod untrusted_content;
+pub mod write_jail;
 
 use crate::config::Config;
 use crate::conversation::message::{Message, ToolRequest};
@@ -34,12 +36,27 @@ impl SecurityManager {
         }
     }
 
+    /// Prompt-injection detection is ON by default (C3): the scanner gates the
+    /// dangerous tools (shell + write/edit) and its above-threshold findings
+    /// block by routing through the Decision Inbox as an answerable approval.
+    /// Set `SECURITY_PROMPT_ENABLED: false` to disable scanning entirely, or
+    /// `SECURITY_PROMPT_LOG_ONLY: true` to keep scanning but never block.
     pub fn is_prompt_injection_detection_enabled(&self) -> bool {
-        let config = Config::global();
+        prompt_detection_enabled(
+            Config::global()
+                .get_param::<bool>("SECURITY_PROMPT_ENABLED")
+                .ok(),
+        )
+    }
 
-        config
-            .get_param::<bool>("SECURITY_PROMPT_ENABLED")
-            .unwrap_or(false)
+    /// Log-only mode: findings are still scanned and logged, but never block
+    /// (the pre-C3 posture). Explicit config over a hidden default.
+    pub fn is_log_only(&self) -> bool {
+        prompt_detection_log_only(
+            Config::global()
+                .get_param::<bool>("SECURITY_PROMPT_LOG_ONLY")
+                .ok(),
+        )
     }
 
     fn is_ml_scanning_enabled(&self) -> bool {
@@ -212,5 +229,36 @@ impl SecurityManager {
 impl Default for SecurityManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Pure default policies, split out so the defaults are testable without the
+/// process-global config: scanning defaults ON, log-only defaults OFF.
+pub(crate) fn prompt_detection_enabled(param: Option<bool>) -> bool {
+    param.unwrap_or(true)
+}
+
+pub(crate) fn prompt_detection_log_only(param: Option<bool>) -> bool {
+    param.unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// C3 default posture: scanning ON unless explicitly disabled; blocking
+    /// (not log-only) unless explicitly reverted.
+    #[test]
+    fn default_posture_is_scan_and_block() {
+        assert!(prompt_detection_enabled(None), "scanning defaults ON");
+        assert!(prompt_detection_enabled(Some(true)));
+        assert!(!prompt_detection_enabled(Some(false)), "explicit off wins");
+
+        assert!(!prompt_detection_log_only(None), "blocking is the default");
+        assert!(
+            prompt_detection_log_only(Some(true)),
+            "log-only revert flag"
+        );
+        assert!(!prompt_detection_log_only(Some(false)));
     }
 }
