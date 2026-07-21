@@ -740,6 +740,18 @@ impl OrchestratorClient {
                     persona_override,
                 })
             }
+            // S1 (#427): supervised sibling — same worktree/review scaffolding,
+            // but the session runs gate-enabled stream-json in a VISIBLE
+            // Build-tab terminal. Completion arrives through the
+            // `supervised_cli::complete_supervised_session` seam (S2 wires it);
+            // until then a supervised goal runs to its timeout and parks.
+            Some(agent_identity::WorkerEngineKind::SupervisedCli { bin }) => {
+                Box::new(super::supervised_cli::SupervisedCliEngine {
+                    bin: bin.clone(),
+                    project_slug: project.slug.clone(),
+                    persona_override,
+                })
+            }
             Some(agent_identity::WorkerEngineKind::Pending) => {
                 return Err(format!(
                     "Worker '{}' has no runnable engine yet (engine pending) — not dispatched",

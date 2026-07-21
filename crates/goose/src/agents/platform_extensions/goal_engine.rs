@@ -62,7 +62,7 @@ pub const PUSH_BLOCK_SENTINEL: &str = "permagent-credential-guard://push-disable
 /// Standing constraint appended to every external-CLI worker prompt (#522).
 /// The pushurl override above is the enforcement; this line keeps the worker
 /// from burning its run retrying a push that can never succeed.
-const COMMIT_ONLY_BRIEF: &str =
+pub(crate) const COMMIT_ONLY_BRIEF: &str =
     "\n\nIMPORTANT: Commit your work in this worktree, but do NOT push. \
 Pushing from this worktree is disabled — Permagent scans your commits for \
 credential-shaped content and performs the push itself after the scan passes.";
@@ -71,7 +71,7 @@ credential-shaped content and performs the push itself after the scan passes.";
 /// process (#523 hooks pattern): the push block is unconditional; the
 /// work-base hooks path is added when available. Inherited only by this
 /// worker's git subprocesses — the user's repo config is never touched.
-fn worker_git_env(hooks_dir: Option<&PathBuf>) -> Vec<(String, String)> {
+pub(crate) fn worker_git_env(hooks_dir: Option<&PathBuf>) -> Vec<(String, String)> {
     let mut pairs = vec![(
         "remote.origin.pushurl".to_string(),
         PUSH_BLOCK_SENTINEL.to_string(),
@@ -528,7 +528,7 @@ pub(crate) async fn create_goal_worktree(
 /// `(hooks_dir, work_base_file)`, or `None` if the hooks could not be installed
 /// (the verifier then records Uncertain rather than diffing a possibly-stale
 /// base — we never silently fall back to a weaker anchor).
-async fn install_work_base_hooks(worktree: &Path) -> Option<PathBuf> {
+pub(crate) async fn install_work_base_hooks(worktree: &Path) -> Option<PathBuf> {
     let git_dir = git_text(worktree, &["rev-parse", "--absolute-git-dir"]).await;
     if git_dir.is_empty() {
         tracing::error!(
@@ -993,7 +993,7 @@ async fn run_external_cli(
 /// failure — unreachable remote, non-fast-forward from a concurrent push — is
 /// logged loudly and left for review-in-worktree; it never fails the goal and
 /// never bypasses the scan.
-async fn push_clean_work(worktree: &Path, baseline: &str) {
+pub(crate) async fn push_clean_work(worktree: &Path, baseline: &str) {
     let range = format!("{}..HEAD", baseline);
     let committed = git_text(worktree, &["rev-list", "--count", &range])
         .await

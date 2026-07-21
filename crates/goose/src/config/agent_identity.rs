@@ -213,6 +213,15 @@ pub enum WorkerEngineKind {
     /// worktree. `args` may contain the literal token `{prompt}`, replaced with
     /// the goal prompt at dispatch time.
     ExternalCli { bin: String, args: Vec<String> },
+    /// SUPERVISED external CLI (S1, #427): a stream-json Claude Code session
+    /// launched into a VISIBLE Build-tab terminal with permission gates
+    /// ENABLED, in an isolated git worktree. Unlike `ExternalCli` there is no
+    /// `args` field — the flag roster is composed by the supervised launcher
+    /// (`platform_extensions::supervised_cli`) because every flag is
+    /// load-bearing for gate detection; only the binary is configurable.
+    /// Opt-in via `agent.yaml` (`engine: { type: supervised_cli, bin: claude }`)
+    /// until the S2 parser + S3 inbox bridge make supervision end-to-end.
+    SupervisedCli { bin: String },
     /// Registered and probed, but no runnable engine wired yet. Such a worker is
     /// visible in the roster but never selected for a real goal — it must not be
     /// dispatched and silently fail.
@@ -225,6 +234,7 @@ impl WorkerEngineKind {
         match self {
             Self::InternalSubagent => "internal_subagent",
             Self::ExternalCli { .. } => "external_cli",
+            Self::SupervisedCli { .. } => "supervised_cli",
             Self::Pending => "pending",
         }
     }
@@ -559,6 +569,32 @@ cost_tier: subscription
         assert_eq!(persona.tool_kinds, vec!["code_edit", "shell", "git"]);
         assert_eq!(persona.availability_check, "bin_exists:codex");
         assert_eq!(persona.cost_tier, "subscription");
+    }
+
+    #[test]
+    fn supervised_cli_engine_kind_roundtrips_and_is_selectable() {
+        // S1 (#427): the agent.yaml opt-in shape for a supervised worker.
+        let yaml = r#"
+first_name: Claude Code (supervised)
+tool_kinds: [code_edit, shell, git]
+availability_check: "bin_exists:claude"
+engine:
+  type: supervised_cli
+  bin: claude
+"#;
+        let persona: WorkerPersona = serde_yaml::from_str(yaml).unwrap();
+        match &persona.engine {
+            WorkerEngineKind::SupervisedCli { bin } => assert_eq!(bin, "claude"),
+            other => panic!("expected SupervisedCli, got {:?}", other),
+        }
+        assert_eq!(persona.engine.label(), "supervised_cli");
+        // Unlike Pending, a supervised worker IS dispatchable (select_worker
+        // filters only Pending engines).
+        assert!(!matches!(persona.engine, WorkerEngineKind::Pending));
+        // And it round-trips through serialization unchanged.
+        let out = serde_yaml::to_string(&persona).unwrap();
+        let back: WorkerPersona = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(back.engine, persona.engine);
     }
 
     #[test]

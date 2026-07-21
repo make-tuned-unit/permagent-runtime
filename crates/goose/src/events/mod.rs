@@ -708,12 +708,18 @@ pub fn app_open_item(
 /// terminal in the Build tab. Mirrors [`app_navigate`]: the agent does not
 /// spawn the PTY directly — the command-center catches this and calls the
 /// existing `createProjectTab` launch path (BuildView → terminal.rs).
+///
+/// `supervised_session_id` (S1, #427) tags a SUPERVISED stream-json Claude
+/// Code launch with its loop session id (`sup-<uuid>`). The frontend ignores
+/// it today; S2's session registry (#428) uses it to correlate the loop
+/// session with the PTY the tab spawns. `None` for plain launches.
 pub fn project_launch(
     root_path: &str,
     label: &str,
     command: Option<&str>,
     project_slug: &str,
     reason: &str,
+    supervised_session_id: Option<&str>,
 ) -> PermagentEvent {
     PermagentEvent::new(
         PermagentEventType::ProjectLaunch,
@@ -723,6 +729,7 @@ pub fn project_launch(
             "command": command,
             "project_slug": project_slug,
             "reason": reason,
+            "supervised_session_id": supervised_session_id,
         }),
     )
 }
