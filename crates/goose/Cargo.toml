@@ -130,7 +130,7 @@ tokio-cron-scheduler = "0.14.0"
 # Cron occurrence math for missed-run detection. Already in the lock transitively
 # via tokio-cron-scheduler (2.2.0); declaring it direct adds only a dependency
 # edge (no new package/checksum). Same parse builder chain the engine uses.
-croner = "2.2.0"
+croner = "3.0.1"
 urlencoding = { workspace = true }
 v_htmlescape = "0.17"
 sqlx = { version = "0.8", default-features = false, features = [
