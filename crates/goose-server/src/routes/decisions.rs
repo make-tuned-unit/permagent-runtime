@@ -531,6 +531,84 @@ async fn execute_effect(
             Some("enrichment proposal declined; nothing was written".to_string()),
             None,
         )),
+        // Approved file_to_project proposal (call-notes/email MVP 2A): the ONE
+        // user-approved seam through which viewed content (e.g. an email in the
+        // embedded browser) is ever persisted. Creates the project note through
+        // the same composed path the Notes panel uses (durable row +
+        // description-less `permagent.note` Brain index + project association),
+        // then adds the named people ADDRESS-LESS. People steps are best-effort
+        // AFTER the note commits: per-name failures (ambiguous directory match,
+        // Brain unavailable for minting) surface as an effect warning — recorded,
+        // never silently dropped — while the note stands.
+        ("file_to_project", Some("approve")) => {
+            let payload: permagent::decisions::FileToProjectPayload =
+                serde_json::from_value(decision.payload.clone()).map_err(|e| {
+                    GuardError::Invalid(format!("stored file_to_project payload unreadable: {}", e))
+                })?;
+            let project = permagent::projects::get_project_by_id_or_slug(pool, &payload.project_id)
+                .await
+                .map_err(GuardError::Db)?
+                .ok_or_else(|| {
+                    GuardError::NotFound(format!(
+                        "project '{}' ('{}') no longer exists — nothing was filed",
+                        payload.project_id, payload.project_name
+                    ))
+                })?;
+
+            let brain = permagent::agents::platform_extensions::get_global_brain();
+            let note = permagent::project_notes::create_note_indexed(
+                pool,
+                brain.as_ref(),
+                &project.id,
+                payload.title.as_deref(),
+                &payload.body,
+            )
+            .await
+            .map_err(GuardError::Db)?;
+
+            let (mut added, mut associated) = (0usize, 0usize);
+            let mut warnings: Vec<String> = Vec::new();
+            for name in &payload.people {
+                match file_person_addressless(pool, brain.as_ref(), &project.id, name).await {
+                    Ok(PersonOutcome::Created) => added += 1,
+                    Ok(PersonOutcome::AssociatedExisting) => associated += 1,
+                    Err(w) => warnings.push(format!("{}: {}", name, w)),
+                }
+            }
+
+            let mut effect = format!(
+                "filed note {} to project \"{}\"{}",
+                note.id,
+                project.name,
+                if note.memory_key.is_some() {
+                    " (indexed into the Brain)"
+                } else {
+                    " (Brain index skipped — note row persisted)"
+                }
+            );
+            if added + associated > 0 {
+                effect.push_str(&format!(
+                    "; people: {} added, {} already in the directory — all address-less",
+                    added, associated
+                ));
+            }
+            let warning = if warnings.is_empty() {
+                None
+            } else {
+                Some(format!(
+                    "note filed, but {} people step(s) did not apply: {}",
+                    warnings.len(),
+                    warnings.join("; ")
+                ))
+            };
+            Ok((Some(effect), warning))
+        }
+        // Declined file_to_project proposal: recorded; nothing is persisted —
+        // the browser-reads-are-never-persisted guarantee holds untouched.
+        ("file_to_project", Some("reject")) => Ok((
+            Some("file-to-project proposal declined; nothing was persisted".to_string()),
+            None,
+        )),
         // Remaining shapes route through L3's resume:auto — `choice` answers
         // and `unblock` answered with input on a PARKED goal make it
         // re-dispatch eligible (Triage → Ready through the guard). Everything
@@ -539,6 +617,77 @@ async fn execute_effect(
         _ => permagent::decision_inbox::policy::resume_answered_decision(pool, decision, proof)
             .await
             .map(|effect| (effect, None)),
+    }
+}
+
+/// Outcome of one address-less people step in the file_to_project effect.
+enum PersonOutcome {
+    /// The person was new: minted (Runtime provenance, name only) + associated.
+    Created,
+    /// The person already existed in the directory: associated only.
+    AssociatedExisting,
+}
+
+/// Add one person to a project ADDRESS-LESS for the file_to_project approve
+/// effect: an exact (case-insensitive) directory match is associated; a
+/// missing person is minted through the one runtime person path
+/// (`people_create::create_person`, name only — no email/phone can ever ride
+/// this) and then associated; an ambiguous name is refused rather than guessed
+/// (the people-extension discipline, held at apply time too).
+async fn file_person_addressless(
+    pool: &Pool<Sqlite>,
+    brain: Option<&permagent::brain_handle::SafeBrain>,
+    project_id: &str,
+    name: &str,
+) -> Result<PersonOutcome, String> {
+    let filter = permagent::people::PeopleFilter {
+        company: None,
+        role: None,
+        query: Some(name.to_string()),
+    };
+    let candidates = permagent::people::list_people(pool, &filter).await?;
+    let exact: Vec<&permagent::people::Person> = candidates
+        .iter()
+        .filter(|p| p.display_name.eq_ignore_ascii_case(name))
+        .collect();
+
+    match exact.len() {
+        1 => {
+            permagent::project_association::associate_person(
+                pool,
+                project_id,
+                &exact[0].entity_uuid,
+                None,
+            )
+            .await?;
+            Ok(PersonOutcome::AssociatedExisting)
+        }
+        0 => {
+            let brain = brain.ok_or_else(|| {
+                "Brain is not available — minting a person writes a graph entity; add them \
+                 later with create_person"
+                    .to_string()
+            })?;
+            let person = permagent::people_create::create_person(
+                pool,
+                brain,
+                name,
+                permagent::people_provenance::Provenance::Runtime,
+            )
+            .await?;
+            permagent::project_association::associate_person(
+                pool,
+                project_id,
+                &person.entity_uuid,
+                None,
+            )
+            .await?;
+            Ok(PersonOutcome::Created)
+        }
+        n => Err(format!(
+            "matches {} people in the directory — not added (never guess an identity)",
+            n
+        )),
     }
 }
 

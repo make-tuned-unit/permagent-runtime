@@ -3,6 +3,7 @@ import { useCommandCenter } from '../../lib/store';
 import { font, ease } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
+import { MeetingRecorder } from '../voice/MeetingRecorder';
 
 /** SVG icon paths from design handoff (view-dashboard.jsx lines 17-20, 107) */
 const ICON_PATHS: Record<string, string> = {
@@ -141,6 +142,12 @@ export function Sidebar() {
       })}
 
       <div style={{ flex: 1 }} />
+
+      {/* Meeting dictation (call-notes MVP 1A) — click-to-toggle Record button
+          (NOT push-to-talk: PTT dies when the embedded webview holds focus).
+          Lives here because the Sidebar never unmounts, so a recording
+          survives workspace and overlay switches. */}
+      <MeetingRecorder open={open} />
 
       {/* Sessions — return to a past conversation (the only entry to the
           Sessions history overlay). */}

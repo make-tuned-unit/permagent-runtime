@@ -107,8 +107,9 @@ export function useDictation(onText: (text: string) => void) {
   return { state, error, toggle };
 }
 
-/** Encode mono Float32 PCM `[-1, 1]` as a 16-bit PCM WAV. */
-function encodeWav(samples: Float32Array, sampleRate: number): ArrayBuffer {
+/** Encode mono Float32 PCM `[-1, 1]` as a 16-bit PCM WAV. Exported for the
+ *  chunked meeting-dictation variant (useMeetingDictation). */
+export function encodeWav(samples: Float32Array, sampleRate: number): ArrayBuffer {
   const buffer = new ArrayBuffer(44 + samples.length * 2);
   const view = new DataView(buffer);
   const writeStr = (off: number, s: string) => {

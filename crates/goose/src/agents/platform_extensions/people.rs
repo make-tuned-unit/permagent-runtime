@@ -160,8 +160,12 @@ impl PeopleClient {
     }
 
     /// Resolve a project by id, slug, or (case-insensitive) name. Ambiguous names
-    /// error with the candidate list rather than guessing.
-    async fn resolve_project(pool: &Pool<Sqlite>, q: &str) -> Result<projects::Project, String> {
+    /// error with the candidate list rather than guessing. `pub(crate)` so the
+    /// file_to_project extension resolves projects through this exact discipline.
+    pub(crate) async fn resolve_project(
+        pool: &Pool<Sqlite>,
+        q: &str,
+    ) -> Result<projects::Project, String> {
         if let Some(p) = projects::get_project_by_id_or_slug(pool, q).await? {
             return Ok(p);
         }

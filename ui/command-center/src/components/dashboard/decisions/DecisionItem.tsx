@@ -16,6 +16,8 @@
  *  - risk_gate: approve authorizes the gated action class; reject records.
  *  - enrichment_proposal: approve writes the proposed person fields with
  *    Enriched provenance (manual entries protected); reject records only.
+ *  - file_to_project: approve files the content as a project note (Brain-
+ *    indexed) and adds named people address-less; reject persists nothing.
  *  - malformed: acknowledgement only — recorded, no state change.
  *
  * S2: every string from the daemon renders as a React text node. No markdown,
@@ -78,6 +80,11 @@ function effectTextFor(kind: string, answer: 'approve' | 'reject', agentName: st
     return answer === 'approve'
       ? `Confirm approve — ${agentName} will save these details to the person's profile (your manual entries stay protected).`
       : 'Confirm reject — nothing is written to the profile.';
+  }
+  if (kind === 'file_to_project') {
+    return answer === 'approve'
+      ? `Confirm approve — ${agentName} will save this as a project note and add the named people (name only, no contact details).`
+      : 'Confirm reject — nothing is saved anywhere.';
   }
   if (kind === 'tool_approval') {
     return answer === 'approve'
@@ -201,7 +208,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
   const isApprovalLike =
     d.kind === 'approve_review' || d.kind === 'risk_gate' || d.kind === 'malformed' ||
     d.kind === 'enrichment_proposal' || d.kind === 'automation_proposal' ||
-    d.kind === 'tool_approval';
+    d.kind === 'file_to_project' || d.kind === 'tool_approval';
   // The agent's original draft, when this decision carries one (payload.draft):
   // enables "approve with edits" — revise the text, then accept (answer='edit').
   const draft = draftText(d);
@@ -574,6 +581,7 @@ function badgeFor(d: Decision, colors: ReturnType<typeof useTheme>['colors']) {
     case 'choice': return { label: 'choice', color: colors.purpleBright, bg: colors.purpleSoft };
     case 'risk_gate': return { label: 'permission', color: colors.danger, bg: colors.danger + '24' };
     case 'enrichment_proposal': return { label: 'enrichment', color: colors.purpleBright, bg: colors.purpleSoft };
+    case 'file_to_project': return { label: 'file note', color: colors.cyan, bg: colors.cyanSoft };
     case 'malformed': return { label: 'review', color: colors.warning, bg: colors.warning + '24' };
     default: return { label: 'approval', color: colors.cyan, bg: colors.cyanSoft };
   }
