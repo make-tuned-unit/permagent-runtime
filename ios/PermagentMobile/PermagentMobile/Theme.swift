@@ -15,8 +15,12 @@ enum Brand {
     static let textMuted = Color(hex: 0x8A94A6)
     static let textDim = Color(hex: 0x5A6478)
     static let danger = Color(hex: 0xFFB4A2)
+    static let success = Color(hex: 0x34D399)          // tokens.ts DARK_COLORS.success
+    static let warning = Color(hex: 0xFBBF24)          // tokens.ts DARK_COLORS.warning
     static let border = Color.white.opacity(0.07)
-    static let borderHi = Color(hex: 0x00D5FF).opacity(0.16)
+    static let borderHi = Color(hex: 0x00D5FF).opacity(0.18)   // tokens.ts color.borderHi
+    static let cyanSoft = Color(hex: 0x00D5FF).opacity(0.14)   // tokens.ts color.cyanSoft
+    static let purpleSoft = Color(hex: 0x8D44AE).opacity(0.18) // tokens.ts color.purpleSoft
 
     /// The signature ribbon: cyan → indigo → violet (tokens.ts ribbonGradient).
     static let ribbon = LinearGradient(

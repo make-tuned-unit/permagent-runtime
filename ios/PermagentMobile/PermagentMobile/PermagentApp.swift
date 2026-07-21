@@ -73,6 +73,7 @@ struct MainTabs: View {
             InboxView().tabItem { Label("Decisions", systemImage: "tray.full.fill") }
                 .badge(session.unread)
             GoalsView().tabItem { Label("In Flight", systemImage: "bolt.fill") }
+            ControlHubView().tabItem { Label("Control", systemImage: "slider.horizontal.3") }
         }
     }
 }
