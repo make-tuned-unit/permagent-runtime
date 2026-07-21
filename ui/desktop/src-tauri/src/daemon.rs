@@ -469,6 +469,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_daemon_token_extracts_token() {
+        assert_eq!(
+            parse_daemon_token(r#"{"token":"abc123"}"#).unwrap(),
+            "abc123"
+        );
+        assert!(parse_daemon_token(r#"{"nope":true}"#)
+            .unwrap_err()
+            .contains("missing 'token'"));
+        assert!(parse_daemon_token("not json").is_err());
+    }
+
+    #[test]
     fn rotate_log_moves_previous_run_aside() {
         let dir = std::env::temp_dir().join(format!("permagent-rotate-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
