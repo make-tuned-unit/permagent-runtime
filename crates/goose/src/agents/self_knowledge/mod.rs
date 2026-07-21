@@ -995,9 +995,9 @@ mod tests {
     ///   branch lands here automatically.
     fn extension_tool_inventories() -> Vec<(&'static str, Vec<String>)> {
         use crate::agents::platform_extensions::{
-            analyze, app_conductor, apps, browser, chatrecall, developer, ext_manager, listen,
-            orchestrator, people, project_manager, pronunciation, recipe_author, skills,
-            storage_health, summarize, summon, todo,
+            analyze, app_conductor, apps, browser, chatrecall, developer, ext_manager,
+            file_to_project, listen, orchestrator, people, project_manager, pronunciation,
+            recipe_author, skills, storage_health, summarize, summon, todo,
         };
 
         fn names(tools: Vec<rmcp::model::Tool>) -> Vec<String> {
@@ -1032,6 +1032,10 @@ mod tests {
             (
                 ext_manager::EXTENSION_NAME,
                 names(ext_manager::ExtensionManagerClient::all_possible_tools()),
+            ),
+            (
+                file_to_project::EXTENSION_NAME,
+                names(file_to_project::FileToProjectClient::get_tools()),
             ),
             (
                 listen::EXTENSION_NAME,
