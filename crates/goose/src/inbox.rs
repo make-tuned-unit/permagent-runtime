@@ -125,6 +125,55 @@ pub async fn list_inbox_files(pool: &Pool<Sqlite>) -> Result<Vec<InboxFile>, Str
     Ok(rows.iter().map(row_to_inbox_file).collect())
 }
 
+/// Fetch one inbox file by id.
+pub async fn get_inbox_file(pool: &Pool<Sqlite>, id: &str) -> Result<Option<InboxFile>, String> {
+    let sql = format!("SELECT {SELECT_COLS} FROM inbox_files WHERE id = ?");
+    let row = sqlx::query(&sql)
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(row.as_ref().map(row_to_inbox_file))
+}
+
+/// Statuses [`mark_inbox_file`] accepts — the routing slice's lifecycle moves.
+/// (`received` is the DB default on insert; `deleted` is a future slice.)
+pub const ROUTABLE_STATUSES: &[&str] = &["ingested", "routed"];
+
+/// Record the outcome of routing an inbox file (#395): set `status`
+/// (`ingested` when the content went to the Brain, `routed` when the file went
+/// to a project or scheduler surface) and, when the destination is
+/// project-scoped, stamp `project_id`. Returns the updated row, or `Ok(None)`
+/// if `id` does not exist. `project_id: None` leaves any existing value
+/// untouched (Brain routing is not project-scoped).
+pub async fn mark_inbox_file(
+    pool: &Pool<Sqlite>,
+    id: &str,
+    status: &str,
+    project_id: Option<&str>,
+) -> Result<Option<InboxFile>, String> {
+    if !ROUTABLE_STATUSES.contains(&status) {
+        return Err(format!(
+            "Invalid routing status: {status}. Must be one of {ROUTABLE_STATUSES:?}"
+        ));
+    }
+
+    let sql = format!(
+        "UPDATE inbox_files
+         SET status = ?, project_id = COALESCE(?, project_id)
+         WHERE id = ?
+         RETURNING {SELECT_COLS}",
+    );
+    let row = sqlx::query(&sql)
+        .bind(status)
+        .bind(project_id)
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(row.as_ref().map(row_to_inbox_file))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,5 +240,87 @@ mod tests {
         let names: std::collections::HashSet<_> =
             listed.iter().map(|f| f.filename.as_str()).collect();
         assert_eq!(names.len(), 3);
+    }
+
+    async fn seed_file(pool: &Pool<Sqlite>, name: &str) -> InboxFile {
+        insert_inbox_file(
+            pool,
+            &NewInboxFile {
+                filename: name.to_string(),
+                disk_path: name.to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn get_inbox_file_roundtrips_and_misses() {
+        let pool = fresh_pool().await;
+        let saved = seed_file(&pool, "doc.pdf").await;
+
+        let found = get_inbox_file(&pool, &saved.id).await.unwrap();
+        assert_eq!(found, Some(saved));
+        assert_eq!(get_inbox_file(&pool, "nope").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn mark_ingested_sets_status_and_keeps_project_untouched() {
+        let pool = fresh_pool().await;
+        let saved = seed_file(&pool, "notes.txt").await;
+
+        let updated = mark_inbox_file(&pool, &saved.id, "ingested", None)
+            .await
+            .unwrap()
+            .expect("row exists");
+        assert_eq!(updated.status, "ingested");
+        assert_eq!(updated.project_id, None);
+    }
+
+    #[tokio::test]
+    async fn mark_routed_stamps_project_id() {
+        let pool = fresh_pool().await;
+        // A real project row: inbox_files.project_id carries an FK to projects.
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "Routing target".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let saved = seed_file(&pool, "asset.png").await;
+
+        let updated = mark_inbox_file(&pool, &saved.id, "routed", Some(&project.id))
+            .await
+            .unwrap()
+            .expect("row exists");
+        assert_eq!(updated.status, "routed");
+        assert_eq!(updated.project_id.as_deref(), Some(project.id.as_str()));
+
+        // A later status change without a project keeps the stamp (COALESCE).
+        let again = mark_inbox_file(&pool, &saved.id, "ingested", None)
+            .await
+            .unwrap()
+            .expect("row exists");
+        assert_eq!(again.project_id.as_deref(), Some(project.id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn mark_rejects_invalid_status_and_unknown_id() {
+        let pool = fresh_pool().await;
+        let saved = seed_file(&pool, "x.txt").await;
+
+        let err = mark_inbox_file(&pool, &saved.id, "received", None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("Invalid routing status"), "got: {err}");
+
+        let missing = mark_inbox_file(&pool, "nope", "routed", None)
+            .await
+            .unwrap();
+        assert_eq!(missing, None);
     }
 }

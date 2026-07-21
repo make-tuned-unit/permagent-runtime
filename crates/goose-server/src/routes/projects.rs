@@ -620,6 +620,116 @@ struct UploadDocumentsResponse {
     documents: Vec<ProjectDocument>,
 }
 
+/// Save one file as a project document: write the bytes to disk under
+/// `~/.permagent/project-docs/<project_id>/<doc_id>/<filename>`, insert the
+/// `project_documents` row, and best-effort index the extracted text into the
+/// Brain scoped to the project. Factored out of the multipart upload handler so
+/// the inbox routing slice (#395) shares the exact same write path — behavior
+/// (logging, size cap, never-fail Brain enrichment) unchanged.
+pub(crate) async fn save_project_document(
+    state: &Arc<AppState>,
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    project: &projects::Project,
+    filename: &str,
+    mime_type: &str,
+    data: &[u8],
+) -> Result<ProjectDocument, (StatusCode, String)> {
+    if data.len() > MAX_DOCUMENT_SIZE {
+        tracing::warn!(project = %project.id, %filename, size = data.len(), "project document exceeds size cap");
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("{filename} exceeds the {MAX_DOCUMENT_SIZE}-byte limit"),
+        ));
+    }
+
+    let docs_base = dirs::home_dir()
+        .ok_or((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "no home directory".to_string(),
+        ))?
+        .join(".permagent")
+        .join("project-docs")
+        .join(&project.id);
+
+    let doc_id = uuid::Uuid::now_v7().to_string();
+    let dir = docs_base.join(&doc_id);
+    fs::create_dir_all(&dir).await.map_err(|e| {
+        tracing::error!(project = %project.id, %filename, error = %e, "project document dir create failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+    })?;
+    let file_path = dir.join(filename);
+    fs::write(&file_path, data).await.map_err(|e| {
+        tracing::error!(project = %project.id, %filename, error = %e, "project document write failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+    })?;
+
+    let size_bytes = data.len() as i64;
+    let path_str = file_path.to_string_lossy().to_string();
+    let uploaded_at = project_documents::insert_document(
+        pool, &doc_id, &project.id, filename, mime_type, size_bytes, &path_str,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(project = %project.id, %filename, error = %e, "project document insert failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, e)
+    })?;
+
+    tracing::info!(project = %project.id, %filename, %mime_type, size = size_bytes, "project document uploaded");
+
+    // Best-effort Brain index: extract the file's text LOCALLY (mirroring the
+    // Reader ingest route's image-vs-document decision), store the full text
+    // durably in the Brain, and associate that memory with this project — so a
+    // dropped document becomes recallable + Librarian-enriched, scoped to the
+    // project it landed in. Every failure is logged and skipped; indexing is
+    // enrichment on top of the durable file + row, and must NEVER fail the
+    // upload. Guarded on the Brain being ready. Visual images (OCR finds too
+    // little text) are not indexed — there is no text to recall.
+    if let Some(brain) = state.brain.as_ref() {
+        let ingest = if mime_type.starts_with("image/") {
+            reader::ingest_image(data, filename).await
+        } else {
+            reader::ingest_document(data, filename, mime_type).await
+        };
+        match ingest {
+            Ok(digest) if !digest.is_visual => {
+                match brain.get_memory_by_key(&digest.memory_key).await {
+                    Ok(Some(mem)) => {
+                        if let Err(e) =
+                            project_association::associate_memory(pool, &project.id, &mem.id).await
+                        {
+                            tracing::warn!(project = %project.id, %filename, error = %e, "project document brain association failed");
+                        } else {
+                            tracing::info!(project = %project.id, %filename, memory = %mem.id, "project document indexed into brain");
+                        }
+                    }
+                    Ok(None) => {
+                        tracing::warn!(project = %project.id, %filename, key = %digest.memory_key, "project document ingested but its memory was not found for association")
+                    }
+                    Err(e) => {
+                        tracing::warn!(project = %project.id, %filename, error = %e, "project document memory lookup failed")
+                    }
+                }
+            }
+            Ok(_) => {
+                tracing::debug!(project = %project.id, %filename, "project document classified visual; text not indexed")
+            }
+            Err(e) => {
+                tracing::warn!(project = %project.id, %filename, error = %e, "project document brain ingest failed (upload still succeeds)")
+            }
+        }
+    }
+
+    Ok(ProjectDocument {
+        id: doc_id,
+        project_id: project.id.clone(),
+        filename: filename.to_string(),
+        mime_type: mime_type.to_string(),
+        size_bytes,
+        path: path_str,
+        uploaded_at,
+    })
+}
+
 /// POST /api/projects/{id}/documents — upload one or more files (multipart).
 ///
 /// Mirrors the session attachment pipeline: each file is written to disk under
@@ -642,15 +752,6 @@ async fn upload_project_documents_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
         .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
 
-    let docs_base = dirs::home_dir()
-        .ok_or((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "no home directory".to_string(),
-        ))?
-        .join(".permagent")
-        .join("project-docs")
-        .join(&project.id);
-
     let mut results = Vec::new();
 
     while let Ok(Some(field)) = multipart.next_field().await {
@@ -668,92 +769,9 @@ async fn upload_project_documents_handler(
             (StatusCode::BAD_REQUEST, format!("read failed: {e}"))
         })?;
 
-        if data.len() > MAX_DOCUMENT_SIZE {
-            tracing::warn!(project = %project.id, %filename, size = data.len(), "project document exceeds size cap");
-            return Err((
-                StatusCode::PAYLOAD_TOO_LARGE,
-                format!("{filename} exceeds the {MAX_DOCUMENT_SIZE}-byte limit"),
-            ));
-        }
-
-        let doc_id = uuid::Uuid::now_v7().to_string();
-        let dir = docs_base.join(&doc_id);
-        fs::create_dir_all(&dir).await.map_err(|e| {
-            tracing::error!(project = %project.id, %filename, error = %e, "project document dir create failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-        })?;
-        let file_path = dir.join(&filename);
-        fs::write(&file_path, &data).await.map_err(|e| {
-            tracing::error!(project = %project.id, %filename, error = %e, "project document write failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-        })?;
-
-        let size_bytes = data.len() as i64;
-        let path_str = file_path.to_string_lossy().to_string();
-        let uploaded_at = project_documents::insert_document(
-            &pool, &doc_id, &project.id, &filename, &mime_type, size_bytes, &path_str,
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!(project = %project.id, %filename, error = %e, "project document insert failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, e)
-        })?;
-
-        tracing::info!(project = %project.id, %filename, %mime_type, size = size_bytes, "project document uploaded");
-
-        // Best-effort Brain index: extract the file's text LOCALLY (mirroring the
-        // Reader ingest route's image-vs-document decision), store the full text
-        // durably in the Brain, and associate that memory with this project — so a
-        // dropped document becomes recallable + Librarian-enriched, scoped to the
-        // project it landed in. Every failure is logged and skipped; indexing is
-        // enrichment on top of the durable file + row, and must NEVER fail the
-        // upload. Guarded on the Brain being ready. Visual images (OCR finds too
-        // little text) are not indexed — there is no text to recall.
-        if let Some(brain) = state.brain.as_ref() {
-            let ingest = if mime_type.starts_with("image/") {
-                reader::ingest_image(&data, &filename).await
-            } else {
-                reader::ingest_document(&data, &filename, &mime_type).await
-            };
-            match ingest {
-                Ok(digest) if !digest.is_visual => {
-                    match brain.get_memory_by_key(&digest.memory_key).await {
-                        Ok(Some(mem)) => {
-                            if let Err(e) =
-                                project_association::associate_memory(&pool, &project.id, &mem.id)
-                                    .await
-                            {
-                                tracing::warn!(project = %project.id, %filename, error = %e, "project document brain association failed");
-                            } else {
-                                tracing::info!(project = %project.id, %filename, memory = %mem.id, "project document indexed into brain");
-                            }
-                        }
-                        Ok(None) => {
-                            tracing::warn!(project = %project.id, %filename, key = %digest.memory_key, "project document ingested but its memory was not found for association")
-                        }
-                        Err(e) => {
-                            tracing::warn!(project = %project.id, %filename, error = %e, "project document memory lookup failed")
-                        }
-                    }
-                }
-                Ok(_) => {
-                    tracing::debug!(project = %project.id, %filename, "project document classified visual; text not indexed")
-                }
-                Err(e) => {
-                    tracing::warn!(project = %project.id, %filename, error = %e, "project document brain ingest failed (upload still succeeds)")
-                }
-            }
-        }
-
-        results.push(ProjectDocument {
-            id: doc_id,
-            project_id: project.id.clone(),
-            filename,
-            mime_type,
-            size_bytes,
-            path: path_str,
-            uploaded_at,
-        });
+        let doc =
+            save_project_document(&state, &pool, &project, &filename, &mime_type, &data).await?;
+        results.push(doc);
     }
 
     Ok(Json(UploadDocumentsResponse { documents: results }))
