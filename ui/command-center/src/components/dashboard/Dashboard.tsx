@@ -6,7 +6,7 @@ import { Mobius } from '../mobius/Mobius';
 import { useDashboard } from './useDashboard';
 import { useLiveGoals } from '../../lib/useLiveGoals';
 import { useLayout, DEFAULT_LAYOUT, type DashboardLayoutData, type DashboardCardLayout } from './useLayout';
-import { CARD_REGISTRY } from './cards/registry';
+import { useCardRegistry } from './cards/useCardRegistry';
 import { AddCardPicker } from './AddCardPicker';
 import { DashboardOverflowMenu } from './DashboardOverflowMenu';
 import { ResetConfirmModal } from './ResetConfirmModal';
@@ -61,6 +61,8 @@ export function Dashboard() {
   // (deduped) goal list actually changes, so a benign refetch never re-renders it.
   const inFlightProps = useMemo(() => ({ goals: activeGoals }), [activeGoals]);
   const { layout, persistLayout } = useLayout();
+  // Rendered registry = first-party code cards + daemon-served manifest cards.
+  const registry = useCardRegistry();
   const [isEditMode, setIsEditMode] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [showPicker, setShowPicker] = useState(false);
@@ -94,7 +96,7 @@ export function Dashboard() {
   }, [layout.cards, persistLayout]);
 
   const addCard = useCallback((type: string) => {
-    const entry = CARD_REGISTRY[type];
+    const entry = registry[type];
     if (!entry) return;
     const newCard: DashboardCardLayout = {
       id: type,
@@ -104,7 +106,7 @@ export function Dashboard() {
       visible: true,
     };
     persistAndNotify(persistLayout, { cards: reflow([...layout.cards, newCard]) }, setSaveState);
-  }, [layout.cards, persistLayout]);
+  }, [layout.cards, persistLayout, registry]);
 
   const resetToDefault = useCallback(() => {
     setShowResetConfirm(false);
@@ -285,10 +287,12 @@ export function Dashboard() {
         }}
       >
         {visibleCards.map(card => {
-          const entry = CARD_REGISTRY[card.type];
+          const entry = registry[card.type];
           if (!entry) return null;
           const Component = entry.component;
-          const props = cardDataMap[card.type] || {};
+          // Manifest cards self-fetch and only need their manifest; first-party
+          // code cards read pre-fetched data from cardDataMap.
+          const props = entry.manifest ? { manifest: entry.manifest } : (cardDataMap[card.type] || {});
           const { x, y } = card.position;
           const isResizing = resizeId === card.id;
           const w = isResizing && resizePreview ? resizePreview.w : card.size.w;
@@ -339,7 +343,7 @@ export function Dashboard() {
       {/* Drag ghost — follows pointer during reorder */}
       {dragSrcId && dragPos && (() => {
         const srcCard = visibleCards.find(c => c.id === dragSrcId);
-        const entry = srcCard ? CARD_REGISTRY[srcCard.type] : null;
+        const entry = srcCard ? registry[srcCard.type] : null;
         if (!entry) return null;
         const gh = dragGhostSize.current;
         return (
@@ -396,6 +400,7 @@ export function Dashboard() {
 
       {showPicker && (
         <AddCardPicker
+          registry={registry}
           currentCardTypes={currentTypes}
           onSelect={addCard}
           onClose={() => setShowPicker(false)}

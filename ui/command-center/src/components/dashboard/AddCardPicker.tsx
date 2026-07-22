@@ -1,17 +1,18 @@
 import { FiPlus, FiX } from 'react-icons/fi';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
-import { CARD_REGISTRY } from './cards/registry';
+import type { CardRegistryEntry } from './cards/registry';
 
 interface Props {
+  registry: Record<string, CardRegistryEntry>;
   currentCardTypes: string[];
   onSelect: (type: string) => void;
   onClose: () => void;
 }
 
-export function AddCardPicker({ currentCardTypes, onSelect, onClose }: Props) {
+export function AddCardPicker({ registry, currentCardTypes, onSelect, onClose }: Props) {
   const { colors } = useTheme();
-  const available = Object.entries(CARD_REGISTRY).filter(
+  const available = Object.entries(registry).filter(
     ([type]) => !currentCardTypes.includes(type)
   );
 
@@ -88,9 +89,20 @@ export function AddCardPicker({ currentCardTypes, onSelect, onClose }: Props) {
                 }}>
                   <FiPlus size={14} style={{ color: colors.cyan }} />
                 </div>
-                <div>
-                  <div style={{ fontFamily: font.body, fontSize: 13, fontWeight: 500, color: colors.text }}>
-                    {entry.name}
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontFamily: font.body, fontSize: 13, fontWeight: 500, color: colors.text }}>
+                      {entry.name}
+                    </span>
+                    {entry.source && entry.source !== 'built-in' && (
+                      <span style={{
+                        fontFamily: font.body, fontSize: 9, fontWeight: 600, letterSpacing: '0.04em',
+                        textTransform: 'uppercase', color: colors.cyan, background: colors.cyanSoft,
+                        padding: '1px 6px', borderRadius: radius.pill, flexShrink: 0,
+                      }}>
+                        {entry.source}
+                      </span>
+                    )}
                   </div>
                   <div style={{ fontFamily: font.body, fontSize: 11, color: colors.textDim, marginTop: 1 }}>
                     {entry.description}
