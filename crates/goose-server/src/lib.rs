@@ -17,6 +17,7 @@ pub mod error;
 pub mod event_at_backfill;
 pub mod federation;
 pub mod middleware;
+pub mod notification_router;
 pub mod openapi;
 pub mod routes;
 pub mod session_event_bus;

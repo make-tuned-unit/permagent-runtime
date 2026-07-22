@@ -325,6 +325,11 @@ pub enum PermagentEventType {
     // Echo/Watcher — the agent proactively resurfaces something worth your
     // attention (a dormant Brain thread today; project news/analytics later).
     ProactiveNudge,
+    // Notification routing (#66). These are delivery instructions emitted by
+    // the daemon router, never raw workflow facts. Clients should notify only
+    // from these events, which keeps per-user policy out of every producer.
+    NotificationRouted,
+    NotificationDigestReady,
     // ── Multi-client liveness (#629): emitted on REAL writes only, so a second
     // open client refreshes the affected surface instead of going stale. ──
     /// A workspace's persisted layout changed (PUT /api/workspaces/{id}/layout).
@@ -829,6 +834,38 @@ pub fn proactive_nudge(
             "count": count,
             "last_ts": last_ts,
         }),
+    )
+}
+
+/// A workflow event passed the user's notification policy for an immediate
+/// channel. `source_event_id` makes delivery idempotent for clients.
+pub fn notification_routed(
+    source_event_id: &str,
+    user_id: &str,
+    severity: &str,
+    channel: &str,
+    source_type: &str,
+    source_payload: &Value,
+) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::NotificationRouted,
+        serde_json::json!({
+            "source_event_id": source_event_id,
+            "user_id": user_id,
+            "severity": severity,
+            "channel": channel,
+            "source_type": source_type,
+            "source_payload": source_payload,
+        }),
+    )
+}
+
+/// Batch boundary emitted after the day's individually routed digest entries.
+/// `count` lets clients present one grouped affordance instead of N toasts.
+pub fn notification_digest_ready(user_id: &str, count: i64) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::NotificationDigestReady,
+        serde_json::json!({ "user_id": user_id, "count": count }),
     )
 }
 

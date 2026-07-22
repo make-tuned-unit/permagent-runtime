@@ -960,6 +960,13 @@ impl SessionStorage {
                     if version < 32 {
                         spectral_schema::migrate_v31_to_v32(&self.pool).await?;
                     }
+                    // v33: per-user notification severity thresholds and the
+                    // durable daily-digest queue (#66). Purely additive and
+                    // idempotent; the router owns delivery, workflow emitters
+                    // remain policy-free.
+                    if version < 33 {
+                        spectral_schema::migrate_v32_to_v33(&self.pool).await?;
+                    }
                     // Version-independent safety net for the cfg-gated v22
                     // recognition columns. The always-on v23 above can stamp
                     // schema_version past the `version < 22` gate on a feature-off
