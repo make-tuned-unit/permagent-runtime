@@ -130,10 +130,15 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
     async fn put_identity_persists_and_get_round_trips() {
+        // HOME stays a throwaway so agent.yaml (keyed off HOME) is isolated and
+        // survives the in-test "daemon restart"; only PERMAGENT_PATH_ROOT (the
+        // global session-pool DB root) resolves to the shared, process-lifetime
+        // root so it never outlives a per-test tempdir (#858).
+        let root = crate::test_support::test_root();
         let home = tempfile::tempdir().unwrap();
         let _guard = env_lock::lock_env([
             ("HOME", Some(home.path().to_str().unwrap())),
-            ("PERMAGENT_PATH_ROOT", Some(home.path().to_str().unwrap())),
+            ("PERMAGENT_PATH_ROOT", Some(root.to_str().unwrap())),
         ]);
 
         let state = AppState::new(true).await.unwrap();

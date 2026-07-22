@@ -758,10 +758,16 @@ mod tests {
         #[tokio::test(flavor = "multi_thread")]
         #[serial]
         async fn keep_action_persists_and_round_trips() {
+            // HOME stays a throwaway — findings_dir()/the ledger are keyed off
+            // HOME and the cumulative-total assertion needs per-test isolation.
+            // Only PERMAGENT_PATH_ROOT (the global session-pool DB root) resolves
+            // to the shared, process-lifetime root so it never outlives a
+            // per-test tempdir (#858).
+            let root = crate::test_support::test_root();
             let home = tempfile::tempdir().unwrap();
             let _guard = env_lock::lock_env([
                 ("HOME", Some(home.path().to_str().unwrap())),
-                ("PERMAGENT_PATH_ROOT", Some(home.path().to_str().unwrap())),
+                ("PERMAGENT_PATH_ROOT", Some(root.to_str().unwrap())),
             ]);
             let dir = findings_dir();
             save_findings_to(&dir, &sample_findings("run-keep")).unwrap();
@@ -783,10 +789,16 @@ mod tests {
         #[tokio::test(flavor = "multi_thread")]
         #[serial]
         async fn recovery_total_route_reports_cumulative() {
+            // HOME stays a throwaway — findings_dir()/the ledger are keyed off
+            // HOME and the cumulative-total assertion needs per-test isolation.
+            // Only PERMAGENT_PATH_ROOT (the global session-pool DB root) resolves
+            // to the shared, process-lifetime root so it never outlives a
+            // per-test tempdir (#858).
+            let root = crate::test_support::test_root();
             let home = tempfile::tempdir().unwrap();
             let _guard = env_lock::lock_env([
                 ("HOME", Some(home.path().to_str().unwrap())),
-                ("PERMAGENT_PATH_ROOT", Some(home.path().to_str().unwrap())),
+                ("PERMAGENT_PATH_ROOT", Some(root.to_str().unwrap())),
             ]);
             let dir = findings_dir();
             write_run_with_recovery(&dir, "run-1", &[10], 0);
@@ -817,10 +829,16 @@ mod tests {
         #[cfg(unix)]
         async fn keep_action_ledger_write_failure_is_500() {
             use std::os::unix::fs::PermissionsExt;
+            // HOME stays a throwaway — findings_dir()/the ledger are keyed off
+            // HOME and the cumulative-total assertion needs per-test isolation.
+            // Only PERMAGENT_PATH_ROOT (the global session-pool DB root) resolves
+            // to the shared, process-lifetime root so it never outlives a
+            // per-test tempdir (#858).
+            let root = crate::test_support::test_root();
             let home = tempfile::tempdir().unwrap();
             let _guard = env_lock::lock_env([
                 ("HOME", Some(home.path().to_str().unwrap())),
-                ("PERMAGENT_PATH_ROOT", Some(home.path().to_str().unwrap())),
+                ("PERMAGENT_PATH_ROOT", Some(root.to_str().unwrap())),
             ]);
             let dir = findings_dir();
             save_findings_to(&dir, &sample_findings("run-fail")).unwrap();

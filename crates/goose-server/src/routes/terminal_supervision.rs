@@ -167,7 +167,10 @@ mod tests {
 
     async fn test_app() -> Router {
         // Builds AppState → #[serial] on every test using this (env_lock /
-        // process-singleton session-store race, see #695).
+        // process-singleton session-store race, see #695). Pin the global
+        // session pool to the shared, process-lifetime PERMAGENT_PATH_ROOT so
+        // it never outlives a per-test tempdir (#858).
+        crate::test_support::test_root();
         let state = AppState::new(true).await.unwrap();
         routes(state)
     }
