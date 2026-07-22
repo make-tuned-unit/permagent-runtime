@@ -153,8 +153,9 @@ pub fn extract_event_at(content: &str) -> Option<String> {
 
 fn extract_with(re: &regex::Regex, content: &str) -> Option<String> {
     let caps = re.captures(content)?;
-    let date = &caps[0][..10]; // YYYY-MM-DD
-    let nd = NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?;
+    // YYYY-MM-DD from the three date groups (avoids slicing the whole match).
+    let date = format!("{}-{}-{}", &caps[1], &caps[2], &caps[3]);
+    let nd = NaiveDate::parse_from_str(&date, "%Y-%m-%d").ok()?;
     if !(2000..=2100).contains(&chrono::Datelike::year(&nd)) {
         return None;
     }
@@ -175,8 +176,11 @@ fn extract_with(re: &regex::Regex, content: &str) -> Option<String> {
     let zone = match caps.get(5).map(|m| m.as_str()) {
         None | Some("Z") => "Z".to_string(),
         Some(off) if off.contains(':') => off.to_string(),
-        // "+0100" → "+01:00"
-        Some(off) => format!("{}:{}", &off[..3], &off[3..]),
+        // "+0100" → "+01:00": split before the final two minute digits.
+        Some(off) => {
+            let (hours, minutes) = off.split_at(off.len() - 2);
+            format!("{hours}:{minutes}")
+        }
     };
     let rfc = format!("{date}T{time}{zone}");
     chrono::DateTime::parse_from_rfc3339(&rfc)
