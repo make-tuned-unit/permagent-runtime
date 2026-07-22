@@ -673,6 +673,17 @@ export interface SovereigntyStatus {
   localProviderAvailable: boolean;
 }
 
+/**
+ * Crash-report / diagnostics sharing consent (GET/POST /telemetry/consent).
+ * The authoritative backend gate (crash_capture::crash_reports_consented) — off
+ * by default, explicit opt-in. The Settings "Share anonymous diagnostics" toggle
+ * renders from this, never a hardcoded default (#845).
+ */
+export interface ConsentStatus {
+  /** Whether the user has consented to sharing crash reports / diagnostics. */
+  crashReportsConsented: boolean;
+}
+
 /** One row of the cloud-egress audit log (GET /api/security/egress-log). */
 export interface EgressLogEntry {
   id: string;
@@ -941,6 +952,18 @@ export const api = {
   /** Recent cloud-egress audit entries (everything that has left this machine). */
   getEgressLog: (limit = 100) =>
     apiFetch<EgressLogEntry[]>(`/api/security/egress-log?limit=${limit}`),
+
+  // ── Diagnostics / crash-report consent ───────────────────────────────
+  /** Current crash-report/diagnostics sharing consent (off by default). */
+  getCrashConsent: () =>
+    apiFetch<ConsentStatus>('/telemetry/consent'),
+
+  /** Set crash-report/diagnostics consent; returns the authoritative value. */
+  setCrashConsent: (consented: boolean) =>
+    apiFetch<ConsentStatus>('/telemetry/consent', {
+      method: 'POST',
+      body: JSON.stringify({ consented }),
+    }),
 
   // Providers
   getProviders: () =>

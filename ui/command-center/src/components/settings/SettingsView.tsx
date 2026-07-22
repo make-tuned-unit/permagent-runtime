@@ -835,11 +835,37 @@ function ShortcutsPanel() {
   );
 }
 
-function DataPanel() {
+export function DataPanel() {
+  const { colors } = useThemeHook();
   const [localFirst, setLocalFirst] = useState(true);
   const [e2e, setE2e] = useState(true);
-  const [diagnostics, setDiagnostics] = useState(true);
   const [sharePrompts, setSharePrompts] = useState(false);
+
+  // Crash-report / diagnostics sharing consent is a REAL backend gate (#845):
+  // it must render from crash_capture::crash_reports_consented (off by default,
+  // explicit opt-in), never a hardcoded UI default. `null` = not loaded yet;
+  // the toggle reads false until the true value arrives so it can never flash ON.
+  const [diagnostics, setDiagnostics] = useState<boolean | null>(null);
+  const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.getCrashConsent()
+      .then(s => setDiagnostics(s.crashReportsConsented))
+      .catch(() => setDiagnosticsError('Could not load diagnostics consent.'));
+  }, []);
+
+  const saveDiagnostics = useCallback((v: boolean) => {
+    setDiagnosticsError(null);
+    const prev = diagnostics;
+    setDiagnostics(v); // optimistic; the daemon echoes the authoritative value back
+    api.setCrashConsent(v)
+      .then(s => setDiagnostics(s.crashReportsConsented))
+      .catch(err => {
+        setDiagnostics(prev); // roll back on failure — never claim consent we didn't persist
+        setDiagnosticsError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
+      });
+  }, [diagnostics]);
+
   return (
     <div>
       <H1 sub="Your data is yours. Everything is local-first today; these controls activate as remote features land."><>Data &amp; privacy<PreviewBadge /></></H1>
@@ -848,8 +874,11 @@ function DataPanel() {
         <Row label="Keep everything on this device" hint="Memory and traces never leave your machine. Cloud sync turns off."><Toggle on={localFirst} onChange={setLocalFirst} /></Row>
         <Row label="End-to-end encryption" hint="Required when you have external collaborators."><Toggle on={e2e} onChange={setE2e} /></Row>
       </Section>
-      <Section title="Telemetry">
-        <Row label="Share anonymous diagnostics" hint="Crash reports and timing. Never your prompts."><Toggle on={diagnostics} onChange={setDiagnostics} /></Row>
+      <Section title="Telemetry" sub="Live — the diagnostics toggle writes the daemon's crash-report consent gate (off by default).">
+        <Row label="Share anonymous diagnostics" hint="Crash reports and timing. Never your prompts."><Toggle on={!!diagnostics} onChange={saveDiagnostics} /></Row>
+        {diagnosticsError && (
+          <div style={{ fontSize: 12, color: colors.danger, padding: '2px 0 8px' }}>{diagnosticsError}</div>
+        )}
         <Row label="Share prompts to improve models" hint="Off by default. Opt in at your own risk."><Toggle on={sharePrompts} onChange={setSharePrompts} /></Row>
       </Section>
       <Section title="Manage">
