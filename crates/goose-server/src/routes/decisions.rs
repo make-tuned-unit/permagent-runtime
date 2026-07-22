@@ -189,9 +189,11 @@ async fn answer_decision_handler(
     // so both run; each is a no-op when it does not apply. `tool_approval` is
     // skipped: it is an operational confirmation, not a judgment worth
     // memorializing, and would flood the Brain in approve/smart_approve modes.
-    // `session_gate` is skipped for the same reason today; when S4's
-    // classification lands, per-tool allow/deny rulings become the Fork-2
-    // whitelist signal and ingestion is revisited THERE, with the mapping.
+    // `session_gate` is skipped for the same reason today. S4 (#430) has landed
+    // the tool→action_class→tier classification (so gates now file at their
+    // real tier, not a blanket Tier 2), but turning per-tool allow/deny rulings
+    // into a Fork-2 whitelist LEARNING signal is deferred to the S5/#401-#402
+    // auto-relay work — ingestion is revisited THERE, with that mapping.
     if !matches!(decision.kind.as_str(), "tool_approval" | "session_gate") {
         if let Some(brain) = permagent::agents::platform_extensions::get_global_brain() {
             use permagent::decision_inbox::learn;

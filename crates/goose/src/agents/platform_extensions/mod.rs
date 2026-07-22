@@ -11,6 +11,7 @@ pub mod developer;
 pub mod execution_receipt;
 pub mod ext_manager;
 pub mod file_to_project;
+pub mod gate_classifier;
 pub mod goal_engine;
 pub mod librarian;
 pub mod librarian_atoms;

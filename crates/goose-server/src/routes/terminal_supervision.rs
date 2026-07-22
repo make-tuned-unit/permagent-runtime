@@ -1,5 +1,5 @@
-//! S2 (#428) + S3 (#429), epic #399: the tee ingest seam for supervised
-//! terminal sessions, now bridged into the Decision Inbox.
+//! S2 (#428) + S3 (#429) + S4 (#430), epic #399: the tee ingest seam for
+//! supervised terminal sessions, bridged into the Decision Inbox.
 //!
 //! The supervised Claude Code session lives in a Tauri-owned PTY (the visible
 //! Build-tab terminal) in the APP process; the gate parser + session registry
@@ -7,9 +7,11 @@
 //! the DAEMON. This route is the bridge: the Tauri PTY reader tees each raw
 //! output chunk here (`ui/desktop/src-tauri/src/terminal.rs`), the registry
 //! parses it and emits structured gate events to the bus, and (S3) every
-//! detected gate is filed as a `session_gate` Decision-Inbox row — Tier 2
-//! fail-closed until S4's classification — while gates that resolve outside
-//! the inbox (hand-typed answer, session end) supersede their open card.
+//! detected gate is filed as a `session_gate` Decision-Inbox row — filed at the
+//! tier S4 (`gate_classifier`) resolves from the gate's tool (read-only → Tier
+//! 0, confined edit → Tier 1, shell/network/unrecognized → Tier 2 fail-closed)
+//! — while gates that resolve outside the inbox (hand-typed answer, session
+//! end) supersede their open card.
 //!
 //! Push, deterministic, zero-LLM: nothing polls — cost is one localhost POST
 //! per output burst of a SUPERVISED session only (plain terminals never tee).

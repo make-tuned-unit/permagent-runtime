@@ -34,9 +34,14 @@
 //! answer observed in the PTY echo, or session end) supersedes its open card
 //! so the inbox never shows a zombie.
 //!
-//! What S2+S3 deliberately do NOT do (later slices, do not fold in):
-//! - No tier/action_class mapping (S4, #430) — `session_gate` has no seeded
-//!   risk_policy class, so every gate fail-closes to Tier 2.
+//! S4 (#429→#430) classifies each gate's tool into a `risk_policy`
+//! action_class ([`super::gate_classifier`]) so the bridge files it at the
+//! correct tier instead of a blanket Tier 2 — read-only tools at Tier 0,
+//! confined edits at Tier 1, shell/network/unrecognized tools at Tier 2
+//! (fail-closed). The classification is the ONLY S4 change here; the tier
+//! itself is resolved by the existing `risk_policy` machinery.
+//!
+//! What this module deliberately does NOT do (later slices, do not fold in):
 //! - No relay of answers into stdin (S5, #431) — answering the decision
 //!   records the ruling and surfaces the exact `control_response` line to
 //!   hand-type into the session's visible tab (the S1/S2 escape hatch).
@@ -692,9 +697,11 @@ pub struct GateBridgeOutcome {
 ///
 /// - each detected gate → a `session_gate` decision (deduped on the
 ///   (session, request_id) pair — a re-observed gate line, e.g. after a tee
-///   reconnect, must not double-escalate). No seeded risk_policy class for
-///   `session_gate` means [`crate::decisions::create_decision`] fail-closes
-///   the tier to 2: only Jesse can answer until S4's classification lands.
+///   reconnect, must not double-escalate). S4 (#430) classifies the gate's
+///   tool via [`super::gate_classifier::classify_gate`] into a `risk_policy`
+///   action_class, and [`crate::decisions::create_decision`] resolves the tier
+///   from it (unrecognized tools → `cc_unclassified`, unseeded → Tier 2
+///   fail-closed, Jesse-only).
 /// - each cleared gate → the matching open card superseded (status
 ///   `superseded`, honest note, audit row) so the inbox never shows a gate
 ///   the session is no longer waiting on.
@@ -790,6 +797,12 @@ pub async fn bridge_report_to_inbox(
             gate.tool_name,
             gate_input_preview(&gate.input),
         );
+        // S4 (#430): classify the gate's tool → a risk_policy action_class; the
+        // tier machinery resolves it (unrecognized tools → `cc_unclassified`,
+        // which is unseeded → Tier 2 fail-closed). Setting `action_class` is the
+        // only S4 wiring here — the tier decision stays in `risk_policy`.
+        let action_class =
+            super::gate_classifier::classify_gate(&gate.tool_name, &gate.input).to_string();
         match crate::decisions::create_decision(
             pool,
             crate::decisions::NewDecision {
@@ -798,6 +811,7 @@ pub async fn bridge_report_to_inbox(
                 headline: Some(headline),
                 detail: Some(detail),
                 payload: payload_json,
+                action_class: Some(action_class),
                 ..Default::default()
             },
         )
@@ -1431,7 +1445,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bridge_files_a_tier2_session_gate_decision() {
+    async fn bridge_files_a_session_gate_decision_classified_by_s4() {
         let pool = memory_pool().await;
         let sid = unique_id("bridge-file");
         register_session(&sid, SupervisedSessionKind::Watched, "proj", "/tmp/p");
@@ -1448,7 +1462,12 @@ mod tests {
             .unwrap()
             .expect("a session_gate decision must be filed");
         assert_eq!(d.kind, "session_gate");
-        assert_eq!(d.tier, 2, "unclassified gates fail closed to Tier 2 (S4)");
+        // GATE_LINE is a `Write` → S4 classifies it `cc_workspace_edit` (Tier 1:
+        // confined, git-reversible edit — Henry-clearable, not Jesse-only).
+        assert_eq!(
+            d.tier, 1,
+            "a Write gate classifies to cc_workspace_edit (Tier 1)"
+        );
         assert_eq!(d.payload["target_session_id"], sid.as_str());
         assert_eq!(d.payload["pty_session_id"], "pty-br-1");
         assert_eq!(d.payload["tool_name"], "Write");
@@ -1561,5 +1580,81 @@ mod tests {
         assert_eq!(outcome.decisions_filed, 0);
         assert_eq!(outcome.decisions_superseded, 0);
         assert!(outcome.errors.is_empty());
+    }
+
+    // ── S4 (#430): classification → tier, through the bridge ──
+    //
+    // The classifier itself is unit-tested in `gate_classifier`; these prove the
+    // action_class it returns reaches `risk_policy` and resolves to the right
+    // tier ON A REAL DECISION filed by the bridge — especially the fail-closed
+    // Tier-2 default for an unrecognized tool.
+
+    /// A `can_use_tool` gate line for an arbitrary tool + request id, so a test
+    /// can drive a specific S4 classification path.
+    fn gate_line(request_id: &str, tool_name: &str) -> String {
+        format!(
+            r#"{{"type":"control_request","request_id":"{request_id}","request":{{"subtype":"can_use_tool","tool_name":"{tool_name}","input":{{}},"tool_use_id":"tu_{request_id}"}}}}"#
+        )
+    }
+
+    async fn filed_tier_for_tool(tool_name: &str) -> i64 {
+        let pool = memory_pool().await;
+        let sid = unique_id("s4");
+        register_session(&sid, SupervisedSessionKind::Watched, "proj", "/tmp/p");
+        let report = ingest_output(
+            &sid,
+            &format!("{}\r\n", gate_line("perm_1", tool_name)),
+            false,
+        )
+        .unwrap();
+        let outcome = bridge_report_to_inbox(&pool, &sid, &report).await;
+        assert_eq!(
+            outcome.decisions_filed, 1,
+            "a gate for {tool_name} must file exactly one decision"
+        );
+        let d = decisions::find_open_session_gate(&pool, &sid, "perm_1")
+            .await
+            .unwrap()
+            .expect("decision filed");
+        remove_session(&sid);
+        d.tier
+    }
+
+    #[tokio::test]
+    async fn read_only_gate_is_filed_at_tier0() {
+        // `Read` → cc_read_only (Tier 0): auto-clearable, no recorded ruling
+        // required — the "don't make me babysit" win for pure reads.
+        assert_eq!(filed_tier_for_tool("Read").await, 0);
+    }
+
+    #[tokio::test]
+    async fn edit_gate_is_filed_at_tier1() {
+        // `Edit` → cc_workspace_edit (Tier 1): Henry-clearable but recorded.
+        assert_eq!(filed_tier_for_tool("Edit").await, 1);
+    }
+
+    #[tokio::test]
+    async fn shell_gate_is_filed_at_tier2() {
+        // `Bash` → cc_shell (Tier 2): the irreversible surface, Jesse-only.
+        assert_eq!(filed_tier_for_tool("Bash").await, 2);
+    }
+
+    #[tokio::test]
+    async fn network_gate_is_filed_at_tier2() {
+        // `WebFetch` → network_external (Tier 2, existing seed).
+        assert_eq!(filed_tier_for_tool("WebFetch").await, 2);
+    }
+
+    #[tokio::test]
+    async fn unrecognized_tool_gate_fails_closed_to_tier2() {
+        // A tool the classifier does not know (a future CC tool, an MCP tool,
+        // a crafted gate) → cc_unclassified, which is UNSEEDED → Tier 2. This
+        // is epic #399's escalate-when-unsure guarantee at the decision layer.
+        assert_eq!(filed_tier_for_tool("Task").await, 2);
+        assert_eq!(
+            filed_tier_for_tool("mcp__evil__exfiltrate").await,
+            2,
+            "an unknown MCP tool must never resolve below Tier 2"
+        );
     }
 }

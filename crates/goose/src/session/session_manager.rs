@@ -951,6 +951,15 @@ impl SessionStorage {
                     if version < 31 {
                         spectral_schema::migrate_v30_to_v31(&self.pool).await?;
                     }
+                    // v32: seed the supervised-CC-gate risk_policy classes
+                    // (#430, S4 — cc_read_only/cc_workspace_edit/cc_shell). The
+                    // S4 classifier maps a CC gate's tool to one of these so the
+                    // gate → inbox decision is filed at the right tier (unknown
+                    // tools fail closed to Tier 2). INSERT OR IGNORE, purely
+                    // additive to a free-text-PK table, base-independent.
+                    if version < 32 {
+                        spectral_schema::migrate_v31_to_v32(&self.pool).await?;
+                    }
                     // Version-independent safety net for the cfg-gated v22
                     // recognition columns. The always-on v23 above can stamp
                     // schema_version past the `version < 22` gate on a feature-off
