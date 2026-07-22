@@ -257,7 +257,7 @@ impl SafeBrain {
 
     /// Hard-delete a memory by its logical **key** across every substrate
     /// (memories + all FK children + recognition sidecar), returning a
-    /// verified [`ForgetReport`].
+    /// verified `ForgetReport`.
     ///
     /// Unlike `consolidate_into` — which is a *soft* filter that hides a memory
     /// from recall while the row persists — `forget` makes the content
