@@ -245,8 +245,11 @@ async fn cancel_voice_models_download() -> Result<StatusCode, ErrorResponse> {
 // The one text→audio path that doesn't exist on the `/voice` WS (which only
 // synthesizes the reply stream). ONE primitive, THREE consumers: per-voice
 // sound preview, the spoken opening greeting, and the picker's audition tap.
-// Returns a self-contained 16-bit PCM WAV so a fresh consumer can play it with
-// `new Audio(URL.createObjectURL(blob))` — no manual AudioBuffer assembly.
+// Returns a self-contained 16-bit PCM WAV. Consumers MUST decode it through the
+// Web Audio API (`AudioContext.decodeAudioData`), NOT `new Audio(blobUrl)` —
+// WKWebView (the shipping shell) has no HTMLMediaElement backend for blob URLs
+// and rejects `.play()` with "operation not supported" (#385). See
+// `useVoicePreview` in `ui/command-center/src/lib/useVoices.ts` for the path.
 
 #[derive(Deserialize)]
 pub struct SynthesizeRequest {

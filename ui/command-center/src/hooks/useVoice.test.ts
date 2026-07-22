@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isVoiceWedged, VOICE_WATCHDOG_MS } from './useVoice';
+import { isVoiceWedged, isInterruptibleState, VOICE_WATCHDOG_MS, type VoiceState } from './useVoice';
 
 describe('isVoiceWedged', () => {
   const base = {
@@ -38,5 +38,26 @@ describe('isVoiceWedged', () => {
   it('respects a custom threshold', () => {
     expect(isVoiceWedged({ ...base, msSinceActivity: 5000, thresholdMs: 4000 })).toBe(true);
     expect(isVoiceWedged({ ...base, msSinceActivity: 5000, thresholdMs: 6000 })).toBe(false);
+  });
+});
+
+describe('isInterruptibleState (barge-in routing)', () => {
+  it('is interruptible while Henry is producing or speaking a reply', () => {
+    // The states where "stop and let me talk" is meaningful.
+    expect(isInterruptibleState('processing')).toBe(true);
+    expect(isInterruptibleState('playing')).toBe(true);
+  });
+
+  it('is NOT interruptible in ready/idle/recording/connecting/error', () => {
+    // In 'ready' a Space press starts recording; the rest have nothing to stop.
+    for (const state of ['ready', 'idle', 'recording', 'connecting', 'error'] as VoiceState[]) {
+      expect(isInterruptibleState(state)).toBe(false);
+    }
+  });
+
+  it('covers exactly the two busy states that lock the mic', () => {
+    // Guards against the barge-in set drifting from the mic-locking set.
+    const all: VoiceState[] = ['idle', 'connecting', 'ready', 'recording', 'processing', 'playing', 'error'];
+    expect(all.filter(isInterruptibleState)).toEqual(['processing', 'playing']);
   });
 });
