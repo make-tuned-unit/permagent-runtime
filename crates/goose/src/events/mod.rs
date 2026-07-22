@@ -311,6 +311,15 @@ pub enum PermagentEventType {
     AppOpenItem,
     // Project terminal launch (chat agent → frontend Build tab)
     ProjectLaunch,
+    // Terminal supervision (S2, #428): a supervised Claude Code session hit a
+    // permission gate (`control_request`/`can_use_tool`) — detected by the
+    // deterministic stream-json parser, zero LLM. S3's inbox bridge consumes
+    // this.
+    TerminalGateDetected,
+    // Terminal supervision (S2, #428): a previously detected gate is no longer
+    // pending — an answer was observed in the session's stream (`answered`) or
+    // the session reached a terminal state (`session_ended`).
+    TerminalGateCleared,
     // Goal lifecycle (create / transition / park / requeue / failure / delete)
     GoalStateChanged,
     // Echo/Watcher — the agent proactively resurfaces something worth your
@@ -730,6 +739,57 @@ pub fn project_launch(
             "project_slug": project_slug,
             "reason": reason,
             "supervised_session_id": supervised_session_id,
+        }),
+    )
+}
+
+/// S2 (#428): a supervised Claude Code session hit a permission gate — a
+/// `control_request`/`can_use_tool` NDJSON line arrived on its PTY stream and
+/// the deterministic parser classified it. Everything S3 needs to raise a
+/// `session_gate` decision rides in the payload: the addressing pair
+/// (`supervised_session_id` + `pty_session_id`, the S5 relay address), the
+/// project/goal association, and the gate itself (`request_id`, `tool_name`,
+/// `input`, `tool_use_id` — echoed back verbatim in an `allow` answer).
+pub fn terminal_gate_detected(
+    supervised_session_id: &str,
+    pty_session_id: Option<&str>,
+    project_slug: &str,
+    kind: crate::agents::platform_extensions::terminal_supervision::SupervisedSessionKind,
+    root_path: &str,
+    gate: &crate::agents::platform_extensions::terminal_supervision::PendingGate,
+) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::TerminalGateDetected,
+        serde_json::json!({
+            "supervised_session_id": supervised_session_id,
+            "pty_session_id": pty_session_id,
+            "project_slug": project_slug,
+            "session_kind": kind,
+            "root_path": root_path,
+            "request_id": gate.request_id,
+            "tool_name": gate.tool_name,
+            "input": gate.input,
+            "tool_use_id": gate.tool_use_id,
+            "detected_at": gate.detected_at.to_rfc3339(),
+        }),
+    )
+}
+
+/// S2 (#428): a detected gate stopped being pending. `reason` is `"answered"`
+/// (a `control_response` for its `request_id` was observed in the session's
+/// stream — hand-typed today, S5-relayed later) or `"session_ended"` (the
+/// session reached a terminal state with the gate still open).
+pub fn terminal_gate_cleared(
+    supervised_session_id: &str,
+    request_id: &str,
+    reason: &str,
+) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::TerminalGateCleared,
+        serde_json::json!({
+            "supervised_session_id": supervised_session_id,
+            "request_id": request_id,
+            "reason": reason,
         }),
     )
 }

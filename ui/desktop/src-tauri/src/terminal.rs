@@ -1,10 +1,132 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::Mutex;
+use std::sync::{mpsc, Mutex};
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
+
+// ── Supervised-session tee (S2, #428) ───────────────────────────────────────
+//
+// A SUPERVISED Claude Code session (epic #399) runs its stream-json protocol
+// inside this visible PTY. The daemon's gate parser + session registry live in
+// the daemon process, so the PTY reader tees every raw output chunk of a
+// supervised session to the daemon's ingest route. Plain terminals never tee —
+// the frontend passes `supervised_session_id` only for launches tagged by the
+// daemon's `project_launch` event.
+//
+// Ordering matters (the parser reassembles NDJSON lines across chunks), so a
+// single forwarder thread drains an mpsc channel sequentially — never parallel
+// fire-and-forget POSTs. The daemon address/port mirror daemon.rs.
+const DAEMON_SUPERVISED_OUTPUT_URL: &str = "http://127.0.0.1:3001/terminal/supervised/output";
+/// Coalesce bursts up to this many bytes per POST so heavy output doesn't
+/// become a POST-per-4KiB-read storm.
+const TEE_COALESCE_CAP_BYTES: usize = 64 * 1024;
+/// Give up teeing after this many consecutive delivery failures (daemon down);
+/// gates can't be observed anyway and the session stays visible in the tab.
+const TEE_MAX_CONSECUTIVE_FAILURES: u32 = 20;
+
+enum TeeFrame {
+    Data(String),
+    Eof,
+}
+
+/// Drain-and-coalesce: starting from `first`, greedily append already-queued
+/// Data frames (up to `cap` bytes) and report whether an Eof was consumed.
+/// Pure so the batching contract is unit-testable.
+fn coalesce_frames(first: TeeFrame, rx: &mpsc::Receiver<TeeFrame>, cap: usize) -> (String, bool) {
+    let mut data = String::new();
+    let mut eof = false;
+    match first {
+        TeeFrame::Data(d) => data.push_str(&d),
+        TeeFrame::Eof => eof = true,
+    }
+    while !eof && data.len() < cap {
+        match rx.try_recv() {
+            Ok(TeeFrame::Data(d)) => data.push_str(&d),
+            Ok(TeeFrame::Eof) => eof = true,
+            Err(_) => break,
+        }
+    }
+    (data, eof)
+}
+
+/// Spawn the forwarder thread for one supervised session and return the
+/// sender the PTY reader feeds. Failure posture: log-and-continue on
+/// transient errors, stop for good on 404 (the daemon no longer knows the
+/// session — e.g. it restarted) or after sustained failure; the reader's
+/// sends then drop silently (`let _`), never blocking the terminal.
+fn spawn_supervised_tee(
+    supervised_session_id: String,
+    pty_session_id: String,
+) -> mpsc::Sender<TeeFrame> {
+    let (tx, rx) = mpsc::channel::<TeeFrame>();
+    std::thread::spawn(move || {
+        let token = match crate::daemon::read_daemon_token() {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("[permagent-app] supervised tee: no daemon token, not teeing: {e}");
+                return;
+            }
+        };
+        let client = reqwest::Client::new();
+        let mut consecutive_failures: u32 = 0;
+        loop {
+            let first = match rx.recv() {
+                Ok(f) => f,
+                // Reader thread gone without an explicit Eof (shouldn't
+                // happen — it always sends Eof) — treat as end of stream.
+                Err(_) => TeeFrame::Eof,
+            };
+            let (data, eof) = coalesce_frames(first, &rx, TEE_COALESCE_CAP_BYTES);
+            let body = serde_json::json!({
+                "supervised_session_id": supervised_session_id,
+                "pty_session_id": pty_session_id,
+                "data": data,
+                "eof": eof,
+            });
+            let send = client
+                .post(DAEMON_SUPERVISED_OUTPUT_URL)
+                .bearer_auth(&token)
+                .json(&body)
+                .send();
+            match tauri::async_runtime::block_on(send) {
+                Ok(resp) if resp.status().as_u16() == 404 => {
+                    eprintln!(
+                        "[permagent-app] supervised tee: daemon does not know session {supervised_session_id} — stopping tee"
+                    );
+                    return;
+                }
+                Ok(resp) if !resp.status().is_success() => {
+                    consecutive_failures += 1;
+                    eprintln!(
+                        "[permagent-app] supervised tee: ingest returned {} for {supervised_session_id}",
+                        resp.status()
+                    );
+                }
+                Ok(_) => consecutive_failures = 0,
+                Err(e) => {
+                    consecutive_failures += 1;
+                    if consecutive_failures == 1 {
+                        eprintln!(
+                            "[permagent-app] supervised tee: delivery failed for {supervised_session_id}: {e}"
+                        );
+                    }
+                }
+            }
+            if consecutive_failures >= TEE_MAX_CONSECUTIVE_FAILURES {
+                eprintln!(
+                    "[permagent-app] supervised tee: {TEE_MAX_CONSECUTIVE_FAILURES} consecutive failures — stopping tee for {supervised_session_id}"
+                );
+                return;
+            }
+            if eof {
+                return;
+            }
+        }
+    });
+    tx
+}
 
 struct PtySession {
     master: Box<dyn MasterPty + Send>,
@@ -51,6 +173,7 @@ pub async fn spawn_pty_session(
     cwd: Option<String>,
     cols: u16,
     rows: u16,
+    supervised_session_id: Option<String>,
 ) -> Result<SpawnResult, String> {
     let session_id = format!("pty-{}", uuid::Uuid::new_v4());
 
@@ -120,6 +243,12 @@ pub async fn spawn_pty_session(
         -1
     };
 
+    // S2 (#428): supervised sessions tee raw output to the daemon's gate
+    // parser. `None` for plain terminals — zero overhead on the common path.
+    let tee_tx = supervised_session_id
+        .as_ref()
+        .map(|sup| spawn_supervised_tee(sup.clone(), session_id.clone()));
+
     let sid = session_id.clone();
     let app_handle = app.clone();
     std::thread::spawn(move || {
@@ -155,6 +284,10 @@ pub async fn spawn_pty_session(
                     }
 
                     let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                    if let Some(tx) = &tee_tx {
+                        // Never blocks (unbounded); a dead forwarder is fine.
+                        let _ = tx.send(TeeFrame::Data(data.clone()));
+                    }
                     let _ = app_handle.emit_to(
                         "main",
                         "pty_data",
@@ -170,6 +303,12 @@ pub async fn spawn_pty_session(
         // Clean up the dup'd fd
         if echo_fd >= 0 {
             unsafe { libc::close(echo_fd) };
+        }
+        if let Some(tx) = &tee_tx {
+            // Tell the daemon the PTY closed: a supervised session that dies
+            // without a `type:"result"` is failed through the completion seam
+            // instead of parking at its goal timeout.
+            let _ = tx.send(TeeFrame::Eof);
         }
         let _ = app_handle.emit_to(
             "main",
@@ -273,4 +412,52 @@ pub async fn kill_pty(app: AppHandle, session_id: String) -> Result<(), String> 
         let _ = session._child.kill();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn coalesce_merges_queued_data_in_order() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(TeeFrame::Data("b".to_string())).unwrap();
+        tx.send(TeeFrame::Data("c".to_string())).unwrap();
+        let (data, eof) = coalesce_frames(TeeFrame::Data("a".to_string()), &rx, 1024);
+        assert_eq!(data, "abc");
+        assert!(!eof);
+    }
+
+    #[test]
+    fn coalesce_stops_at_eof_and_reports_it() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(TeeFrame::Eof).unwrap();
+        tx.send(TeeFrame::Data("late".to_string())).unwrap();
+        let (data, eof) = coalesce_frames(TeeFrame::Data("a".to_string()), &rx, 1024);
+        assert_eq!(data, "a");
+        assert!(eof, "eof frame must terminate the batch");
+        // The late frame stays queued (it is dead data after eof — the
+        // forwarder exits after posting the eof batch).
+    }
+
+    #[test]
+    fn coalesce_respects_byte_cap() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(TeeFrame::Data("y".repeat(10))).unwrap();
+        tx.send(TeeFrame::Data("z".repeat(10))).unwrap();
+        let (data, eof) = coalesce_frames(TeeFrame::Data("x".repeat(10)), &rx, 15);
+        // First append crosses the cap, second stays queued for the next POST.
+        assert_eq!(data.len(), 20);
+        assert!(!eof);
+        let (rest, _) = coalesce_frames(rx.recv().unwrap(), &rx, 15);
+        assert_eq!(rest, "z".repeat(10));
+    }
+
+    #[test]
+    fn eof_first_frame_posts_empty_final_batch() {
+        let (_tx, rx) = mpsc::channel::<TeeFrame>();
+        let (data, eof) = coalesce_frames(TeeFrame::Eof, &rx, 1024);
+        assert_eq!(data, "");
+        assert!(eof);
+    }
 }

@@ -199,8 +199,9 @@ static COMPLETION_HOOKS: Lazy<Mutex<HashMap<String, oneshot::Sender<SupervisedOu
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Register a completion hook for `session_id`, returning the receiver the
-/// dispatch tracker awaits.
-fn register_completion_hook(session_id: &str) -> oneshot::Receiver<SupervisedOutcome> {
+/// dispatch tracker awaits. `pub(crate)` so S2's registry tests can prove the
+/// parser fulfils the seam end-to-end.
+pub(crate) fn register_completion_hook(session_id: &str) -> oneshot::Receiver<SupervisedOutcome> {
     let (tx, rx) = oneshot::channel();
     if let Ok(mut map) = COMPLETION_HOOKS.lock() {
         map.insert(session_id.to_string(), tx);
@@ -220,10 +221,11 @@ fn drop_completion_hook(session_id: &str) {
 /// already-completed / free-standing session (free-standing sessions register
 /// no hook — nothing tracks their completion in S1).
 ///
-/// PRODUCTION CALLER: S2's stream-json parser, on the session's `type:"result"`
-/// line. In S1 the only callers are tests — a dispatched supervised goal that
-/// nobody completes runs to its wall-clock timeout and PARKS (never a silent
-/// retry), exactly like a hung external worker.
+/// PRODUCTION CALLER: S2's stream-json parser
+/// (`terminal_supervision::ingest_output`), on the session's `type:"result"`
+/// line — or on PTY close without one. A dispatched supervised goal that
+/// nobody completes still runs to its wall-clock timeout and PARKS (never a
+/// silent retry), exactly like a hung external worker.
 pub fn complete_supervised_session(session_id: &str, outcome: SupervisedOutcome) -> bool {
     let tx = match COMPLETION_HOOKS.lock() {
         Ok(mut map) => map.remove(session_id),
@@ -266,6 +268,16 @@ pub async fn launch_watched_session(
     };
     let shell_command =
         compose_supervised_command(SUPERVISED_CLI_DEFAULT_BIN, prompt_file.as_deref(), &[])?;
+
+    // S2 (#428): register with the supervision registry BEFORE the launch
+    // event goes out, so the PTY attach that follows can never hit an unknown
+    // session.
+    super::terminal_supervision::register_session(
+        &session_id,
+        super::terminal_supervision::SupervisedSessionKind::Watched,
+        project_slug,
+        root_path,
+    );
 
     crate::events::emit(crate::events::project_launch(
         root_path,
@@ -344,6 +356,16 @@ impl GoalEngine for SupervisedCliEngine {
         let shell_command = compose_supervised_command(&self.bin, Some(&prompt_file), &git_env)?;
 
         let rx = register_completion_hook(&session_id);
+
+        // S2 (#428): register with the supervision registry BEFORE the launch
+        // event goes out (attach must never race an unknown session). The
+        // session id doubles as the goal's run_id/worker_session_id.
+        super::terminal_supervision::register_session(
+            &session_id,
+            super::terminal_supervision::SupervisedSessionKind::DispatchedGoal,
+            &self.project_slug,
+            &worktree.to_string_lossy(),
+        );
 
         let label = format!("{} · {} (supervised)", self.project_slug, self.bin);
         let reason = format!(

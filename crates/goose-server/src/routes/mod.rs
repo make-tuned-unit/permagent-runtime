@@ -47,6 +47,7 @@ pub mod skills;
 pub mod status;
 pub mod storage;
 pub mod telemetry;
+pub mod terminal_supervision;
 pub mod tunnel;
 pub mod utils;
 pub mod version;
@@ -137,6 +138,9 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(schedule::routes(state.clone()))
         .merge(setup::routes(state.clone()))
         .merge(telemetry::routes(state.clone()))
+        // S2 (#428): supervised-terminal tee ingest — the Tauri PTY reader
+        // POSTs raw output chunks of SUPERVISED sessions here (bearer token).
+        .merge(terminal_supervision::routes())
         .merge(tunnel::routes(state.clone()))
         .merge(gateway::routes(state.clone()))
         .merge(sampling::routes(state.clone()))
