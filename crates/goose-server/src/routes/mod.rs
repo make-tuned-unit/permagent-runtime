@@ -11,6 +11,7 @@ pub mod browser_state;
 pub mod cards;
 pub mod config_management;
 pub mod dashboard;
+pub mod dashboard_cards;
 pub mod decisions;
 pub mod devices;
 pub mod dictation;
@@ -158,6 +159,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(people::routes(state.clone()))
         .merge(inbox::routes(state.clone()))
         .merge(dashboard::routes(state.clone()))
+        .merge(dashboard_cards::routes(state.clone()))
         .merge(identity::routes(state.clone()))
         .merge(workers::routes(state.clone()))
         .merge(findings::routes(state.clone()))
