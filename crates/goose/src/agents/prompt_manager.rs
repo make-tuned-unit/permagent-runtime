@@ -502,6 +502,41 @@ mod tests {
     }
 
     #[test]
+    fn test_tool_only_extension_section_suppressed() {
+        let manager = PromptManager::new();
+
+        let result = manager
+            .builder()
+            .with_extension(ExtensionInfo::new("toolonly", "", false))
+            .with_extension(ExtensionInfo::new("documented", "use it like this", false))
+            .build();
+
+        // A tool-only extension (no instructions, no resources) must not render
+        // an empty '## name' section into the brief (#637).
+        assert!(!result.contains("## toolonly"));
+        // Non-empty sections are unaffected.
+        assert!(result.contains("## documented\n\n### Instructions\nuse it like this"));
+        // The extensions block still renders (the extension list is non-empty),
+        // so the no-extensions fallback must not appear.
+        assert!(!result.contains("No extensions are defined"));
+    }
+
+    #[test]
+    fn test_resources_only_extension_section_kept() {
+        let manager = PromptManager::new();
+
+        let result = manager
+            .builder()
+            .with_extension(ExtensionInfo::new("resourceful", "", true))
+            .build();
+
+        // Empty instructions but has_resources: the section still carries
+        // content, so it must be kept (with no empty '### Instructions').
+        assert!(result.contains("## resourceful\n\nresourceful supports resources.\n"));
+        assert!(!result.contains("### Instructions"));
+    }
+
+    #[test]
     fn test_basic() {
         // Pin config resolution to an empty temp root so the rendered brief is
         // deterministic regardless of the machine's real config (e.g. local
