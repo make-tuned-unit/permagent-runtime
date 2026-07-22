@@ -208,6 +208,19 @@ fn technical_lexicon() -> PronunciationLexicon {
     ])
 }
 
+/// Combine the built-in technical pronunciations with per-call user entries.
+/// User pronunciations win for matching keys without hiding unrelated seeds.
+fn effective_lexicon(
+    seeded: &PronunciationLexicon,
+    user: Option<&PronunciationLexicon>,
+) -> PronunciationLexicon {
+    let mut effective = seeded.clone();
+    if let Some(user) = user {
+        effective.entries.extend(user.entries.clone());
+    }
+    effective
+}
+
 /// A planned phoneme segment: either a verbatim override pulled from the
 /// lexicon, or raw text still to be run through misaki G2P.
 #[derive(Debug, PartialEq, Eq)]
@@ -486,8 +499,7 @@ impl TextToSpeech for OrtKokoroTts {
 
         let mut all_samples: Vec<f32> = Vec::new();
         let voice_name = config.voice_id.as_deref().unwrap_or(&self.default_voice);
-        // Per-call lexicon overrides the built-in technical one when supplied.
-        let lexicon = config.lexicon.as_ref().unwrap_or(&self.lexicon);
+        let lexicon = effective_lexicon(&self.lexicon, config.lexicon.as_ref());
 
         for (i, sentence) in sentences.iter().enumerate() {
             if sentence.trim().is_empty() {
@@ -503,7 +515,7 @@ impl TextToSpeech for OrtKokoroTts {
                     .g2p
                     .lock()
                     .map_err(|e| anyhow::anyhow!("G2P lock: {}", e))?;
-                phonemize(&g2p, sentence, lexicon)?
+                phonemize(&g2p, sentence, &lexicon)?
             };
             let g2p_ms = t_g2p.elapsed().as_millis();
 
@@ -676,6 +688,29 @@ mod tests {
         assert!(lex.get("Claude Code").is_some(), "Claude Code must resolve");
         assert_eq!(lex.get("Claude Code"), lex.get("claude code"));
         assert!(lex.get("claude").is_some());
+    }
+
+    #[test]
+    fn user_lexicon_overlays_seeded_pronunciations() {
+        let seeded = technical_lexicon();
+        let unrelated_user =
+            PronunciationLexicon::from_pairs([("unrelated", "user-unrelated-ipa")]);
+        let effective = effective_lexicon(&seeded, Some(&unrelated_user));
+
+        assert_eq!(
+            effective.get("spectral"),
+            seeded.get("spectral"),
+            "an unrelated user entry must not hide seeded pronunciations"
+        );
+
+        let overriding_user =
+            PronunciationLexicon::from_pairs([("permagent", "user-permagent-ipa")]);
+        let effective = effective_lexicon(&seeded, Some(&overriding_user));
+        assert_eq!(
+            effective.get("permagent"),
+            Some("user-permagent-ipa"),
+            "a user pronunciation must override the matching seed"
+        );
     }
 
     #[test]
