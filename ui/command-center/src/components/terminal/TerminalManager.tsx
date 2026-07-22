@@ -1,7 +1,10 @@
 import { useState, useCallback, useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
-import { FiPlus, FiX, FiTerminal } from 'react-icons/fi';
+import { FiPlus, FiX, FiTerminal, FiFilePlus } from 'react-icons/fi';
 import { Terminal } from './Terminal';
 import { useTheme } from '../../styles/useTheme';
+import { registerDropZone } from '../../lib/native-drag-drop';
+import { resolvePtyInjection } from './terminalDrop';
+import { font } from '../../styles/tokens';
 
 export interface TerminalManagerHandle {
   createProjectTab: (cwd: string, label: string, initialCommand?: string, supervisedSessionId?: string) => void;
@@ -55,6 +58,9 @@ export const TerminalManager = forwardRef<TerminalManagerHandle>(function Termin
     return persistedActiveTabId || tabs[0].id;
   });
   const [closingTabId, setClosingTabId] = useState<string | null>(null);
+  // Drop-to-CC-terminal (#557): visual state while a file is dragged over the pane.
+  const [dropActive, setDropActive] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
   const killPtyRef = useRef<(sessionId: string) => Promise<void>>();
 
   if (!killPtyRef.current) {
@@ -80,6 +86,36 @@ export const TerminalManager = forwardRef<TerminalManagerHandle>(function Termin
       persistedActiveTabId = activeTabIdRef.current;
     };
   }, []);
+
+  // Drop-to-CC-terminal (#557): inject a dropped file's path into the PTY of the
+  // active tab's session as if typed — a running Claude Code session then
+  // receives the path in its input (no newline; the path is inserted, not
+  // submitted). Depends on the scoped drop routing from #550: this zone claims
+  // drops over its own bounds at a higher priority than the app-level chat zone.
+  const injectPaths = useCallback(async (paths: string[]) => {
+    const target = resolvePtyInjection(tabsRef.current, activeTabIdRef.current, paths);
+    if (!target) return; // no live session, or nothing to inject
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('write_to_pty', { sessionId: target.sessionId, data: target.data });
+    } catch (err) {
+      console.error('[terminal] drop-to-CC path injection failed:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    return registerDropZone({
+      id: 'build-terminal',
+      getElement: () => rootRef.current,
+      priority: 10, // win over the window-wide chat fallback (#550)
+      onEnter: () => setDropActive(true),
+      onLeave: () => setDropActive(false),
+      onDrop: (paths) => {
+        setDropActive(false);
+        void injectPaths(paths);
+      },
+    });
+  }, [injectPaths]);
 
   const handleNewTab = useCallback(() => {
     const tab = createTab();
@@ -183,7 +219,20 @@ export const TerminalManager = forwardRef<TerminalManagerHandle>(function Termin
   }, [handleNewTab, handleCloseTab]);
 
   return (
-    <div className="flex h-full flex-col" style={{ backgroundColor: colors.bg }}>
+    <div ref={rootRef} className="relative flex h-full flex-col" style={{ backgroundColor: colors.bg }}>
+      {/* Drop-to-CC-terminal overlay (#557): shown while a file is dragged over
+          the pane. pointer-events-none so it never intercepts the native drop. */}
+      {dropActive && (
+        <div
+          className="absolute inset-0 z-40 flex flex-col items-center justify-center rounded-xl m-2 pointer-events-none"
+          style={{ backgroundColor: colors.bg, opacity: 0.93, border: `2px dashed ${colors.cyan}80` }}
+        >
+          <FiFilePlus size={32} className="mb-2" style={{ color: `${colors.cyan}99` }} />
+          <span className="text-sm" style={{ fontFamily: font.mono, color: `${colors.cyan}CC` }}>
+            Drop to add file path to the terminal
+          </span>
+        </div>
+      )}
       <div className="flex items-center border-b border-dark-border" style={{ backgroundColor: colors.surface }}>
         <div className="flex flex-1 items-center overflow-x-auto">
           {tabs.map(tab => (
