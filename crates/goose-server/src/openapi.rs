@@ -476,6 +476,8 @@ derive_utoipa!(IconTheme as IconThemeSchema);
         super::routes::tunnel::stop_tunnel,
         super::routes::tunnel::get_tunnel_status,
         super::routes::telemetry::send_telemetry_event,
+        super::routes::telemetry::get_telemetry_consent,
+        super::routes::telemetry::set_telemetry_consent,
         super::routes::features::get_features,
     ),
     components(schemas(
@@ -644,6 +646,8 @@ derive_utoipa!(IconTheme as IconThemeSchema);
         super::tunnel::TunnelInfo,
         super::tunnel::TunnelState,
         super::routes::telemetry::TelemetryEventRequest,
+        super::routes::telemetry::ConsentStatus,
+        super::routes::telemetry::SetConsentRequest,
         permagent::goose_apps::GooseApp,
         permagent::goose_apps::WindowProps,
         permagent::goose_apps::McpAppResource,
