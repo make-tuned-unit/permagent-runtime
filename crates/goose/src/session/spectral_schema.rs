@@ -1285,6 +1285,35 @@ pub async fn migrate_v30_to_v31(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
+/// v32 (#430, S4): reconcile the supervised-CC-gate `risk_policy` seed onto
+/// existing DBs. Adds the three `cc_*` action classes the S4 classifier
+/// resolves gates to (`platform_extensions::gate_classifier::SEEDED_CLASSES`);
+/// `network_external` and the fail-closed `cc_unclassified` sentinel are NOT
+/// added (the former predates S4, the latter is deliberately unseeded).
+///
+/// `INSERT OR IGNORE` so any user/Henry tier customization on an already-present
+/// row survives (same posture as the v18 reconcile). Purely additive to a
+/// free-text-PK table — no CHECK to widen — and base-independent, so it applies
+/// cleanly over any earlier base. Records v32 in `schema_version`.
+pub async fn migrate_v31_to_v32(pool: &Pool<Sqlite>) -> Result<()> {
+    info!(
+        "Migrating Spectral schema v31 -> v32 (seed supervised-CC-gate risk_policy classes, #430)"
+    );
+    sqlx::query(
+        "INSERT OR IGNORE INTO risk_policy (action_class, tier, rationale) VALUES
+            ('cc_read_only', 0, 'Supervised CC read-only tool (Read/Glob/Grep/LS/NotebookRead/BashOutput/TodoWrite) — no effect outside the session'),
+            ('cc_workspace_edit', 1, 'Supervised CC file edit (Write/Edit/MultiEdit/NotebookEdit) — confined, git-reversible; recorded decision'),
+            ('cc_shell', 2, 'Supervised CC shell (Bash/KillBash) — arbitrary command surface; Jesse-only')",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (32)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v32 (supervised-CC-gate risk_policy classes seeded)");
+    Ok(())
+}
+
 /// Apply the per-call cost-ledger schema (v28, cost-transparency workstream):
 /// `cost_ledger` — one append-only row per provider response — plus the O(1)
 /// cost-rollup columns on `sessions`.
@@ -2156,6 +2185,9 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await?;
 
     // Seeds. Unknown action_class resolves to Tier 2 (fail-closed) in code.
+    // The `cc_*` classes are the S4 (#430) supervised-CC-gate policy — kept in
+    // sync with `platform_extensions::gate_classifier::SEEDED_CLASSES` and
+    // reconciled onto existing DBs by `migrate_v31_to_v32`.
     sqlx::query(
         "INSERT OR IGNORE INTO risk_policy (action_class, tier, rationale) VALUES
             ('goal_ready', 0, 'Triage->Ready promotion is reversible'),
@@ -2174,7 +2206,10 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
             ('secrets_access', 2, 'Credential exposure'),
             ('permission_change', 2, 'Expands capability surface'),
             ('orchestrator_edit', 2, 'Self-modification of the control loop'),
-            ('policy_edit', 2, 'Changes to this table are themselves Tier 2')",
+            ('policy_edit', 2, 'Changes to this table are themselves Tier 2'),
+            ('cc_read_only', 0, 'Supervised CC read-only tool (Read/Glob/Grep/LS/NotebookRead/BashOutput/TodoWrite) — no effect outside the session'),
+            ('cc_workspace_edit', 1, 'Supervised CC file edit (Write/Edit/MultiEdit/NotebookEdit) — confined, git-reversible; recorded decision'),
+            ('cc_shell', 2, 'Supervised CC shell (Bash/KillBash) — arbitrary command surface; Jesse-only')",
     )
     .execute(&mut *tx)
     .await?;
@@ -3409,6 +3444,90 @@ mod inbox_schema_tests {
         .unwrap();
         assert_eq!(cancel_count, 1, "no duplicate goal_cancel row on re-run");
         assert_eq!(push_tier, 1, "customization still preserved after re-run");
+    }
+
+    /// migrate_v31_to_v32 (#430, S4): a pre-S4 DB has no `cc_*` risk_policy
+    /// classes, so every supervised-CC gate fails closed to Tier 2. After v32
+    /// the three classes exist at their intended tiers, a user customization on
+    /// one is preserved, the fail-closed sentinel stays unseeded, and a re-run
+    /// changes nothing.
+    #[tokio::test]
+    async fn migrate_v31_to_v32_seeds_supervised_cc_gate_classes() {
+        let pool = mem_pool().await;
+        init_spectral_db(&pool).await.unwrap();
+
+        // Simulate a pre-S4 DB: drop the fresh-install cc_* seed, stamp v31.
+        sqlx::query("DELETE FROM risk_policy WHERE action_class LIKE 'cc_%'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (31)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Precondition: the classes are genuinely absent (would fail closed to
+        // Tier 2 via tier_for_action_class).
+        let before: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM risk_policy WHERE action_class LIKE 'cc_%'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(before, 0, "cc_* classes absent on a pre-S4 DB");
+
+        migrate_v31_to_v32(&pool).await.unwrap();
+        assert_eq!(current_version(&pool).await, 32);
+
+        for (class, want) in [
+            ("cc_read_only", 0),
+            ("cc_workspace_edit", 1),
+            ("cc_shell", 2),
+        ] {
+            let tier: i64 =
+                sqlx::query_scalar("SELECT tier FROM risk_policy WHERE action_class = ?")
+                    .bind(class)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(tier, want, "{class} seeded at tier {want}");
+        }
+
+        // The fail-closed sentinel is deliberately NEVER seeded.
+        let unclassified: Option<i64> = sqlx::query_scalar(
+            "SELECT tier FROM risk_policy WHERE action_class = 'cc_unclassified'",
+        )
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            unclassified, None,
+            "cc_unclassified must stay unseeded so it fails closed to Tier 2"
+        );
+
+        // A user customization on a cc_* row survives a re-run (INSERT OR IGNORE).
+        sqlx::query("UPDATE risk_policy SET tier = 2 WHERE action_class = 'cc_workspace_edit'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        migrate_v31_to_v32(&pool).await.unwrap();
+        let edit_tier: i64 = sqlx::query_scalar(
+            "SELECT tier FROM risk_policy WHERE action_class = 'cc_workspace_edit'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            edit_tier, 2,
+            "user-customized cc_workspace_edit tier preserved, not reset to seed"
+        );
+
+        // Idempotent: no duplicate rows after re-run.
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM risk_policy WHERE action_class LIKE 'cc_%'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 3, "exactly the three cc_* rows, no duplicates");
     }
 
     /// Count schema objects (table/view/trigger) by exact name.
