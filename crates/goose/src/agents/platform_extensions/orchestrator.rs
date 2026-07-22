@@ -540,14 +540,32 @@ fn parent_extensions_fn(context: &PlatformExtensionContext) -> Vec<ExtensionConf
     EnabledExtensionsState::extensions_or_default(extension_data, Config::global())
 }
 
+/// The outcome of worker selection: the chosen worker plus a routing snapshot
+/// (#211) capturing WHY it was chosen — the required capabilities, and every
+/// candidate's availability / cost tier / load at the selection moment. Stored
+/// on the goal card so a dispatch decision is auditable after the fact.
+pub(crate) struct WorkerSelection {
+    pub worker_key: String,
+    pub snapshot: serde_json::Value,
+}
+
 /// Select the best available worker for a goal card.
 ///
 /// Builds candidate list from agent.yaml + probe cache, then delegates
-/// to the pure `goal_state::select_best_worker` algorithm.
+/// to the pure `goal_state::select_best_worker` algorithm. Returns only the
+/// key; [`select_worker_detailed`] additionally returns the routing snapshot.
 pub(crate) async fn select_worker_fn(
     probe_cache: &ProbeCache,
     goal: &cards::Card,
 ) -> Result<String, String> {
+    Ok(select_worker_detailed(probe_cache, goal).await?.worker_key)
+}
+
+/// Select a worker AND capture the capability snapshot used for routing (#211).
+pub(crate) async fn select_worker_detailed(
+    probe_cache: &ProbeCache,
+    goal: &cards::Card,
+) -> Result<WorkerSelection, String> {
     let config = agent_identity::load_agent_config();
 
     // Derive required tool_kinds from goal metadata, default to code_edit + shell
@@ -607,7 +625,50 @@ pub(crate) async fn select_worker_fn(
         })
         .collect();
 
-    goal_state::select_best_worker(&candidates, &required_kinds)
+    let worker_key = goal_state::select_best_worker(&candidates, &required_kinds)?;
+    let snapshot = build_capability_snapshot(&worker_key, &required_kinds, &candidates);
+    Ok(WorkerSelection {
+        worker_key,
+        snapshot,
+    })
+}
+
+/// Build the routing snapshot (#211): the required capabilities plus every
+/// candidate's availability / cost tier / load at selection time, and which one
+/// was chosen. Pure — safe to unit-test.
+pub(crate) fn build_capability_snapshot(
+    worker_key: &str,
+    required_kinds: &[String],
+    candidates: &[goal_state::WorkerCandidate],
+) -> serde_json::Value {
+    let candidate_json: Vec<serde_json::Value> = candidates
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "key": c.key,
+                "available": c.available,
+                "cost_tier": c.cost_tier,
+                "tool_kinds": c.tool_kinds,
+                "active_sessions": c.active_sessions,
+            })
+        })
+        .collect();
+    let selected = candidates.iter().find(|c| c.key == worker_key).map(|c| {
+        serde_json::json!({
+            "key": c.key,
+            "available": c.available,
+            "cost_tier": c.cost_tier,
+            "tool_kinds": c.tool_kinds,
+            "active_sessions": c.active_sessions,
+        })
+    });
+    serde_json::json!({
+        "selected_at": chrono::Utc::now().to_rfc3339(),
+        "worker_key": worker_key,
+        "required_kinds": required_kinds,
+        "selected": selected,
+        "candidates_considered": candidate_json,
+    })
 }
 
 /// Dispatch a goal card to a worker via subagent.
@@ -680,8 +741,12 @@ pub(crate) async fn dispatch_goal_fn(
         ));
     }
 
-    // Select worker — on failure, leave card in Ready, no metadata changes
-    let worker_key = select_worker_fn(probe_cache, &card).await?;
+    // Select worker — on failure, leave card in Ready, no metadata changes.
+    // #211: also capture the routing snapshot (why this worker won) so the
+    // dispatch decision is auditable after the fact.
+    let selection = select_worker_detailed(probe_cache, &card).await?;
+    let worker_key = selection.worker_key.clone();
+    let capability_snapshot = selection.snapshot;
 
     // Resolve worker persona for the subagent
     let config = agent_identity::load_agent_config();
@@ -992,6 +1057,13 @@ pub(crate) async fn dispatch_goal_fn(
 
     let mut patch = serde_json::Map::new();
     patch.insert("worker_key".to_string(), serde_json::json!(worker_key));
+    // #211: record the capability/routing snapshot alongside the chosen worker,
+    // so a goal preserves what the roster looked like when it was dispatched
+    // (not just the live roster at read time).
+    patch.insert(
+        "capability_snapshot".to_string(),
+        capability_snapshot.clone(),
+    );
     patch.insert(
         "worker_session_id".to_string(),
         serde_json::json!(session_id),
@@ -5698,6 +5770,40 @@ mod tests {
                 .is_none(),
             "no unblock decision while within budget"
         );
+    }
+
+    #[test]
+    fn capability_snapshot_records_selection_and_candidates() {
+        // #211: the routing snapshot must name the chosen worker, echo the
+        // required capabilities, describe the selected worker, and list every
+        // candidate considered at dispatch time.
+        let candidates = vec![
+            goal_state::WorkerCandidate {
+                key: "codex".to_string(),
+                available: true,
+                tool_kinds: vec!["code_edit".to_string(), "shell".to_string()],
+                cost_tier: "subscription".to_string(),
+                active_sessions: 2,
+            },
+            goal_state::WorkerCandidate {
+                key: "claude-code".to_string(),
+                available: false,
+                tool_kinds: vec!["code_edit".to_string()],
+                cost_tier: "subscription".to_string(),
+                active_sessions: 0,
+            },
+        ];
+        let required = vec!["code_edit".to_string()];
+        let snap = build_capability_snapshot("codex", &required, &candidates);
+
+        assert_eq!(snap["worker_key"], "codex");
+        assert_eq!(snap["required_kinds"][0], "code_edit");
+        assert_eq!(snap["selected"]["key"], "codex");
+        assert_eq!(snap["selected"]["cost_tier"], "subscription");
+        assert_eq!(snap["selected"]["active_sessions"], 2);
+        let considered = snap["candidates_considered"].as_array().unwrap();
+        assert_eq!(considered.len(), 2, "every candidate must be recorded");
+        assert!(snap["selected_at"].as_str().is_some());
     }
 
     #[tokio::test]
