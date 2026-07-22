@@ -249,7 +249,7 @@ pub fn build_redacted_bundle(logs: &[(String, Vec<u8>)]) -> String {
 }
 
 /// Produce a **redacted** crash-report bundle on local disk and return its path
-/// + content (#327 MVP). Reads the captured crash logs from [`crash_dir`],
+/// and content (#327 MVP). Reads the captured crash logs from [`crash_dir`],
 /// scrubs every one through the shared redactor, writes the concatenated bundle
 /// to `<state>/crash-exports/crash-report-<ts>.txt`, and returns it for preview.
 ///
