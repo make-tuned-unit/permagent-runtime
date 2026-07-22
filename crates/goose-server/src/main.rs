@@ -7,6 +7,7 @@ mod commands;
 mod configuration;
 mod device_registry;
 mod error;
+mod event_at_backfill;
 mod logging;
 mod middleware;
 mod openapi;

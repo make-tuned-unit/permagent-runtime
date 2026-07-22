@@ -713,6 +713,24 @@ async fn brain_memories(
     Ok(Json(result))
 }
 
+/// Whether `table` has `column`. Used to guard the optional `event_at` column
+/// (#92) so the timeline query stays correct on a Brain DB that predates the
+/// boot-time backfill (returns `false`, we fall back to `created_at`).
+fn table_has_column(conn: &rusqlite::Connection, table: &str, column: &str) -> bool {
+    let Ok(mut stmt) = conn.prepare(&format!("PRAGMA table_info({table})")) else {
+        return false;
+    };
+    let Ok(mut rows) = stmt.query([]) else {
+        return false;
+    };
+    while let Ok(Some(row)) = rows.next() {
+        if matches!(row.get::<_, String>(1), Ok(name) if name == column) {
+            return true;
+        }
+    }
+    false
+}
+
 fn query_browse_memories(
     conn: &rusqlite::Connection,
     before: Option<&str>,
@@ -722,6 +740,16 @@ fn query_browse_memories(
     now: DateTime<Utc>,
     max_age_secs: f64,
 ) -> Result<MemoriesResponse, String> {
+    // #92 — order the timeline by original event time when we have it, so
+    // imported memories (Slack/browser history) sit at their event date rather
+    // than the batch-import date. `event_at` is backfilled at boot; on an older
+    // DB without the column we transparently fall back to `created_at`.
+    let time_col = if table_has_column(conn, "memories", "event_at") {
+        "COALESCE(event_at, created_at)"
+    } else {
+        "created_at"
+    };
+
     // Build WHERE clauses dynamically
     let mut where_clauses: Vec<String> = Vec::new();
     let mut params_vec: Vec<String> = Vec::new();
@@ -729,7 +757,7 @@ fn query_browse_memories(
 
     // Time slider lower bound
     if let Some(a) = after {
-        where_clauses.push(format!("created_at >= ?{}", param_idx));
+        where_clauses.push(format!("{time_col} >= ?{param_idx}"));
         params_vec.push(a.to_string());
         param_idx += 1;
     }
@@ -737,7 +765,7 @@ fn query_browse_memories(
     // Cursor upper bound
     if let (Some(b), Some(bid)) = (before, before_id) {
         where_clauses.push(format!(
-            "(created_at < ?{} OR (created_at = ?{} AND id < ?{}))",
+            "({time_col} < ?{} OR ({time_col} = ?{} AND id < ?{}))",
             param_idx,
             param_idx,
             param_idx + 1
@@ -746,7 +774,7 @@ fn query_browse_memories(
         params_vec.push(bid.to_string());
         param_idx += 2;
     } else if let Some(b) = before {
-        where_clauses.push(format!("created_at < ?{}", param_idx));
+        where_clauses.push(format!("{time_col} < ?{param_idx}"));
         params_vec.push(b.to_string());
         param_idx += 1;
     }
@@ -760,7 +788,7 @@ fn query_browse_memories(
     // Total count: only apply the 'after' filter (not cursor params which are for pagination)
     let total: usize = if let Some(a) = after {
         conn.query_row(
-            "SELECT COUNT(*) FROM memories WHERE created_at >= ?1",
+            &format!("SELECT COUNT(*) FROM memories WHERE {time_col} >= ?1"),
             [a],
             |r| r.get(0),
         )
@@ -773,9 +801,12 @@ fn query_browse_memories(
     let limit_param = format!("?{}", param_idx);
     params_vec.push((limit + 1).to_string());
 
+    // Alias the effective time into the `created_at` slot so `row_to_graph_memory`
+    // reads it unchanged and the cursor the frontend echoes back (before/before_id)
+    // stays consistent with the sort key.
     let sql = format!(
-        "SELECT id, key, content, description, signal_score, created_at \
-         FROM memories {} ORDER BY created_at DESC, id DESC LIMIT {}",
+        "SELECT id, key, content, description, signal_score, {time_col} AS created_at \
+         FROM memories {} ORDER BY {time_col} DESC, id DESC LIMIT {}",
         where_sql, limit_param
     );
 
@@ -973,5 +1004,102 @@ mod tests {
             [graph_id("person", "jesse sharratt")].into_iter().collect();
 
         assert!(collect_entity_edges(&triples, &picked).is_empty());
+    }
+
+    // ── #92: timeline orders by COALESCE(event_at, created_at) ────────────
+
+    fn seed_browse_db() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE memories (
+                 id TEXT PRIMARY KEY,
+                 key TEXT,
+                 content TEXT,
+                 description TEXT,
+                 signal_score REAL,
+                 created_at TEXT,
+                 event_at TEXT
+             );",
+        )
+        .unwrap();
+        // Imported in July but the event was in March — event_at wins.
+        conn.execute(
+            "INSERT INTO memories VALUES ('march','import-core','march slack',NULL,0.0,'2026-07-01T00:00:00+00:00','2026-03-14T09:30:00+00:00')",
+            [],
+        ).unwrap();
+        // A native June memory with no event_at — falls back to created_at.
+        conn.execute(
+            "INSERT INTO memories VALUES ('june','session:chat','june chat',NULL,0.0,'2026-06-01T00:00:00+00:00',NULL)",
+            [],
+        ).unwrap();
+        conn
+    }
+
+    #[test]
+    fn browse_orders_by_event_at_then_created_at() {
+        let conn = seed_browse_db();
+        let now = Utc::now();
+        let res =
+            query_browse_memories(&conn, None, None, None, 50, now, 90.0 * 24.0 * 3600.0).unwrap();
+        let ids: Vec<&str> = res.memories.iter().map(|m| m.id.as_str()).collect();
+        // June (event 2026-06) sorts above March (event 2026-03), even though
+        // March was *imported* (created_at) more recently in July.
+        assert_eq!(ids, vec!["june", "march"]);
+        // The returned timestamp reflects the effective (event) time, so the
+        // cursor the frontend echoes back stays consistent with the sort key.
+        let march = res.memories.iter().find(|m| m.id == "march").unwrap();
+        assert_eq!(march.timestamp, "2026-03-14T09:30:00+00:00");
+    }
+
+    #[test]
+    fn browse_after_bound_uses_effective_time() {
+        let conn = seed_browse_db();
+        let now = Utc::now();
+        // Slider lower bound at 2026-05: March's *import* date (July) would pass a
+        // created_at filter, but its effective event time (March) must exclude it.
+        let res = query_browse_memories(
+            &conn,
+            None,
+            None,
+            Some("2026-05-01T00:00:00+00:00"),
+            50,
+            now,
+            90.0 * 24.0 * 3600.0,
+        )
+        .unwrap();
+        let ids: Vec<&str> = res.memories.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, vec!["june"]);
+        assert_eq!(res.total, 1);
+    }
+
+    #[test]
+    fn browse_falls_back_when_event_at_column_absent() {
+        // A pre-backfill DB with no event_at column must still work (created_at).
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE memories (
+                 id TEXT PRIMARY KEY, key TEXT, content TEXT, description TEXT,
+                 signal_score REAL, created_at TEXT
+             );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memories VALUES ('a','k','c',NULL,0.0,'2026-06-01T00:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        assert!(!table_has_column(&conn, "memories", "event_at"));
+        let res = query_browse_memories(
+            &conn,
+            None,
+            None,
+            None,
+            50,
+            Utc::now(),
+            90.0 * 24.0 * 3600.0,
+        )
+        .unwrap();
+        assert_eq!(res.memories.len(), 1);
+        assert_eq!(res.memories[0].id, "a");
     }
 }
