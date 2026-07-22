@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { emitActivity } from '../../lib/emitActivity';
-import { api, apiFetch, type SovereigntyStatus, type EgressLogEntry, type DeviceInfo } from '../../lib/api';
+import { api, apiFetch, type SovereigntyStatus, type EgressLogEntry, type DeviceInfo, type CrashExportResponse } from '../../lib/api';
 import { relativeTimeAgo } from '../../lib/time-decay';
 import { font, ease, setTheme as setThemeFn, setMobiusGlow, setIdleAnim, setShowHeroMobius, setDensity as setDensityFn, setReduceMotion as setReduceMotionFn, type ThemePref, type IdleAnim, type UIDensity } from '../../styles/tokens';
 import { useTheme as useThemeHook } from '../../styles/useTheme';
@@ -841,16 +841,18 @@ export function DataPanel() {
   const [e2e, setE2e] = useState(true);
   const [sharePrompts, setSharePrompts] = useState(false);
 
-  // Crash-report / diagnostics sharing consent is a REAL backend gate (#845):
-  // it must render from crash_capture::crash_reports_consented (off by default,
-  // explicit opt-in), never a hardcoded UI default. `null` = not loaded yet;
-  // the toggle reads false until the true value arrives so it can never flash ON.
+  // Crash-report + product-analytics consent are TWO independent, REAL backend
+  // gates (#327 split; #845 fix). Each must render from the backend (off by
+  // default, explicit opt-in), never a hardcoded UI default. `null` = not
+  // loaded; the toggle reads false until the true value arrives so it can never
+  // flash ON.
   const [diagnostics, setDiagnostics] = useState<boolean | null>(null);
+  const [analytics, setAnalytics] = useState<boolean | null>(null);
   const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
 
   useEffect(() => {
     api.getCrashConsent()
-      .then(s => setDiagnostics(s.crashReportsConsented))
+      .then(s => { setDiagnostics(s.crashReportsConsented); setAnalytics(s.analyticsConsented); })
       .catch(() => setDiagnosticsError('Could not load diagnostics consent.'));
   }, []);
 
@@ -866,6 +868,35 @@ export function DataPanel() {
       });
   }, [diagnostics]);
 
+  const saveAnalytics = useCallback((v: boolean) => {
+    setDiagnosticsError(null);
+    const prev = analytics;
+    setAnalytics(v); // optimistic
+    api.setAnalyticsConsent(v)
+      .then(s => setAnalytics(s.analyticsConsented))
+      .catch(err => {
+        setAnalytics(prev);
+        setDiagnosticsError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
+      });
+  }, [analytics]);
+
+  // User-triggered redacted export (#327 MVP): writes a REDACTED bundle locally
+  // and returns its path + content so the user can inspect exactly what would
+  // be shared. No network upload.
+  const [exporting, setExporting] = useState(false);
+  const [exportResult, setExportResult] = useState<CrashExportResponse | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  const runExport = useCallback(() => {
+    setExporting(true);
+    setExportError(null);
+    setExportResult(null);
+    api.exportCrashReport()
+      .then(setExportResult)
+      .catch(err => setExportError(`Export failed: ${err instanceof Error ? err.message : String(err)}`))
+      .finally(() => setExporting(false));
+  }, []);
+
   return (
     <div>
       <H1 sub="Your data is yours. Everything is local-first today; these controls activate as remote features land."><>Data &amp; privacy<PreviewBadge /></></H1>
@@ -874,18 +905,45 @@ export function DataPanel() {
         <Row label="Keep everything on this device" hint="Memory and traces never leave your machine. Cloud sync turns off."><Toggle on={localFirst} onChange={setLocalFirst} /></Row>
         <Row label="End-to-end encryption" hint="Required when you have external collaborators."><Toggle on={e2e} onChange={setE2e} /></Row>
       </Section>
-      <Section title="Telemetry" sub="Live — the diagnostics toggle writes the daemon's crash-report consent gate (off by default).">
-        <Row label="Share anonymous diagnostics" hint="Crash reports and timing. Never your prompts."><Toggle on={!!diagnostics} onChange={saveDiagnostics} /></Row>
+      <Section title="Diagnostics" sub="Live — two separate, off-by-default opt-ins written to the daemon's consent gates.">
+        <Row label="Share anonymous diagnostics" hint="Crash reports. Never your prompts."><Toggle on={!!diagnostics} onChange={saveDiagnostics} /></Row>
+        <Row label="Share product analytics" hint="Anonymous usage and timing. Separate from crash reports."><Toggle on={!!analytics} onChange={saveAnalytics} /></Row>
         {diagnosticsError && (
           <div style={{ fontSize: 12, color: colors.danger, padding: '2px 0 8px' }}>{diagnosticsError}</div>
         )}
         <Row label="Share prompts to improve models" hint="Off by default. Opt in at your own risk."><Toggle on={sharePrompts} onChange={setSharePrompts} /></Row>
       </Section>
-      <Section title="Manage">
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {/* Export/Download/Delete removed (2026-07-10 audit): action-styled
-              buttons with no handlers. They return with real endpoints. */}
+      <Section title="Crash report" sub="Export a redacted crash report to attach to a support message. Written locally — home paths, keys, tokens, emails, and UUIDs are redacted first. Nothing is uploaded.">
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <button
+            onClick={runExport}
+            disabled={exporting}
+            style={{
+              fontSize: 12, padding: '6px 12px', borderRadius: 6,
+              cursor: exporting ? 'default' : 'pointer', opacity: exporting ? 0.6 : 1,
+              background: colors.surfaceHi, color: colors.text, border: `1px solid ${colors.border}`,
+            }}
+          >{exporting ? 'Exporting…' : 'Export redacted crash report'}</button>
         </div>
+        {exportError && (
+          <div style={{ fontSize: 12, color: colors.danger, padding: '6px 0' }}>{exportError}</div>
+        )}
+        {exportResult && (
+          <div style={{ padding: '8px 0' }}>
+            <div style={{ fontSize: 12, color: colors.textDim }}>
+              {exportResult.reportCount === 0
+                ? 'No crash reports captured. Saved an empty redacted bundle to:'
+                : `${exportResult.reportCount} crash report(s) redacted and saved to:`}
+            </div>
+            <div style={{ fontSize: 12, color: colors.text, fontFamily: font.mono, wordBreak: 'break-all', padding: '2px 0 6px' }}>{exportResult.path}</div>
+            <div style={{ fontSize: 11, color: colors.textDim, paddingBottom: 4 }}>Preview (exactly what would be shared):</div>
+            <pre style={{
+              fontSize: 11, fontFamily: font.mono, color: colors.text, background: colors.surface,
+              border: `1px solid ${colors.border}`, borderRadius: 6, padding: 8, margin: 0,
+              maxHeight: 220, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+            }}>{exportResult.content}</pre>
+          </div>
+        )}
       </Section>
     </div>
   );

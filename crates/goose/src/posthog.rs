@@ -69,6 +69,22 @@ async fn posthog_capture(
     distinct_id: &str,
     properties: HashMap<String, serde_json::Value>,
 ) -> Result<(), String> {
+    // Bring telemetry egress under the sovereignty boundary (#327). This is the
+    // single outbound choke point for all PostHog POSTs; under sovereign mode the
+    // POST is HARD-SUPPRESSED (fail-closed) and, either way, the attempt is
+    // recorded in the append-only egress audit log — so telemetry is no longer an
+    // egress the sovereignty story can't see. Suppression does not depend on the
+    // audit write succeeding.
+    let allowed = crate::sovereignty::guard_outbound_telemetry(
+        crate::sovereignty::EgressKind::Telemetry,
+        POSTHOG_CAPTURE_URL,
+        event_name,
+    )
+    .await;
+    if !allowed {
+        return Ok(());
+    }
+
     let payload = CaptureEvent {
         api_key: POSTHOG_API_KEY,
         event: event_name.to_string(),
@@ -507,32 +523,12 @@ pub fn classify_error(error: &str) -> &'static str {
 // Privacy Sanitization
 // ============================================================================
 
-use regex::Regex;
-use std::sync::LazyLock;
-
-static SENSITIVE_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
-    vec![
-        Regex::new(r"/Users/[^/\s]+").unwrap(),
-        Regex::new(r"/home/[^/\s]+").unwrap(),
-        Regex::new(r"(?i)C:\\Users\\[^\\\s]+").unwrap(),
-        Regex::new(r"sk-[a-zA-Z0-9]{20,}").unwrap(),
-        Regex::new(r"pk-[a-zA-Z0-9]{20,}").unwrap(),
-        Regex::new(r"(?i)key[_-]?[a-zA-Z0-9]{16,}").unwrap(),
-        Regex::new(r"(?i)token[_-]?[a-zA-Z0-9]{16,}").unwrap(),
-        Regex::new(r"(?i)bearer\s+[a-zA-Z0-9._-]+").unwrap(),
-        Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}").unwrap(),
-        Regex::new(r"https?://[^:]+:[^@]+@").unwrap(),
-        Regex::new(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
-            .unwrap(),
-    ]
-});
-
+/// Redact known-sensitive substrings before any telemetry leaves the machine.
+/// Delegates to the shared, non-feature-gated redactor (`crate::privacy::redact`)
+/// so telemetry and the crash-report export scrub through exactly one pattern
+/// set — a single source of truth (#327).
 fn sanitize_string(s: &str) -> String {
-    let mut result = s.to_string();
-    for pattern in SENSITIVE_PATTERNS.iter() {
-        result = pattern.replace_all(&result, "[REDACTED]").to_string();
-    }
-    result
+    crate::privacy::redact(s)
 }
 
 fn sanitize_value(value: serde_json::Value) -> serde_json::Value {
@@ -577,15 +573,11 @@ pub async fn emit_event(
         insert(&mut properties, "platform_version", platform_version);
     }
 
-    if event_name == "error_occurred" || event_name == "app_crashed" {
-        if let Some(serde_json::Value::String(error_type)) = properties.get("error_type") {
-            let classified = classify_error(error_type);
-            properties.insert(
-                "error_category".to_string(),
-                serde_json::Value::String(classified.to_string()),
-            );
-        }
-    }
+    // NOTE (#327): the former `app_crashed`/`error_occurred` handling here was
+    // dead code — those event names are not onboarding events, so the guard
+    // above (`is_onboarding_event`) already returned before this point. Telemetry
+    // canon is self-hostable / privacy-first only (never PostHog for crashes);
+    // crash reporting is handled by the local redacted export, not this path.
 
     let sanitized: HashMap<String, serde_json::Value> = properties
         .into_iter()

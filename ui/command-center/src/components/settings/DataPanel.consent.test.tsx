@@ -25,6 +25,8 @@ vi.mock('../../lib/api', () => ({
   api: {
     getCrashConsent: vi.fn(),
     setCrashConsent: vi.fn(),
+    setAnalyticsConsent: vi.fn(),
+    exportCrashReport: vi.fn(),
   },
   apiFetch: vi.fn(),
   extractText: vi.fn(() => ''),
@@ -42,21 +44,41 @@ import { api } from '../../lib/api';
 
 const getConsentMock = vi.mocked(api.getCrashConsent);
 const setConsentMock = vi.mocked(api.setCrashConsent);
+const setAnalyticsMock = vi.mocked(api.setAnalyticsConsent);
+const exportMock = vi.mocked(api.exportCrashReport);
 
 let container: HTMLDivElement;
 let root: Root;
 
-/** The diagnostics Toggle: the <button> in the row labelled "Share anonymous diagnostics". */
-function diagnosticsToggle(): HTMLButtonElement {
-  const labels = Array.from(container.querySelectorAll('div')).filter(
-    d => d.textContent === 'Share anonymous diagnostics',
+/** The Toggle <button> in the row whose label div has exactly `text`. */
+function toggleByLabel(text: string): HTMLButtonElement {
+  const label = Array.from(container.querySelectorAll('div')).find(
+    d => d.textContent === text,
   );
-  const label = labels[0];
-  if (!label) throw new Error('diagnostics row label not found');
+  if (!label) throw new Error(`row label not found: ${text}`);
   // label div → 200px container → Row → the toggle button in the second column.
   const row = label.parentElement!.parentElement!;
   const btn = row.querySelector('button');
-  if (!btn) throw new Error('diagnostics toggle button not found');
+  if (!btn) throw new Error(`toggle button not found for: ${text}`);
+  return btn as HTMLButtonElement;
+}
+
+/** The diagnostics (crash-report) Toggle. */
+function diagnosticsToggle(): HTMLButtonElement {
+  return toggleByLabel('Share anonymous diagnostics');
+}
+
+/** The product-analytics Toggle. */
+function analyticsToggle(): HTMLButtonElement {
+  return toggleByLabel('Share product analytics');
+}
+
+/** The "Export redacted crash report" button (found by its label text). */
+function exportButton(): HTMLButtonElement {
+  const btn = Array.from(container.querySelectorAll('button')).find(
+    b => (b.textContent || '').includes('Export redacted crash report'),
+  );
+  if (!btn) throw new Error('export button not found');
   return btn as HTMLButtonElement;
 }
 
@@ -80,6 +102,8 @@ beforeEach(() => {
   root = createRoot(container);
   getConsentMock.mockReset();
   setConsentMock.mockReset();
+  setAnalyticsMock.mockReset();
+  exportMock.mockReset();
 });
 
 afterEach(() => {
@@ -89,14 +113,14 @@ afterEach(() => {
 
 describe('DataPanel diagnostics consent wiring', () => {
   it('renders the toggle ON when the backend reports consent', async () => {
-    getConsentMock.mockResolvedValue({ crashReportsConsented: true });
+    getConsentMock.mockResolvedValue({ crashReportsConsented: true, analyticsConsented: false });
     await mount();
     expect(getConsentMock).toHaveBeenCalledTimes(1);
     expect(isOn(diagnosticsToggle())).toBe(true);
   });
 
   it('renders the toggle OFF when the backend reports no consent (default)', async () => {
-    getConsentMock.mockResolvedValue({ crashReportsConsented: false });
+    getConsentMock.mockResolvedValue({ crashReportsConsented: false, analyticsConsented: false });
     await mount();
     expect(isOn(diagnosticsToggle())).toBe(false);
   });
@@ -109,8 +133,8 @@ describe('DataPanel diagnostics consent wiring', () => {
   });
 
   it('persists to the backend consent gate when toggled on', async () => {
-    getConsentMock.mockResolvedValue({ crashReportsConsented: false });
-    setConsentMock.mockResolvedValue({ crashReportsConsented: true });
+    getConsentMock.mockResolvedValue({ crashReportsConsented: false, analyticsConsented: false });
+    setConsentMock.mockResolvedValue({ crashReportsConsented: true, analyticsConsented: false });
     await mount();
 
     await act(async () => { diagnosticsToggle().click(); });
@@ -122,7 +146,7 @@ describe('DataPanel diagnostics consent wiring', () => {
   });
 
   it('rolls back the toggle if the persist call fails', async () => {
-    getConsentMock.mockResolvedValue({ crashReportsConsented: false });
+    getConsentMock.mockResolvedValue({ crashReportsConsented: false, analyticsConsented: false });
     setConsentMock.mockRejectedValue(new Error('boom'));
     await mount();
 
@@ -130,5 +154,59 @@ describe('DataPanel diagnostics consent wiring', () => {
     await act(async () => { await Promise.resolve(); });
     // Failed write must not leave the UI claiming consent we never stored.
     expect(isOn(diagnosticsToggle())).toBe(false);
+  });
+});
+
+describe('DataPanel split analytics consent (#327)', () => {
+  it('renders the analytics toggle independently from the crash toggle', async () => {
+    getConsentMock.mockResolvedValue({ crashReportsConsented: false, analyticsConsented: true });
+    await mount();
+    // Crash off, analytics on — proves they are separate gates, not one value.
+    expect(isOn(diagnosticsToggle())).toBe(false);
+    expect(isOn(analyticsToggle())).toBe(true);
+  });
+
+  it('persists analytics consent via setAnalyticsConsent (not the crash gate)', async () => {
+    getConsentMock.mockResolvedValue({ crashReportsConsented: false, analyticsConsented: false });
+    setAnalyticsMock.mockResolvedValue({ crashReportsConsented: false, analyticsConsented: true });
+    await mount();
+
+    await act(async () => { analyticsToggle().click(); });
+    expect(setAnalyticsMock).toHaveBeenCalledTimes(1);
+    expect(setAnalyticsMock).toHaveBeenCalledWith(true);
+    expect(setConsentMock).not.toHaveBeenCalled(); // crash gate untouched
+    await act(async () => { await Promise.resolve(); });
+    expect(isOn(analyticsToggle())).toBe(true);
+    expect(isOn(diagnosticsToggle())).toBe(false);
+  });
+});
+
+describe('DataPanel redacted crash-report export (#327)', () => {
+  it('calls the real export endpoint and shows the saved path + redacted preview', async () => {
+    getConsentMock.mockResolvedValue({ crashReportsConsented: false, analyticsConsented: false });
+    exportMock.mockResolvedValue({
+      path: '/state/crash-exports/crash-report-x.txt',
+      reportCount: 2,
+      content: 'Permagent redacted crash-report export\n[REDACTED] boom',
+    });
+    await mount();
+
+    await act(async () => { exportButton().click(); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(exportMock).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('/state/crash-exports/crash-report-x.txt');
+    expect(container.textContent).toContain('[REDACTED]');
+    expect(container.textContent).toContain('2 crash report(s) redacted');
+  });
+
+  it('surfaces an error when the export fails', async () => {
+    getConsentMock.mockResolvedValue({ crashReportsConsented: false, analyticsConsented: false });
+    exportMock.mockRejectedValue(new Error('disk full'));
+    await mount();
+
+    await act(async () => { exportButton().click(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(container.textContent).toContain('Export failed');
   });
 });
