@@ -605,7 +605,7 @@ mod tests {
     fn doc_index_updated_reingest_returns_stale_key() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         let old = content_key(b"v1 contents");
-        let new = content_key(b"v2 contents — edited");
+        let new = content_key(b"v2 contents - edited");
         assert_ne!(old, new);
 
         doc_index::swap_content_key_on_conn(&conn, "report.pdf", &old).unwrap();
