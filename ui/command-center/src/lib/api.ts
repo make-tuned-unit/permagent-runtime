@@ -674,14 +674,28 @@ export interface SovereigntyStatus {
 }
 
 /**
- * Crash-report / diagnostics sharing consent (GET/POST /telemetry/consent).
- * The authoritative backend gate (crash_capture::crash_reports_consented) — off
- * by default, explicit opt-in. The Settings "Share anonymous diagnostics" toggle
- * renders from this, never a hardcoded default (#845).
+ * Diagnostics consent (GET/POST /telemetry/consent) — two INDEPENDENT opt-ins
+ * (#327 split), both off by default, explicit opt-in:
+ *   - crashReportsConsented — crash-report sharing gate
+ *     (crash_capture::crash_reports_consented, key `crash_reports_consent`)
+ *   - analyticsConsented — product-analytics telemetry (`GOOSE_TELEMETRY_ENABLED`)
+ * The Settings toggles render from these, never a hardcoded default (#845).
  */
 export interface ConsentStatus {
-  /** Whether the user has consented to sharing crash reports / diagnostics. */
+  /** Whether the user has consented to sharing crash reports. */
   crashReportsConsented: boolean;
+  /** Whether the user has consented to product-analytics telemetry. */
+  analyticsConsented: boolean;
+}
+
+/** A locally-written, redacted crash-report export (#327 MVP). */
+export interface CrashExportResponse {
+  /** Absolute path of the redacted bundle written to local disk. */
+  path: string;
+  /** Number of captured crash reports included. */
+  reportCount: number;
+  /** The exact redacted bundle text (what would be shared), for preview. */
+  content: string;
 }
 
 /** One row of the cloud-egress audit log (GET /api/security/egress-log). */
@@ -953,16 +967,33 @@ export const api = {
   getEgressLog: (limit = 100) =>
     apiFetch<EgressLogEntry[]>(`/api/security/egress-log?limit=${limit}`),
 
-  // ── Diagnostics / crash-report consent ───────────────────────────────
-  /** Current crash-report/diagnostics sharing consent (off by default). */
+  // ── Diagnostics consent (two independent opt-ins, #327) ───────────────
+  /** Current crash-report + analytics consent (both off by default). */
   getCrashConsent: () =>
     apiFetch<ConsentStatus>('/telemetry/consent'),
 
-  /** Set crash-report/diagnostics consent; returns the authoritative value. */
+  /** Set crash-report sharing consent; returns the authoritative values. */
   setCrashConsent: (consented: boolean) =>
     apiFetch<ConsentStatus>('/telemetry/consent', {
       method: 'POST',
-      body: JSON.stringify({ consented }),
+      body: JSON.stringify({ crashReports: consented }),
+    }),
+
+  /** Set product-analytics telemetry consent; returns authoritative values. */
+  setAnalyticsConsent: (consented: boolean) =>
+    apiFetch<ConsentStatus>('/telemetry/consent', {
+      method: 'POST',
+      body: JSON.stringify({ analytics: consented }),
+    }),
+
+  /**
+   * Produce a REDACTED crash-report bundle on local disk and return its path +
+   * content (#327 MVP). No network upload — the user decides whether to attach
+   * the file. Sovereign-safe (a local write is not egress).
+   */
+  exportCrashReport: () =>
+    apiFetch<CrashExportResponse>('/telemetry/crash-report/export', {
+      method: 'POST',
     }),
 
   // Providers

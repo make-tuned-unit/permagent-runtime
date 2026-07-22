@@ -18,10 +18,21 @@ use std::sync::{Mutex, Once};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::paths::Paths;
+use crate::config::Config;
 
 const CRASH_SUBDIR: &str = "crashes";
+/// Subdirectory for user-triggered redacted exports (#327 MVP).
+const CRASH_EXPORT_SUBDIR: &str = "crash-exports";
 /// Keep only the most recent N crash reports on disk.
 const MAX_CRASH_FILES: usize = 20;
+
+/// Config key for crash-report sharing consent — **separate** from the
+/// product-analytics telemetry opt-in (`GOOSE_TELEMETRY_ENABLED`) as of the
+/// #327 split. Two distinct consent asks: "help fix crashes" vs. "share usage
+/// analytics." Default OFF (explicit opt-in). Because `Config::get_param`
+/// checks the uppercased env var first, `CRASH_REPORTS_CONSENT=false` also works
+/// as a kill-switch.
+pub const CRASH_REPORTS_CONSENT_KEY: &str = "crash_reports_consent";
 
 /// Panic circuit-breaker defaults (durability F1). A single panic in a spawned
 /// task unwinds only that task — the process limps on "half-dead", invisible to
@@ -44,21 +55,22 @@ pub fn crash_dir() -> PathBuf {
     Paths::in_state_dir(CRASH_SUBDIR)
 }
 
-/// Whether crash reports may be included in the diagnostic bundle.
+/// Whether crash reports may be **shared** (bundled today; uploaded if an
+/// ambient path is ever built).
 ///
-/// Off by default — reuses the PostHog telemetry opt-in so a single privacy
-/// choice governs both. The `posthog` module is `#[cfg(feature = "telemetry")]`;
-/// without it there is no opt-in to honor, so consent is denied (crash reports
-/// are never bundled) — safe by construction.
+/// Off by default, explicit opt-in. As of #327 this is a **dedicated** consent
+/// key ([`CRASH_REPORTS_CONSENT_KEY`]) — no longer piggy-backed on the product-
+/// analytics telemetry opt-in — so a user can help fix crashes without sharing
+/// usage analytics, or vice versa. Reading config directly (not the `telemetry`
+/// feature) keeps the gate available even in builds compiled without telemetry.
+///
+/// Note: this gates *ambient sharing*. The user-triggered redacted export
+/// ([`export_redacted_bundle`]) is not gated on it — the user is the actor and
+/// the export never leaves the machine on its own.
 pub fn crash_reports_consented() -> bool {
-    #[cfg(feature = "telemetry")]
-    {
-        crate::posthog::is_telemetry_enabled()
-    }
-    #[cfg(not(feature = "telemetry"))]
-    {
-        false
-    }
+    Config::global()
+        .get_param::<bool>(CRASH_REPORTS_CONSENT_KEY)
+        .unwrap_or(false)
 }
 
 /// Self-knowledge descriptor for the daemon's durability supervision (the
@@ -185,6 +197,96 @@ pub fn collect_crash_logs(dir: &Path) -> Vec<(String, Vec<u8>)> {
             Some((name, bytes))
         })
         .collect()
+}
+
+/// Directory where user-triggered redacted exports are written
+/// (`<state>/crash-exports`).
+pub fn export_dir() -> PathBuf {
+    Paths::in_state_dir(CRASH_EXPORT_SUBDIR)
+}
+
+/// The result of a user-triggered redacted crash-report export (#327 MVP).
+#[derive(Debug, Clone)]
+pub struct RedactedCrashExport {
+    /// Absolute path of the redacted bundle written to local disk.
+    pub path: PathBuf,
+    /// How many captured crash logs were included.
+    pub report_count: usize,
+    /// The full redacted bundle text (identical to the file contents) so the UI
+    /// can show the user *exactly* what would be shared before they attach it.
+    pub content: String,
+}
+
+/// Assemble the redacted bundle text from `(filename, bytes)` crash logs. Pure
+/// (no I/O) so it is directly unit-testable: each log is scrubbed through the
+/// shared redactor ([`crate::privacy::redact`]) and framed with a header. Empty
+/// input yields an honest "no crash reports" bundle so the export action always
+/// produces a real, inspectable artifact.
+pub fn build_redacted_bundle(logs: &[(String, Vec<u8>)]) -> String {
+    let mut out = String::new();
+    out.push_str("Permagent redacted crash-report export\n");
+    out.push_str("======================================\n");
+    out.push_str(
+        "All home paths, keys, tokens, emails, and UUIDs below have been redacted.\n\
+         This file is LOCAL — nothing was uploaded. Attach it yourself if you\n\
+         choose to share it.\n\n",
+    );
+    if logs.is_empty() {
+        out.push_str("(No crash reports have been captured on this machine.)\n");
+        return out;
+    }
+    out.push_str(&format!("{} crash report(s) included.\n\n", logs.len()));
+    for (name, bytes) in logs {
+        let text = String::from_utf8_lossy(bytes);
+        out.push_str(&format!("===== {name} =====\n"));
+        out.push_str(&crate::privacy::redact(&text));
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// Produce a **redacted** crash-report bundle on local disk and return its path
+/// + content (#327 MVP). Reads the captured crash logs from [`crash_dir`],
+/// scrubs every one through the shared redactor, writes the concatenated bundle
+/// to `<state>/crash-exports/crash-report-<ts>.txt`, and returns it for preview.
+///
+/// **No network path.** This is the user-triggered, sovereign-safe reporting
+/// surface: the user is the actor, the bytes stay on their disk, and they decide
+/// whether to attach the file to a support channel. It is intentionally *not*
+/// gated on [`crash_reports_consented`] (that gate governs ambient sharing) and
+/// is never suppressed by sovereign mode (a local file write is not egress).
+pub fn export_redacted_bundle() -> std::io::Result<RedactedCrashExport> {
+    export_redacted_bundle_in(&crash_dir(), &export_dir())
+}
+
+/// [`export_redacted_bundle`] against explicit source/destination dirs. Split
+/// out so tests can drive the whole write path against temp dirs without
+/// mutating the process-global `PERMAGENT_PATH_ROOT` (which would race other
+/// tests reading the state dir).
+fn export_redacted_bundle_in(
+    crash_dir: &Path,
+    export_dir: &Path,
+) -> std::io::Result<RedactedCrashExport> {
+    let logs = collect_crash_logs(crash_dir);
+    let content = build_redacted_bundle(&logs);
+
+    std::fs::create_dir_all(export_dir)?;
+    let ts = chrono::Utc::now().to_rfc3339();
+    let safe_ts: String = ts
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let path = export_dir.join(format!("crash-report-{safe_ts}.txt"));
+    std::fs::write(&path, content.as_bytes())?;
+
+    Ok(RedactedCrashExport {
+        path,
+        report_count: logs.len(),
+        content,
+    })
 }
 
 /// Render a panic into a [`CrashReport`].
@@ -386,21 +488,73 @@ mod tests {
         assert!(logs.is_empty());
     }
 
-    #[cfg(feature = "telemetry")]
     #[test]
-    fn consent_gate_delegates_to_telemetry_optin() {
-        // The gate must equal the telemetry opt-in (off by default until the
-        // user explicitly chooses).
-        assert_eq!(
-            crash_reports_consented(),
-            crate::posthog::is_telemetry_enabled()
+    fn crash_consent_key_is_split_from_analytics_telemetry() {
+        // #327 split: crash-report consent is a DEDICATED key, not the product-
+        // analytics telemetry opt-in. The two must be distinct config keys so a
+        // user can consent to one without the other.
+        assert_eq!(CRASH_REPORTS_CONSENT_KEY, "crash_reports_consent");
+        assert_ne!(
+            CRASH_REPORTS_CONSENT_KEY, "GOOSE_TELEMETRY_ENABLED",
+            "crash-report consent must not reuse the analytics telemetry key"
         );
     }
 
-    #[cfg(not(feature = "telemetry"))]
     #[test]
-    fn consent_denied_without_telemetry_feature() {
-        // No telemetry module compiled in → no opt-in to honor → never bundle.
-        assert!(!crash_reports_consented());
+    fn redacted_bundle_scrubs_home_paths_keys_and_emails() {
+        // A synthetic crash log carrying exactly the sensitive shapes the export
+        // must never leak.
+        let raw = report_from_leaky();
+        let logs = vec![("crash-leaky.log".to_string(), raw.into_bytes())];
+        let bundle = build_redacted_bundle(&logs);
+
+        assert!(bundle.contains("[REDACTED]"), "must redact");
+        assert!(!bundle.contains("/Users/jesse"), "home path must not leak");
+        assert!(!bundle.contains("jesse@example.com"), "email must not leak");
+        assert!(
+            !bundle.contains("sk-abcdefghijklmnopqrstuvwxyz012345"),
+            "api key must not leak"
+        );
+        // Still useful: the framing + the panic location survive.
+        assert!(bundle.contains("crash-leaky.log"));
+        assert!(bundle.contains("src/foo.rs:1:1"));
+        assert!(bundle.contains("nothing was uploaded") || bundle.contains("LOCAL"));
+    }
+
+    #[test]
+    fn redacted_bundle_is_honest_when_empty() {
+        let bundle = build_redacted_bundle(&[]);
+        assert!(bundle.contains("No crash reports"));
+    }
+
+    #[test]
+    fn export_writes_a_redacted_file_to_disk() {
+        // Drive the whole export against temp source/dest dirs — no env mutation,
+        // so this can't race other tests reading the real state dir.
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+        std::fs::write(src.path().join("crash-x.log"), report_from_leaky()).unwrap();
+
+        let export = export_redacted_bundle_in(src.path(), dst.path()).unwrap();
+        assert!(export.path.exists(), "the redacted bundle must be written");
+        assert_eq!(export.report_count, 1);
+        let on_disk = std::fs::read_to_string(&export.path).unwrap();
+        assert_eq!(on_disk, export.content, "returned content == file content");
+        assert!(!on_disk.contains("/Users/jesse"), "file must be redacted");
+        assert!(on_disk.contains("[REDACTED]"));
+    }
+
+    /// A crash-report text carrying every sensitive shape the export must scrub.
+    fn report_from_leaky() -> String {
+        CrashReport {
+            timestamp: "2026-07-22T10:00:00Z".to_string(),
+            thread: "main".to_string(),
+            location: "src/foo.rs:1:1".to_string(),
+            message: "boom for jesse@example.com".to_string(),
+            backtrace: "0: at /Users/jesse/dev/permagent/crate.rs\n\
+                 1: key sk-abcdefghijklmnopqrstuvwxyz012345"
+                .to_string(),
+        }
+        .to_text()
     }
 }

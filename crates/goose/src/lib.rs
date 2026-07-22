@@ -50,6 +50,7 @@ pub mod permission;
 pub mod playbook;
 #[cfg(feature = "telemetry")]
 pub mod posthog;
+pub mod privacy;
 pub mod project_association;
 pub mod project_documents;
 pub mod project_graph;

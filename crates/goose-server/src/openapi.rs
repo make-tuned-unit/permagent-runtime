@@ -478,6 +478,7 @@ derive_utoipa!(IconTheme as IconThemeSchema);
         super::routes::telemetry::send_telemetry_event,
         super::routes::telemetry::get_telemetry_consent,
         super::routes::telemetry::set_telemetry_consent,
+        super::routes::telemetry::export_crash_report,
         super::routes::features::get_features,
     ),
     components(schemas(
@@ -648,6 +649,7 @@ derive_utoipa!(IconTheme as IconThemeSchema);
         super::routes::telemetry::TelemetryEventRequest,
         super::routes::telemetry::ConsentStatus,
         super::routes::telemetry::SetConsentRequest,
+        super::routes::telemetry::CrashExportResponse,
         permagent::goose_apps::GooseApp,
         permagent::goose_apps::WindowProps,
         permagent::goose_apps::McpAppResource,

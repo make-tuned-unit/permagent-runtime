@@ -239,6 +239,11 @@ pub enum EgressKind {
     Inference,
     /// An embedding request.
     Embedding,
+    /// A product-analytics telemetry POST (e.g. the session-started event).
+    Telemetry,
+    /// A crash-report upload (no ambient path exists today; a future one must
+    /// flow through the same boundary — see [`guard_outbound_telemetry`]).
+    CrashReport,
 }
 
 impl EgressKind {
@@ -246,6 +251,8 @@ impl EgressKind {
         match self {
             EgressKind::Inference => "inference",
             EgressKind::Embedding => "embedding",
+            EgressKind::Telemetry => "telemetry",
+            EgressKind::CrashReport => "crash_report",
         }
     }
 }
@@ -418,6 +425,59 @@ pub async fn recent_egress(limit: i64) -> anyhow::Result<Vec<EgressLogEntry>> {
         .pool_clone()
         .await?;
     recent_egress_rows(&pool, limit).await
+}
+
+// ── Non-inference outbound egress (telemetry / crash-report uploads) ─────────
+
+/// Pure policy for a non-inference outbound POST (telemetry or a crash-report
+/// upload) under the sovereign boundary (#327). Given whether the process is in
+/// sovereign mode, decide whether the caller MAY send, and build the audit
+/// record to write either way. Under sovereign mode the egress is
+/// **hard-suppressed** — `allowed = false` and `record.blocked = true` — so
+/// telemetry and (any future) crash-report upload fail closed exactly like
+/// cloud inference. Split out from [`guard_outbound_telemetry`] so the decision
+/// is unit-testable without touching process-global state.
+///
+/// `destination` is the endpoint URL (recorded as the `provider`), `event` a
+/// short label (recorded as the `model`) — both non-sensitive; the audit hashes
+/// the destination rather than any payload, so no user content is stored.
+pub fn plan_telemetry_egress(
+    kind: EgressKind,
+    destination: &str,
+    event: &str,
+    sovereign: bool,
+) -> (bool, EgressRecord) {
+    let rec = EgressRecord {
+        provider: destination.to_string(),
+        model: event.to_string(),
+        session_id: "-".to_string(),
+        project_id: None,
+        kind,
+        blocked: sovereign,
+        content_hash: hash_str(destination),
+        prompt: None,
+    };
+    (!sovereign, rec)
+}
+
+/// Guard an outbound telemetry / crash-report POST under the global sovereign
+/// boundary and record it to the append-only egress audit log (#327).
+///
+/// Returns `true` if the caller may send (not sovereign), `false` if it must
+/// **hard-suppress** the POST (sovereign mode on). Either way an audit row is
+/// written (`blocked = sovereign`), bringing telemetry egress under the same
+/// no-unlogged-egress boundary as inference. The suppression decision is
+/// independent of whether the audit write succeeds — a failed audit write is
+/// logged loudly by [`record_egress`] but never causes a suppressed POST to be
+/// sent, and never fails an allowed telemetry POST (unlike strict-audit for
+/// inference, telemetry is best-effort and must not break the app).
+pub async fn guard_outbound_telemetry(kind: EgressKind, destination: &str, event: &str) -> bool {
+    let sovereign = global_sovereign_mode();
+    let (allowed, rec) = plan_telemetry_egress(kind, destination, event, sovereign);
+    // Best-effort audit: `record_egress` already logs failures loudly. We do not
+    // propagate the error — telemetry/crash egress must never crash the caller.
+    let _ = record_egress(rec).await;
+    allowed
 }
 
 #[cfg(test)]
@@ -599,5 +659,55 @@ mod tests {
         assert!(upd.is_err(), "egress_audit must reject UPDATE");
         let del = sqlx::query("DELETE FROM egress_audit").execute(&pool).await;
         assert!(del.is_err(), "egress_audit must reject DELETE");
+    }
+
+    #[test]
+    fn telemetry_and_crash_egress_kinds_render_stable_strings() {
+        assert_eq!(EgressKind::Telemetry.as_str(), "telemetry");
+        assert_eq!(EgressKind::CrashReport.as_str(), "crash_report");
+    }
+
+    /// The load-bearing #327 guarantee at the policy layer: under sovereign mode
+    /// a would-be crash-report upload is HARD-SUPPRESSED and recorded as blocked;
+    /// with the mode off the same egress is allowed and recorded as not blocked.
+    /// Uses the pure planner + an in-memory audit pool so it is race-free (no
+    /// process-global sovereign flag to mutate).
+    #[tokio::test]
+    async fn sovereign_mode_suppresses_and_audits_a_would_be_upload() {
+        let pool = mem_pool().await;
+
+        // Sovereign context: a crash-report upload must be suppressed + audited.
+        let (allowed, rec) = plan_telemetry_egress(
+            EgressKind::CrashReport,
+            "https://glitchtip.example/api/store/",
+            "crash_report",
+            /* sovereign */ true,
+        );
+        assert!(!allowed, "sovereign mode must hard-suppress the upload");
+        assert!(
+            rec.blocked,
+            "the suppressed upload must be recorded blocked"
+        );
+        assert!(rec.prompt.is_none(), "no payload/user content is stored");
+        record_egress_row(&pool, &rec).await.unwrap();
+
+        // Non-sovereign context: a telemetry POST is allowed + audited (allowed).
+        let (allowed2, rec2) = plan_telemetry_egress(
+            EgressKind::Telemetry,
+            "https://us.i.posthog.com/capture/",
+            "session_started",
+            /* sovereign */ false,
+        );
+        assert!(allowed2, "with sovereign mode off the POST is allowed");
+        assert!(!rec2.blocked, "an allowed egress is recorded not-blocked");
+        record_egress_row(&pool, &rec2).await.unwrap();
+
+        // Both attempts are in the append-only audit log — no unlogged egress.
+        let rows = recent_egress_rows(&pool, 10).await.unwrap();
+        assert_eq!(rows.len(), 2, "both egress attempts were audited");
+        let crash = rows.iter().find(|r| r.kind == "crash_report").unwrap();
+        assert!(crash.blocked, "the sovereign-suppressed upload is blocked");
+        let telem = rows.iter().find(|r| r.kind == "telemetry").unwrap();
+        assert!(!telem.blocked, "the allowed telemetry POST is not blocked");
     }
 }
