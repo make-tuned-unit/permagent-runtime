@@ -878,48 +878,46 @@ impl ProjectManagerClient {
             .await
             .map_err(String::from)?;
 
-            // Dispatch via a temporary OrchestratorClient
-            match super::orchestrator::OrchestratorClient::new(self.context.clone()) {
-                Ok(orch) => match orch.dispatch_goal(&card.id).await {
-                    Ok(session_id) => {
-                        let updated = cards::get_card(&pool, &card.id)
-                            .await?
-                            .unwrap_or(card.clone());
-                        let json = serde_json::json!({
-                            "id": updated.id, "title": updated.title, "card_type": updated.card_type,
-                            "column_id": updated.column_id, "assigned_to": updated.assigned_to,
-                            "worker_session_id": session_id,
-                            "project": project.name, "state": "in_progress",
-                        });
-                        return Ok(vec![Content::text(format!(
-                            "Created goal \"{}\" in {} and dispatched to worker (session: {})\n\n{}",
-                            updated.title,
-                            project.name,
-                            session_id,
-                            serde_json::to_string_pretty(&json).unwrap_or_default()
-                        ))]);
-                    }
-                    Err(e) => {
-                        // Dispatch failed — card is in Ready, user can retry manually
-                        let json = serde_json::json!({
-                            "id": card.id, "title": card.title, "card_type": card.card_type,
-                            "column_id": ready_col.id, "project": project.name,
-                            "state": "ready", "dispatch_error": e,
-                        });
-                        return Ok(vec![Content::text(format!(
-                            "Created goal \"{}\" in {} (moved to Ready) but dispatch failed: {}\n\n{}",
-                            card.title,
-                            project.name,
-                            e,
-                            serde_json::to_string_pretty(&json).unwrap_or_default()
-                        ))]);
-                    }
-                },
+            // Dispatch via the free-function pipeline (#213) — no throwaway
+            // OrchestratorClient, whose `new()` would also spawn a resume +
+            // worktree-sweep task on construction. A fresh ProbeCache is cheap
+            // (an empty in-memory map); the temp client's own cache was discarded
+            // anyway.
+            let probe_cache = crate::config::worker_probe::ProbeCache::new();
+            match super::orchestrator::dispatch_goal_fn(&self.context, &probe_cache, &card.id).await
+            {
+                Ok(session_id) => {
+                    let updated = cards::get_card(&pool, &card.id)
+                        .await?
+                        .unwrap_or(card.clone());
+                    let json = serde_json::json!({
+                        "id": updated.id, "title": updated.title, "card_type": updated.card_type,
+                        "column_id": updated.column_id, "assigned_to": updated.assigned_to,
+                        "worker_session_id": session_id,
+                        "project": project.name, "state": "in_progress",
+                    });
+                    return Ok(vec![Content::text(format!(
+                        "Created goal \"{}\" in {} and dispatched to worker (session: {})\n\n{}",
+                        updated.title,
+                        project.name,
+                        session_id,
+                        serde_json::to_string_pretty(&json).unwrap_or_default()
+                    ))]);
+                }
                 Err(e) => {
-                    return Err(format!(
-                        "Created goal but failed to initialize dispatch: {}",
-                        e
-                    ));
+                    // Dispatch failed — card is in Ready, user can retry manually
+                    let json = serde_json::json!({
+                        "id": card.id, "title": card.title, "card_type": card.card_type,
+                        "column_id": ready_col.id, "project": project.name,
+                        "state": "ready", "dispatch_error": e,
+                    });
+                    return Ok(vec![Content::text(format!(
+                        "Created goal \"{}\" in {} (moved to Ready) but dispatch failed: {}\n\n{}",
+                        card.title,
+                        project.name,
+                        e,
+                        serde_json::to_string_pretty(&json).unwrap_or_default()
+                    ))]);
                 }
             }
         }

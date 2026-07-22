@@ -1,3 +1,4 @@
+use super::execution_receipt::{self, ExecutionReceipt, ReceiptState};
 use super::goal_engine;
 use super::publish_sequence;
 use crate::agents::extension::PlatformExtensionContext;
@@ -407,24 +408,11 @@ impl OrchestratorClient {
     }
 
     async fn get_agent_manager(&self) -> Result<Arc<AgentManager>, String> {
-        AgentManager::instance()
-            .await
-            .map_err(|e| format!("Failed to get agent manager: {}", e))
+        get_agent_manager_fn().await
     }
 
     async fn get_provider(&self) -> Result<Arc<dyn Provider>, String> {
-        let extension_manager = self
-            .context
-            .extension_manager
-            .as_ref()
-            .and_then(|weak| weak.upgrade())
-            .ok_or("Extension manager not available")?;
-
-        let provider_guard = extension_manager.get_provider().lock().await;
-        provider_guard
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| "Provider not available".to_string())
+        get_provider_fn(&self.context).await
     }
 
     /// Resolve the cheaper provider used for the roadmap decomposition pass
@@ -469,8 +457,7 @@ impl OrchestratorClient {
     }
 
     fn parent_extensions(&self) -> Vec<ExtensionConfig> {
-        let extension_data = self.context.session.as_ref().map(|s| &s.extension_data);
-        EnabledExtensionsState::extensions_or_default(extension_data, Config::global())
+        parent_extensions_fn(&self.context)
     }
 
     /// Refresh the cached board summary from the database.
@@ -498,533 +485,741 @@ impl OrchestratorClient {
         cache.last_refreshed = None;
     }
 
-    /// Select the best available worker for a goal card.
-    ///
-    /// Builds candidate list from agent.yaml + probe cache, then delegates
-    /// to the pure `goal_state::select_best_worker` algorithm.
+    /// Thin wrapper (#213): delegates to the free [`select_worker_fn`].
     pub async fn select_worker(&self, goal: &cards::Card) -> Result<String, String> {
-        let config = agent_identity::load_agent_config();
-
-        // Derive required tool_kinds from goal metadata, default to code_edit + shell
-        let required_kinds: Vec<String> = goal
-            .metadata_json
-            .get("tags")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_else(|| vec!["code_edit".to_string(), "shell".to_string()]);
-
-        // Build candidate list with availability + session counts
-        let manager = self.get_agent_manager().await.ok();
-        let active_ids = match &manager {
-            Some(m) => m.list_active_session_ids().await,
-            None => Vec::new(),
-        };
-
-        let candidates: Vec<goal_state::WorkerCandidate> = config
-            .workers
-            .iter()
-            // Workers with no runnable engine yet are visible in the roster but
-            // never selected — never route a real goal to an unbuilt engine.
-            .filter(|(_, persona)| {
-                !matches!(persona.engine, agent_identity::WorkerEngineKind::Pending)
-            })
-            .map(|(key, persona)| {
-                let available = match self.probe_cache.get(key) {
-                    Some(cached) => cached.available,
-                    None => {
-                        let (ok, reason) = worker_probe::probe_worker(&persona.availability_check);
-                        self.probe_cache.set(key, ok, reason);
-                        ok
-                    }
-                };
-
-                // Count active sessions for this worker (best-effort from session names)
-                let active_sessions = active_ids
-                    .iter()
-                    .filter(|id| {
-                        // Sessions spawned by this worker will have the worker key
-                        // in their name or metadata — for now, approximate as 0
-                        // since we don't yet track per-worker session counts.
-                        let _ = id;
-                        false
-                    })
-                    .count();
-
-                goal_state::WorkerCandidate {
-                    key: key.clone(),
-                    available,
-                    tool_kinds: persona.tool_kinds.clone(),
-                    cost_tier: persona.cost_tier.clone(),
-                    active_sessions,
-                }
-            })
-            .collect();
-
-        goal_state::select_best_worker(&candidates, &required_kinds)
-    }
-
-    /// Dispatch a goal card to a worker via subagent.
-    ///
-    /// Precondition: card must be card_type='goal' in state='ready'.
-    /// On success: card moves to InProgress with worker metadata.
-    /// On worker selection failure: card stays in Ready, no metadata changes.
-    /// On dispatch failure: card stays in Ready, attempt_count incremented.
-    pub async fn dispatch_goal(&self, card_id: &str) -> Result<String, String> {
         let pool = self
             .context
             .session_manager
             .pool_clone()
             .await
             .map_err(|e| e.to_string())?;
-
-        let card = cards::get_card(&pool, card_id)
-            .await?
-            .ok_or_else(|| format!("Card '{}' not found", card_id))?;
-
-        if card.card_type != "goal" {
-            return Err(format!(
-                "Card '{}' is type '{}', not 'goal'",
-                card_id, card.card_type
-            ));
-        }
-
-        // Verify card is in Ready state
-        let current_col = cards::get_column(&pool, &card.column_id)
-            .await?
-            .ok_or_else(|| format!("Column '{}' not found", card.column_id))?;
-
-        if current_col.state_binding.as_deref() != Some("ready") {
-            return Err(format!(
-                "Card '{}' is in state '{}', not 'ready'. Only Ready goals can be dispatched.",
-                card_id,
-                current_col
-                    .state_binding
-                    .as_deref()
-                    .unwrap_or(&current_col.name)
-            ));
-        }
-
-        // Budget precondition (S4): exhausted goals are parked with an
-        // unblock decision — never silently retried or re-dispatched.
-        if let Some(exhaustion) = goal_transition::check_budget(&pool, &card.metadata_json).await? {
-            let last_error = card
-                .metadata_json
-                .get("last_error")
-                .and_then(|v| v.as_str())
-                .map(String::from);
-            let decision_id = goal_transition::exhaust_and_park(
-                &pool,
-                card_id,
-                &card.title,
-                &card.project_id,
-                exhaustion,
-                last_error.as_deref(),
-            )
-            .await?;
-            self.invalidate_kanban_cache().await;
-            return Err(format!(
-                "Goal '{}' not dispatched: {}. Parked with unblock decision {} — answer it in \
-                 the decision inbox to continue.",
-                card.title,
-                exhaustion.describe(),
-                decision_id
-            ));
-        }
-
-        // Select worker — on failure, leave card in Ready, no metadata changes
-        let worker_key = self.select_worker(&card).await?;
-
-        // Resolve worker persona for the subagent
-        let config = agent_identity::load_agent_config();
-        let persona_override = config
-            .workers
-            .get(&worker_key)
-            .map(|w| (w.system_prompt_block(), w.display_name()));
-
-        // Look up project for root_path context
-        let project = crate::projects::get_project(&pool, &card.project_id)
-            .await?
-            .ok_or_else(|| format!("Project '{}' not found", card.project_id))?;
-
-        let root_path = project.root_path.as_deref().unwrap_or("(not specified)");
-
-        // Build instructions
-        let mut instructions = format!(
-            "Goal: {}\n\nDescription: {}\nProject: {}\nProject root: {}",
-            card.title, card.description, project.name, root_path
-        );
-        // Verify-loop escalation (the #739 ACTION): read the goal's per-goal
-        // escalation state. On an escalated RE-dispatch, carry the prior (weaker)
-        // attempt's diff + verify failure forward as context (R2) so the stronger
-        // model continues the fix rather than restarting cold.
-        let escalation_state = card
-            .metadata_json
-            .as_object()
-            .and_then(crate::cost_router::GoalEscalationState::from_metadata);
-        if let Some(handoff) = escalation_state
-            .as_ref()
-            .filter(|s| s.is_escalated())
-            .and_then(|s| s.handoff.as_ref())
-        {
-            instructions = format!("{instructions}\n\n{handoff}");
-        }
-
-        // Publish sequence (#457): when the project declares ordered post-push
-        // steps (`metadata_json.publish_sequence`), tell the worker up front
-        // that a git push is NOT live and what remains — so it never reports
-        // "pushed" as "deployed/live".
-        let publish_steps = publish_sequence::parse_publish_sequence(&project.metadata_json);
-        if let Some(block) = publish_sequence::dispatch_instructions_block(&publish_steps) {
-            instructions = format!("{instructions}\n\n{block}");
-        }
-
-        // Working dir + baseline commit at dispatch time (recorded beside
-        // dispatched_at so a commit-producing worker's changes can be diffed
-        // against a known-good ref). Best-effort — baseline is absent when the
-        // working dir is not a git repo.
-        let working_dir = project
-            .root_path
-            .as_ref()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-
-        let baseline_commit = tokio::process::Command::new("git")
-            .arg("-C")
-            .arg(&working_dir)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .await
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .filter(|s| !s.is_empty());
-
-        // Author the goal's completion criterion at dispatch, in precedence
-        // order (all seed the SAME `metadata_json.completion_checks` the #682
-        // verifier runs in the worker's worktree):
-        //   1. user-authored `completion_checks` win — never overwritten;
-        //   2. else the goal's acceptance criteria, COMPILED into enforced
-        //      checks (spec-driven builds, extends #682): unlike spec-kit, which
-        //      only prompts the model, we prove each mechanically-checkable
-        //      criterion — source "spec-acceptance";
-        //   3. else the #456 project-default build check — source
-        //      "project-default".
-        // A failing check clamps the verdict to Fail and blocks auto-approval.
-        let (seeded_checks, checks_source): (Option<serde_json::Value>, &str) =
-            if card.metadata_json.get("completion_checks").is_some() {
-                (None, "")
-            } else if let Some(acc) = checks_from_acceptance(
-                &card.metadata_json,
-                &card.description,
-                &project.metadata_json,
-                &working_dir,
-            ) {
-                (Some(acc), ACCEPTANCE_CHECKS_SOURCE)
-            } else {
-                (
-                    default_completion_checks(
-                        &card.metadata_json,
-                        &project.metadata_json,
-                        &working_dir,
-                        baseline_commit.is_some(),
-                    ),
-                    PROJECT_DEFAULT_CHECKS_SOURCE,
-                )
-            };
-
-        // Resolve the engine for this worker and dispatch. The engine owns *how*
-        // the goal runs; the card lifecycle around it stays here.
-        let worker_cfg = config.workers.get(&worker_key);
-        let timeout_secs = worker_cfg
-            .and_then(|w| w.timeout_secs)
-            .unwrap_or(goal_engine::DEFAULT_EXTERNAL_CLI_TIMEOUT_SECS);
-        let task = goal_engine::GoalTask {
-            card_title: card.title.clone(),
-            instructions,
-            working_dir,
-            baseline_commit: baseline_commit.clone(),
-            timeout: std::time::Duration::from_secs(timeout_secs),
-        };
-
-        let engine: Box<dyn goal_engine::GoalEngine> = match worker_cfg.map(|w| &w.engine) {
-            Some(agent_identity::WorkerEngineKind::ExternalCli { bin, args }) => {
-                Box::new(goal_engine::ExternalCliEngine {
-                    bin: bin.clone(),
-                    args: args.clone(),
-                    persona_override,
-                })
-            }
-            // S1 (#427): supervised sibling — same worktree/review scaffolding,
-            // but the session runs gate-enabled stream-json in a VISIBLE
-            // Build-tab terminal. Completion arrives through the
-            // `supervised_cli::complete_supervised_session` seam (S2 wires it);
-            // until then a supervised goal runs to its timeout and parks.
-            Some(agent_identity::WorkerEngineKind::SupervisedCli { bin }) => {
-                Box::new(super::supervised_cli::SupervisedCliEngine {
-                    bin: bin.clone(),
-                    project_slug: project.slug.clone(),
-                    persona_override,
-                })
-            }
-            Some(agent_identity::WorkerEngineKind::Pending) => {
-                return Err(format!(
-                    "Worker '{}' has no runnable engine yet (engine pending) — not dispatched",
-                    worker_key
-                ));
-            }
-            // InternalSubagent (default), or worker entry absent.
-            _ => {
-                let provider = self.get_provider().await?;
-                let extensions = self.parent_extensions();
-                // Resolve the worker's workflow role → its CONFIGURED model (#730
-                // wiring). Unset ⇒ None ⇒ the engine clones the parent session
-                // model (single-model fallback; never a baked-in vendor default).
-                let worker_role = worker_cfg.and_then(|w| w.routing_role());
-                let mut role = worker_role;
-                let mut model_override = worker_role.and_then(crate::cost_router::role_model);
-
-                // Verify-loop escalation override: an escalated re-dispatch runs
-                // the CONFIGURED model for the climbed tier. This is never a baked
-                // default — `escalate_verify_fix_loop` only marks a swap when the
-                // next tier is actually configured (else it parks), so an escalated
-                // goal reaching here has a mapped model.
-                if let Some(tier) = escalation_state
-                    .as_ref()
-                    .filter(|s| s.is_escalated())
-                    .and_then(|s| s.current_tier)
-                {
-                    let esc_role = crate::cost_router::workflow_role_for_tier(tier);
-                    if let Some(rm) = crate::cost_router::role_model(esc_role) {
-                        role = Some(esc_role);
-                        model_override = Some(rm);
-                    }
-                } else if escalation_state.is_none() {
-                    // First dispatch of a fresh goal: seed the escalation ladder
-                    // position from the worker's role tier so the first verify-loop
-                    // climb knows which rung it leaves. A role-less (single-model)
-                    // worker seeds no tier → any later escalation parks (no-default).
-                    let seed = crate::cost_router::GoalEscalationState::seed(
-                        worker_role.map(crate::cost_router::tier_for_workflow_role),
-                    );
-                    if let Err(e) = persist_escalation_state(&pool, card_id, &seed).await {
-                        tracing::warn!(
-                            target: "permagentd::brain",
-                            card_id,
-                            error = %e,
-                            "failed to seed verify-escalation state (non-fatal)",
-                        );
-                    }
-                }
-                Box::new(goal_engine::InternalSubagentEngine {
-                    session_manager: self.context.session_manager.clone(),
-                    provider,
-                    extensions,
-                    persona_override,
-                    role,
-                    model_override,
-                })
-            }
-        };
-
-        let goal_engine::DispatchedWork {
-            run_id: session_id,
-            join,
-            kill,
-        } = engine.spawn(task).await?;
-
-        // Register the worker kill handle so the cancel path (#490) can stop it.
-        register_goal_worker(card_id, kill);
-
-        // Spawn completion tracker — awaits the engine's outcome and transitions
-        // the card. Success / retriable failure route to handle_goal_completion;
-        // a timeout parks the goal (unblock decision) via handle_goal_timeout.
-        let tracker_card_id = card_id.to_string();
-        let tracker_project_id = card.project_id.clone();
-        let tracker_pool = pool.clone();
-        tokio::spawn(async move {
-            let outcome = match join.await {
-                Ok(o) => o,
-                Err(e) => goal_engine::GoalOutcome::Failed(format!("Worker task panicked: {}", e)),
-            };
-            // The worker has exited — drop its kill handle from the registry.
-            // (A cancel may already have taken it; remove is then a no-op.)
-            take_goal_worker(&tracker_card_id);
-            let result = match outcome {
-                goal_engine::GoalOutcome::Success(evidence) => {
-                    // Layer 1: persist deterministic proof-of-work to the goal
-                    // card BEFORE the completion handler runs, so the
-                    // approve_review decision it writes can cite it and the
-                    // Evidence panel + Discuss-with-Henry can read it. Best-effort
-                    // — a metadata-write failure must not block completion.
-                    if let Some(ev) = evidence {
-                        match serde_json::to_value(&ev) {
-                            Ok(v) => {
-                                if let Err(e) = cards::set_goal_dispatch_evidence(
-                                    &tracker_pool,
-                                    &tracker_card_id,
-                                    v,
-                                )
-                                .await
-                                {
-                                    tracing::warn!(
-                                        target: "permagentd::brain",
-                                        "Failed to persist dispatch evidence for card {}: {}",
-                                        tracker_card_id,
-                                        e
-                                    );
-                                }
-                            }
-                            Err(e) => tracing::warn!(
-                                target: "permagentd::brain",
-                                "Failed to serialize dispatch evidence for card {}: {}",
-                                tracker_card_id,
-                                e
-                            ),
-                        }
-                    }
-                    handle_goal_completion(
-                        &tracker_pool,
-                        &tracker_card_id,
-                        &tracker_project_id,
-                        Ok(()),
-                    )
-                    .await
-                }
-                goal_engine::GoalOutcome::Failed(error) => {
-                    handle_goal_completion(
-                        &tracker_pool,
-                        &tracker_card_id,
-                        &tracker_project_id,
-                        Err(error),
-                    )
-                    .await
-                }
-                goal_engine::GoalOutcome::TimedOut { secs } => {
-                    handle_goal_timeout(&tracker_pool, &tracker_card_id, &tracker_project_id, secs)
-                        .await
-                }
-                goal_engine::GoalOutcome::Blocked { reason } => {
-                    handle_goal_blocked(
-                        &tracker_pool,
-                        &tracker_card_id,
-                        &tracker_project_id,
-                        &reason,
-                    )
-                    .await
-                }
-            };
-            if let Err(e) = result {
-                tracing::error!(
-                    target: "permagentd::brain",
-                    "Failed to handle goal completion for card {}: {}",
-                    tracker_card_id,
-                    e
-                );
-            }
-        });
-
-        // Ready → InProgress through the goal-transition guard (tier-0
-        // 'dispatch'): worker metadata, dispatch timestamps, attempt count,
-        // baseline_commit, and the column move land in one audited transaction.
-        let attempt_count = card
-            .metadata_json
-            .get("attempt_count")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        let dispatched_at = chrono::Utc::now().to_rfc3339();
-
-        // Per-attempt worker session history for token accounting (S4).
-        let mut worker_session_ids: Vec<String> = card
-            .metadata_json
-            .get("worker_session_ids")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-        worker_session_ids.push(session_id.clone());
-
-        let mut patch = serde_json::Map::new();
-        patch.insert("worker_key".to_string(), serde_json::json!(worker_key));
-        patch.insert(
-            "worker_session_id".to_string(),
-            serde_json::json!(session_id),
-        );
-        patch.insert(
-            "worker_session_ids".to_string(),
-            serde_json::json!(worker_session_ids),
-        );
-        patch.insert(
-            "dispatched_at".to_string(),
-            serde_json::json!(dispatched_at),
-        );
-        if card.metadata_json.get("first_dispatched_at").is_none() {
-            patch.insert(
-                "first_dispatched_at".to_string(),
-                serde_json::json!(dispatched_at),
-            );
-        }
-        patch.insert(
-            "attempt_count".to_string(),
-            serde_json::json!(attempt_count + 1),
-        );
-        // Tag the dispatch with the current daemon lifecycle so restart-recovery
-        // won't reclaim this goal while its in-process tracker is still alive.
-        patch.insert(
-            "dispatched_lifecycle".to_string(),
-            serde_json::json!(daemon_lifecycle_id()),
-        );
-        if let Some(ref baseline) = baseline_commit {
-            patch.insert("baseline_commit".to_string(), serde_json::json!(baseline));
-        }
-        if let Some(checks) = seeded_checks {
-            tracing::info!(
-                target: "permagentd::brain",
-                "Seeding {} completion checks onto goal '{}': {}",
-                checks_source,
-                card.title,
-                checks
-            );
-            patch.insert("completion_checks".to_string(), checks);
-            patch.insert(
-                "completion_checks_source".to_string(),
-                serde_json::json!(checks_source),
-            );
-        }
-
-        goal_transition::advance_goal_checked(
-            &pool,
-            card_id,
-            GoalAction::Dispatch,
-            decisions::ACTOR_SYSTEM,
-            None,
-            TransitionEffects {
-                metadata_patch: patch,
-                assigned_to: Some(worker_key.clone()),
-                ..Default::default()
-            },
-        )
-        .await
-        .map_err(String::from)?;
-
-        tracing::info!(
-            target: "permagentd::brain",
-            "Goal '{}' dispatched to worker '{}' (session: {})",
-            card.title,
-            worker_key,
-            session_id
-        );
-
-        self.invalidate_kanban_cache().await;
-        Ok(session_id)
+        select_worker_fn(&pool, &self.probe_cache, goal).await
     }
 
+    /// Thin wrapper (#213): delegates to the free [`dispatch_goal_fn`], then
+    /// invalidates this client's Kanban cache — a client-local concern the free
+    /// function has no handle to. Invalidating on every outcome (not only on the
+    /// success/park paths, as the pre-refactor body did) at worst forces one
+    /// board-summary refresh on the next read; it never changes dispatch
+    /// behavior.
+    pub async fn dispatch_goal(&self, card_id: &str) -> Result<String, String> {
+        let result = dispatch_goal_fn(&self.context, &self.probe_cache, card_id).await;
+        self.invalidate_kanban_cache().await;
+        result
+    }
+}
+
+// ── Free-function dispatch pipeline (#213) ──────────────────────────────────
+//
+// The dispatch pipeline is independent of any `OrchestratorClient` instance so
+// `project_manager`'s auto_dispatch can drive it directly instead of spinning up
+// a throwaway client — whose `new()` also spawns a resume + worktree-sweep task
+// on construction. The `OrchestratorClient` methods above are thin wrappers;
+// these free functions are the real bodies.
+
+/// AgentManager handle (free-fn form; needs no client state).
+async fn get_agent_manager_fn() -> Result<Arc<AgentManager>, String> {
+    AgentManager::instance()
+        .await
+        .map_err(|e| format!("Failed to get agent manager: {}", e))
+}
+
+/// Resolve the live provider from the extension manager on `context` (free-fn
+/// form of `OrchestratorClient::get_provider`).
+async fn get_provider_fn(context: &PlatformExtensionContext) -> Result<Arc<dyn Provider>, String> {
+    let extension_manager = context
+        .extension_manager
+        .as_ref()
+        .and_then(|weak| weak.upgrade())
+        .ok_or("Extension manager not available")?;
+
+    let provider_guard = extension_manager.get_provider().lock().await;
+    provider_guard
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "Provider not available".to_string())
+}
+
+/// The parent session's enabled extensions (free-fn form of
+/// `OrchestratorClient::parent_extensions`).
+fn parent_extensions_fn(context: &PlatformExtensionContext) -> Vec<ExtensionConfig> {
+    let extension_data = context.session.as_ref().map(|s| &s.extension_data);
+    EnabledExtensionsState::extensions_or_default(extension_data, Config::global())
+}
+
+/// The outcome of worker selection: the chosen worker plus a routing snapshot
+/// (#211) capturing WHY it was chosen — the required capabilities, and every
+/// candidate's availability / cost tier / load at the selection moment. Stored
+/// on the goal card so a dispatch decision is auditable after the fact.
+pub(crate) struct WorkerSelection {
+    pub worker_key: String,
+    pub snapshot: serde_json::Value,
+}
+
+/// Select the best available worker for a goal card.
+///
+/// Builds candidate list from agent.yaml + probe cache, then delegates
+/// to the pure `goal_state::select_best_worker` algorithm. Returns only the
+/// key; [`select_worker_detailed`] additionally returns the routing snapshot.
+pub(crate) async fn select_worker_fn(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    probe_cache: &ProbeCache,
+    goal: &cards::Card,
+) -> Result<String, String> {
+    Ok(select_worker_detailed(pool, probe_cache, goal)
+        .await?
+        .worker_key)
+}
+
+/// Select a worker AND capture the capability snapshot used for routing (#211).
+pub(crate) async fn select_worker_detailed(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    probe_cache: &ProbeCache,
+    goal: &cards::Card,
+) -> Result<WorkerSelection, String> {
+    let config = agent_identity::load_agent_config();
+
+    // Derive required tool_kinds from goal metadata, default to code_edit + shell
+    let required_kinds: Vec<String> = goal
+        .metadata_json
+        .get("tags")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_else(|| vec!["code_edit".to_string(), "shell".to_string()]);
+
+    // Per-worker active load for the tie-break (#212): count in-progress goal
+    // cards grouped by their spawning `worker_key`. Authoritative and engine-
+    // agnostic (see `cards::active_worker_load`). Best-effort — a query error
+    // yields an empty map (all zeros), which degrades to the alphabetical
+    // final tie-break exactly as before.
+    let load = cards::active_worker_load(pool).await.unwrap_or_default();
+
+    let candidates: Vec<goal_state::WorkerCandidate> = config
+        .workers
+        .iter()
+        // Workers with no runnable engine yet are visible in the roster but
+        // never selected — never route a real goal to an unbuilt engine.
+        .filter(|(_, persona)| !matches!(persona.engine, agent_identity::WorkerEngineKind::Pending))
+        .map(|(key, persona)| {
+            let available = match probe_cache.get(key) {
+                Some(cached) => cached.available,
+                None => {
+                    let (ok, reason) = worker_probe::probe_worker(&persona.availability_check);
+                    probe_cache.set(key, ok, reason);
+                    ok
+                }
+            };
+
+            let active_sessions = load.get(key).copied().unwrap_or(0);
+
+            goal_state::WorkerCandidate {
+                key: key.clone(),
+                available,
+                tool_kinds: persona.tool_kinds.clone(),
+                cost_tier: persona.cost_tier.clone(),
+                active_sessions,
+            }
+        })
+        .collect();
+
+    let worker_key = goal_state::select_best_worker(&candidates, &required_kinds)?;
+    let snapshot = build_capability_snapshot(&worker_key, &required_kinds, &candidates);
+    Ok(WorkerSelection {
+        worker_key,
+        snapshot,
+    })
+}
+
+/// Build the routing snapshot (#211): the required capabilities plus every
+/// candidate's availability / cost tier / load at selection time, and which one
+/// was chosen. Pure — safe to unit-test.
+pub(crate) fn build_capability_snapshot(
+    worker_key: &str,
+    required_kinds: &[String],
+    candidates: &[goal_state::WorkerCandidate],
+) -> serde_json::Value {
+    let candidate_json: Vec<serde_json::Value> = candidates
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "key": c.key,
+                "available": c.available,
+                "cost_tier": c.cost_tier,
+                "tool_kinds": c.tool_kinds,
+                "active_sessions": c.active_sessions,
+            })
+        })
+        .collect();
+    let selected = candidates.iter().find(|c| c.key == worker_key).map(|c| {
+        serde_json::json!({
+            "key": c.key,
+            "available": c.available,
+            "cost_tier": c.cost_tier,
+            "tool_kinds": c.tool_kinds,
+            "active_sessions": c.active_sessions,
+        })
+    });
+    serde_json::json!({
+        "selected_at": chrono::Utc::now().to_rfc3339(),
+        "worker_key": worker_key,
+        "required_kinds": required_kinds,
+        "selected": selected,
+        "candidates_considered": candidate_json,
+    })
+}
+
+/// Map a dispatch outcome to the terminal receipt state it should record (#210).
+fn receipt_state_for_outcome(outcome: &goal_engine::GoalOutcome) -> ReceiptState {
+    match outcome {
+        goal_engine::GoalOutcome::Success(_) => ReceiptState::Completed,
+        goal_engine::GoalOutcome::Failed(_) => ReceiptState::Failed,
+        goal_engine::GoalOutcome::TimedOut { .. } => ReceiptState::Timeout,
+        goal_engine::GoalOutcome::Blocked { .. } => ReceiptState::Blocked,
+    }
+}
+
+/// Best-effort liveness beat on a goal's execution receipt (#210). No-op when
+/// the card carries no receipt or it is already terminal. Never fails the
+/// tracker — receipts are observability, not control flow.
+async fn beat_receipt(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str) {
+    if let Ok(Some(value)) = cards::get_goal_execution_receipt(pool, card_id).await {
+        if let Ok(mut receipt) = serde_json::from_value::<ExecutionReceipt>(value) {
+            if receipt.state.is_terminal() {
+                return;
+            }
+            receipt.heartbeat(chrono::Utc::now().to_rfc3339());
+            if let Ok(updated) = serde_json::to_value(&receipt) {
+                let _ = cards::set_goal_execution_receipt(pool, card_id, updated).await;
+            }
+        }
+    }
+}
+
+/// Best-effort terminal stamp on a goal's execution receipt (#210).
+async fn finalize_receipt(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str, state: ReceiptState) {
+    if let Ok(Some(value)) = cards::get_goal_execution_receipt(pool, card_id).await {
+        if let Ok(mut receipt) = serde_json::from_value::<ExecutionReceipt>(value) {
+            receipt.finalize(state, chrono::Utc::now().to_rfc3339());
+            if let Ok(updated) = serde_json::to_value(&receipt) {
+                let _ = cards::set_goal_execution_receipt(pool, card_id, updated).await;
+            }
+        }
+    }
+}
+
+/// Dispatch a goal card to a worker via subagent.
+///
+/// Precondition: card must be card_type='goal' in state='ready'.
+/// On success: card moves to InProgress with worker metadata.
+/// On worker selection failure: card stays in Ready, no metadata changes.
+/// On dispatch failure: card stays in Ready, attempt_count incremented.
+pub(crate) async fn dispatch_goal_fn(
+    context: &PlatformExtensionContext,
+    probe_cache: &ProbeCache,
+    card_id: &str,
+) -> Result<String, String> {
+    let pool = context
+        .session_manager
+        .pool_clone()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let card = cards::get_card(&pool, card_id)
+        .await?
+        .ok_or_else(|| format!("Card '{}' not found", card_id))?;
+
+    if card.card_type != "goal" {
+        return Err(format!(
+            "Card '{}' is type '{}', not 'goal'",
+            card_id, card.card_type
+        ));
+    }
+
+    // Verify card is in Ready state
+    let current_col = cards::get_column(&pool, &card.column_id)
+        .await?
+        .ok_or_else(|| format!("Column '{}' not found", card.column_id))?;
+
+    if current_col.state_binding.as_deref() != Some("ready") {
+        return Err(format!(
+            "Card '{}' is in state '{}', not 'ready'. Only Ready goals can be dispatched.",
+            card_id,
+            current_col
+                .state_binding
+                .as_deref()
+                .unwrap_or(&current_col.name)
+        ));
+    }
+
+    // Budget precondition (S4): exhausted goals are parked with an
+    // unblock decision — never silently retried or re-dispatched.
+    if let Some(exhaustion) = goal_transition::check_budget(&pool, &card.metadata_json).await? {
+        let last_error = card
+            .metadata_json
+            .get("last_error")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let decision_id = goal_transition::exhaust_and_park(
+            &pool,
+            card_id,
+            &card.title,
+            &card.project_id,
+            exhaustion,
+            last_error.as_deref(),
+        )
+        .await?;
+        return Err(format!(
+            "Goal '{}' not dispatched: {}. Parked with unblock decision {} — answer it in \
+                 the decision inbox to continue.",
+            card.title,
+            exhaustion.describe(),
+            decision_id
+        ));
+    }
+
+    // Select worker — on failure, leave card in Ready, no metadata changes.
+    // #211: also capture the routing snapshot (why this worker won) so the
+    // dispatch decision is auditable after the fact.
+    let selection = select_worker_detailed(&pool, probe_cache, &card).await?;
+    let worker_key = selection.worker_key.clone();
+    let capability_snapshot = selection.snapshot;
+
+    // Resolve worker persona for the subagent
+    let config = agent_identity::load_agent_config();
+    let persona_override = config
+        .workers
+        .get(&worker_key)
+        .map(|w| (w.system_prompt_block(), w.display_name()));
+
+    // Look up project for root_path context
+    let project = crate::projects::get_project(&pool, &card.project_id)
+        .await?
+        .ok_or_else(|| format!("Project '{}' not found", card.project_id))?;
+
+    let root_path = project.root_path.as_deref().unwrap_or("(not specified)");
+
+    // Build instructions
+    let mut instructions = format!(
+        "Goal: {}\n\nDescription: {}\nProject: {}\nProject root: {}",
+        card.title, card.description, project.name, root_path
+    );
+    // Verify-loop escalation (the #739 ACTION): read the goal's per-goal
+    // escalation state. On an escalated RE-dispatch, carry the prior (weaker)
+    // attempt's diff + verify failure forward as context (R2) so the stronger
+    // model continues the fix rather than restarting cold.
+    let escalation_state = card
+        .metadata_json
+        .as_object()
+        .and_then(crate::cost_router::GoalEscalationState::from_metadata);
+    if let Some(handoff) = escalation_state
+        .as_ref()
+        .filter(|s| s.is_escalated())
+        .and_then(|s| s.handoff.as_ref())
+    {
+        instructions = format!("{instructions}\n\n{handoff}");
+    }
+
+    // Publish sequence (#457): when the project declares ordered post-push
+    // steps (`metadata_json.publish_sequence`), tell the worker up front
+    // that a git push is NOT live and what remains — so it never reports
+    // "pushed" as "deployed/live".
+    let publish_steps = publish_sequence::parse_publish_sequence(&project.metadata_json);
+    if let Some(block) = publish_sequence::dispatch_instructions_block(&publish_steps) {
+        instructions = format!("{instructions}\n\n{block}");
+    }
+
+    // Working dir + baseline commit at dispatch time (recorded beside
+    // dispatched_at so a commit-producing worker's changes can be diffed
+    // against a known-good ref). Best-effort — baseline is absent when the
+    // working dir is not a git repo.
+    let working_dir = project
+        .root_path
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+    let baseline_commit = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(&working_dir)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .await
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    // Author the goal's completion criterion at dispatch, in precedence
+    // order (all seed the SAME `metadata_json.completion_checks` the #682
+    // verifier runs in the worker's worktree):
+    //   1. user-authored `completion_checks` win — never overwritten;
+    //   2. else the goal's acceptance criteria, COMPILED into enforced
+    //      checks (spec-driven builds, extends #682): unlike spec-kit, which
+    //      only prompts the model, we prove each mechanically-checkable
+    //      criterion — source "spec-acceptance";
+    //   3. else the #456 project-default build check — source
+    //      "project-default".
+    // A failing check clamps the verdict to Fail and blocks auto-approval.
+    let (seeded_checks, checks_source): (Option<serde_json::Value>, &str) =
+        if card.metadata_json.get("completion_checks").is_some() {
+            (None, "")
+        } else if let Some(acc) = checks_from_acceptance(
+            &card.metadata_json,
+            &card.description,
+            &project.metadata_json,
+            &working_dir,
+        ) {
+            (Some(acc), ACCEPTANCE_CHECKS_SOURCE)
+        } else {
+            (
+                default_completion_checks(
+                    &card.metadata_json,
+                    &project.metadata_json,
+                    &working_dir,
+                    baseline_commit.is_some(),
+                ),
+                PROJECT_DEFAULT_CHECKS_SOURCE,
+            )
+        };
+
+    // Resolve the engine for this worker and dispatch. The engine owns *how*
+    // the goal runs; the card lifecycle around it stays here.
+    let worker_cfg = config.workers.get(&worker_key);
+    let timeout_secs = worker_cfg
+        .and_then(|w| w.timeout_secs)
+        .unwrap_or(goal_engine::DEFAULT_EXTERNAL_CLI_TIMEOUT_SECS);
+    let task = goal_engine::GoalTask {
+        card_title: card.title.clone(),
+        instructions,
+        working_dir,
+        baseline_commit: baseline_commit.clone(),
+        timeout: std::time::Duration::from_secs(timeout_secs),
+    };
+
+    let engine: Box<dyn goal_engine::GoalEngine> = match worker_cfg.map(|w| &w.engine) {
+        Some(agent_identity::WorkerEngineKind::ExternalCli { bin, args }) => {
+            Box::new(goal_engine::ExternalCliEngine {
+                bin: bin.clone(),
+                args: args.clone(),
+                persona_override,
+            })
+        }
+        // S1 (#427): supervised sibling — same worktree/review scaffolding,
+        // but the session runs gate-enabled stream-json in a VISIBLE
+        // Build-tab terminal. Completion arrives through the
+        // `supervised_cli::complete_supervised_session` seam (S2 wires it);
+        // until then a supervised goal runs to its timeout and parks.
+        Some(agent_identity::WorkerEngineKind::SupervisedCli { bin }) => {
+            Box::new(super::supervised_cli::SupervisedCliEngine {
+                bin: bin.clone(),
+                project_slug: project.slug.clone(),
+                persona_override,
+            })
+        }
+        Some(agent_identity::WorkerEngineKind::Pending) => {
+            return Err(format!(
+                "Worker '{}' has no runnable engine yet (engine pending) — not dispatched",
+                worker_key
+            ));
+        }
+        // InternalSubagent (default), or worker entry absent.
+        _ => {
+            let provider = get_provider_fn(context).await?;
+            let extensions = parent_extensions_fn(context);
+            // Resolve the worker's workflow role → its CONFIGURED model (#730
+            // wiring). Unset ⇒ None ⇒ the engine clones the parent session
+            // model (single-model fallback; never a baked-in vendor default).
+            let worker_role = worker_cfg.and_then(|w| w.routing_role());
+            let mut role = worker_role;
+            let mut model_override = worker_role.and_then(crate::cost_router::role_model);
+
+            // Verify-loop escalation override: an escalated re-dispatch runs
+            // the CONFIGURED model for the climbed tier. This is never a baked
+            // default — `escalate_verify_fix_loop` only marks a swap when the
+            // next tier is actually configured (else it parks), so an escalated
+            // goal reaching here has a mapped model.
+            if let Some(tier) = escalation_state
+                .as_ref()
+                .filter(|s| s.is_escalated())
+                .and_then(|s| s.current_tier)
+            {
+                let esc_role = crate::cost_router::workflow_role_for_tier(tier);
+                if let Some(rm) = crate::cost_router::role_model(esc_role) {
+                    role = Some(esc_role);
+                    model_override = Some(rm);
+                }
+            } else if escalation_state.is_none() {
+                // First dispatch of a fresh goal: seed the escalation ladder
+                // position from the worker's role tier so the first verify-loop
+                // climb knows which rung it leaves. A role-less (single-model)
+                // worker seeds no tier → any later escalation parks (no-default).
+                let seed = crate::cost_router::GoalEscalationState::seed(
+                    worker_role.map(crate::cost_router::tier_for_workflow_role),
+                );
+                if let Err(e) = persist_escalation_state(&pool, card_id, &seed).await {
+                    tracing::warn!(
+                        target: "permagentd::brain",
+                        card_id,
+                        error = %e,
+                        "failed to seed verify-escalation state (non-fatal)",
+                    );
+                }
+            }
+            Box::new(goal_engine::InternalSubagentEngine {
+                session_manager: context.session_manager.clone(),
+                provider,
+                extensions,
+                persona_override,
+                role,
+                model_override,
+            })
+        }
+    };
+
+    let goal_engine::DispatchedWork {
+        run_id: session_id,
+        join,
+        kill,
+    } = engine.spawn(task).await?;
+
+    // Register the worker kill handle so the cancel path (#490) can stop it.
+    register_goal_worker(card_id, kill);
+
+    // Spawn completion tracker — awaits the engine's outcome and transitions
+    // the card. Success / retriable failure route to handle_goal_completion;
+    // a timeout parks the goal (unblock decision) via handle_goal_timeout.
+    let tracker_card_id = card_id.to_string();
+    let tracker_project_id = card.project_id.clone();
+    let tracker_pool = pool.clone();
+    tokio::spawn(async move {
+        // #210: beat the execution receipt while awaiting the worker, so a
+        // dispatch owned by THIS lifecycle stays visibly live (rebind-vs-stale
+        // on restart). The heartbeat proves the tracker is alive — not that the
+        // worker is producing output.
+        let outcome = {
+            let mut join = join;
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
+                execution_receipt::HEARTBEAT_INTERVAL_SECS,
+            ));
+            ticker.tick().await; // consume the immediate first tick
+            loop {
+                tokio::select! {
+                    res = &mut join => {
+                        break match res {
+                            Ok(o) => o,
+                            Err(e) => goal_engine::GoalOutcome::Failed(
+                                format!("Worker task panicked: {}", e),
+                            ),
+                        };
+                    }
+                    _ = ticker.tick() => {
+                        beat_receipt(&tracker_pool, &tracker_card_id).await;
+                    }
+                }
+            }
+        };
+        // The worker has exited — drop its kill handle from the registry.
+        // (A cancel may already have taken it; remove is then a no-op.)
+        take_goal_worker(&tracker_card_id);
+        // #210: stamp the receipt's terminal state (best-effort) before running
+        // the completion handler, so the attempt's outcome is recorded even if a
+        // downstream handler step fails.
+        let terminal_state = receipt_state_for_outcome(&outcome);
+        finalize_receipt(&tracker_pool, &tracker_card_id, terminal_state).await;
+        let result = match outcome {
+            goal_engine::GoalOutcome::Success(evidence) => {
+                // Layer 1: persist deterministic proof-of-work to the goal
+                // card BEFORE the completion handler runs, so the
+                // approve_review decision it writes can cite it and the
+                // Evidence panel + Discuss-with-Henry can read it. Best-effort
+                // — a metadata-write failure must not block completion.
+                if let Some(ev) = evidence {
+                    match serde_json::to_value(&ev) {
+                        Ok(v) => {
+                            if let Err(e) = cards::set_goal_dispatch_evidence(
+                                &tracker_pool,
+                                &tracker_card_id,
+                                v,
+                            )
+                            .await
+                            {
+                                tracing::warn!(
+                                    target: "permagentd::brain",
+                                    "Failed to persist dispatch evidence for card {}: {}",
+                                    tracker_card_id,
+                                    e
+                                );
+                            }
+                        }
+                        Err(e) => tracing::warn!(
+                            target: "permagentd::brain",
+                            "Failed to serialize dispatch evidence for card {}: {}",
+                            tracker_card_id,
+                            e
+                        ),
+                    }
+                }
+                handle_goal_completion(&tracker_pool, &tracker_card_id, &tracker_project_id, Ok(()))
+                    .await
+            }
+            goal_engine::GoalOutcome::Failed(error) => {
+                handle_goal_completion(
+                    &tracker_pool,
+                    &tracker_card_id,
+                    &tracker_project_id,
+                    Err(error),
+                )
+                .await
+            }
+            goal_engine::GoalOutcome::TimedOut { secs } => {
+                handle_goal_timeout(&tracker_pool, &tracker_card_id, &tracker_project_id, secs)
+                    .await
+            }
+            goal_engine::GoalOutcome::Blocked { reason } => {
+                handle_goal_blocked(
+                    &tracker_pool,
+                    &tracker_card_id,
+                    &tracker_project_id,
+                    &reason,
+                )
+                .await
+            }
+        };
+        if let Err(e) = result {
+            tracing::error!(
+                target: "permagentd::brain",
+                "Failed to handle goal completion for card {}: {}",
+                tracker_card_id,
+                e
+            );
+        }
+    });
+
+    // Ready → InProgress through the goal-transition guard (tier-0
+    // 'dispatch'): worker metadata, dispatch timestamps, attempt count,
+    // baseline_commit, and the column move land in one audited transaction.
+    let attempt_count = card
+        .metadata_json
+        .get("attempt_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let dispatched_at = chrono::Utc::now().to_rfc3339();
+
+    // Per-attempt worker session history for token accounting (S4).
+    let mut worker_session_ids: Vec<String> = card
+        .metadata_json
+        .get("worker_session_ids")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    worker_session_ids.push(session_id.clone());
+
+    // #210: the initial execution receipt for THIS attempt — worker, routing
+    // snapshot, session id, owning lifecycle, and a heartbeat seeded at dispatch.
+    // It lands atomically with the dispatch transition below; the completion
+    // tracker then beats it and stamps its terminal state.
+    let receipt = ExecutionReceipt::new(
+        worker_key.clone(),
+        session_id.clone(),
+        capability_snapshot.clone(),
+        daemon_lifecycle_id().to_string(),
+        dispatched_at.clone(),
+        attempt_count + 1,
+    );
+
+    let mut patch = serde_json::Map::new();
+    patch.insert("worker_key".to_string(), serde_json::json!(worker_key));
+    // #211: record the capability/routing snapshot alongside the chosen worker,
+    // so a goal preserves what the roster looked like when it was dispatched
+    // (not just the live roster at read time).
+    patch.insert(
+        "capability_snapshot".to_string(),
+        capability_snapshot.clone(),
+    );
+    if let Ok(receipt_json) = serde_json::to_value(&receipt) {
+        patch.insert("execution_receipt".to_string(), receipt_json);
+    }
+    patch.insert(
+        "worker_session_id".to_string(),
+        serde_json::json!(session_id),
+    );
+    patch.insert(
+        "worker_session_ids".to_string(),
+        serde_json::json!(worker_session_ids),
+    );
+    patch.insert(
+        "dispatched_at".to_string(),
+        serde_json::json!(dispatched_at),
+    );
+    if card.metadata_json.get("first_dispatched_at").is_none() {
+        patch.insert(
+            "first_dispatched_at".to_string(),
+            serde_json::json!(dispatched_at),
+        );
+    }
+    patch.insert(
+        "attempt_count".to_string(),
+        serde_json::json!(attempt_count + 1),
+    );
+    // Tag the dispatch with the current daemon lifecycle so restart-recovery
+    // won't reclaim this goal while its in-process tracker is still alive.
+    patch.insert(
+        "dispatched_lifecycle".to_string(),
+        serde_json::json!(daemon_lifecycle_id()),
+    );
+    if let Some(ref baseline) = baseline_commit {
+        patch.insert("baseline_commit".to_string(), serde_json::json!(baseline));
+    }
+    if let Some(checks) = seeded_checks {
+        tracing::info!(
+            target: "permagentd::brain",
+            "Seeding {} completion checks onto goal '{}': {}",
+            checks_source,
+            card.title,
+            checks
+        );
+        patch.insert("completion_checks".to_string(), checks);
+        patch.insert(
+            "completion_checks_source".to_string(),
+            serde_json::json!(checks_source),
+        );
+    }
+
+    goal_transition::advance_goal_checked(
+        &pool,
+        card_id,
+        GoalAction::Dispatch,
+        decisions::ACTOR_SYSTEM,
+        None,
+        TransitionEffects {
+            metadata_patch: patch,
+            assigned_to: Some(worker_key.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .map_err(String::from)?;
+
+    tracing::info!(
+        target: "permagentd::brain",
+        "Goal '{}' dispatched to worker '{}' (session: {})",
+        card.title,
+        worker_key,
+        session_id
+    );
+
+    Ok(session_id)
+}
+
+impl OrchestratorClient {
     async fn handle_list_sessions(
         &self,
         arguments: Option<JsonObject>,
@@ -5658,6 +5853,200 @@ mod tests {
                 .is_none(),
             "no unblock decision while within budget"
         );
+    }
+
+    /// Raw-SQL stamp of a card's `worker_key` (a protected metadata key), used
+    /// to simulate a dispatched-goal card in tests without going through the
+    /// guarded transition path.
+    async fn set_worker_key(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str, worker_key: &str) {
+        let card = cards::get_card(pool, card_id).await.unwrap().unwrap();
+        let mut meta = card.metadata_json.as_object().cloned().unwrap();
+        meta.insert("worker_key".to_string(), serde_json::json!(worker_key));
+        let meta_str = serde_json::to_string(&serde_json::Value::Object(meta)).unwrap();
+        sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+            .bind(&meta_str)
+            .bind(card_id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn active_worker_load_drives_tie_break() {
+        // #212: the tie-break counts in-progress goals per spawning worker and
+        // picks the least-loaded eligible worker — overriding the alphabetical
+        // final tie-break the old (always-zero) count degraded to.
+        let pool = test_pool().await;
+
+        // Two in-progress goals already dispatched to "atlas", none to "zeta".
+        for _ in 0..2 {
+            let c = setup_goal_in_state(&pool, "in_progress", 1).await;
+            set_worker_key(&pool, &c.id, "atlas").await;
+        }
+
+        let load = cards::active_worker_load(&pool).await.unwrap();
+        assert_eq!(load.get("atlas").copied(), Some(2));
+        assert_eq!(load.get("zeta").copied(), None);
+
+        // Same tier + capability, both available: fewest active goals wins.
+        let candidates = vec![
+            goal_state::WorkerCandidate {
+                key: "atlas".to_string(),
+                available: true,
+                tool_kinds: vec!["code_edit".to_string()],
+                cost_tier: "subscription".to_string(),
+                active_sessions: load.get("atlas").copied().unwrap_or(0),
+            },
+            goal_state::WorkerCandidate {
+                key: "zeta".to_string(),
+                available: true,
+                tool_kinds: vec!["code_edit".to_string()],
+                cost_tier: "subscription".to_string(),
+                active_sessions: load.get("zeta").copied().unwrap_or(0),
+            },
+        ];
+        let chosen =
+            goal_state::select_best_worker(&candidates, &["code_edit".to_string()]).unwrap();
+        assert_eq!(
+            chosen, "zeta",
+            "least-loaded worker must win, overriding alphabetical (atlas < zeta)"
+        );
+    }
+
+    #[tokio::test]
+    async fn execution_receipt_persist_beat_and_finalize() {
+        // #210: a dispatched goal carries a receipt; the tracker beats it while
+        // running and stamps a terminal state when the worker exits.
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+
+        // Seed an initial Running receipt (as dispatch would).
+        let receipt = ExecutionReceipt::new(
+            "codex",
+            "sess-42",
+            serde_json::json!({ "worker_key": "codex" }),
+            "life-test",
+            "2026-07-22T10:00:00+00:00",
+            1,
+        );
+        cards::set_goal_execution_receipt(&pool, &card.id, serde_json::to_value(&receipt).unwrap())
+            .await
+            .unwrap();
+
+        // Heartbeat advances last_heartbeat_at while non-terminal.
+        beat_receipt(&pool, &card.id).await;
+        let after_beat: ExecutionReceipt = serde_json::from_value(
+            cards::get_goal_execution_receipt(&pool, &card.id)
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(after_beat.state, ReceiptState::Running);
+        assert_ne!(
+            after_beat.last_heartbeat_at, "2026-07-22T10:00:00+00:00",
+            "heartbeat must advance the beat timestamp"
+        );
+
+        // Finalize stamps the terminal state + terminal_at.
+        finalize_receipt(&pool, &card.id, ReceiptState::Completed).await;
+        let after_final: ExecutionReceipt = serde_json::from_value(
+            cards::get_goal_execution_receipt(&pool, &card.id)
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(after_final.state, ReceiptState::Completed);
+        assert!(after_final.terminal_at.is_some());
+
+        // A beat after terminal is a no-op.
+        let frozen = after_final.last_heartbeat_at.clone();
+        beat_receipt(&pool, &card.id).await;
+        let after_noop: ExecutionReceipt = serde_json::from_value(
+            cards::get_goal_execution_receipt(&pool, &card.id)
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            after_noop.last_heartbeat_at, frozen,
+            "a terminal receipt must not beat"
+        );
+    }
+
+    #[test]
+    fn capability_snapshot_records_selection_and_candidates() {
+        // #211: the routing snapshot must name the chosen worker, echo the
+        // required capabilities, describe the selected worker, and list every
+        // candidate considered at dispatch time.
+        let candidates = vec![
+            goal_state::WorkerCandidate {
+                key: "codex".to_string(),
+                available: true,
+                tool_kinds: vec!["code_edit".to_string(), "shell".to_string()],
+                cost_tier: "subscription".to_string(),
+                active_sessions: 2,
+            },
+            goal_state::WorkerCandidate {
+                key: "claude-code".to_string(),
+                available: false,
+                tool_kinds: vec!["code_edit".to_string()],
+                cost_tier: "subscription".to_string(),
+                active_sessions: 0,
+            },
+        ];
+        let required = vec!["code_edit".to_string()];
+        let snap = build_capability_snapshot("codex", &required, &candidates);
+
+        assert_eq!(snap["worker_key"], "codex");
+        assert_eq!(snap["required_kinds"][0], "code_edit");
+        assert_eq!(snap["selected"]["key"], "codex");
+        assert_eq!(snap["selected"]["cost_tier"], "subscription");
+        assert_eq!(snap["selected"]["active_sessions"], 2);
+        let considered = snap["candidates_considered"].as_array().unwrap();
+        assert_eq!(considered.len(), 2, "every candidate must be recorded");
+        assert!(snap["selected_at"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn dispatch_goal_fn_is_callable_without_a_client() {
+        // #213: the dispatch pipeline is a free function — no OrchestratorClient
+        // (and no resume/sweep spawn) required. A goal that is not in Ready must
+        // be rejected by the extracted seam exactly as the method did.
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+
+        // A goal sitting in Review (not Ready) must not dispatch.
+        let card = setup_goal_in_state(&pool, "review", 0).await;
+
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        };
+        let probe_cache = ProbeCache::new();
+
+        let err = dispatch_goal_fn(&context, &probe_cache, &card.id)
+            .await
+            .expect_err("a non-Ready goal must not dispatch");
+        assert!(
+            err.contains("not 'ready'"),
+            "the free seam must reject a non-Ready goal: {}",
+            err
+        );
+
+        // Card did not move out of Review.
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(col.state_binding.as_deref(), Some("review"));
     }
 
     #[tokio::test]

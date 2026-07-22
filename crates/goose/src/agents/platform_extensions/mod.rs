@@ -8,6 +8,7 @@ pub mod chatrecall;
 pub mod code_execution;
 pub mod desktop;
 pub mod developer;
+pub mod execution_receipt;
 pub mod ext_manager;
 pub mod file_to_project;
 pub mod goal_engine;

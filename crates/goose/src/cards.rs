@@ -1097,6 +1097,46 @@ pub async fn set_goal_dispatch_evidence(
     Ok(())
 }
 
+/// Narrow API for the orchestrator's dispatch/heartbeat path (#210): writes
+/// ONLY the `execution_receipt` metadata key on a goal card — the per-attempt
+/// record of which worker ran, the routing snapshot, session id, lifecycle,
+/// liveness heartbeat, and terminal state. Never moves cards, never touches
+/// protected keys. Mirrors [`set_goal_dispatch_evidence`].
+pub async fn set_goal_execution_receipt(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    receipt: serde_json::Value,
+) -> Result<(), String> {
+    let card = get_card(pool, card_id)
+        .await?
+        .ok_or_else(|| format!("Card '{}' not found", card_id))?;
+    if card.card_type != "goal" {
+        return Err(format!("Card '{}' is not a goal", card_id));
+    }
+    let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
+    meta.insert("execution_receipt".to_string(), receipt);
+    let meta_str =
+        serde_json::to_string(&serde_json::Value::Object(meta)).map_err(|e| e.to_string())?;
+    sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+        .bind(&meta_str)
+        .bind(card_id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Read the `execution_receipt` off a goal card's metadata, if present (#210).
+pub async fn get_goal_execution_receipt(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+) -> Result<Option<serde_json::Value>, String> {
+    let card = get_card(pool, card_id)
+        .await?
+        .ok_or_else(|| format!("Card '{}' not found", card_id))?;
+    Ok(card.metadata_json.get("execution_receipt").cloned())
+}
+
 /// Count cards in a project, optionally filtered by card_type.
 pub async fn count_cards(
     pool: &Pool<Sqlite>,
@@ -1121,6 +1161,41 @@ pub async fn count_cards(
         .await
         .map_err(|e| e.to_string())
     }
+}
+
+/// Per-worker active load (#212): the number of goal cards currently
+/// `in_progress`, grouped by their `worker_key` metadata.
+///
+/// This is the authoritative source for the orchestrator's `select_worker`
+/// tie-break ("fewest active goals wins"). It counts goals rather than
+/// SessionManager sessions because the goal card is tagged with `worker_key` on
+/// EVERY dispatch — including external-CLI and supervised workers that never
+/// create a SessionManager session — so the count is complete and engine-
+/// agnostic. Best-effort: cards with no `worker_key` are skipped.
+pub async fn active_worker_load(
+    pool: &Pool<Sqlite>,
+) -> Result<std::collections::HashMap<String, usize>, String> {
+    let rows = sqlx::query_as::<_, (String,)>(
+        "SELECT c.metadata_json FROM cards c
+         JOIN board_columns bc ON c.column_id = bc.id
+         WHERE c.card_type = 'goal'
+           AND bc.state_binding = 'in_progress'
+           AND c.archived_at IS NULL",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut load: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (meta_str,) in rows {
+        let Ok(meta) = serde_json::from_str::<serde_json::Value>(&meta_str) else {
+            continue;
+        };
+        if let Some(worker) = meta.get("worker_key").and_then(|v| v.as_str()) {
+            *load.entry(worker.to_string()).or_insert(0) += 1;
+        }
+    }
+    Ok(load)
 }
 
 #[cfg(test)]
