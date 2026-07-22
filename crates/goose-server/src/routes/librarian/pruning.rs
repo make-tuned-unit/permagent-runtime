@@ -214,7 +214,10 @@ mod tests {
     #[test]
     fn prune_without_fk_enforcement_orphans_children() {
         let conn = Connection::open_in_memory().unwrap();
-        // foreign_keys defaults OFF; do not enable it.
+        // Explicitly disable FK enforcement — the `foreign_keys` default is
+        // build-dependent (some SQLite builds compile it ON), so force OFF to
+        // deterministically reproduce the pre-fix orphaning behavior.
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
         schema(&conn);
         insert_noise_with_children(&conn, "m1", "activity:noise:1");
 
