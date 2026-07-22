@@ -90,4 +90,20 @@ mod tests {
         assert_eq!(trace.tool_type, "trace");
         assert_eq!(trace.panel_type, "overlay");
     }
+
+    /// Governance is an overlay-only surface (no seeded workspace hosts it), so
+    /// — like Inbox/Skills/Sessions/Trace — the catalog entry is the ONLY thing
+    /// that makes `navigate_app("Governance")` resolve, and it must route as an
+    /// overlay so useAppNavigate lands it via `setActivePanel('governance')`.
+    #[test]
+    fn governance_is_overlay_navigable() {
+        let catalog: AppCatalog =
+            serde_yaml::from_str(CATALOG_YAML).expect("catalog.yaml must parse");
+
+        let gov = catalog
+            .find_by_name("Governance")
+            .expect("Governance must be in the navigate_app catalog");
+        assert_eq!(gov.tool_type, "governance");
+        assert_eq!(gov.panel_type, "overlay");
+    }
 }

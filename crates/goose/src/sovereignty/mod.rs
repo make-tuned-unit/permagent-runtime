@@ -83,6 +83,50 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
         teaching: &[],
     };
 
+/// Self-knowledge descriptor for the **Governance** surface — the single,
+/// sovereign control surface that consolidates what were four scattered views
+/// into one legible place. Co-located with the sovereignty spine because the
+/// egress-audit "pull-the-cable" viewer is its headline panel; it also folds in
+/// the per-role model roster, the live spend/budget meter, and the pending
+/// approvals summary. Enforced locally on the user's own machine — not by any
+/// cloud admin.
+pub const GOVERNANCE_SURFACE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "governance",
+        display_name: "Governance",
+        category: crate::agents::self_knowledge::FeatureCategory::Surface,
+        what_it_does:
+            "One sovereign control surface — reachable from the sidebar — that consolidates four \
+             things you govern about the user's own machine into a single legible view: Models \
+             (the active model per role and the worker roster, with a link to change them), Spend \
+             (per-session and per-project token and dollar consumption drawn from the cost \
+             ledger, a running total, and an optional budget the user can set that gates through \
+             the Decision Inbox at the ceiling), Sovereignty (the on/off data-boundary toggle \
+             plus the append-only egress audit log — every cloud call that was allowed or \
+             blocked, when, and of what kind), and Approvals (a summary of pending \
+             Decision-Inbox items and the current tool-approval posture, linking through to the \
+             inbox itself)",
+        why_it_matters:
+            "This is where the user answers 'what is this costing me, what has left my machine, \
+             what am I running, and what needs my sign-off' — in one place, on their own terms. \
+             When they ask about spend, want a budget cap, worry about what data left the \
+             machine, or ask which model a role uses, bring them here. It is a control surface \
+             the user owns and enforces locally; it is not org administration and not a place \
+             other people manage",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        teaching: &[crate::agents::self_knowledge::TeachingStep {
+            title: "Open Governance",
+            body: "Show the user their single sovereign control surface — models, spend and \
+                   budget, the egress audit log, and pending approvals — and point out that \
+                   everything here is enforced locally on their machine, not by any cloud admin.",
+            open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                tab: "Governance",
+                section: None,
+            }),
+            confirm: None,
+        }],
+    };
+
 // ── Local vs cloud identity ─────────────────────────────────────────────────
 
 /// Where a model's inference physically runs — the load-bearing local-vs-cloud

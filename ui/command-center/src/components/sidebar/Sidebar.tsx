@@ -30,6 +30,10 @@ const INBOX_ICON = 'M22 12h-6l-2 3h-4l-2-3H2M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2
 // from the daemon event bus).
 const TRACE_ICON = 'M22 12h-4l-3 9L9 3l-3 9H2';
 
+// "Shield" glyph — opens the Governance overlay (the single sovereign control
+// surface: models, spend, egress audit, approvals).
+const GOVERNANCE_ICON = 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10zM9 12l2 2 4-4';
+
 function SidebarRow({
   icon, label, active, open, onClick, title,
 }: {
@@ -76,6 +80,7 @@ export function Sidebar() {
   const isSessionsOpen = activePanel === 'sessions';
   const isInboxOpen = activePanel === 'inbox';
   const isTraceOpen = activePanel === 'trace';
+  const isGovernanceOpen = activePanel === 'governance';
   // Any non-chat panel (settings, inbox, skills, sessions) is a full-screen overlay. It
   // must be dismissed when the user picks a workspace, or the overlay stays
   // stuck over the tab they just selected.
@@ -177,6 +182,16 @@ export function Sidebar() {
         active={isTraceOpen}
         open={open}
         onClick={() => setActivePanel(isTraceOpen ? 'chat' : 'trace')}
+      />
+
+      {/* Governance — the single sovereign control surface (models, spend,
+          egress audit, approvals). Human entry point to the overlay. */}
+      <SidebarRow
+        icon={GOVERNANCE_ICON}
+        label="Governance"
+        active={isGovernanceOpen}
+        open={open}
+        onClick={() => setActivePanel(isGovernanceOpen ? 'chat' : 'governance')}
       />
 
       {/* Settings */}
