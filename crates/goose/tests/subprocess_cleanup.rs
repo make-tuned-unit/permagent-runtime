@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 const HELPER_ENV: &str = "GOOSE_SUBPROCESS_PARENT_DEATH_HELPER";
 
 #[ctor::ctor]
-fn maybe_run_helper() {
+unsafe fn maybe_run_helper() {
     if std::env::var_os(HELPER_ENV).is_none() {
         return;
     }
