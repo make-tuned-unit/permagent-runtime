@@ -426,7 +426,7 @@ export function AutomateView() {
               </svg>
             </button>
             <button onClick={() => setShowModal(true)} style={{
-              padding: '6px 14px', borderRadius: radius.md, background: colors.cyan, color: '#000',
+              padding: '6px 14px', borderRadius: radius.md, background: colors.cyan, color: colors.textOnCyan,
               fontWeight: 600, fontSize: 12, border: 'none', cursor: 'pointer', fontFamily: font.body,
             }}>+ Create</button>
           </div>
@@ -474,7 +474,7 @@ export function AutomateView() {
             </div>
             <div style={{ marginTop: 16, display: 'flex', gap: 12, justifyContent: 'center' }}>
               <button onClick={() => setShowModal(true)} style={{
-                padding: '8px 20px', borderRadius: radius.md, background: colors.cyan, color: '#000',
+                padding: '8px 20px', borderRadius: radius.md, background: colors.cyan, color: colors.textOnCyan,
                 fontWeight: 600, fontSize: 13, border: 'none', cursor: 'pointer', fontFamily: font.body,
               }}>Schedule a task</button>
             </div>
@@ -1152,7 +1152,7 @@ label, onClick, primary, danger, muted, actionState, successLabel, loadingLabel,
   const isSuccess = phase === 'success';
   const isBusy = isLoading || isSuccess;
   const bg = isSuccess ? withAlpha(colors.success, 0.15) : isLoading ? colors.border : primary ? colors.cyan : danger ? withAlpha(colors.danger, 0.1) : colors.border;
-  const fg = isSuccess ? colors.success : isLoading ? colors.textDim : primary ? '#000' : danger ? colors.danger : colors.textMuted;
+  const fg = isSuccess ? colors.success : isLoading ? colors.textDim : primary ? colors.textOnCyan : danger ? colors.danger : colors.textMuted;
   const bdr = isSuccess ? withAlpha(colors.success, 0.3) : isLoading ? colors.border : primary ? 'transparent' : danger ? withAlpha(colors.danger, 0.2) : colors.border;
   const displayLabel = isSuccess ? `\u2713 ${successLabel || label}` : isLoading ? (loadingLabel || label) : label;
   return (
@@ -1302,7 +1302,7 @@ findings, actionInFlight, onAction, totalRecovered, allActioned, lifetime }: {
           </div>
         )}
         {totalPending > 0 && (
-          <button onClick={() => setPreviewGroup('__all__')} style={{ marginTop: 14, padding: '12px 32px', borderRadius: radius.md, background: colors.cyan, color: '#000', fontWeight: 700, fontSize: 14, border: 'none', cursor: 'pointer', fontFamily: font.body }}>
+          <button onClick={() => setPreviewGroup('__all__')} style={{ marginTop: 14, padding: '12px 32px', borderRadius: radius.md, background: colors.cyan, color: colors.textOnCyan, fontWeight: 700, fontSize: 14, border: 'none', cursor: 'pointer', fontFamily: font.body }}>
             Clean Up All — {formatBytes(totalPendingBytes)}
           </button>
         )}
@@ -1356,7 +1356,7 @@ findings, actionInFlight, onAction, totalRecovered, allActioned, lifetime }: {
                   <div style={{ fontSize: 12, color: colors.textDim, marginTop: 2 }}>{allDone ? `Cleaned — ${formatBytes(groupRecovered)}` : `${pending.length} items · ${formatBytes(pendingBytes)}`}</div>
                 </div>
                 {allDone ? <div style={{ padding: '8px 16px', borderRadius: radius.md, background: withAlpha(colors.success, 0.1), color: colors.success, fontSize: 12, fontWeight: 600 }}>Done</div> : (
-                  <button onClick={() => setPreviewGroup(groupName)} style={{ padding: '10px 22px', borderRadius: radius.md, background: colors.cyan, color: '#000', fontWeight: 700, fontSize: 13, border: 'none', cursor: 'pointer', fontFamily: font.body }}>Clean — {formatBytes(pendingBytes)}</button>
+                  <button onClick={() => setPreviewGroup(groupName)} style={{ padding: '10px 22px', borderRadius: radius.md, background: colors.cyan, color: colors.textOnCyan, fontWeight: 700, fontSize: 13, border: 'none', cursor: 'pointer', fontFamily: font.body }}>Clean — {formatBytes(pendingBytes)}</button>
                 )}
               </div>
               {isExpanded && (
@@ -1488,7 +1488,7 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
           {kindTabs.map(t => (
             <button key={t.id} onClick={() => setKind(t.id)} style={{
               flex: 1, padding: '6px 0', borderRadius: radius.sm, border: 'none', cursor: 'pointer', fontSize: 12, fontFamily: font.body,
-              background: kind === t.id ? colors.cyan : 'transparent', color: kind === t.id ? '#000' : colors.textMuted, fontWeight: kind === t.id ? 600 : 400,
+              background: kind === t.id ? colors.cyan : 'transparent', color: kind === t.id ? colors.textOnCyan : colors.textMuted, fontWeight: kind === t.id ? 600 : 400,
             }}>{t.label}</button>
           ))}
         </div>
@@ -1544,7 +1544,7 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           <button onClick={onClose} style={{ padding: '8px 16px', borderRadius: radius.sm, background: 'transparent', border: `1px solid ${colors.border}`, color: colors.textMuted, fontSize: 12, cursor: 'pointer', fontFamily: font.body }}>Cancel</button>
-          <button onClick={handleSave} disabled={saving} style={{ padding: '8px 20px', borderRadius: radius.sm, background: colors.cyan, color: '#000', fontWeight: 600, fontSize: 12, border: 'none', cursor: saving ? 'wait' : 'pointer', fontFamily: font.body, opacity: saving ? 0.6 : 1 }}>{saving ? 'Creating...' : 'Create Automation'}</button>
+          <button onClick={handleSave} disabled={saving} style={{ padding: '8px 20px', borderRadius: radius.sm, background: colors.cyan, color: colors.textOnCyan, fontWeight: 600, fontSize: 12, border: 'none', cursor: saving ? 'wait' : 'pointer', fontFamily: font.body, opacity: saving ? 0.6 : 1 }}>{saving ? 'Creating...' : 'Create Automation'}</button>
         </div>
       </div>
     </div>

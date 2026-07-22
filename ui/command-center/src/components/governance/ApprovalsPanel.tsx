@@ -80,7 +80,7 @@ export function ApprovalsPanel() {
             onClick={() => setOpen(true)}
             style={{
               marginTop: 16, height: 32, padding: '0 16px', borderRadius: 8,
-              background: colors.cyan, border: 'none', color: colors.textOnAccent,
+              background: colors.cyan, border: 'none', color: colors.textOnCyan,
               cursor: 'pointer', fontFamily: font.body, fontSize: 12, fontWeight: 600,
               alignSelf: 'flex-start',
             }}

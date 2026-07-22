@@ -103,8 +103,13 @@ export interface ThemeColors {
   userBubbleText: string;
   /** Inset surface for inputs */
   inputBg: string;
-  /** On-accent text (white on gradient/cyan buttons) */
+  /** On-accent text (white on the blue→violet gradient/ribbon buttons) */
   textOnAccent: string;
+  /** Text/iconography sitting on a FLAT cyan accent fill (solid `colors.cyan`
+   *  buttons, active pills). Cyan is bright in every theme, so on-cyan text must
+   *  be a fixed dark ink — white/`colors.bg` fails WCAG contrast (and inverts to
+   *  near-white on the silver theme). Never use textOnAccent on a flat-cyan fill. */
+  textOnCyan: string;
   /** Success semantic */
   success: string;
   /** Warning semantic */
@@ -132,6 +137,7 @@ const DARK_COLORS: ThemeColors = {
   userBubbleText: '#FFFFFF',
   inputBg: '#1E2433',
   textOnAccent: '#FFFFFF',
+  textOnCyan: '#04141B',
   success: '#34D399',
   warning: '#FBBF24',
   codeBg: 'rgba(0,0,0,0.30)',
@@ -176,6 +182,7 @@ const SILVER_COLORS: ThemeColors = {
   userBubbleText: '#1E2530', // Graphite (BLACK text)
   inputBg: '#EEF2F7',       // Chrome Mist (recessed)
   textOnAccent: '#FFFFFF',
+  textOnCyan: '#04141B',    // Deep ink — ~12:1 on #00BFEF (white would be ~1.9:1)
   success: '#059669',
   warning: '#D97706',
   codeBg: '#EEF2F7',          // Chrome Mist — 1.1:1 vs white (subtle tint)

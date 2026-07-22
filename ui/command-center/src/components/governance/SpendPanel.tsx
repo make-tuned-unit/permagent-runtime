@@ -115,7 +115,7 @@ export function SpendPanel() {
             disabled={saving}
             style={{
               height: 30, padding: '0 16px', borderRadius: 8,
-              background: colors.cyan, border: 'none', color: colors.textOnAccent,
+              background: colors.cyan, border: 'none', color: colors.textOnCyan,
               cursor: saving ? 'default' : 'pointer', fontFamily: font.body, fontSize: 12, fontWeight: 600,
             }}
           >

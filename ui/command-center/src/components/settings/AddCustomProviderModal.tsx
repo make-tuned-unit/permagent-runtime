@@ -303,7 +303,7 @@ export function AddCustomProviderModal({ onClose }: Props) {
               onClick={handleCreate}
               disabled={submitting}
               className="px-4 py-1.5 text-sm rounded transition disabled:opacity-50"
-              style={{ fontFamily: font.display, fontWeight: 600, backgroundColor: colors.cyan, color: colors.textOnAccent }}
+              style={{ fontFamily: font.display, fontWeight: 600, backgroundColor: colors.cyan, color: colors.textOnCyan }}
               onMouseEnter={e => { e.currentTarget.style.backgroundColor = `${colors.cyan}CC`; }}
               onMouseLeave={e => { e.currentTarget.style.backgroundColor = colors.cyan; }}
             >

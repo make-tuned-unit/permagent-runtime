@@ -65,7 +65,7 @@ export function NotificationHost() {
         {unread > 0 && (
           <span style={{
             position: 'absolute', top: -4, right: -4, minWidth: 15, height: 15,
-            borderRadius: radius.pill, background: colors.cyan, color: '#0A0E1A',
+            borderRadius: radius.pill, background: colors.cyan, color: colors.textOnCyan,
             fontFamily: font.mono, fontSize: 9, fontWeight: 700,
             display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px',
           }}>{unread > 9 ? '9+' : unread}</span>
