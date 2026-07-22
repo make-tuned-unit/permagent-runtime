@@ -3,6 +3,7 @@ import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { ProjectKanban } from './ProjectsView';
 import { ProjectOverview } from './ProjectOverview';
+import { ProjectDetails } from './ProjectDetails';
 import type { Project, ProjectLens } from './types';
 
 // ── Project Workspace ───────────────────────────────────────────────────────
@@ -56,9 +57,9 @@ export function ProjectWorkspace({ project, projects, onSwitchProject, onBack, o
       </div>
 
       {/* Active lens — both render the SAME selected project */}
-      {lens === 'overview'
-        ? <ProjectOverview project={project} onProjectUpdated={onProjectUpdated} />
-        : <ProjectKanban project={project} />}
+      {lens === 'overview' && <ProjectOverview project={project} onProjectUpdated={onProjectUpdated} />}
+      {lens === 'details' && <ProjectDetails project={project} onProjectUpdated={onProjectUpdated} />}
+      {lens === 'kanban' && <ProjectKanban project={project} />}
     </div>
   );
 }
@@ -139,6 +140,7 @@ function ViewToggle({ lens, onChange }: { lens: ProjectLens; onChange: (l: Proje
   const { colors } = useTheme();
   const tabs: { key: ProjectLens; label: string }[] = [
     { key: 'overview', label: 'Overview' },
+    { key: 'details', label: 'Details' },
     { key: 'kanban', label: 'Kanban' },
   ];
   return (
