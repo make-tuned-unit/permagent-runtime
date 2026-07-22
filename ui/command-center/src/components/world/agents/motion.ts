@@ -36,6 +36,9 @@ export interface MotionState {
   onArrive: (() => void) | null;
   /** Librarian: project XZ onto this radius (mezzanine ring lock). */
   ringLock: number | null;
+  /** Librarian: hard-pin Y to this height (the mezzanine floor). Enforced every
+   *  frame so the ring-locked agent can never drift off-path vertically (#105). */
+  ringLockY: number | null;
 }
 
 const WALK_SPEED = 3; // u/s — existing system speed
@@ -77,7 +80,13 @@ function surfaceYAt(x: number, z: number, currentY: number): number {
  *  high on the stairs/mezzanine can't step inward off the band and drop — then follows
  *  the surface height at the contained position. */
 function applyLevel(m: MotionState): void {
-  if (m.ringLock !== null) return; // Librarian: own ring projection + fixed Y
+  if (m.ringLock !== null) {
+    // Librarian: XZ ring projection lives in advanceMotion/nudgeAgent; here we
+    // enforce the vertical invariant — pin Y to the mezzanine floor every frame
+    // so no waypoint, nudge, or edge case can leave it off-path (#105).
+    if (m.ringLockY !== null) m.y = m.ringLockY;
+    return;
+  }
   const r = Math.sqrt(m.x * m.x + m.z * m.z);
   if (m.y >= STAIR_FLOOR_Y) {
     // up on the stairs/mezzanine — stay within the ring band (no stepping off into air)
@@ -119,6 +128,9 @@ export function ensureMotion(
       waitUntil: 0,
       onArrive: null,
       ringLock,
+      // A ring-locked agent (Librarian) is pinned to the height it spawns at —
+      // the mezzanine floor (home.y = MEZZ_Y). Everyone else follows the surface.
+      ringLockY: ringLock !== null ? home.y : null,
     };
     store.set(id, m);
   }
@@ -225,7 +237,9 @@ export function advanceMotion(dt: number): void {
     if (dist < ARRIVE_DIST) {
       m.x = wp.x;
       m.z = wp.z;
-      m.y = wp.y;
+      // A ring-locked agent stays on the mezzanine floor even if a waypoint
+      // carries a stray height (#105); everyone else snaps to the waypoint y.
+      m.y = m.ringLockY !== null ? m.ringLockY : wp.y;
       if (wp.facing !== undefined) m.targetHeading = wp.facing;
       m.queue.shift();
       if (wp.pauseMs) {
@@ -246,11 +260,10 @@ export function advanceMotion(dt: number): void {
     const step = Math.min(WALK_SPEED * dt, dist);
     m.x += (dx / dist) * step;
     m.z += (dz / dist) * step;
-    // Vertical: the ring-locked Librarian eases toward its waypoint y; everyone else's
-    // Y is owned by the walkable-surface follow (applyLevel, top of loop).
-    if (m.ringLock !== null) {
-      m.y += (wp.y - m.y) * Math.min(1, step / Math.max(dist, 0.001));
-    }
+    // Vertical: the ring-locked Librarian's Y is pinned to the mezzanine floor by
+    // applyLevel (top of loop) — it never eases toward a waypoint y, so a stray
+    // waypoint height can't lift it off-path (#105). Everyone else's Y is owned by
+    // the walkable-surface follow, also in applyLevel.
 
     // Mezzanine ring lock — never cut across the void.
     if (m.ringLock !== null) {
