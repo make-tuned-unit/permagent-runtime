@@ -223,7 +223,7 @@ jobs:
           echo "Bundle inputs verified."
 
       - name: Build, sign, and publish the bundle
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         env:
           # Updater signing (independent of Apple — needed for self-update).
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
