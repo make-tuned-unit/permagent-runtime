@@ -361,6 +361,72 @@ pub async fn record_execution(
     Ok(())
 }
 
+/// Record a skill execution by its known index id — the direct path used when the
+/// agent actually RUNS a saved skill via the `load_skill` tool (the on-disk
+/// `SKILL.md` carries the `permagent_id`, so no shape-hash match is needed).
+///
+/// This closes the gap where only the repetition-detection sweep
+/// ([`record_execution`], called post-hoc from the auto-skills tick) wrote to the
+/// history: loading and using a saved skill is itself a run, and must count.
+/// Idempotently no-ops if `skill_id` names a skill that no longer exists (e.g. it
+/// was deleted after export) so a stale on-disk folder can never error the tool.
+pub async fn record_execution_by_id(
+    pool: &Pool<Sqlite>,
+    skill_id: &str,
+    session_id: Option<&str>,
+) -> Result<(), String> {
+    // Guard against a stale permagent_id (deleted skill / another user's id).
+    let exists: Option<String> =
+        sqlx::query_scalar("SELECT id FROM skills WHERE id = ? AND user_id = 'default'")
+            .bind(skill_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    if exists.is_none() {
+        return Ok(());
+    }
+
+    let exec_id = Uuid::now_v7().to_string();
+    let input = serde_json::json!({ "source": "load_skill" }).to_string();
+
+    sqlx::query(
+        "INSERT INTO skill_executions (id, skill_id, user_id, session_id, status, input_json, completed_at)
+         VALUES (?, ?, 'default', ?, 'completed', ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+    )
+    .bind(&exec_id)
+    .bind(skill_id)
+    .bind(session_id)
+    .bind(&input)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Record a run for the on-disk skill folder at `skill_dir`, when it is a
+/// Permagent-managed skill (its `SKILL.md` carries a `permagent_id`). Reads the
+/// id from disk and delegates to [`record_execution_by_id`]. This is the seam the
+/// `load_skill` tool calls so that RUNNING a saved skill counts in the execution
+/// history, not just repetition-detected use. No-ops (and never errors) for
+/// builtin skills (empty path) and filesystem-only skills with no `permagent_id`.
+pub async fn record_loaded_skill_run(
+    pool: &Pool<Sqlite>,
+    skill_dir: &std::path::Path,
+    session_id: Option<&str>,
+) -> Result<(), String> {
+    if skill_dir.as_os_str().is_empty() {
+        return Ok(());
+    }
+    let Some(permagent_id) = crate::skill_md::read_skill_folder(skill_dir)
+        .ok()
+        .and_then(|parsed| parsed.meta.permagent_id())
+    else {
+        return Ok(()); // Not a Permagent-managed skill — nothing to record.
+    };
+    record_execution_by_id(pool, &permagent_id, session_id).await
+}
+
 /// Update a skill's editable fields (name and/or description). A `None` field is
 /// left unchanged; `Some` overwrites it. Returns false when no skill matched (an
 /// unknown id or another user's skill) so callers can surface the failure rather
@@ -1204,6 +1270,87 @@ mod tests {
         assert_eq!(execs[0].status, "completed");
         assert!(execs[0].completed_at.is_some());
         assert!(!execs[0].started_at.is_empty());
+    }
+
+    #[tokio::test]
+    async fn record_execution_by_id_noops_for_unknown_skill() {
+        let pool = test_pool().await;
+        // A stale / unknown id must NOT insert a row (and must not error) — a
+        // deleted skill's on-disk folder can outlive its index row.
+        record_execution_by_id(&pool, "does-not-exist", None)
+            .await
+            .unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM skill_executions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "unknown skill id must record nothing");
+    }
+
+    #[tokio::test]
+    async fn loading_a_saved_skill_records_a_run() {
+        // Isolate the skills dir so create_skill's on-disk export lands in a tmp
+        // root, and the exported SKILL.md carries the permagent_id we resolve.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().display().to_string();
+        let _env = env_lock::lock_env([
+            ("HOME", Some(root.as_str())),
+            ("PERMAGENT_PATH_ROOT", Some(root.as_str())),
+        ]);
+        let pool = test_pool().await;
+
+        let created = create_skill(
+            &pool,
+            CreateSkillParams {
+                name: "Loadable".to_string(),
+                description: Some("A saved skill the agent can load.".to_string()),
+                tool_used: "gmail__search".to_string(),
+                argument_shape_hash: "shape-load".to_string(),
+                definition_json: serde_json::json!({}),
+                source_task_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        // The on-disk folder the load_skill tool would read.
+        let skill_path: String = sqlx::query_scalar("SELECT skill_path FROM skills WHERE id = ?")
+            .bind(&created.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let dir = std::path::PathBuf::from(skill_path);
+
+        // No runs before the skill is loaded.
+        assert!(list_skill_executions(&pool, &created.id)
+            .await
+            .unwrap()
+            .is_empty());
+
+        // Loading the saved skill (as the load_skill tool does) records a run.
+        record_loaded_skill_run(&pool, &dir, Some("sess-1"))
+            .await
+            .unwrap();
+
+        let execs = list_skill_executions(&pool, &created.id).await.unwrap();
+        assert_eq!(execs.len(), 1, "loading a saved skill must count as a run");
+        assert_eq!(execs[0].status, "completed");
+
+        // A filesystem-only skill (no permagent_id) is a silent no-op.
+        let plain = tmp.path().join("plain-skill");
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::write(
+            plain.join("SKILL.md"),
+            "---\nname: plain-skill\ndescription: A hand-authored skill.\n---\nBody.\n",
+        )
+        .unwrap();
+        record_loaded_skill_run(&pool, &plain, None).await.unwrap();
+        // Still exactly one run — the un-managed skill recorded nothing.
+        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM skill_executions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(total, 1, "a skill with no permagent_id records nothing");
     }
 
     // ── On-disk SKILL.md source-of-truth ──

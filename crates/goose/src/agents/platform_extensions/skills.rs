@@ -199,6 +199,9 @@ pub fn list_installed_skills(working_dir: Option<&Path>) -> Vec<Source> {
 pub struct SkillsClient {
     info: InitializeResult,
     working_dir: PathBuf,
+    /// Handle to the shared spectral pool, so a `load_skill` run can be recorded
+    /// to the skill-execution history (see `record_skill_run`).
+    session_manager: std::sync::Arc<crate::session::SessionManager>,
 }
 
 impl SkillsClient {
@@ -208,6 +211,7 @@ impl SkillsClient {
             .as_ref()
             .map(|s| s.working_dir.clone())
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let session_manager = context.session_manager.clone();
 
         let mut instructions = String::new();
         if context.session.is_some() {
@@ -232,7 +236,49 @@ impl SkillsClient {
             .with_server_info(Implementation::new(EXTENSION_NAME, "1.0.0").with_title("Skills"))
             .with_instructions(instructions);
 
-        Ok(Self { info, working_dir })
+        Ok(Self {
+            info,
+            working_dir,
+            session_manager,
+        })
+    }
+
+    /// Record a `load_skill` run against the skill-execution history when the
+    /// loaded skill is a Permagent-managed one (its on-disk `SKILL.md` carries a
+    /// `permagent_id`). Running a saved skill IS a run, so it must count toward
+    /// the usage history the Skills Library shows — previously only the
+    /// repetition-detection sweep recorded runs, so skills invoked directly via
+    /// `load_skill` never showed up. Best-effort: a filesystem-only skill (no
+    /// `permagent_id`) or any DB error is a silent no-op and never fails the tool.
+    async fn record_skill_run(&self, skill: &Source, session_id: &str) {
+        // Cheap filesystem peek FIRST: only Permagent-managed skills (on-disk
+        // SKILL.md carrying a permagent_id) have execution history to record.
+        // Resolving the id here avoids opening the DB pool for builtins and
+        // hand-authored skills (the common case).
+        if skill.path.as_os_str().is_empty()
+            || crate::skill_md::read_skill_folder(&skill.path)
+                .ok()
+                .and_then(|parsed| parsed.meta.permagent_id())
+                .is_none()
+        {
+            return;
+        }
+
+        let session = if session_id.is_empty() {
+            None
+        } else {
+            Some(session_id)
+        };
+        match self.session_manager.pool_clone().await {
+            Ok(pool) => {
+                if let Err(e) =
+                    crate::skills::record_loaded_skill_run(&pool, &skill.path, session).await
+                {
+                    warn!("failed to record load_skill run: {e}");
+                }
+            }
+            Err(e) => warn!("skill-run history unavailable (no db pool): {e}"),
+        }
     }
 
     /// The full, static tool inventory. Extracted from `list_tools` so the
@@ -282,7 +328,7 @@ impl McpClientTrait for SkillsClient {
 
     async fn call_tool(
         &self,
-        _ctx: &ToolCallContext,
+        ctx: &ToolCallContext,
         name: &str,
         arguments: Option<JsonObject>,
         _cancellation_token: CancellationToken,
@@ -334,6 +380,13 @@ impl McpClientTrait for SkillsClient {
             }
 
             output.push_str("\n---\nThis knowledge is now available in your context.");
+
+            // Loading a saved skill to follow it IS a run — record it to the
+            // skill-execution history so the Skills Library usage count reflects
+            // real use, not just repetition-detected use. Best-effort no-op for
+            // filesystem-only / builtin skills.
+            self.record_skill_run(skill, &ctx.session_id).await;
+
             return Ok(CallToolResult::success(vec![Content::text(output)]));
         }
 
