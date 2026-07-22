@@ -1328,9 +1328,10 @@ mod tests {
             .is_empty());
 
         // Loading the saved skill (as the load_skill tool does) records a run.
-        record_loaded_skill_run(&pool, &dir, Some("sess-1"))
-            .await
-            .unwrap();
+        // session_id is left None here: it carries a FK to `sessions`, and in a
+        // live tool call it is the caller's real session id (which exists); the
+        // history-recording behavior under test is independent of that linkage.
+        record_loaded_skill_run(&pool, &dir, None).await.unwrap();
 
         let execs = list_skill_executions(&pool, &created.id).await.unwrap();
         assert_eq!(execs.len(), 1, "loading a saved skill must count as a run");
