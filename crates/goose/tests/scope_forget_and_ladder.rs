@@ -19,7 +19,7 @@
 
 use std::sync::Arc;
 
-use permagent::brain_handle::SafeBrain;
+use permagent::brain_handle::{MemoryScope, SafeBrain};
 use permagent::config::paths::Paths;
 use serial_test::serial;
 use spectral::core::entity_id::entity_id;
@@ -249,6 +249,91 @@ async fn forget_scope_on_empty_wing_is_a_noop() {
             .expect("get keep-1")
             .is_some(),
         "unrelated wing untouched by empty sweep"
+    );
+
+    std::env::remove_var("PERMAGENT_PATH_ROOT");
+}
+
+#[tokio::test]
+#[serial]
+async fn visibility_ladder_is_settable_and_filtered() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("PERMAGENT_PATH_ROOT", temp.path());
+
+    let brain = tokio::task::spawn_blocking(build_brain)
+        .await
+        .expect("build task");
+    let safe = SafeBrain::from_arc(brain);
+
+    // Write one memory at each ladder level via the settable path.
+    for (key, scope, expected) in [
+        ("vis-private", MemoryScope::Private, "private"),
+        ("vis-team", MemoryScope::Team, "team"),
+        ("vis-org", MemoryScope::Org, "org"),
+        ("vis-public", MemoryScope::Public, "public"),
+    ] {
+        safe.remember_scoped(
+            key,
+            &format!("Distinctive ladder content for the {expected} level."),
+            scope,
+            RememberOpts {
+                source: Some("test".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_or_else(|e| panic!("remember_scoped {key}: {e}"));
+
+        // Deterministic proof the chosen level was persisted.
+        let mem = safe
+            .get_memory_by_key(key)
+            .await
+            .unwrap_or_else(|e| panic!("get {key}: {e}"))
+            .unwrap_or_else(|| panic!("{key} should exist"));
+        assert_eq!(
+            mem.visibility, expected,
+            "{key} persisted at the chosen visibility"
+        );
+    }
+
+    // Mapping round-trips losslessly.
+    for scope in [
+        MemoryScope::Private,
+        MemoryScope::Team,
+        MemoryScope::Org,
+        MemoryScope::Public,
+    ] {
+        assert_eq!(MemoryScope::from_visibility(scope.to_visibility()), scope);
+    }
+
+    // Real read filter: recall clearance is a publicness floor
+    // (`content_vis >= clearance`). A Private memory surfaces at Private
+    // clearance but is filtered out at Team clearance.
+    let q = "Distinctive ladder content for the private level.";
+    let at_private: Vec<String> = safe
+        .recall(q, Visibility::Private)
+        .await
+        .expect("recall private")
+        .memory_hits
+        .iter()
+        .map(|h| h.key.clone())
+        .collect();
+    assert!(
+        at_private.iter().any(|k| k == "vis-private"),
+        "Private memory is visible at Private clearance (floor); got {at_private:?}"
+    );
+
+    let at_team: Vec<String> = safe
+        .recall(q, Visibility::Team)
+        .await
+        .expect("recall team")
+        .memory_hits
+        .iter()
+        .map(|h| h.key.clone())
+        .collect();
+    assert!(
+        !at_team.iter().any(|k| k == "vis-private"),
+        "Private memory is filtered out at Team clearance; got {at_team:?}"
     );
 
     std::env::remove_var("PERMAGENT_PATH_ROOT");

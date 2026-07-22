@@ -91,6 +91,116 @@ pub enum OntologyEntityResolution {
     },
 }
 
+/// Permagent's name for Spectral's visibility ladder — the four-level total
+/// order `Private < Team < Org < Public` (`spectral_core::visibility::Visibility`).
+///
+/// This is a **1:1 typed alias** over the shipped Spectral enum, not a new
+/// level: it exists so Permagent (and the product surface / website) can name
+/// the ladder in Permagent's own vocabulary without leaking the Spectral type,
+/// and so the mapping is documented in exactly one place. Round-trips losslessly
+/// via [`to_visibility`](MemoryScope::to_visibility) /
+/// [`from_visibility`](MemoryScope::from_visibility).
+///
+/// ## Read semantics (what the ladder actually does)
+///
+/// Recall takes a *clearance floor*: a memory at visibility `V` surfaces in a
+/// recall with clearance `C` iff `V >= C` (`Visibility::allows`,
+/// `spectral-core/visibility.rs`). So a recall at `Private` clearance sees
+/// **everything**; a recall at `Team` clearance hides `Private` memories; a
+/// recall at `Public` clearance sees only `Public`. This is the honest,
+/// shipped read filter — **not** an export boundary and **not** a
+/// confidentiality barrier against a hostile local process (see the federation
+/// security spec, "the overclaim to avoid").
+///
+/// ## The default is unchanged
+///
+/// [`MemoryScope::default()`] is `Private`, matching
+/// [`Visibility::default()`]. Nothing in Permagent flips the global default —
+/// non-`Private` levels are *expressible* (via
+/// [`SafeBrain::remember_scoped`]), never *imposed*.
+///
+/// ## Not to be confused with a *wing* (the offboarding axis)
+///
+/// A `MemoryScope`/`Visibility` is a **read filter** (design-doc Axis B). A
+/// **wing** — the `wing` string on a memory (`RememberOpts.wing`), what
+/// [`SafeBrain::forget_scope`] sweeps — is a separate topical/scope axis
+/// (Axis A-adjacent). A permagent "Project" or "Company" scope maps onto a
+/// **wing** (a `String` slug), *not* onto a visibility level; do not invent a
+/// fake ladder rung for it. The two axes are orthogonal and share no value:
+/// a memory can be `Team`-visible yet in the `"acme"` wing, or `Private` and
+/// wingless. (This is the design doc's Q3 terminology-collision hazard, called
+/// out here so callers keep the axes distinct.)
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryScope {
+    /// Most restrictive. The default; local, personal memory.
+    #[default]
+    Private,
+    /// Shared with a team clearance and broader.
+    Team,
+    /// Shared with an org clearance and broader.
+    Org,
+    /// Least restrictive; visible at every clearance.
+    Public,
+}
+
+impl MemoryScope {
+    /// Map to the shipped Spectral visibility level (lossless).
+    pub fn to_visibility(self) -> spectral::Visibility {
+        match self {
+            MemoryScope::Private => spectral::Visibility::Private,
+            MemoryScope::Team => spectral::Visibility::Team,
+            MemoryScope::Org => spectral::Visibility::Org,
+            MemoryScope::Public => spectral::Visibility::Public,
+        }
+    }
+
+    /// Map back from a Spectral visibility level (lossless).
+    pub fn from_visibility(v: spectral::Visibility) -> Self {
+        match v {
+            spectral::Visibility::Private => MemoryScope::Private,
+            spectral::Visibility::Team => MemoryScope::Team,
+            spectral::Visibility::Org => MemoryScope::Org,
+            spectral::Visibility::Public => MemoryScope::Public,
+        }
+    }
+
+    /// Canonical lowercase slug (matches the persisted `memories.visibility`
+    /// string and the serde representation).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MemoryScope::Private => "private",
+            MemoryScope::Team => "team",
+            MemoryScope::Org => "org",
+            MemoryScope::Public => "public",
+        }
+    }
+}
+
+impl From<MemoryScope> for spectral::Visibility {
+    fn from(s: MemoryScope) -> Self {
+        s.to_visibility()
+    }
+}
+
+impl From<spectral::Visibility> for MemoryScope {
+    fn from(v: spectral::Visibility) -> Self {
+        MemoryScope::from_visibility(v)
+    }
+}
+
 /// Aggregate outcome of a scope sweep ([`SafeBrain::forget_scope`] /
 /// [`SafeBrain::forget_keys`]): a per-key roll-up of the verified
 /// [`ForgetReport`](spectral::graph::brain::ForgetReport)s produced by hard-
@@ -930,6 +1040,36 @@ impl SafeBrain {
         .await
         .map_err(|e| anyhow::anyhow!("brain task panicked: recall_with_provenance: {e}"))?
         .map_err(Into::into)
+    }
+
+    /// Write a memory at an explicitly chosen [`MemoryScope`] (visibility level).
+    ///
+    /// This is the settable entry point for Spectral's shipped visibility ladder
+    /// (`Private < Team < Org < Public`). It is thin sugar over
+    /// [`remember_with`](Self::remember_with): it stamps `opts.visibility` from
+    /// `scope` (overriding whatever the passed `opts` carried) and forwards the
+    /// rest of `opts` unchanged — so callers can still set `source`, `wing`,
+    /// `confidence`, etc. alongside the level.
+    ///
+    /// **Default is unchanged.** Existing write paths that never call this keep
+    /// their `Visibility::Private` writes. Nothing here flips a global default;
+    /// it only makes a non-`Private` level *expressible* at the call site.
+    ///
+    /// The persisted `memories.visibility` string is what the read filter keys
+    /// off: a memory written `Team` is hidden from a `Private`-clearance recall
+    /// context's *floor* — see [`MemoryScope`] for the exact `allows` semantics.
+    pub async fn remember_scoped(
+        &self,
+        key: &str,
+        content: &str,
+        scope: MemoryScope,
+        opts: spectral::RememberOpts,
+    ) -> anyhow::Result<spectral::RememberResult> {
+        let opts = spectral::RememberOpts {
+            visibility: scope.to_visibility(),
+            ..opts
+        };
+        self.remember_with(key, content, opts).await
     }
 
     /// Hard-delete an explicit set of memory keys, aggregating each verified
