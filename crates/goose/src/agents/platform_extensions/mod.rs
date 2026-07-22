@@ -6,6 +6,7 @@ pub mod browser;
 pub mod chatrecall;
 #[cfg(feature = "code-mode")]
 pub mod code_execution;
+pub mod desktop;
 pub mod developer;
 pub mod ext_manager;
 pub mod file_to_project;
@@ -368,6 +369,23 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                         .unwrap(),
                     )
                 },
+            },
+        );
+
+        map.insert(
+            desktop::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: desktop::EXTENSION_NAME,
+                display_name: "Desktop Control",
+                description:
+                    "Ground and act on native desktop apps through the macOS accessibility tree — check permission and flag state (desktop_status), list running apps (desktop_apps), snapshot an app's real UI elements as stable refs (desktop_tree), and press a control (desktop_click) or replace an editable field's text (desktop_type) by element ref — local-first grounding in real UI elements, never cloud screenshots",
+                default_enabled: false,
+                unprefixed_tools: true,
+                hidden: false,
+                why_it_matters:
+                    "Act on the user's other desktop apps by real UI element, entirely on-device — the local-first alternative to cloud screenshot computer use. Double-gated by design: default-off behind DESKTOP_CONTROL_ENABLED plus the macOS Accessibility permission (desktop_status explains both), every action re-checks the flag, and clicking and typing are approval-gated like shell.",
+                teaching: &[],
+                client_factory: |ctx| Box::new(desktop::DesktopClient::new(ctx).unwrap()),
             },
         );
 
