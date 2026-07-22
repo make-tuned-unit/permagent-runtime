@@ -54,6 +54,19 @@ export function isVoiceWedged(opts: {
   return msSinceActivity > thresholdMs;
 }
 
+/**
+ * Pure predicate: is the voice loop in a state the user can barge in on?
+ *
+ * True while a reply is being produced or spoken (`processing`/`playing`) — the
+ * states where "stop and let me talk" (#398) is meaningful. In `ready` a Space
+ * press means start recording, not interrupt; in `idle`/`connecting`/`error`
+ * there's nothing to stop. Extracted so the key/click routing is unit-testable
+ * without a live audio session.
+ */
+export function isInterruptibleState(state: VoiceState): boolean {
+  return state === 'processing' || state === 'playing';
+}
+
 export interface VoiceEvent {
   type: 'transcript' | 'reply_text' | 'reply_audio' | 'error' | 'state_change';
   text?: string;
@@ -407,6 +420,21 @@ export function useVoice(options: UseVoiceOptions = {}) {
     }
   }, [connectSocket, setStateAndEmit]);
 
+  // Barge-in (#398): stop Henry mid-response so the user can talk. Halts TTS
+  // playback immediately (silence is instant — playback is torn down before the
+  // socket work) and cancels the in-flight daemon turn by reconnecting a FRESH
+  // socket: closing the old one sets the daemon handler's cancellation flag, so
+  // it stops synthesizing further sentences instead of streaming audio the user
+  // no longer wants. The reconnect leaves voice ACTIVE (mic stays acquired), so
+  // it returns to 'ready' — the mic is listening again for the next turn.
+  //
+  // No-op unless a reply is actually in flight: in 'ready' a Space press means
+  // start recording, and there is nothing to interrupt in idle/connecting/error.
+  const interrupt = useCallback(() => {
+    if (!isInterruptibleState(stateRef.current)) return;
+    forceRecover('user barge-in — interrupt reply');
+  }, [forceRecover]);
+
   // Stuck-state watchdog: a daemon that stops emitting terminal events (a hung
   // LLM/TTS stream sends no reply_end/error yet leaves the socket open) would
   // otherwise pin the UI in 'playing'/'processing' forever — locking the mic.
@@ -629,6 +657,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     deactivate,
     startRecording,
     stopRecording,
+    interrupt,
     getAnalyser,
   };
 }

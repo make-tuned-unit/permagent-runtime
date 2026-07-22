@@ -6,7 +6,7 @@
  * State: idle → click to activate → ready → hold to talk → recording → processing → playing → ready.
  */
 import { useEffect, useRef, useCallback } from 'react';
-import { useVoice, VoiceState } from '../../hooks/useVoice';
+import { useVoice, VoiceState, isInterruptibleState } from '../../hooks/useVoice';
 import { useCommandCenter } from '../../lib/store';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/useTheme';
@@ -55,6 +55,7 @@ export function VoiceButton() {
     deactivate,
     startRecording,
     stopRecording,
+    interrupt,
     getAnalyser,
   } = useVoice({ sessionId: chatSessionId ?? undefined });
 
@@ -71,9 +72,15 @@ export function VoiceButton() {
       if (isRecordingRef.current) return; // already recording
 
       const s = stateRef.current;
-      // Only trigger when socket is connected and ready — NOT during
-      // processing/playing (prevents overlapping exchanges that contend
-      // on the TTS mutex). First activation requires clicking the mic button.
+      // Barge-in (#398): Space while Henry is thinking/speaking STOPS him and
+      // returns the mic to listening, instead of doing nothing.
+      if (isInterruptibleState(s)) {
+        e.preventDefault();
+        interrupt();
+        return;
+      }
+      // Push-to-talk: only start recording from a connected, ready socket.
+      // First activation requires clicking the mic button.
       if (s !== 'ready') return;
 
       e.preventDefault(); // prevent page scroll
@@ -96,17 +103,20 @@ export function VoiceButton() {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [activate, startRecording, stopRecording]);
+  }, [activate, startRecording, stopRecording, interrupt]);
 
   // --- Button handlers ---
   const handleClick = useCallback(() => {
     if (state === 'idle' || state === 'error') {
       activate();
+    } else if (isInterruptibleState(state)) {
+      // Barge-in (#398): the mic button doubles as a Stop button while Henry is
+      // thinking/speaking — click halts the reply and returns to listening.
+      interrupt();
     } else if (state === 'ready') {
       deactivate();
     }
-    // During processing/playing: click does nothing (wait for reply to finish)
-  }, [state, activate, deactivate]);
+  }, [state, activate, deactivate, interrupt]);
 
   const handlePointerDown = useCallback(() => {
     if (state === 'ready') {
@@ -146,10 +156,10 @@ export function VoiceButton() {
         title={
           state === 'idle' ? 'Enable voice (spacebar to talk)'
           : state === 'ready' ? 'Hold to talk (spacebar)'
-          : state === 'processing' || state === 'playing' ? 'Busy — wait for reply'
+          : isInterruptibleState(state) ? 'Stop Henry — click or press space to interrupt'
           : STATE_LABELS[state]
         }
-        className={`transition ${isBusy ? 'opacity-50 cursor-wait' : ''}`}
+        className={`transition ${isBusy ? 'cursor-pointer' : ''}`}
         style={{ width: 28, height: 28, borderRadius: 6, flexShrink: 0, display: 'grid', placeItems: 'center', ...btnColors }}
         onMouseEnter={e => { if (!isActive) e.currentTarget.style.color = colors.text; }}
         onMouseLeave={e => { if (!isActive) e.currentTarget.style.color = colors.textMuted; }}
