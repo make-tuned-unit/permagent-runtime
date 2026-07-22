@@ -248,6 +248,26 @@ impl AppState {
                     }
                 }
 
+                // #92 — one-time backfill of `event_at` for imported memories,
+                // now that Spectral has created/migrated its schema. Additive
+                // column, idempotent, non-fatal: it lets the Brain timeline
+                // order by original event time (COALESCE(event_at, created_at))
+                // instead of import time. Mirrors the people_bridge backfill.
+                match crate::event_at_backfill::backfill_event_at(&brain_dir.join("memory.db")) {
+                    Ok(stats) => tracing::info!(
+                        target: "permagentd::brain",
+                        column_added = stats.column_added,
+                        rows_examined = stats.rows_examined,
+                        rows_backfilled = stats.rows_backfilled,
+                        "event_at backfill complete"
+                    ),
+                    Err(e) => tracing::warn!(
+                        target: "permagentd::brain",
+                        error = %e,
+                        "event_at backfill failed (non-fatal)"
+                    ),
+                }
+
                 Some(permagent::brain_handle::SafeBrain::new(raw_brain))
             })
             .await
