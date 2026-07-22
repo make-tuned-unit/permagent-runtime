@@ -1,6 +1,7 @@
 import { FiPlus, FiX, FiGlobe } from 'react-icons/fi';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { CycleTabsButton } from '../build/CycleTabsButton';
 
 export interface BrowserTab {
   id: string;
@@ -17,6 +18,7 @@ interface BrowserTabsProps {
   onSelectTab: (tabId: string) => void;
   onCloseTab: (tabId: string, e?: React.MouseEvent) => void;
   onNewTab: () => void;
+  onCycleTab: () => void;
 }
 
 export function BrowserTabs({
@@ -26,6 +28,7 @@ export function BrowserTabs({
   onSelectTab,
   onCloseTab,
   onNewTab,
+  onCycleTab,
 }: BrowserTabsProps) {
   const { colors } = useTheme();
   return (
@@ -68,6 +71,7 @@ export function BrowserTabs({
           );
         })}
       </div>
+      <CycleTabsButton pane="browser" onCycle={onCycleTab} />
       <button
         onClick={onNewTab}
         className="px-2.5 py-1.5 transition-colors"
