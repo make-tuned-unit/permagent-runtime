@@ -178,4 +178,4 @@ export const PERSONAL_ID = '00000000-0000-0000-0000-000000000001';
 export const CANCELLABLE_STATES = ['triage', 'ready', 'in_progress', 'review', 'failed'];
 
 /** Which Projects-tab lens is showing for the selected project. */
-export type ProjectLens = 'overview' | 'kanban';
+export type ProjectLens = 'overview' | 'details' | 'kanban';

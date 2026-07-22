@@ -351,9 +351,10 @@ function RootPathRow({ project }: { project: Project }) {
  * existing PATCH /api/projects/:id; custom links merge into the shared
  * metadata bag without touching foreign keys (see workspaceMeta.ts).
  */
-function LinksPanel({ project, onProjectUpdated }: {
+export function LinksPanel({ project, onProjectUpdated, title = 'Links' }: {
   project: Project;
   onProjectUpdated?: () => void;
+  title?: string;
 }) {
   const { colors } = useTheme();
   const navigate = useBrowserNavigate();
@@ -399,7 +400,7 @@ function LinksPanel({ project, onProjectUpdated }: {
 
   if (editing) {
     return (
-      <Panel title="Links">
+      <Panel title={title}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <label style={fieldLabel(colors)}>
             Website
@@ -444,7 +445,7 @@ function LinksPanel({ project, onProjectUpdated }: {
 
   return (
     <Panel
-      title="Links"
+      title={title}
       action={<button onClick={startEditing} style={panelActionBtn(colors)}>Edit</button>}
     >
       {links.length === 0 ? (
