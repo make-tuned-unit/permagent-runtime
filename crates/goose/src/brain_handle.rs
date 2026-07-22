@@ -91,6 +91,170 @@ pub enum OntologyEntityResolution {
     },
 }
 
+/// Permagent's name for Spectral's visibility ladder — the four-level total
+/// order `Private < Team < Org < Public` (`spectral_core::visibility::Visibility`).
+///
+/// This is a **1:1 typed alias** over the shipped Spectral enum, not a new
+/// level: it exists so Permagent (and the product surface / website) can name
+/// the ladder in Permagent's own vocabulary without leaking the Spectral type,
+/// and so the mapping is documented in exactly one place. Round-trips losslessly
+/// via [`to_visibility`](MemoryScope::to_visibility) /
+/// [`from_visibility`](MemoryScope::from_visibility).
+///
+/// ## Read semantics (what the ladder actually does)
+///
+/// Recall takes a *clearance floor*: a memory at visibility `V` surfaces in a
+/// recall with clearance `C` iff `V >= C` (`Visibility::allows`,
+/// `spectral-core/visibility.rs`). So a recall at `Private` clearance sees
+/// **everything**; a recall at `Team` clearance hides `Private` memories; a
+/// recall at `Public` clearance sees only `Public`. This is the honest,
+/// shipped read filter — **not** an export boundary and **not** a
+/// confidentiality barrier against a hostile local process (see the federation
+/// security spec, "the overclaim to avoid").
+///
+/// ## The default is unchanged
+///
+/// [`MemoryScope::default()`] is `Private`, matching
+/// [`Visibility::default()`]. Nothing in Permagent flips the global default —
+/// non-`Private` levels are *expressible* (via
+/// [`SafeBrain::remember_scoped`]), never *imposed*.
+///
+/// ## Not to be confused with a *wing* (the offboarding axis)
+///
+/// A `MemoryScope`/`Visibility` is a **read filter** (design-doc Axis B). A
+/// **wing** — the `wing` string on a memory (`RememberOpts.wing`), what
+/// [`SafeBrain::forget_scope`] sweeps — is a separate topical/scope axis
+/// (Axis A-adjacent). A permagent "Project" or "Company" scope maps onto a
+/// **wing** (a `String` slug), *not* onto a visibility level; do not invent a
+/// fake ladder rung for it. The two axes are orthogonal and share no value:
+/// a memory can be `Team`-visible yet in the `"acme"` wing, or `Private` and
+/// wingless. (This is the design doc's Q3 terminology-collision hazard, called
+/// out here so callers keep the axes distinct.)
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryScope {
+    /// Most restrictive. The default; local, personal memory.
+    #[default]
+    Private,
+    /// Shared with a team clearance and broader.
+    Team,
+    /// Shared with an org clearance and broader.
+    Org,
+    /// Least restrictive; visible at every clearance.
+    Public,
+}
+
+impl MemoryScope {
+    /// Map to the shipped Spectral visibility level (lossless).
+    pub fn to_visibility(self) -> spectral::Visibility {
+        match self {
+            MemoryScope::Private => spectral::Visibility::Private,
+            MemoryScope::Team => spectral::Visibility::Team,
+            MemoryScope::Org => spectral::Visibility::Org,
+            MemoryScope::Public => spectral::Visibility::Public,
+        }
+    }
+
+    /// Map back from a Spectral visibility level (lossless).
+    pub fn from_visibility(v: spectral::Visibility) -> Self {
+        match v {
+            spectral::Visibility::Private => MemoryScope::Private,
+            spectral::Visibility::Team => MemoryScope::Team,
+            spectral::Visibility::Org => MemoryScope::Org,
+            spectral::Visibility::Public => MemoryScope::Public,
+        }
+    }
+
+    /// Canonical lowercase slug (matches the persisted `memories.visibility`
+    /// string and the serde representation).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MemoryScope::Private => "private",
+            MemoryScope::Team => "team",
+            MemoryScope::Org => "org",
+            MemoryScope::Public => "public",
+        }
+    }
+}
+
+impl From<MemoryScope> for spectral::Visibility {
+    fn from(s: MemoryScope) -> Self {
+        s.to_visibility()
+    }
+}
+
+impl From<spectral::Visibility> for MemoryScope {
+    fn from(v: spectral::Visibility) -> Self {
+        MemoryScope::from_visibility(v)
+    }
+}
+
+/// Aggregate outcome of a scope sweep ([`SafeBrain::forget_scope`] /
+/// [`SafeBrain::forget_keys`]): a per-key roll-up of the verified
+/// [`ForgetReport`](spectral::graph::brain::ForgetReport)s produced by hard-
+/// deleting every memory in a scope.
+///
+/// This is the audit substrate for design-doc Step 4 ("local scope-forget"):
+/// it records how many memories were swept, how many were *verified* gone
+/// (recall + recognition both clear), and — critically — how many associated
+/// **graph triples** were removed.
+///
+/// ### Graph-triple residual (Spectral-gated — see `graph_triples_deleted`)
+///
+/// `graph_triples_deleted` is **always 0 at Spectral pin `fb1038db`**: Spectral
+/// exposes no triple/entity delete API and its `triple` rows carry no scope
+/// key, so company-derived *graph* facts survive the memory sweep. This is the
+/// design doc's **Q2** gap and is flagged, not silently dropped. See
+/// `docs/design/sovereign-offboarding-phase1-notes.md` for the exact missing
+/// Spectral surface. Until it lands, a scope sweep is honestly described as
+/// "memories hard-deleted and verified; graph triples pending Spectral API".
+#[derive(Debug, Clone, Default)]
+pub struct ScopeForgetReport {
+    /// The wing (scope) that was swept, if this came from [`SafeBrain::forget_scope`].
+    pub wing: Option<String>,
+    /// Number of memory keys the sweep attempted to forget.
+    pub keys_swept: usize,
+    /// Of those, how many actually existed in the store (`store.existed`).
+    pub existed: usize,
+    /// Of those, how many are *verified* gone — every substrate deleted and
+    /// both the recall and recognition probes clear
+    /// ([`ForgetReport::fully_forgotten`](spectral::graph::brain::ForgetReport::fully_forgotten)).
+    pub fully_forgotten: usize,
+    /// Graph triples deleted by the sweep. **Always 0 at pin `fb1038db`** — the
+    /// Spectral-gated Q2 residual (no triple-delete API). Non-zero only once
+    /// Spectral ships a scoped triple delete.
+    pub graph_triples_deleted: usize,
+    /// The forgotten keys, in sweep order (for the audit receipt).
+    pub forgotten_keys: Vec<String>,
+}
+
+impl ScopeForgetReport {
+    /// Fold one per-key [`ForgetReport`](spectral::graph::brain::ForgetReport)
+    /// into the aggregate.
+    fn absorb(&mut self, key: &str, report: &spectral::graph::brain::ForgetReport) {
+        self.keys_swept += 1;
+        if report.store.existed {
+            self.existed += 1;
+        }
+        if report.fully_forgotten() {
+            self.fully_forgotten += 1;
+        }
+        self.forgotten_keys.push(key.to_string());
+    }
+}
+
 /// A thread-safe handle to `spectral::Brain` that enforces all operations
 /// run off the async executor via `spawn_blocking`.
 ///
@@ -876,6 +1040,126 @@ impl SafeBrain {
         .await
         .map_err(|e| anyhow::anyhow!("brain task panicked: recall_with_provenance: {e}"))?
         .map_err(Into::into)
+    }
+
+    /// Write a memory at an explicitly chosen [`MemoryScope`] (visibility level).
+    ///
+    /// This is the settable entry point for Spectral's shipped visibility ladder
+    /// (`Private < Team < Org < Public`). It is thin sugar over
+    /// [`remember_with`](Self::remember_with): it stamps `opts.visibility` from
+    /// `scope` (overriding whatever the passed `opts` carried) and forwards the
+    /// rest of `opts` unchanged — so callers can still set `source`, `wing`,
+    /// `confidence`, etc. alongside the level.
+    ///
+    /// **Default is unchanged.** Existing write paths that never call this keep
+    /// their `Visibility::Private` writes. Nothing here flips a global default;
+    /// it only makes a non-`Private` level *expressible* at the call site.
+    ///
+    /// The persisted `memories.visibility` string is what the read filter keys
+    /// off: a memory written `Team` is hidden from a `Private`-clearance recall
+    /// context's *floor* — see [`MemoryScope`] for the exact `allows` semantics.
+    pub async fn remember_scoped(
+        &self,
+        key: &str,
+        content: &str,
+        scope: MemoryScope,
+        opts: spectral::RememberOpts,
+    ) -> anyhow::Result<spectral::RememberResult> {
+        let opts = spectral::RememberOpts {
+            visibility: scope.to_visibility(),
+            ..opts
+        };
+        self.remember_with(key, content, opts).await
+    }
+
+    /// Hard-delete an explicit set of memory keys, aggregating each verified
+    /// [`ForgetReport`](spectral::graph::brain::ForgetReport) into a
+    /// [`ScopeForgetReport`]. The reusable core of the scope sweep.
+    ///
+    /// Each key is passed to [`forget`](Self::forget), which removes the memory
+    /// across every SQLite substrate (row + FTS shadow, fingerprints,
+    /// spectrogram, annotations, consolidation edges, co-retrieval pairs,
+    /// retrieval-event refs, recognition sidecar) and re-probes recall +
+    /// recognition to verify it is gone. A key with no memory is a no-op
+    /// (`store.existed == false`), counted but not an error.
+    ///
+    /// The whole loop runs in a single `spawn_blocking` so N deletes cost one
+    /// task dispatch rather than N.
+    ///
+    /// **Graph triples are not touched** — see [`ScopeForgetReport`] and the
+    /// Q2 residual (`graph_triples_deleted` is always 0 at pin `fb1038db`).
+    pub async fn forget_keys(&self, keys: Vec<String>) -> anyhow::Result<ScopeForgetReport> {
+        let brain = self.inner.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut agg = ScopeForgetReport::default();
+            for key in &keys {
+                let report = brain
+                    .forget(key)
+                    .map_err(|e| anyhow::anyhow!("forget({key}) failed: {e}"))?;
+                agg.absorb(key, &report);
+            }
+            Ok::<_, anyhow::Error>(agg)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: forget_keys: {e}"))?
+    }
+
+    /// Hard-delete **every memory in a wing (scope)** — the scope-based forget
+    /// primitive behind the offboarding "clean divorce" claim (design doc
+    /// §3.2, Step 4).
+    ///
+    /// This is an *enumerate → forget* sweep, not a single Spectral primitive:
+    /// it reads the local brain `memory.db`, selects every `key` whose `wing`
+    /// column equals `wing`, then hard-deletes each via
+    /// [`forget_keys`](Self::forget_keys) and returns the aggregate
+    /// [`ScopeForgetReport`] (the audit substrate). Memories in *other* wings —
+    /// and wingless memories (`wing IS NULL`, e.g. chat turns) — are untouched.
+    ///
+    /// The `wing` here is the **cognitive/topical wing** carried on each memory
+    /// (`RememberOpts.wing`), which is what Permagent can enumerate today. It is
+    /// *not* the federation `wing_id` of the design doc's Axis A (shared-wing
+    /// membership): that layer (`federation_sync::enumerate`) is not reachable
+    /// from Permagent at pin `fb1038db` — the outer `spectral::Brain` exposes no
+    /// `enumerate`/`share`, and the `&SqliteStore` accessor is crate-private.
+    /// Binding this sweep to the federation offboarding boundary is a
+    /// Spectral-gated + decision-gated follow-up (design doc Q1/Q3). See
+    /// `docs/design/sovereign-offboarding-phase1-notes.md`.
+    ///
+    /// **Graph-triple residual:** company-derived graph facts survive this sweep
+    /// (Q2). `report.graph_triples_deleted == 0` at this pin. Flagged, not
+    /// hidden.
+    pub async fn forget_scope(&self, wing: &str) -> anyhow::Result<ScopeForgetReport> {
+        let wing_owned = wing.to_string();
+        // Enumerate the wing's member keys from the brain memory.db via a
+        // read-only connection — the same blessed pattern as
+        // `brain_ops::read_only_brain_conn`. A fresh connection sees committed
+        // rows; the sweep collects the full key set before any delete runs.
+        let keys = tokio::task::spawn_blocking(move || {
+            let db_path = crate::config::paths::Paths::brain_dir().join("memory.db");
+            let conn = rusqlite::Connection::open_with_flags(
+                &db_path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                    | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )
+            .map_err(|e| anyhow::anyhow!("scope enumerate: open {}: {e}", db_path.display()))?;
+            let mut stmt = conn
+                .prepare("SELECT key FROM memories WHERE wing = ?1 ORDER BY key")
+                .map_err(|e| anyhow::anyhow!("scope enumerate: prepare: {e}"))?;
+            let rows = stmt
+                .query_map(rusqlite::params![wing_owned], |r| r.get::<_, String>(0))
+                .map_err(|e| anyhow::anyhow!("scope enumerate: query: {e}"))?;
+            let mut keys = Vec::new();
+            for r in rows {
+                keys.push(r.map_err(|e| anyhow::anyhow!("scope enumerate: row: {e}"))?);
+            }
+            Ok::<_, anyhow::Error>(keys)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: forget_scope enumerate: {e}"))??;
+
+        let mut report = self.forget_keys(keys).await?;
+        report.wing = Some(wing.to_string());
+        Ok(report)
     }
 }
 
