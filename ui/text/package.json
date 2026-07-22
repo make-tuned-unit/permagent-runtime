@@ -30,7 +30,7 @@
     "@aaif/goose-sdk": "workspace:*",
     "@agentclientprotocol/sdk": "^1.2.1",
     "@inkjs/ui": "^2.0.0",
-    "ink": "^7.1.0",
+    "ink": "^7.1.1",
     "ink-multiline-input": "^0.1.0",
     "marked": "^18.0.6",
     "marked-terminal": "^7.3.0",
