@@ -16,6 +16,11 @@ mod proactive;
 mod routes;
 mod session_event_bus;
 mod state;
+// The route modules are compiled into BOTH crate roots (this bin and the lib),
+// so the shared test-support helper their `#[cfg(test)]` modules reference must
+// be declared in both roots — see the matching decl in lib.rs (#858).
+#[cfg(test)]
+mod test_support;
 mod tunnel;
 // Some verification items (test-support consts/fields) are only consumed by
 // the lib target's tests; the bin needs the module for the startup hook wire.
