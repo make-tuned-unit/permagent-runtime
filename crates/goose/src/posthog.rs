@@ -549,15 +549,34 @@ fn sanitize_value(value: serde_json::Value) -> serde_json::Value {
 // ============================================================================
 // Generic Event API (for frontend)
 // ============================================================================
+
+/// The SINGLE consent gate for the outbound analytics beacon (#852).
+///
+/// Returns `true` only when the user has EXPLICITLY opted in
+/// ([`is_telemetry_enabled`], default OFF). Out of the box — no opt-in — it is
+/// `false` for EVERY event, including `onboarding_*` and
+/// `telemetry_preference_set`. Those formerly BYPASSED the gate to track the
+/// onboarding funnel before consent; that bypass is removed so a fresh install
+/// makes ZERO analytics network calls.
+///
+/// Telemetry canon: this PostHog beacon is a stopgap slated for
+/// removal/replacement (never PostHog; self-hostable / privacy-first; opt-in
+/// only). Until then every send funnels through this gate AND the sovereignty
+/// egress guard (see [`posthog_capture`]). Local error logging (tracing/logs)
+/// is untouched — only the outbound analytics beacon is gated.
+fn analytics_beacon_allowed() -> bool {
+    is_telemetry_enabled()
+}
+
 pub async fn emit_event(
     event_name: &str,
     mut properties: HashMap<String, serde_json::Value>,
 ) -> Result<(), String> {
-    // Only onboarding events are enabled for now. These bypass the telemetry
-    // check so we can track the funnel before the user makes their choice.
-    let is_onboarding_event =
-        event_name.starts_with("onboarding_") || event_name == "telemetry_preference_set";
-    if !is_onboarding_event {
+    // #852 — NO analytics beacon without an explicit opt-in. Every send path,
+    // including the formerly-bypassing onboarding_* / telemetry_preference_set
+    // events, now respects the consent gate. A fresh, un-opted-in install sends
+    // NOTHING to PostHog / any analytics endpoint from here.
+    if !analytics_beacon_allowed() {
         return Ok(());
     }
 
@@ -573,11 +592,10 @@ pub async fn emit_event(
         insert(&mut properties, "platform_version", platform_version);
     }
 
-    // NOTE (#327): the former `app_crashed`/`error_occurred` handling here was
-    // dead code — those event names are not onboarding events, so the guard
-    // above (`is_onboarding_event`) already returned before this point. Telemetry
-    // canon is self-hostable / privacy-first only (never PostHog for crashes);
-    // crash reporting is handled by the local redacted export, not this path.
+    // NOTE (#327): crash/error events (`app_crashed`/`error_occurred`) are NOT
+    // sent through this analytics beacon. Telemetry canon is self-hostable /
+    // privacy-first only (never PostHog for crashes); crash reporting is handled
+    // by the local redacted export, not this path.
 
     let sanitized: HashMap<String, serde_json::Value> = properties
         .into_iter()
@@ -593,4 +611,77 @@ pub async fn emit_event(
         .collect();
 
     posthog_capture(event_name, &installation.installation_id, sanitized).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    /// Out of the box (no opt-in) the consent gate is CLOSED for every event —
+    /// including the `onboarding_*` and `telemetry_preference_set` events that
+    /// used to bypass it (#852). The gate is consent, not event class.
+    #[test]
+    #[serial]
+    fn no_beacon_allowed_for_any_event_without_opt_in() {
+        // Fresh, isolated config with NO telemetry choice recorded (default OFF)
+        // and no env override forcing the value either way.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().display().to_string();
+        let _env = env_lock::lock_env([
+            ("HOME", Some(root.as_str())),
+            ("PERMAGENT_PATH_ROOT", Some(root.as_str())),
+            ("GOOSE_TELEMETRY_OFF", None),
+        ]);
+
+        assert!(
+            !is_telemetry_enabled(),
+            "a fresh install has telemetry OFF by default (explicit opt-in required)"
+        );
+        // The former name-based bypass is gone: consent gates ALL of these.
+        assert!(!analytics_beacon_allowed());
+    }
+
+    /// End-to-end proof that `emit_event` sends NOTHING without an opt-in — even
+    /// for the events that formerly bypassed the gate. The sovereignty egress
+    /// guard is the single choke point every PostHog POST must pass, and it
+    /// writes a `telemetry` audit row BEFORE the network send (whether the send
+    /// is allowed or suppressed). So zero `telemetry` egress rows after these
+    /// calls proves `posthog_capture` was never reached for any event.
+    #[tokio::test]
+    #[serial]
+    async fn emit_event_sends_nothing_without_opt_in_including_onboarding() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().display().to_string();
+        let _env = env_lock::lock_env([
+            ("HOME", Some(root.as_str())),
+            ("PERMAGENT_PATH_ROOT", Some(root.as_str())),
+            ("GOOSE_TELEMETRY_OFF", None),
+        ]);
+
+        assert!(!is_telemetry_enabled(), "telemetry OFF by default");
+
+        // Formerly-bypassing events + a normal one: all must be no-ops.
+        emit_event("onboarding_started", HashMap::new())
+            .await
+            .unwrap();
+        emit_event("onboarding_completed", HashMap::new())
+            .await
+            .unwrap();
+        emit_event("telemetry_preference_set", HashMap::new())
+            .await
+            .unwrap();
+        emit_event("session_started", HashMap::new()).await.unwrap();
+
+        // No PostHog POST was attempted for ANY of them: the egress guard (the
+        // single choke point) recorded zero telemetry attempts.
+        let rows = crate::sovereignty::recent_egress(1000)
+            .await
+            .unwrap_or_default();
+        let telemetry_attempts = rows.iter().filter(|r| r.kind == "telemetry").count();
+        assert_eq!(
+            telemetry_attempts, 0,
+            "no analytics beacon may be attempted without an explicit opt-in"
+        );
+    }
 }
