@@ -754,6 +754,18 @@ pub(crate) trait BatchOps: Send + Sync {
     /// Describe one memory. Returns `true` if newly described, `false` if it was
     /// already described (cached — counted as skipped, not progress).
     async fn describe(&self, id: &str) -> Result<bool, String>;
+
+    // ── Live-HUD observer hooks ──────────────────────────────────────
+    // These update the global `librarian_state` singleton in production. They
+    // are trait methods (not direct calls in `run_batch_core`) so the pure loop
+    // stays side-effect-free: test ops leave the defaults, so unit tests never
+    // mutate the process-wide singleton the self-knowledge brief renders from.
+    /// A page is about to be described (`page_len` memories). Default: no-op.
+    fn on_page_started(&self, _page_len: usize) {}
+    /// A single memory failed to describe (skipped). Default: no-op.
+    fn on_describe_failed(&self, _error: &str) {}
+    /// The batch run finished. Default: no-op.
+    fn on_batch_complete(&self) {}
 }
 
 /// Real ops: wraps the Brain handle + model, routing through `describe_one`
@@ -778,6 +790,18 @@ impl BatchOps for BrainBatchOps<'_> {
         describe_one(self.brain, id, false, self.model, true)
             .await
             .map(|r| !r.cached)
+    }
+
+    fn on_page_started(&self, page_len: usize) {
+        super::librarian_state::set_describing(page_len);
+    }
+
+    fn on_describe_failed(&self, error: &str) {
+        super::librarian_state::record_describe_failure(error);
+    }
+
+    fn on_batch_complete(&self) {
+        super::librarian_state::set_batch_complete();
     }
 }
 
@@ -821,8 +845,6 @@ async fn run_batch_core(
     config: BatchConfig,
     store: &dyn CheckpointStore,
 ) -> Result<BatchOutcome, String> {
-    use super::librarian_state;
-
     // Resume: load prior campaign progress. `run_in_progress == true` here means
     // a previous run was interrupted (crash/restart) — we simply continue; the
     // undescribed queue already excludes everything Spectral persisted, so no
@@ -852,7 +874,7 @@ async fn run_batch_core(
         if ids.is_empty() {
             break;
         }
-        librarian_state::set_describing(ids.len());
+        ops.on_page_started(ids.len());
 
         for id in &ids {
             if config.max_per_run != 0 && described_this_run >= config.max_per_run {
@@ -878,7 +900,7 @@ async fn run_batch_core(
                     tracing::debug!(memory_id = %id, "Librarian skipped already-described memory");
                 }
                 Err(e) => {
-                    librarian_state::record_describe_failure(&e);
+                    ops.on_describe_failed(&e);
                     tracing::warn!(memory_id = %id, error = %e, "Librarian failed to describe memory, skipping");
                 }
             }
@@ -901,7 +923,7 @@ async fn run_batch_core(
     cp.touch();
     store.save(&cp);
 
-    librarian_state::set_batch_complete();
+    ops.on_batch_complete();
     tracing::info!(
         described = described_this_run,
         described_total = cp.described_total,
