@@ -1,26 +1,36 @@
-//! S2 (#428, epic #399): the tee ingest seam for supervised terminal sessions.
+//! S2 (#428) + S3 (#429), epic #399: the tee ingest seam for supervised
+//! terminal sessions, now bridged into the Decision Inbox.
 //!
 //! The supervised Claude Code session lives in a Tauri-owned PTY (the visible
 //! Build-tab terminal) in the APP process; the gate parser + session registry
 //! (`permagent::agents::platform_extensions::terminal_supervision`) live in
 //! the DAEMON. This route is the bridge: the Tauri PTY reader tees each raw
 //! output chunk here (`ui/desktop/src-tauri/src/terminal.rs`), the registry
-//! parses it and emits structured gate events to the bus.
+//! parses it and emits structured gate events to the bus, and (S3) every
+//! detected gate is filed as a `session_gate` Decision-Inbox row — Tier 2
+//! fail-closed until S4's classification — while gates that resolve outside
+//! the inbox (hand-typed answer, session end) supersede their open card.
 //!
 //! Push, deterministic, zero-LLM: nothing polls — cost is one localhost POST
 //! per output burst of a SUPERVISED session only (plain terminals never tee).
+//! The inbox bridge is best-effort: a filing failure is reported in the
+//! response (and logged), never a failed tee — the gate stays visible in the
+//! session's tab and on the event bus regardless.
 //!
 //! Auth: mounted in the protected router — the tee holds the daemon bearer
 //! token (same token the app already uses). Unknown sessions return 404 so a
 //! tee outliving a restarted daemon stops instead of spamming.
 
+use crate::state::AppState;
 use axum::{
+    extract::State,
     http::StatusCode,
     routing::{get, post},
     Json, Router,
 };
 use permagent::agents::platform_extensions::terminal_supervision as registry;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 #[derive(Debug, Deserialize)]
 pub struct OutputChunk {
@@ -47,9 +57,26 @@ struct ErrorBody {
     error: String,
 }
 
+/// The ingest report plus what the S3 inbox bridge did with it — evidence,
+/// not silence, for the tee side and tests. The tee only inspects the HTTP
+/// status; the extra fields are additive.
+#[derive(Serialize)]
+struct IngestResponse {
+    #[serde(flatten)]
+    report: registry::IngestReport,
+    /// `session_gate` decisions filed for gates detected by this chunk.
+    decisions_filed: usize,
+    /// Open `session_gate` decisions superseded (gate answered in the
+    /// terminal / session ended).
+    decisions_superseded: usize,
+    /// Best-effort bridge failures (also logged). Never fails the tee.
+    bridge_errors: Vec<String>,
+}
+
 async fn ingest_output(
+    State(state): State<Arc<AppState>>,
     Json(chunk): Json<OutputChunk>,
-) -> Result<Json<registry::IngestReport>, (StatusCode, Json<ErrorBody>)> {
+) -> Result<Json<IngestResponse>, (StatusCode, Json<ErrorBody>)> {
     let session_id = registry::resolve_session_id(
         chunk.supervised_session_id.as_deref(),
         chunk.pty_session_id.as_deref(),
@@ -76,19 +103,45 @@ async fn ingest_output(
             }),
         )
     })?;
-    Ok(Json(report))
+
+    // S3 (#429): gate → Decision Inbox. Best-effort by design — the parse
+    // already happened, the bus events are out, and the gate is visible in
+    // the session's tab; a DB hiccup must not stop the tee (fail-stop there
+    // would blind the whole loop, strictly worse than a missed card).
+    let bridge = match state.session_manager().pool_clone().await {
+        Ok(pool) => registry::bridge_report_to_inbox(&pool, &session_id, &report).await,
+        Err(e) => {
+            tracing::warn!(
+                session_id = session_id.as_str(),
+                "session-gate inbox bridge skipped: no DB pool ({e})"
+            );
+            registry::GateBridgeOutcome {
+                errors: vec![format!("no DB pool: {e}")],
+                ..Default::default()
+            }
+        }
+    };
+
+    Ok(Json(IngestResponse {
+        report,
+        decisions_filed: bridge.decisions_filed,
+        decisions_superseded: bridge.decisions_superseded,
+        bridge_errors: bridge.errors,
+    }))
 }
 
 async fn list_sessions() -> Json<Vec<registry::SessionSnapshot>> {
     Json(registry::list_sessions())
 }
 
-/// Stateless (the registry is process-wide, like the event bus) — mounted in
-/// the PROTECTED router: the tee authenticates with the daemon bearer token.
-pub fn routes() -> Router {
+/// Mounted in the PROTECTED router: the tee authenticates with the daemon
+/// bearer token. Stateful since S3 — the inbox bridge needs the decisions DB
+/// (the registry itself stays process-wide, like the event bus).
+pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/terminal/supervised/output", post(ingest_output))
         .route("/terminal/supervised/sessions", get(list_sessions))
+        .with_state(state)
 }
 
 #[cfg(test)]
@@ -99,6 +152,7 @@ mod tests {
     use permagent::agents::platform_extensions::terminal_supervision::{
         register_session, remove_session, session_snapshot, SupervisedSessionKind, SupervisedStatus,
     };
+    use serial_test::serial;
     use tower::ServiceExt;
 
     // Real captured gate line (from `providers/claude_code.rs` tests) and the
@@ -109,6 +163,13 @@ mod tests {
 
     fn unique_id(tag: &str) -> String {
         format!("sup-route-{tag}-{}", uuid::Uuid::new_v4())
+    }
+
+    async fn test_app() -> Router {
+        // Builds AppState → #[serial] on every test using this (env_lock /
+        // process-singleton session-store race, see #695).
+        let state = AppState::new(true).await.unwrap();
+        routes(state)
     }
 
     async fn post_chunk(app: &Router, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
@@ -131,11 +192,12 @@ mod tests {
         (status, serde_json::from_slice(&bytes).unwrap())
     }
 
-    #[tokio::test]
-    async fn output_chunk_attaches_pty_and_reports_gates() {
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn output_chunk_attaches_pty_reports_gates_and_files_decisions() {
         let sid = unique_id("gates");
         register_session(&sid, SupervisedSessionKind::Watched, "proj", "/tmp/p");
-        let app = routes();
+        let app = test_app().await;
 
         let (status, body) = post_chunk(
             &app,
@@ -149,6 +211,13 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["gates_detected"], 1);
         assert_eq!(body["completed"], false);
+        // S3: the gate reached the Decision Inbox as a session_gate row.
+        assert_eq!(
+            body["bridge_errors"],
+            serde_json::json!([]),
+            "bridge must not error: {body}"
+        );
+        assert_eq!(body["decisions_filed"], 1);
 
         // The PTY was attached as the relay address on first sight.
         let snap = session_snapshot(&sid).unwrap();
@@ -156,7 +225,8 @@ mod tests {
         assert_eq!(snap.status, SupervisedStatus::Attached);
         assert_eq!(snap.pending_gates.len(), 1);
 
-        // Follow-up chunks may address by PTY id alone.
+        // Follow-up chunks may address by PTY id alone. The result ends the
+        // session with the gate unanswered → its inbox card is superseded.
         let (status, body) = post_chunk(
             &app,
             serde_json::json!({
@@ -167,6 +237,7 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["completed"], true);
+        assert_eq!(body["decisions_superseded"], 1);
         assert_eq!(
             session_snapshot(&sid).unwrap().status,
             SupervisedStatus::Completed
@@ -175,9 +246,10 @@ mod tests {
         remove_session(&sid);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
     async fn unknown_session_is_404() {
-        let app = routes();
+        let app = test_app().await;
         let (status, body) = post_chunk(
             &app,
             serde_json::json!({
@@ -193,11 +265,12 @@ mod tests {
             .contains("sup-route-unknown"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
     async fn eof_fails_an_unfinished_session() {
         let sid = unique_id("eof");
         register_session(&sid, SupervisedSessionKind::Watched, "proj", "/tmp/p");
-        let app = routes();
+        let app = test_app().await;
 
         let (status, body) = post_chunk(
             &app,
@@ -217,11 +290,12 @@ mod tests {
         remove_session(&sid);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
     async fn sessions_listing_returns_registered_sessions() {
         let sid = unique_id("list");
         register_session(&sid, SupervisedSessionKind::Watched, "proj", "/tmp/p");
-        let app = routes();
+        let app = test_app().await;
 
         let resp = app
             .oneshot(

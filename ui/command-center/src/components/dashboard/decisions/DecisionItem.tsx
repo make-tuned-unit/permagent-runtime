@@ -91,6 +91,15 @@ function effectTextFor(kind: string, answer: 'approve' | 'reject', agentName: st
       ? `Confirm approve — ${agentName} will run this tool and continue the turn.`
       : `Confirm reject — ${agentName} will skip this tool and continue the turn.`;
   }
+  if (kind === 'session_gate') {
+    // Honest pre-S5 contract (routes/decisions.rs session_gate arm): the
+    // answer records the ruling; nothing is relayed into the terminal session
+    // yet, so it advances only when the gate is answered in its tab (the
+    // server's effect message hands back the exact line to paste).
+    return answer === 'approve'
+      ? 'Confirm allow — records your ruling. The terminal session itself advances once the gate is answered in its tab (the confirmation gives you the exact line to paste).'
+      : 'Confirm deny — records your ruling. The terminal session itself advances once the gate is answered in its tab (the confirmation gives you the exact line to paste).';
+  }
   // malformed and anything unknown: recorded only, no state change.
   return answer === 'approve'
     ? 'Confirm — this is recorded for the audit trail; nothing else changes.'
@@ -106,8 +115,16 @@ function effectTextFor(kind: string, answer: 'approve' | 'reject', agentName: st
  * Exported for tests.
  */
 export function toolArgumentsText(d: Decision): string | null {
-  if (d.kind !== 'tool_approval' || !d.payload) return null;
-  const raw = (d.payload as { arguments?: unknown }).arguments;
+  if (!d.payload) return null;
+  // tool_approval carries the tool call in `arguments`; session_gate (S3,
+  // #429) carries the supervised session's gated tool input in `input` — the
+  // detail line for both holds only a clipped preview.
+  const raw =
+    d.kind === 'tool_approval'
+      ? (d.payload as { arguments?: unknown }).arguments
+      : d.kind === 'session_gate'
+        ? (d.payload as { input?: unknown }).input
+        : undefined;
   if (raw === undefined || raw === null) return null;
   try {
     return JSON.stringify(raw, null, 2) ?? null;
@@ -208,7 +225,8 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
   const isApprovalLike =
     d.kind === 'approve_review' || d.kind === 'risk_gate' || d.kind === 'malformed' ||
     d.kind === 'enrichment_proposal' || d.kind === 'automation_proposal' ||
-    d.kind === 'file_to_project' || d.kind === 'tool_approval';
+    d.kind === 'file_to_project' || d.kind === 'tool_approval' ||
+    d.kind === 'session_gate';
   // The agent's original draft, when this decision carries one (payload.draft):
   // enables "approve with edits" — revise the text, then accept (answer='edit').
   const draft = draftText(d);
@@ -217,7 +235,8 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
   const recommended = options.find(o => o.id === recommendedId) ?? null;
   // L2 digest lives on the goal card; only goal-bound reviews can have one.
   const hasEvidence = isReviewWithGoal;
-  // Full tool-call arguments (tool_approval) — the detail above may be clipped.
+  // Full tool-call arguments (tool_approval) / gated tool input
+  // (session_gate) — the detail above holds only a clipped preview.
   const toolArgs = toolArgumentsText(d);
 
   return (
@@ -580,6 +599,7 @@ function badgeFor(d: Decision, colors: ReturnType<typeof useTheme>['colors']) {
     case 'unblock': return { label: 'unblock', color: colors.warning, bg: colors.warning + '24' };
     case 'choice': return { label: 'choice', color: colors.purpleBright, bg: colors.purpleSoft };
     case 'risk_gate': return { label: 'permission', color: colors.danger, bg: colors.danger + '24' };
+    case 'session_gate': return { label: 'terminal gate', color: colors.danger, bg: colors.danger + '24' };
     case 'enrichment_proposal': return { label: 'enrichment', color: colors.purpleBright, bg: colors.purpleSoft };
     case 'file_to_project': return { label: 'file note', color: colors.cyan, bg: colors.cyanSoft };
     case 'malformed': return { label: 'review', color: colors.warning, bg: colors.warning + '24' };

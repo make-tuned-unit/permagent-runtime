@@ -27,10 +27,19 @@
 //! ([`super::supervised_cli::complete_supervised_session`]) so a dispatched
 //! goal resolves instead of parking at its timeout.
 //!
-//! What S2 deliberately does NOT do (later slices, do not fold in):
-//! - No Decision-Inbox rows (S3, #429) — the bus event is the S3 input.
-//! - No tier/action_class mapping (S4, #430).
-//! - No relay of answers into stdin (S5, #431).
+//! S3 (#429) adds the gate → Decision-Inbox bridge here
+//! ([`bridge_report_to_inbox`]): every gate the parser detects becomes a
+//! `session_gate` decision (Tier 2 fail-closed — Jesse-only until S4's
+//! classification), and a gate that resolves outside the inbox (hand-typed
+//! answer observed in the PTY echo, or session end) supersedes its open card
+//! so the inbox never shows a zombie.
+//!
+//! What S2+S3 deliberately do NOT do (later slices, do not fold in):
+//! - No tier/action_class mapping (S4, #430) — `session_gate` has no seeded
+//!   risk_policy class, so every gate fail-closes to Tier 2.
+//! - No relay of answers into stdin (S5, #431) — answering the decision
+//!   records the ruling and surfaces the exact `control_response` line to
+//!   hand-type into the session's visible tab (the S1/S2 escape hatch).
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -316,14 +325,28 @@ pub struct SessionSnapshot {
     pub last_summary: Option<String>,
 }
 
+/// A gate cleared during one ingest call: the request id plus why it cleared
+/// (`answered` — a `control_response` echo was observed; `session_ended` — the
+/// session finished with the gate still pending).
+#[derive(Debug, Clone, Serialize)]
+pub struct ClearedGate {
+    pub request_id: String,
+    pub reason: String,
+}
+
 /// What one [`ingest_output`] call did — the route returns this verbatim so
-/// the tee side (and tests) get evidence, not silence.
+/// the tee side (and tests) get evidence, not silence. S3 widened it beyond
+/// counts: `detected`/`cleared` carry the per-gate substance the inbox bridge
+/// ([`bridge_report_to_inbox`]) files/supersedes decisions from, so the bridge
+/// acts on exactly what THIS call observed (no racy registry re-read).
 #[derive(Debug, Default, Serialize)]
 pub struct IngestReport {
     pub gates_detected: usize,
     pub gates_cleared: usize,
     pub completed: bool,
     pub failed: bool,
+    pub detected: Vec<PendingGate>,
+    pub cleared: Vec<ClearedGate>,
 }
 
 /// The process-wide registry. Global like S1's completion hooks and the event
@@ -574,7 +597,17 @@ pub fn ingest_output(session_id: &str, data: &str, eof: bool) -> Option<IngestRe
             "supervised session reached a terminal state via the S2 parser"
         );
     }
-    Some(actions.report)
+    let mut report = actions.report;
+    report.detected = actions.detected;
+    report.cleared = actions
+        .cleared
+        .into_iter()
+        .map(|(request_id, reason)| ClearedGate {
+            request_id,
+            reason: reason.to_string(),
+        })
+        .collect();
+    Some(report)
 }
 
 /// Snapshot one session (S3's context-load and tests).
@@ -615,6 +648,211 @@ pub fn list_sessions() -> Vec<SessionSnapshot> {
 /// Drop a session from the registry (terminal-state sweep / tests).
 pub fn remove_session(session_id: &str) -> bool {
     with_registry(|map| map.remove(session_id).is_some())
+}
+
+// ── S3 (#429): gate → Decision Inbox bridge ────────────────────────────────
+
+/// Character cap for the tool-input preview embedded in a `session_gate`
+/// decision's `detail` text (same cap and explicit-truncation contract as the
+/// `tool_approval` preview in `tool_execution.rs`; the FULL input lives in the
+/// payload and is inspectable on the card).
+const GATE_INPUT_PREVIEW_MAX_CHARS: usize = 400;
+
+fn gate_input_preview(input: &Value) -> String {
+    let json = serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string());
+    let total = json.chars().count();
+    if total <= GATE_INPUT_PREVIEW_MAX_CHARS {
+        return json;
+    }
+    let clipped: String = json.chars().take(GATE_INPUT_PREVIEW_MAX_CHARS).collect();
+    format!(
+        "{}… [truncated — {} more chars]",
+        clipped,
+        total - GATE_INPUT_PREVIEW_MAX_CHARS
+    )
+}
+
+/// What one [`bridge_report_to_inbox`] call did — evidence for the ingest
+/// route's response (and tests), never silence.
+#[derive(Debug, Default, Serialize)]
+pub struct GateBridgeOutcome {
+    /// `session_gate` decisions filed for gates detected by this ingest.
+    pub decisions_filed: usize,
+    /// Open `session_gate` decisions superseded because their gate resolved
+    /// outside the inbox (hand-typed answer, session end).
+    pub decisions_superseded: usize,
+    /// Best-effort failures (logged too). A bridge failure never fails the
+    /// tee: the gate stays VISIBLE in the session's tab (the S1 posture) and
+    /// the bus event already went out.
+    pub errors: Vec<String>,
+}
+
+/// Bridge one ingest call's gate activity into the Decision Inbox (S3, #429;
+/// spec Piece 4):
+///
+/// - each detected gate → a `session_gate` decision (deduped on the
+///   (session, request_id) pair — a re-observed gate line, e.g. after a tee
+///   reconnect, must not double-escalate). No seeded risk_policy class for
+///   `session_gate` means [`crate::decisions::create_decision`] fail-closes
+///   the tier to 2: only Jesse can answer until S4's classification lands.
+/// - each cleared gate → the matching open card superseded (status
+///   `superseded`, honest note, audit row) so the inbox never shows a gate
+///   the session is no longer waiting on.
+///
+/// Deterministic, zero-LLM. `project_id` is resolved best-effort from the
+/// registry's project slug (the decisions table groups by project id);
+/// resolution failure files the card without it rather than dropping the
+/// escalation.
+pub async fn bridge_report_to_inbox(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    session_id: &str,
+    report: &IngestReport,
+) -> GateBridgeOutcome {
+    let mut outcome = GateBridgeOutcome::default();
+    if report.detected.is_empty() && report.cleared.is_empty() {
+        return outcome;
+    }
+    // Session context for headline/payload. The registry retains finished
+    // sessions (S2), so this resolves for cleared gates too; a missing entry
+    // (restart race) degrades to unknown context, never a dropped escalation.
+    let snapshot = session_snapshot(session_id);
+    let (project_slug, pty_session_id) = match &snapshot {
+        Some(s) => (s.project_slug.clone(), s.pty_session_id.clone()),
+        None => (String::from("unknown"), None),
+    };
+    let project_id: Option<String> = sqlx::query_scalar(
+        "SELECT id FROM projects WHERE slug = ? ORDER BY last_opened_at DESC LIMIT 1",
+    )
+    .bind(&project_slug)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+
+    for gate in &report.detected {
+        match crate::decisions::find_open_session_gate(pool, session_id, &gate.request_id).await {
+            Ok(Some(_)) => continue, // already escalated — never double-file
+            Ok(None) => {}
+            Err(e) => {
+                outcome
+                    .errors
+                    .push(format!("dedupe lookup failed for {}: {e}", gate.request_id));
+                continue;
+            }
+        }
+        let question = format!(
+            "The Claude Code session in '{}' is asking to run {} — allow it?",
+            project_slug, gate.tool_name
+        );
+        let payload = crate::decisions::SessionGatePayload {
+            question: question.clone(),
+            target_session_id: session_id.to_string(),
+            pty_session_id: pty_session_id.clone(),
+            request_id: gate.request_id.clone(),
+            tool_name: gate.tool_name.clone(),
+            input: gate.input.clone(),
+            tool_use_id: if gate.tool_use_id.is_empty() {
+                None
+            } else {
+                Some(gate.tool_use_id.clone())
+            },
+            options: vec!["allow".to_string(), "deny".to_string()],
+        };
+        let payload_json = match serde_json::to_value(&payload) {
+            Ok(v) => v,
+            Err(e) => {
+                outcome.errors.push(format!(
+                    "payload serialize failed for {}: {e}",
+                    gate.request_id
+                ));
+                continue;
+            }
+        };
+        // Plain-language headline (A1: <= 80 chars, no technical ids); the
+        // technical substance goes in `detail`.
+        let headline = {
+            let h = format!("A terminal session wants to run {}", gate.tool_name);
+            if h.chars().count() > crate::decisions::MAX_HEADLINE_CHARS {
+                h.chars()
+                    .take(crate::decisions::MAX_HEADLINE_CHARS)
+                    .collect()
+            } else {
+                h
+            }
+        };
+        let detail = format!(
+            "Supervised session {} (project '{}') is blocked on a can_use_tool gate: \
+             {} with input {}. Approving records your ruling; the answer relay into the \
+             session ships in S5 (#431) — until then the gate is also answerable in the \
+             session's terminal tab.",
+            session_id,
+            project_slug,
+            gate.tool_name,
+            gate_input_preview(&gate.input),
+        );
+        match crate::decisions::create_decision(
+            pool,
+            crate::decisions::NewDecision {
+                kind: "session_gate".to_string(),
+                project_id: project_id.clone(),
+                headline: Some(headline),
+                detail: Some(detail),
+                payload: payload_json,
+                ..Default::default()
+            },
+        )
+        .await
+        {
+            Ok(d) => {
+                tracing::info!(
+                    session_id,
+                    request_id = gate.request_id.as_str(),
+                    decision_id = d.id.as_str(),
+                    tier = d.tier,
+                    "session gate escalated to the Decision Inbox"
+                );
+                outcome.decisions_filed += 1;
+            }
+            Err(e) => outcome.errors.push(format!(
+                "decision create failed for {}: {e}",
+                gate.request_id
+            )),
+        }
+    }
+
+    for cleared in &report.cleared {
+        let open =
+            match crate::decisions::find_open_session_gate(pool, session_id, &cleared.request_id)
+                .await
+            {
+                Ok(Some(d)) => d,
+                Ok(None) => continue, // never filed, or already resolved — benign
+                Err(e) => {
+                    outcome.errors.push(format!(
+                        "supersede lookup failed for {}: {e}",
+                        cleared.request_id
+                    ));
+                    continue;
+                }
+            };
+        let note = match cleared.reason.as_str() {
+            "answered" => "gate answered in the terminal session".to_string(),
+            "session_ended" => "session ended before the gate was answered".to_string(),
+            other => format!("gate cleared: {other}"),
+        };
+        match crate::decisions::supersede_decision(pool, &open.id, &note).await {
+            Ok(true) => outcome.decisions_superseded += 1,
+            Ok(false) => {} // raced with another resolver — already closed
+            Err(e) => outcome
+                .errors
+                .push(format!("supersede failed for decision {}: {e}", open.id)),
+        }
+    }
+
+    for e in &outcome.errors {
+        tracing::warn!(session_id, "session-gate inbox bridge: {e}");
+    }
+    outcome
 }
 
 #[cfg(test)]
@@ -1152,5 +1390,176 @@ mod tests {
         register_session(&sid, SupervisedSessionKind::Watched, "proj", "/tmp/p");
         assert!(list_sessions().iter().any(|s| s.session_id == sid));
         remove_session(&sid);
+    }
+
+    // ── S3 (#429): gate → Decision Inbox bridge ──
+    //
+    // In-memory decisions DB per test (no AppState, no PERMAGENT_PATH_ROOT →
+    // no #[serial] needed); unique session ids on the shared process-global
+    // registry, same as the S2 tests above.
+
+    use crate::decisions;
+
+    async fn memory_pool() -> sqlx::Pool<sqlx::Sqlite> {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::session::spectral_schema::init_spectral_db(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn ingest_report_carries_gate_details_for_the_bridge() {
+        let sid = unique_id("report-details");
+        register_session(&sid, SupervisedSessionKind::Watched, "proj", "/tmp/p");
+        let report = ingest_output(&sid, &format!("{GATE_LINE}\r\n"), false).unwrap();
+        assert_eq!(report.gates_detected, 1);
+        assert_eq!(report.detected.len(), 1);
+        assert_eq!(report.detected[0].request_id, "perm_1");
+        assert_eq!(report.detected[0].tool_name, "Write");
+        assert_eq!(report.detected[0].input["path"], "foo.txt");
+
+        let report = ingest_output(&sid, &format!("{ANSWER_ECHO_LINE}\r\n"), false).unwrap();
+        assert_eq!(report.gates_cleared, 1);
+        assert_eq!(report.cleared.len(), 1);
+        assert_eq!(report.cleared[0].request_id, "perm_1");
+        assert_eq!(report.cleared[0].reason, "answered");
+        remove_session(&sid);
+    }
+
+    #[tokio::test]
+    async fn bridge_files_a_tier2_session_gate_decision() {
+        let pool = memory_pool().await;
+        let sid = unique_id("bridge-file");
+        register_session(&sid, SupervisedSessionKind::Watched, "proj", "/tmp/p");
+        attach_pty(&sid, "pty-br-1");
+
+        let report = ingest_output(&sid, &format!("{GATE_LINE}\r\n"), false).unwrap();
+        let outcome = bridge_report_to_inbox(&pool, &sid, &report).await;
+        assert_eq!(outcome.decisions_filed, 1);
+        assert_eq!(outcome.decisions_superseded, 0);
+        assert!(outcome.errors.is_empty(), "errors: {:?}", outcome.errors);
+
+        let d = decisions::find_open_session_gate(&pool, &sid, "perm_1")
+            .await
+            .unwrap()
+            .expect("a session_gate decision must be filed");
+        assert_eq!(d.kind, "session_gate");
+        assert_eq!(d.tier, 2, "unclassified gates fail closed to Tier 2 (S4)");
+        assert_eq!(d.payload["target_session_id"], sid.as_str());
+        assert_eq!(d.payload["pty_session_id"], "pty-br-1");
+        assert_eq!(d.payload["tool_name"], "Write");
+        assert_eq!(d.payload["input"]["content"], "hello");
+        assert_eq!(d.payload["tool_use_id"], "tu_1");
+        assert_eq!(d.payload["options"], serde_json::json!(["allow", "deny"]));
+        assert!(
+            !d.headline.contains(sid.as_str()),
+            "headline must stay plain-language (A1), no technical ids"
+        );
+        assert!(d.detail.contains("Write"));
+
+        // The typed payload round-trips (deny_unknown_fields) and composes the
+        // relay lines — the operator's pre-S5 escape hatch.
+        let payload: decisions::SessionGatePayload =
+            serde_json::from_value(d.payload.clone()).unwrap();
+        let line = decisions::session_gate_relay_line(&payload, true);
+        assert!(line.contains("\"behavior\":\"allow\""));
+        assert!(line.contains("perm_1"));
+
+        remove_session(&sid);
+    }
+
+    #[tokio::test]
+    async fn bridge_dedupes_a_reobserved_gate() {
+        let pool = memory_pool().await;
+        let sid = unique_id("bridge-dedupe");
+        register_session(&sid, SupervisedSessionKind::Watched, "proj", "/tmp/p");
+
+        let report = ingest_output(&sid, &format!("{GATE_LINE}\r\n"), false).unwrap();
+        assert_eq!(
+            bridge_report_to_inbox(&pool, &sid, &report)
+                .await
+                .decisions_filed,
+            1
+        );
+        // The same report bridged again (tee redelivery) must not double-file.
+        assert_eq!(
+            bridge_report_to_inbox(&pool, &sid, &report)
+                .await
+                .decisions_filed,
+            0
+        );
+        remove_session(&sid);
+    }
+
+    #[tokio::test]
+    async fn bridge_supersedes_when_gate_is_answered_in_the_terminal() {
+        let pool = memory_pool().await;
+        let sid = unique_id("bridge-answered");
+        register_session(&sid, SupervisedSessionKind::Watched, "proj", "/tmp/p");
+
+        let report = ingest_output(&sid, &format!("{GATE_LINE}\r\n"), false).unwrap();
+        bridge_report_to_inbox(&pool, &sid, &report).await;
+        let open = decisions::find_open_session_gate(&pool, &sid, "perm_1")
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Hand-typed answer echoed in the PTY → gate cleared → card superseded.
+        let report = ingest_output(&sid, &format!("{ANSWER_ECHO_LINE}\r\n"), false).unwrap();
+        let outcome = bridge_report_to_inbox(&pool, &sid, &report).await;
+        assert_eq!(outcome.decisions_superseded, 1);
+
+        let d = decisions::get_decision(&pool, &open.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(d.status, "superseded");
+        assert_eq!(
+            d.answer_note.as_deref(),
+            Some("gate answered in the terminal session")
+        );
+        assert!(decisions::find_open_session_gate(&pool, &sid, "perm_1")
+            .await
+            .unwrap()
+            .is_none());
+        remove_session(&sid);
+    }
+
+    #[tokio::test]
+    async fn bridge_supersedes_pending_gates_on_session_end() {
+        let pool = memory_pool().await;
+        let sid = unique_id("bridge-ended");
+        register_session(&sid, SupervisedSessionKind::Watched, "proj", "/tmp/p");
+
+        let report = ingest_output(&sid, &format!("{GATE_LINE}\r\n"), false).unwrap();
+        bridge_report_to_inbox(&pool, &sid, &report).await;
+
+        // Session finishes with the gate still pending → cleared as
+        // session_ended → card superseded with the honest note.
+        let report = ingest_output(&sid, &format!("{RESULT_LINE}\r\n"), false).unwrap();
+        assert!(report.completed);
+        assert_eq!(report.cleared[0].reason, "session_ended");
+        let outcome = bridge_report_to_inbox(&pool, &sid, &report).await;
+        assert_eq!(outcome.decisions_superseded, 1);
+
+        let history_note = decisions::find_open_session_gate(&pool, &sid, "perm_1")
+            .await
+            .unwrap();
+        assert!(history_note.is_none());
+        remove_session(&sid);
+    }
+
+    #[tokio::test]
+    async fn bridge_is_a_noop_for_an_empty_report() {
+        let pool = memory_pool().await;
+        let outcome =
+            bridge_report_to_inbox(&pool, "sup-never-registered", &IngestReport::default()).await;
+        assert_eq!(outcome.decisions_filed, 0);
+        assert_eq!(outcome.decisions_superseded, 0);
+        assert!(outcome.errors.is_empty());
     }
 }

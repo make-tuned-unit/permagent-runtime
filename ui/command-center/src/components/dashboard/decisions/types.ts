@@ -22,7 +22,11 @@
  *    no markdown pipeline, no auto-linking, no dangerouslySetInnerHTML.
  */
 
-/** Decision kinds (decisions.rs kind vocabulary; escalate.rs:109-127). */
+/** Decision kinds (decisions.rs kind vocabulary; escalate.rs:109-127).
+ *  'session_gate' (S3, #429): a supervised terminal Claude Code session is
+ *  blocked on a can_use_tool permission gate; payload carries
+ *  {question, target_session_id, pty_session_id, request_id, tool_name,
+ *   input, tool_use_id, options}. */
 export type DecisionKind =
   | 'approve_review'
   | 'choice'
@@ -32,6 +36,7 @@ export type DecisionKind =
   | 'enrichment_proposal'
   | 'file_to_project'
   | 'tool_approval'
+  | 'session_gate'
   | 'malformed';
 
 /** One selectable option (decisions.rs:71-74 — {id, label} only). */
