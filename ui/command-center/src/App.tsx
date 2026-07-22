@@ -7,6 +7,7 @@ import { InboxPanel } from './components/inbox/InboxPanel';
 import { SkillsPanel } from './components/skills/SkillsPanel';
 import { SessionsList } from './components/sessions/SessionsList';
 import { ExecutionTrace } from './components/trace/ExecutionTrace';
+import { GovernanceView } from './components/governance/GovernanceView';
 import { WorkspaceRenderer } from './components/workspaces/WorkspaceRenderer';
 import { WorkspaceSaveErrorChip } from './components/workspaces/WorkspaceSaveErrorChip';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
@@ -47,6 +48,10 @@ function MainContent() {
   // ExecutionTrace reads the global `events` buffer and needs no session id, so a
   // global overlay is the honest entry point. Reached from the sidebar "Trace" row.
   const showTrace = activePanel === 'trace';
+  // Governance renders as a labeled overlay (mirrors trace/sessions/inbox): a
+  // global, session-less surface, so a global overlay is the honest entry point.
+  // Reached from the sidebar "Governance" row and navigate_app("Governance").
+  const showGovernance = activePanel === 'governance';
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
 
   if (!workspacesLoaded) {
@@ -57,7 +62,7 @@ function MainContent() {
     );
   }
 
-  if (!activeWorkspaceId && !showSettings && !showInbox && !showSkills && !showSessions && !showTrace) {
+  if (!activeWorkspaceId && !showSettings && !showInbox && !showSkills && !showSessions && !showTrace && !showGovernance) {
     return (
       <div className="flex h-full items-center justify-center text-dark-muted text-xs font-mono">
         No workspaces available
@@ -95,11 +100,16 @@ function MainContent() {
           <ExecutionTrace onClose={() => setActivePanel('chat')} />
         </div>
       )}
+      {showGovernance && (
+        <div className="absolute inset-0 z-10">
+          <GovernanceView />
+        </div>
+      )}
       {workspaces.map(ws => (
         <div
           key={ws.id}
           className="absolute inset-0"
-          style={{ display: (!showSettings && !showInbox && !showSkills && !showSessions && !showTrace && ws.id === activeWorkspaceId) ? 'block' : 'none' }}
+          style={{ display: (!showSettings && !showInbox && !showSkills && !showSessions && !showTrace && !showGovernance && ws.id === activeWorkspaceId) ? 'block' : 'none' }}
         >
           <ErrorBoundary surface="the workspace">
             <WorkspaceRenderer workspaceId={ws.id} />

@@ -177,3 +177,23 @@ tabs:
       - User wants to see the raw event stream or debug what just happened
       - User asks what the system is doing right now at a low level
     customizable_layout: false
+
+  - name: Governance
+    tool_type: governance
+    panel_type: overlay
+    description: >-
+      The Governance surface is the user's single sovereign control view over
+      their own machine — the active model per role, per-session and per-project
+      spend with an optional budget, the sovereignty toggle plus the egress
+      audit log of everything that left the machine, and a summary of pending
+      approvals. Enforced locally, not by a cloud admin.
+    affords:
+      - See the active model per role and how to change it
+      - Review token and dollar spend per session and project, and set a budget
+      - Toggle the data boundary and read the egress audit log
+      - See pending approvals and the current tool-approval posture
+    suggest_when:
+      - User asks what something is costing, wants a spend cap, or worries about a bill
+      - User asks what data has left the machine or wants to audit egress
+      - User asks which model a role uses or what needs their approval
+    customizable_layout: false

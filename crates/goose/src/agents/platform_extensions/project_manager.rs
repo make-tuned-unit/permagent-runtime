@@ -268,8 +268,10 @@ pub const GROW_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
         what_it_does: "A per-project go-to-market workspace: strategy pillars (audience, value \
              proposition, positioning, channels, content) you think through with the user, a \
-             content calendar of drafted posts, and a growth view — with any post or outreach \
-             you draft written in a crisp human voice, never chatbot boilerplate",
+             content calendar of drafted posts, and a growth view with a live analytics lens — a \
+             provider-pluggable stats client (Plausible or GoatCounter) that pulls the project's \
+             real visitor and traffic numbers into the view — with any post or outreach you draft \
+             written in a crisp human voice, never chatbot boilerplate",
         why_it_matters:
             "It is where the user takes a project to market with you. When they want to reach an \
              audience, plan a launch, or draft a post, bring them here and draft it in their \
@@ -313,8 +315,10 @@ pub const DEVICES_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
             "Settings → Devices pairs the user's other devices to this machine (the hub): it \
              shows a pairing URL carrying the daemon token, auto-fills the hub's Tailscale \
              MagicDNS name when a tailnet is detected, and any browser on the tailnet that \
-             opens the URL becomes a full Permagent client. One Brain on the hub — other \
-             devices connect to it, nothing syncs",
+             opens the URL becomes a full Permagent client. Paired devices are listed by name \
+             with a last-seen time, and each one is revocable — the user can name a device, see \
+             when it last connected, and revoke its access from this surface. One Brain on the \
+             hub — other devices connect to it, nothing syncs",
         why_it_matters:
             "When the user wants Permagent on their phone or laptop, set the tailnet up FOR \
              them with your terminal: (1) `tailscale status --json` — if it errors, install \

@@ -725,6 +725,71 @@ export interface DeviceInfo {
   revoked: boolean;
 }
 
+// ── Governance / spend ──────────────────────────────────────────────────
+/** A budget ceiling triplet (soft warn ≤ gate/pause ≤ hard stop), USD. */
+export interface Ceilings {
+  soft: number;
+  gate: number;
+  hard: number;
+}
+
+/** The optional budget the cost-router enforces via the Decision Inbox. */
+export interface BudgetView {
+  /** Per-session ceiling — the "spend cap for this machine" the user sets. */
+  session: Ceilings;
+  /** Per-task ceiling (tighter, per unit of work). */
+  task: Ceilings;
+}
+
+/** One session's spend (GET /api/governance/spend). */
+export interface SessionSpend {
+  id: string;
+  name: string;
+  workingDir: string;
+  sessionType: string;
+  costUsd: number;
+  tokens: number;
+  updatedAt: string;
+  /** 'ok' | 'soft' | 'gate' | 'hard' — spend vs the session ceiling. */
+  band: string;
+}
+
+/** Spend rolled up to a project (grouped by working directory). */
+export interface ProjectSpend {
+  path: string;
+  label: string;
+  costUsd: number;
+  tokens: number;
+  sessionCount: number;
+}
+
+/** The Spend panel's snapshot (GET /api/governance/spend). */
+export interface SpendSnapshot {
+  runningTotalUsd: number;
+  totalTokens: number;
+  sessionCount: number;
+  budget: BudgetView;
+  sessions: SessionSpend[];
+  projects: ProjectSpend[];
+}
+
+/** A budget patch — omit a scope or a ceiling to leave it untouched. */
+export interface BudgetPatch {
+  session?: Partial<Ceilings>;
+  task?: Partial<Ceilings>;
+}
+
+/** One worker in the roster (GET /api/agent/workers). */
+export interface WorkerInfo {
+  key: string;
+  display_name: string;
+  role: string;
+  /** "internal_subagent" | "external_cli" | "pending". */
+  engine: string;
+  available: boolean;
+  reason: string | null;
+}
+
 export const api = {
   // Health
   getHealth: () => apiFetch<{ status: string }>('/status'),
@@ -966,6 +1031,25 @@ export const api = {
   /** Recent cloud-egress audit entries (everything that has left this machine). */
   getEgressLog: (limit = 100) =>
     apiFetch<EgressLogEntry[]>(`/api/security/egress-log?limit=${limit}`),
+
+  // ── Governance / spend ────────────────────────────────────────────────
+  /** Per-session + per-project spend, running total, and the current budget. */
+  getSpend: (limit = 100) =>
+    apiFetch<SpendSnapshot>(`/api/governance/spend?limit=${limit}`),
+
+  /** The current optional budget ceilings. */
+  getBudget: () => apiFetch<BudgetView>('/api/governance/budget'),
+
+  /** Set the budget ceilings; returns the enforced (sanitized) budget. */
+  setBudget: (patch: BudgetPatch) =>
+    apiFetch<BudgetView>('/api/governance/budget', {
+      method: 'POST',
+      body: JSON.stringify(patch),
+    }),
+
+  /** The worker roster (per-role model/engine + live availability). */
+  getWorkers: () =>
+    apiFetch<Record<string, WorkerInfo>>('/api/agent/workers'),
 
   // ── Diagnostics consent (two independent opt-ins, #327) ───────────────
   /** Current crash-report + analytics consent (both off by default). */
