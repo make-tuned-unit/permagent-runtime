@@ -3,7 +3,11 @@
 //! The goal states: Triage → Ready → InProgress → Review → Complete
 //! with a bounce-back path from Review → InProgress, plus a Cancelled
 //! terminal state reachable from any non-terminal state (the user abandons
-//! the goal — see [`GoalAction::Cancel`]).
+//! the goal — see [`GoalAction::Cancel`]) and a Failed holding state (#250)
+//! where the system parks exhausted goals (budget/timeout/credential block)
+//! so a failure never masquerades as a fresh Triage goal. Failed is not
+//! terminal: answering the goal's `unblock` decision retries it (Failed →
+//! Ready), and the user can cancel it (Failed → Cancelled).
 //!
 //! This module is deliberately free of async, DB, or IO — it's a pure
 //! state machine that can be unit tested without infrastructure.
@@ -23,6 +27,13 @@ pub enum GoalState {
     /// resurrected by resume/reaper. A running worker is killed before the card
     /// lands here.
     Cancelled,
+    /// The system parked the goal after exhausting its budget (attempt cap,
+    /// token budget, wallclock), a dispatch timeout, or a credential block
+    /// (#250). Visibly distinct from Triage so an exhausted goal never reads
+    /// as a fresh, un-triaged one. NOT terminal: approving the goal's open
+    /// `unblock` decision retries it (Failed → Ready with the cap extended),
+    /// and the user can cancel it (Failed → Cancelled).
+    Failed,
 }
 
 impl GoalState {
@@ -35,6 +46,7 @@ impl GoalState {
             "review" => Some(Self::Review),
             "complete" => Some(Self::Complete),
             "cancelled" => Some(Self::Cancelled),
+            "failed" => Some(Self::Failed),
             _ => None,
         }
     }
@@ -48,6 +60,7 @@ impl GoalState {
             Self::Review => "review",
             Self::Complete => "complete",
             Self::Cancelled => "cancelled",
+            Self::Failed => "failed",
         }
     }
 
@@ -78,6 +91,7 @@ impl fmt::Display for GoalState {
             Self::Review => write!(f, "Review"),
             Self::Complete => write!(f, "Complete"),
             Self::Cancelled => write!(f, "Cancelled"),
+            Self::Failed => write!(f, "Failed"),
         }
     }
 }
@@ -165,10 +179,18 @@ pub fn validate_transition(
         (GoalState::InProgress, GoalAction::Review) => Ok(GoalState::Review),
         (GoalState::Review, GoalAction::Approve) => Ok(GoalState::Complete),
         (GoalState::Review, GoalAction::Reject) => Ok(GoalState::InProgress),
-        // Cancel is legal from any non-terminal state (#490). Terminal states
+        // Manual retry of an exhausted goal (#250): unparking (the unblock
+        // decision's approve/input effect) routes Failed → Ready.
+        (GoalState::Failed, GoalAction::Ready) => Ok(GoalState::Ready),
+        // Cancel is legal from any non-terminal state (#490), including a
+        // Failed goal the user chooses to abandon (#250). Terminal states
         // (Complete, Cancelled) fall through to the rejection arm below.
         (
-            GoalState::Triage | GoalState::Ready | GoalState::InProgress | GoalState::Review,
+            GoalState::Triage
+            | GoalState::Ready
+            | GoalState::InProgress
+            | GoalState::Review
+            | GoalState::Failed,
             GoalAction::Cancel,
         ) => Ok(GoalState::Cancelled),
         _ => {
@@ -177,6 +199,7 @@ pub fn validate_transition(
                 GoalState::Ready => "'dispatch' or 'cancel'",
                 GoalState::InProgress => "'review' or 'cancel'",
                 GoalState::Review => "'approve', 'reject', or 'cancel'",
+                GoalState::Failed => "'ready' (retry via the unblock decision) or 'cancel'",
                 GoalState::Complete => "none (terminal state)",
                 GoalState::Cancelled => "none (terminal state)",
             };
@@ -385,6 +408,85 @@ pub fn topological_order(goals: &[ProposedGoal]) -> Result<Vec<usize>, RoadmapEr
     }
 
     Ok(order)
+}
+
+// ── Post-creation roadmap graph validation (#251, pure logic) ────────────
+
+/// A goal node in an EXISTING roadmap graph (card-id-based, unlike
+/// [`ProposedGoal`]'s index-based pre-creation shape).
+#[derive(Debug, Clone)]
+pub struct GraphGoal {
+    pub id: String,
+    pub title: String,
+    pub depends_on: Vec<String>,
+}
+
+/// Validate an existing roadmap's dependency graph (#251): rejects
+/// self-dependencies and cycles with actionable errors naming the goals.
+/// Edges to ids NOT present in `nodes` are ignored — they point at cards
+/// outside the validated set (e.g. deleted or terminal goals) and cannot
+/// participate in a cycle among the given nodes.
+pub fn validate_goal_graph(nodes: &[GraphGoal]) -> Result<(), RoadmapError> {
+    let n = nodes.len();
+    if n == 0 {
+        return Ok(());
+    }
+    let index_of: std::collections::HashMap<&str, usize> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, g)| (g.id.as_str(), i))
+        .collect();
+
+    let mut in_degree = vec![0usize; n];
+    let mut adjacency: Vec<Vec<usize>> = vec![vec![]; n];
+    for (i, node) in nodes.iter().enumerate() {
+        for dep in &node.depends_on {
+            if dep == &node.id {
+                return Err(RoadmapError {
+                    message: format!("Goal '{}' ({}) depends on itself.", node.title, node.id),
+                });
+            }
+            if let Some(&dep_idx) = index_of.get(dep.as_str()) {
+                adjacency[dep_idx].push(i);
+                in_degree[i] += 1;
+            }
+            // Unknown dep id: edge leaves the validated set — ignore.
+        }
+    }
+
+    let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+    for (i, &deg) in in_degree.iter().enumerate() {
+        if deg == 0 {
+            queue.push_back(i);
+        }
+    }
+    let mut visited = 0usize;
+    while let Some(node) = queue.pop_front() {
+        visited += 1;
+        for &dependent in &adjacency[node] {
+            in_degree[dependent] -= 1;
+            if in_degree[dependent] == 0 {
+                queue.push_back(dependent);
+            }
+        }
+    }
+
+    if visited != n {
+        let in_cycle: Vec<String> = in_degree
+            .iter()
+            .enumerate()
+            .filter(|(_, &deg)| deg > 0)
+            .map(|(i, _)| format!("'{}'", nodes[i].title))
+            .collect();
+        return Err(RoadmapError {
+            message: format!(
+                "Dependency cycle detected among goals: {}. \
+                 Remove or reorder dependencies to break the cycle.",
+                in_cycle.join(", ")
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Strip markdown fences and leading/trailing prose from an LLM response
@@ -624,6 +726,7 @@ mod tests {
             GoalState::Ready,
             GoalState::InProgress,
             GoalState::Review,
+            GoalState::Failed,
         ] {
             assert_eq!(
                 validate_transition(from, GoalAction::Cancel),
@@ -691,9 +794,44 @@ mod tests {
             GoalState::Review,
             GoalState::Complete,
             GoalState::Cancelled,
+            GoalState::Failed,
         ] {
             assert_eq!(GoalState::from_binding(state.binding()), Some(state));
         }
+    }
+
+    // ── Failed state (#250) ───────────────────────────────────────────
+
+    #[test]
+    fn failed_to_ready_is_the_manual_retry_path() {
+        assert_eq!(
+            validate_transition(GoalState::Failed, GoalAction::Ready),
+            Ok(GoalState::Ready)
+        );
+    }
+
+    #[test]
+    fn failed_rejects_everything_but_ready_and_cancel() {
+        for action in [
+            GoalAction::Dispatch,
+            GoalAction::Review,
+            GoalAction::Approve,
+            GoalAction::Reject,
+        ] {
+            let err = validate_transition(GoalState::Failed, action).unwrap_err();
+            assert!(
+                err.reason.contains("'ready'") && err.reason.contains("'cancel'"),
+                "Failed + {} should name the valid actions: {}",
+                action,
+                err.reason
+            );
+        }
+    }
+
+    #[test]
+    fn failed_is_not_active() {
+        assert!(!GoalState::Failed.is_active());
+        assert!(!GoalState::ACTIVE_BINDINGS.contains(&"failed"));
     }
 
     #[test]
@@ -867,6 +1005,53 @@ mod tests {
         assert!(err.message.contains("'A'"));
         assert!(err.message.contains("'B'"));
         assert!(err.message.contains("'C'"));
+    }
+
+    // ── Existing-roadmap graph validation (#251) ──────────────────────
+
+    fn node(id: &str, title: &str, deps: &[&str]) -> GraphGoal {
+        GraphGoal {
+            id: id.to_string(),
+            title: title.to_string(),
+            depends_on: deps.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn graph_valid_chain_and_empty() {
+        assert!(validate_goal_graph(&[]).is_ok());
+        let nodes = vec![
+            node("a", "A", &[]),
+            node("b", "B", &["a"]),
+            node("c", "C", &["b", "a"]),
+        ];
+        assert!(validate_goal_graph(&nodes).is_ok());
+    }
+
+    #[test]
+    fn graph_cycle_rejected_with_titles() {
+        let nodes = vec![node("a", "Alpha", &["b"]), node("b", "Beta", &["a"])];
+        let err = validate_goal_graph(&nodes).unwrap_err();
+        assert!(err.message.contains("cycle"), "{}", err.message);
+        assert!(
+            err.message.contains("'Alpha'") && err.message.contains("'Beta'"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn graph_self_dependency_rejected() {
+        let nodes = vec![node("a", "Alpha", &["a"])];
+        let err = validate_goal_graph(&nodes).unwrap_err();
+        assert!(err.message.contains("depends on itself"), "{}", err.message);
+    }
+
+    #[test]
+    fn graph_unknown_dep_ids_are_ignored() {
+        // Edge to a card outside the set (deleted/terminal) can't cycle.
+        let nodes = vec![node("a", "A", &["gone"]), node("b", "B", &["a"])];
+        assert!(validate_goal_graph(&nodes).is_ok());
     }
 
     // ── JSON extraction tests ─────────────────────────────────────────

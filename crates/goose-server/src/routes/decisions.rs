@@ -350,7 +350,7 @@ async fn execute_effect(
             }
         }
         // Unblock approved → unpark: clear attention flag, extend the attempt
-        // cap, and requeue Triage → Ready.
+        // cap, and requeue (Failed | legacy Triage) → Ready.
         ("unblock", Some("approve")) => {
             let goal_id = match decision.goal_id.as_deref() {
                 Some(g) => g,
@@ -397,7 +397,7 @@ async fn execute_effect(
             .await?;
             Ok((
                 Some(format!(
-                    "goal unparked: Triage → Ready with attempt_cap raised to {}",
+                    "goal unparked to Ready with attempt_cap raised to {}",
                     attempt_count + goal_transition::DEFAULT_ATTEMPT_CAP
                 )),
                 None,

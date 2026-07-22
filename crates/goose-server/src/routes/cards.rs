@@ -13,6 +13,12 @@
 //!   DELETE /api/projects/:project_id/cards/:card_id        — Hard delete card
 //!   POST   /api/projects/:project_id/cards/:card_id/cancel — Cancel a goal (kills worker, terminal)
 //!   POST   /api/projects/:project_id/cards/reorder         — Batch reorder cards
+//!
+//! Post-creation roadmap editing (#251) + per-goal auto-approve (#252):
+//!   POST   /api/projects/:project_id/roadmap/goals                        — Insert a goal into the roadmap
+//!   PUT    /api/projects/:project_id/roadmap/goals/:card_id/dependencies  — Set a goal's depends_on (validated)
+//!   POST   /api/projects/:project_id/roadmap/goals/:card_id/remove        — Splice a goal out (rewire dependents, cancel it)
+//!   POST   /api/projects/:project_id/cards/:card_id/auto-approve          — Per-goal auto-approve opt-in (#252)
 
 use crate::state::AppState;
 use axum::{
@@ -22,8 +28,23 @@ use axum::{
     Json, Router,
 };
 use permagent::cards;
+use permagent::goal_transition::{self, GuardError};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+
+/// Map a goal-transition guard error onto the HTTP surface.
+fn guard_status(e: &GuardError) -> StatusCode {
+    match e {
+        GuardError::NotFound(_) => StatusCode::NOT_FOUND,
+        GuardError::Invalid(_) => StatusCode::BAD_REQUEST,
+        GuardError::Denied(_) => StatusCode::FORBIDDEN,
+        GuardError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+fn guard_err(e: GuardError) -> (StatusCode, String) {
+    (guard_status(&e), e.to_string())
+}
 
 // ── Response types ─────────────────────────────────────────────────────────
 
@@ -486,6 +507,213 @@ async fn reorder_cards_handler(
     Ok(StatusCode::OK)
 }
 
+// ── Post-creation roadmap editing (#251) ───────────────────────────────────
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InsertRoadmapGoalRequest {
+    title: String,
+    description: Option<String>,
+    #[serde(default)]
+    acceptance_criteria: Vec<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    depends_on: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetDependenciesRequest {
+    depends_on: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveRoadmapGoalResponse {
+    removed: bool,
+    /// Whether the goal was cancelled (non-terminal goals are; a goal already
+    /// Complete/Cancelled is only spliced out of the graph).
+    cancelled: bool,
+    /// Number of dependent goals rewired onto the removed goal's own deps.
+    rewired_dependents: u32,
+}
+
+/// Insert a goal into an existing roadmap: validated dependency wiring, Triage
+/// (or straight to Ready when its dependencies are already satisfied).
+async fn insert_roadmap_goal_handler(
+    State(state): State<Arc<AppState>>,
+    Path(project_id): Path<String>,
+    Json(req): Json<InsertRoadmapGoalRequest>,
+) -> Result<(StatusCode, Json<CardResponse>), (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let card = goal_transition::insert_roadmap_goal(
+        &pool,
+        &project_id,
+        goal_transition::NewRoadmapGoal {
+            title: req.title,
+            description: req.description,
+            acceptance_criteria: req.acceptance_criteria,
+            tags: req.tags,
+            depends_on: req.depends_on,
+        },
+    )
+    .await
+    .map_err(guard_err)?;
+    Ok((StatusCode::CREATED, Json(CardResponse::from(card))))
+}
+
+/// Set a goal's dependencies (reorder / re-parent within the graph). The graph
+/// is re-validated (no cycles, no dangling ids) before anything is written;
+/// afterwards eligible dependents are promoted so auto-dispatch respects the
+/// new wiring.
+async fn set_goal_dependencies_handler(
+    State(state): State<Arc<AppState>>,
+    Path((project_id, card_id)): Path<(String, String)>,
+    Json(req): Json<SetDependenciesRequest>,
+) -> Result<Json<CardResponse>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let card = cards::get_card(&pool, &card_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Card not found".to_string()))?;
+    if card.project_id != project_id {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "Card does not belong to this project".to_string(),
+        ));
+    }
+
+    goal_transition::set_goal_dependencies(&pool, &card_id, &req.depends_on, "jesse")
+        .await
+        .map_err(guard_err)?;
+
+    // Auto-dispatch respects the change: a goal whose (new) deps are all
+    // Complete is promoted Triage → Ready now, not on the next approval.
+    goal_transition::promote_eligible_dependents_or_warn(&pool, &project_id, &card_id).await;
+
+    let updated = cards::get_card(&pool, &card_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Card not found".to_string()))?;
+    Ok(Json(CardResponse::from(updated)))
+}
+
+/// Remove a goal from its roadmap: dependents are rewired onto the removed
+/// goal's own dependencies (graph stays valid), then a non-terminal goal is
+/// cancelled (kills its worker, supersedes its open decisions). The card
+/// itself is kept — hard deletion stays Tier-2 gated via DELETE /cards/:id.
+async fn remove_roadmap_goal_handler(
+    State(state): State<Arc<AppState>>,
+    Path((project_id, card_id)): Path<(String, String)>,
+) -> Result<Json<RemoveRoadmapGoalResponse>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let card = cards::get_card(&pool, &card_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Card not found".to_string()))?;
+    if card.project_id != project_id {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "Card does not belong to this project".to_string(),
+        ));
+    }
+    if card.card_type != "goal" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Only goal cards can be removed from a roadmap".to_string(),
+        ));
+    }
+
+    let rewired = goal_transition::detach_goal_from_dependents(&pool, &card_id, "jesse")
+        .await
+        .map_err(guard_err)?;
+
+    // Cancel the goal itself unless it is already terminal.
+    let col = cards::get_column(&pool, &card.column_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let binding = col.and_then(|c| c.state_binding).unwrap_or_default();
+    let cancelled = if binding == "complete" || binding == "cancelled" {
+        false
+    } else {
+        permagent::agents::platform_extensions::orchestrator::cancel_goal(&pool, &card_id)
+            .await
+            .map_err(|e| (StatusCode::CONFLICT, e))?;
+        true
+    };
+
+    // Dependents whose remaining deps are all Complete become dispatchable now.
+    goal_transition::promote_eligible_dependents_or_warn(&pool, &project_id, &card_id).await;
+
+    Ok(Json(RemoveRoadmapGoalResponse {
+        removed: true,
+        cancelled,
+        rewired_dependents: rewired,
+    }))
+}
+
+// ── Per-goal auto-approve override (#252) ──────────────────────────────────
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoApproveRequest {
+    enabled: bool,
+}
+
+/// Toggle a goal's `auto_approve` flag: when set, a VERIFIED PASS from the L2
+/// verifier is answered by henry-policy instead of waiting for a manual
+/// Review answer (same single gate as the verifier.json goal-type allow-list;
+/// see verification::auto_approve_allowed). Default remains Review-required;
+/// the flag is a protected metadata key so this audited endpoint — a user
+/// surface, not an orchestrator tool — is its only writer.
+async fn set_auto_approve_handler(
+    State(state): State<Arc<AppState>>,
+    Path((project_id, card_id)): Path<(String, String)>,
+    Json(req): Json<AutoApproveRequest>,
+) -> Result<Json<CardResponse>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let card = cards::get_card(&pool, &card_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Card not found".to_string()))?;
+    if card.project_id != project_id {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "Card does not belong to this project".to_string(),
+        ));
+    }
+
+    goal_transition::set_goal_auto_approve(&pool, &card_id, req.enabled, "jesse")
+        .await
+        .map_err(guard_err)?;
+
+    let updated = cards::get_card(&pool, &card_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Card not found".to_string()))?;
+    Ok(Json(CardResponse::from(updated)))
+}
+
 // ── Route registration ────────────────────────────────────────────────────
 
 /// Unified "in flight" payload: the active-goal list and its count come from a
@@ -545,6 +773,24 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route(
             "/api/projects/{project_id}/cards/{card_id}/cancel",
             post(cancel_card_handler),
+        )
+        // Post-creation roadmap editing (#251)
+        .route(
+            "/api/projects/{project_id}/roadmap/goals",
+            post(insert_roadmap_goal_handler),
+        )
+        .route(
+            "/api/projects/{project_id}/roadmap/goals/{card_id}/dependencies",
+            axum::routing::put(set_goal_dependencies_handler),
+        )
+        .route(
+            "/api/projects/{project_id}/roadmap/goals/{card_id}/remove",
+            post(remove_roadmap_goal_handler),
+        )
+        // Per-goal auto-approve override (#252)
+        .route(
+            "/api/projects/{project_id}/cards/{card_id}/auto-approve",
+            post(set_auto_approve_handler),
         )
         .with_state(state)
 }

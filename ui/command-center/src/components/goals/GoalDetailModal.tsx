@@ -22,6 +22,7 @@
 
 import { useEffect, useState } from 'react';
 import { apiFetch } from '../../lib/api';
+import { removeRoadmapGoal, setGoalAutoApprove, setGoalDependencies } from '../../lib/roadmapClient';
 import { useCommandCenter } from '../../lib/store';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
@@ -47,8 +48,13 @@ interface BoardColumn {
   stateBinding?: string | null;
 }
 
-/** Goal lifecycle states a goal can still be cancelled from (mirrors #490). */
-const CANCELLABLE_STATES = ['triage', 'ready', 'in_progress', 'review'];
+/** Goal lifecycle states a goal can still be cancelled from (mirrors #490);
+ *  Failed goals (#250) can be abandoned too. */
+const CANCELLABLE_STATES = ['triage', 'ready', 'in_progress', 'review', 'failed'];
+
+/** Goal states whose roadmap dependency wiring may still be edited (#251) —
+ *  mirrors the daemon's DEP_EDITABLE_STATES. */
+const DEP_EDITABLE_STATES = ['triage', 'ready', 'failed'];
 
 function fmtTime(iso: string): string {
   const t = Date.parse(iso);
@@ -94,6 +100,18 @@ export function GoalDetailModal({
   const [cancelling, setCancelling] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
   const [cancelledState, setCancelledState] = useState<string | null>(null);
+  // #251 roadmap editing state
+  const [projectGoals, setProjectGoals] = useState<CardResponse[]>([]);
+  const [editingDeps, setEditingDeps] = useState(false);
+  const [draftDeps, setDraftDeps] = useState<string[]>([]);
+  const [savingDeps, setSavingDeps] = useState(false);
+  const [depsError, setDepsError] = useState<string | null>(null);
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [removed, setRemoved] = useState(false);
+  // #252 per-goal auto-approve toggle state
+  const [togglingAutoApprove, setTogglingAutoApprove] = useState(false);
+  const [autoApproveError, setAutoApproveError] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -102,11 +120,13 @@ export function GoalDetailModal({
     Promise.all([
       apiFetch<CardResponse>(`/api/projects/${encodeURIComponent(projectId)}/cards/${encodeURIComponent(cardId)}`),
       apiFetch<BoardColumn[]>(`/api/projects/${encodeURIComponent(projectId)}/columns`).catch(() => [] as BoardColumn[]),
+      apiFetch<CardResponse[]>(`/api/projects/${encodeURIComponent(projectId)}/cards?card_type=goal`).catch(() => [] as CardResponse[]),
     ])
-      .then(([c, cols]) => {
+      .then(([c, cols, goals]) => {
         if (!live) return;
         setCard(c);
         setColumns(cols);
+        setProjectGoals(goals);
       })
       .catch(() => { if (live) setLoadError(true); })
       .finally(() => { if (live) setLoading(false); });
@@ -124,6 +144,64 @@ export function GoalDetailModal({
   const meta = card?.metadataJson ?? {};
   const workerSessionId = typeof meta.worker_session_id === 'string' ? meta.worker_session_id : null;
   const attemptCount = typeof meta.attempt_count === 'number' ? meta.attempt_count : null;
+  const isGoal = card?.cardType === 'goal';
+  const dependsOn: string[] = Array.isArray(meta.depends_on)
+    ? (meta.depends_on as unknown[]).filter((d): d is string => typeof d === 'string')
+    : [];
+  const depsEditable =
+    isGoal && !removed && !cancelledState && !!stateBinding && DEP_EDITABLE_STATES.includes(stateBinding);
+  const goalTitle = (id: string) => projectGoals.find(g => g.id === id)?.title ?? id;
+
+  const startEditDeps = () => {
+    setDraftDeps(dependsOn);
+    setDepsError(null);
+    setEditingDeps(true);
+  };
+
+  const saveDeps = async () => {
+    setSavingDeps(true);
+    setDepsError(null);
+    try {
+      const updated = await setGoalDependencies(projectId, cardId, draftDeps);
+      setCard(prev => (prev ? { ...prev, metadataJson: updated.metadataJson, columnId: updated.columnId } : prev));
+      setEditingDeps(false);
+    } catch (e) {
+      setDepsError(e instanceof Error ? e.message : 'Saving dependencies failed.');
+    } finally {
+      setSavingDeps(false);
+    }
+  };
+
+  const autoApprove = meta.auto_approve === true;
+  const autoApproveTogglable = isGoal && !removed && !cancelledState;
+
+  const toggleAutoApprove = async () => {
+    setTogglingAutoApprove(true);
+    setAutoApproveError(null);
+    try {
+      const updated = await setGoalAutoApprove(projectId, cardId, !autoApprove);
+      setCard(prev => (prev ? { ...prev, metadataJson: updated.metadataJson } : prev));
+    } catch (e) {
+      setAutoApproveError(e instanceof Error ? e.message : 'Updating auto-approve failed.');
+    } finally {
+      setTogglingAutoApprove(false);
+    }
+  };
+
+  const doRemove = async () => {
+    setRemoving(true);
+    setDepsError(null);
+    try {
+      const res = await removeRoadmapGoal(projectId, cardId);
+      setRemoved(true);
+      if (res.cancelled) setCancelledState('cancelled');
+      setConfirmingRemove(false);
+    } catch (e) {
+      setDepsError(e instanceof Error ? e.message : 'Removing from roadmap failed.');
+    } finally {
+      setRemoving(false);
+    }
+  };
 
   const badge = cancelledState
     ? { label: 'Cancelled', color: colors.danger, bg: colors.danger + '24' }
@@ -148,7 +226,7 @@ export function GoalDetailModal({
     }
   };
 
-  const footer = cancellable ? (
+  const footer = cancellable || (isGoal && !removed && !cancelledState) ? (
     confirming ? (
       <>
         <span style={{ flex: 1, fontSize: 12, color: colors.textMuted }}>
@@ -161,10 +239,32 @@ export function GoalDetailModal({
           {cancelling ? 'Cancelling…' : 'Confirm cancel'}
         </button>
       </>
+    ) : confirmingRemove ? (
+      <>
+        <span style={{ flex: 1, fontSize: 12, color: colors.textMuted }}>
+          Remove from roadmap? Dependents are rewired onto this goal's own dependencies
+          {cancellable ? ' and the goal is cancelled' : ''}.
+        </span>
+        <button onClick={() => setConfirmingRemove(false)} disabled={removing} style={ghostBtn(colors)}>
+          Keep it
+        </button>
+        <button onClick={doRemove} disabled={removing} style={dangerBtn(colors)}>
+          {removing ? 'Removing…' : 'Confirm remove'}
+        </button>
+      </>
     ) : (
-      <button onClick={() => setConfirming(true)} style={dangerBtn(colors)}>
-        Cancel goal
-      </button>
+      <>
+        {isGoal && !removed && !cancelledState && (
+          <button onClick={() => setConfirmingRemove(true)} style={ghostBtn(colors)}>
+            Remove from roadmap
+          </button>
+        )}
+        {cancellable && (
+          <button onClick={() => setConfirming(true)} style={dangerBtn(colors)}>
+            Cancel goal
+          </button>
+        )}
+      </>
     )
   ) : null;
 
@@ -197,6 +297,139 @@ export function GoalDetailModal({
             ['Created', fmtTime(card.createdAt)],
             ['Updated', fmtTime(card.updatedAt)],
           ]} />
+
+          {/* #252: per-goal auto-approve opt-in — a verified PASS skips the
+              manual Review answer for THIS goal only. Fail-closed: a FAIL or
+              Uncertain verdict (or a Tier-2 approval dial) still holds. */}
+          {isGoal && (
+            <div>
+              <div style={{
+                fontSize: 11, color: colors.textDim, fontFamily: font.mono,
+                textTransform: 'uppercase', letterSpacing: '0.04em',
+              }}>
+                Auto-approve
+              </div>
+              <label style={{
+                marginTop: 6, display: 'flex', alignItems: 'center', gap: 8,
+                fontSize: 12, color: colors.text,
+                cursor: autoApproveTogglable ? 'pointer' : 'default',
+                opacity: autoApproveTogglable ? 1 : 0.6,
+              }}>
+                <input
+                  type="checkbox"
+                  checked={autoApprove}
+                  disabled={!autoApproveTogglable || togglingAutoApprove}
+                  onChange={toggleAutoApprove}
+                />
+                <span>
+                  Skip manual Review when the verifier passes
+                  {togglingAutoApprove ? ' — saving…' : ''}
+                </span>
+              </label>
+              <div style={{ marginTop: 4, fontSize: 11, color: colors.textDim }}>
+                Only a verified pass auto-approves; failures still wait for you.
+              </div>
+              {autoApproveError && (
+                <div style={{
+                  marginTop: 6, fontSize: 12, color: colors.danger,
+                  borderRadius: radius.md, border: `1px solid ${colors.danger}`,
+                  background: colors.danger + '14', padding: '8px 12px',
+                }}>
+                  {autoApproveError}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* #251: roadmap dependency wiring — read view + validated editor. */}
+          {isGoal && (
+            <div>
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                fontSize: 11, color: colors.textDim, fontFamily: font.mono,
+                textTransform: 'uppercase', letterSpacing: '0.04em',
+              }}>
+                <span>Dependencies</span>
+                {depsEditable && !editingDeps && (
+                  <button
+                    onClick={startEditDeps}
+                    style={{
+                      border: 'none', background: 'none', cursor: 'pointer',
+                      fontSize: 11, color: colors.cyan, fontFamily: font.mono, padding: 0,
+                    }}
+                  >
+                    Edit
+                  </button>
+                )}
+              </div>
+              {editingDeps ? (
+                <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {projectGoals.filter(g => g.id !== cardId).length === 0 ? (
+                    <span style={{ fontSize: 12, color: colors.textDim }}>
+                      No other goals in this project to depend on.
+                    </span>
+                  ) : (
+                    projectGoals.filter(g => g.id !== cardId).map(g => (
+                      <label key={g.id} style={{
+                        display: 'flex', alignItems: 'center', gap: 8,
+                        fontSize: 12, color: colors.text, cursor: 'pointer',
+                      }}>
+                        <input
+                          type="checkbox"
+                          checked={draftDeps.includes(g.id)}
+                          onChange={e => setDraftDeps(prev =>
+                            e.target.checked ? [...prev, g.id] : prev.filter(d => d !== g.id))}
+                        />
+                        <span style={{ wordBreak: 'break-word' }}>{g.title}</span>
+                      </label>
+                    ))
+                  )}
+                  <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                    <button onClick={() => setEditingDeps(false)} disabled={savingDeps} style={ghostBtn(colors)}>
+                      Discard
+                    </button>
+                    <button
+                      onClick={saveDeps}
+                      disabled={savingDeps}
+                      style={{
+                        ...ghostBtn(colors),
+                        color: colors.cyan, borderColor: colors.cyan, fontWeight: 500,
+                      }}
+                    >
+                      {savingDeps ? 'Saving…' : 'Save dependencies'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ marginTop: 6, fontSize: 12, color: colors.text }}>
+                  {dependsOn.length === 0
+                    ? <span style={{ color: colors.textDim }}>None — this is a root goal.</span>
+                    : dependsOn.map(d => (
+                      <div key={d} style={{ wordBreak: 'break-word' }}>• {goalTitle(d)}</div>
+                    ))}
+                </div>
+              )}
+              {depsError && (
+                <div style={{
+                  marginTop: 6, fontSize: 12, color: colors.danger,
+                  borderRadius: radius.md, border: `1px solid ${colors.danger}`,
+                  background: colors.danger + '14', padding: '8px 12px',
+                }}>
+                  {depsError}
+                </div>
+              )}
+            </div>
+          )}
+
+          {removed && (
+            <div style={{
+              fontSize: 12, color: colors.text,
+              borderRadius: radius.md, border: `1px solid ${colors.border}`,
+              background: colors.cyanSoft, padding: '8px 12px',
+            }}>
+              Removed from the roadmap — dependents were rewired onto this goal's dependencies.
+            </div>
+          )}
 
           {/*
             #524: the layered Evidence panel — the same component the Decision
