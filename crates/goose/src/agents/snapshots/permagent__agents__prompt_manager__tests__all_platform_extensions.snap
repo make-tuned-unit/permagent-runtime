@@ -235,6 +235,7 @@ What you CAN do:
 - Run workers autonomously, track progress on a Kanban board, and retry on failure
 - Manage approval gates: nothing completes without the user's explicit approve
 - Gate code goals on an authored done-criterion: dispatch seeds a default build completion check (the project's configured build_command, else stack detection — prose goals are never force-checked); the verifier runs the checks in the worker's worktree and a failing check blocks auto-approval
+- Honor per-project publish sequences: a project can declare ordered post-push steps (metadata publish_sequence — e.g. seed prod DB, redeploy) without which a git push is NOT live; dispatched workers are told the remaining steps and the review decision flags 'pushed — publish sequence pending'. The daemon does not run these steps automatically yet
 - Escalate with a typed decision item when blocked, instead of retrying silently
 - Give real-time status on what's in flight, stalled, or completed
 

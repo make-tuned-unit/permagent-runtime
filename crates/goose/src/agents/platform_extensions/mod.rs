@@ -21,6 +21,7 @@ pub mod orchestrator;
 pub mod people;
 pub mod project_manager;
 pub mod pronunciation;
+pub mod publish_sequence;
 pub mod recipe_author;
 pub mod skills;
 pub mod steward;

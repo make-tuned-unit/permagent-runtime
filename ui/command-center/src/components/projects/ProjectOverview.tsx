@@ -12,6 +12,7 @@ import { NotesPanel } from './NotesPanel';
 import { CodeIndexPanel } from './CodeIndexPanel';
 import { MemoriesPanel } from './MemoriesPanel';
 import { readBrief, readLinks, normalizeUrl, saveProjectSummary, type WorkspaceLink } from './workspaceMeta';
+import { PublishSequencePanel } from './PublishSequencePanel';
 import type { Project, BoardColumn, Card } from './types';
 
 // ── Project Overview ────────────────────────────────────────────────────────
@@ -96,6 +97,9 @@ export function ProjectOverview({ project, onProjectUpdated }: {
             cards={cards}
             onOpenGoal={(cardId) => openGoalDetail(project.id, cardId)}
           />
+          {/* Publish sequence (#457) — post-push steps before "live"; the
+              orchestrator reads the same metadata key at dispatch/review. */}
+          <PublishSequencePanel project={project} />
         </div>
       </div>
     </div>
