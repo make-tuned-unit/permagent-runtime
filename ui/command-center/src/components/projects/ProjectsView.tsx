@@ -80,7 +80,18 @@ export function ProjectsView() {
     }
   }, [loading, projects]);
 
-  // Agent/voice navigation: open a specific project when pendingProjectNavigation is set
+  // Agent/voice navigation: open a specific project when pendingProjectNavigation
+  // is set. The id is resolved daemon-side against the LIVE project list
+  // (project_resolve queries the DB), which can be AHEAD of this view's ≤5s-old
+  // polled snapshot — and in the voice flow the drill-in fires seconds later,
+  // only after the narration audio drains. So a target that is missing from the
+  // current `projects` is NOT proof it doesn't exist. Dropping it there (the old
+  // behavior) IS #266: the drill-in "reports done" but the board never changes,
+  // flaky on whether the snapshot happened to be current. Instead, force ONE
+  // fresh load and HOLD the pending id; clear it only once applied, or once a
+  // freshly-loaded list still lacks it (a genuinely stale/deleted id) — so the
+  // navigation self-heals against a lagging cache without ever looping forever.
+  const refreshedForPendingRef = useRef<string | null>(null);
   useEffect(() => {
     if (!pendingProjectNavigation || loading || projects.length === 0) return;
     const target = projects.find(p => p.id === pendingProjectNavigation);
@@ -88,9 +99,24 @@ export function ProjectsView() {
       setActiveProjectId(target.id);
       localStorage.setItem(LS_KEY, target.id);
       emitProjectSelected(target);
+      refreshedForPendingRef.current = null;
+      setPendingProjectNavigation(null);
+      return;
     }
+    // Absent from this snapshot. If we haven't already re-checked for THIS id,
+    // force a fresh load (the snapshot may simply be stale) and keep the pending
+    // id so the reloaded list can still resolve it.
+    if (refreshedForPendingRef.current !== pendingProjectNavigation) {
+      refreshedForPendingRef.current = pendingProjectNavigation;
+      loadProjects();
+      return;
+    }
+    // Already refreshed against the live list for this id and it's still not
+    // there — a stale or deleted id. Drop it rather than hold a navigation that
+    // can never resolve (and rather than re-loading on every future poll).
+    refreshedForPendingRef.current = null;
     setPendingProjectNavigation(null);
-  }, [pendingProjectNavigation, loading, projects, setPendingProjectNavigation]);
+  }, [pendingProjectNavigation, loading, projects, setPendingProjectNavigation, loadProjects]);
 
   const openProject = useCallback((id: string) => {
     setActiveProjectId(id);
