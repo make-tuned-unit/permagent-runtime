@@ -20,6 +20,14 @@
 //!   POST   /api/projects/:id/notes               — Create a note ({title?, body}), indexed into the Brain
 //!   DELETE /api/projects/:id/notes/:note_id      — Delete a note
 //!   POST   /api/projects/:id/index-code          — Parse the project's codebase into a Brain code map
+//!   GET    /api/projects/:id/stack               — List the project's stack entries (#512)
+//!   POST   /api/projects/:id/stack               — Add a stack entry ({serviceName, category?, identity?, notes?, dashboardUrl?})
+//!   PATCH  /api/projects/:id/stack/:entry_id     — Edit a stack entry (double-Option clears for identity/dashboardUrl)
+//!   DELETE /api/projects/:id/stack/:entry_id     — Remove a stack entry
+//!
+//! The stack endpoints are REFERENCE-ONLY (#512): they carry the service +
+//! which login identity is used, never a password/secret — no such field is
+//! accepted or stored.
 
 use crate::state::AppState;
 use axum::{
@@ -34,6 +42,7 @@ use permagent::agents::platform_extensions::analyze;
 use permagent::project_association::{self, ProjectPerson};
 use permagent::project_documents::{self, ProjectDocument};
 use permagent::project_notes::{self, ProjectNote};
+use permagent::project_stack::{self, StackEntry, UpdateStackEntry};
 use permagent::projects::{self, PERSONAL_PROJECT_ID};
 use permagent::reader;
 use serde::{Deserialize, Serialize};
@@ -1169,6 +1178,193 @@ async fn index_project_code_handler(
     }))
 }
 
+// ── Project stack organizer (#512): services + login identity, reference-only ─
+
+/// Create body for a stack entry. REFERENCE-ONLY: there is deliberately no
+/// password/secret/token field here and none may be added — `identity` is the
+/// account label (email/handle) used to log in, nothing more. Unknown JSON
+/// fields are rejected outright (`deny_unknown_fields`) so a client attempting
+/// to send `password: …` gets a 422, not silent acceptance.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateStackEntryRequest {
+    service_name: String,
+    /// One of `project_stack::VALID_CATEGORIES`; defaults to "other".
+    category: Option<String>,
+    identity: Option<String>,
+    notes: Option<String>,
+    dashboard_url: Option<String>,
+}
+
+/// Deserialize an `Option<Option<T>>` field so a MISSING key (outer `None`,
+/// "leave unchanged") is distinguished from an explicit JSON `null`
+/// (`Some(None)`, "clear to NULL"). Paired with `#[serde(default)]` for the
+/// missing case. serde's stock `Option<Option<T>>` collapses both a missing
+/// key and an explicit `null` to `None`; this restores the difference the
+/// PATCH clear semantics depend on.
+fn double_option<'de, T, D>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Ok(Some(Option::<T>::deserialize(de)?))
+}
+
+/// Patch body for a stack entry. Single-Option = leave unchanged; the nullable
+/// fields (`identity`, `dashboardUrl`) use double-Option via [`double_option`]
+/// so an explicit JSON `null` clears them (vs. an omitted key = unchanged).
+/// `deny_unknown_fields` for the same no-secrets reason as create.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateStackEntryRequest {
+    service_name: Option<String>,
+    category: Option<String>,
+    #[serde(default, deserialize_with = "double_option")]
+    identity: Option<Option<String>>,
+    notes: Option<String>,
+    #[serde(default, deserialize_with = "double_option")]
+    dashboard_url: Option<Option<String>>,
+}
+
+/// Map a `project_stack` CRUD error to a status: validation messages become
+/// 400s, anything else is a 500.
+fn stack_error_status(e: String) -> (StatusCode, String) {
+    if e.contains("Invalid category") || e.contains("service_name is empty") {
+        (StatusCode::BAD_REQUEST, e)
+    } else {
+        (StatusCode::INTERNAL_SERVER_ERROR, e)
+    }
+}
+
+/// GET /api/projects/{id}/stack — the project's stack entries, grouped by
+/// category then service name.
+async fn list_stack_entries_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<StackEntry>>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let project = projects::get_project_by_id_or_slug(&pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+    let entries = project_stack::list_entries(&pool, &project.id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(entries))
+}
+
+/// POST /api/projects/{id}/stack — add a stack entry.
+async fn create_stack_entry_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<CreateStackEntryRequest>,
+) -> Result<(StatusCode, Json<StackEntry>), (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let project = projects::get_project_by_id_or_slug(&pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+
+    let entry_id = uuid::Uuid::now_v7().to_string();
+    let entry = project_stack::insert_entry(
+        &pool,
+        &entry_id,
+        &project.id,
+        &req.service_name,
+        req.category.as_deref().unwrap_or("other"),
+        req.identity
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty()),
+        req.notes.as_deref().unwrap_or(""),
+        req.dashboard_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty()),
+    )
+    .await
+    .map_err(stack_error_status)?;
+
+    tracing::info!(project = %project.id, entry = %entry.id, service = %entry.service_name, "stack entry created");
+    Ok((StatusCode::CREATED, Json(entry)))
+}
+
+/// PATCH /api/projects/{id}/stack/{entry_id} — edit a stack entry.
+async fn update_stack_entry_handler(
+    State(state): State<Arc<AppState>>,
+    Path((id, entry_id)): Path<(String, String)>,
+    Json(req): Json<UpdateStackEntryRequest>,
+) -> Result<Json<StackEntry>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let project = projects::get_project_by_id_or_slug(&pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+
+    let entry = project_stack::update_entry(
+        &pool,
+        &project.id,
+        &entry_id,
+        UpdateStackEntry {
+            service_name: req.service_name,
+            category: req.category,
+            // Explicit null clears; a set value is trimmed, and trimming to
+            // empty also clears (an all-whitespace identity is no identity).
+            identity: req
+                .identity
+                .map(|v| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())),
+            notes: req.notes,
+            dashboard_url: req
+                .dashboard_url
+                .map(|v| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())),
+        },
+    )
+    .await
+    .map_err(stack_error_status)?
+    .ok_or((StatusCode::NOT_FOUND, "Stack entry not found".to_string()))?;
+
+    tracing::info!(project = %project.id, entry = %entry.id, "stack entry updated");
+    Ok(Json(entry))
+}
+
+/// DELETE /api/projects/{id}/stack/{entry_id} — remove a stack entry. 200 on
+/// delete, 404 if no such entry.
+async fn delete_stack_entry_handler(
+    State(state): State<Arc<AppState>>,
+    Path((id, entry_id)): Path<(String, String)>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let project = projects::get_project_by_id_or_slug(&pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+
+    let deleted = project_stack::delete_entry(&pool, &project.id, &entry_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    if !deleted {
+        return Err((StatusCode::NOT_FOUND, "Stack entry not found".to_string()));
+    }
+    tracing::info!(project = %project.id, entry = %entry_id, "stack entry deleted");
+    Ok(StatusCode::OK)
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/projects", get(list_projects_handler))
@@ -1221,6 +1417,14 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route(
             "/api/projects/{id}/index-code",
             post(index_project_code_handler),
+        )
+        .route(
+            "/api/projects/{id}/stack",
+            get(list_stack_entries_handler).post(create_stack_entry_handler),
+        )
+        .route(
+            "/api/projects/{id}/stack/{entry_id}",
+            patch(update_stack_entry_handler).delete(delete_stack_entry_handler),
         )
         .with_state(state)
 }

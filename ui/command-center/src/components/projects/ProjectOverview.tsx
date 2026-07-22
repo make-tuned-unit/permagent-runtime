@@ -9,6 +9,7 @@ import { Panel } from './Panel';
 import { PeoplePanel } from './PeoplePanel';
 import { DocumentsPanel } from './DocumentsPanel';
 import { NotesPanel } from './NotesPanel';
+import { StackPanel } from './StackPanel';
 import { CodeIndexPanel } from './CodeIndexPanel';
 import { MemoriesPanel } from './MemoriesPanel';
 import { readBrief, readLinks, normalizeUrl, saveProjectSummary, type WorkspaceLink } from './workspaceMeta';
@@ -20,8 +21,10 @@ import type { Project, BoardColumn, Card } from './types';
 // The "command-center dash" lens of the Projects tab (#471, Layer 1). A
 // two-column read of a single project. LEFT = substance, RIGHT = people +
 // action. Ships Summary, Key Facts, Links, Tasks, People, Documents (the
-// #471 Layer 2 document hub + in-app viewer), and Notes (freeform notes the
-// user writes, indexed into the Brain). The Memories panel closes the Brain
+// #471 Layer 2 document hub + in-app viewer), Notes (freeform notes the
+// user writes, indexed into the Brain), and Stack (#512 — which services the
+// project runs on + which login identity per service, reference-only, no
+// secrets). The Memories panel closes the Brain
 // loop: it reads back the Brain memories this project's own surfaces wrote
 // (notes / documents / indexed code), each deep-linkable into the Brain view.
 
@@ -66,6 +69,8 @@ export function ProjectOverview({ project, onProjectUpdated }: {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
           <SummaryPanel project={project} onProjectUpdated={onProjectUpdated} />
           <KeyFactsPanel project={project} />
+          {/* Stack organizer (#512): services + login identity, reference-only. */}
+          <StackPanel project={project} />
           <MemoriesPanel project={project} />
           <DocumentsPanel project={project} />
           <NotesPanel project={project} />

@@ -55,6 +55,7 @@ pub mod project_association;
 pub mod project_documents;
 pub mod project_graph;
 pub mod project_notes;
+pub mod project_stack;
 pub mod projects;
 pub mod prompt_template;
 pub mod providers;

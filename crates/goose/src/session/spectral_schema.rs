@@ -709,6 +709,12 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // migrate_v28_to_v29. Append-only, purely additive, base-independent.
     apply_egress_audit_schema(pool).await?;
 
+    // Project stack organizer table (schema v31, #512): which services a
+    // project runs on + which login identity is used per service —
+    // reference-only, no secrets by design. Idempotent; shared with
+    // migrate_v30_to_v31. Purely additive, base-independent.
+    apply_project_stack_schema(pool).await?;
+
     info!(
         "Spectral schema v{} initialized successfully",
         SPECTRAL_SCHEMA_VERSION
@@ -1204,6 +1210,78 @@ pub async fn migrate_v29_to_v30(pool: &Pool<Sqlite>) -> Result<()> {
         .await?;
     info!("Spectral schema migrated to v30 ({added} Failed columns added)");
 
+    Ok(())
+}
+
+/// Apply the project stack-organizer schema (#512): `project_stack_entries`
+/// — one row per service a project is built on, recording WHICH login identity
+/// (email/handle) is used for that service on that project.
+///
+/// REFERENCE-ONLY BY DESIGN: there is deliberately no column for a password,
+/// token, or secret of any kind, and none may ever be added here — the actual
+/// credential stays in the user's password manager. `identity` is the
+/// low-sensitivity account label ("jesse+kinrows@…"), nothing more (#512 ruled
+/// out autofill/secret storage after the WKWebView/Associated-Domains research).
+///
+/// The `category` CHECK mirrors the `projects.status` inline-CHECK precedent;
+/// the Rust-side [`crate::project_stack::VALID_CATEGORIES`] list must stay in
+/// sync with it (widen BOTH if a category is ever added). The `project_id` FK
+/// cascades on project delete. Fully idempotent
+/// (`CREATE TABLE / INDEX / TRIGGER IF NOT EXISTS`), base-independent.
+pub async fn apply_project_stack_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool.begin().await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS project_stack_entries (
+            id            TEXT PRIMARY KEY,
+            project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            service_name  TEXT NOT NULL,
+            category      TEXT NOT NULL DEFAULT 'other'
+                          CHECK (category IN ('hosting', 'database', 'backend', 'auth',
+                                              'analytics', 'social', 'domain', 'other')),
+            identity      TEXT,
+            notes         TEXT NOT NULL DEFAULT '',
+            dashboard_url TEXT,
+            created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_project_stack_entries_project \
+         ON project_stack_entries(project_id, category, service_name)",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS trg_project_stack_entries_updated_at
+            AFTER UPDATE ON project_stack_entries
+            FOR EACH ROW
+            BEGIN
+                UPDATE project_stack_entries SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                WHERE id = NEW.id;
+            END",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Migrate an existing database to the project stack-organizer schema (v31,
+/// #512). Purely additive and base-version independent
+/// (`CREATE ... IF NOT EXISTS`), so it applies cleanly over any earlier base.
+/// Records v31 in `schema_version`. (Reconciled onto v31: main already used v30
+/// for the #250 Failed-column backfill.)
+pub async fn migrate_v30_to_v31(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v30 -> v31 (project stack organizer)");
+    apply_project_stack_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (31)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v31 (project stack organizer)");
     Ok(())
 }
 

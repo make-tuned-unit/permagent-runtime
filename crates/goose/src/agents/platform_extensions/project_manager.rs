@@ -348,7 +348,10 @@ pub const PROJECT_WORKSPACE_FEATURE: crate::agents::self_knowledge::FeatureDescr
             "The Projects tab where each project opens into a workspace with two lenses, toggled \
              in shared chrome: an Overview dashboard (summary, key facts, links, live task \
              status, the People panel with person profile cards, the Documents hub with an \
-             in-app viewer for PDFs/images/markdown, a Notes panel, and a Memories panel that \
+             in-app viewer for PDFs/images/markdown, a Notes panel, a Stack panel that lists \
+             each service the project is built on and which login identity (an email or account \
+             label) the user signs in with per service — a reference card only, it never stores \
+             passwords or secrets — and a Memories panel that \
              lists what your Brain has learned about the project — each with a 'View in Brain' \
              deep-link that focuses that memory in the Brain view) and the Kanban board of \
              goal and to-do cards. A document dropped into a project is extracted and indexed \

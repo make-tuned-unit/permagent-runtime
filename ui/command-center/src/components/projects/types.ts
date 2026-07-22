@@ -108,6 +108,52 @@ export interface ProjectNote {
 }
 
 /**
+ * A stack-organizer entry (#512, `GET /api/projects/{id}/stack`): one service
+ * the project is built on + WHICH login identity is used for it. Serialized
+ * **snake_case** (the backend `StackEntry` struct carries no `rename_all`) —
+ * match the wire exactly. REFERENCE-ONLY: `identity` is the account label
+ * (email/handle), never a password/secret — the backend has no field for one
+ * and rejects unknown fields.
+ */
+export interface StackEntry {
+  id: string;
+  project_id: string;
+  service_name: string;
+  category: StackCategory;
+  identity: string | null;
+  notes: string;
+  dashboard_url: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Valid stack-entry categories (mirrors the backend CHECK constraint). */
+export const STACK_CATEGORIES = [
+  'hosting',
+  'database',
+  'backend',
+  'auth',
+  'analytics',
+  'social',
+  'domain',
+  'other',
+] as const;
+
+export type StackCategory = (typeof STACK_CATEGORIES)[number];
+
+/** Display labels for stack categories, in display order. */
+export const STACK_CATEGORY_LABELS: Record<StackCategory, string> = {
+  hosting: 'Hosting',
+  database: 'Database',
+  backend: 'Backend',
+  auth: 'Auth',
+  analytics: 'Analytics',
+  social: 'Social',
+  domain: 'Domain',
+  other: 'Other',
+};
+
+/**
  * A Brain memory associated with a project (`GET /api/projects/{id}/memories`).
  * Resolved from the LIVE Brain (`memory.db`) — content/description reflect the
  * current memory, not a stale copy. Serialized **snake_case** (the backend

@@ -943,6 +943,14 @@ impl SessionStorage {
                     if version < 30 {
                         spectral_schema::migrate_v29_to_v30(&self.pool).await?;
                     }
+                    // v31: project_stack_entries table (#512, stack organizer).
+                    // Per-project services + login-identity reference rows —
+                    // reference-only, no secrets by design. Purely additive
+                    // (CREATE ... IF NOT EXISTS), base-independent, always-on.
+                    // (Reconciled onto v31: v30 was taken by the #250 backfill.)
+                    if version < 31 {
+                        spectral_schema::migrate_v30_to_v31(&self.pool).await?;
+                    }
                     // Version-independent safety net for the cfg-gated v22
                     // recognition columns. The always-on v23 above can stamp
                     // schema_version past the `version < 22` gate on a feature-off
