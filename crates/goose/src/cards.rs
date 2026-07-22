@@ -1123,6 +1123,41 @@ pub async fn count_cards(
     }
 }
 
+/// Per-worker active load (#212): the number of goal cards currently
+/// `in_progress`, grouped by their `worker_key` metadata.
+///
+/// This is the authoritative source for the orchestrator's `select_worker`
+/// tie-break ("fewest active goals wins"). It counts goals rather than
+/// SessionManager sessions because the goal card is tagged with `worker_key` on
+/// EVERY dispatch — including external-CLI and supervised workers that never
+/// create a SessionManager session — so the count is complete and engine-
+/// agnostic. Best-effort: cards with no `worker_key` are skipped.
+pub async fn active_worker_load(
+    pool: &Pool<Sqlite>,
+) -> Result<std::collections::HashMap<String, usize>, String> {
+    let rows = sqlx::query_as::<_, (String,)>(
+        "SELECT c.metadata_json FROM cards c
+         JOIN board_columns bc ON c.column_id = bc.id
+         WHERE c.card_type = 'goal'
+           AND bc.state_binding = 'in_progress'
+           AND c.archived_at IS NULL",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut load: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (meta_str,) in rows {
+        let Ok(meta) = serde_json::from_str::<serde_json::Value>(&meta_str) else {
+            continue;
+        };
+        if let Some(worker) = meta.get("worker_key").and_then(|v| v.as_str()) {
+            *load.entry(worker.to_string()).or_insert(0) += 1;
+        }
+    }
+    Ok(load)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

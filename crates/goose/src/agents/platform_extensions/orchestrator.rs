@@ -486,7 +486,13 @@ impl OrchestratorClient {
 
     /// Thin wrapper (#213): delegates to the free [`select_worker_fn`].
     pub async fn select_worker(&self, goal: &cards::Card) -> Result<String, String> {
-        select_worker_fn(&self.probe_cache, goal).await
+        let pool = self
+            .context
+            .session_manager
+            .pool_clone()
+            .await
+            .map_err(|e| e.to_string())?;
+        select_worker_fn(&pool, &self.probe_cache, goal).await
     }
 
     /// Thin wrapper (#213): delegates to the free [`dispatch_goal_fn`], then
@@ -555,14 +561,18 @@ pub(crate) struct WorkerSelection {
 /// to the pure `goal_state::select_best_worker` algorithm. Returns only the
 /// key; [`select_worker_detailed`] additionally returns the routing snapshot.
 pub(crate) async fn select_worker_fn(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
     probe_cache: &ProbeCache,
     goal: &cards::Card,
 ) -> Result<String, String> {
-    Ok(select_worker_detailed(probe_cache, goal).await?.worker_key)
+    Ok(select_worker_detailed(pool, probe_cache, goal)
+        .await?
+        .worker_key)
 }
 
 /// Select a worker AND capture the capability snapshot used for routing (#211).
 pub(crate) async fn select_worker_detailed(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
     probe_cache: &ProbeCache,
     goal: &cards::Card,
 ) -> Result<WorkerSelection, String> {
@@ -580,12 +590,12 @@ pub(crate) async fn select_worker_detailed(
         })
         .unwrap_or_else(|| vec!["code_edit".to_string(), "shell".to_string()]);
 
-    // Build candidate list with availability + session counts
-    let manager = get_agent_manager_fn().await.ok();
-    let active_ids = match &manager {
-        Some(m) => m.list_active_session_ids().await,
-        None => Vec::new(),
-    };
+    // Per-worker active load for the tie-break (#212): count in-progress goal
+    // cards grouped by their spawning `worker_key`. Authoritative and engine-
+    // agnostic (see `cards::active_worker_load`). Best-effort — a query error
+    // yields an empty map (all zeros), which degrades to the alphabetical
+    // final tie-break exactly as before.
+    let load = cards::active_worker_load(pool).await.unwrap_or_default();
 
     let candidates: Vec<goal_state::WorkerCandidate> = config
         .workers
@@ -603,17 +613,7 @@ pub(crate) async fn select_worker_detailed(
                 }
             };
 
-            // Count active sessions for this worker (best-effort from session names)
-            let active_sessions = active_ids
-                .iter()
-                .filter(|id| {
-                    // Sessions spawned by this worker will have the worker key
-                    // in their name or metadata — for now, approximate as 0
-                    // since we don't yet track per-worker session counts.
-                    let _ = id;
-                    false
-                })
-                .count();
+            let active_sessions = load.get(key).copied().unwrap_or(0);
 
             goal_state::WorkerCandidate {
                 key: key.clone(),
@@ -744,7 +744,7 @@ pub(crate) async fn dispatch_goal_fn(
     // Select worker — on failure, leave card in Ready, no metadata changes.
     // #211: also capture the routing snapshot (why this worker won) so the
     // dispatch decision is auditable after the fact.
-    let selection = select_worker_detailed(probe_cache, &card).await?;
+    let selection = select_worker_detailed(&pool, probe_cache, &card).await?;
     let worker_key = selection.worker_key.clone();
     let capability_snapshot = selection.snapshot;
 
@@ -5769,6 +5769,64 @@ mod tests {
                 .unwrap()
                 .is_none(),
             "no unblock decision while within budget"
+        );
+    }
+
+    /// Raw-SQL stamp of a card's `worker_key` (a protected metadata key), used
+    /// to simulate a dispatched-goal card in tests without going through the
+    /// guarded transition path.
+    async fn set_worker_key(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str, worker_key: &str) {
+        let card = cards::get_card(pool, card_id).await.unwrap().unwrap();
+        let mut meta = card.metadata_json.as_object().cloned().unwrap();
+        meta.insert("worker_key".to_string(), serde_json::json!(worker_key));
+        let meta_str = serde_json::to_string(&serde_json::Value::Object(meta)).unwrap();
+        sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+            .bind(&meta_str)
+            .bind(card_id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn active_worker_load_drives_tie_break() {
+        // #212: the tie-break counts in-progress goals per spawning worker and
+        // picks the least-loaded eligible worker — overriding the alphabetical
+        // final tie-break the old (always-zero) count degraded to.
+        let pool = test_pool().await;
+
+        // Two in-progress goals already dispatched to "atlas", none to "zeta".
+        for _ in 0..2 {
+            let c = setup_goal_in_state(&pool, "in_progress", 1).await;
+            set_worker_key(&pool, &c.id, "atlas").await;
+        }
+
+        let load = cards::active_worker_load(&pool).await.unwrap();
+        assert_eq!(load.get("atlas").copied(), Some(2));
+        assert_eq!(load.get("zeta").copied(), None);
+
+        // Same tier + capability, both available: fewest active goals wins.
+        let candidates = vec![
+            goal_state::WorkerCandidate {
+                key: "atlas".to_string(),
+                available: true,
+                tool_kinds: vec!["code_edit".to_string()],
+                cost_tier: "subscription".to_string(),
+                active_sessions: load.get("atlas").copied().unwrap_or(0),
+            },
+            goal_state::WorkerCandidate {
+                key: "zeta".to_string(),
+                available: true,
+                tool_kinds: vec!["code_edit".to_string()],
+                cost_tier: "subscription".to_string(),
+                active_sessions: load.get("zeta").copied().unwrap_or(0),
+            },
+        ];
+        let chosen =
+            goal_state::select_best_worker(&candidates, &["code_edit".to_string()]).unwrap();
+        assert_eq!(
+            chosen, "zeta",
+            "least-loaded worker must win, overriding alphabetical (atlas < zeta)"
         );
     }
 
