@@ -652,6 +652,13 @@ fn build_description_prompt(
 ) -> String {
     // Truncate content to avoid blowing context on very large memories
     let content: String = memory.content.chars().take(2000).collect();
+    // Mask long opaque IDs (UUIDs, hashes, `task_…`/`slack_…` keys) so the
+    // describe model doesn't try to transcribe them into the FACTS line and
+    // truncate them mid-token, producing garbled sentences like "task 0e Slack"
+    // instead of "task via Slack" (#77). Replacing them with a short, stable
+    // placeholder leaves the surrounding prose — and the FACTS/TERMS/CATEGORIES
+    // bridging — intact.
+    let content = mask_opaque_ids(&content);
     let mut prompt = format!("Memory key: {}\nMemory content: {}\n", memory.key, content);
     if let Some(ctx) = cross_context {
         prompt.push('\n');
@@ -660,6 +667,74 @@ fn build_description_prompt(
     }
     prompt.push_str("\nOutput the three labeled fields.");
     prompt
+}
+
+/// Whether a bare `[A-Za-z0-9_-]` token is an opaque machine identifier — the
+/// kind the describe model garbles when it tries to restate it (#77). Matches
+/// the two signatures that actually appear in imported content while leaving
+/// ordinary prose (long words, bare years, dates) untouched:
+///
+/// * an underscore-joined key that carries a digit (`task_0e7a5d3f`,
+///   `slack_1776885565`), and
+/// * a hash/UUID-like run of >= 8 contiguous alphanumerics that mixes letters
+///   and digits (`550e8400`, `0e7a5d3f`).
+///
+/// Both require the whole token to be >= 12 chars, so short hex fragments and
+/// normal hyphenated words (`state-of-the-art`, `well-being`) are never masked.
+fn is_opaque_id(token: &str) -> bool {
+    if token.len() < 12 {
+        return false;
+    }
+    if token.contains('_') && token.chars().any(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    // Longest contiguous alphanumeric run that mixes a letter and a digit.
+    let mut run_len = 0usize;
+    let mut run_alpha = false;
+    let mut run_digit = false;
+    for c in token.chars() {
+        if c.is_ascii_alphanumeric() {
+            run_len += 1;
+            run_alpha |= c.is_ascii_alphabetic();
+            run_digit |= c.is_ascii_digit();
+            if run_len >= 8 && run_alpha && run_digit {
+                return true;
+            }
+        } else {
+            run_len = 0;
+            run_alpha = false;
+            run_digit = false;
+        }
+    }
+    false
+}
+
+/// Replace opaque machine identifiers in `content` with a `[id]` placeholder.
+/// Scans maximal `[A-Za-z0-9_-]` runs so punctuation and whitespace (and the
+/// surrounding sentence) are preserved verbatim; only whole ID tokens change.
+fn mask_opaque_ids(content: &str) -> String {
+    let mut out = String::with_capacity(content.len());
+    let mut token = String::new();
+    let flush = |token: &mut String, out: &mut String| {
+        if !token.is_empty() {
+            if is_opaque_id(token) {
+                out.push_str("[id]");
+            } else {
+                out.push_str(token);
+            }
+            token.clear();
+        }
+    };
+    for ch in content.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            token.push(ch);
+        } else {
+            flush(&mut token, &mut out);
+            out.push(ch);
+        }
+    }
+    flush(&mut token, &mut out);
+    out
 }
 
 /// Parse the three-field structural output into a single description string.
@@ -1353,6 +1428,54 @@ mod tests {
         let mem_pos = prompt.find("Memory content:").unwrap();
         let out_pos = prompt.find("Output the three labeled fields.").unwrap();
         assert!(mem_pos < ctx_pos && ctx_pos < out_pos);
+    }
+
+    // ── #77: opaque-ID masking ────────────────────────────────────────────
+
+    #[test]
+    fn test_mask_opaque_ids_replaces_task_and_slack_keys() {
+        // The exact garble-inducing token from #77 (task_<hex>…) plus a Slack key.
+        let masked =
+            mask_opaque_ids("Completed task_0e7a5d3f-4b21-9c88 via Slack (slack_1776885565).");
+        assert_eq!(masked, "Completed [id] via Slack ([id]).");
+    }
+
+    #[test]
+    fn test_mask_opaque_ids_replaces_uuid_and_hash() {
+        let masked = mask_opaque_ids(
+            "run 550e8400-e29b-41d4-a716-446655440000 sha 9f86d081884c7d659a2feaa0c55ad015",
+        );
+        assert_eq!(masked, "run [id] sha [id]");
+    }
+
+    #[test]
+    fn test_mask_opaque_ids_leaves_prose_intact() {
+        // Long words, bare years, dates, and hyphenated words must survive
+        // untouched — masking must not eat real content or the FTS bridge.
+        let text =
+            "On 2026-03-14 the state-of-the-art internationalization effort shipped 42 fixes.";
+        assert_eq!(mask_opaque_ids(text), text);
+    }
+
+    #[test]
+    fn test_is_opaque_id_boundaries() {
+        assert!(is_opaque_id("task_0e7a5d3f4b21")); // underscore + digits, len>=12
+        assert!(is_opaque_id("550e8400e29b41d4")); // 16-char mixed run
+        assert!(!is_opaque_id("0e7a5d3f")); // 8 chars — too short overall
+        assert!(!is_opaque_id("internationalization")); // long word, no digit
+        assert!(!is_opaque_id("state-of-the-art")); // hyphenated words, no digit
+        assert!(!is_opaque_id("1776885565")); // bare number (date/count) — kept
+    }
+
+    /// End-to-end: the describe prompt built for a memory whose content carries
+    /// a long ID no longer exposes that ID to the model (#77).
+    #[test]
+    fn test_prompt_building_masks_ids_in_content() {
+        let mut mem = test_memory();
+        mem.content = "Jesse asked Henry to run task_0e7a5d3f-4b21 via Slack.".to_string();
+        let prompt = build_description_prompt(&mem, None);
+        assert!(!prompt.contains("task_0e7a5d3f"));
+        assert!(prompt.contains("run [id] via Slack"));
     }
 
     #[test]
