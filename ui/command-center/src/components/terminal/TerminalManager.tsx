@@ -5,6 +5,8 @@ import { useTheme } from '../../styles/useTheme';
 import { registerDropZone } from '../../lib/native-drag-drop';
 import { resolvePtyInjection } from './terminalDrop';
 import { font } from '../../styles/tokens';
+import { CycleTabsButton } from '../build/CycleTabsButton';
+import { nextPaneTabId, usePaneTabCycling } from '../build/paneTabCycling';
 
 export interface TerminalManagerHandle {
   createProjectTab: (cwd: string, label: string, initialCommand?: string, supervisedSessionId?: string) => void;
@@ -78,6 +80,16 @@ export const TerminalManager = forwardRef<TerminalManagerHandle>(function Termin
   activeTabIdRef.current = activeTabId;
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
+
+  const cycleTabs = useCallback((backwards = false) => {
+    const nextId = nextPaneTabId(
+      tabsRef.current.map(tab => tab.id),
+      activeTabIdRef.current,
+      backwards,
+    );
+    if (nextId) setActiveTabId(nextId);
+  }, []);
+  const selectPane = usePaneTabCycling('terminal', rootRef, cycleTabs);
 
   // Persist state on unmount so terminal survives workspace switches
   useEffect(() => {
@@ -219,7 +231,7 @@ export const TerminalManager = forwardRef<TerminalManagerHandle>(function Termin
   }, [handleNewTab, handleCloseTab]);
 
   return (
-    <div ref={rootRef} className="relative flex h-full flex-col" style={{ backgroundColor: colors.bg }}>
+    <div ref={rootRef} onFocusCapture={selectPane} className="relative flex h-full flex-col" style={{ backgroundColor: colors.bg }}>
       {/* Drop-to-CC-terminal overlay (#557): shown while a file is dragged over
           the pane. pointer-events-none so it never intercepts the native drop. */}
       {dropActive && (
@@ -261,6 +273,7 @@ export const TerminalManager = forwardRef<TerminalManagerHandle>(function Termin
             </button>
           ))}
         </div>
+        <CycleTabsButton pane="terminal" onCycle={() => cycleTabs()} />
         <button
           onClick={handleNewTab}
           className="px-2.5 py-1.5 text-dark-muted hover:text-accent transition-colors"

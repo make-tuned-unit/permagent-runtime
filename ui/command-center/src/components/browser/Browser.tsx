@@ -15,6 +15,7 @@ import { BrowserTabs, type BrowserTab } from './BrowserTabs';
 import { BookmarksBar } from './BookmarksBar';
 import { CHAT_LAUNCHER_MARGIN } from '../chat/ChatLauncher';
 import { CHAT_DOCK_WIDTH } from '../chat/ChatDock';
+import { nextPaneTabId, usePaneTabCycling } from '../build/paneTabCycling';
 
 // ── Tauri API loader (cached, no module-level mutation) ──
 
@@ -108,6 +109,7 @@ export function Browser() {
   const [zoomLevel, setZoomLevel] = useState(1.0);
   const urlInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
 
   // Refs that always hold the latest value (for callbacks and cleanup)
   const tabsRef = useRef(tabs);
@@ -566,6 +568,19 @@ export function Browser() {
     [tabs],
   );
 
+  const cycleTabs = useCallback((backwards = false) => {
+    const nextId = nextPaneTabId(
+      tabsRef.current.map(tab => tab.id),
+      activeTabIdRef.current,
+      backwards,
+    );
+    if (!nextId) return;
+    const nextTab = tabsRef.current.find(tab => tab.id === nextId);
+    setActiveTabId(nextId);
+    setUrlInput(nextTab?.url ?? '');
+  }, []);
+  const selectPane = usePaneTabCycling('browser', rootRef, cycleTabs);
+
   const handleReload = useCallback(() => {
     if (!activeTab?.webviewId || !apiRef.current) return;
     apiRef.current.invoke('navigate_browser', {
@@ -645,7 +660,7 @@ export function Browser() {
   const protocol = activeTab?.url ? getUrlProtocol(activeTab.url) : 'other';
 
   return (
-    <div className="flex h-full flex-col" style={{ backgroundColor: colors.bg }}>
+    <div ref={rootRef} onFocusCapture={selectPane} className="flex h-full flex-col" style={{ backgroundColor: colors.bg }}>
       {/* Tab bar */}
       <BrowserTabs
         tabs={tabs}
@@ -654,6 +669,7 @@ export function Browser() {
         onSelectTab={handleSelectTab}
         onCloseTab={handleCloseTab}
         onNewTab={handleNewTab}
+        onCycleTab={() => cycleTabs()}
       />
 
       {/* URL bar */}
