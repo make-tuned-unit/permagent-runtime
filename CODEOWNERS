@@ -1,0 +1,20 @@
+# Code owners for permagent-runtime.
+# Owners are automatically requested for review on PRs touching matching paths.
+# Solo-owner today (@make-tuned-unit); refine per-path as the team grows.
+#
+# NOTE: required-review branch protection is intentionally NOT enabled yet — a solo
+# owner cannot approve their own PR, so requiring review would block all merges.
+# See docs/policies/change-management.md for the sequenced plan (review at team-of-2).
+
+* @make-tuned-unit
+
+# Security- and compliance-sensitive areas — always route to the owner (and, once a
+# security reviewer exists, to them) even after per-path ownership is added.
+/crates/goose/src/sovereignty/            @make-tuned-unit
+/crates/goose-server/src/auth.rs          @make-tuned-unit
+/crates/goose/src/agents/self_knowledge/  @make-tuned-unit
+/docs/design/*federation*                 @make-tuned-unit
+/docs/design/sovereign-offboarding*       @make-tuned-unit
+/docs/design/soc2-scoping.md              @make-tuned-unit
+/docs/policies/                           @make-tuned-unit
+/.github/workflows/                        @make-tuned-unit
