@@ -11,6 +11,7 @@
 // metadata as those land.
 
 import { useCallback, useEffect, useState } from 'react';
+import type { CSSProperties } from 'react';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/tokens';
@@ -89,6 +90,40 @@ interface GrowthInboxData {
   moves: GrowthMove[];
   wins: GrowthWin[];
   signal: { posts: number; shipped: number; activeGoals: number; daysSinceLastPost: number | null };
+}
+
+// ── Analytics connection (backend routes/grow_analytics.rs) ──────────────────
+// Ruled decision (2026-07-20): the analytics lens is an API CLIENT to an
+// existing web-analytics account (read-only stats fetch), not a self-hosted
+// collector. Wire types mirror the Rust responses (camelCase).
+type AnalyticsProviderId = 'plausible' | 'plausible_v2' | 'goatcounter';
+const PROVIDER_LABELS: Record<AnalyticsProviderId, string> = {
+  plausible: 'Plausible (v1 · CE)',
+  plausible_v2: 'Plausible Cloud (v2)',
+  goatcounter: 'GoatCounter',
+};
+interface AnalyticsConnectionStatus {
+  connected: boolean;
+  provider: AnalyticsProviderId | null;
+  baseUrl: string | null;
+  siteId: string | null;
+  /** Whether a key is stored server-side — the key itself is never sent back. */
+  hasApiKey: boolean;
+}
+interface AnalyticsStatsData {
+  connected: boolean;
+  provider: AnalyticsProviderId | null;
+  periodDays: number | null;
+  visitors: number | null;
+  pageviews: number | null;
+  /** Fetch failures (provider down, bad key, sovereign mode) arrive here — honest, never faked. */
+  error: string | null;
+}
+interface AnalyticsTestResult {
+  ok: boolean;
+  visitors: number | null;
+  pageviews: number | null;
+  error: string | null;
 }
 
 type GrowLens = 'strategy' | 'calendar' | 'analytics';
@@ -464,14 +499,16 @@ function ErrorState({ colors, message, onRetry, inline }: { colors: ThemeColors;
   );
 }
 
-// ── Analytics lens — PostHog-style growth funnel + metric tiles ──────────────
+// ── Analytics lens — growth funnel + metric tiles ────────────────────────────
 //
-// v1 shows REAL, derivable signal (content published, goals shipped) and the
-// funnel scaffold the growth metrics plug into. Live product analytics
-// (visitors, signups, retention) require an events pipeline — the Grow epic's
-// analytics slice wires a self-hosted PostHog / native event bridge here. The
-// scaffold is honest: metrics with no source yet say so rather than faking a
-// number.
+// Shows REAL, derivable signal (content published, goals shipped) plus live
+// visitors/pageviews once an analytics account is connected below. Ruled
+// decision (2026-07-20): connect to an EXISTING analytics account via its
+// stats API — Plausible (v1 Stats API, CE-compatible), Plausible Cloud (v2),
+// or GoatCounter — read-only, provider-pluggable. This supersedes the earlier
+// "self-hosted PostHog / native event bridge" plan. Metrics no provider
+// exposes without goal config (signups, retention) keep their honest "no
+// source" hints rather than faking a number.
 
 function GrowAnalytics({
   project, posts, colors,
@@ -495,23 +532,94 @@ function GrowAnalytics({
 
   useEffect(() => { loadInbox(project.id); }, [project.id, loadInbox]);
 
+  // Analytics connection + live stats. The connection status loads first;
+  // stats only fetch once a provider is connected (no pointless round-trip on
+  // the empty state).
+  const [conn, setConn] = useState<AnalyticsConnectionStatus | null>(null);
+  const [connState, setConnState] = useState<LoadState>('loading');
+  const [stats, setStats] = useState<AnalyticsStatsData | null>(null);
+  const [statsState, setStatsState] = useState<LoadState>('ready');
+
+  const loadStats = useCallback((id: string) => {
+    setStatsState('loading');
+    apiFetch<AnalyticsStatsData>(`/api/projects/${encodeURIComponent(id)}/analytics/stats?period=30d`)
+      .then((s) => { setStats(s); setStatsState('ready'); })
+      .catch(() => { setStats(null); setStatsState('error'); });
+  }, []);
+
+  const loadConnection = useCallback((id: string) => {
+    setConnState('loading');
+    setStats(null);
+    apiFetch<AnalyticsConnectionStatus>(`/api/projects/${encodeURIComponent(id)}/analytics/connection`)
+      .then((c) => {
+        setConn(c);
+        setConnState('ready');
+        if (c.connected) loadStats(id);
+      })
+      .catch(() => { setConn(null); setConnState('error'); });
+  }, [loadStats]);
+
+  useEffect(() => { loadConnection(project.id); }, [project.id, loadConnection]);
+
+  const connected = conn?.connected ?? false;
+  const providerLabel = conn?.provider ? PROVIDER_LABELS[conn.provider] : null;
+  const visitors = connected ? stats?.visitors ?? null : null;
+  const pageviews = connected ? stats?.pageviews ?? null : null;
+  const fetchFailed = connected && (statsState === 'error' || !!stats?.error);
+
+  // Hint for a connected-but-valueless metric slot: fetching, failed, or the
+  // provider genuinely doesn't expose it (e.g. GoatCounter has no site-wide
+  // pageview aggregate) — each state named honestly.
+  const liveHint = (notExposed: string, awaiting: string): string => {
+    if (!connected) return awaiting;
+    if (statsState === 'loading') return 'Fetching…';
+    if (fetchFailed) return 'Fetch failed — see the connection panel';
+    return notExposed;
+  };
+
   // The classic growth funnel (research: awareness → interest → action →
-  // retention). Awareness/reach comes from published content; the deeper
-  // stages await the analytics pipeline.
+  // retention). Awareness/reach comes from published content; Visitors is
+  // live once analytics is connected; signups/retention need provider goal
+  // events (flagged follow-up).
   const funnel = [
     { stage: 'Content live', value: posts.length, source: true, hint: 'Published social posts' },
-    { stage: 'Reach', value: null, source: false, hint: 'Impressions — connect a channel' },
-    { stage: 'Visitors', value: null, source: false, hint: 'Site sessions — connect analytics' },
-    { stage: 'Signups', value: null, source: false, hint: 'Conversions — connect analytics' },
-    { stage: 'Retained', value: null, source: false, hint: 'Return users — connect analytics' },
+    { stage: 'Reach', value: null as number | null, source: false, hint: 'Impressions — connect a channel' },
+    {
+      stage: 'Visitors',
+      value: visitors,
+      source: visitors != null,
+      hint: liveHint(`Not exposed by ${providerLabel}`, 'Site sessions — connect analytics below'),
+    },
+    {
+      stage: 'Signups',
+      value: null as number | null,
+      source: false,
+      hint: connected ? `Needs goal events in ${providerLabel} — follow-up` : 'Conversions — connect analytics below',
+    },
+    {
+      stage: 'Retained',
+      value: null as number | null,
+      source: false,
+      hint: connected ? `Needs goal events in ${providerLabel} — follow-up` : 'Return users — connect analytics below',
+    },
   ];
   const maxV = Math.max(1, ...funnel.map((f) => f.value ?? 0));
 
   const tiles = [
     { label: 'POSTS PUBLISHED', value: String(posts.length), sub: 'this project' },
     { label: 'ACTIVE CHANNELS', value: '0', sub: 'connect in the epic' },
-    { label: 'REACH (30D)', value: '—', sub: 'awaiting analytics' },
-    { label: 'CONVERSIONS', value: '—', sub: 'awaiting analytics' },
+    {
+      label: 'REACH (30D)',
+      value: pageviews != null ? pageviews.toLocaleString() : '—',
+      sub: pageviews != null
+        ? `pageviews · ${providerLabel}`
+        : liveHint(`not exposed by ${providerLabel}`, 'awaiting analytics'),
+    },
+    {
+      label: 'CONVERSIONS',
+      value: '—',
+      sub: connected ? 'needs provider goals — follow-up' : 'awaiting analytics',
+    },
   ];
 
   return (
@@ -529,9 +637,21 @@ function GrowAnalytics({
         border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: '8px 12px', marginBottom: 4,
       }}>
         Growth analytics for <strong style={{ color: colors.text }}>{project.name}</strong>. Real
-        signal shows now; live product metrics (visitors, signups, retention) light up when the
-        analytics pipeline is connected — nothing here is faked.
+        signal shows now; visitors and pageviews go live when you connect your analytics account
+        below (read-only) — nothing here is faked.
       </div>
+
+      {/* Analytics connection — the settings surface for the live metrics */}
+      <AnalyticsConnectionPanel
+        colors={colors}
+        projectId={project.id}
+        conn={conn}
+        connState={connState}
+        stats={stats}
+        statsState={statsState}
+        onReload={() => loadConnection(project.id)}
+        onRefreshStats={() => loadStats(project.id)}
+      />
 
       {/* Metric tiles */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 12 }}>
@@ -568,14 +688,309 @@ function GrowAnalytics({
                 )}
               </div>
               <div style={{
-                width: 40, textAlign: 'right', flexShrink: 0, fontFamily: font.mono, fontSize: 12,
+                minWidth: 40, textAlign: 'right', flexShrink: 0, fontFamily: font.mono, fontSize: 12,
                 color: colors.text, fontVariantNumeric: 'tabular-nums',
-              }}>{f.source ? f.value : ''}</div>
+              }}>{f.source ? f.value?.toLocaleString() : ''}</div>
             </div>
           ))}
         </div>
       </section>
     </>
+  );
+}
+
+// ── Analytics connection panel ───────────────────────────────────────────────
+// The "connect analytics" settings surface on the analytics lens. Every
+// control hits a real endpoint (save / test / stats / disconnect) — no dead
+// UI. The API key is write-only: sent on save, never read back.
+
+function AnalyticsConnectionPanel({
+  colors, projectId, conn, connState, stats, statsState, onReload, onRefreshStats,
+}: {
+  colors: ThemeColors;
+  projectId: string;
+  conn: AnalyticsConnectionStatus | null;
+  connState: LoadState;
+  stats: AnalyticsStatsData | null;
+  statsState: LoadState;
+  onReload: () => void;
+  onRefreshStats: () => void;
+}) {
+  const [showForm, setShowForm] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [disconnecting, setDisconnecting] = useState(false);
+
+  // Transient panel state must not leak across a project switch.
+  useEffect(() => { setShowForm(false); setTestResult(null); }, [projectId]);
+
+  const runTest = () => {
+    setTesting(true);
+    setTestResult(null);
+    apiFetch<AnalyticsTestResult>(
+      `/api/projects/${encodeURIComponent(projectId)}/analytics/connection/test`,
+      { method: 'POST' },
+    )
+      .then((r) => setTestResult(r.ok
+        ? {
+          ok: true,
+          message: `Connection OK — ${(r.visitors ?? 0).toLocaleString()} visitors in the last 7 days.`,
+        }
+        : { ok: false, message: r.error ?? 'Test failed.' }))
+      .catch((e: Error) => setTestResult({ ok: false, message: e.message }))
+      .finally(() => setTesting(false));
+  };
+
+  const disconnect = () => {
+    setDisconnecting(true);
+    apiFetch(`/api/projects/${encodeURIComponent(projectId)}/analytics/connection`, { method: 'DELETE' })
+      .then(() => { setTestResult(null); setShowForm(false); onReload(); })
+      .catch((e: Error) => setTestResult({ ok: false, message: e.message }))
+      .finally(() => setDisconnecting(false));
+  };
+
+  const btnStyle: CSSProperties = {
+    fontSize: 11, fontFamily: font.body, color: colors.text,
+    background: 'transparent', border: `1px solid ${colors.border}`,
+    borderRadius: radius.md, padding: '4px 10px', cursor: 'pointer',
+  };
+
+  if (connState === 'error') {
+    return <ErrorState colors={colors} inline message="Couldn't load the analytics connection." onRetry={onReload} />;
+  }
+  if (connState === 'loading') {
+    return <LoadingState colors={colors} inline label="Checking analytics connection…" />;
+  }
+
+  if (showForm) {
+    return (
+      <AnalyticsConnectForm
+        colors={colors}
+        projectId={projectId}
+        conn={conn}
+        onCancel={() => setShowForm(false)}
+        onSaved={() => { setShowForm(false); setTestResult(null); onReload(); }}
+      />
+    );
+  }
+
+  if (!conn?.connected) {
+    return (
+      <div style={{
+        border: `1px dashed ${colors.border}`, borderRadius: radius.lg, padding: '16px 18px',
+        display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap',
+      }}>
+        <div style={{ flex: 1, minWidth: 220 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>Connect analytics</div>
+          <div style={{ fontSize: 11, color: colors.textDim, marginTop: 3, lineHeight: 1.5 }}>
+            Point the funnel at your existing Plausible or GoatCounter account — a read-only stats
+            fetch, your data stays where it is.
+          </div>
+        </div>
+        <button
+          onClick={() => setShowForm(true)}
+          style={{
+            fontSize: 12, fontFamily: font.body, color: colors.cyan, background: colors.cyanSoft,
+            border: `1px solid ${colors.borderHi}`, borderRadius: radius.md, padding: '7px 14px', cursor: 'pointer',
+          }}
+        >Connect analytics</button>
+      </div>
+    );
+  }
+
+  const providerLabel = conn.provider ? PROVIDER_LABELS[conn.provider] : conn.provider;
+  const statsLine = statsState === 'loading'
+    ? 'Fetching stats…'
+    : statsState === 'error'
+      ? 'Stats fetch failed — the daemon may be unreachable.'
+      : stats?.error
+        ? stats.error
+        : stats
+          ? [
+            stats.visitors != null ? `${stats.visitors.toLocaleString()} visitors` : null,
+            stats.pageviews != null ? `${stats.pageviews.toLocaleString()} pageviews` : null,
+          ].filter(Boolean).join(' · ') + ` (last ${stats.periodDays ?? 30}d)`
+          : '';
+  const statsFailed = statsState === 'error' || !!stats?.error;
+
+  return (
+    <div style={{
+      background: colors.surface, border: `1px solid ${colors.border}`,
+      borderRadius: radius.lg, padding: '12px 14px',
+      display: 'flex', flexDirection: 'column', gap: 8,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <span aria-hidden style={{
+          width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
+          background: statsFailed ? colors.warning : colors.success,
+        }} />
+        <span style={{ fontSize: 12, fontWeight: 600, color: colors.text }}>{providerLabel}</span>
+        <span style={{ fontSize: 11, color: colors.textMuted, fontFamily: font.mono }}>
+          {conn.baseUrl}{conn.siteId ? ` · ${conn.siteId}` : ''}
+        </span>
+        <div style={{ flex: 1 }} />
+        <button onClick={onRefreshStats} disabled={statsState === 'loading'} style={btnStyle}>Refresh</button>
+        <button onClick={runTest} disabled={testing} style={btnStyle}>{testing ? 'Testing…' : 'Test connection'}</button>
+        <button onClick={() => { setTestResult(null); setShowForm(true); }} style={btnStyle}>Edit</button>
+        <button
+          onClick={disconnect}
+          disabled={disconnecting}
+          style={{ ...btnStyle, color: colors.warning }}
+        >{disconnecting ? 'Disconnecting…' : 'Disconnect'}</button>
+      </div>
+      {statsLine && (
+        <div style={{ fontSize: 11, color: statsFailed ? colors.warning : colors.textMuted }}>{statsLine}</div>
+      )}
+      {testResult && (
+        <div style={{ fontSize: 11, color: testResult.ok ? colors.success : colors.warning }}>{testResult.message}</div>
+      )}
+    </div>
+  );
+}
+
+// The connect/edit form. Provider, base URL, site id, API key — saved via
+// PUT /analytics/connection. The key field is write-only: when one is already
+// stored, leaving it blank keeps it.
+function AnalyticsConnectForm({
+  colors, projectId, conn, onSaved, onCancel,
+}: {
+  colors: ThemeColors;
+  projectId: string;
+  conn: AnalyticsConnectionStatus | null;
+  onSaved: () => void;
+  onCancel: () => void;
+}) {
+  const [provider, setProvider] = useState<AnalyticsProviderId>(conn?.provider ?? 'plausible');
+  const [baseUrl, setBaseUrl] = useState(conn?.baseUrl ?? '');
+  const [siteId, setSiteId] = useState(conn?.siteId ?? '');
+  const [apiKey, setApiKey] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const needsSiteId = provider !== 'goatcounter';
+  const hasStoredKey = conn?.hasApiKey ?? false;
+  const canSave = baseUrl.trim() !== ''
+    && (!needsSiteId || siteId.trim() !== '')
+    && (hasStoredKey || apiKey.trim() !== '');
+
+  const baseUrlPlaceholder = provider === 'goatcounter'
+    ? 'https://yoursite.goatcounter.com'
+    : provider === 'plausible_v2'
+      ? 'https://plausible.io'
+      : 'https://plausible.example.com (or https://plausible.io)';
+
+  const save = () => {
+    setSaving(true);
+    setError(null);
+    const body: Record<string, string> = {
+      provider,
+      baseUrl: baseUrl.trim(),
+      siteId: needsSiteId ? siteId.trim() : '',
+    };
+    if (apiKey.trim()) body.apiKey = apiKey.trim();
+    apiFetch<AnalyticsConnectionStatus>(
+      `/api/projects/${encodeURIComponent(projectId)}/analytics/connection`,
+      { method: 'PUT', body: JSON.stringify(body) },
+    )
+      .then(() => { setApiKey(''); onSaved(); })
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setSaving(false));
+  };
+
+  const fieldStyle: CSSProperties = {
+    background: colors.bgDeeper, color: colors.text, border: `1px solid ${colors.border}`,
+    borderRadius: radius.md, padding: '6px 10px', fontSize: 12, fontFamily: font.body, width: '100%',
+    boxSizing: 'border-box',
+  };
+  const labelStyle: CSSProperties = {
+    fontSize: 10, fontFamily: font.mono, color: colors.textDim,
+    textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4, display: 'block',
+  };
+
+  return (
+    <div style={{
+      background: colors.surface, border: `1px solid ${colors.border}`,
+      borderRadius: radius.lg, padding: 16, display: 'flex', flexDirection: 'column', gap: 12,
+    }}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>
+        {conn?.connected ? 'Edit analytics connection' : 'Connect analytics'}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
+        <label>
+          <span style={labelStyle}>Provider</span>
+          <select
+            value={provider}
+            onChange={(e) => setProvider(e.target.value as AnalyticsProviderId)}
+            style={fieldStyle}
+          >
+            {(Object.keys(PROVIDER_LABELS) as AnalyticsProviderId[]).map((p) => (
+              <option key={p} value={p}>{PROVIDER_LABELS[p]}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span style={labelStyle}>Base URL</span>
+          <input
+            type="url"
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            placeholder={baseUrlPlaceholder}
+            style={fieldStyle}
+          />
+        </label>
+        {needsSiteId && (
+          <label>
+            <span style={labelStyle}>Site ID (domain)</span>
+            <input
+              type="text"
+              value={siteId}
+              onChange={(e) => setSiteId(e.target.value)}
+              placeholder="example.com"
+              style={fieldStyle}
+            />
+          </label>
+        )}
+        <label>
+          <span style={labelStyle}>API key</span>
+          <input
+            type="password"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder={hasStoredKey ? 'stored — leave blank to keep' : 'paste your stats API key'}
+            autoComplete="off"
+            style={fieldStyle}
+          />
+        </label>
+      </div>
+      <div style={{ fontSize: 10, color: colors.textDim, lineHeight: 1.5 }}>
+        {provider === 'goatcounter'
+          ? 'GoatCounter: your site lives in the URL (no separate site id). Create an API token under Settings → API in your GoatCounter dashboard.'
+          : 'Plausible: the site id is the domain as it appears in Plausible. Create a Stats API key under Settings → API keys.'}
+        {' '}Read-only — this never writes to your analytics account.
+      </div>
+      {error && <div style={{ fontSize: 11, color: colors.warning }}>{error}</div>}
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button
+          onClick={save}
+          disabled={!canSave || saving}
+          style={{
+            fontSize: 12, fontFamily: font.body,
+            color: canSave ? colors.cyan : colors.textDim,
+            background: canSave ? colors.cyanSoft : 'transparent',
+            border: `1px solid ${canSave ? colors.borderHi : colors.border}`,
+            borderRadius: radius.md, padding: '6px 14px',
+            cursor: canSave && !saving ? 'pointer' : 'default',
+          }}
+        >{saving ? 'Saving…' : 'Save connection'}</button>
+        <button
+          onClick={onCancel}
+          style={{
+            fontSize: 12, fontFamily: font.body, color: colors.textMuted, background: 'transparent',
+            border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: '6px 14px', cursor: 'pointer',
+          }}
+        >Cancel</button>
+      </div>
+    </div>
   );
 }
 

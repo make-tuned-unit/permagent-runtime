@@ -21,6 +21,7 @@ pub mod features;
 pub mod findings;
 pub mod gateway;
 pub mod grow;
+pub mod grow_analytics;
 pub mod henry_status;
 pub mod identity;
 pub mod inbox;
@@ -173,6 +174,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(projects::routes(state.clone()))
         .merge(cards::routes(state.clone()))
         .merge(grow::routes(state.clone()))
+        .merge(grow_analytics::routes(state.clone()))
         .merge(decisions::routes(state.clone()))
         .merge(devices::routes(state.clone()))
         .merge(agents::routes(state.clone()))

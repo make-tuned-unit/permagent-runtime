@@ -7579,6 +7579,7 @@ dependencies = [
  "utoipa 4.2.3",
  "uuid",
  "winreg",
+ "wiremock",
  "x25519-dalek",
  "zip 2.4.2",
 ]
