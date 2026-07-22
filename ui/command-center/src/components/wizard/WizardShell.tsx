@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ease } from '../../styles/tokens';
+import { ease, duration } from '../../styles/tokens';
 import { ProgressDots, BackChevron } from './atoms';
 import { MomentWelcome } from './MomentWelcome';
 import { MomentHardware } from './MomentHardware';
@@ -26,7 +26,7 @@ interface Props {
 }
 
 export function WizardShell({ onComplete }: Props) {
-  const { colors } = useTheme();
+  const { colors, reduceMotion } = useTheme();
   const [step, setStep] = useState(0);
   const [intent, setIntent] = useState('');
   const [persona, setPersona] = useState<Persona>({
@@ -142,7 +142,7 @@ export function WizardShell({ onComplete }: Props) {
             position: 'absolute', inset: 0,
             opacity: i === step ? 1 : 0,
             pointerEvents: i === step ? 'auto' : 'none',
-            transition: `opacity 320ms ${ease.out}`,
+            transition: reduceMotion ? 'none' : `opacity ${duration.slow}ms ${ease.out}`,
           }}>
             {moment}
           </div>

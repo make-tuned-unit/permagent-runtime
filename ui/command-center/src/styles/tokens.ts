@@ -62,6 +62,14 @@ export const ease = {
   spring: 'cubic-bezier(0.34, 1.56, 0.64, 1)',
 } as const;
 
+/**
+ * Motion duration scale (ms). One vocabulary for transitions so surfaces don't
+ * hand-roll a grab-bag of 160/200/320 timings (wizard audit #603). `fast` =
+ * hover/focus feedback, `base` = element state changes, `slow` = view/crossfade.
+ * Pair with an `ease` token: `transition: \`all ${duration.fast}ms ${ease.out}\``.
+ */
+export const duration = { fast: 160, base: 200, slow: 320 } as const;
+
 export const radius = { sm: 6, md: 10, lg: 14, xl: 20, pill: 999 } as const;
 
 export const shadow = {
@@ -70,7 +78,7 @@ export const shadow = {
   card: '0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04)',
 } as const;
 
-export const tokens = { color, font, type, tabularNums, ease, radius, shadow } as const;
+export const tokens = { color, font, type, tabularNums, ease, duration, radius, shadow } as const;
 export type DesignTokens = typeof tokens;
 
 // ── Theme gradients + colors ────────────────────────────────────────

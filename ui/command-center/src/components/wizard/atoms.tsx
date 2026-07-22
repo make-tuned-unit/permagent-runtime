@@ -1,6 +1,32 @@
-import { useState, useRef, useEffect, useMemo, type CSSProperties, type ReactNode } from 'react';
-import { font, ease, radius } from '../../styles/tokens';
+import { useState, useRef, useEffect, useMemo, type CSSProperties, type ReactNode, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { font, ease, duration, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+
+// ── WizardHeading / WizardSubhead ──────────────────────────────────────
+// One heading scale for every moment (audit #603: sizes drifted 32/28/22 and
+// weight 700 vs 600 across screens). All moments render the title + subtitle
+// through these so the flow reads as one designed object in all three themes.
+export function WizardHeading({ children, style = {} }: { children: ReactNode; style?: CSSProperties }) {
+  const { colors } = useTheme();
+  return (
+    <h1 style={{
+      fontFamily: font.display, fontSize: 28, fontWeight: 700, lineHeight: 1.15,
+      letterSpacing: '-0.02em', color: colors.text, margin: 0, textAlign: 'center',
+      ...style,
+    }}>{children}</h1>
+  );
+}
+
+export function WizardSubhead({ children, style = {} }: { children: ReactNode; style?: CSSProperties }) {
+  const { colors } = useTheme();
+  return (
+    <p style={{
+      fontFamily: font.body, fontSize: 14, lineHeight: 1.5, color: colors.textMuted,
+      margin: '8px 0 0', textAlign: 'center', maxWidth: 400,
+      ...style,
+    }}>{children}</p>
+  );
+}
 
 // ── PrimaryButton ──────────────────────────────────────────────────────
 export function PrimaryButton({
@@ -22,7 +48,7 @@ children, disabled, onClick, full, style = {} }: {
         boxShadow: disabled ? 'none' : hover
           ? `0 0 0 4px ${colors.purpleSoft}, 0 8px 24px ${colors.purpleGlow}`
           : `0 4px 14px ${colors.purpleGlow}`,
-        transition: `all 200ms ${ease.out}`, ...style,
+        transition: `all ${duration.base}ms ${ease.out}`, ...style,
       }}
     >{children}</button>
   );
@@ -42,7 +68,7 @@ children, onClick, style = {} }: {
         fontFamily: font.body, fontSize: 13, fontWeight: 500,
         color: hover ? colors.text : colors.textMuted,
         background: 'transparent', border: 'none', padding: '6px 2px',
-        cursor: 'pointer', transition: `color 160ms ${ease.out}`, ...style,
+        cursor: 'pointer', transition: `color ${duration.fast}ms ${ease.out}`, ...style,
       }}
     >{children}</button>
   );
@@ -50,15 +76,18 @@ children, onClick, style = {} }: {
 
 // ── Input ──────────────────────────────────────────────────────────────
 export function Input({
-value, onChange, placeholder, type = 'text', style = {} }: {
-  value: string; onChange: (v: string) => void; placeholder?: string; type?: string; style?: CSSProperties;
+value, onChange, placeholder, type = 'text', onKeyDown, onBlur, autoFocus, ariaLabel, style = {} }: {
+  value: string; onChange: (v: string) => void; placeholder?: string; type?: string;
+  onKeyDown?: (e: ReactKeyboardEvent<HTMLInputElement>) => void;
+  onBlur?: () => void; autoFocus?: boolean; ariaLabel?: string; style?: CSSProperties;
 }) {
   const { colors } = useTheme();
   const [focus, setFocus] = useState(false);
   return (
     <input type={type} value={value} onChange={e => onChange(e.target.value)}
-      placeholder={placeholder} spellCheck={false}
-      onFocus={() => setFocus(true)} onBlur={() => setFocus(false)}
+      placeholder={placeholder} spellCheck={false} autoFocus={autoFocus}
+      aria-label={ariaLabel} onKeyDown={onKeyDown}
+      onFocus={() => setFocus(true)} onBlur={() => { setFocus(false); onBlur?.(); }}
       style={{
         width: '100%', fontFamily: font.body, fontSize: 14, fontWeight: 400,
         color: colors.text,
@@ -66,10 +95,52 @@ value, onChange, placeholder, type = 'text', style = {} }: {
         border: focus ? `1px solid ${colors.cyan}` : `1px solid ${colors.border}`,
         borderRadius: radius.md, padding: '13px 14px', outline: 'none',
         boxShadow: focus ? `0 0 0 3px ${colors.cyanGlow}` : 'none',
-        transition: `all 160ms ${ease.out}`, ...style,
+        transition: `all ${duration.fast}ms ${ease.out}`, ...style,
       }}
     />
   );
+}
+
+// ── Textarea ───────────────────────────────────────────────────────────
+// Multi-line sibling of Input. Carries the SAME focus-ring treatment (cyan
+// border + glow) so the wizard's textareas stop re-implementing it inline
+// (audit #603: three duplicate focus-glow implementations) and every field
+// gets a visible focus indicator for keyboard users.
+export function Textarea({
+  value, onChange, placeholder, rows = 3, style = {} }: {
+  value: string; onChange: (v: string) => void; placeholder?: string; rows?: number; style?: CSSProperties;
+}) {
+  const { colors } = useTheme();
+  const [focus, setFocus] = useState(false);
+  return (
+    <textarea value={value} onChange={e => onChange(e.target.value)}
+      placeholder={placeholder} rows={rows} spellCheck={false}
+      onFocus={() => setFocus(true)} onBlur={() => setFocus(false)}
+      style={{
+        width: '100%', fontFamily: font.body, fontSize: 14, fontWeight: 400,
+        color: colors.text, background: colors.inputBg, resize: 'none', lineHeight: 1.6,
+        border: focus ? `1px solid ${colors.cyan}` : `1px solid ${colors.border}`,
+        borderRadius: radius.md, padding: '13px 14px', outline: 'none',
+        boxShadow: focus ? `0 0 0 3px ${colors.cyanGlow}` : 'none',
+        transition: `all ${duration.fast}ms ${ease.out}`, ...style,
+      }}
+    />
+  );
+}
+
+/**
+ * Trait-add validation (MomentMeet). Pure so it's unit-testable and the moment
+ * can surface a real reason instead of silently swallowing the input (audit
+ * #603: trait-add had no validation feedback). Case-insensitive dedupe.
+ */
+export function validateTrait(existing: string[], candidate: string): { ok: boolean; reason?: string } {
+  const t = candidate.trim();
+  if (!t) return { ok: false, reason: 'Type a trait first.' };
+  if (t.length > 24) return { ok: false, reason: 'Keep traits short (under 24 characters).' };
+  if (existing.some(x => x.toLowerCase() === t.toLowerCase())) {
+    return { ok: false, reason: `"${t}" is already there.` };
+  }
+  return { ok: true };
 }
 
 // ── Select ─────────────────────────────────────────────────────────────
@@ -101,7 +172,7 @@ value, onChange, options, style = {} }: {
         border: open ? `1px solid ${colors.cyan}` : `1px solid ${colors.border}`,
         borderRadius: radius.md, padding: '13px 14px', cursor: 'pointer',
         boxShadow: open ? `0 0 0 3px ${colors.cyanGlow}` : 'none',
-        transition: `all 160ms ${ease.out}`,
+        transition: `all ${duration.fast}ms ${ease.out}`,
       }}>
         <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           {current.dot && <span style={{ width: 8, height: 8, borderRadius: '50%', background: current.dot }} />}
@@ -164,7 +235,7 @@ export function ProgressDots({ count = 4, current = 0, style = {} }: {
           width: i === current ? 18 : 6, height: 6, borderRadius: 999,
           background: i === current ? colors.cyan : colors.textDim,
           boxShadow: i === current ? `0 0 12px ${colors.cyanGlow}` : 'none',
-          transition: `all 320ms ${ease.out}`,
+          transition: `all ${duration.slow}ms ${ease.out}`,
         }} />
       ))}
     </div>
@@ -184,7 +255,7 @@ onClick }: { onClick: () => void }) {
         color: hover ? colors.text : colors.textMuted,
         fontFamily: font.body, fontSize: 13, fontWeight: 500,
         cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
-        borderRadius: 8, transition: `color 160ms ${ease.out}`,
+        borderRadius: 8, transition: `color ${duration.fast}ms ${ease.out}`,
       }}>
       <svg width="14" height="10" viewBox="0 0 14 10" fill="none">
         <path d="M5 1L1 5l4 4M1 5h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -195,15 +266,22 @@ onClick }: { onClick: () => void }) {
 }
 
 // ── Particles ──────────────────────────────────────────────────────────
+// Custom-property carrier: lets `--pa-dx` sit in a typed style object without a
+// blanket @ts-expect-error (audit #603 #9). The animation is gated on the
+// user's reduce-motion preference — no drifting particles when motion is off.
+type ParticleStyle = CSSProperties & { '--pa-dx': string };
+
 export function Particles({ density = 28 }: { density?: number }) {
-  const { colors } = useTheme();
+  const { colors, reduceMotion } = useTheme();
   const seeds = useMemo(() => Array.from({ length: density }).map((_, i) => ({
     i, x: Math.random() * 100, y: Math.random() * 100,
     r: 0.5 + Math.random() * 1.6, d: 18 + Math.random() * 28,
     delay: -Math.random() * 30, drift: (Math.random() - 0.5) * 30,
     hue: Math.random() < 0.85 ? 'cyan' : 'purple' as const,
   })), [density]);
-  if (density === 0) return null;
+  // Respect reduce-motion: skip the floating field entirely (the shell keeps its
+  // static brand backdrop) rather than animating against the user's preference.
+  if (density === 0 || reduceMotion) return null;
   return (
     <>
       <style>{`
@@ -221,11 +299,10 @@ export function Particles({ density = 28 }: { density?: number }) {
             width: s.r * 2, height: s.r * 2, borderRadius: '50%',
             background: s.hue === 'cyan' ? colors.cyan : colors.purple,
             filter: 'blur(0.4px)',
-            // @ts-expect-error CSS custom properties
             '--pa-dx': `${s.drift}vw`,
             animation: `pa-float ${s.d}s linear ${s.delay}s infinite`,
             opacity: 0,
-          }} />
+          } as ParticleStyle} />
         ))}
       </div>
     </>

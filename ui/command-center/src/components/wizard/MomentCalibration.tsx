@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { font, ease } from '../../styles/tokens';
+import { font, ease, duration, radius } from '../../styles/tokens';
 import { Mobius } from '../mobius/Mobius';
-import { PrimaryButton, Particles } from './atoms';
+import { PrimaryButton, Particles, WizardHeading, WizardSubhead } from './atoms';
 import { useTheme } from '../../styles/useTheme';
 
 const PRESETS = [
@@ -27,24 +27,23 @@ export function MomentCalibration({ onAdvance }: Props) {
       <Particles density={16} />
       <Mobius size={140} state={selected ? 'idle' : 'calibrating'} />
 
-      <h1 style={{ fontFamily: font.display, fontSize: 28, fontWeight: 700, color: colors.text, margin: '28px 0 8px', letterSpacing: '-0.02em' }}>
-        How should your agent think?
-      </h1>
-      <p style={{ fontFamily: font.body, fontSize: 14, color: colors.textMuted, marginBottom: 28, textAlign: 'center', maxWidth: 380 }}>
+      <WizardHeading style={{ marginTop: 28 }}>How should your agent think?</WizardHeading>
+      <WizardSubhead style={{ marginBottom: 28 }}>
         Pick a personality template. You can refine it in the next step.
-      </p>
+      </WizardSubhead>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, width: 400, marginBottom: 24 }}>
         {PRESETS.map(p => {
           const active = selected === p.id;
           return (
             <button key={p.id} onClick={() => setSelected(p.id)}
+              aria-pressed={active}
               style={{
-                padding: '16px 14px', borderRadius: 12, cursor: 'pointer',
+                padding: '16px 14px', borderRadius: radius.lg, cursor: 'pointer',
                 background: active ? colors.cyanSoft : colors.inputBg,
                 border: active ? `1px solid ${colors.cyan}` : `1px solid ${colors.border}`,
                 boxShadow: active ? `0 0 0 3px ${colors.cyanGlow}` : 'none',
-                textAlign: 'left', transition: `all 200ms ${ease.out}`,
+                textAlign: 'left', transition: `all ${duration.base}ms ${ease.out}`,
               }}>
               <div style={{ fontFamily: font.body, fontSize: 14, fontWeight: 600, color: colors.text, marginBottom: 4 }}>
                 {p.label}
