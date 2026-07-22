@@ -5,6 +5,29 @@ fn main() {
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/refs/");
 
+    // Runtime dylib discovery for the daemon binaries (macOS).
+    //
+    // The daemon dynamically links libsherpa-onnx-c-api.dylib (STT via
+    // sherpa-onnx), which in turn pulls in libonnxruntime. A plain
+    // `cargo build` (debug or release) drops these dylibs into
+    // `target/<profile>/` — the SAME directory as the `permagentd` binary —
+    // but Cargo does not add an rpath that points there, so the binary
+    // cannot find them at runtime without DYLD_FALLBACK_LIBRARY_PATH.
+    // Debug builds run in-place from worktrees hit exactly this (issue #295);
+    // the bundled app dodges it because ui/desktop/scripts/copy-sidecar.sh
+    // rewrites the rpath to `@executable_path/../Frameworks` after the fact.
+    //
+    // Adding `@executable_path` as an rpath makes the binary look in its own
+    // directory — where the dylibs already sit for in-place builds — fixing
+    // debug (and raw release) runs. It is harmless for the bundle: an extra
+    // rpath pointing at Contents/MacOS/ simply finds nothing and falls
+    // through to the `../Frameworks` rpath copy-sidecar.sh still adds.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        // Applies to every bin target in this package (permagentd et al.),
+        // all of which link the same sherpa-onnx dylibs.
+        println!("cargo:rustc-link-arg-bins=-Wl,-rpath,@executable_path");
+    }
+
     // Git SHA
     let sha = git(&["rev-parse", "--short=9", "HEAD"]);
     println!("cargo:rustc-env=PERMAGENT_GIT_SHA={}", sha);
