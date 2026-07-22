@@ -21,6 +21,8 @@ pub mod openapi;
 pub mod routes;
 pub mod session_event_bus;
 pub mod state;
+#[cfg(test)]
+mod test_support;
 #[cfg(any(feature = "rustls-tls", feature = "native-tls"))]
 pub mod tls;
 pub mod tunnel;

@@ -132,10 +132,17 @@ mod tests {
         use super::*;
         use axum::{body::Body, http::Request};
         use http::StatusCode;
+        use serial_test::serial;
         use tower::ServiceExt;
 
+        // Builds a real AppState (global session pool) → #[serial] per the
+        // standing rule, and pins PERMAGENT_PATH_ROOT to the shared,
+        // process-lifetime root so the pool never outlives a per-test tempdir
+        // (#858).
         #[tokio::test(flavor = "multi_thread")]
+        #[serial]
         async fn test_tool_confirmation_endpoint() {
+            crate::test_support::test_root();
             let state = AppState::new(true).await.unwrap();
 
             let app = routes(state);

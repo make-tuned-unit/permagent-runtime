@@ -449,10 +449,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
     async fn connection_lifecycle_roundtrip() {
+        // PERMAGENT_PATH_ROOT is the shared, process-lifetime root (#858) so the
+        // global session pool never outlives a per-test tempdir; HOME stays a
+        // throwaway so home-keyed artifacts remain isolated.
+        let root = crate::test_support::test_root();
         let home = tempfile::tempdir().unwrap();
         let _guard = env_lock::lock_env([
             ("HOME", Some(home.path().to_str().unwrap())),
-            ("PERMAGENT_PATH_ROOT", Some(home.path().to_str().unwrap())),
+            ("PERMAGENT_PATH_ROOT", Some(root.to_str().unwrap())),
             ("SOVEREIGN_MODE", Some("false")),
         ]);
         permagent::sovereignty::invalidate_global_mode_cache();
@@ -561,10 +565,12 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
     async fn save_validates_input_and_unknown_project_is_404() {
+        // Shared process-lifetime PERMAGENT_PATH_ROOT (#858); throwaway HOME.
+        let root = crate::test_support::test_root();
         let home = tempfile::tempdir().unwrap();
         let _guard = env_lock::lock_env([
             ("HOME", Some(home.path().to_str().unwrap())),
-            ("PERMAGENT_PATH_ROOT", Some(home.path().to_str().unwrap())),
+            ("PERMAGENT_PATH_ROOT", Some(root.to_str().unwrap())),
         ]);
         let (app, pool) = test_app().await;
         let project = seed_project(&pool, "Validate").await;
@@ -621,10 +627,12 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
     async fn stats_honest_when_disconnected_and_refuses_under_sovereign_mode() {
+        // Shared process-lifetime PERMAGENT_PATH_ROOT (#858); throwaway HOME.
+        let root = crate::test_support::test_root();
         let home = tempfile::tempdir().unwrap();
         let _guard = env_lock::lock_env([
             ("HOME", Some(home.path().to_str().unwrap())),
-            ("PERMAGENT_PATH_ROOT", Some(home.path().to_str().unwrap())),
+            ("PERMAGENT_PATH_ROOT", Some(root.to_str().unwrap())),
             ("SOVEREIGN_MODE", Some("true")),
         ]);
         permagent::sovereignty::invalidate_global_mode_cache();

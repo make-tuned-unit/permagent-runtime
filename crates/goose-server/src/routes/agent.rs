@@ -1416,9 +1416,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
     async fn bad_recipe_schema_is_4xx_and_daemon_survives() {
-        let tmp = tempfile::tempdir().unwrap();
-        let _guard =
-            env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(tmp.path().to_str().unwrap()))]);
+        // Shared, process-lifetime PERMAGENT_PATH_ROOT (#858) so the global
+        // session pool never outlives a per-test tempdir.
+        let root = crate::test_support::test_root();
+        let _guard = env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(root.to_str().unwrap()))]);
         let state = AppState::new(true).await.unwrap();
         let app = routes(state);
 
