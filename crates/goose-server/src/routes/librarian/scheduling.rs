@@ -319,13 +319,32 @@ async fn warm_and_run(schedule: &LibrarianSchedule, keep_alive_secs: u64) -> Res
 
     // Annotation backfill runs at daemon startup (state.rs), not here.
 
-    let result =
-        permagent::agents::platform_extensions::librarian::run_batch(&brain, 20, &schedule.model)
-            .await;
-
-    if let Err(ref e) = result {
-        librarian_state::set_error(e);
-    }
+    // #68 — batch size / per-run cap / checkpoint interval are now read from
+    // the environment inside run_batch (BatchConfig::from_env), and progress is
+    // checkpointed to disk so a bounded run resumes on the next call. Map the
+    // richer BatchOutcome back to the described count this fn has always
+    // returned; surface the "more pending" signal in the log.
+    let result = match permagent::agents::platform_extensions::librarian::run_batch(
+        &brain,
+        &schedule.model,
+    )
+    .await
+    {
+        Ok(outcome) => {
+            if outcome.more_pending {
+                tracing::info!(
+                    described = outcome.described,
+                    stopped_at_cap = outcome.stopped_at_cap,
+                    "Librarian batch paused with memories still pending — the next run resumes from the checkpoint"
+                );
+            }
+            Ok(outcome.described)
+        }
+        Err(e) => {
+            librarian_state::set_error(&e);
+            Err(e)
+        }
+    };
 
     // #387 v2 — the entity sweep rides the same warm model: ALL knowledge-graph
     // items (people, projects, topics/terms, categories, locations) get

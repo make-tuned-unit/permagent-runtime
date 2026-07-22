@@ -576,66 +576,346 @@ pub async fn describe_one(
     })
 }
 
-/// Run a batch of descriptions: list undescribed → describe each → return count.
+// ---------------------------------------------------------------------------
+// Batch checkpoint mechanism (#68)
+// ---------------------------------------------------------------------------
+//
+// AUDIT NOTE — resumability was *already* correct at the finest granularity:
+// `describe_one` writes each description to Spectral before moving on, and
+// `list_undescribed` returns only rows where `description IS NULL`. So a daemon
+// restart mid-batch never reprocesses a completed memory and loses at most the
+// single in-flight one (re-queued on the next pass). Spectral is the durable,
+// idempotent source of truth for "what is done".
+//
+// What #68 asks for, and what was missing, is layered on top of that:
+//   (a) a configurable *bound* so a run can stop after N memories instead of
+//       draining the whole corpus in one continuous pass — useful for
+//       controlled full-corpus regeneration after a prompt/model change; and
+//   (b) an observable, restart-surviving record of campaign progress.
+//
+// The checkpoint below is advisory for correctness (Spectral remains the source
+// of truth) but load-bearing for bounding and observability: a
+// `run_in_progress = true` checkpoint that survives a restart signals that a
+// campaign was interrupted and will resume, and `described_total` accumulates
+// across the multiple bounded calls a regeneration campaign takes.
+
+/// Tunables for a batch run. Built from the environment at the call sites via
+/// [`BatchConfig::from_env`]; pure and injectable for tests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BatchConfig {
+    /// `list_undescribed` page size — rows fetched per DB query. Clamped 1..=100.
+    pub page_size: usize,
+    /// Max memories to describe in a single run before stopping. `0` = unbounded
+    /// (drain the whole undescribed queue — the historical behavior).
+    pub max_per_run: usize,
+    /// Persist a checkpoint every N successful describes. Clamped to >= 1.
+    pub checkpoint_interval: usize,
+}
+
+impl Default for BatchConfig {
+    fn default() -> Self {
+        Self {
+            page_size: 20,
+            max_per_run: 0,
+            checkpoint_interval: 10,
+        }
+    }
+}
+
+impl BatchConfig {
+    pub const PAGE_SIZE_ENV: &'static str = "PERMAGENT_LIBRARIAN_BATCH_PAGE_SIZE";
+    pub const MAX_PER_RUN_ENV: &'static str = "PERMAGENT_LIBRARIAN_MAX_PER_RUN";
+    pub const CHECKPOINT_INTERVAL_ENV: &'static str = "PERMAGENT_LIBRARIAN_CHECKPOINT_INTERVAL";
+
+    /// Read config from the environment, falling back to defaults for any unset
+    /// or unparseable var. Values are clamped to safe ranges so a bad env var
+    /// can never wedge the batch: `page_size` to 1..=100 (Spectral's documented
+    /// list cap), `checkpoint_interval` to >= 1.
+    pub fn from_env() -> Self {
+        let d = Self::default();
+        let parse = |k: &str, fallback: usize| -> usize {
+            std::env::var(k)
+                .ok()
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .unwrap_or(fallback)
+        };
+        Self {
+            page_size: parse(Self::PAGE_SIZE_ENV, d.page_size).clamp(1, 100),
+            max_per_run: parse(Self::MAX_PER_RUN_ENV, d.max_per_run),
+            checkpoint_interval: parse(Self::CHECKPOINT_INTERVAL_ENV, d.checkpoint_interval).max(1),
+        }
+    }
+}
+
+/// Persisted, restart-surviving record of batch progress. Written atomically
+/// (temp file + rename) so a checkpoint captured mid-batch is always a complete,
+/// consistent JSON document — never a torn write.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BatchCheckpoint {
+    /// Memories described so far in the current campaign. Accumulates across the
+    /// multiple bounded runs a full regeneration takes, and resets to 0 when a
+    /// completed campaign is followed by a fresh one.
+    #[serde(default)]
+    pub described_total: usize,
+    /// Id of the most recently described memory — informational, for telemetry
+    /// and debugging the resume point. Correctness does not depend on it.
+    #[serde(default)]
+    pub last_processed_id: Option<String>,
+    /// RFC3339 timestamp of the last checkpoint write.
+    #[serde(default)]
+    pub updated_at: Option<String>,
+    /// True while a run is executing. A `true` value that survives a daemon
+    /// restart means a batch was interrupted and the next run resumes it.
+    #[serde(default)]
+    pub run_in_progress: bool,
+    /// True once the undescribed queue has been fully drained.
+    #[serde(default)]
+    pub complete: bool,
+}
+
+impl BatchCheckpoint {
+    fn touch(&mut self) {
+        self.updated_at = Some(chrono::Utc::now().to_rfc3339());
+    }
+}
+
+/// Storage backend for the batch checkpoint. Abstracted so the batch loop can be
+/// exercised with an in-memory store in tests while file I/O lives behind the
+/// production impl.
+pub trait CheckpointStore: Send + Sync {
+    fn load(&self) -> BatchCheckpoint;
+    fn save(&self, cp: &BatchCheckpoint);
+}
+
+/// Production checkpoint store: `~/.permagent/data/librarian_checkpoint.json`,
+/// written via a temp file + atomic rename (the same pattern the librarian
+/// scheduler state uses) so a crash during a write can never corrupt it.
+pub struct FileCheckpointStore {
+    path: std::path::PathBuf,
+}
+
+impl Default for FileCheckpointStore {
+    fn default() -> Self {
+        Self {
+            path: crate::config::paths::Paths::in_data_dir("librarian_checkpoint.json"),
+        }
+    }
+}
+
+impl FileCheckpointStore {
+    /// Construct a store at an explicit path (tests point this at a TempDir).
+    #[cfg(test)]
+    fn at(path: std::path::PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl CheckpointStore for FileCheckpointStore {
+    fn load(&self) -> BatchCheckpoint {
+        std::fs::read_to_string(&self.path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    fn save(&self, cp: &BatchCheckpoint) {
+        if let Some(parent) = self.path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let tmp = self.path.with_extension("json.tmp");
+        if let Ok(json) = serde_json::to_string_pretty(cp) {
+            if std::fs::write(&tmp, json).is_ok() {
+                let _ = std::fs::rename(&tmp, &self.path);
+            }
+        }
+    }
+}
+
+/// Outcome of a single batch run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BatchOutcome {
+    /// Memories newly described in this run (excludes cached/skipped).
+    pub described: usize,
+    /// True if the run stopped because it hit `max_per_run` rather than draining
+    /// the queue.
+    pub stopped_at_cap: bool,
+    /// True if undescribed memories remain after this run — the caller should
+    /// run again (the next scheduled window or run-now continues automatically,
+    /// since the still-undescribed rows resurface in `list_undescribed`).
+    pub more_pending: bool,
+}
+
+/// The two Brain operations the batch loop needs, abstracted so the loop is
+/// unit-testable without a live Brain or Ollama.
+#[async_trait]
+pub(crate) trait BatchOps: Send + Sync {
+    /// Ids of up to `limit` undescribed memories (newest first).
+    async fn list_undescribed_ids(&self, limit: usize) -> Result<Vec<String>, String>;
+    /// Describe one memory. Returns `true` if newly described, `false` if it was
+    /// already described (cached — counted as skipped, not progress).
+    async fn describe(&self, id: &str) -> Result<bool, String>;
+}
+
+/// Real ops: wraps the Brain handle + model, routing through `describe_one`
+/// (force=false, emit_events=true) so idempotency and live HUD state are
+/// preserved exactly as before this refactor.
+struct BrainBatchOps<'a> {
+    brain: &'a crate::brain_handle::SafeBrain,
+    model: &'a str,
+}
+
+#[async_trait]
+impl BatchOps for BrainBatchOps<'_> {
+    async fn list_undescribed_ids(&self, limit: usize) -> Result<Vec<String>, String> {
+        self.brain
+            .list_undescribed(limit)
+            .await
+            .map(|mems| mems.into_iter().map(|m| m.id).collect())
+            .map_err(|e| format!("Brain error: {}", e))
+    }
+
+    async fn describe(&self, id: &str) -> Result<bool, String> {
+        describe_one(self.brain, id, false, self.model, true)
+            .await
+            .map(|r| !r.cached)
+    }
+}
+
+/// Run a batch of descriptions with the environment-configured [`BatchConfig`],
+/// checkpointing progress to the on-disk [`FileCheckpointStore`].
 ///
-/// Calls `describe_one(force=false)` for each memory, so already-described memories
-/// are skipped cheaply. This handles the race where a memory gets described between
-/// the `list_undescribed` query and the `describe_one` call (audit vector #2).
+/// Calls `describe_one(force=false)` for each memory (via [`BrainBatchOps`]), so
+/// already-described memories are skipped cheaply — this handles the race where
+/// a memory gets described between the `list_undescribed` query and the
+/// `describe_one` call (audit vector #2), and is what makes a mid-batch restart
+/// safe: Spectral already excludes everything that completed.
 ///
-/// NOTE on vector #2 (Spectral write fails after Ollama returns): if set_description
-/// fails after Ollama completes, the memory remains undescribed and will be re-queued
-/// on the next batch. The re-call to Ollama is a known cost — the description content
-/// may differ slightly but is functionally equivalent. Not worth guarding against
-/// since set_description failures indicate a deeper Spectral issue.
+/// NOTE on vector #2 (Spectral write fails after Ollama returns): if
+/// set_description fails after Ollama completes, the memory remains undescribed
+/// and will be re-queued on the next batch. The re-call to Ollama is a known
+/// cost — the description content may differ slightly but is functionally
+/// equivalent. Not worth guarding against since set_description failures
+/// indicate a deeper Spectral issue.
 ///
 /// #387 v2 — the entity-summary pass moved to
-/// [`super::librarian_entities::run_entity_sweep`]: full enumeration (people /
-/// projects / annotated terms + the persona-neighborhood catch-all),
-/// evidence-grounded prompts, and a freshness ledger. The v1
-/// `describe_entities_batch` (persona 2-hop neighborhood only, name+fields
-/// grounding) was removed with it.
+/// [`super::librarian_entities::run_entity_sweep`].
 pub async fn run_batch(
     brain: &crate::brain_handle::SafeBrain,
-    batch_size: usize,
     model: &str,
-) -> Result<usize, String> {
+) -> Result<BatchOutcome, String> {
+    let ops = BrainBatchOps { brain, model };
+    run_batch_core(
+        &ops,
+        BatchConfig::from_env(),
+        &FileCheckpointStore::default(),
+    )
+    .await
+}
+
+/// Core batch loop, generic over [`BatchOps`] and [`CheckpointStore`] so it can
+/// be tested without a live Brain/Ollama. Honors `max_per_run` (stop-after-N),
+/// checkpoints every `checkpoint_interval` successful describes, and records
+/// completion/progress in the checkpoint.
+async fn run_batch_core(
+    ops: &dyn BatchOps,
+    config: BatchConfig,
+    store: &dyn CheckpointStore,
+) -> Result<BatchOutcome, String> {
     use super::librarian_state;
 
-    let mut described = 0;
-    loop {
-        let memories = brain
-            .list_undescribed(batch_size)
-            .await
-            .map_err(|e| format!("Brain error: {}", e))?;
+    // Resume: load prior campaign progress. `run_in_progress == true` here means
+    // a previous run was interrupted (crash/restart) — we simply continue; the
+    // undescribed queue already excludes everything Spectral persisted, so no
+    // completed memory is reprocessed. If the prior campaign completed, this is
+    // a fresh one and the accumulator resets.
+    let mut cp = store.load();
+    let resumed_from = cp.described_total;
+    if cp.complete {
+        cp = BatchCheckpoint::default();
+    }
+    cp.run_in_progress = true;
+    cp.complete = false;
+    cp.touch();
+    store.save(&cp);
 
-        if memories.is_empty() {
+    let mut described_this_run = 0usize;
+    let mut since_checkpoint = 0usize;
+    let mut stopped_at_cap = false;
+
+    'outer: loop {
+        if config.max_per_run != 0 && described_this_run >= config.max_per_run {
+            stopped_at_cap = true;
             break;
         }
 
-        // Update state: entering describing phase with this batch's count
-        librarian_state::set_describing(memories.len());
+        let ids = ops.list_undescribed_ids(config.page_size).await?;
+        if ids.is_empty() {
+            break;
+        }
+        librarian_state::set_describing(ids.len());
 
-        for mem in &memories {
-            match describe_one(brain, &mem.id, false, model, true).await {
-                Ok(r) if r.cached => {
-                    tracing::debug!(memory_id = %mem.id, "Librarian skipped already-described memory");
+        for id in &ids {
+            if config.max_per_run != 0 && described_this_run >= config.max_per_run {
+                stopped_at_cap = true;
+                break 'outer;
+            }
+            match ops.describe(id).await {
+                Ok(true) => {
+                    described_this_run += 1;
+                    cp.described_total += 1;
+                    cp.last_processed_id = Some(id.clone());
+                    since_checkpoint += 1;
+                    // Crash-safe interval checkpoint: the write is atomic, and it
+                    // only records counts/last-id (never mutates memory data), so
+                    // whatever it captures is always consistent with Spectral.
+                    if since_checkpoint >= config.checkpoint_interval {
+                        cp.touch();
+                        store.save(&cp);
+                        since_checkpoint = 0;
+                    }
                 }
-                Ok(_) => described += 1,
+                Ok(false) => {
+                    tracing::debug!(memory_id = %id, "Librarian skipped already-described memory");
+                }
                 Err(e) => {
                     librarian_state::record_describe_failure(&e);
-                    tracing::warn!(memory_id = %mem.id, error = %e, "Librarian failed to describe memory, skipping");
+                    tracing::warn!(memory_id = %id, error = %e, "Librarian failed to describe memory, skipping");
                 }
             }
         }
 
-        if memories.len() < batch_size {
+        if ids.len() < config.page_size {
             break;
         }
     }
 
+    // Cheap 1-row probe: is anything still undescribed?
+    let more_pending = !ops
+        .list_undescribed_ids(1)
+        .await
+        .unwrap_or_default()
+        .is_empty();
+
+    cp.run_in_progress = false;
+    cp.complete = !more_pending;
+    cp.touch();
+    store.save(&cp);
+
     librarian_state::set_batch_complete();
-    tracing::info!(described = described, "Librarian batch complete");
-    Ok(described)
+    tracing::info!(
+        described = described_this_run,
+        described_total = cp.described_total,
+        resumed_from = resumed_from,
+        stopped_at_cap = stopped_at_cap,
+        more_pending = more_pending,
+        "Librarian batch complete"
+    );
+
+    Ok(BatchOutcome {
+        described: described_this_run,
+        stopped_at_cap,
+        more_pending,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1519,5 +1799,359 @@ mod tests {
         let result = parse_structured_description(raw).unwrap();
         assert!(result.starts_with("Browser navigated"));
         assert!(result.contains("navigate, navigation"));
+    }
+
+    // ── Batch checkpoint mechanism (#68) ──────────────────────────────
+    //
+    // These exercise the pure batch loop (`run_batch_core`) with an in-memory
+    // Brain (`FakeOps`) and checkpoint store (`MemStore`), so no live Brain or
+    // Ollama is required. They cover: config parsing/clamping, atomic file
+    // round-trip, unbounded drain, the `max_per_run` cap + multi-call resume,
+    // crash-mid-batch resume with no reprocessing, and interval checkpointing.
+
+    use async_trait::async_trait;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    /// In-memory Brain stand-in. Holds an ordered queue of undescribed ids and
+    /// counts how many times each id is described, so a test can assert an id is
+    /// never processed twice (resume correctness) nor dropped.
+    struct FakeOps {
+        undescribed: Mutex<Vec<String>>,
+        describe_counts: Mutex<HashMap<String, usize>>,
+    }
+
+    impl FakeOps {
+        /// Queue of `m0..m{n-1}`.
+        fn with_n(n: usize) -> Self {
+            Self {
+                undescribed: Mutex::new((0..n).map(|i| format!("m{i}")).collect()),
+                describe_counts: Mutex::new(HashMap::new()),
+            }
+        }
+
+        fn remaining(&self) -> usize {
+            self.undescribed.lock().unwrap().len()
+        }
+
+        fn max_describe_count(&self) -> usize {
+            self.describe_counts
+                .lock()
+                .unwrap()
+                .values()
+                .copied()
+                .max()
+                .unwrap_or(0)
+        }
+
+        fn total_describes(&self) -> usize {
+            self.describe_counts.lock().unwrap().values().copied().sum()
+        }
+    }
+
+    #[async_trait]
+    impl BatchOps for FakeOps {
+        async fn list_undescribed_ids(&self, limit: usize) -> Result<Vec<String>, String> {
+            let q = self.undescribed.lock().unwrap();
+            Ok(q.iter().take(limit).cloned().collect())
+        }
+
+        async fn describe(&self, id: &str) -> Result<bool, String> {
+            let mut q = self.undescribed.lock().unwrap();
+            if let Some(pos) = q.iter().position(|x| x == id) {
+                q.remove(pos);
+                drop(q);
+                *self
+                    .describe_counts
+                    .lock()
+                    .unwrap()
+                    .entry(id.to_string())
+                    .or_insert(0) += 1;
+                Ok(true) // newly described
+            } else {
+                Ok(false) // already described (cached)
+            }
+        }
+    }
+
+    /// In-memory checkpoint store that also counts `save` calls.
+    struct MemStore {
+        cp: Mutex<BatchCheckpoint>,
+        saves: AtomicUsize,
+    }
+
+    impl MemStore {
+        fn new() -> Self {
+            Self {
+                cp: Mutex::new(BatchCheckpoint::default()),
+                saves: AtomicUsize::new(0),
+            }
+        }
+
+        fn seeded(cp: BatchCheckpoint) -> Self {
+            Self {
+                cp: Mutex::new(cp),
+                saves: AtomicUsize::new(0),
+            }
+        }
+
+        fn snapshot(&self) -> BatchCheckpoint {
+            self.cp.lock().unwrap().clone()
+        }
+
+        fn save_count(&self) -> usize {
+            self.saves.load(Ordering::SeqCst)
+        }
+    }
+
+    impl CheckpointStore for MemStore {
+        fn load(&self) -> BatchCheckpoint {
+            self.cp.lock().unwrap().clone()
+        }
+
+        fn save(&self, cp: &BatchCheckpoint) {
+            *self.cp.lock().unwrap() = cp.clone();
+            self.saves.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn test_batch_config_defaults() {
+        let d = BatchConfig::default();
+        assert_eq!(d.page_size, 20);
+        assert_eq!(d.max_per_run, 0); // unbounded
+        assert_eq!(d.checkpoint_interval, 10);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_batch_config_from_env_and_clamping() {
+        // Unset → defaults.
+        std::env::remove_var(BatchConfig::PAGE_SIZE_ENV);
+        std::env::remove_var(BatchConfig::MAX_PER_RUN_ENV);
+        std::env::remove_var(BatchConfig::CHECKPOINT_INTERVAL_ENV);
+        assert_eq!(BatchConfig::from_env(), BatchConfig::default());
+
+        // Set → parsed.
+        std::env::set_var(BatchConfig::PAGE_SIZE_ENV, "40");
+        std::env::set_var(BatchConfig::MAX_PER_RUN_ENV, "100");
+        std::env::set_var(BatchConfig::CHECKPOINT_INTERVAL_ENV, "25");
+        let c = BatchConfig::from_env();
+        assert_eq!(c.page_size, 40);
+        assert_eq!(c.max_per_run, 100);
+        assert_eq!(c.checkpoint_interval, 25);
+
+        // Clamping: page_size to 1..=100, interval to >= 1.
+        std::env::set_var(BatchConfig::PAGE_SIZE_ENV, "9999");
+        std::env::set_var(BatchConfig::CHECKPOINT_INTERVAL_ENV, "0");
+        let c = BatchConfig::from_env();
+        assert_eq!(c.page_size, 100);
+        assert_eq!(c.checkpoint_interval, 1);
+
+        std::env::set_var(BatchConfig::PAGE_SIZE_ENV, "0");
+        assert_eq!(BatchConfig::from_env().page_size, 1);
+
+        // Garbage → fallback to default.
+        std::env::set_var(BatchConfig::PAGE_SIZE_ENV, "not-a-number");
+        assert_eq!(BatchConfig::from_env().page_size, 20);
+
+        std::env::remove_var(BatchConfig::PAGE_SIZE_ENV);
+        std::env::remove_var(BatchConfig::MAX_PER_RUN_ENV);
+        std::env::remove_var(BatchConfig::CHECKPOINT_INTERVAL_ENV);
+    }
+
+    #[test]
+    fn test_file_checkpoint_store_roundtrip() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("librarian_checkpoint.json");
+        let store = FileCheckpointStore::at(path.clone());
+
+        // Missing file → default.
+        assert_eq!(store.load(), BatchCheckpoint::default());
+
+        let mut cp = BatchCheckpoint {
+            described_total: 42,
+            last_processed_id: Some("m41".to_string()),
+            run_in_progress: true,
+            complete: false,
+            ..Default::default()
+        };
+        cp.touch();
+        store.save(&cp);
+
+        assert!(path.exists());
+        let loaded = store.load();
+        assert_eq!(loaded, cp);
+        // A stray temp file must not linger after the atomic rename.
+        assert!(!path.with_extension("json.tmp").exists());
+    }
+
+    #[tokio::test]
+    async fn test_batch_drains_unbounded() {
+        let ops = FakeOps::with_n(25);
+        let store = MemStore::new();
+        let config = BatchConfig {
+            page_size: 10,
+            max_per_run: 0,
+            checkpoint_interval: 10,
+        };
+
+        let outcome = run_batch_core(&ops, config, &store).await.unwrap();
+
+        assert_eq!(outcome.described, 25);
+        assert!(!outcome.stopped_at_cap);
+        assert!(!outcome.more_pending);
+        assert_eq!(ops.remaining(), 0);
+        assert_eq!(ops.max_describe_count(), 1, "no memory described twice");
+        assert_eq!(ops.total_describes(), 25, "no memory dropped");
+
+        let cp = store.snapshot();
+        assert_eq!(cp.described_total, 25);
+        assert!(cp.complete);
+        assert!(!cp.run_in_progress);
+    }
+
+    /// The core resume scenario: a capped run stops after N, and each subsequent
+    /// call continues from where the last left off — never reprocessing a done
+    /// memory, never dropping one.
+    #[tokio::test]
+    async fn test_batch_stops_at_cap_and_resumes_across_calls() {
+        let ops = FakeOps::with_n(25);
+        let store = MemStore::new();
+        let config = BatchConfig {
+            page_size: 10,
+            max_per_run: 10,
+            checkpoint_interval: 5,
+        };
+
+        // Run 1 — describes 10, stops at cap, 15 pending.
+        let o1 = run_batch_core(&ops, config, &store).await.unwrap();
+        assert_eq!(o1.described, 10);
+        assert!(o1.stopped_at_cap);
+        assert!(o1.more_pending);
+        let cp1 = store.snapshot();
+        assert_eq!(cp1.described_total, 10);
+        assert!(!cp1.run_in_progress, "run flag cleared when a run returns");
+        assert!(!cp1.complete);
+        assert_eq!(ops.remaining(), 15);
+
+        // Run 2 — resumes, describes 10 more (total 20), 5 pending.
+        let o2 = run_batch_core(&ops, config, &store).await.unwrap();
+        assert_eq!(o2.described, 10);
+        assert!(o2.more_pending);
+        assert_eq!(store.snapshot().described_total, 20);
+        assert_eq!(ops.remaining(), 5);
+
+        // Run 3 — drains the last 5, campaign complete.
+        let o3 = run_batch_core(&ops, config, &store).await.unwrap();
+        assert_eq!(o3.described, 5);
+        assert!(!o3.stopped_at_cap);
+        assert!(!o3.more_pending);
+        let cp3 = store.snapshot();
+        assert_eq!(cp3.described_total, 25);
+        assert!(cp3.complete);
+
+        // The whole point: every id described exactly once across the 3 calls.
+        assert_eq!(
+            ops.max_describe_count(),
+            1,
+            "no memory reprocessed on resume"
+        );
+        assert_eq!(
+            ops.total_describes(),
+            25,
+            "no memory dropped across resumes"
+        );
+        assert_eq!(ops.remaining(), 0);
+    }
+
+    /// Simulate a daemon crash mid-batch: a checkpoint with `run_in_progress =
+    /// true` survives, and the undescribed queue (Spectral's view) already
+    /// excludes everything that completed before the crash. The resumed run must
+    /// pick up the remainder without re-touching the completed memories.
+    #[tokio::test]
+    async fn test_resume_after_crash_does_not_reprocess() {
+        // Crash left the campaign 7-in with a run still "in progress".
+        let seeded = BatchCheckpoint {
+            described_total: 7,
+            last_processed_id: Some("done-6".to_string()),
+            run_in_progress: true,
+            complete: false,
+            ..Default::default()
+        };
+        let store = MemStore::seeded(seeded);
+        // Only the 10 not-yet-described memories remain in Spectral's queue.
+        let ops = FakeOps::with_n(10);
+        let config = BatchConfig {
+            page_size: 4,
+            max_per_run: 0,
+            checkpoint_interval: 3,
+        };
+
+        let outcome = run_batch_core(&ops, config, &store).await.unwrap();
+
+        assert_eq!(outcome.described, 10, "describes only the remainder");
+        assert!(!outcome.more_pending);
+        assert_eq!(
+            ops.max_describe_count(),
+            1,
+            "completed memories not reprocessed"
+        );
+        assert_eq!(ops.total_describes(), 10);
+
+        let cp = store.snapshot();
+        // Accumulates on top of the pre-crash progress (7 + 10).
+        assert_eq!(cp.described_total, 17);
+        assert!(cp.complete);
+        assert!(!cp.run_in_progress);
+    }
+
+    #[tokio::test]
+    async fn test_checkpoint_written_at_interval() {
+        let ops = FakeOps::with_n(12);
+        let store = MemStore::new();
+        let config = BatchConfig {
+            page_size: 100,
+            max_per_run: 0,
+            checkpoint_interval: 5,
+        };
+
+        run_batch_core(&ops, config, &store).await.unwrap();
+
+        // 1 start save + 2 interval saves (after #5 and #10) + 1 final save.
+        assert_eq!(store.save_count(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_empty_queue_marks_complete() {
+        let ops = FakeOps::with_n(0);
+        let store = MemStore::new();
+        let outcome = run_batch_core(&ops, BatchConfig::default(), &store)
+            .await
+            .unwrap();
+        assert_eq!(outcome.described, 0);
+        assert!(!outcome.more_pending);
+        assert!(!outcome.stopped_at_cap);
+        let cp = store.snapshot();
+        assert!(cp.complete);
+        assert!(!cp.run_in_progress);
+    }
+
+    /// A completed campaign followed by a fresh one resets the accumulator.
+    #[tokio::test]
+    async fn test_new_campaign_resets_accumulator() {
+        let store = MemStore::seeded(BatchCheckpoint {
+            described_total: 99,
+            complete: true,
+            ..Default::default()
+        });
+        let ops = FakeOps::with_n(3);
+        let outcome = run_batch_core(&ops, BatchConfig::default(), &store)
+            .await
+            .unwrap();
+        assert_eq!(outcome.described, 3);
+        // Reset from the prior completed campaign, not 99 + 3.
+        assert_eq!(store.snapshot().described_total, 3);
     }
 }
