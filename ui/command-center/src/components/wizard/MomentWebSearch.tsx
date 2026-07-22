@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
-import { PrimaryButton, GhostLink, Input, Glass, Particles } from './atoms';
+import { PrimaryButton, GhostLink, Input, Glass, Particles, WizardHeading, WizardSubhead } from './atoms';
 import { api } from '../../lib/api';
 import { SEARCH_PROVIDERS, saveAndEnableSearchProvider, type SearchProvider } from '../../lib/searchProviders';
 
@@ -66,12 +66,10 @@ export function MomentWebSearch({ personaName, onAdvance, onBack }: Props) {
     <div style={{ position: 'relative', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
       <Particles density={20} />
       <Mobius size={72} state="idle" glow={0.9} />
-      <div style={{ fontFamily: font.display, fontSize: 28, fontWeight: 700, letterSpacing: '-0.01em', color: colors.text, marginTop: 18, textAlign: 'center' }}>
-        Give {who} the web?
-      </div>
-      <div style={{ fontFamily: font.body, fontSize: 13, color: colors.textMuted, marginTop: 8, maxWidth: 440, textAlign: 'center', lineHeight: 1.5 }}>
+      <WizardHeading style={{ marginTop: 18 }}>Give {who} the web?</WizardHeading>
+      <WizardSubhead style={{ maxWidth: 440 }}>
         Add a key for Brave or Tavily (or both) and {who} can search the web when it helps. Both have free tiers. You can skip this and set it up later anytime.
-      </div>
+      </WizardSubhead>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 22, width: '100%', maxWidth: 460 }}>
         {SEARCH_PROVIDERS.map(p => {

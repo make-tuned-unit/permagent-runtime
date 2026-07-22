@@ -90,7 +90,7 @@ export function BuildView() {
 
   const primaryBtn: React.CSSProperties = {
     height: 30, padding: '0 14px', borderRadius: 8,
-    background: colors.cyan, color: colors.bg, border: 'none',
+    background: colors.cyan, color: colors.textOnCyan, border: 'none',
     fontFamily: font.body, fontSize: 12, fontWeight: 600,
     cursor: 'pointer', boxShadow: `0 0 14px ${colors.cyanGlow}`,
   };

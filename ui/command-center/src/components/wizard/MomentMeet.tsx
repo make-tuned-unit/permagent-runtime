@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { Mobius } from '../mobius/Mobius';
-import { PrimaryButton, Glass, Particles } from './atoms';
+import { PrimaryButton, Glass, Particles, Input, Textarea, WizardHeading, WizardSubhead, validateTrait } from './atoms';
 import { useTheme } from '../../styles/useTheme';
 import { VoicePicker } from '../voice/VoicePicker';
 
@@ -24,19 +24,21 @@ export function MomentMeet({ persona, setPersona, onAdvance }: Props) {
   const { colors } = useTheme();
   const [editName, setEditName] = useState(false);
   const [newTrait, setNewTrait] = useState('');
+  const [traitError, setTraitError] = useState('');
 
   const updateField = <K extends keyof Persona>(key: K, value: Persona[K]) =>
     setPersona({ ...persona, [key]: value });
 
   const addTrait = () => {
-    const t = newTrait.trim();
-    if (!t) return;
-    if (persona.traits.some(x => x.toLowerCase() === t.toLowerCase())) {
-      setNewTrait('');
-      return;
-    }
-    updateField('traits', [...persona.traits, t]);
+    // Silently ignore an empty field on blur (not an error the user should see),
+    // but surface a real reason for a rejected non-empty value (audit #603:
+    // trait-add gave no feedback).
+    if (!newTrait.trim()) { setTraitError(''); return; }
+    const v = validateTrait(persona.traits, newTrait);
+    if (!v.ok) { setTraitError(v.reason ?? ''); return; }
+    updateField('traits', [...persona.traits, newTrait.trim()]);
     setNewTrait('');
+    setTraitError('');
   };
   const removeTrait = (trait: string) =>
     updateField('traits', persona.traits.filter(t => t !== trait));
@@ -45,14 +47,12 @@ export function MomentMeet({ persona, setPersona, onAdvance }: Props) {
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', position: 'relative' }}>
       <Particles density={12} />
 
-      <h1 style={{ fontFamily: font.display, fontSize: 28, fontWeight: 700, color: colors.text, margin: '0 0 8px', letterSpacing: '-0.02em' }}>
-        Meet your agent
-      </h1>
-      <p style={{ fontFamily: font.body, fontSize: 14, color: colors.textMuted, marginBottom: 28, textAlign: 'center', maxWidth: 380 }}>
+      <WizardHeading>Meet your agent</WizardHeading>
+      <WizardSubhead style={{ marginBottom: 28 }}>
         Give it a name and review its personality. You can always change these in Settings.
-      </p>
+      </WizardSubhead>
 
-      <Glass r={16} padding={28} style={{ width: 420, position: 'relative' }}>
+      <Glass r={radius.lg} padding={28} style={{ width: 420, position: 'relative' }}>
         <div style={{ position: 'absolute', top: 16, right: 16 }}>
           <Mobius size={48} state="idle" logoMode />
         </div>
@@ -119,9 +119,9 @@ export function MomentMeet({ persona, setPersona, onAdvance }: Props) {
               </span>
             ))}
           </div>
-          <input
+          <Input
             value={newTrait}
-            onChange={e => setNewTrait(e.target.value)}
+            onChange={v => { setNewTrait(v); if (traitError) setTraitError(''); }}
             onKeyDown={e => {
               if (e.key === 'Enter' || e.key === ',') {
                 e.preventDefault();
@@ -129,13 +129,14 @@ export function MomentMeet({ persona, setPersona, onAdvance }: Props) {
               }
             }}
             onBlur={addTrait}
+            ariaLabel="Add a trait"
             placeholder="Add a trait — type and press Enter"
-            style={{
-              width: '100%', fontFamily: font.body, fontSize: 13, color: colors.text,
-              background: colors.inputBg, border: `1px solid ${colors.border}`,
-              borderRadius: 8, padding: '8px 12px', outline: 'none',
-            }}
           />
+          {traitError && (
+            <div role="alert" style={{ fontFamily: font.body, fontSize: 11, color: colors.danger, marginTop: 6 }}>
+              {traitError}
+            </div>
+          )}
         </div>
 
         {/* Tone */}
@@ -143,15 +144,10 @@ export function MomentMeet({ persona, setPersona, onAdvance }: Props) {
           <label style={{ fontFamily: font.body, fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', display: 'block', marginBottom: 6 }}>
             Tone
           </label>
-          <textarea
+          <Textarea
             value={persona.tone}
-            onChange={e => updateField('tone', e.target.value)}
+            onChange={v => updateField('tone', v)}
             rows={2}
-            style={{
-              width: '100%', fontFamily: font.body, fontSize: 13, color: colors.text,
-              background: colors.inputBg, border: `1px solid ${colors.border}`,
-              borderRadius: 8, padding: '10px 12px', outline: 'none', resize: 'none', lineHeight: 1.5,
-            }}
           />
         </div>
 
@@ -168,15 +164,10 @@ export function MomentMeet({ persona, setPersona, onAdvance }: Props) {
           <label style={{ fontFamily: font.body, fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', display: 'block', marginBottom: 6 }}>
             Opening greeting
           </label>
-          <textarea
+          <Textarea
             value={persona.greeting}
-            onChange={e => updateField('greeting', e.target.value)}
+            onChange={v => updateField('greeting', v)}
             rows={2}
-            style={{
-              width: '100%', fontFamily: font.body, fontSize: 13, color: colors.text,
-              background: colors.inputBg, border: `1px solid ${colors.border}`,
-              borderRadius: 8, padding: '10px 12px', outline: 'none', resize: 'none', lineHeight: 1.5,
-            }}
           />
         </div>
 

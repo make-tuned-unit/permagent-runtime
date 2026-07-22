@@ -148,7 +148,7 @@ export function ManifestCard({ manifest }: Props) {
                 disabled={configBusy || !configValue.trim()}
                 style={{
                   padding: '6px 12px', borderRadius: radius.sm, border: 'none',
-                  background: colors.cyan, color: colors.bg,
+                  background: colors.cyan, color: colors.textOnCyan,
                   fontFamily: font.body, fontSize: 12, fontWeight: 600,
                   cursor: configBusy ? 'default' : 'pointer', opacity: configBusy ? 0.6 : 1,
                 }}

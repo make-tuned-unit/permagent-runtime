@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { font } from '../../styles/tokens';
 import { Mobius } from '../mobius/Mobius';
-import { Particles } from './atoms';
+import { Particles, PrimaryButton } from './atoms';
 import { useTheme } from '../../styles/useTheme';
 
 interface Persona {
@@ -17,13 +17,15 @@ interface Props {
 }
 
 export function MomentChat({ persona, onComplete }: Props) {
-  const { colors } = useTheme();
+  const { colors, reduceMotion } = useTheme();
   const [streamed, setStreamed] = useState('');
   const [done, setDone] = useState(false);
   const streamRef = useRef<ReturnType<typeof setInterval>>();
 
   useEffect(() => {
     const greeting = persona.greeting || `Hello! I'm ${persona.name}. How can I help you today?`;
+    // Reduce-motion: present the greeting whole rather than typing it out.
+    if (reduceMotion) { setStreamed(greeting); setDone(true); return; }
     let idx = 0;
     streamRef.current = setInterval(() => {
       idx++;
@@ -36,7 +38,7 @@ export function MomentChat({ persona, onComplete }: Props) {
       }
     }, 28);
     return () => clearInterval(streamRef.current);
-  }, [persona]);
+  }, [persona, reduceMotion]);
 
   const isSpeaking = !done;
 
@@ -84,14 +86,9 @@ export function MomentChat({ persona, onComplete }: Props) {
         padding: '16px 24px', borderTop: `1px solid ${colors.border}`,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}>
-        <button onClick={onComplete} style={{
-          fontFamily: font.body, fontSize: 14, fontWeight: 600,
-          color: colors.textOnAccent, background: colors.purple,
-          border: 'none', borderRadius: 10, padding: '12px 32px',
-          cursor: 'pointer', boxShadow: `0 4px 14px ${colors.purpleGlow}`,
-        }}>
+        <PrimaryButton onClick={onComplete} style={{ padding: '12px 32px' }}>
           Enter Permagent
-        </button>
+        </PrimaryButton>
       </div>
 
       <style>{`

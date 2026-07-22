@@ -62,6 +62,14 @@ export const ease = {
   spring: 'cubic-bezier(0.34, 1.56, 0.64, 1)',
 } as const;
 
+/**
+ * Motion duration scale (ms). One vocabulary for transitions so surfaces don't
+ * hand-roll a grab-bag of 160/200/320 timings (wizard audit #603). `fast` =
+ * hover/focus feedback, `base` = element state changes, `slow` = view/crossfade.
+ * Pair with an `ease` token: `transition: \`all ${duration.fast}ms ${ease.out}\``.
+ */
+export const duration = { fast: 160, base: 200, slow: 320 } as const;
+
 export const radius = { sm: 6, md: 10, lg: 14, xl: 20, pill: 999 } as const;
 
 export const shadow = {
@@ -70,7 +78,7 @@ export const shadow = {
   card: '0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04)',
 } as const;
 
-export const tokens = { color, font, type, tabularNums, ease, radius, shadow } as const;
+export const tokens = { color, font, type, tabularNums, ease, duration, radius, shadow } as const;
 export type DesignTokens = typeof tokens;
 
 // ── Theme gradients + colors ────────────────────────────────────────
@@ -103,8 +111,13 @@ export interface ThemeColors {
   userBubbleText: string;
   /** Inset surface for inputs */
   inputBg: string;
-  /** On-accent text (white on gradient/cyan buttons) */
+  /** On-accent text (white on the blue→violet gradient/ribbon buttons) */
   textOnAccent: string;
+  /** Text/iconography sitting on a FLAT cyan accent fill (solid `colors.cyan`
+   *  buttons, active pills). Cyan is bright in every theme, so on-cyan text must
+   *  be a fixed dark ink — white/`colors.bg` fails WCAG contrast (and inverts to
+   *  near-white on the silver theme). Never use textOnAccent on a flat-cyan fill. */
+  textOnCyan: string;
   /** Success semantic */
   success: string;
   /** Warning semantic */
@@ -132,6 +145,7 @@ const DARK_COLORS: ThemeColors = {
   userBubbleText: '#FFFFFF',
   inputBg: '#1E2433',
   textOnAccent: '#FFFFFF',
+  textOnCyan: '#04141B',
   success: '#34D399',
   warning: '#FBBF24',
   codeBg: 'rgba(0,0,0,0.30)',
@@ -176,6 +190,7 @@ const SILVER_COLORS: ThemeColors = {
   userBubbleText: '#1E2530', // Graphite (BLACK text)
   inputBg: '#EEF2F7',       // Chrome Mist (recessed)
   textOnAccent: '#FFFFFF',
+  textOnCyan: '#04141B',    // Deep ink — ~12:1 on #00BFEF (white would be ~1.9:1)
   success: '#059669',
   warning: '#D97706',
   codeBg: '#EEF2F7',          // Chrome Mist — 1.1:1 vs white (subtle tint)
