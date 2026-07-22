@@ -10,7 +10,7 @@
  * from the next PTY chunk). That was only sound for canonical-mode input,
  * which no modern interactive tool uses — zsh's ZLE and TUI apps (Claude
  * Code/Ink) run the PTY raw with termios ECHO off and repaint themselves.
- * Because the Rust reader reports ECHO transitions only (starting from
+ * Because the Rust reader reported ECHO transitions only (starting from
  * `false`), a normal zsh → claude flow never emitted `pty_echo_state`, so
  * the frontend's `echoEnabled = true` default kept local echo active during
  * TUI sessions. Two artifacts followed (#573):
@@ -27,6 +27,10 @@
  * `emit_to("main")` instead of broadcasting to every webview); a localhost
  * PTY round-trip is ~1ms, so local echo bought nothing and cost render
  * correctness. It is removed; this module pins the verbatim contract.
+ *
+ * The daemon-side `pty_echo_state` emission (the Rust reader's ECHO-transition
+ * tracking) was removed in #831 once this frontend listener was gone — nothing
+ * consumed it. The verbatim contract is now the only echo policy.
  */
 
 export interface PtyDataPayload {
