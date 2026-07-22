@@ -255,6 +255,24 @@ impl SafeBrain {
             .map_err(Into::into)
     }
 
+    /// Hard-delete a memory by its logical **key** across every substrate
+    /// (memories + all FK children + recognition sidecar), returning a
+    /// verified [`ForgetReport`].
+    ///
+    /// Unlike `consolidate_into` — which is a *soft* filter that hides a memory
+    /// from recall while the row persists — `forget` makes the content
+    /// unrecoverable (#339). `report.store.existed == false` means no memory
+    /// was found for the key (a no-op, not an error). Used by the Reader to
+    /// retire a stale prior-version document on re-ingest.
+    pub async fn forget(&self, key: &str) -> anyhow::Result<spectral::graph::brain::ForgetReport> {
+        let brain = self.inner.clone();
+        let key = key.to_string();
+        tokio::task::spawn_blocking(move || brain.forget(&key))
+            .await
+            .map_err(|e| anyhow::anyhow!("brain task panicked: forget: {e}"))?
+            .map_err(Into::into)
+    }
+
     pub async fn set_description(&self, id: &str, description: &str) -> anyhow::Result<()> {
         let brain = self.inner.clone();
         let id = id.to_string();
