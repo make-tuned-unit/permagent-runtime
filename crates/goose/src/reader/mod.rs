@@ -195,6 +195,15 @@ async fn finalize_text_ingest(key: String, full_text: String, filename: &str) ->
         if let Err(e) = brain.remember_with(&key, &full_text, opts).await {
             tracing::warn!("reader: brain write failed for {key}: {e}");
         }
+
+        // #339: retire the prior version of this document, if any. The Reader
+        // keys memories by content-hash (`reader:file:{sha256}`), so an UPDATED
+        // file lands under a NEW key while the OLD memory persists — stale, yet
+        // still recall-able, so the agent could surface a version the user
+        // already replaced. We track the last content-key per document identity
+        // (the dropped filename) and hard-delete the superseded memory via
+        // `Brain::forget` on re-ingest.
+        retire_prior_version(&brain, filename, &key).await;
     } else {
         tracing::warn!("reader: Brain not ready; digest returned but full text not persisted");
     }
@@ -209,6 +218,129 @@ async fn finalize_text_ingest(key: String, full_text: String, filename: &str) ->
         is_visual: false,
         memory_key: key,
         already_ingested: false,
+    }
+}
+
+/// Retire the previously-ingested version of a document on re-ingest (#339).
+///
+/// Records `doc_identity` (the dropped filename) → `new_key` in a
+/// Permagent-owned index table and returns the prior content-key it replaced.
+/// If a different prior key existed, its (now stale) memory is hard-deleted via
+/// [`SafeBrain::forget`](crate::brain_handle::SafeBrain::forget). Best-effort:
+/// any index/forget failure is logged, never surfaced to the caller — a stale
+/// leftover is a quality issue, not an ingest failure.
+///
+/// Identity is the filename: re-dropping an updated file under the same name
+/// retires the old text. (Two unrelated files sharing a name will also retire
+/// the earlier one — an accepted limitation of filename-as-identity; the
+/// content the agent already saw lives in the conversation, not this cache.)
+async fn retire_prior_version(
+    brain: &crate::brain_handle::SafeBrain,
+    doc_identity: &str,
+    new_key: &str,
+) {
+    let identity = doc_identity.to_string();
+    let new_key_owned = new_key.to_string();
+
+    let prior =
+        tokio::task::spawn_blocking(move || doc_index::swap_content_key(&identity, &new_key_owned))
+            .await;
+
+    let prior = match prior {
+        Ok(Ok(p)) => p,
+        Ok(Err(e)) => {
+            tracing::warn!("reader: doc-index update failed for {doc_identity}: {e}");
+            return;
+        }
+        Err(e) => {
+            tracing::warn!("reader: doc-index task panicked: {e}");
+            return;
+        }
+    };
+
+    if let Some(old_key) = prior {
+        if old_key != new_key {
+            match brain.forget(&old_key).await {
+                Ok(report) => tracing::info!(
+                    doc = %doc_identity,
+                    old_key = %old_key,
+                    new_key = %new_key,
+                    memory_rows = report.store.memory_rows,
+                    fingerprints = report.store.fingerprints,
+                    "reader: retired stale prior document version"
+                ),
+                Err(e) => tracing::warn!(
+                    old_key = %old_key,
+                    "reader: forget of stale prior version failed: {e}"
+                ),
+            }
+        }
+    }
+}
+
+/// Permagent-owned index mapping a document identity (filename) to the
+/// content-hash key its latest ingest was stored under. Lives in the Brain DB
+/// as a `_pm_`-prefixed table (same convention as cleanup's migration ledger);
+/// it never participates in recall.
+mod doc_index {
+    use anyhow::Result;
+
+    /// How long an index connection waits for SQLite's write lock before
+    /// giving up — mirrors the cleanup path's contention handling.
+    const BUSY_TIMEOUT_MS: u64 = 30_000;
+
+    fn open() -> Result<rusqlite::Connection> {
+        let db_path = crate::config::paths::Paths::brain_dir().join("memory.db");
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.busy_timeout(std::time::Duration::from_millis(BUSY_TIMEOUT_MS))?;
+        Ok(conn)
+    }
+
+    fn ensure_table(conn: &rusqlite::Connection) -> Result<()> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS _pm_reader_doc_index ( \
+                 doc_identity TEXT PRIMARY KEY, \
+                 content_key  TEXT NOT NULL, \
+                 updated_at   TEXT NOT NULL DEFAULT (datetime('now')) \
+             );",
+        )?;
+        Ok(())
+    }
+
+    /// Record `doc_identity → new_key`, returning the content-key it replaced
+    /// (if the document had been ingested before). Production entrypoint.
+    pub(super) fn swap_content_key(doc_identity: &str, new_key: &str) -> Result<Option<String>> {
+        let conn = open()?;
+        swap_content_key_on_conn(&conn, doc_identity, new_key)
+    }
+
+    /// Core of [`swap_content_key`] against an arbitrary connection. Exposed for
+    /// testing without touching `Paths::brain_dir()`.
+    pub(super) fn swap_content_key_on_conn(
+        conn: &rusqlite::Connection,
+        doc_identity: &str,
+        new_key: &str,
+    ) -> Result<Option<String>> {
+        ensure_table(conn)?;
+
+        let prior: Option<String> = conn
+            .query_row(
+                "SELECT content_key FROM _pm_reader_doc_index WHERE doc_identity = ?1",
+                [doc_identity],
+                |r| r.get(0),
+            )
+            .ok();
+
+        conn.execute(
+            "INSERT INTO _pm_reader_doc_index (doc_identity, content_key, updated_at) \
+             VALUES (?1, ?2, datetime('now')) \
+             ON CONFLICT(doc_identity) DO UPDATE SET \
+                 content_key = excluded.content_key, \
+                 updated_at  = excluded.updated_at",
+            rusqlite::params![doc_identity, new_key],
+        )?;
+
+        Ok(prior)
     }
 }
 
@@ -446,6 +578,72 @@ fn truncate(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #339: first ingest of a document records its content-key and has no
+    /// prior version to retire; re-ingesting the SAME bytes (same key) reports
+    /// the prior key equal to the new one, so no forget fires.
+    #[test]
+    fn doc_index_first_ingest_and_identical_reingest() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let k1 = content_key(b"v1 contents");
+
+        let prior = doc_index::swap_content_key_on_conn(&conn, "report.pdf", &k1).unwrap();
+        assert_eq!(prior, None, "first ingest has no prior version");
+
+        let prior2 = doc_index::swap_content_key_on_conn(&conn, "report.pdf", &k1).unwrap();
+        assert_eq!(
+            prior2,
+            Some(k1.clone()),
+            "identical re-drop returns the same key (== new_key ⇒ caller skips forget)"
+        );
+    }
+
+    /// #339: re-ingesting an UPDATED document (new bytes ⇒ new key) returns the
+    /// superseded key so the caller can `forget` it, and the index now points
+    /// at the new key.
+    #[test]
+    fn doc_index_updated_reingest_returns_stale_key() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let old = content_key(b"v1 contents");
+        let new = content_key(b"v2 contents - edited");
+        assert_ne!(old, new);
+
+        doc_index::swap_content_key_on_conn(&conn, "report.pdf", &old).unwrap();
+        let prior = doc_index::swap_content_key_on_conn(&conn, "report.pdf", &new).unwrap();
+
+        assert_eq!(
+            prior,
+            Some(old),
+            "updated re-ingest surfaces the stale prior key to be forgotten"
+        );
+
+        let current: String = conn
+            .query_row(
+                "SELECT content_key FROM _pm_reader_doc_index WHERE doc_identity = 'report.pdf'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(current, new, "index advances to the new content key");
+    }
+
+    /// Distinct document identities are tracked independently.
+    #[test]
+    fn doc_index_keys_are_per_identity() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let a = content_key(b"a");
+        let b = content_key(b"b");
+
+        assert_eq!(
+            doc_index::swap_content_key_on_conn(&conn, "a.txt", &a).unwrap(),
+            None
+        );
+        assert_eq!(
+            doc_index::swap_content_key_on_conn(&conn, "b.txt", &b).unwrap(),
+            None,
+            "a second document does not see the first's key"
+        );
+    }
 
     #[test]
     fn content_key_is_stable_and_namespaced() {

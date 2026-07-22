@@ -928,6 +928,12 @@ pub fn annotate_memory(
         rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
 
+    // #276: enforce FKs on this raw write connection. `memory_annotations`
+    // references `memories(id)`; with FKs OFF (the per-connection default) an
+    // INSERT can silently reference a memory_id that no longer exists, seeding
+    // dangling annotations. With FKs ON such an INSERT is refused instead.
+    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+
     let when_rfc = created_at.to_rfc3339();
 
     // Idempotency check: skip if identical annotation exists

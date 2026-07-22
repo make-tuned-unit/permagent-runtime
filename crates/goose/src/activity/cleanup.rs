@@ -963,6 +963,64 @@ mod tests {
         );
     }
 
+    /// #230 root cause: a bare `DELETE FROM memories` on a connection with
+    /// `PRAGMA foreign_keys = ON` fails with "FOREIGN KEY constraint failed"
+    /// when a child row references the victim through a **legacy NO ACTION** FK
+    /// (RESTRICT semantics). This is exactly the consolidation-time abort the
+    /// issue reported.
+    #[test]
+    fn no_action_fk_makes_delete_fail_under_enforcement() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute_batch(
+            "CREATE TABLE memories (id TEXT PRIMARY KEY, content TEXT);
+             CREATE TABLE constellation_fingerprints (
+                 id TEXT PRIMARY KEY,
+                 anchor_memory_id TEXT NOT NULL,
+                 FOREIGN KEY (anchor_memory_id) REFERENCES memories(id)
+             );
+             INSERT INTO memories (id, content) VALUES ('m1', 'x');
+             INSERT INTO constellation_fingerprints (id, anchor_memory_id) VALUES ('fp1', 'm1');",
+        )
+        .unwrap();
+
+        let res = conn.execute("DELETE FROM memories WHERE id = 'm1'", []);
+        assert!(
+            res.is_err(),
+            "NO ACTION FK + enforcement must reject the delete (reproduces #230)"
+        );
+    }
+
+    /// #230 fix (via the pinned Spectral CASCADE schema / migration): the same
+    /// delete succeeds and cascades to the child when the FK is
+    /// `ON DELETE CASCADE`. No explicit child cleanup, no FK violation.
+    #[test]
+    fn cascade_fk_makes_delete_succeed_and_clean_children() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute_batch(
+            "CREATE TABLE memories (id TEXT PRIMARY KEY, content TEXT);
+             CREATE TABLE constellation_fingerprints (
+                 id TEXT PRIMARY KEY,
+                 anchor_memory_id TEXT NOT NULL,
+                 FOREIGN KEY (anchor_memory_id) REFERENCES memories(id) ON DELETE CASCADE
+             );
+             INSERT INTO memories (id, content) VALUES ('m1', 'x');
+             INSERT INTO constellation_fingerprints (id, anchor_memory_id) VALUES ('fp1', 'm1');",
+        )
+        .unwrap();
+
+        conn.execute("DELETE FROM memories WHERE id = 'm1'", [])
+            .expect("CASCADE FK allows the delete (fixes #230)");
+
+        let children: usize = conn
+            .query_row("SELECT COUNT(*) FROM constellation_fingerprints", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(children, 0, "child row cascaded — no orphan, no FK failure");
+    }
+
     /// Control: a plain connection with no busy_timeout fails immediately under
     /// the same contention — demonstrating the bug `open_cleanup_conn` fixes.
     #[test]
