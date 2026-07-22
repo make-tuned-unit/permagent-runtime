@@ -10,7 +10,53 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serial_test::serial;
+use std::sync::LazyLock;
 use tower::ServiceExt;
+
+/// Process-lifetime `PERMAGENT_PATH_ROOT` shared by every test in this binary.
+///
+/// The session-manager pool behind AppState is a process-global `LazyLock`
+/// (`SESSION_STORAGE`) that pins its sqlite path — and `create_dir_all`s that
+/// path's parent — to whatever `PERMAGENT_PATH_ROOT` resolves to the *first*
+/// time any test builds an AppState. Each test used to mint its own
+/// `tempfile::tempdir()` and set the root to it; that dir was deleted the moment
+/// the first test returned, while the process-global pool kept pointing at it,
+/// so the next `#[serial]` test's very first query opened a connection under a
+/// vanished parent directory → "unable to open database file" (#840, the flake
+/// that forced CI re-runs across the merge fleet). It only *flaked* rather than
+/// always failing because the per-platform run order and lazy-connection reuse
+/// decided whether a fresh connection had to be opened after the drop.
+///
+/// The fix: one tempdir, owned by this `static` so it lives for the whole
+/// process (never dropped between tests), with the db/brain/inbox parents
+/// created up front. Every test roots itself through [`test_root`] *before*
+/// building an AppState, so the global pool is pinned to a directory that
+/// outlives every test. HOME is pointed at the same root because the
+/// project-documents write path resolves under `~/.permagent/…` via
+/// `dirs::home_dir()` (an inherited #677 wart, not PERMAGENT_PATH_ROOT) — doing
+/// it once here keeps every test's artifacts out of the real home.
+static TEST_ROOT: LazyLock<tempfile::TempDir> = LazyLock::new(|| {
+    let tmp = tempfile::tempdir().expect("create test PERMAGENT_PATH_ROOT");
+    std::env::set_var("PERMAGENT_PATH_ROOT", tmp.path());
+    std::env::set_var("HOME", tmp.path());
+    // Pre-create every parent a lazily-opened db/brain/inbox handle might touch,
+    // so no connection can ever race a missing directory.
+    for dir in [
+        permagent::config::paths::Paths::spectral_dir(),
+        permagent::config::paths::Paths::brain_dir(),
+        permagent::config::paths::Paths::inbox_dir(),
+        permagent::config::paths::Paths::logs_dir(),
+    ] {
+        std::fs::create_dir_all(&dir).expect("create test root subdir");
+    }
+    tmp
+});
+
+/// Root this test in the shared, process-lifetime `PERMAGENT_PATH_ROOT`.
+/// Call at the top of every test, before building an AppState.
+fn test_root() {
+    LazyLock::force(&TEST_ROOT);
+}
 
 async fn body_json(resp: axum::response::Response) -> serde_json::Value {
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
@@ -50,8 +96,7 @@ fn row_by_id<'a>(listed: &'a serde_json::Value, id: &str) -> Option<&'a serde_js
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn post_then_get_inbox_roundtrips_through_router() {
-    let tmp = tempfile::tempdir().unwrap();
-    std::env::set_var("PERMAGENT_PATH_ROOT", tmp.path());
+    test_root();
 
     let state = permagent_daemon::state::AppState::new(true).await.unwrap();
     let app = permagent_daemon::routes::inbox::routes(state.clone());
@@ -104,17 +149,14 @@ async fn post_then_get_inbox_roundtrips_through_router() {
 /// project (document row via the shared docs write path). One test so the
 /// expensive AppState build happens once.
 ///
-/// HOME is pointed at the tempdir because the project-documents path writes
-/// under `~/.permagent/project-docs/` via `dirs::home_dir()` (not
-/// PERMAGENT_PATH_ROOT — an inherited #677 wart); this keeps test artifacts out
-/// of the real home. Safe here: #[serial] and this binary's tests set their own
-/// env.
+/// The project-documents path writes under `~/.permagent/project-docs/` via
+/// `dirs::home_dir()` (not PERMAGENT_PATH_ROOT — an inherited #677 wart);
+/// [`test_root`] points HOME at the shared throwaway root so those artifacts
+/// stay out of the real home.
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn route_inbox_file_to_each_destination() {
-    let tmp = tempfile::tempdir().unwrap();
-    std::env::set_var("PERMAGENT_PATH_ROOT", tmp.path());
-    std::env::set_var("HOME", tmp.path());
+    test_root();
 
     let state = permagent_daemon::state::AppState::new(true).await.unwrap();
     let app = permagent_daemon::routes::inbox::routes(state.clone());
@@ -240,8 +282,7 @@ async fn route_inbox_file_to_each_destination() {
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn route_inbox_file_guard_rails() {
-    let tmp = tempfile::tempdir().unwrap();
-    std::env::set_var("PERMAGENT_PATH_ROOT", tmp.path());
+    test_root();
 
     let state = permagent_daemon::state::AppState::new(true).await.unwrap();
     let app = permagent_daemon::routes::inbox::routes(state.clone());
