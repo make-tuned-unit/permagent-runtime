@@ -1097,6 +1097,46 @@ pub async fn set_goal_dispatch_evidence(
     Ok(())
 }
 
+/// Narrow API for the orchestrator's dispatch/heartbeat path (#210): writes
+/// ONLY the `execution_receipt` metadata key on a goal card — the per-attempt
+/// record of which worker ran, the routing snapshot, session id, lifecycle,
+/// liveness heartbeat, and terminal state. Never moves cards, never touches
+/// protected keys. Mirrors [`set_goal_dispatch_evidence`].
+pub async fn set_goal_execution_receipt(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    receipt: serde_json::Value,
+) -> Result<(), String> {
+    let card = get_card(pool, card_id)
+        .await?
+        .ok_or_else(|| format!("Card '{}' not found", card_id))?;
+    if card.card_type != "goal" {
+        return Err(format!("Card '{}' is not a goal", card_id));
+    }
+    let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
+    meta.insert("execution_receipt".to_string(), receipt);
+    let meta_str =
+        serde_json::to_string(&serde_json::Value::Object(meta)).map_err(|e| e.to_string())?;
+    sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+        .bind(&meta_str)
+        .bind(card_id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Read the `execution_receipt` off a goal card's metadata, if present (#210).
+pub async fn get_goal_execution_receipt(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+) -> Result<Option<serde_json::Value>, String> {
+    let card = get_card(pool, card_id)
+        .await?
+        .ok_or_else(|| format!("Card '{}' not found", card_id))?;
+    Ok(card.metadata_json.get("execution_receipt").cloned())
+}
+
 /// Count cards in a project, optionally filtered by card_type.
 pub async fn count_cards(
     pool: &Pool<Sqlite>,

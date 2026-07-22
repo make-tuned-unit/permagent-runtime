@@ -1,3 +1,4 @@
+use super::execution_receipt::{self, ExecutionReceipt, ReceiptState};
 use super::goal_engine;
 use super::publish_sequence;
 use crate::agents::extension::PlatformExtensionContext;
@@ -671,6 +672,45 @@ pub(crate) fn build_capability_snapshot(
     })
 }
 
+/// Map a dispatch outcome to the terminal receipt state it should record (#210).
+fn receipt_state_for_outcome(outcome: &goal_engine::GoalOutcome) -> ReceiptState {
+    match outcome {
+        goal_engine::GoalOutcome::Success(_) => ReceiptState::Completed,
+        goal_engine::GoalOutcome::Failed(_) => ReceiptState::Failed,
+        goal_engine::GoalOutcome::TimedOut { .. } => ReceiptState::Timeout,
+        goal_engine::GoalOutcome::Blocked { .. } => ReceiptState::Blocked,
+    }
+}
+
+/// Best-effort liveness beat on a goal's execution receipt (#210). No-op when
+/// the card carries no receipt or it is already terminal. Never fails the
+/// tracker — receipts are observability, not control flow.
+async fn beat_receipt(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str) {
+    if let Ok(Some(value)) = cards::get_goal_execution_receipt(pool, card_id).await {
+        if let Ok(mut receipt) = serde_json::from_value::<ExecutionReceipt>(value) {
+            if receipt.state.is_terminal() {
+                return;
+            }
+            receipt.heartbeat(chrono::Utc::now().to_rfc3339());
+            if let Ok(updated) = serde_json::to_value(&receipt) {
+                let _ = cards::set_goal_execution_receipt(pool, card_id, updated).await;
+            }
+        }
+    }
+}
+
+/// Best-effort terminal stamp on a goal's execution receipt (#210).
+async fn finalize_receipt(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str, state: ReceiptState) {
+    if let Ok(Some(value)) = cards::get_goal_execution_receipt(pool, card_id).await {
+        if let Ok(mut receipt) = serde_json::from_value::<ExecutionReceipt>(value) {
+            receipt.finalize(state, chrono::Utc::now().to_rfc3339());
+            if let Ok(updated) = serde_json::to_value(&receipt) {
+                let _ = cards::set_goal_execution_receipt(pool, card_id, updated).await;
+            }
+        }
+    }
+}
+
 /// Dispatch a goal card to a worker via subagent.
 ///
 /// Precondition: card must be card_type='goal' in state='ready'.
@@ -956,13 +996,40 @@ pub(crate) async fn dispatch_goal_fn(
     let tracker_project_id = card.project_id.clone();
     let tracker_pool = pool.clone();
     tokio::spawn(async move {
-        let outcome = match join.await {
-            Ok(o) => o,
-            Err(e) => goal_engine::GoalOutcome::Failed(format!("Worker task panicked: {}", e)),
+        // #210: beat the execution receipt while awaiting the worker, so a
+        // dispatch owned by THIS lifecycle stays visibly live (rebind-vs-stale
+        // on restart). The heartbeat proves the tracker is alive — not that the
+        // worker is producing output.
+        let outcome = {
+            let mut join = join;
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
+                execution_receipt::HEARTBEAT_INTERVAL_SECS,
+            ));
+            ticker.tick().await; // consume the immediate first tick
+            loop {
+                tokio::select! {
+                    res = &mut join => {
+                        break match res {
+                            Ok(o) => o,
+                            Err(e) => goal_engine::GoalOutcome::Failed(
+                                format!("Worker task panicked: {}", e),
+                            ),
+                        };
+                    }
+                    _ = ticker.tick() => {
+                        beat_receipt(&tracker_pool, &tracker_card_id).await;
+                    }
+                }
+            }
         };
         // The worker has exited — drop its kill handle from the registry.
         // (A cancel may already have taken it; remove is then a no-op.)
         take_goal_worker(&tracker_card_id);
+        // #210: stamp the receipt's terminal state (best-effort) before running
+        // the completion handler, so the attempt's outcome is recorded even if a
+        // downstream handler step fails.
+        let terminal_state = receipt_state_for_outcome(&outcome);
+        finalize_receipt(&tracker_pool, &tracker_card_id, terminal_state).await;
         let result = match outcome {
             goal_engine::GoalOutcome::Success(evidence) => {
                 // Layer 1: persist deterministic proof-of-work to the goal
@@ -1055,6 +1122,19 @@ pub(crate) async fn dispatch_goal_fn(
         .unwrap_or_default();
     worker_session_ids.push(session_id.clone());
 
+    // #210: the initial execution receipt for THIS attempt — worker, routing
+    // snapshot, session id, owning lifecycle, and a heartbeat seeded at dispatch.
+    // It lands atomically with the dispatch transition below; the completion
+    // tracker then beats it and stamps its terminal state.
+    let receipt = ExecutionReceipt::new(
+        worker_key.clone(),
+        session_id.clone(),
+        capability_snapshot.clone(),
+        daemon_lifecycle_id().to_string(),
+        dispatched_at.clone(),
+        attempt_count + 1,
+    );
+
     let mut patch = serde_json::Map::new();
     patch.insert("worker_key".to_string(), serde_json::json!(worker_key));
     // #211: record the capability/routing snapshot alongside the chosen worker,
@@ -1064,6 +1144,9 @@ pub(crate) async fn dispatch_goal_fn(
         "capability_snapshot".to_string(),
         capability_snapshot.clone(),
     );
+    if let Ok(receipt_json) = serde_json::to_value(&receipt) {
+        patch.insert("execution_receipt".to_string(), receipt_json);
+    }
     patch.insert(
         "worker_session_id".to_string(),
         serde_json::json!(session_id),
@@ -5827,6 +5910,69 @@ mod tests {
         assert_eq!(
             chosen, "zeta",
             "least-loaded worker must win, overriding alphabetical (atlas < zeta)"
+        );
+    }
+
+    #[tokio::test]
+    async fn execution_receipt_persist_beat_and_finalize() {
+        // #210: a dispatched goal carries a receipt; the tracker beats it while
+        // running and stamps a terminal state when the worker exits.
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+
+        // Seed an initial Running receipt (as dispatch would).
+        let receipt = ExecutionReceipt::new(
+            "codex",
+            "sess-42",
+            serde_json::json!({ "worker_key": "codex" }),
+            "life-test",
+            "2026-07-22T10:00:00+00:00",
+            1,
+        );
+        cards::set_goal_execution_receipt(&pool, &card.id, serde_json::to_value(&receipt).unwrap())
+            .await
+            .unwrap();
+
+        // Heartbeat advances last_heartbeat_at while non-terminal.
+        beat_receipt(&pool, &card.id).await;
+        let after_beat: ExecutionReceipt = serde_json::from_value(
+            cards::get_goal_execution_receipt(&pool, &card.id)
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(after_beat.state, ReceiptState::Running);
+        assert_ne!(
+            after_beat.last_heartbeat_at, "2026-07-22T10:00:00+00:00",
+            "heartbeat must advance the beat timestamp"
+        );
+
+        // Finalize stamps the terminal state + terminal_at.
+        finalize_receipt(&pool, &card.id, ReceiptState::Completed).await;
+        let after_final: ExecutionReceipt = serde_json::from_value(
+            cards::get_goal_execution_receipt(&pool, &card.id)
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(after_final.state, ReceiptState::Completed);
+        assert!(after_final.terminal_at.is_some());
+
+        // A beat after terminal is a no-op.
+        let frozen = after_final.last_heartbeat_at.clone();
+        beat_receipt(&pool, &card.id).await;
+        let after_noop: ExecutionReceipt = serde_json::from_value(
+            cards::get_goal_execution_receipt(&pool, &card.id)
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            after_noop.last_heartbeat_at, frozen,
+            "a terminal receipt must not beat"
         );
     }
 
