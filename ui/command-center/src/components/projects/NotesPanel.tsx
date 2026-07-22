@@ -48,6 +48,10 @@ export function NotesPanel({ project }: { project: Project }) {
   }, []);
   const { state: dictation, error: dictationError, toggle: toggleDictation } = useDictation(appendDictation);
 
+  // #629 multi-client liveness: `project_changed` (change=notes) from another
+  // device refetches this list.
+  const projectsRev = useCommandCenter(s => s.projectsRev);
+
   const load = useCallback(async () => {
     try {
       setNotes(await api.listProjectNotes(project.id));
@@ -57,7 +61,7 @@ export function NotesPanel({ project }: { project: Project }) {
     }
   }, [project.id]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load, projectsRev]);
 
   const save = useCallback(async () => {
     const trimmed = body.trim();

@@ -325,6 +325,20 @@ pub enum PermagentEventType {
     // Echo/Watcher — the agent proactively resurfaces something worth your
     // attention (a dormant Brain thread today; project news/analytics later).
     ProactiveNudge,
+    // ── Multi-client liveness (#629): emitted on REAL writes only, so a second
+    // open client refreshes the affected surface instead of going stale. ──
+    /// A workspace's persisted layout changed (PUT /api/workspaces/{id}/layout).
+    WorkspaceChanged,
+    /// A project or one of its owned collections (tags / people-assoc /
+    /// memories-assoc / documents / notes) changed. Payload's `change` names
+    /// the collection so clients can refresh narrowly.
+    ProjectChanged,
+    /// A person's project association changed (associate / disassociate).
+    PersonChanged,
+    /// The agent's primary persona was edited (PUT /api/agent/identity).
+    IdentityChanged,
+    /// The chat-session list changed (created / deleted / renamed / forked).
+    SessionChanged,
 }
 
 // ── Convenience constructors ────────────────────────────────────────────────
@@ -814,6 +828,68 @@ pub fn proactive_nudge(
             "message": message,
             "count": count,
             "last_ts": last_ts,
+        }),
+    )
+}
+
+// ── Multi-client liveness constructors (#629) ───────────────────────────────
+// Discipline: call these ONLY after the write succeeded — events fire on real
+// mutations, never on attempts. Payloads carry ids + a `change` discriminator,
+// never row bodies (payload discipline: clients refetch, the bus doesn't carry
+// state).
+
+/// A workspace's persisted layout changed. `change` is `"layout"` today.
+pub fn workspace_changed(workspace_id: &str, change: &str) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::WorkspaceChanged,
+        serde_json::json!({
+            "workspace_id": workspace_id,
+            "change": change,
+        }),
+    )
+}
+
+/// A project (or an owned collection of it) changed. `change` ∈
+/// `created|updated|deleted|touched|tags|memories|documents|notes`.
+pub fn project_changed(project_id: &str, change: &str) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::ProjectChanged,
+        serde_json::json!({
+            "project_id": project_id,
+            "change": change,
+        }),
+    )
+}
+
+/// A person's project association changed. `change` ∈ `associated|disassociated`.
+pub fn person_changed(project_id: &str, entity_uuid: &str, change: &str) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::PersonChanged,
+        serde_json::json!({
+            "project_id": project_id,
+            "entity_uuid": entity_uuid,
+            "change": change,
+        }),
+    )
+}
+
+/// The primary persona was edited — clients re-read `/api/agent/identity`.
+pub fn identity_changed(display_name: &str) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::IdentityChanged,
+        serde_json::json!({
+            "display_name": display_name,
+        }),
+    )
+}
+
+/// The chat-session list changed. `change` ∈ `created|deleted|renamed|forked`.
+pub fn session_changed(session_id: &str, change: &str) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::SessionChanged,
+        serde_json::json!({
+            "session_id": session_id,
+            "change": change,
         }),
     )
 }

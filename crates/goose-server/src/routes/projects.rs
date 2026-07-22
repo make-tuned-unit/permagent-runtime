@@ -39,6 +39,7 @@ use axum::{
     Json, Router,
 };
 use permagent::agents::platform_extensions::analyze;
+use permagent::events;
 use permagent::project_association::{self, ProjectPerson};
 use permagent::project_documents::{self, ProjectDocument};
 use permagent::project_notes::{self, ProjectNote};
@@ -199,6 +200,10 @@ async fn create_project_handler(
     let project = projects::create_project(&pool, input)
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    // #629 multi-client liveness: real write → push, so a second client's
+    // projects list updates without waiting for its 5s poll. Same discipline
+    // for every emit in this file: only after the write succeeded.
+    events::emit(events::project_changed(&project.id, "created"));
     Ok((StatusCode::CREATED, Json(ProjectResponse::from(project))))
 }
 
@@ -237,6 +242,8 @@ async fn update_project_handler(
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?
         .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+    // #629: status drags / renames from another device push instantly.
+    events::emit(events::project_changed(&updated.id, "updated"));
     Ok(Json(ProjectResponse::from(updated)))
 }
 
@@ -262,6 +269,9 @@ async fn delete_project_handler(
     let deleted = projects::delete_project(&pool, &project.id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    if deleted {
+        events::emit(events::project_changed(&project.id, "deleted"));
+    }
     Ok(Json(DeleteResponse { deleted }))
 }
 
@@ -278,6 +288,8 @@ async fn touch_project_handler(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if touched {
+        // Real write (last_opened_at ordering changes other clients' lists).
+        events::emit(events::project_changed(&id, "touched"));
         Ok(Json(TouchResponse { touched }))
     } else {
         Err(StatusCode::NOT_FOUND)
@@ -317,6 +329,7 @@ async fn add_tag_handler(
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     if ok {
+        events::emit(events::project_changed(&id, "tags"));
         Ok(StatusCode::CREATED)
     } else {
         Err((StatusCode::NOT_FOUND, "Project not found".to_string()))
@@ -336,6 +349,7 @@ async fn remove_tag_handler(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if removed {
+        events::emit(events::project_changed(&id, "tags"));
         Ok(StatusCode::OK)
     } else {
         Err(StatusCode::NOT_FOUND)
@@ -455,6 +469,13 @@ async fn associate_person_handler(
             ),
         }
     }
+    // #629: cross-client bump for the People panel — peopleRev is client-local,
+    // so the second desktop only learns about this association via the bus.
+    events::emit(events::person_changed(
+        &project.id,
+        &req.entity_uuid,
+        "associated",
+    ));
     Ok(StatusCode::CREATED)
 }
 
@@ -486,6 +507,8 @@ async fn disassociate_person_handler(
     if !removed {
         return Err((StatusCode::NOT_FOUND, "Association not found".to_string()));
     }
+    // #629 liveness: broadcast so other connected clients refresh the people panel.
+    events::emit(events::person_changed(&id, &entity_uuid, "disassociated"));
 
     // #595: best-effort works_on residue cleanup. Read-only identity
     // resolution (never creates nodes on a delete path), then a scoped
@@ -657,6 +680,7 @@ async fn associate_memory_handler(
     project_association::associate_memory(&pool, &project.id, &memory_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    events::emit(events::project_changed(&project.id, "memories"));
     Ok(StatusCode::CREATED)
 }
 
@@ -674,6 +698,7 @@ async fn disassociate_memory_handler(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     if removed {
+        events::emit(events::project_changed(&id, "memories"));
         Ok(StatusCode::OK)
     } else {
         Err((StatusCode::NOT_FOUND, "Association not found".to_string()))
@@ -861,6 +886,11 @@ async fn upload_project_documents_handler(
         results.push(doc);
     }
 
+    // #629: one event per request (not per file) — the other client refetches
+    // the whole documents list anyway. Only when something actually landed.
+    if !results.is_empty() {
+        events::emit(events::project_changed(&project.id, "documents"));
+    }
     Ok(Json(UploadDocumentsResponse { documents: results }))
 }
 
@@ -927,6 +957,7 @@ async fn delete_project_document_handler(
         let _ = fs::remove_dir(parent).await;
     }
     tracing::info!(project = %project.id, doc = %doc_id, "project document deleted");
+    events::emit(events::project_changed(&project.id, "documents"));
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -998,6 +1029,8 @@ async fn create_project_note_handler(
     })?;
 
     tracing::info!(project = %project.id, note = %note.id, "project note created");
+    // #629 liveness: broadcast so other connected clients refresh the notes panel.
+    events::emit(events::project_changed(&project.id, "notes"));
     Ok(Json(note))
 }
 
@@ -1038,6 +1071,7 @@ async fn delete_project_note_handler(
     }
 
     tracing::info!(project = %project.id, note = %note_id, "project note deleted");
+    events::emit(events::project_changed(&project.id, "notes"));
     Ok(StatusCode::OK)
 }
 

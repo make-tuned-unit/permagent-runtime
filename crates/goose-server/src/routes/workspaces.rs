@@ -126,6 +126,13 @@ async fn update_layout_handler(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     if updated {
+        // #629 multi-client liveness: a second open client refetches its
+        // workspace layouts instead of showing the pre-edit arrangement until
+        // reload. Emitted only on a REAL row update (not on 404).
+        permagent::events::emit(permagent::events::workspace_changed(
+            &workspace_id,
+            "layout",
+        ));
         Ok(StatusCode::OK)
     } else {
         Err(StatusCode::NOT_FOUND)

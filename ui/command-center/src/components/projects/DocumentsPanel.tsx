@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { FiFile, FiTrash2, FiUploadCloud } from 'react-icons/fi';
 import { api } from '../../lib/api';
+import { useCommandCenter } from '../../lib/store';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Panel } from './Panel';
@@ -34,6 +35,9 @@ export function DocumentsPanel({ project }: { project: Project }) {
   // instead of the empty drop-zone, and never a perpetual spinner.
   const [status, setStatus] = useState<'loading' | 'error' | 'ready'>('loading');
   const fileInput = useRef<HTMLInputElement>(null);
+  // #629 multi-client liveness: bumped by `project_changed` on /events, so an
+  // upload/delete from another device refetches this list.
+  const projectsRev = useCommandCenter(s => s.projectsRev);
 
   const load = useCallback(async () => {
     try {
@@ -45,7 +49,7 @@ export function DocumentsPanel({ project }: { project: Project }) {
     }
   }, [project.id]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load, projectsRev]);
 
   const upload = useCallback(async (files: File[]) => {
     if (files.length === 0) return;

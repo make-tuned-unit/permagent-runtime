@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '../../lib/api';
+import { useCommandCenter } from '../../lib/store';
 import { emitActivity } from '../../lib/emitActivity';
 
 export interface PersonaData {
@@ -59,7 +60,10 @@ export function usePersona() {
     setLoading(false);
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  // #629 multi-client liveness: identityRev bumps when `identity_changed`
+  // arrives on /events — the persona form re-reads a remote edit.
+  const identityRev = useCommandCenter(s => s.identityRev);
+  useEffect(() => { load(); }, [load, identityRev]);
 
   /** Retry a failed initial load (shows a spinner again). */
   const reload = useCallback(async () => {

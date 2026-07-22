@@ -16,10 +16,13 @@ export function ChatView() {
   const connectSession = useCommandCenter(s => s.connectSession);
   const setAgentName = useCommandCenter(s => s.setAgentName);
   const chatInputRef = useRef<ChatInputHandle>(null);
+  // #629 multi-client liveness: re-read identity when `identity_changed`
+  // arrives on /events (persona edited on another device).
+  const identityRev = useCommandCenter(s => s.identityRev);
 
   useEffect(() => {
     api.getIdentity().then(id => setAgentName(id.first_name)).catch(() => {});
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [identityRev]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     (async () => {

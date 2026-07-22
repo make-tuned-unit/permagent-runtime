@@ -11,6 +11,10 @@ import { useTheme } from '../styles/useTheme';
 // Prefers the daemon's server-side `"replayed": true` marker, with the
 // per-epoch timestamp heuristic as the fallback for unmarked frames.
 import { frameReplayed } from '../components/world/shared/worldEvents';
+// #629 multi-client liveness: maps domain events (workspace/project/person/
+// identity/session _changed) to the store refreshes that keep a second open
+// client's surfaces current. Does its own replay gating + per-kind debounce.
+import { applyLivenessFrame } from '../lib/livenessSync';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
@@ -194,6 +198,11 @@ export function routeGlobalFrame(
   },
 ): void {
   recordGlobalTraceFrame(event);
+  // Liveness invalidation rides the same socket: a `*_changed` domain event
+  // from another device refreshes the matching surface (replay-gated +
+  // debounced inside). Runs before the action gate — these are not
+  // ACTION_FRAME_TYPES and must not be dropped by it.
+  applyLivenessFrame(event, connectionEpoch);
   if (!shouldActOnFrame(event, connectionEpoch)) return;
   const payload =
     (event && typeof event === 'object'
