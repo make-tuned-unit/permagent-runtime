@@ -13,6 +13,7 @@ pub mod brain_ops;
 pub mod configuration;
 pub mod device_registry;
 pub mod error;
+pub mod federation;
 pub mod middleware;
 pub mod openapi;
 pub mod routes;
