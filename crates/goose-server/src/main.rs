@@ -11,6 +11,7 @@ mod error;
 mod event_at_backfill;
 mod logging;
 mod middleware;
+mod notification_router;
 mod openapi;
 mod proactive;
 mod routes;

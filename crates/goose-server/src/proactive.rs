@@ -164,7 +164,6 @@ pub fn spawn(state: Arc<AppState>) {
                 subject = %nudge.subject,
                 "emitted proactive nudge"
             );
-            push_to_phone(&message).await;
             budget.last_delivered = Some(now.to_rfc3339());
             budget.last_subject = Some(nudge.subject.clone());
             if let Some(link) = nudge.news_link.clone() {
@@ -263,34 +262,6 @@ async fn resolve_provider() -> Option<Arc<dyn Provider>> {
     permagent::providers::create_with_named_model(&provider_name, &model_name, Vec::new())
         .await
         .ok()
-}
-
-// ── Opt-in phone push (ntfy — no Apple cert) ─────────────────────────────────
-
-async fn push_to_phone(message: &str) {
-    let Ok(topic) = std::env::var("PERMAGENT_NTFY_TOPIC") else {
-        return;
-    };
-    let topic = topic.trim();
-    if topic.is_empty() {
-        return;
-    }
-    let server =
-        std::env::var("PERMAGENT_NTFY_SERVER").unwrap_or_else(|_| "https://ntfy.sh".to_string());
-    let url = format!("{}/{}", server.trim_end_matches('/'), topic);
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-    else {
-        return;
-    };
-    let _ = client
-        .post(&url)
-        .header("Title", "Henry noticed something")
-        .header("Tags", "sparkles")
-        .body(message.to_string())
-        .send()
-        .await;
 }
 
 // ── Subject aggregation (shared by both sources) ─────────────────────────────

@@ -43,6 +43,10 @@ use tracing::{info, warn};
 /// `sessions` (cost-transparency workstream). New table + PRAGMA-guarded ADD
 /// COLUMNs, additive and base-independent. `migrate_v27_to_v28` applies it.
 ///
+/// v33 = per-user notification channel thresholds (`notification_preferences`)
+/// and the durable daily digest queue (`notification_digest_entries`). New
+/// tables only, additive and base-independent. `migrate_v32_to_v33` applies it.
+///
 /// NOTE on the version drift: this constant intentionally stays at 14 even though
 /// the migration chain now runs to v19 (`migrate_v14_to_v15` … `migrate_v18_to_v19`).
 /// It is the stamp `init_spectral_db` applies to a *fresh* DB — those later steps
@@ -715,6 +719,10 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // migrate_v30_to_v31. Purely additive, base-independent.
     apply_project_stack_schema(pool).await?;
 
+    // Per-user notification policy + durable daily-digest queue (schema v33,
+    // #66). Idempotent; shared with migrate_v32_to_v33.
+    apply_notification_routing_schema(pool).await?;
+
     info!(
         "Spectral schema v{} initialized successfully",
         SPECTRAL_SCHEMA_VERSION
@@ -1311,6 +1319,68 @@ pub async fn migrate_v31_to_v32(pool: &Pool<Sqlite>) -> Result<()> {
         .execute(pool)
         .await?;
     info!("Spectral schema migrated to v32 (supervised-CC-gate risk_policy classes seeded)");
+    Ok(())
+}
+
+/// Apply notification routing policy and the durable digest queue (#66).
+/// Severity is ordered info=1, warning=2, critical=3; NULL disables a channel.
+/// Keeping thresholds in rows (rather than process configuration) makes policy
+/// genuinely per-user and gives future multi-user installs the same behavior.
+pub async fn apply_notification_routing_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS notification_preferences (
+            user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            push_min_severity INTEGER CHECK (push_min_severity BETWEEN 1 AND 3),
+            in_app_min_severity INTEGER CHECK (in_app_min_severity BETWEEN 1 AND 3),
+            digest_min_severity INTEGER CHECK (digest_min_severity BETWEEN 1 AND 3),
+            digest_hour_local INTEGER NOT NULL DEFAULT 8 CHECK (digest_hour_local BETWEEN 0 AND 23),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT OR IGNORE INTO notification_preferences
+            (user_id, push_min_severity, in_app_min_severity, digest_min_severity)
+         SELECT id, 3, 2, 1 FROM users",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS notification_digest_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            source_event_id TEXT NOT NULL,
+            severity INTEGER NOT NULL CHECK (severity BETWEEN 1 AND 3),
+            source_type TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            delivered_at TEXT,
+            UNIQUE(user_id, source_event_id)
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_notification_digest_pending
+         ON notification_digest_entries(user_id, delivered_at, created_at)",
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// v33 (#66): per-user severity thresholds and durable daily digest queue.
+/// New tables only, base-independent, and safe to run repeatedly.
+pub async fn migrate_v32_to_v33(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v32 -> v33 (notification routing, #66)");
+    apply_notification_routing_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (33)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v33 (notification routing)");
     Ok(())
 }
 
@@ -3528,6 +3598,81 @@ mod inbox_schema_tests {
                 .await
                 .unwrap();
         assert_eq!(count, 3, "exactly the three cc_* rows, no duplicates");
+    }
+
+    /// v33 (#66) is additive, seeds every existing user without overwriting a
+    /// customization, and remains idempotent on repeated boots.
+    #[tokio::test]
+    async fn migrate_v32_to_v33_adds_idempotent_notification_routing_schema() {
+        let pool = mem_pool().await;
+        init_spectral_db(&pool).await.unwrap();
+        sqlx::query("DROP TABLE notification_digest_entries")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE notification_preferences")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (32)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        migrate_v32_to_v33(&pool).await.unwrap();
+        assert_eq!(current_version(&pool).await, 33);
+        let defaults: (Option<i64>, Option<i64>, Option<i64>) = sqlx::query_as(
+            "SELECT push_min_severity, in_app_min_severity, digest_min_severity
+             FROM notification_preferences WHERE user_id = 'default'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(defaults, (Some(3), Some(2), Some(1)));
+
+        sqlx::query(
+            "UPDATE notification_preferences SET push_min_severity = NULL
+             WHERE user_id = 'default'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        apply_notification_routing_schema(&pool).await.unwrap();
+        migrate_v32_to_v33(&pool).await.unwrap();
+        let push: Option<i64> = sqlx::query_scalar(
+            "SELECT push_min_severity FROM notification_preferences WHERE user_id = 'default'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(push, None, "re-run preserves the user's disabled channel");
+
+        sqlx::query(
+            "INSERT OR IGNORE INTO notification_digest_entries
+             (user_id, source_event_id, severity, source_type, payload_json)
+             VALUES ('default', 'same-event', 1, 'task_completed', '{}')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT OR IGNORE INTO notification_digest_entries
+             (user_id, source_event_id, severity, source_type, payload_json)
+             VALUES ('default', 'same-event', 1, 'task_completed', '{}')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let queued: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notification_digest_entries WHERE source_event_id='same-event'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            queued, 1,
+            "one source event is queued at most once per user"
+        );
     }
 
     /// Count schema objects (table/view/trigger) by exact name.
