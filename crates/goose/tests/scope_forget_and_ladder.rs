@@ -163,6 +163,10 @@ async fn forget_scope_hard_deletes_wing_and_spares_others() {
         2,
         "audit receipt lists both keys"
     );
+    assert!(
+        report.residual_keys.is_empty(),
+        "scope receipt must be clean"
+    );
     // Q2 residual: graph triples are Spectral-gated and NOT deleted. This
     // assertion documents the gap and guards against a silent regression.
     assert_eq!(
@@ -243,6 +247,7 @@ async fn forget_scope_on_empty_wing_is_a_noop() {
         .expect("forget_scope");
     assert_eq!(report.keys_swept, 0, "no members to sweep");
     assert_eq!(report.fully_forgotten, 0);
+    assert!(report.residual_keys.is_empty());
     assert!(
         safe.get_memory_by_key("keep-1")
             .await
@@ -250,6 +255,55 @@ async fn forget_scope_on_empty_wing_is_a_noop() {
             .is_some(),
         "unrelated wing untouched by empty sweep"
     );
+
+    std::env::remove_var("PERMAGENT_PATH_ROOT");
+}
+
+#[tokio::test]
+#[serial]
+async fn forget_scope_reenumerates_keys_that_appear_during_the_sweep() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("PERMAGENT_PATH_ROOT", temp.path());
+
+    let brain = tokio::task::spawn_blocking(|| {
+        let brain = build_brain();
+        remember(
+            &brain,
+            "first",
+            "Initially in the target wing.",
+            Some("acme"),
+        );
+        remember(
+            &brain,
+            "late",
+            "Moves into the target wing after enumeration.",
+            Some("pending"),
+        );
+        let db_path = Paths::brain_dir().join("memory.db");
+        let conn = rusqlite::Connection::open(db_path).expect("trigger connection");
+        // Deterministically model a concurrent committed write after the first
+        // key snapshot: deleting `first` makes `late` enter the swept scope.
+        conn.execute_batch(
+            "CREATE TRIGGER add_late_scope_member AFTER DELETE ON memories
+             WHEN OLD.key = 'first'
+             BEGIN UPDATE memories SET wing = 'acme' WHERE key = 'late'; END;",
+        )
+        .expect("create trigger");
+        brain
+    })
+    .await
+    .expect("build task");
+
+    let safe = SafeBrain::from_arc(brain);
+    let report = safe.forget_scope("acme").await.expect("forget scope");
+    assert_eq!(report.keys_swept, 2, "the second pass must sweep late");
+    assert!(report.forgotten_keys.contains(&"late".to_string()));
+    assert!(report.residual_keys.is_empty());
+    assert!(safe
+        .get_memory_by_key("late")
+        .await
+        .expect("get late")
+        .is_none());
 
     std::env::remove_var("PERMAGENT_PATH_ROOT");
 }

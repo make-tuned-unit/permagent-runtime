@@ -245,6 +245,10 @@ pub struct ScopeForgetReport {
     pub graph_triples_deleted: usize,
     /// The forgotten keys, in sweep order (for the audit receipt).
     pub forgotten_keys: Vec<String>,
+    /// Keys still present after the bounded sweep. A non-empty list means the
+    /// scope was not completely forgotten and prevents callers from treating
+    /// this receipt as a clean sweep.
+    pub residual_keys: Vec<String>,
 }
 
 impl ScopeForgetReport {
@@ -260,6 +264,32 @@ impl ScopeForgetReport {
         }
         self.forgotten_keys.push(key.to_string());
     }
+}
+
+fn write_manual_entity_fields(
+    db_path: &std::path::Path,
+    entity_id: &str,
+    fields: Vec<(String, String)>,
+) -> anyhow::Result<()> {
+    let mut conn = rusqlite::Connection::open(db_path)
+        .map_err(|e| anyhow::anyhow!("manual field batch: open {}: {e}", db_path.display()))?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| anyhow::anyhow!("manual field batch: begin: {e}"))?;
+    for (name, value) in fields {
+        tx.execute(
+            "INSERT INTO entity_fields \
+                 (entity_id, field_name, value, source, source_url, updated_at) \
+             VALUES (?1, ?2, ?3, 'manual', NULL, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')) \
+             ON CONFLICT(entity_id, field_name) DO UPDATE SET \
+                 value = excluded.value, source = excluded.source, \
+                 source_url = excluded.source_url, updated_at = excluded.updated_at",
+            rusqlite::params![entity_id, name, value],
+        )
+        .map_err(|e| anyhow::anyhow!("manual field batch ({name}): {e}"))?;
+    }
+    tx.commit()
+        .map_err(|e| anyhow::anyhow!("manual field batch: commit: {e}"))
 }
 
 /// A thread-safe handle to `spectral::Brain` that enforces all operations
@@ -991,6 +1021,23 @@ impl SafeBrain {
         .map_err(Into::into)
     }
 
+    /// Atomically write a batch of manual entity fields in deterministic name
+    /// order. The direct transaction is necessary because Spectral currently
+    /// exposes only a single-field API; independent calls can partially commit.
+    pub async fn set_manual_entity_fields(
+        &self,
+        entity_id: spectral::core::entity_id::EntityId,
+        mut fields: Vec<(String, String)>,
+    ) -> anyhow::Result<()> {
+        fields.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        let db_path = crate::config::paths::Paths::brain_dir().join("memory.db");
+        tokio::task::spawn_blocking(move || {
+            write_manual_entity_fields(&db_path, &entity_id.to_string(), fields)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: set_manual_entity_fields: {e}"))?
+    }
+
     /// Read all typed fields for a graph entity (provenance included).
     pub async fn get_entity_fields(
         &self,
@@ -1215,11 +1262,12 @@ impl SafeBrain {
     /// primitive behind the offboarding "clean divorce" claim (design doc
     /// §3.2, Step 4).
     ///
-    /// This is an *enumerate → forget* sweep, not a single Spectral primitive:
-    /// it reads the local brain `memory.db`, selects every `key` whose `wing`
-    /// column equals `wing`, then hard-deletes each via
+    /// This is a bounded *enumerate → forget → re-enumerate* sweep, not a single
+    /// Spectral primitive: it reads the local brain `memory.db`, selects every
+    /// `key` whose `wing` column equals `wing`, then hard-deletes each via
     /// [`forget_keys`](Self::forget_keys) and returns the aggregate
-    /// [`ScopeForgetReport`] (the audit substrate). Memories in *other* wings —
+    /// [`ScopeForgetReport`] (the audit substrate). Any keys still present after
+    /// the pass bound are returned in `residual_keys`. Memories in *other* wings —
     /// and wingless memories (`wing IS NULL`, e.g. chat turns) — are untouched.
     ///
     /// The `wing` here is the **cognitive/topical wing** carried on each memory
@@ -1236,35 +1284,48 @@ impl SafeBrain {
     /// (Q2). `report.graph_triples_deleted == 0` at this pin. Flagged, not
     /// hidden.
     pub async fn forget_scope(&self, wing: &str) -> anyhow::Result<ScopeForgetReport> {
-        let wing_owned = wing.to_string();
-        // Enumerate the wing's member keys from the brain memory.db via a
-        // read-only connection — the same blessed pattern as
-        // `brain_ops::read_only_brain_conn`. A fresh connection sees committed
-        // rows; the sweep collects the full key set before any delete runs.
-        let keys = tokio::task::spawn_blocking(move || {
-            let db_path = crate::config::paths::Paths::brain_dir().join("memory.db");
-            let conn = rusqlite::Connection::open_with_flags(
-                &db_path,
-                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-                    | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-            )
-            .map_err(|e| anyhow::anyhow!("scope enumerate: open {}: {e}", db_path.display()))?;
-            let mut stmt = conn
-                .prepare("SELECT key FROM memories WHERE wing = ?1 ORDER BY key")
-                .map_err(|e| anyhow::anyhow!("scope enumerate: prepare: {e}"))?;
-            let rows = stmt
-                .query_map(rusqlite::params![wing_owned], |r| r.get::<_, String>(0))
-                .map_err(|e| anyhow::anyhow!("scope enumerate: query: {e}"))?;
-            let mut keys = Vec::new();
-            for r in rows {
-                keys.push(r.map_err(|e| anyhow::anyhow!("scope enumerate: row: {e}"))?);
-            }
-            Ok::<_, anyhow::Error>(keys)
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("brain task panicked: forget_scope enumerate: {e}"))??;
+        const MAX_PASSES: usize = 8;
 
-        let mut report = self.forget_keys(keys).await?;
+        async fn enumerate(wing: String) -> anyhow::Result<Vec<String>> {
+            tokio::task::spawn_blocking(move || {
+                let db_path = crate::config::paths::Paths::brain_dir().join("memory.db");
+                let conn = rusqlite::Connection::open_with_flags(
+                    &db_path,
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                        | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                )
+                .map_err(|e| anyhow::anyhow!("scope enumerate: open {}: {e}", db_path.display()))?;
+                let mut stmt = conn
+                    .prepare("SELECT key FROM memories WHERE wing = ?1 ORDER BY key")
+                    .map_err(|e| anyhow::anyhow!("scope enumerate: prepare: {e}"))?;
+                let rows = stmt
+                    .query_map(rusqlite::params![wing], |r| r.get::<_, String>(0))
+                    .map_err(|e| anyhow::anyhow!("scope enumerate: query: {e}"))?;
+                let mut keys = Vec::new();
+                for r in rows {
+                    keys.push(r.map_err(|e| anyhow::anyhow!("scope enumerate: row: {e}"))?);
+                }
+                Ok::<_, anyhow::Error>(keys)
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("brain task panicked: forget_scope enumerate: {e}"))?
+        }
+
+        let mut report = ScopeForgetReport::default();
+        for _ in 0..MAX_PASSES {
+            let keys = enumerate(wing.to_string()).await?;
+            if keys.is_empty() {
+                break;
+            }
+            let pass = self.forget_keys(keys).await?;
+            report.keys_swept += pass.keys_swept;
+            report.existed += pass.existed;
+            report.fully_forgotten += pass.fully_forgotten;
+            report.forgotten_keys.extend(pass.forgotten_keys);
+        }
+        // Always re-query after the final deletion pass. If writers keep the
+        // scope non-empty past the bound, the receipt says exactly what remains.
+        report.residual_keys = enumerate(wing.to_string()).await?;
         report.wing = Some(wing.to_string());
         Ok(report)
     }
@@ -1355,6 +1416,39 @@ fn resolve_acr_spread(raw: Option<&str>) -> spectral::graph::spreading::AssocSpr
 mod tests {
     use super::*;
     use spectral::graph::spreading::SpreadMode;
+
+    #[test]
+    fn manual_entity_field_batch_rolls_back_on_later_failure() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let db = temp.path().join("memory.db");
+        let conn = rusqlite::Connection::open(&db).expect("open");
+        conn.execute_batch(
+            "CREATE TABLE entity_fields (
+                entity_id TEXT NOT NULL, field_name TEXT NOT NULL,
+                value TEXT NOT NULL, source TEXT NOT NULL, source_url TEXT,
+                updated_at TEXT NOT NULL, PRIMARY KEY (entity_id, field_name)
+             );
+             CREATE TRIGGER reject_role BEFORE INSERT ON entity_fields
+             WHEN NEW.field_name = 'role' BEGIN SELECT RAISE(FAIL, 'injected'); END;",
+        )
+        .expect("schema");
+        drop(conn);
+
+        let result = write_manual_entity_fields(
+            &db,
+            "entity",
+            vec![
+                ("company".into(), "Acme".into()),
+                ("role".into(), "Engineer".into()),
+            ],
+        );
+        assert!(result.is_err(), "the injected second write must fail");
+        let conn = rusqlite::Connection::open(&db).expect("reopen");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entity_fields", [], |row| row.get(0))
+            .expect("count");
+        assert_eq!(count, 0, "the earlier field must roll back with the batch");
+    }
 
     /// Verify that Clone shares the same underlying Arc (cheap clone).
     #[test]
