@@ -88,6 +88,27 @@ describe('ManifestCard — data + layout', () => {
     await flush();
     expect(container.textContent).toContain('No events today');
   });
+
+  it('ignores an older poll response that resolves after a newer one', async () => {
+    vi.useFakeTimers();
+    let resolveOld!: (value: unknown) => void;
+    let resolveNew!: (value: unknown) => void;
+    apiFetch
+      .mockReturnValueOnce(new Promise(resolve => { resolveOld = resolve; }))
+      .mockReturnValueOnce(new Promise(resolve => { resolveNew = resolve; }));
+
+    await act(async () => {
+      root.render(<ManifestCard manifest={{ ...statManifest, refreshSeconds: 1 }} />);
+    });
+    await act(async () => { vi.advanceTimersByTime(1_000); });
+    await act(async () => { resolveNew({ cells: [{ label: 'Generation', value: 'new' }] }); });
+    expect(container.textContent).toContain('new');
+
+    await act(async () => { resolveOld({ cells: [{ label: 'Generation', value: 'old' }] }); });
+    expect(container.textContent).toContain('new');
+    expect(container.textContent).not.toContain('old');
+    vi.useRealTimers();
+  });
 });
 
 describe('ManifestCard — configure flow', () => {

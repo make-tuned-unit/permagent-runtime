@@ -146,11 +146,58 @@ pub struct SetFieldsRequest {
     pub fields: HashMap<String, String>,
 }
 
+const MAX_PERSON_FIELD_VALUE_LEN: usize = 2_000;
+
+fn validate_person_field(name: &str, value: &str) -> Result<(), String> {
+    if !people::PERSON_FIELD_NAMES.contains(&name) {
+        return Err(format!("Unknown person field: {name}"));
+    }
+    if value.chars().count() > MAX_PERSON_FIELD_VALUE_LEN {
+        return Err(format!(
+            "Person field {name} exceeds {MAX_PERSON_FIELD_VALUE_LEN} characters"
+        ));
+    }
+    if value.chars().any(char::is_control) {
+        return Err(format!("Person field {name} contains control characters"));
+    }
+    if name == "email" && !value.is_empty() {
+        let (local, domain) = value
+            .split_once('@')
+            .ok_or_else(|| "Invalid email address".to_string())?;
+        if local.is_empty()
+            || domain.starts_with('.')
+            || domain.ends_with('.')
+            || !domain.contains('.')
+            || value.chars().any(char::is_whitespace)
+        {
+            return Err("Invalid email address".to_string());
+        }
+    }
+    if name == "birthday" && !value.is_empty() {
+        let valid = value.len() == 10
+            && value.as_bytes()[4] == b'-'
+            && value.as_bytes()[7] == b'-'
+            && value
+                .bytes()
+                .enumerate()
+                .all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit());
+        if !valid {
+            return Err("Invalid birthday; expected YYYY-MM-DD".to_string());
+        }
+        let month: u8 = value[5..7].parse().unwrap_or(0);
+        let day: u8 = value[8..10].parse().unwrap_or(0);
+        if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+            return Err("Invalid birthday; expected YYYY-MM-DD".to_string());
+        }
+    }
+    Ok(())
+}
+
 /// Set one or more typed person fields with **manual** provenance (slice 2b).
 ///
-/// Writes straight to the authoritative graph via `set_entity_field` /
-/// `FieldSource::Manual` — never to the legacy people-table columns, which are
-/// not the response source (Decision A). The response is the re-overlaid
+/// Writes to the authoritative graph in one transaction with manual provenance
+/// — never to the legacy people-table columns, which are not the response
+/// source (Decision A). The response is the re-overlaid
 /// [`Person`], reflecting exactly what the graph now holds, so the client sees
 /// the persisted truth (and can confirm a manual value stuck).
 async fn set_person_fields_handler(
@@ -161,15 +208,9 @@ async fn set_person_fields_handler(
     if req.fields.is_empty() {
         return Err((StatusCode::BAD_REQUEST, "No fields supplied".to_string()));
     }
-    // Validate the whole batch before writing anything (all-or-nothing on the
-    // vocabulary check; the writes themselves are per-field but pre-validated).
-    for name in req.fields.keys() {
-        if !people::PERSON_FIELD_NAMES.contains(&name.as_str()) {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                format!("Unknown person field: {name}"),
-            ));
-        }
+    // Validate the whole batch before opening the all-or-nothing write.
+    for (name, value) in &req.fields {
+        validate_person_field(name, value).map_err(|message| (StatusCode::BAD_REQUEST, message))?;
     }
 
     let pool = state
@@ -199,23 +240,10 @@ async fn set_person_fields_handler(
         )
     })?;
 
-    for (name, value) in &req.fields {
-        brain
-            .set_entity_field(
-                entity_id,
-                name,
-                value,
-                spectral::ingest::FieldSource::Manual,
-                None,
-            )
-            .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("set_entity_field({name}): {e}"),
-                )
-            })?;
-    }
+    brain
+        .set_manual_entity_fields(entity_id, req.fields.clone().into_iter().collect())
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     tracing::info!(
         target: "permagentd::people_attrs",
         entity_uuid = %entity_uuid,
@@ -282,6 +310,19 @@ mod tests {
     async fn rejects_empty_field_map() {
         let status = patch_fields("any-uuid", serde_json::json!({ "fields": {} })).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn rejects_invalid_person_field_values() {
+        assert!(validate_person_field("email", "not-an-email").is_err());
+        assert!(validate_person_field("birthday", "January sometime").is_err());
+        assert!(validate_person_field("birthday", "1990-13-01").is_err());
+        assert!(
+            validate_person_field("notes", &"x".repeat(MAX_PERSON_FIELD_VALUE_LEN + 1)).is_err()
+        );
+        assert!(validate_person_field("company", "Acme\nInjected").is_err());
+        assert!(validate_person_field("email", "jane@example.com").is_ok());
+        assert!(validate_person_field("birthday", "1990-01-31").is_ok());
     }
 
     #[tokio::test(flavor = "multi_thread")]

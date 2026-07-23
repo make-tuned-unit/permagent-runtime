@@ -52,13 +52,17 @@ export function ManifestCard({ manifest }: Props) {
   const [configValue, setConfigValue] = useState('');
   const [configBusy, setConfigBusy] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval>>();
+  const requestGeneration = useRef(0);
 
   const fetchData = useCallback(async () => {
+    const generation = ++requestGeneration.current;
     try {
       const result = await apiFetch<CardData>(manifest.dataEndpoint);
+      if (generation !== requestGeneration.current) return;
       setData(result);
       setPhase('ready');
     } catch {
+      if (generation !== requestGeneration.current) return;
       // A failed poll keeps the last good data on screen rather than blanking.
       setPhase(prev => (prev === 'ready' ? 'ready' : 'error'));
     }
@@ -69,7 +73,10 @@ export function ManifestCard({ manifest }: Props) {
     if (manifest.refreshSeconds && manifest.refreshSeconds > 0) {
       intervalRef.current = setInterval(fetchData, manifest.refreshSeconds * 1000);
     }
-    return () => clearInterval(intervalRef.current);
+    return () => {
+      clearInterval(intervalRef.current);
+      ++requestGeneration.current;
+    };
   }, [fetchData, manifest.refreshSeconds]);
 
   const submitConfig = useCallback(async () => {
