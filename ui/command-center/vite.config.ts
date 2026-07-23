@@ -5,6 +5,9 @@ const isTauri = !!process.env.TAURI_ENV_PLATFORM;
 
 export default defineConfig({
   plugins: [react()],
+  // Expose only this explicitly non-secret PERMAGENT flag in addition to
+  // Vite's normal VITE_* variables.
+  envPrefix: ['VITE_', 'PERMAGENT_SHORTLIVED_STREAM_TOKEN'],
   base: isTauri ? '/' : '/ui/',
   server: {
     port: 5273,

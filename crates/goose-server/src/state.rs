@@ -5,7 +5,8 @@ use permagent::scheduler_trait::SchedulerTrait;
 use permagent::session::SessionManager;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::Instant;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
@@ -18,6 +19,36 @@ use permagent::providers::local_inference::InferenceRuntime;
 
 type ExtensionLoadingTasks =
     Arc<Mutex<HashMap<String, Arc<Mutex<Option<JoinHandle<Vec<ExtensionLoadResult>>>>>>>>;
+
+/// In-memory credentials scoped to browser event streams. These tokens are
+/// deliberately not consulted by the bearer middleware for protected routes.
+#[derive(Clone, Default)]
+pub struct StreamTokenStore {
+    entries: Arc<StdMutex<HashMap<String, Instant>>>,
+}
+
+impl StreamTokenStore {
+    pub fn insert(&self, token: String, expires_at: Instant) {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        entries.retain(|_, expiry| *expiry > now);
+        entries.insert(token, expires_at);
+    }
+
+    pub fn contains_unexpired(&self, provided: &str) -> bool {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        entries.retain(|_, expiry| *expiry > now);
+
+        // Do not use HashMap::contains_key for a secret. Scan all live entries
+        // and compare every candidate in constant time.
+        let mut matched = subtle::Choice::from(0);
+        for token in entries.keys() {
+            matched |= subtle::ConstantTimeEq::ct_eq(token.as_bytes(), provided.as_bytes());
+        }
+        bool::from(matched)
+    }
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -41,6 +72,8 @@ pub struct AppState {
     /// Loaded from ~/.permagent/secrets/daemon_token.json on startup.
     /// The Tauri shell reads the same file to include the token in requests.
     pub daemon_token: Option<String>,
+    /// Short-lived credentials accepted only by browser stream auth.
+    pub stream_tokens: StreamTokenStore,
     /// Per-device pairing tokens (#628): named companions, last-seen,
     /// revocation. The bearer middleware accepts the master `daemon_token`
     /// (the hub's own app — legacy, zero-breakage) OR any non-revoked device
@@ -740,6 +773,7 @@ impl AppState {
             persona,
             agent_config,
             daemon_token,
+            stream_tokens: StreamTokenStore::default(),
             device_registry,
             activity_ingester,
             context_builder,

@@ -7,7 +7,8 @@
  * State machine: idle → connecting → ready → recording → processing → playing → ready
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getApiBaseUrl, loadDaemonToken } from '../lib/api';
+import { getApiBaseUrl } from '../lib/api';
+import { getStreamToken } from '../lib/streamToken';
 
 export type VoiceState =
   | 'idle'          // Voice off — no socket
@@ -318,9 +319,9 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
     let token: string | null = null;
     try {
-      token = await loadDaemonToken();
+      token = await getStreamToken();
     } catch (e) {
-      console.error('[useVoice] loadDaemonToken failed:', e);
+      console.error('[useVoice] getStreamToken failed:', e);
     }
 
     // A newer connect started while we awaited the token — it owns the socket

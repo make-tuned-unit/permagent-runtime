@@ -24,7 +24,7 @@ use permagent::events;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
-use crate::middleware::auth::{bearer_token, validate_daemon_token, TokenQuery};
+use crate::middleware::auth::{bearer_token, validate_stream_token, TokenQuery};
 
 pub fn routes(state: Arc<crate::state::AppState>) -> Router {
     // The event bus itself is global; AppState is needed only to validate the
@@ -47,7 +47,7 @@ async fn ws_handler(
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, axum::http::StatusCode> {
     let provided = bearer_token(&headers).or(query.token.as_deref());
-    validate_daemon_token(&state, provided)?;
+    validate_stream_token(&state, provided, query.token.as_deref())?;
     Ok(ws.on_upgrade(handle_socket))
 }
 

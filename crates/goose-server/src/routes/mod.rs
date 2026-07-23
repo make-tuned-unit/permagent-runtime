@@ -47,6 +47,7 @@ pub mod session;
 pub mod session_events;
 pub mod setup;
 pub mod skills;
+pub mod sse_token;
 pub mod status;
 pub mod storage;
 pub mod telemetry;
@@ -128,6 +129,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         // its only HTTP consumers hold the token (the CLI builds diagnostics
         // in-process, not over HTTP).
         .merge(status::protected_routes(state.clone()))
+        .merge(sse_token::routes(state.clone()))
         .merge(backup::routes(state.clone()))
         .merge(reply::routes(state.clone()))
         .merge(activity::routes(state.clone()))
