@@ -25,13 +25,14 @@
  * store's `personDetail` target is set.
  */
 
-import { useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { FiBookOpen, FiCheckSquare, FiFileText, FiPlus, FiTrash2 } from 'react-icons/fi';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { DetailModal } from '../common/DetailModal';
-import type { Person, ProjectPerson } from './types';
+import type { Person, PersonActivity, PersonRelationship, ProjectPerson } from './types';
 
 function fmtTime(iso: string | null): string {
   if (!iso) return '—';
@@ -100,6 +101,56 @@ export function PersonDetailModal({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Draft>(() => draftFrom(person));
   const [saving, setSaving] = useState(false);
+  const [relationships, setRelationships] = useState<PersonRelationship[]>([]);
+  const [activity, setActivity] = useState<PersonActivity[]>([]);
+  const [allPeople, setAllPeople] = useState<Person[]>([]);
+  const [relatedStatus, setRelatedStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [activityStatus, setActivityStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [addingRelationship, setAddingRelationship] = useState(false);
+  const [targetId, setTargetId] = useState('');
+  const [predicate, setPredicate] = useState('related_to');
+
+  const loadRelationships = useCallback(async () => {
+    setRelatedStatus('loading');
+    try {
+      const [edges, people] = await Promise.all([
+        apiFetch<PersonRelationship[]>(`/api/people/${encodeURIComponent(view.entity_uuid)}/relationships`),
+        apiFetch<Person[]>('/api/people'),
+      ]);
+      setRelationships(edges);
+      setAllPeople(people.filter(p => p.entity_uuid !== view.entity_uuid));
+      setRelatedStatus('ready');
+    } catch { setRelatedStatus('error'); }
+  }, [view.entity_uuid]);
+
+  const loadActivity = useCallback(async () => {
+    setActivityStatus('loading');
+    try {
+      setActivity(await apiFetch<PersonActivity[]>(`/api/people/${encodeURIComponent(view.entity_uuid)}/activity`));
+      setActivityStatus('ready');
+    } catch { setActivityStatus('error'); }
+  }, [view.entity_uuid]);
+
+  useEffect(() => { loadRelationships(); loadActivity(); }, [loadRelationships, loadActivity]);
+
+  const addRelationship = async () => {
+    if (!targetId || !predicate.trim()) return;
+    setError(null);
+    try {
+      await apiFetch(`/api/people/${encodeURIComponent(view.entity_uuid)}/relationships`, {
+        method: 'POST', body: JSON.stringify({ target_entity_uuid: targetId, predicate: predicate.trim() }),
+      });
+      setAddingRelationship(false); setTargetId(''); await loadRelationships();
+    } catch (e) { setError(`Couldn't add relationship: ${(e as Error).message}`); }
+  };
+
+  const removeRelationship = async (edge: PersonRelationship) => {
+    setError(null);
+    try {
+      await apiFetch(`/api/people/${encodeURIComponent(edge.from_entity_uuid)}/relationships/${encodeURIComponent(edge.to_entity_uuid)}/${encodeURIComponent(edge.predicate)}`, { method: 'DELETE' });
+      await loadRelationships();
+    } catch (e) { setError(`Couldn't remove relationship: ${(e as Error).message}`); }
+  };
 
   // The Enricher (#495 slice 4), prepared-prompt pattern: copy the enrichment
   // request to the clipboard and take the user to chat — the agent runs
@@ -247,7 +298,14 @@ export function PersonDetailModal({
         {editing ? (
           <EditForm colors={colors} draft={draft} onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))} />
         ) : (
-          <ReadView colors={colors} person={view} />
+          <>
+            <ReadView colors={colors} person={view} />
+            <RelatedPeople colors={colors} rows={relationships} people={allPeople} status={relatedStatus}
+              adding={addingRelationship} targetId={targetId} predicate={predicate}
+              onStart={() => setAddingRelationship(true)} onCancel={() => setAddingRelationship(false)}
+              onTarget={setTargetId} onPredicate={setPredicate} onAdd={addRelationship} onRemove={removeRelationship} />
+            <PersonActivityTimeline colors={colors} rows={activity} status={activityStatus} onRetry={loadActivity} />
+          </>
         )}
 
         {error && (
@@ -263,6 +321,46 @@ export function PersonDetailModal({
     </DetailModal>
   );
 }
+
+function RelatedPeople({ colors, rows, people, status, adding, targetId, predicate, onStart, onCancel, onTarget, onPredicate, onAdd, onRemove }: {
+  colors: ReturnType<typeof useTheme>['colors']; rows: PersonRelationship[]; people: Person[];
+  status: 'loading' | 'ready' | 'error'; adding: boolean; targetId: string; predicate: string;
+  onStart: () => void; onCancel: () => void; onTarget: (v: string) => void; onPredicate: (v: string) => void;
+  onAdd: () => void; onRemove: (r: PersonRelationship) => void;
+}) {
+  return <section>
+    <div style={{ display: 'flex', alignItems: 'center', marginBottom: 7 }}>
+      <SectionLabel colors={colors}>Related people</SectionLabel><span style={{ flex: 1 }} />
+      {!adding && <button aria-label="Add related person" onClick={onStart} style={miniBtn(colors)}><FiPlus size={12} /> Add</button>}
+    </div>
+    {status === 'loading' && <Small colors={colors}>Loading relationships…</Small>}
+    {status === 'error' && <Small colors={colors}>Couldn't load relationships.</Small>}
+    {status === 'ready' && rows.length === 0 && !adding && <Small colors={colors}>No related people yet.</Small>}
+    {rows.map(row => <div key={`${row.from_entity_uuid}-${row.to_entity_uuid}-${row.predicate}`} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '6px 0', borderBottom: `1px solid ${colors.border}` }}>
+      <span style={{ color: colors.text, fontSize: 12, fontWeight: 600 }}>{row.other_person.display_name}</span>
+      <span style={{ color: colors.textDim, fontSize: 11 }}>{row.predicate.replace(/_/g, ' ')}</span><span style={{ flex: 1 }} />
+      <button aria-label={`Remove ${row.other_person.display_name} relationship`} onClick={() => onRemove(row)} style={iconBtn(colors)}><FiTrash2 size={12} /></button>
+    </div>)}
+    {adding && <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 6, marginTop: 8 }}>
+      <select aria-label="Related person" value={targetId} onChange={e => onTarget(e.target.value)} style={control(colors)}><option value="">Choose person…</option>{people.map(p => <option key={p.entity_uuid} value={p.entity_uuid}>{p.display_name}</option>)}</select>
+      <input aria-label="Relationship type" value={predicate} onChange={e => onPredicate(e.target.value)} placeholder="related_to" style={control(colors)} />
+      <div style={{ display: 'flex', gap: 4 }}><button onClick={onCancel} style={miniBtn(colors)}>Cancel</button><button onClick={onAdd} disabled={!targetId || !predicate.trim()} style={miniBtn(colors)}>Add</button></div>
+    </div>}
+  </section>;
+}
+
+function PersonActivityTimeline({ colors, rows, status, onRetry }: { colors: ReturnType<typeof useTheme>['colors']; rows: PersonActivity[]; status: 'loading'|'ready'|'error'; onRetry: () => void }) {
+  const icon = (kind: PersonActivity['kind']) => kind === 'memory' ? <FiBookOpen size={12} /> : kind === 'note' ? <FiFileText size={12} /> : <FiCheckSquare size={12} />;
+  return <section><SectionLabel colors={colors}>Recent activity</SectionLabel>
+    {status === 'loading' && <Small colors={colors}>Loading activity…</Small>}
+    {status === 'error' && <Small colors={colors}>Couldn't load activity. <button onClick={onRetry} style={linkBtn(colors)}>Retry</button></Small>}
+    {status === 'ready' && rows.length === 0 && <Small colors={colors}>No activity referencing this person yet.</Small>}
+    {rows.map(row => <div key={row.id} style={{ display: 'flex', gap: 8, padding: '7px 0', borderBottom: `1px solid ${colors.border}` }}><span style={{ color: colors.cyan, marginTop: 2 }}>{icon(row.kind)}</span><div style={{ minWidth: 0 }}><div style={{ fontSize: 12, color: colors.text, fontWeight: 600 }}>{row.title}</div><div style={{ fontSize: 11, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.detail}</div><div style={{ fontSize: 10, color: colors.textDim }}>{fmtTime(row.timestamp)}</div></div></div>)}
+  </section>;
+}
+
+function SectionLabel({ colors, children }: { colors: ReturnType<typeof useTheme>['colors']; children: ReactNode }) { return <div style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono, textTransform: 'uppercase', letterSpacing: '.04em' }}>{children}</div>; }
+function Small({ colors, children }: { colors: ReturnType<typeof useTheme>['colors']; children: ReactNode }) { return <div style={{ fontSize: 11, color: colors.textDim, marginTop: 6 }}>{children}</div>; }
 
 function ReadView({ colors, person }: {
   colors: ReturnType<typeof useTheme>['colors'];
@@ -372,6 +470,24 @@ function inputStyle(colors: ReturnType<typeof useTheme>['colors']): React.CSSPro
     color: colors.text, fontFamily: font.body, outline: 'none', width: '100%',
     boxSizing: 'border-box',
   };
+}
+
+function control(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
+  return { ...inputStyle(colors), padding: '5px 7px' };
+}
+
+function miniBtn(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
+  return { display: 'inline-flex', alignItems: 'center', gap: 3, padding: '4px 7px', borderRadius: radius.md,
+    border: `1px solid ${colors.border}`, background: 'none', color: colors.textMuted,
+    fontFamily: font.body, fontSize: 11, cursor: 'pointer' };
+}
+
+function iconBtn(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
+  return { border: 'none', background: 'none', color: colors.textDim, cursor: 'pointer', padding: 2, display: 'flex' };
+}
+
+function linkBtn(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
+  return { border: 'none', background: 'none', color: colors.cyan, cursor: 'pointer', padding: 0, fontFamily: font.body, fontSize: 11 };
 }
 
 function ghostBtn(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {

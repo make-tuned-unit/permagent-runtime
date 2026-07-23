@@ -49,7 +49,10 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
-  apiFetch.mockReset();
+  apiFetch.mockReset().mockImplementation((url: string) => {
+    if (url.endsWith('/relationships') || url.endsWith('/activity') || url === '/api/people') return Promise.resolve([]);
+    return Promise.resolve(undefined);
+  });
   useCommandCenter.setState({ peopleRev: 0 });
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -97,11 +100,9 @@ function inputForLabel(label: string): HTMLInputElement {
 
 describe('PersonDetailModal manual field edit', () => {
   it('PATCHes only changed fields with the manual write endpoint, then bumps peopleRev', async () => {
-    apiFetch.mockResolvedValue({
-      ...person,
-      email: 'jane@acme.com',
-      birthday: '1990-04-01',
-    });
+    apiFetch.mockImplementation((url: string) => url.endsWith('/fields') ? Promise.resolve({
+      ...person, email: 'jane@acme.com', birthday: '1990-04-01',
+    }) : Promise.resolve([]));
     await render();
 
     await click(buttonByText('Edit fields'));
@@ -112,8 +113,7 @@ describe('PersonDetailModal manual field edit', () => {
     await setInput(inputForLabel('Birthday'), '1990-04-01');
     await click(buttonByText('Save'));
 
-    expect(apiFetch).toHaveBeenCalledTimes(1);
-    const [url, opts] = apiFetch.mock.calls[0];
+    const [url, opts] = apiFetch.mock.calls.find(([url]) => String(url).endsWith('/fields'))!;
     expect(url).toBe('/api/people/uuid-jane/fields');
     expect(opts.method).toBe('PATCH');
     const body = JSON.parse(opts.body);
@@ -127,14 +127,15 @@ describe('PersonDetailModal manual field edit', () => {
   });
 
   it('rolls back the optimistic edit and shows an error on a failed save', async () => {
-    apiFetch.mockRejectedValue(Object.assign(new Error('boom'), { status: 500 }));
+    apiFetch.mockImplementation((url: string) => url.endsWith('/fields')
+      ? Promise.reject(Object.assign(new Error('boom'), { status: 500 })) : Promise.resolve([]));
     await render();
 
     await click(buttonByText('Edit fields'));
     await setInput(inputForLabel('Company'), 'Globex');
     await click(buttonByText('Save'));
 
-    expect(apiFetch).toHaveBeenCalledTimes(1);
+    expect(apiFetch.mock.calls.some(([url]) => String(url).endsWith('/fields'))).toBe(true);
     // Error surfaced, still in edit mode, peopleRev untouched (no phantom refetch).
     expect(container.textContent).toContain("Couldn't save changes");
     expect(container.textContent).toContain('500');
