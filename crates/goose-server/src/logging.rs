@@ -88,6 +88,9 @@ fn default_env_filter() -> EnvFilter {
         // floor and the "never silent" contract in initiative::driver::spawn
         // is defeated.
         .add_directive("initiative=info".parse().unwrap())
+        // #169: SkillProposed is emitted on the in-process event bus, but the
+        // proposal decision must also be visible in launchd's daemon.err.
+        .add_directive("auto_skills=info".parse().unwrap())
         // #560: circuit-breaker trips / WAL checkpoints / watchdog. Its
         // error!/warn! lines cleared the WARN floor but the INFO heartbeats
         // ("WAL checkpoint ok") were in the trap.
@@ -179,6 +182,7 @@ mod tests {
         let directives = default_env_filter().to_string();
         for target in [
             "initiative",
+            "auto_skills",
             "session_perf",
             "permagentd",
             "permagent",

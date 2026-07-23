@@ -13,6 +13,8 @@ use std::sync::OnceLock;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+const AUTO_SKILLS_LOG_TARGET: &str = "auto_skills";
+
 /// Opaque task identifier (UUIDv7 string).
 pub type TaskId = String;
 
@@ -171,7 +173,7 @@ impl TaskLogger {
     /// times within the configured window, then emits `SkillProposed` for new patterns.
     /// Returns a prompt fragment for injection into the agent's system prompt.
     ///
-    /// Only proposes patterns with 2-10 occurrences in the 7-day window. Patterns
+    /// Only proposes patterns with 2-10 occurrences in the configured window. Patterns
     /// above 10 are considered fundamental tool usage (e.g. `shell`) rather than
     /// discrete user tasks. After surfacing a proposal, auto-dismisses for 7 days
     /// to prevent re-proposing every turn.
@@ -198,13 +200,30 @@ impl TaskLogger {
         // Cap at 10: beyond that, it's generic tool usage, not a task pattern
         let max_threshold: i64 = 10;
 
+        // Count directly from tasks instead of the compatibility view: the view's
+        // fixed seven-day horizon cannot honor repetition_window_days, and legacy
+        // databases may still have its original lifetime-total definition.
+        let window_modifier = format!("-{} days", config.repetition_window_days);
         let rows = match sqlx::query(
-            "SELECT tool_used, argument_shape_hash, occurrence_count, latest_description
-             FROM repetition_candidates
+            "SELECT tool_used, argument_shape_hash, COUNT(*) AS occurrence_count,
+                    (SELECT t2.description FROM tasks t2
+                     WHERE t2.user_id = tasks.user_id
+                       AND t2.tool_used = tasks.tool_used
+                       AND t2.argument_shape_hash = tasks.argument_shape_hash
+                       AND t2.status = 'completed'
+                       AND t2.completed_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)
+                     ORDER BY t2.completed_at DESC LIMIT 1) AS latest_description
+             FROM tasks
              WHERE user_id = 'default'
-               AND occurrence_count >= ?
-               AND occurrence_count <= ?",
+               AND status = 'completed'
+               AND tool_used IS NOT NULL
+               AND argument_shape_hash IS NOT NULL
+               AND completed_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)
+             GROUP BY user_id, tool_used, argument_shape_hash
+             HAVING COUNT(*) >= ? AND COUNT(*) <= ?",
         )
+        .bind(&window_modifier)
+        .bind(&window_modifier)
         .bind(config.repetition_threshold as i64)
         .bind(max_threshold)
         .fetch_all(&self.pool)
@@ -275,11 +294,13 @@ impl TaskLogger {
                    AND t.tool_used = ?
                    AND t.argument_shape_hash = ?
                    AND t.status = 'completed'
+                   AND t.completed_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)
                  ORDER BY t.completed_at DESC
                  LIMIT 1",
             )
             .bind(&tool_used)
             .bind(&shape_hash)
+            .bind(&window_modifier)
             .fetch_optional(&self.pool)
             .await
             .unwrap_or(None);
@@ -294,19 +315,17 @@ impl TaskLogger {
                    AND tool_used = ?
                    AND argument_shape_hash = ?
                    AND status = 'completed'
+                   AND completed_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)
                  ORDER BY completed_at DESC
                  LIMIT 5",
             )
             .bind(&tool_used)
             .bind(&shape_hash)
+            .bind(&window_modifier)
             .fetch_all(&self.pool)
             .await
             .unwrap_or_default();
 
-            info!(
-                "Skill proposed: '{}' ({} occurrences of {})",
-                intent_text, count, tool_used
-            );
             events::emit(events::skill_proposed(
                 &intent_text,
                 &tool_used,
@@ -314,6 +333,15 @@ impl TaskLogger {
                 count,
                 &task_ids,
             ));
+            info!(
+                target: AUTO_SKILLS_LOG_TARGET,
+                event_type = "skill_proposed",
+                description = %intent_text,
+                occurrence_count = count,
+                tool_used = %tool_used,
+                argument_shape_hash = %shape_hash,
+                "SkillProposed event emitted"
+            );
 
             // Auto-dismiss for 7 days to prevent re-proposing to the agent every turn.
             // Uses tool_used='__agent_surfaced' to distinguish from user dismissals —
@@ -531,5 +559,58 @@ mod tests {
             .expect("a repeated pattern must produce a skill proposal");
         assert!(prompt.contains("Skill Proposal"), "{prompt}");
         assert!(prompt.contains("gmail__search"), "{prompt}");
+    }
+
+    #[tokio::test]
+    async fn repetition_count_only_includes_configured_window() {
+        use sqlx::sqlite::SqlitePoolOptions;
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::session::spectral_schema::init_spectral_db(&pool)
+            .await
+            .unwrap();
+
+        for completed_at in [
+            "strftime('%Y-%m-%dT%H:%M:%fZ','now','-2 days')",
+            "strftime('%Y-%m-%dT%H:%M:%fZ','now')",
+        ] {
+            let statement = format!(
+                "INSERT INTO tasks (id, user_id, description, tool_used, argument_shape_hash, status, completed_at) \
+                 VALUES (?, 'default', 'list documents', 'navigate_app', 'shape-window', 'completed', {completed_at})"
+            );
+            sqlx::query(&statement)
+                .bind(Uuid::now_v7().to_string())
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        let logger = TaskLogger::new(pool.clone());
+        let config = SkillsConfig {
+            repetition_window_days: 1,
+            ..SkillsConfig::default()
+        };
+        assert!(
+            logger.check_repetition_candidates(&config).await.is_none(),
+            "an old occurrence must not combine with a recent one"
+        );
+
+        sqlx::query(
+            "INSERT INTO tasks (id, user_id, description, tool_used, argument_shape_hash, status, completed_at)
+             VALUES (?, 'default', 'list documents', 'navigate_app', 'shape-window',
+                     'completed', strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+        )
+        .bind(Uuid::now_v7().to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let prompt = logger
+            .check_repetition_candidates(&config)
+            .await
+            .expect("two recent occurrences must cross the threshold");
+        assert!(prompt.contains("2 times recently"), "{prompt}");
     }
 }
