@@ -411,6 +411,42 @@ pub struct PersonActivity {
     timestamp: String,
 }
 
+/// Escape SQL LIKE wildcards so a literal string matches literally.
+/// Pair with `ESCAPE '\'` in the query.
+fn escape_like(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(c, '\\' | '%' | '_') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// True if `needle` occurs in `haystack` as a whole word (case-insensitive),
+/// where word chars are alphanumeric; punctuation/space/start/end are boundaries.
+fn contains_whole_word_ci(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+
+    let haystack = haystack.to_lowercase();
+    let needle = needle.to_lowercase();
+    haystack.match_indices(&needle).any(|(start, matched)| {
+        let end = start + matched.len();
+        let before_is_boundary = haystack
+            .get(..start)
+            .and_then(|prefix| prefix.chars().next_back())
+            .is_none_or(|c| !c.is_alphanumeric());
+        let after_is_boundary = haystack
+            .get(end..)
+            .and_then(|suffix| suffix.chars().next())
+            .is_none_or(|c| !c.is_alphanumeric());
+        before_is_boundary && after_is_boundary
+    })
+}
+
 async fn person_activity_handler(
     State(state): State<Arc<AppState>>,
     Path(uuid): Path<String>,
@@ -424,20 +460,30 @@ async fn person_activity_handler(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
         .ok_or((StatusCode::NOT_FOUND, "Person not found".into()))?;
-    let needle = format!("%{}%", person.display_name);
-    let note_rows = sqlx::query(
-        "SELECT id, title, body, created_at FROM project_notes WHERE title LIKE ? OR body LIKE ?",
-    )
-    .bind(&needle)
-    .bind(&needle)
-    .fetch_all(&pool)
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let card_rows = sqlx::query("SELECT id, title, description, updated_at FROM cards WHERE title LIKE ? OR description LIKE ?")
-        .bind(&needle).bind(&needle).fetch_all(&pool).await
+    let (note_rows, card_rows) = if person.display_name.trim().is_empty() {
+        (Vec::new(), Vec::new())
+    } else {
+        let needle = format!("%{}%", escape_like(&person.display_name));
+        let note_rows = sqlx::query(
+            "SELECT id, title, body, created_at FROM project_notes WHERE title LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\'",
+        )
+        .bind(&needle)
+        .bind(&needle)
+        .fetch_all(&pool)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let card_rows = sqlx::query("SELECT id, title, description, updated_at FROM cards WHERE title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\'")
+            .bind(&needle).bind(&needle).fetch_all(&pool).await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        (note_rows, card_rows)
+    };
     let mut items: Vec<PersonActivity> = note_rows
         .into_iter()
+        .filter(|r| {
+            r.get::<Option<String>, _>("title")
+                .is_some_and(|title| contains_whole_word_ci(&title, &person.display_name))
+                || contains_whole_word_ci(&r.get::<String, _>("body"), &person.display_name)
+        })
         .map(|r| PersonActivity {
             id: format!("note-{}", r.get::<String, _>("id")),
             kind: "note".into(),
@@ -447,13 +493,24 @@ async fn person_activity_handler(
             detail: r.get("body"),
             timestamp: r.get("created_at"),
         })
-        .chain(card_rows.into_iter().map(|r| PersonActivity {
-            id: format!("card-{}", r.get::<String, _>("id")),
-            kind: "task".into(),
-            title: r.get("title"),
-            detail: r.get("description"),
-            timestamp: r.get("updated_at"),
-        }))
+        .chain(
+            card_rows
+                .into_iter()
+                .filter(|r| {
+                    contains_whole_word_ci(&r.get::<String, _>("title"), &person.display_name)
+                        || contains_whole_word_ci(
+                            &r.get::<String, _>("description"),
+                            &person.display_name,
+                        )
+                })
+                .map(|r| PersonActivity {
+                    id: format!("card-{}", r.get::<String, _>("id")),
+                    kind: "task".into(),
+                    title: r.get("title"),
+                    detail: r.get("description"),
+                    timestamp: r.get("updated_at"),
+                }),
+        )
         .collect();
 
     let display = person.display_name;
@@ -500,6 +557,24 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use serial_test::serial;
     use tower::ServiceExt;
+
+    #[test]
+    fn escapes_like_metacharacters() {
+        assert_eq!(escape_like(r"100%_safe\name"), r"100\%\_safe\\name");
+        assert_eq!(escape_like("ordinary chars"), "ordinary chars");
+    }
+
+    #[test]
+    fn matches_names_as_case_insensitive_whole_words() {
+        assert!(contains_whole_word_ci("Meeting with Jon today", "jon"));
+        assert!(!contains_whole_word_ci("Call Jonathan re: budget", "Jon"));
+        assert!(!contains_whole_word_ci("SAMSUNG order", "Sam"));
+        assert!(contains_whole_word_ci("Note about Jo_", "jo_"));
+        assert!(!contains_whole_word_ci("Note about Jo_x", "Jo_"));
+        assert!(contains_whole_word_ci("Jon starts the note", "jon"));
+        assert!(contains_whole_word_ci("The note ends with JON", "jon"));
+        assert!(!contains_whole_word_ci("Anything", ""));
+    }
 
     /// Drive `PATCH /api/people/{id}/fields` against a real router. Builds the
     /// process-global AppState (→ #[serial], test_root pinned first per the #843
