@@ -264,11 +264,14 @@ pub fn classify_urgency(msg: &InboxMessage) -> Urgency {
         msg.subject.to_ascii_lowercase(),
         msg.snippet.to_ascii_lowercase()
     );
-    if NOISE_HINTS.iter().any(|h| hay.contains(h)) {
-        return Urgency::Noise;
-    }
+    // Urgent wins over noise: a payment/fraud/family alert is worth surfacing
+    // even from a no-reply sender (it still gets no reply — `wants_reply` gates
+    // that on an addressable sender). Only non-urgent mail can be classed noise.
     if URGENT_HINTS.iter().any(|h| hay.contains(h)) {
         return Urgency::Urgent;
+    }
+    if NOISE_HINTS.iter().any(|h| hay.contains(h)) {
+        return Urgency::Noise;
     }
     Urgency::Normal
 }
