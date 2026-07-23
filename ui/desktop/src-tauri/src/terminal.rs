@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::{mpsc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
@@ -132,6 +132,7 @@ struct PtySession {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     _child: Box<dyn portable_pty::Child + Send>,
+    output: Arc<Mutex<String>>,
 }
 
 pub struct PtySessions(Mutex<HashMap<String, PtySession>>);
@@ -236,6 +237,8 @@ pub async fn spawn_pty_session(
 
     let sid = session_id.clone();
     let app_handle = app.clone();
+    let output = Arc::new(Mutex::new(String::new()));
+    let reader_output = output.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
         loop {
@@ -243,12 +246,22 @@ pub async fn spawn_pty_session(
                 Ok(0) => break,
                 Ok(n) => {
                     let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                    if let Ok(mut replay) = reader_output.lock() {
+                        replay.push_str(&data);
+                        const MAX_REPLAY_BYTES: usize = 2 * 1024 * 1024;
+                        if replay.len() > MAX_REPLAY_BYTES {
+                            let mut cut = replay.len() - MAX_REPLAY_BYTES;
+                            while !replay.is_char_boundary(cut) {
+                                cut += 1;
+                            }
+                            replay.drain(..cut);
+                        }
+                    }
                     if let Some(tx) = &tee_tx {
                         // Never blocks (unbounded); a dead forwarder is fine.
                         let _ = tx.send(TeeFrame::Data(data.clone()));
                     }
-                    let _ = app_handle.emit_to(
-                        "main",
+                    let _ = app_handle.emit(
                         "pty_data",
                         PtyDataPayload {
                             session_id: sid.clone(),
@@ -265,8 +278,7 @@ pub async fn spawn_pty_session(
             // instead of parking at its goal timeout.
             let _ = tx.send(TeeFrame::Eof);
         }
-        let _ = app_handle.emit_to(
-            "main",
+        let _ = app_handle.emit(
             "pty_exit",
             PtyExitPayload {
                 session_id: sid,
@@ -303,6 +315,7 @@ pub async fn spawn_pty_session(
         master: pair.master,
         writer,
         _child: child,
+        output,
     };
 
     app.state::<PtySessions>()
@@ -315,6 +328,20 @@ pub async fn spawn_pty_session(
         session_id,
         cwd: resolved_cwd,
     })
+}
+
+#[tauri::command]
+pub async fn get_pty_output(app: AppHandle, session_id: String) -> Result<String, String> {
+    let sessions = app.state::<PtySessions>();
+    let map = sessions.0.lock().unwrap();
+    let session = map
+        .get(&session_id)
+        .ok_or_else(|| "Session not found".to_string())?;
+    session
+        .output
+        .lock()
+        .map(|s| s.clone())
+        .map_err(|_| "Output buffer unavailable".to_string())
 }
 
 #[tauri::command]

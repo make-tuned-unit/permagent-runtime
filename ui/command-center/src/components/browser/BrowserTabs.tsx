@@ -1,4 +1,4 @@
-import { FiPlus, FiX, FiGlobe } from 'react-icons/fi';
+import { FiPlus, FiX, FiGlobe, FiExternalLink } from 'react-icons/fi';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { CycleTabsButton } from '../build/CycleTabsButton';
@@ -19,6 +19,7 @@ interface BrowserTabsProps {
   onCloseTab: (tabId: string, e?: React.MouseEvent) => void;
   onNewTab: () => void;
   onCycleTab: () => void;
+  onPopOut?: () => void;
 }
 
 export function BrowserTabs({
@@ -29,6 +30,7 @@ export function BrowserTabs({
   onCloseTab,
   onNewTab,
   onCycleTab,
+  onPopOut,
 }: BrowserTabsProps) {
   const { colors } = useTheme();
   return (
@@ -72,6 +74,7 @@ export function BrowserTabs({
         })}
       </div>
       <CycleTabsButton pane="browser" onCycle={onCycleTab} />
+      {onPopOut && <button onClick={onPopOut} className="px-2 py-1.5 transition-colors" style={{ color: colors.textMuted }} title="Pop out active browser"><FiExternalLink size={13} /></button>}
       <button
         onClick={onNewTab}
         className="px-2.5 py-1.5 transition-colors"

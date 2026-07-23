@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
-import { FiPlus, FiX, FiTerminal, FiFilePlus } from 'react-icons/fi';
+import { FiPlus, FiX, FiTerminal, FiFilePlus, FiExternalLink } from 'react-icons/fi';
 import { Terminal } from './Terminal';
 import { useTheme } from '../../styles/useTheme';
 import { registerDropZone } from '../../lib/native-drag-drop';
@@ -10,9 +10,10 @@ import { nextPaneTabId, usePaneTabCycling } from '../build/paneTabCycling';
 
 export interface TerminalManagerHandle {
   createProjectTab: (cwd: string, label: string, initialCommand?: string, supervisedSessionId?: string) => void;
+  getActiveTab: () => TerminalTab;
 }
 
-interface TerminalTab {
+export interface TerminalTab {
   id: string;
   label: string;
   sessionId: string | null;
@@ -50,14 +51,17 @@ function createTab(cwd?: string): TerminalTab {
 let persistedTabs: TerminalTab[] | null = null;
 let persistedActiveTabId: string | null = null;
 
-export const TerminalManager = forwardRef<TerminalManagerHandle>(function TerminalManager(_props, ref) {
+interface TerminalManagerProps { initialTab?: TerminalTab | null; detached?: boolean }
+
+export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManagerProps>(function TerminalManager({ initialTab, detached = false }, ref) {
   const { colors } = useTheme();
   const [tabs, setTabs] = useState<TerminalTab[]>(() => {
-    if (persistedTabs) return persistedTabs;
+    if (initialTab) return [initialTab];
+    if (!detached && persistedTabs) return persistedTabs;
     return [createTab()];
   });
   const [activeTabId, setActiveTabId] = useState<string>(() => {
-    return persistedActiveTabId || tabs[0].id;
+    return initialTab?.id || (!detached ? persistedActiveTabId : null) || tabs[0].id;
   });
   const [closingTabId, setClosingTabId] = useState<string | null>(null);
   // Drop-to-CC-terminal (#557): visual state while a file is dragged over the pane.
@@ -94,10 +98,23 @@ export const TerminalManager = forwardRef<TerminalManagerHandle>(function Termin
   // Persist state on unmount so terminal survives workspace switches
   useEffect(() => {
     return () => {
-      persistedTabs = tabsRef.current;
-      persistedActiveTabId = activeTabIdRef.current;
+      if (!detached) {
+        persistedTabs = tabsRef.current;
+        persistedActiveTabId = activeTabIdRef.current;
+      }
     };
-  }, []);
+  }, [detached]);
+
+  useEffect(() => {
+    if (detached || !('__TAURI_INTERNALS__' in window)) return;
+    let unlisten: (() => void) | undefined;
+    import('@tauri-apps/api/event').then(({ listen }) => listen<{ kind: string; tab: TerminalTab }>('pane_redock', e => {
+      if (e.payload.kind !== 'terminal') return;
+      setTabs(prev => [...prev.filter(t => t.id !== e.payload.tab.id), e.payload.tab]);
+      setActiveTabId(e.payload.tab.id);
+    })).then(fn => { unlisten = fn; });
+    return () => unlisten?.();
+  }, [detached]);
 
   // Drop-to-CC-terminal (#557): inject a dropped file's path into the PTY of the
   // active tab's session as if typed — a running Claude Code session then
@@ -212,7 +229,26 @@ export const TerminalManager = forwardRef<TerminalManagerHandle>(function Termin
     setActiveTabId(tab.id);
   }, []);
 
-  useImperativeHandle(ref, () => ({ createProjectTab }), [createProjectTab]);
+  useImperativeHandle(ref, () => ({
+    createProjectTab,
+    getActiveTab: () => tabsRef.current.find(t => t.id === activeTabIdRef.current) || tabsRef.current[0],
+  }), [createProjectTab]);
+
+  const popOutActive = useCallback(async () => {
+    const tab = tabsRef.current.find(t => t.id === activeTabIdRef.current);
+    if (!tab || detached) return;
+    try {
+      const { createPaneWindow } = await import('../../lib/paneWindows');
+      await createPaneWindow('terminal', tab);
+      setTabs(prev => {
+        const next = prev.filter(t => t.id !== tab.id);
+        if (next.length) { setActiveTabId(next[0].id); return next; }
+        const replacement = createTab();
+        setActiveTabId(replacement.id);
+        return [replacement];
+      });
+    } catch (err) { console.error('[terminal] pop-out failed:', err); }
+  }, [detached]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -274,6 +310,7 @@ export const TerminalManager = forwardRef<TerminalManagerHandle>(function Termin
           ))}
         </div>
         <CycleTabsButton pane="terminal" onCycle={() => cycleTabs()} />
+        {!detached && <button onClick={popOutActive} className="px-2 py-1.5 text-dark-muted hover:text-accent transition-colors" title="Pop out active terminal"><FiExternalLink size={13} /></button>}
         <button
           onClick={handleNewTab}
           className="px-2.5 py-1.5 text-dark-muted hover:text-accent transition-colors"

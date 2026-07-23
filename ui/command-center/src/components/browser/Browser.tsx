@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
 import { useCommandCenter } from '../../lib/store';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
@@ -88,7 +88,9 @@ function normalizeUrl(input: string): string {
 let persistedTabs: BrowserTab[] | null = null;
 let persistedActiveTabId: string | null = null;
 
-export function Browser() {
+interface BrowserProps { initialTab?: BrowserTab | null; ownerWindowLabel?: string; detached?: boolean }
+
+export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserProps>(function Browser({ initialTab, ownerWindowLabel = 'main', detached = false }, ref) {
   const { colors } = useTheme();
   const overlayBlocking = useCommandCenter(s => s.overlayBlockingBrowser);
   const chatLauncherSize = useCommandCenter(s => s.chatLauncherSize);
@@ -97,11 +99,12 @@ export function Browser() {
   const clearPendingBrowserUrl = useCommandCenter(s => s.clearPendingBrowserUrl);
 
   const [tabs, setTabs] = useState<BrowserTab[]>(() => {
-    if (persistedTabs) return persistedTabs;
+    if (initialTab) return [initialTab];
+    if (!detached && persistedTabs) return persistedTabs;
     return [createTab()];
   });
   const [activeTabId, setActiveTabId] = useState<string>(() => {
-    return persistedActiveTabId || tabs[0].id;
+    return initialTab?.id || (!detached ? persistedActiveTabId : null) || tabs[0].id;
   });
   const [closingTabId, setClosingTabId] = useState<string | null>(null);
   const [urlInput, setUrlInput] = useState('');
@@ -140,8 +143,10 @@ export function Browser() {
   // ── Persist state and hide webviews on unmount (workspace switch) ──
   useEffect(() => {
     return () => {
-      persistedTabs = tabsRef.current;
-      persistedActiveTabId = activeTabIdRef.current;
+      if (!detached) {
+        persistedTabs = tabsRef.current;
+        persistedActiveTabId = activeTabIdRef.current;
+      }
       // Move all child webviews offscreen
       const inv = apiRef.current;
       tabsRef.current.forEach((t) => {
@@ -150,7 +155,23 @@ export function Browser() {
         }
       });
     };
-  }, []);
+  }, [detached]);
+
+  useImperativeHandle(ref, () => ({
+    getActiveTab: () => tabsRef.current.find(t => t.id === activeTabIdRef.current) || tabsRef.current[0],
+  }), []);
+
+  useEffect(() => {
+    if (detached || !('__TAURI_INTERNALS__' in window)) return;
+    let unlisten: (() => void) | undefined;
+    import('@tauri-apps/api/event').then(({ listen }) => listen<{ kind: string; tab: BrowserTab }>('pane_redock', e => {
+      if (e.payload.kind !== 'browser') return;
+      setTabs(prev => [...prev.filter(t => t.id !== e.payload.tab.id), e.payload.tab]);
+      setActiveTabId(e.payload.tab.id);
+      setUrlInput(e.payload.tab.url);
+    })).then(fn => { unlisten = fn; });
+    return () => unlisten?.();
+  }, [detached]);
 
   // ── Sync active webview position with the container div ──
   const syncBounds = useCallback(() => {
@@ -418,6 +439,7 @@ export function Browser() {
       try {
         const webviewId = (await apiRef.current.invoke('create_browser_webview', {
           url,
+          windowLabel: ownerWindowLabel,
           x: rect?.x ?? 0,
           y: rect?.y ?? 0,
           width: rect?.width ?? 800,
@@ -434,7 +456,7 @@ export function Browser() {
       setActiveTabId(tab.id);
       setUrlInput(url);
     },
-    [],
+    [ownerWindowLabel],
   );
 
   // ── Open a URL pushed from elsewhere (chat-link click, agent tour #353) ──
@@ -485,6 +507,7 @@ export function Browser() {
         try {
           const webviewId = (await apiRef.current.invoke('create_browser_webview', {
             url: normalized,
+            windowLabel: ownerWindowLabel,
             x: rect?.x ?? 0,
             y: rect?.y ?? 0,
             width: rect?.width ?? 800,
@@ -510,7 +533,7 @@ export function Browser() {
         }
       }
     },
-    [tabs, activeTabId],
+    [tabs, activeTabId, ownerWindowLabel],
   );
 
   const handleNewTab = useCallback(() => {
@@ -659,6 +682,25 @@ export function Browser() {
 
   const protocol = activeTab?.url ? getUrlProtocol(activeTab.url) : 'other';
 
+  const popOutActive = useCallback(async () => {
+    const tab = tabsRef.current.find(t => t.id === activeTabIdRef.current);
+    if (!tab || detached) return;
+    try {
+      const { createPaneWindow } = await import('../../lib/paneWindows');
+      const label = await createPaneWindow('browser', tab);
+      if (tab.webviewId && apiRef.current) {
+        await apiRef.current.invoke('reparent_browser', { webviewId: tab.webviewId, windowLabel: label });
+      }
+      setTabs(prev => {
+        const next = prev.filter(t => t.id !== tab.id);
+        if (next.length) { setActiveTabId(next[0].id); setUrlInput(next[0].url); return next; }
+        const replacement = createTab();
+        setActiveTabId(replacement.id); setUrlInput('');
+        return [replacement];
+      });
+    } catch (err) { console.error('[browser] pop-out failed:', err); }
+  }, [detached]);
+
   return (
     <div ref={rootRef} onFocusCapture={selectPane} className="flex h-full flex-col" style={{ backgroundColor: colors.bg }}>
       {/* Tab bar */}
@@ -670,6 +712,7 @@ export function Browser() {
         onCloseTab={handleCloseTab}
         onNewTab={handleNewTab}
         onCycleTab={() => cycleTabs()}
+        onPopOut={detached ? undefined : popOutActive}
       />
 
       {/* URL bar */}
@@ -809,4 +852,4 @@ export function Browser() {
       </div>
     </div>
   );
-}
+});

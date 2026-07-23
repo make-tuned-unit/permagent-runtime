@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Default permissions for Permagent desktop app",
-  "windows": ["main", "chat"],
+  "windows": ["main", "chat", "terminal-*", "browser-*"],
   "permissions": [
     "core:default",
     "core:event:default",
