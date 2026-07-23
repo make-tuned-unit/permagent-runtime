@@ -20,6 +20,8 @@ const writeText = vi.fn();
 const project = { id: 'project/1', name: 'Acme' } as Project;
 
 beforeEach(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-07-22T14:00:00Z'));
   apiFetch.mockReset().mockResolvedValue({
     competitors: [{
       id: 'c1', kind: 'competitor', name: 'Rival',
@@ -50,6 +52,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  vi.useRealTimers();
 });
 
 it('renders grouped cited items and prepares the refresh prompt', async () => {
@@ -60,6 +63,7 @@ it('renders grouped cited items and prepares the refresh prompt', async () => {
   expect(container.textContent).toContain('Partners');
   expect(container.textContent).toContain('Ecosystem');
   expect(container.textContent).toContain('Rival');
+  expect(container.textContent).toContain('Last researched 2h ago');
   expect(Array.from(container.querySelectorAll('a')).map(a => a.href)).toEqual([
     'https://rival.example/',
     'https://ally.example/',
@@ -75,4 +79,18 @@ it('renders grouped cited items and prepares the refresh prompt', async () => {
     'with your web tools, then call propose_project_intel so I can review the findings in ' +
     'the Decision Inbox.',
   );
+});
+
+it('dismisses an item after the DELETE succeeds', async () => {
+  await act(async () => root.render(<EcosystemPanel project={project} />));
+
+  const dismiss = container.querySelector<HTMLButtonElement>('button[aria-label="Dismiss Rival"]');
+  await act(async () => dismiss?.click());
+
+  expect(apiFetch).toHaveBeenCalledWith(
+    '/api/projects/project%2F1/intel/c1',
+    { method: 'DELETE' },
+  );
+  expect(container.textContent).not.toContain('Rival');
+  expect(container.textContent).toContain('Ally');
 });
