@@ -1395,10 +1395,14 @@ mod tests {
     const KNOWN_DYNAMIC_TOOLS: &[&str] = &["web_search"];
 
     /// Snake_case prose tokens that are NOT tools (parameter names, config
-    /// keys, …). EMPTY by design — current descriptor prose contains none, and
-    /// keeping it empty forces every new snake_case token to be either a real
-    /// tool or an explicit, justified entry here.
-    const NON_TOOL_PROSE_TOKENS: &[&str] = &[];
+    /// keys, …). Kept minimal — every entry needs a justification, so that a new
+    /// snake_case token must be either a real tool or an explicit choice here.
+    ///
+    /// - `sub_recipes`, `worker_persona`: `create_recipe` (recipe_author)
+    ///   authoring FIELDS on the `Recipe`/`ScheduledJob`, named in the
+    ///   descriptor prose so the agent knows the richer recipe surface exists.
+    ///   They are recipe schema keys, not callable tools.
+    const NON_TOOL_PROSE_TOKENS: &[&str] = &["sub_recipes", "worker_persona"];
 
     /// Every tool name that exists in the runtime: the statically-derived
     /// per-extension inventories, hidden-but-real extensions (Git Steward),
