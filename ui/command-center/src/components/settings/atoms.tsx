@@ -69,13 +69,14 @@ export function Chip({ on, onClick, children }: { on: boolean; onClick?: () => v
   );
 }
 
-export function Toggle({ on, onChange }: { on: boolean; onChange?: (v: boolean) => void }) {
+export function Toggle({ on, onChange, disabled = false }: { on: boolean; onChange?: (v: boolean) => void; disabled?: boolean }) {
   const { colors } = useTheme();
   return (
-    <button onClick={() => onChange?.(!on)} style={{
+    <button disabled={disabled} onClick={() => onChange?.(!on)} style={{
       width: 36, height: 22, borderRadius: 999, padding: 2,
       background: on ? colors.cyan : colors.surfaceHi,
-      border: 'none', cursor: 'pointer', position: 'relative',
+      border: 'none', cursor: disabled ? 'not-allowed' : 'pointer', position: 'relative',
+      opacity: disabled ? 0.55 : 1,
       transition: `background 160ms ${ease.out}`,
       boxShadow: on ? `0 0 8px ${colors.cyanGlow}` : 'none',
     }}>

@@ -309,7 +309,7 @@ function MemoryPanel() {
 // a user is already there (e.g. via env or old YAML), so they can switch back.
 const SELECTABLE_TRUST_MODES = new Set(['auto', 'chat']);
 
-function AutonomyPanel() {
+export function AutonomyPanel() {
   const { colors } = useThemeHook();
   // Trust level is REAL (2026-07-10 audit): it reads/writes the daemon's
   // GOOSE_MODE, which gates tool-call approval in the agent loop.
@@ -346,9 +346,29 @@ function AutonomyPanel() {
       setTrustError(`Couldn't save trust level: ${err instanceof Error ? err.message : String(err)}`);
     });
   };
-  const [confirms, setConfirms] = useState([true, true, true, true, false]);
-  const [perSession, setPerSession] = useState(5);
-  const [perDay, setPerDay] = useState(20);
+  const confirms = [true, true, true, true, false];
+  const [perSession, setPerSession] = useState<number | null>(null);
+  const [perTask, setPerTask] = useState<number | null>(null);
+  const [budgetError, setBudgetError] = useState<string | null>(null);
+  useEffect(() => {
+    api.getBudget().then(budget => {
+      setPerSession(budget.session.hard);
+      setPerTask(budget.task.hard);
+      setBudgetError(null);
+    }).catch(() => setBudgetError('Could not load spend caps.'));
+  }, []);
+  const saveCap = (scope: 'session' | 'task', value: number) => {
+    const previous = scope === 'session' ? perSession : perTask;
+    if (scope === 'session') setPerSession(value); else setPerTask(value);
+    setBudgetError(null);
+    api.setBudget({ [scope]: { hard: value } }).then(budget => {
+      setPerSession(budget.session.hard);
+      setPerTask(budget.task.hard);
+    }).catch(() => {
+      if (scope === 'session') setPerSession(previous); else setPerTask(previous);
+      setBudgetError('Could not save spend cap.');
+    });
+  };
   const trustLevels = [
     { v: 'auto', l: 'Automatic', d: 'Run tool calls without asking (default)' },
     { v: 'chat', l: 'Chat only', d: 'No tool calls at all' },
@@ -418,18 +438,25 @@ function AutonomyPanel() {
           </div>
         )}
       </Section>
-      <PreviewNotice />
       <Section title="Always confirm before…">
+        <PreviewNotice />
         {confirmItems.map((l, i) => (
           <div key={l} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '10px 0', borderTop: `1px solid ${colors.border}` }}>
-            <Toggle on={confirms[i]} onChange={v => setConfirms(p => { const n = [...p]; n[i] = v; return n; })} />
+            <Toggle on={confirms[i]} disabled />
             <span style={{ fontSize: 13, flex: 1 }}>{l}</span>
           </div>
         ))}
       </Section>
-      <Section title="Spend cap" sub="Hard ceiling. Agent will stop and ask for more rope before exceeding.">
-        <Row label="Per session"><Slider value={perSession} onChange={setPerSession} min={0} max={50} suffix=" USD" /></Row>
-        <Row label="Per day"><Slider value={perDay} onChange={setPerDay} min={0} max={200} suffix=" USD" /></Row>
+      <Section title="Spend cap" sub="Live hard ceilings enforced by the cost router. The agent stops before exceeding them.">
+        {budgetError && <div style={{ fontSize: 12, color: colors.danger, paddingBottom: 8 }}>{budgetError}</div>}
+        {perSession === null || perTask === null ? (
+          <div style={{ color: colors.textDim, fontSize: 13 }}>Loading spend caps…</div>
+        ) : (
+          <>
+            <Row label="Per session"><Slider value={perSession} onChange={v => saveCap('session', v)} min={0} max={50} suffix=" USD" /></Row>
+            <Row label="Per task"><Slider value={perTask} onChange={v => saveCap('task', v)} min={0} max={200} suffix=" USD" /></Row>
+          </>
+        )}
       </Section>
     </div>
   );
