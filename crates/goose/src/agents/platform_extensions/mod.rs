@@ -521,7 +521,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: recipe_author::EXTENSION_NAME,
                 display_name: "Recipe Author",
                 description:
-                    "Create, list, run, pause, and delete scheduled automations (create_recipe, list_recipes, run_recipe, pause_recipe, delete_recipe) and save or list reusable skills (save_skill, list_skills) through chat",
+                    "Create, list, run, pause, and delete scheduled automations (create_recipe, list_recipes, run_recipe, pause_recipe, delete_recipe) and save or list reusable skills (save_skill, list_skills) through chat. create_recipe supports richer authoring: input parameters, sub_recipes, retry with success checks, extensions, model settings, and a worker_persona",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
