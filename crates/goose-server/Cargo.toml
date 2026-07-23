@@ -109,7 +109,7 @@ objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSURL", "NSString"] }
 
 [target.'cfg(windows)'.dependencies]
-winreg = { version = "0.55.0" }
+winreg = { version = "0.56.0" }
 
 [[bin]]
 name = "permagentd"
