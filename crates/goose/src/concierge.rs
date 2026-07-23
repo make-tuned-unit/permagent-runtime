@@ -476,8 +476,8 @@ pub async fn record_proposals(
 /// The display half of a `Name <addr>` / bare-address `From` header.
 fn sender_name(from: &str) -> String {
     let f = from.trim();
-    if let Some(idx) = f.find('<') {
-        let name = f[..idx].trim().trim_matches('"').trim();
+    if let Some((name, _addr)) = f.split_once('<') {
+        let name = name.trim().trim_matches('"').trim();
         if !name.is_empty() {
             return name.to_string();
         }
