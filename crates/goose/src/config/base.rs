@@ -11,6 +11,7 @@ use std::env;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
@@ -111,6 +112,10 @@ pub struct Config {
     config_path: PathBuf,
     defaults_path: Option<PathBuf>,
     secrets: SecretStorage,
+    /// Set after this instance observes an unavailable system keyring. Keeping
+    /// fallback state here avoids mutating the process environment (which is
+    /// shared by unrelated Config instances and threads).
+    keyring_fallback_active: AtomicBool,
     guard: Mutex<()>,
     secrets_cache: Arc<Mutex<Option<HashMap<String, Value>>>>,
 }
@@ -154,6 +159,7 @@ impl Default for Config {
             config_path,
             defaults_path,
             secrets,
+            keyring_fallback_active: AtomicBool::new(false),
             guard: Mutex::new(()),
             secrets_cache: Arc::new(Mutex::new(None)),
         }
@@ -275,6 +281,7 @@ impl Config {
             secrets: SecretStorage::Keyring {
                 service: service.to_string(),
             },
+            keyring_fallback_active: AtomicBool::new(false),
             guard: Mutex::new(()),
             secrets_cache: Arc::new(Mutex::new(None)),
         })
@@ -294,6 +301,7 @@ impl Config {
             secrets: SecretStorage::File {
                 path: secrets_path.as_ref().to_path_buf(),
             },
+            keyring_fallback_active: AtomicBool::new(false),
             guard: Mutex::new(()),
             secrets_cache: Arc::new(Mutex::new(None)),
         })
@@ -310,6 +318,7 @@ impl Config {
             secrets: SecretStorage::File {
                 path: secrets_path.as_ref().to_path_buf(),
             },
+            keyring_fallback_active: AtomicBool::new(false),
             guard: Mutex::new(()),
             secrets_cache: Arc::new(Mutex::new(None)),
         })
@@ -841,8 +850,15 @@ impl Config {
 
         let get_value = |key: &str| -> Result<String, ConfigError> {
             if primary_in_keychain {
-                // Primary is in keychain — prefer keychain for all keys
-                self.get_secret(key)
+                // Keep the group on one source. Falling through to an env var
+                // for only a secondary key can combine credentials from two
+                // different accounts/configurations.
+                keychain_values
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned)
+                    .ok_or_else(|| ConfigError::NotFound(key.to_string()))
             } else {
                 // Primary not in keychain — fall back to env for all keys
                 env::var(key.to_uppercase()).map_err(|_| ConfigError::NotFound(key.to_string()))
@@ -1010,18 +1026,25 @@ impl Config {
         fallback_values: Option<&HashMap<String, Value>>,
     ) -> Result<T, ConfigError> {
         if self.is_keyring_availability_error(&keyring_err.to_string()) {
-            std::env::set_var("PERMAGENT_DISABLE_KEYRING", "1");
-            tracing::warn!("Keyring unavailable. Using file storage for secrets.");
-
-            if let Some(values) = fallback_values {
-                self.write_secrets_to_file(values)?;
-                Err(ConfigError::FallbackToFileStorage)
-            } else {
-                Err(ConfigError::FallbackToFileStorage)
-            }
+            self.activate_file_fallback(fallback_values)
         } else {
             Err(ConfigError::KeyringError(keyring_err.to_string()))
         }
+    }
+
+    fn activate_file_fallback<T>(
+        &self,
+        fallback_values: Option<&HashMap<String, Value>>,
+    ) -> Result<T, ConfigError> {
+        self.keyring_fallback_active.store(true, Ordering::Release);
+        tracing::warn!(
+            "Keyring unavailable. Using file storage for secrets for this Config instance."
+        );
+
+        if let Some(values) = fallback_values {
+            self.write_secrets_to_file(values)?;
+        }
+        Err(ConfigError::FallbackToFileStorage)
     }
 
     /// Handle keyring operation with automatic fallback to file storage
@@ -1031,6 +1054,10 @@ impl Config {
         service: &str,
         fallback_values: Option<&HashMap<String, Value>>,
     ) -> Result<T, ConfigError> {
+        if self.keyring_fallback_active.load(Ordering::Acquire) {
+            return self.activate_file_fallback(fallback_values);
+        }
+
         // Try to get the keyring entry and perform the operation
         let entry = match Self::get_keyring_entry(service) {
             Ok(entry) => entry,
@@ -1202,7 +1229,9 @@ mod tests {
 
     #[test]
     fn test_file_based_secrets_management() -> Result<(), ConfigError> {
-        let config = new_test_config();
+        let config_file = NamedTempFile::new().unwrap();
+        let secrets_file = NamedTempFile::new().unwrap();
+        let config = Config::new_with_file_secrets(config_file.path(), secrets_file.path())?;
 
         config.set_secret("key", &"value")?;
 
@@ -1213,6 +1242,13 @@ mod tests {
 
         let result: Result<String, ConfigError> = config.get_secret("key");
         assert!(matches!(result, Err(ConfigError::NotFound(_))));
+
+        let persisted: HashMap<String, Value> =
+            serde_yaml::from_str(&std::fs::read_to_string(secrets_file.path())?)?;
+        assert!(
+            !persisted.contains_key("key"),
+            "deleting a secret must remove the persisted key, not leave an empty ghost entry"
+        );
 
         Ok(())
     }
@@ -1874,6 +1910,42 @@ mod tests {
 
         assert_eq!(secrets["TEST_PRIMARY"], "primary_secret");
         assert_eq!(secrets["TEST_SECONDARY"], "secondary_secret");
+    }
+
+    #[test]
+    fn get_secrets_does_not_mix_keychain_primary_with_env_secondary() {
+        let _guard = env_lock::lock_env([
+            ("TEST_PRIMARY", None::<&str>),
+            ("TEST_SECONDARY", Some("secondary_env")),
+        ]);
+        let config = new_test_config();
+        config
+            .set_secret("TEST_PRIMARY", &"primary_secret")
+            .unwrap();
+
+        let secrets = config
+            .get_secrets("TEST_PRIMARY", &["TEST_SECONDARY"])
+            .unwrap();
+
+        assert_eq!(secrets["TEST_PRIMARY"], "primary_secret");
+        assert!(!secrets.contains_key("TEST_SECONDARY"));
+    }
+
+    #[test]
+    fn keyring_fallback_is_instance_local_and_does_not_set_env() {
+        let _guard = env_lock::lock_env([("PERMAGENT_DISABLE_KEYRING", None::<&str>)]);
+        let config_file = NamedTempFile::new().unwrap();
+        let config = Config::new(config_file.path(), "unreachable-test-keyring").unwrap();
+        let other_config_file = NamedTempFile::new().unwrap();
+        let other_config =
+            Config::new(other_config_file.path(), "independent-test-keyring").unwrap();
+
+        let result: Result<(), ConfigError> = config.activate_file_fallback(None);
+
+        assert!(matches!(result, Err(ConfigError::FallbackToFileStorage)));
+        assert!(config.keyring_fallback_active.load(Ordering::Acquire));
+        assert!(!other_config.keyring_fallback_active.load(Ordering::Acquire));
+        assert_eq!(std::env::var_os("PERMAGENT_DISABLE_KEYRING"), None);
     }
 
     #[test]

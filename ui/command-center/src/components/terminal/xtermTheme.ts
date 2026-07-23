@@ -4,8 +4,8 @@
  * Chrome slots (background / foreground / cursor / cursorAccent / selection)
  * are composed from the active theme's `ThemeColors` (useTheme().colors) so
  * the terminal follows the design tokens. ANSI slots have no token
- * counterparts (tokens.ts `danger` #FFB4A2 is unusable as an ANSI red, etc.)
- * and are curated per theme below.
+ * counterparts are curated per theme below; red is sourced from the stronger
+ * `dangerStrong` semantic because the softer UI danger is not ANSI-legible.
  *
  * tokens.ts is import-only here — it stays xterm-free by design.
  */
@@ -98,5 +98,6 @@ export function getXtermTheme(themeId: ThemeId, colors: ThemeColors): ITheme {
     selectionBackground: withAlpha(colors.cyan, 0.2),
     selectionForeground: colors.text,
     ...ANSI[themeId],
+    red: colors.dangerStrong,
   };
 }
