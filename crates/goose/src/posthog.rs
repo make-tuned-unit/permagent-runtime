@@ -69,6 +69,12 @@ async fn posthog_capture(
     distinct_id: &str,
     properties: HashMap<String, serde_json::Value>,
 ) -> Result<(), String> {
+    // Consent is enforced again at the network choke point so a future caller
+    // cannot bypass opt-in by calling this helper directly.
+    if !is_telemetry_enabled() {
+        return Ok(());
+    }
+
     // Bring telemetry egress under the sovereignty boundary (#327). This is the
     // single outbound choke point for all PostHog POSTs; under sovereign mode the
     // POST is HARD-SUPPRESSED (fail-closed) and, either way, the attempt is
@@ -682,6 +688,34 @@ mod tests {
         assert_eq!(
             telemetry_attempts, 0,
             "no analytics beacon may be attempted without an explicit opt-in"
+        );
+    }
+
+    /// The final network choke point must independently enforce consent, even
+    /// when a caller bypasses the public event helpers' checks.
+    #[tokio::test]
+    #[serial]
+    async fn posthog_capture_is_a_no_op_without_opt_in() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().display().to_string();
+        let _env = env_lock::lock_env([
+            ("HOME", Some(root.as_str())),
+            ("PERMAGENT_PATH_ROOT", Some(root.as_str())),
+            ("GOOSE_TELEMETRY_OFF", None),
+        ]);
+
+        assert!(!is_telemetry_enabled(), "telemetry OFF by default");
+        posthog_capture("direct_internal_call", "test-installation", HashMap::new())
+            .await
+            .unwrap();
+
+        let rows = crate::sovereignty::recent_egress(1000)
+            .await
+            .unwrap_or_default();
+        assert_eq!(
+            rows.iter().filter(|r| r.kind == "telemetry").count(),
+            0,
+            "the consent guard must return before any egress attempt"
         );
     }
 }

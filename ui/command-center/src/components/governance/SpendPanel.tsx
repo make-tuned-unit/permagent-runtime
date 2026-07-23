@@ -42,12 +42,24 @@ export function SpendPanel() {
   const saveBudget = useCallback(async () => {
     setSaving(true);
     setSaved(false);
+    setError(null);
     try {
+      const parseCeiling = (value: string): number | undefined => {
+        if (value.trim() === '') return undefined;
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed) || parsed < 0) {
+          throw new Error('invalid budget');
+        }
+        return parsed;
+      };
+      const parsedSoft = parseCeiling(soft);
+      const parsedGate = parseCeiling(gate);
+      const parsedHard = parseCeiling(hard);
       const patch = {
         session: {
-          soft: Number(soft),
-          gate: Number(gate),
-          hard: Number(hard),
+          ...(parsedSoft !== undefined && { soft: parsedSoft }),
+          ...(parsedGate !== undefined && { gate: parsedGate }),
+          ...(parsedHard !== undefined && { hard: parsedHard }),
         },
       };
       const budget = await api.setBudget(patch);
@@ -123,6 +135,7 @@ export function SpendPanel() {
           </button>
           {saved && <span style={{ fontSize: 12, color: colors.success }}>Saved</span>}
         </div>
+        {error && <div style={{ color: colors.textMuted, fontSize: 12, marginTop: 8 }}>{error}</div>}
       </Card>
 
       {/* Per-project */}

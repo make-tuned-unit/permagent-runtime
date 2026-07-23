@@ -772,6 +772,24 @@ impl Config {
         self.save_values(&values)
     }
 
+    /// Set several non-secret configuration values with one atomic file write.
+    pub fn set_params<I, K, V>(&self, params: I) -> Result<(), ConfigError>
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: AsRef<str>,
+        V: Serialize,
+    {
+        let _guard = self.guard.lock().unwrap();
+        let mut values = self.load_raw()?;
+        for (key, value) in params {
+            values.insert(
+                serde_yaml::to_value(key.as_ref())?,
+                serde_yaml::to_value(value)?,
+            );
+        }
+        self.save_values(&values)
+    }
+
     /// Delete a configuration value in the config file.
     ///
     /// This will immediately write the value to the config file. The value
