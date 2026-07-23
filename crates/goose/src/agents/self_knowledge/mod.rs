@@ -1140,10 +1140,7 @@ mod tests {
                 people::EXTENSION_NAME,
                 names(people::PeopleClient::get_tools()),
             ),
-            (
-                project_manager::EXTENSION_NAME,
-                project_manager_tools,
-            ),
+            (project_manager::EXTENSION_NAME, project_manager_tools),
             (
                 pronunciation::EXTENSION_NAME,
                 names(pronunciation::PronunciationClient::get_tools()),

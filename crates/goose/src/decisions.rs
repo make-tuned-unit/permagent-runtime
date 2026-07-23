@@ -2067,7 +2067,9 @@ mod tests {
             serde_json::json!([{"kind":"partner","name":"Partner","source_url":" "}]),
             serde_json::json!([{"kind":"customer","name":"Buyer","source_url":"https://x.example"}]),
         ] {
-            let d = create_decision(&pool, project_intel(invalid)).await.unwrap();
+            let d = create_decision(&pool, project_intel(invalid))
+                .await
+                .unwrap();
             assert_eq!(d.kind, "malformed");
         }
 

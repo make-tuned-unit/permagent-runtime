@@ -616,7 +616,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: project_manager::EXTENSION_NAME,
                 display_name: "Project Manager",
                 description:
-                    "Manage projects — named workspaces with paths, URLs, and metadata — including create, update, delete, list, and fuzzy-resolve (project_create, project_update, project_delete, project_list, project_resolve); run a project's Kanban board by creating, moving, deleting, and listing cards (card_create, card_move, card_delete, card_list) and adding or removing columns (column_create, column_delete); summarize the board across projects (board_summary); and open a project-rooted terminal in the Build tab (project_launch)",
+                    "Manage projects — named workspaces with paths, URLs, and metadata — including create, update, delete, list, and fuzzy-resolve (project_create, project_update, project_delete, project_list, project_resolve); run a project's Kanban board by creating, moving, deleting, and listing cards (card_create, card_move, card_delete, card_list) and adding or removing columns (column_create, column_delete); summarize the board across projects (board_summary); open a project-rooted terminal in the Build tab (project_launch); and research a project's ecosystem and competitive landscape, review-gated with cited findings (research_project_intel, propose_project_intel)",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,

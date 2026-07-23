@@ -719,10 +719,7 @@ impl ProjectManagerClient {
                 return Err("An intelligence item has an empty name.".to_string());
             }
             if item.source_url.trim().is_empty() {
-                return Err(format!(
-                    "Item \"{}\" is missing its source_url.",
-                    item.name
-                ));
+                return Err(format!("Item \"{}\" is missing its source_url.", item.name));
             }
         }
         let payload = crate::decisions::ProjectIntelProposalPayload {
