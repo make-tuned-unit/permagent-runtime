@@ -267,6 +267,14 @@ function _set(key: string, value: string) {
 // is always a concrete ThemeId so every consumer keeps working.
 export type ThemePref = ThemeId | 'system';
 
+const THEME_PREFS: readonly ThemePref[] = ['dark', 'aurora', 'silver', 'system'];
+
+/** Keep old or manually-edited preferences from producing an undefined token set. */
+export function normalizeThemePref(value: string | null): ThemePref {
+  if (value === 'slate') return 'silver';
+  return THEME_PREFS.includes(value as ThemePref) ? value as ThemePref : 'dark';
+}
+
 function _prefersDark(): boolean {
   return typeof window !== 'undefined'
     && typeof window.matchMedia === 'function'
@@ -278,10 +286,11 @@ function _resolve(pref: ThemePref): ThemeId {
   return pref;
 }
 
-let _themePref: ThemePref = _get('permagent-theme', 'dark') as ThemePref;
+const _storedThemePref = _get('permagent-theme', 'dark');
+let _themePref: ThemePref = normalizeThemePref(_storedThemePref);
 // Migrate 'slate' -> 'silver' (one-time, idempotent)
-if ((_themePref as string) === 'slate') {
-  _themePref = 'silver'; _set('permagent-theme', 'silver');
+if (_storedThemePref === 'slate') {
+  _set('permagent-theme', 'silver');
 }
 let _activeTheme: ThemeId = _resolve(_themePref);
 export function getTheme(): ThemeId { return _activeTheme; }
@@ -355,8 +364,8 @@ _listeners.add(_syncCssVars); // re-sync on theme change
 // (e.g., chat window picks up theme change made in main window's Settings)
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (e) => {
-    if (e.key === 'permagent-theme' && e.newValue) {
-      _themePref = e.newValue as ThemePref;
+    if (e.key === 'permagent-theme') {
+      _themePref = normalizeThemePref(e.newValue);
       _activeTheme = _resolve(_themePref);
       _notify();
     }

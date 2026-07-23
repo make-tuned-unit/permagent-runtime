@@ -4,8 +4,14 @@
     <meta charset="UTF-8" />
     <script>
       (function() {
-        const theme = localStorage.getItem('theme');
-        if (theme !== 'light') {
+        let preference = 'dark';
+        try { preference = localStorage.getItem('permagent-theme') || 'dark'; } catch (_) {}
+        const silver = preference === 'silver'
+          || (preference === 'system' && window.matchMedia('(prefers-color-scheme: light)').matches);
+        const theme = silver ? 'light' : 'dark';
+        document.documentElement.style.colorScheme = theme;
+        document.documentElement.style.background = silver ? '#F8FAFC' : '#0B1220';
+        if (!silver) {
           document.documentElement.classList.add('dark');
         }
       })();
