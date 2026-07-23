@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { invoke } from '@tauri-apps/api/core';
 import { Browser } from './components/browser';
@@ -11,10 +11,17 @@ export default function PaneWindowApp() {
   const params = new URLSearchParams(location.search);
   const kind = params.get('kind') as PaneKind;
   const owner = params.get('owner') || '';
-  const initial = useRef(takePaneTab(owner));
+  const handoffConsumed = useRef(false);
+  const [initial, setInitial] = useState<{ loaded: boolean; tab: TerminalTab | BrowserTab | null }>({ loaded: false, tab: null });
   const terminalRef = useRef<TerminalManagerHandle>(null);
   const browserRef = useRef<{ getActiveTab: () => BrowserTab }>(null);
   const { gradient } = useTheme();
+
+  useEffect(() => {
+    if (handoffConsumed.current) return;
+    handoffConsumed.current = true;
+    setInitial({ loaded: true, tab: takePaneTab(owner) });
+  }, [owner]);
 
   useEffect(() => {
     const win = getCurrentWindow();
@@ -24,15 +31,21 @@ export default function PaneWindowApp() {
     const redock = async () => {
       if (redocking) return;
       redocking = true;
-      if (kind === 'browser') {
-        const tab = browserRef.current?.getActiveTab();
-        if (tab?.webviewId) await invoke('reparent_browser', { webviewId: tab.webviewId, windowLabel: 'main' });
-        if (tab) await emitRedock('browser', tab);
-      } else {
-        const tab = terminalRef.current?.getActiveTab();
-        if (tab) await emitRedock('terminal', tab);
+      try {
+        if (kind === 'browser') {
+          const tab = browserRef.current?.getActiveTab();
+          if (tab?.webviewId) await invoke('reparent_browser', { webviewId: tab.webviewId, windowLabel: 'main' });
+          if (tab) await emitRedock('browser', tab);
+        } else {
+          const tab = terminalRef.current?.getActiveTab();
+          if (tab) await emitRedock('terminal', tab);
+        }
+        await win.destroy();
+      } catch (error) {
+        console.error('Failed to redock detached pane', error);
+      } finally {
+        redocking = false;
       }
-      await win.destroy();
     };
     void win.onCloseRequested(event => {
       event.preventDefault();
@@ -50,8 +63,8 @@ export default function PaneWindowApp() {
   return (
     <div style={{ width: '100vw', height: '100vh', background: gradient.workspace }}>
       {kind === 'browser'
-        ? <Browser ref={browserRef} initialTab={initial.current as BrowserTab} ownerWindowLabel={owner} detached />
-        : <TerminalManager ref={terminalRef} initialTab={initial.current as TerminalTab} detached />}
+        ? initial.loaded && <Browser ref={browserRef} initialTab={initial.tab as BrowserTab | null} ownerWindowLabel={owner} detached />
+        : initial.loaded && <TerminalManager ref={terminalRef} initialTab={initial.tab as TerminalTab | null} detached />}
     </div>
   );
 }
