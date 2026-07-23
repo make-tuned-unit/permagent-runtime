@@ -152,6 +152,10 @@ pub static WORKER_DESCRIPTORS: &[FeatureDescriptor] = &[
     // while `PERMAGENT_PLAYBOOK_ENABLED` is off, so this experimental, unproven
     // capability does not enter every user's Henry until deliberately enabled.
     crate::playbook::PLAYBOOK_SYNTHESIS_FEATURE,
+    // Render-gated on `PERMAGENT_CONCIERGE_ENABLED` (default OFF): the Concierge
+    // inbox-triage character (#640) is hidden from the brief until deliberately
+    // enabled, so the canonical prompt snapshots stay byte-for-byte identical.
+    crate::concierge::SELF_KNOWLEDGE_FEATURE,
 ];
 
 /// Whether a worker descriptor should be rendered into the `permagent_self`
@@ -163,6 +167,9 @@ pub static WORKER_DESCRIPTORS: &[FeatureDescriptor] = &[
 fn worker_descriptor_visible(d: &FeatureDescriptor) -> bool {
     if d.id == crate::playbook::PLAYBOOK_FEATURE_ID {
         return crate::playbook::is_enabled();
+    }
+    if d.id == crate::concierge::CONCIERGE_FEATURE_ID {
+        return crate::concierge::is_enabled();
     }
     true
 }
@@ -558,6 +565,8 @@ mod tests {
         // In the registry always (so `find_descriptor` resolves it); its render
         // into the brief is flag-gated (see `worker_descriptor_visible`).
         "playbook",
+        // Same render-gated contract as the playbook (PERMAGENT_CONCIERGE_ENABLED).
+        "concierge",
     ];
     /// Every known surface id must have exactly one descriptor.
     const KNOWN_SURFACE_IDS: &[&str] = &[
@@ -799,6 +808,65 @@ mod tests {
         assert!(
             brief.contains("provenance"),
             "the rendered playbook descriptor must convey hints-with-provenance"
+        );
+    }
+
+    /// Concierge render-gate (#640): the flag-gated Concierge inbox-triage
+    /// character is HIDDEN from the brief when `PERMAGENT_CONCIERGE_ENABLED` is
+    /// off. This is why the canonical prompt_manager snapshots stay byte-for-byte
+    /// unchanged by this PR — off is a no-op.
+    #[test]
+    fn concierge_descriptor_hidden_when_flag_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().display().to_string();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(root.as_str())),
+            ("PERMAGENT_PATH_ROOT", Some(root.as_str())),
+            ("PERMAGENT_CONCIERGE_ENABLED", None::<&str>),
+        ]);
+
+        let brief = SelfKnowledgeBuilder {
+            agent_display_name: "Aria".to_string(),
+            scheduled_job_count: None,
+            dispatchable_workers: Vec::new(),
+        }
+        .build();
+
+        assert!(
+            !brief.contains("The Concierge"),
+            "concierge descriptor must be hidden from the brief when the flag is off"
+        );
+    }
+
+    /// Concierge enabled rendering: when `PERMAGENT_CONCIERGE_ENABLED` is on, the
+    /// character renders in the brief carrying its safe-by-construction framing
+    /// (draft-only, read-only, local-tier) — so the capability the agent can DO is
+    /// exactly the one it can DESCRIBE.
+    #[test]
+    fn concierge_descriptor_shown_when_flag_on() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().display().to_string();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(root.as_str())),
+            ("PERMAGENT_PATH_ROOT", Some(root.as_str())),
+            ("PERMAGENT_CONCIERGE_ENABLED", Some("1")),
+        ]);
+
+        let brief = SelfKnowledgeBuilder {
+            agent_display_name: "Aria".to_string(),
+            scheduled_job_count: None,
+            dispatchable_workers: Vec::new(),
+        }
+        .build();
+
+        assert!(
+            brief.contains("**The Concierge**"),
+            "concierge descriptor must render in the brief when the flag is on"
+        );
+        // The rendered copy must convey the load-bearing safety properties.
+        assert!(
+            brief.contains("draft") && brief.contains("read-only") && brief.contains("local"),
+            "the rendered concierge descriptor must convey draft-only, read-only, local-tier"
         );
     }
 

@@ -14,6 +14,7 @@ pub mod attachments;
 pub mod brain_handle;
 pub mod builtin_extension;
 pub mod cards;
+pub mod concierge;
 pub mod config;
 pub mod context_mgmt;
 pub mod conversation;
