@@ -43,6 +43,13 @@ pub struct Person {
     pub phone: Option<String>,
     pub notes: Option<String>,
     pub last_contact_at: Option<String>,
+    /// Graph-only manual attributes (#495 vocab, slice 2b). These have **no
+    /// people-table column** — they live solely in the graph's `entity_fields`
+    /// and are populated by the read overlay from there. `None` on a fresh
+    /// row; set once the manual write path (`FieldSource::Manual`) records one.
+    pub birthday: Option<String>,
+    pub relationship_strength: Option<String>,
+    pub how_met: Option<String>,
     /// Immutable bridge key to the Spectral graph node (bare 64-hex blake3
     /// `EntityId`). Set once at creation, never rewritten on rename — the durable
     /// anchor that carries this identity row to its graph attributes (#255/B).
@@ -79,13 +86,20 @@ pub struct PeopleFilter {
 /// (#255) the graph is authoritative for these; the read overlay sources them
 /// from `entity_fields` and the slice-2b write path writes the same names. Kept
 /// here (plain strings — no Spectral dependency) so both sides share one list.
-pub const PERSON_FIELD_NAMES: [&str; 6] = [
+///
+/// The last three (`birthday`, `relationship_strength`, `how_met`) are #495
+/// manual-only fields with no people-table column — graph-`entity_fields`-only,
+/// written exclusively through the `FieldSource::Manual` edit path (slice 2b).
+pub const PERSON_FIELD_NAMES: [&str; 9] = [
     "role",
     "company",
     "email",
     "phone",
     "notes",
     "last_contact_at",
+    "birthday",
+    "relationship_strength",
+    "how_met",
 ];
 
 /// Fields the Enricher may propose (#495 slice 4, design ruled 2026-06-24).
@@ -115,6 +129,9 @@ impl Person {
         self.phone = None;
         self.notes = None;
         self.last_contact_at = None;
+        self.birthday = None;
+        self.relationship_strength = None;
+        self.how_met = None;
     }
 
     /// Set one attribute by its `entity_fields` field name (graph overlay). Names
@@ -127,6 +144,9 @@ impl Person {
             "phone" => self.phone = Some(value),
             "notes" => self.notes = Some(value),
             "last_contact_at" => self.last_contact_at = Some(value),
+            "birthday" => self.birthday = Some(value),
+            "relationship_strength" => self.relationship_strength = Some(value),
+            "how_met" => self.how_met = Some(value),
             _ => {}
         }
     }
@@ -143,6 +163,11 @@ fn row_to_person(r: &sqlx::sqlite::SqliteRow) -> Person {
         phone: r.get("phone"),
         notes: r.get("notes"),
         last_contact_at: r.get("last_contact_at"),
+        // Graph-only fields — no people-table column; the read overlay populates
+        // them from `entity_fields`. Never sourced from the DB row.
+        birthday: None,
+        relationship_strength: None,
+        how_met: None,
         graph_entity_id: r.get("graph_entity_id"),
         created_at: r.get("created_at"),
         updated_at: r.get("updated_at"),
@@ -404,6 +429,9 @@ mod tests {
             phone: Some("old".into()),
             notes: Some("old".into()),
             last_contact_at: Some("old".into()),
+            birthday: Some("old".into()),
+            relationship_strength: Some("old".into()),
+            how_met: Some("old".into()),
             graph_entity_id: Some("hex".into()),
             created_at: "t".into(),
             updated_at: "t".into(),
@@ -412,6 +440,9 @@ mod tests {
         p.clear_attributes();
         assert_eq!(p.role, None);
         assert_eq!(p.last_contact_at, None);
+        assert_eq!(p.birthday, None);
+        assert_eq!(p.relationship_strength, None);
+        assert_eq!(p.how_met, None);
         assert_eq!(p.display_name, "X");
         assert_eq!(p.graph_entity_id.as_deref(), Some("hex"));
 
@@ -426,6 +457,13 @@ mod tests {
         assert_eq!(p.phone.as_deref(), Some("v-phone"));
         assert_eq!(p.notes.as_deref(), Some("v-notes"));
         assert_eq!(p.last_contact_at.as_deref(), Some("v-last_contact_at"));
+        // The #495 manual-only vocab additions map too.
+        assert_eq!(p.birthday.as_deref(), Some("v-birthday"));
+        assert_eq!(
+            p.relationship_strength.as_deref(),
+            Some("v-relationship_strength")
+        );
+        assert_eq!(p.how_met.as_deref(), Some("v-how_met"));
     }
 
     #[tokio::test]
