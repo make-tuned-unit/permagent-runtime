@@ -191,6 +191,33 @@ pub fn delete_works_on_triples(
     Ok(deleted)
 }
 
+/// Delete exactly one typed directed graph edge. This is the same temporary
+/// direct-SQL bridge as `delete_works_on_triples`; Spectral has no delete API.
+pub fn delete_graph_triple(
+    graph_db_path: &Path,
+    from_hex: &str,
+    to_hex: &str,
+    predicate: &str,
+) -> Result<usize, String> {
+    if !graph_db_path.exists() {
+        return Ok(0);
+    }
+    let from = hex::decode(from_hex).map_err(|e| format!("bad source id hex: {e}"))?;
+    let to = hex::decode(to_hex).map_err(|e| format!("bad target id hex: {e}"))?;
+    if from.len() != 32 || to.len() != 32 {
+        return Err("graph ids must be 32 bytes".into());
+    }
+    let conn =
+        rusqlite::Connection::open(graph_db_path).map_err(|e| format!("open graph db: {e}"))?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM triple WHERE from_id = ?1 AND to_id = ?2 AND predicate = ?3",
+        rusqlite::params![from, to, predicate],
+    )
+    .map_err(|e| format!("delete graph triple: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,6 +317,37 @@ mod tests {
         );
         assert!(store.get_entity(&alice).unwrap().is_some());
         assert!(store.get_entity(&acme).unwrap().is_some());
+    }
+
+    #[test]
+    fn typed_delete_removes_only_the_requested_person_edge() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("graph.sqlite");
+        let store = GraphStore::open(&db).unwrap();
+        let alice = eid("person", "alice");
+        let bob = eid("person", "bob");
+        store.upsert_entity(&entity("person", "alice")).unwrap();
+        store.upsert_entity(&entity("person", "bob")).unwrap();
+        store
+            .insert_triple(&triple(alice, bob, "colleague"))
+            .unwrap();
+        store.insert_triple(&triple(alice, bob, "manager")).unwrap();
+
+        assert_eq!(
+            delete_graph_triple(&db, &alice.to_string(), &bob.to_string(), "colleague").unwrap(),
+            1
+        );
+        assert!(store
+            .find_triples(Some(&alice), Some(&bob), Some("colleague"))
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            store
+                .find_triples(Some(&alice), Some(&bob), Some("manager"))
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]

@@ -74,6 +74,13 @@ pub struct GraphEntitySnapshot {
     pub description: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PersonGraphEdge {
+    pub from_id: String,
+    pub to_id: String,
+    pub predicate: String,
+}
+
 /// Outcome of resolving a free-text name against the ontology + graph store
 /// (see [`SafeBrain::resolve_ontology_entities_exact`]).
 #[derive(Debug, Clone)]
@@ -711,6 +718,106 @@ impl SafeBrain {
         })
         .await
         .map_err(|e| anyhow::anyhow!("brain task panicked: assert_works_on_edge: {e}"))?
+    }
+
+    /// List all graph triples touching a person whose other endpoint is also a
+    /// person. Both directions are returned so relationship direction is not
+    /// lost (for example `manages`).
+    pub async fn person_edges(&self, person_id_hex: &str) -> anyhow::Result<Vec<PersonGraphEdge>> {
+        let brain = self.inner.clone();
+        let person_id: spectral::core::entity_id::EntityId = person_id_hex
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid person entity id hex: {e:?}"))?;
+        tokio::task::spawn_blocking(move || {
+            let store = brain.store();
+            let mut triples = store.find_triples(Some(&person_id), None, None)?;
+            triples.extend(store.find_triples(None, Some(&person_id), None)?);
+            let mut seen = std::collections::HashSet::new();
+            let mut out = Vec::new();
+            for triple in triples {
+                let Some(from) = store.get_entity(&triple.from)? else {
+                    continue;
+                };
+                let Some(to) = store.get_entity(&triple.to)? else {
+                    continue;
+                };
+                if from.entity_type != "person" || to.entity_type != "person" {
+                    continue;
+                }
+                let row = PersonGraphEdge {
+                    from_id: triple.from.to_string(),
+                    to_id: triple.to.to_string(),
+                    predicate: triple.predicate,
+                };
+                if seen.insert((
+                    row.from_id.clone(),
+                    row.to_id.clone(),
+                    row.predicate.clone(),
+                )) {
+                    out.push(row);
+                }
+            }
+            Ok::<_, anyhow::Error>(out)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: person_edges: {e}"))?
+    }
+
+    /// Idempotently assert a typed person→person relationship. The predicate
+    /// must be declared by the active ontology and valid for person endpoints.
+    pub async fn upsert_person_edge(
+        &self,
+        from_hex: &str,
+        to_hex: &str,
+        predicate: &str,
+    ) -> anyhow::Result<bool> {
+        let brain = self.inner.clone();
+        let from: spectral::core::entity_id::EntityId = from_hex
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid source person entity id: {e:?}"))?;
+        let to: spectral::core::entity_id::EntityId = to_hex
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid target person entity id: {e:?}"))?;
+        let predicate = predicate.trim().to_string();
+        if predicate.is_empty() || from == to {
+            anyhow::bail!("relationship predicate must be non-empty and people must differ");
+        }
+        tokio::task::spawn_blocking(move || {
+            use spectral::graph::graph_store::Triple;
+            brain
+                .ontology()
+                .validate_triple(&predicate, "person", "person")
+                .map_err(|e| anyhow::anyhow!("invalid person relationship: {e}"))?;
+            let store = brain.store();
+            for (id, label) in [(from, "source"), (to, "target")] {
+                let entity = store
+                    .get_entity(&id)?
+                    .ok_or_else(|| anyhow::anyhow!("{label} person is not in the graph"))?;
+                if entity.entity_type != "person" {
+                    anyhow::bail!("{label} entity is not a person");
+                }
+            }
+            if !store
+                .find_triples(Some(&from), Some(&to), Some(&predicate))?
+                .is_empty()
+            {
+                return Ok(false);
+            }
+            store.insert_triple(&Triple {
+                from,
+                to,
+                predicate,
+                confidence: 1.0,
+                source_doc_id: None,
+                source_brain_id: *brain.brain_id(),
+                asserted_at: chrono::Utc::now(),
+                visibility: spectral::Visibility::Private,
+                weight: 1.0,
+            })?;
+            Ok(true)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: upsert_person_edge: {e}"))?
     }
 
     /// Write a typed field on a graph entity, with provenance. The

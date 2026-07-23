@@ -3,6 +3,8 @@
 //! Endpoints:
 //!   GET   /api/people              — list / surface people, optionally filtered
 //!   PATCH /api/people/{id}/fields  — set a person's typed fields (manual edit)
+//!   GET/POST/DELETE /api/people/{id}/relationships — typed Brain graph edges
+//!   GET   /api/people/{id}/activity — memories/notes/cards referencing a person
 //!
 //! Identity comes from the typed `people` table in permagent.db; person
 //! *attributes* (role/company/email/…) are read through the people↔graph bridge
@@ -19,12 +21,13 @@ use crate::state::AppState;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    routing::{get, patch},
+    routing::{delete, get, patch},
     Json, Router,
 };
 use permagent::brain_handle::SafeBrain;
 use permagent::people::{self, PeopleFilter, Person};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use sqlx::Row;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -229,10 +232,236 @@ async fn set_person_fields_handler(
     Ok(Json(person))
 }
 
+#[derive(Debug, Serialize)]
+pub struct PersonRelationship {
+    from_entity_uuid: String,
+    to_entity_uuid: String,
+    predicate: String,
+    other_person: Person,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AddRelationshipRequest {
+    target_entity_uuid: String,
+    predicate: String,
+}
+
+async fn person_and_brain(
+    state: &AppState,
+    uuid: &str,
+) -> Result<(Person, SafeBrain, String), (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let person = people::get_by_uuid(&pool, uuid)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Person not found".into()))?;
+    let graph_id = person
+        .graph_entity_id
+        .clone()
+        .ok_or((StatusCode::CONFLICT, "Person has no graph identity".into()))?;
+    let brain = state
+        .brain
+        .clone()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Brain unavailable".into()))?;
+    Ok((person, brain, graph_id))
+}
+
+async fn list_relationships_handler(
+    State(state): State<Arc<AppState>>,
+    Path(uuid): Path<String>,
+) -> Result<Json<Vec<PersonRelationship>>, (StatusCode, String)> {
+    let (_, brain, graph_id) = person_and_brain(&state, &uuid).await?;
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let people_rows = people::list_people(&pool, &PeopleFilter::default())
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let by_graph: HashMap<String, Person> = people_rows
+        .into_iter()
+        .filter_map(|p| p.graph_entity_id.clone().map(|id| (id, p)))
+        .collect();
+    let rows = brain
+        .person_edges(&graph_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(
+        rows.into_iter()
+            .filter_map(|edge| {
+                let other_id = if edge.from_id == graph_id {
+                    &edge.to_id
+                } else {
+                    &edge.from_id
+                };
+                let other = by_graph.get(other_id)?.clone();
+                let from_uuid = if edge.from_id == graph_id {
+                    uuid.clone()
+                } else {
+                    other.entity_uuid.clone()
+                };
+                let to_uuid = if edge.to_id == graph_id {
+                    uuid.clone()
+                } else {
+                    other.entity_uuid.clone()
+                };
+                Some(PersonRelationship {
+                    from_entity_uuid: from_uuid,
+                    to_entity_uuid: to_uuid,
+                    predicate: edge.predicate,
+                    other_person: other,
+                })
+            })
+            .collect(),
+    ))
+}
+
+async fn add_relationship_handler(
+    State(state): State<Arc<AppState>>,
+    Path(uuid): Path<String>,
+    Json(req): Json<AddRelationshipRequest>,
+) -> Result<(StatusCode, Json<PersonRelationship>), (StatusCode, String)> {
+    let (source, brain, source_id) = person_and_brain(&state, &uuid).await?;
+    let (target, _, target_id) = person_and_brain(&state, &req.target_entity_uuid).await?;
+    if source.entity_uuid == target.entity_uuid {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "A person cannot relate to themselves".into(),
+        ));
+    }
+    let inserted = brain
+        .upsert_person_edge(&source_id, &target_id, &req.predicate)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let status = if inserted {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    Ok((
+        status,
+        Json(PersonRelationship {
+            from_entity_uuid: source.entity_uuid,
+            to_entity_uuid: target.entity_uuid.clone(),
+            predicate: req.predicate.trim().to_string(),
+            other_person: target,
+        }),
+    ))
+}
+
+async fn delete_relationship_handler(
+    State(state): State<Arc<AppState>>,
+    Path((uuid, target_uuid, predicate)): Path<(String, String, String)>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let (_, _, from_id) = person_and_brain(&state, &uuid).await?;
+    let (_, _, to_id) = person_and_brain(&state, &target_uuid).await?;
+    let db = permagent::config::paths::Paths::brain_dir().join("graph.sqlite");
+    let deleted = tokio::task::spawn_blocking(move || {
+        permagent::project_graph::delete_graph_triple(&db, &from_id, &to_id, &predicate)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    if deleted == 0 {
+        Ok(StatusCode::NOT_FOUND)
+    } else {
+        Ok(StatusCode::NO_CONTENT)
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct PersonActivity {
+    id: String,
+    kind: String,
+    title: String,
+    detail: String,
+    timestamp: String,
+}
+
+async fn person_activity_handler(
+    State(state): State<Arc<AppState>>,
+    Path(uuid): Path<String>,
+) -> Result<Json<Vec<PersonActivity>>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let person = people::get_by_uuid(&pool, &uuid)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Person not found".into()))?;
+    let needle = format!("%{}%", person.display_name);
+    let note_rows = sqlx::query(
+        "SELECT id, title, body, created_at FROM project_notes WHERE title LIKE ? OR body LIKE ?",
+    )
+    .bind(&needle)
+    .bind(&needle)
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let card_rows = sqlx::query("SELECT id, title, description, updated_at FROM cards WHERE title LIKE ? OR description LIKE ?")
+        .bind(&needle).bind(&needle).fetch_all(&pool).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let mut items: Vec<PersonActivity> = note_rows
+        .into_iter()
+        .map(|r| PersonActivity {
+            id: format!("note-{}", r.get::<String, _>("id")),
+            kind: "note".into(),
+            title: r
+                .get::<Option<String>, _>("title")
+                .unwrap_or_else(|| "Note added".into()),
+            detail: r.get("body"),
+            timestamp: r.get("created_at"),
+        })
+        .chain(card_rows.into_iter().map(|r| PersonActivity {
+            id: format!("card-{}", r.get::<String, _>("id")),
+            kind: "task".into(),
+            title: r.get("title"),
+            detail: r.get("description"),
+            timestamp: r.get("updated_at"),
+        }))
+        .collect();
+
+    let display = person.display_name;
+    let memories = tokio::task::spawn_blocking(move || -> Result<Vec<PersonActivity>, String> {
+        let conn = crate::brain_ops::read_only_brain_conn().map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT m.id, m.content, m.description, m.created_at, a.who FROM memories m JOIN memory_annotations a ON a.memory_id=m.id WHERE a.who IS NOT NULL").map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,Option<String>>(2)?, r.get::<_,Option<String>>(3)?, r.get::<_,String>(4)?))).map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for row in rows.flatten() {
+            let refs: Vec<serde_json::Value> = serde_json::from_str(&row.4).unwrap_or_default();
+            let mentioned = refs.iter().any(|v| v.get("display_name").and_then(|v| v.as_str()).is_some_and(|n| n.eq_ignore_ascii_case(&display)));
+            if mentioned && seen.insert(row.0.clone()) { out.push(PersonActivity { id: format!("memory-{}", row.0), kind: "memory".into(), title: row.2.unwrap_or_else(|| "Memory linked".into()), detail: row.1, timestamp: row.3.unwrap_or_default() }); }
+        }
+        Ok(out)
+    }).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+      .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    items.extend(memories);
+    items.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    items.truncate(20);
+    Ok(Json(items))
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/people", get(list_people_handler))
         .route("/api/people/{id}/fields", patch(set_person_fields_handler))
+        .route(
+            "/api/people/{id}/relationships",
+            get(list_relationships_handler).post(add_relationship_handler),
+        )
+        .route(
+            "/api/people/{id}/relationships/{target_id}/{predicate}",
+            delete(delete_relationship_handler),
+        )
+        .route("/api/people/{id}/activity", get(person_activity_handler))
         .with_state(state)
 }
 
@@ -296,5 +525,29 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    async fn get_status(uri: &str) -> StatusCode {
+        crate::test_support::test_root();
+        let state = AppState::new(true).await.unwrap();
+        routes(state)
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn relationship_and_activity_routes_are_mounted() {
+        let missing = "00000000-0000-0000-0000-000000000000";
+        assert_eq!(
+            get_status(&format!("/api/people/{missing}/relationships")).await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            get_status(&format!("/api/people/{missing}/activity")).await,
+            StatusCode::NOT_FOUND
+        );
     }
 }

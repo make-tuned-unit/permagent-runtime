@@ -2167,6 +2167,11 @@ domain = ["concept", "location", "organization", "person", "project", "tool"]
 range = ["concept", "location", "organization", "person", "project", "tool"]
 
 [[predicate]]
+name = "colleague"
+domain = ["person"]
+range = ["person"]
+
+[[predicate]]
 name = "deployed_on"
 domain = ["concept", "location", "organization", "person", "project", "tool"]
 range = ["concept", "location", "organization", "person", "project", "tool"]
@@ -2205,6 +2210,11 @@ range = ["concept", "location", "organization", "person", "project", "tool"]
 name = "location"
 domain = ["concept", "location", "organization", "person", "project", "tool"]
 range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "manager"
+domain = ["person"]
+range = ["person"]
 
 [[predicate]]
 name = "manages"
@@ -2262,6 +2272,11 @@ domain = ["concept", "location", "organization", "person", "project", "tool"]
 range = ["concept", "location", "organization", "person", "project", "tool"]
 
 [[predicate]]
+name = "spouse"
+domain = ["person"]
+range = ["person"]
+
+[[predicate]]
 name = "status"
 domain = ["concept", "location", "organization", "person", "project", "tool"]
 range = ["concept", "location", "organization", "person", "project", "tool"]
@@ -2280,4 +2295,3 @@ range = ["concept", "location", "organization", "person", "project", "tool"]
 name = "works_on"
 domain = ["concept", "location", "organization", "person", "project", "tool"]
 range = ["concept", "location", "organization", "person", "project", "tool"]
-

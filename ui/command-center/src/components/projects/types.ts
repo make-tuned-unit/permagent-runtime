@@ -84,6 +84,21 @@ export interface ProjectPerson {
 /** A bare CRM person (#530 `GET /api/people`), used by the associate picker. */
 export type Person = Omit<ProjectPerson, 'project_role' | 'associated_at'>;
 
+export interface PersonRelationship {
+  from_entity_uuid: string;
+  to_entity_uuid: string;
+  predicate: string;
+  other_person: Person;
+}
+
+export interface PersonActivity {
+  id: string;
+  kind: 'memory' | 'note' | 'task';
+  title: string;
+  detail: string;
+  timestamp: string;
+}
+
 /**
  * A document attached to a project (#471 Layer 2,
  * `GET /api/projects/{id}/documents`). Serialized **snake_case** (the backend
