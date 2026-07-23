@@ -5,6 +5,7 @@ mod automation;
 mod backup;
 mod brain_ops;
 mod commands;
+mod concierge;
 mod configuration;
 mod device_registry;
 mod error;

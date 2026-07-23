@@ -168,6 +168,10 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
     // Echo / the Watcher (#672): gentle, rare proactive nudges from the hub.
     crate::proactive::spawn(app_state.clone());
 
+    // The Concierge (#640): flag-gated (default OFF), draft-only, local-tier
+    // inbox triage. Spawns a loop only when PERMAGENT_CONCIERGE_ENABLED is on.
+    crate::concierge::spawn(app_state.clone());
+
     // Central notification policy (#66): classify workflow facts once, then
     // route them according to the user's channel thresholds.
     crate::notification_router::spawn(app_state.clone());
