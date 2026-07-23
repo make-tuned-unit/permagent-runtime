@@ -219,6 +219,15 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
               }
             }
           })) ?? null;
+
+        // A detached window owns a fresh xterm renderer but reconnects to the
+        // same live PTY. Rehydrate its scrollback from the bounded Rust buffer.
+        if (sessionIdRef.current) {
+          try {
+            const replay = await api.invoke('get_pty_output', { sessionId: sessionIdRef.current }) as string;
+            if (replay) term.write(replay);
+          } catch { /* session may have exited during the handoff */ }
+        }
       }
 
       // Forward keystrokes to PTY

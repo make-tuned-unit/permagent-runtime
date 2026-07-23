@@ -189,6 +189,7 @@ struct BrowserTitleChangedPayload {
 pub async fn create_browser_webview(
     app: AppHandle,
     url: String,
+    window_label: Option<String>,
     x: f64,
     y: f64,
     width: f64,
@@ -199,9 +200,10 @@ pub async fn create_browser_webview(
     let parsed_url: url::Url = url.parse().map_err(|e| format!("Invalid URL: {e}"))?;
     let webview_url = WebviewUrl::External(parsed_url);
 
+    let owner = window_label.unwrap_or_else(|| "main".to_string());
     let window = app
-        .get_window("main")
-        .ok_or_else(|| "Main window not found".to_string())?;
+        .get_window(&owner)
+        .ok_or_else(|| format!("Window {owner} not found"))?;
 
     let nav_id = label.clone();
     let nav_app = app.clone();
@@ -288,6 +290,26 @@ pub async fn create_browser_webview(
     );
 
     Ok(label)
+}
+
+/// Move the existing native browser webview to another shell window. Tauri's
+/// reparent operation preserves the WKWebView/WebView2 instance, including its
+/// DOM, navigation history, cookies and injected capability context.
+#[tauri::command]
+pub async fn reparent_browser(
+    app: AppHandle,
+    webview_id: String,
+    window_label: String,
+) -> Result<(), String> {
+    let webview = app
+        .get_webview(&webview_id)
+        .ok_or_else(|| "Webview not found".to_string())?;
+    let window = app
+        .get_window(&window_label)
+        .ok_or_else(|| format!("Window {window_label} not found"))?;
+    webview
+        .reparent(&window)
+        .map_err(|e| format!("Reparent failed: {e}"))
 }
 
 #[tauri::command]
