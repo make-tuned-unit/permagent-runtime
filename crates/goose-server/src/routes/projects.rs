@@ -24,6 +24,7 @@
 //!   POST   /api/projects/:id/stack               — Add a stack entry ({serviceName, category?, identity?, notes?, dashboardUrl?})
 //!   PATCH  /api/projects/:id/stack/:entry_id     — Edit a stack entry (double-Option clears for identity/dashboardUrl)
 //!   DELETE /api/projects/:id/stack/:entry_id     — Remove a stack entry
+//!   GET    /api/projects/:id/intel               — Cited ecosystem/competitive intelligence
 //!
 //! The stack endpoints are REFERENCE-ONLY (#512): they carry the service +
 //! which login identity is used, never a password/secret — no such field is
@@ -145,6 +146,60 @@ pub struct DeleteResponse {
 #[derive(Serialize)]
 pub struct TouchResponse {
     touched: bool,
+}
+
+#[derive(Serialize, sqlx::FromRow)]
+pub struct ProjectIntelItem {
+    id: String,
+    kind: String,
+    name: String,
+    note: Option<String>,
+    source_url: String,
+    created_at: String,
+}
+
+#[derive(Serialize)]
+pub struct ProjectIntelResponse {
+    competitors: Vec<ProjectIntelItem>,
+    partners: Vec<ProjectIntelItem>,
+    ecosystem: Vec<ProjectIntelItem>,
+}
+
+async fn list_project_intel_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<ProjectIntelResponse>, StatusCode> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let project = projects::get_project_by_id_or_slug(&pool, &id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let rows = sqlx::query_as::<_, ProjectIntelItem>(
+        "SELECT id, kind, name, note, source_url, created_at
+         FROM project_intel WHERE project_id = ? ORDER BY created_at DESC, name",
+    )
+    .bind(&project.id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut response = ProjectIntelResponse {
+        competitors: Vec::new(),
+        partners: Vec::new(),
+        ecosystem: Vec::new(),
+    };
+    for row in rows {
+        match row.kind.as_str() {
+            "competitor" => response.competitors.push(row),
+            "partner" => response.partners.push(row),
+            "adjacent" => response.ecosystem.push(row),
+            _ => {}
+        }
+    }
+    Ok(Json(response))
 }
 
 async fn list_projects_handler(
@@ -1407,6 +1462,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/api/projects/{id}", patch(update_project_handler))
         .route("/api/projects/{id}", delete(delete_project_handler))
         .route("/api/projects/{id}/touch", post(touch_project_handler))
+        .route("/api/projects/{id}/intel", get(list_project_intel_handler))
         .route("/api/projects/{id}/tags", get(list_tags_handler))
         .route("/api/projects/{id}/tags", post(add_tag_handler))
         .route("/api/projects/{id}/tags/{tag}", delete(remove_tag_handler))

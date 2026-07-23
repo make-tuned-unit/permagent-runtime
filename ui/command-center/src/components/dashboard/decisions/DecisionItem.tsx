@@ -81,6 +81,11 @@ function effectTextFor(kind: string, answer: 'approve' | 'reject', agentName: st
       ? `Confirm approve — ${agentName} will save these details to the person's profile (your manual entries stay protected).`
       : 'Confirm reject — nothing is written to the profile.';
   }
+  if (kind === 'project_intel_proposal') {
+    return answer === 'approve'
+      ? `Confirm approve — ${agentName} will save these cited findings to the project's intelligence panel.`
+      : 'Confirm reject — no intelligence is stored.';
+  }
   if (kind === 'file_to_project') {
     return answer === 'approve'
       ? `Confirm approve — ${agentName} will save this as a project note and add the named people (name only, no contact details).`
@@ -224,7 +229,8 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
   const isChoice = d.kind === 'choice';
   const isApprovalLike =
     d.kind === 'approve_review' || d.kind === 'risk_gate' || d.kind === 'malformed' ||
-    d.kind === 'enrichment_proposal' || d.kind === 'automation_proposal' ||
+    d.kind === 'enrichment_proposal' || d.kind === 'project_intel_proposal' ||
+    d.kind === 'automation_proposal' ||
     d.kind === 'file_to_project' || d.kind === 'tool_approval' ||
     d.kind === 'session_gate';
   // The agent's original draft, when this decision carries one (payload.draft):
@@ -238,6 +244,10 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
   // Full tool-call arguments (tool_approval) / gated tool input
   // (session_gate) — the detail above holds only a clipped preview.
   const toolArgs = toolArgumentsText(d);
+  const intelItems = d.kind === 'project_intel_proposal' && Array.isArray(d.payload?.items)
+    ? d.payload.items.filter((item): item is Record<string, unknown> =>
+        typeof item === 'object' && item !== null)
+    : [];
 
   return (
     <div data-testid={`decision-${d.id}`} style={{
@@ -295,6 +305,28 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
           maxHeight: 96, overflow: 'auto',
         }}>
           {d.detail}
+        </div>
+      )}
+
+      {intelItems.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+          {intelItems.map((item, index) => {
+            const kind = typeof item.kind === 'string' ? item.kind : 'item';
+            const name = typeof item.name === 'string' ? item.name : 'Unnamed';
+            const note = typeof item.note === 'string' ? item.note : null;
+            const source = typeof item.source_url === 'string' ? item.source_url : null;
+            return (
+              <div key={`${kind}-${name}-${index}`} style={{ borderLeft: `2px solid ${colors.purpleBright}`, paddingLeft: 9 }}>
+                <div style={{ color: colors.text, fontSize: 12, fontWeight: 600 }}>{kind}: {name}</div>
+                {note && <div style={{ color: colors.textMuted, fontSize: 11 }}>{note}</div>}
+                {source && (
+                  <a href={source} target="_blank" rel="noreferrer" style={{ color: colors.cyan, fontSize: 11 }}>
+                    Source
+                  </a>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -601,6 +633,7 @@ function badgeFor(d: Decision, colors: ReturnType<typeof useTheme>['colors']) {
     case 'risk_gate': return { label: 'permission', color: colors.danger, bg: colors.danger + '24' };
     case 'session_gate': return { label: 'terminal gate', color: colors.danger, bg: colors.danger + '24' };
     case 'enrichment_proposal': return { label: 'enrichment', color: colors.purpleBright, bg: colors.purpleSoft };
+    case 'project_intel_proposal': return { label: 'project intel', color: colors.purpleBright, bg: colors.purpleSoft };
     case 'file_to_project': return { label: 'file note', color: colors.cyan, bg: colors.cyanSoft };
     case 'malformed': return { label: 'review', color: colors.warning, bg: colors.warning + '24' };
     default: return { label: 'approval', color: colors.cyan, bg: colors.cyanSoft };

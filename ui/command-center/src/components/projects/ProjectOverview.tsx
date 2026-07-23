@@ -14,6 +14,7 @@ import { CodeIndexPanel } from './CodeIndexPanel';
 import { MemoriesPanel } from './MemoriesPanel';
 import { readBrief, readLinks, normalizeUrl, saveProjectSummary, type WorkspaceLink } from './workspaceMeta';
 import { PublishSequencePanel } from './PublishSequencePanel';
+import { EcosystemPanel } from './EcosystemPanel';
 import type { Project, BoardColumn, Card } from './types';
 
 // ── Project Overview ────────────────────────────────────────────────────────
@@ -96,6 +97,7 @@ export function ProjectOverview({ project, onProjectUpdated }: {
             Grow this project
           </button>
           <PeoplePanel project={project} />
+          <EcosystemPanel project={project} />
           <LinksPanel project={project} onProjectUpdated={onProjectUpdated} />
           <TasksPanel
             columns={columns}

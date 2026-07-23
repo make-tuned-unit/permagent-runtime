@@ -181,6 +181,51 @@ pub struct EnrichmentProposalPayload {
     pub fields: Vec<ProposedEnrichmentField>,
 }
 
+/// One cited ecosystem or competitive-intelligence finding proposed for a
+/// project. `kind` is bounded to competitor, partner, or adjacent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProposedIntelItem {
+    pub kind: String,
+    pub name: String,
+    #[serde(default)]
+    pub note: Option<String>,
+    pub source_url: String,
+}
+
+/// Review-gated findings from a `research_project_intel` pass.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectIntelProposalPayload {
+    pub project_id: String,
+    pub project_name: String,
+    pub items: Vec<ProposedIntelItem>,
+}
+
+fn validate_project_intel_payload(p: &ProjectIntelProposalPayload) -> Result<(), String> {
+    if p.items.is_empty() {
+        return Err("project_intel_proposal requires at least one item".to_string());
+    }
+    for item in &p.items {
+        if !matches!(item.kind.as_str(), "competitor" | "partner" | "adjacent") {
+            return Err(format!(
+                "intel kind '{}' is invalid (allowed: competitor, partner, adjacent)",
+                item.kind
+            ));
+        }
+        if item.name.trim().is_empty() {
+            return Err("intel item has an empty name".to_string());
+        }
+        if item.source_url.trim().is_empty() {
+            return Err(format!(
+                "intel item '{}' is missing its source_url",
+                item.name
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Structural checks beyond serde for an enrichment proposal: at least one
 /// field, every field name on the enrichable allowlist, non-empty values and
 /// source URLs, and a well-formed 64-hex graph entity id. Failing any of
@@ -525,6 +570,7 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
         "risk_gate",
         "automation_proposal",
         "enrichment_proposal",
+        "project_intel_proposal",
         "file_to_project",
         "tool_approval",
         "session_gate",
@@ -574,6 +620,12 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
         "enrichment_proposal" => {
             match serde_json::from_value::<EnrichmentProposalPayload>(req.payload.clone()) {
                 Ok(p) => validate_enrichment_payload(&p),
+                Err(e) => Err(e.to_string()),
+            }
+        }
+        "project_intel_proposal" => {
+            match serde_json::from_value::<ProjectIntelProposalPayload>(req.payload.clone()) {
+                Ok(p) => validate_project_intel_payload(&p),
                 Err(e) => Err(e.to_string()),
             }
         }
@@ -1990,6 +2042,46 @@ mod tests {
         extra.payload["bogus"] = serde_json::json!(true);
         let d = create_decision(&pool, extra).await.unwrap();
         assert_eq!(d.kind, "malformed", "deny_unknown_fields holds");
+    }
+
+    fn project_intel(items: serde_json::Value) -> NewDecision {
+        NewDecision {
+            kind: "project_intel_proposal".to_string(),
+            headline: Some("Approve intelligence for Acme".to_string()),
+            detail: Some("Competitor: Rival (source: https://rival.example)".to_string()),
+            payload: serde_json::json!({
+                "project_id": "project-1",
+                "project_name": "Acme",
+                "items": items,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn project_intel_payload_validation() {
+        let pool = test_pool().await;
+        for invalid in [
+            serde_json::json!([]),
+            serde_json::json!([{"kind":"competitor","name":"","source_url":"https://x.example"}]),
+            serde_json::json!([{"kind":"partner","name":"Partner","source_url":" "}]),
+            serde_json::json!([{"kind":"customer","name":"Buyer","source_url":"https://x.example"}]),
+        ] {
+            let d = create_decision(&pool, project_intel(invalid)).await.unwrap();
+            assert_eq!(d.kind, "malformed");
+        }
+
+        let d = create_decision(
+            &pool,
+            project_intel(serde_json::json!([
+                {"kind":"competitor","name":"Rival","note":"Adjacent product","source_url":"https://rival.example"},
+                {"kind":"partner","name":"Ally","source_url":"https://ally.example"}
+            ])),
+        )
+        .await
+        .unwrap();
+        assert_eq!(d.kind, "project_intel_proposal");
+        assert_eq!(d.tier, 2);
     }
 
     // ── S5: tier gates on answering ──

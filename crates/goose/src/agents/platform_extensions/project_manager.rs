@@ -128,6 +128,32 @@ struct ProjectResolveParams {
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct ResearchProjectIntelParams {
+    /// Project ID, slug, or exact name.
+    project: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct ProposedIntelItemParams {
+    /// One of: competitor, partner, adjacent.
+    kind: String,
+    /// Organization or product name.
+    name: String,
+    /// Concise explanation of its relationship to the project.
+    note: Option<String>,
+    /// Page where this finding was verified.
+    source_url: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct ProposeProjectIntelParams {
+    /// Project ID, slug, or exact name.
+    project: String,
+    /// Cited findings to send to the Decision Inbox.
+    items: Vec<ProposedIntelItemParams>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ColumnCreateParams {
     /// Project ID (UUID) or slug
     project_id_or_slug: String,
@@ -407,6 +433,12 @@ impl ProjectManagerClient {
                 similar, use card_create with card_type='standard'. Ask which project
                 if not clear from context — default to the active project if the user
                 is currently in one, otherwise Personal.
+
+                Use `research_project_intel` when the user asks to research or
+                refresh a project's ecosystem or competitive landscape. It returns
+                a research briefing; research with your own web tools, then file
+                cited findings with `propose_project_intel`. Findings wait in the
+                Decision Inbox — nothing is stored until the user approves.
             "#}
                 .to_string(),
             );
@@ -583,6 +615,177 @@ impl ProjectManagerClient {
             .await?
             .ok_or_else(|| format!("Project '{}' not found", id_or_slug))?;
         Ok((project, pool))
+    }
+
+    async fn resolve_intel_project(
+        &self,
+        query: &str,
+    ) -> Result<(projects::Project, sqlx::Pool<sqlx::Sqlite>), String> {
+        if let Ok(found) = self.resolve_project(query).await {
+            return Ok(found);
+        }
+        let pool = self
+            .context
+            .session_manager
+            .pool_clone()
+            .await
+            .map_err(|e| e.to_string())?;
+        let all = projects::list_projects(&pool, None).await?;
+        let matches: Vec<_> = all
+            .into_iter()
+            .filter(|p| p.name.eq_ignore_ascii_case(query))
+            .collect();
+        match matches.as_slice() {
+            [project] => Ok((project.clone(), pool)),
+            [] => Err(format!("Project '{}' not found", query)),
+            _ => Err(format!("Project name '{}' is ambiguous", query)),
+        }
+    }
+
+    async fn handle_research_project_intel(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let params: ResearchProjectIntelParams =
+            serde_json::from_value(serde_json::Value::Object(args))
+                .map_err(|e| format!("Invalid arguments: {e}"))?;
+        let (project, pool) = self.resolve_intel_project(&params.project).await?;
+        let current = sqlx::query_as::<_, (String, String, Option<String>, String)>(
+            "SELECT kind, name, note, source_url FROM project_intel
+             WHERE project_id = ? ORDER BY kind, name",
+        )
+        .bind(&project.id)
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        let current = if current.is_empty() {
+            "  (none stored yet)".to_string()
+        } else {
+            current
+                .iter()
+                .map(|(kind, name, note, source)| {
+                    format!(
+                        "  - {}: {}{} [source: {}]",
+                        kind,
+                        name,
+                        note.as_deref()
+                            .filter(|v| !v.trim().is_empty())
+                            .map(|v| format!(" — {v}"))
+                            .unwrap_or_default(),
+                        source
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        Ok(vec![Content::text(format!(
+            "Project intelligence briefing for \"{}\" (project_id: {}).\n\
+             \nCurrent stored intelligence:\n{}\n\
+             \nResearch ONLY these kinds: competitor, partner, adjacent.\n\
+             \nHow to work:\n\
+             1. Use your own web tools to research the project's competitive landscape, \
+             partners, and adjacent ecosystem players.\n\
+             2. Verify every finding on the page you cite; every item needs source_url.\n\
+             3. Prefer primary sources and skip duplicates already stored above.\n\
+             4. Keep each note concise and explain why the item matters to this project.\n\
+             \nWhen done, call propose_project_intel with project \"{}\" and items: \
+             [{{kind, name, note, source_url}}]. Nothing is stored until the user approves \
+             the proposal in the Decision Inbox.",
+            project.name, project.id, current, project.name
+        ))])
+    }
+
+    async fn handle_propose_project_intel(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let params: ProposeProjectIntelParams =
+            serde_json::from_value(serde_json::Value::Object(args))
+                .map_err(|e| format!("Invalid arguments: {e}"))?;
+        let (project, pool) = self.resolve_intel_project(&params.project).await?;
+        if params.items.is_empty() {
+            return Err("No intelligence items proposed — nothing to review.".to_string());
+        }
+        for item in &params.items {
+            if !matches!(item.kind.as_str(), "competitor" | "partner" | "adjacent") {
+                return Err(format!(
+                    "Kind \"{}\" is invalid. Allowed kinds: competitor, partner, adjacent.",
+                    item.kind
+                ));
+            }
+            if item.name.trim().is_empty() {
+                return Err("An intelligence item has an empty name.".to_string());
+            }
+            if item.source_url.trim().is_empty() {
+                return Err(format!(
+                    "Item \"{}\" is missing its source_url.",
+                    item.name
+                ));
+            }
+        }
+        let payload = crate::decisions::ProjectIntelProposalPayload {
+            project_id: project.id.clone(),
+            project_name: project.name.clone(),
+            items: params
+                .items
+                .iter()
+                .map(|item| crate::decisions::ProposedIntelItem {
+                    kind: item.kind.clone(),
+                    name: item.name.trim().to_string(),
+                    note: item
+                        .note
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|v| !v.is_empty())
+                        .map(str::to_string),
+                    source_url: item.source_url.trim().to_string(),
+                })
+                .collect(),
+        };
+        let mut headline = format!("Approve project intelligence for {}", project.name);
+        if headline.chars().count() > 80 {
+            headline = headline.chars().take(79).collect::<String>() + "…";
+        }
+        let detail = params
+            .items
+            .iter()
+            .map(|item| {
+                format!(
+                    "{}: {} (source: {})",
+                    item.kind,
+                    item.name.trim(),
+                    item.source_url.trim()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let decision = crate::decisions::create_decision(
+            &pool,
+            crate::decisions::NewDecision {
+                kind: "project_intel_proposal".to_string(),
+                project_id: Some(project.id.clone()),
+                headline: Some(headline),
+                detail: Some(detail),
+                payload: serde_json::to_value(&payload).map_err(|e| e.to_string())?,
+                ..Default::default()
+            },
+        )
+        .await?;
+        if decision.kind == "malformed" {
+            return Err(format!(
+                "The proposal was rejected as malformed: {}",
+                decision.detail
+            ));
+        }
+        Ok(vec![Content::text(format!(
+            "Proposed {} intelligence item(s) for \"{}\" — decision {} is waiting in the \
+             Decision Inbox. Nothing is stored until the user approves it there.",
+            params.items.len(),
+            project.name,
+            decision.id
+        ))])
     }
 
     async fn handle_launch(&self, arguments: Option<JsonObject>) -> Result<Vec<Content>, String> {
@@ -1437,6 +1640,51 @@ impl ProjectManagerClient {
             )),
             // ── Project launch (terminal) ──
             Tool::new(
+                "research_project_intel".to_string(),
+                indoc! {r#"
+                Start an ecosystem and competitive-intelligence research pass for
+                a project. Returns existing findings and a bounded briefing for
+                competitors, partners, and adjacent ecosystem players. Research
+                with your web tools, then file cited findings via
+                propose_project_intel.
+            "#}
+                .to_string(),
+                serde_json::to_value(schema_for!(ResearchProjectIntelParams))
+                    .unwrap()
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Research Project Intelligence".to_string()),
+                Some(true),
+                Some(false),
+                Some(true),
+                Some(false),
+            )),
+            Tool::new(
+                "propose_project_intel".to_string(),
+                indoc! {r#"
+                File cited project-intelligence findings as a review-gated
+                Decision Inbox proposal. Each item needs
+                {kind, name, note, source_url}; kind is competitor, partner, or
+                adjacent. Nothing is stored until the user approves.
+            "#}
+                .to_string(),
+                serde_json::to_value(schema_for!(ProposeProjectIntelParams))
+                    .unwrap()
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Propose Project Intelligence".to_string()),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+            )),
+            Tool::new(
                 "project_launch".to_string(),
                 indoc! {r#"
                 Open a project-aware terminal in the Build tab, rooted at the project's
@@ -1505,6 +1753,8 @@ impl McpClientTrait for ProjectManagerClient {
             "column_create" => self.handle_column_create(arguments).await,
             "column_delete" => self.handle_column_delete(arguments).await,
             "board_summary" => self.handle_board_summary(arguments).await,
+            "research_project_intel" => self.handle_research_project_intel(arguments).await,
+            "propose_project_intel" => self.handle_propose_project_intel(arguments).await,
             "project_launch" => self.handle_launch(arguments).await,
             _ => Err(format!("Unknown tool: {}", name)),
         };

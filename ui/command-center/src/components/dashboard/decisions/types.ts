@@ -34,6 +34,7 @@ export type DecisionKind =
   | 'risk_gate'
   | 'automation_proposal'
   | 'enrichment_proposal'
+  | 'project_intel_proposal'
   | 'file_to_project'
   | 'tool_approval'
   | 'session_gate'

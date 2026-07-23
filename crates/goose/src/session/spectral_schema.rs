@@ -50,6 +50,10 @@ use tracing::{info, warn};
 /// v34 = local-date tracking for daily digest catch-up. Additive and
 /// base-independent. `migrate_v33_to_v34` applies it.
 ///
+/// v35 = cited per-project ecosystem and competitive intelligence
+/// (`project_intel`). New table + index, additive and idempotent.
+/// `migrate_v34_to_v35` applies it.
+///
 /// NOTE on the version drift: this constant intentionally stays at 14 even though
 /// the migration chain now runs to v19 (`migrate_v14_to_v15` … `migrate_v18_to_v19`).
 /// It is the stamp `init_spectral_db` applies to a *fresh* DB — those later steps
@@ -1412,6 +1416,35 @@ pub async fn migrate_v33_to_v34(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
+/// v35 (#889): cited project ecosystem and competitive-intelligence findings.
+/// New table and index only; safe to run repeatedly on every database.
+pub async fn migrate_v34_to_v35(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v34 -> v35 (project intelligence, #889)");
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS project_intel (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('competitor','partner','adjacent')),
+            name TEXT NOT NULL,
+            note TEXT,
+            source_url TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_project_intel_project ON project_intel(project_id)",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (35)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v35 (project intelligence)");
+    Ok(())
+}
+
 /// Apply the per-call cost-ledger schema (v28, cost-transparency workstream):
 /// `cost_ledger` — one append-only row per provider response — plus the O(1)
 /// cost-rollup columns on `sessions`.
@@ -2088,7 +2121,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS decisions (
             id            TEXT PRIMARY KEY,
             kind          TEXT NOT NULL CHECK (kind IN
-                            ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','file_to_project','tool_approval','session_gate','malformed')),
+                            ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','project_intel_proposal','file_to_project','tool_approval','session_gate','malformed')),
             goal_id       TEXT REFERENCES cards(id) ON DELETE SET NULL,
             project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
             tier          INTEGER NOT NULL CHECK (tier IN (0,1,2)),
@@ -2155,6 +2188,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
     if decisions_ddl
         .map(|sql| {
             !sql.contains("enrichment_proposal")
+                || !sql.contains("project_intel_proposal")
                 || !sql.contains("'edit'")
                 || !sql.contains("tool_approval")
                 || !sql.contains("file_to_project")
@@ -2186,7 +2220,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
             "CREATE TABLE decisions_new (
                 id            TEXT PRIMARY KEY,
                 kind          TEXT NOT NULL CHECK (kind IN
-                                ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','file_to_project','tool_approval','session_gate','malformed')),
+                                ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','project_intel_proposal','file_to_project','tool_approval','session_gate','malformed')),
                 goal_id       TEXT REFERENCES cards(id) ON DELETE SET NULL,
                 project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
                 tier          INTEGER NOT NULL CHECK (tier IN (0,1,2)),
@@ -3728,6 +3762,26 @@ mod inbox_schema_tests {
         .await
         .unwrap();
         assert_eq!(columns, 1, "re-running v34 cannot duplicate the column");
+    }
+
+    #[tokio::test]
+    async fn migrate_v34_to_v35_adds_project_intel_idempotently() {
+        let pool = mem_pool().await;
+        init_spectral_db(&pool).await.unwrap();
+        migrate_v34_to_v35(&pool).await.unwrap();
+        migrate_v34_to_v35(&pool).await.unwrap();
+
+        assert_eq!(current_version(&pool).await, 35);
+        assert!(object_exists(&pool, "project_intel").await);
+        assert!(object_exists(&pool, "idx_project_intel_project").await);
+        sqlx::query(
+            "INSERT INTO project_intel
+             (id, project_id, kind, name, note, source_url, created_at)
+             VALUES ('intel-1','project-1','competitor','Rival',NULL,'https://rival.example','now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
     }
 
     /// Count schema objects (table/view/trigger) by exact name.

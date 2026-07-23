@@ -9,6 +9,7 @@ import { LinksPanel } from './ProjectOverview';
 import { NotesPanel } from './NotesPanel';
 import { Panel } from './Panel';
 import { PeoplePanel } from './PeoplePanel';
+import { EcosystemPanel } from './EcosystemPanel';
 import type { Card, Project, ProjectMemory, ProjectNote } from './types';
 
 /** The focused, operational details lens requested by #73. */
@@ -27,6 +28,7 @@ export function ProjectDetails({ project, onProjectUpdated }: {
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
           <PeoplePanel project={project} />
+          <EcosystemPanel project={project} />
           <NotesPanel project={project} />
         </div>
       </div>
