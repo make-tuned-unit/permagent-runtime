@@ -104,6 +104,11 @@ pub async fn list_project_people(
                 phone: r.get("phone"),
                 notes: r.get("notes"),
                 last_contact_at: r.get("last_contact_at"),
+                // Graph-only manual fields (no people-table column); the caller's
+                // graph overlay populates them from `entity_fields`.
+                birthday: None,
+                relationship_strength: None,
+                how_met: None,
                 graph_entity_id: r.get("graph_entity_id"),
                 created_at: r.get("created_at"),
                 updated_at: r.get("updated_at"),

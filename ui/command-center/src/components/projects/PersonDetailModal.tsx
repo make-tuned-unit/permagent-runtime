@@ -1,37 +1,81 @@
 /**
- * PersonDetailModal (CRM epic slice 2a) — the read-only detail view for a
- * person associated with a project, opened from the Overview People panel.
+ * PersonDetailModal (CRM epic slice 2a read view + slice 2b manual edit) — the
+ * detail view for a person associated with a project, opened from the Overview
+ * People panel.
  *
- * Slice 2a is read-only: it renders the person's typed CRM fields (role /
- * company / email / phone / notes) plus this project's role and association
- * time — ALL carried on the {@link ProjectPerson} the panel already fetched, so
- * the modal makes no extra GET. The one mutation is *disassociate* (DELETE
- * /api/projects/{id}/people/{entity_uuid}, #530), after which it bumps the
- * store's people revision so the decoupled panel refetches, and closes.
- * "Refresh enrichment" (#495 slice 4) mutates nothing here: it copies a
- * prepared prompt and navigates to chat; writes happen only after the user
- * approves the resulting Decision Inbox proposal.
+ * Read view renders the person's typed CRM fields (role / company / email /
+ * phone / birthday / relationship / how-met / notes) plus this project's role
+ * and association time — carried on the {@link ProjectPerson} the panel already
+ * fetched.
  *
- * Editing the typed fields and showing #499 entity_fields provenance are
- * deliberately deferred to a later slice (each needs its own authoritative-store
- * ruling). Built on the generic DetailModal shell, mirroring GoalDetailModal.
+ * Slice 2b (#495) adds an **Edit** mode: the typed fields become inputs and Save
+ * writes them via `PATCH /api/people/{entity_uuid}/fields`. Those land in the
+ * authoritative graph with **manual provenance** (`FieldSource::Manual`), so a
+ * later Enricher pass can never clobber them. The edit is optimistic — inputs
+ * apply to the view immediately and roll back on a non-2xx — and the response is
+ * the re-overlaid person, i.e. the graph's own truth, which we merge back in.
+ * On success we bump the store's people revision so the decoupled panel refetches.
+ *
+ * "Refresh enrichment" (#495 slice 4) mutates nothing here: it copies a prepared
+ * prompt and navigates to chat; enriched writes happen only after the user
+ * approves the resulting Decision Inbox proposal. Disassociate (DELETE
+ * /api/projects/{id}/people/{entity_uuid}, #530) is the other mutation.
  *
  * PersonDetailModalHost is mounted once at the app root and renders whenever the
  * store's `personDetail` target is set.
  */
 
-import { useState, type ReactNode } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { DetailModal } from '../common/DetailModal';
-import type { ProjectPerson } from './types';
+import type { Person, ProjectPerson } from './types';
 
 function fmtTime(iso: string | null): string {
   if (!iso) return '—';
   const t = Date.parse(iso);
   return Number.isFinite(t) ? new Date(t).toLocaleString() : iso;
+}
+
+/** The person fields this modal lets the user edit, in display order. `notes`
+ *  renders as a textarea; the rest as single-line inputs. Field names match the
+ *  backend `PERSON_FIELD_NAMES` vocabulary exactly (the wire keys). */
+const EDITABLE_FIELDS: { key: EditableKey; label: string; multiline?: boolean; placeholder?: string }[] = [
+  { key: 'role', label: 'Role' },
+  { key: 'company', label: 'Company' },
+  { key: 'email', label: 'Email', placeholder: 'name@example.com' },
+  { key: 'phone', label: 'Phone' },
+  { key: 'birthday', label: 'Birthday', placeholder: 'YYYY-MM-DD' },
+  { key: 'relationship_strength', label: 'Relationship' },
+  { key: 'how_met', label: 'How met' },
+  { key: 'notes', label: 'Notes', multiline: true },
+];
+
+type EditableKey =
+  | 'role'
+  | 'company'
+  | 'email'
+  | 'phone'
+  | 'birthday'
+  | 'relationship_strength'
+  | 'how_met'
+  | 'notes';
+
+type Draft = Record<EditableKey, string>;
+
+function draftFrom(p: ProjectPerson): Draft {
+  return {
+    role: p.role ?? '',
+    company: p.company ?? '',
+    email: p.email ?? '',
+    phone: p.phone ?? '',
+    birthday: p.birthday ?? '',
+    relationship_strength: p.relationship_strength ?? '',
+    how_met: p.how_met ?? '',
+    notes: p.notes ?? '',
+  };
 }
 
 export function PersonDetailModal({
@@ -50,14 +94,21 @@ export function PersonDetailModal({
   const [error, setError] = useState<string | null>(null);
   const [promptCopied, setPromptCopied] = useState(false);
 
+  // Local view of the person: seeded from the prop, updated optimistically on a
+  // field edit and reconciled from the PATCH response (the graph's own truth).
+  const [view, setView] = useState<ProjectPerson>(person);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<Draft>(() => draftFrom(person));
+  const [saving, setSaving] = useState(false);
+
   // The Enricher (#495 slice 4), prepared-prompt pattern: copy the enrichment
   // request to the clipboard and take the user to chat — the agent runs
   // enrich_person → researches with its web tools → propose_enrichment, and
   // findings wait in the Decision Inbox for approval. Nothing here writes.
   const requestEnrichment = () => {
     const prompt =
-      `Refresh enrichment for ${person.display_name}: call enrich_person with ` +
-      `person "${person.display_name}", research the enrichable fields with your ` +
+      `Refresh enrichment for ${view.display_name}: call enrich_person with ` +
+      `person "${view.display_name}", research the enrichable fields with your ` +
       `web tools, then call propose_enrichment so I can review the findings in ` +
       `the Decision Inbox.`;
     navigator.clipboard?.writeText(prompt).catch(() => {});
@@ -65,12 +116,80 @@ export function PersonDetailModal({
     navigateToTool('chat');
   };
 
+  const startEdit = () => {
+    setError(null);
+    setDraft(draftFrom(view));
+    setEditing(true);
+  };
+
+  const cancelEdit = () => {
+    setEditing(false);
+    setError(null);
+  };
+
+  const saveEdit = async () => {
+    // Only send fields that actually changed; a null value and an empty draft
+    // are equal (no-op), so clearing a blank field never writes an empty string.
+    const changed: Partial<Record<EditableKey, string>> = {};
+    for (const { key } of EDITABLE_FIELDS) {
+      const current = (view[key] ?? '') as string;
+      const next = draft[key];
+      if (next !== current) changed[key] = next;
+    }
+    if (Object.keys(changed).length === 0) {
+      setEditing(false);
+      return;
+    }
+
+    const prior = view;
+    // Optimistic: reflect the edit immediately; roll back on failure.
+    const optimistic: ProjectPerson = { ...view };
+    for (const [k, v] of Object.entries(changed)) {
+      (optimistic as unknown as Record<string, string | null>)[k] = v === '' ? null : v;
+    }
+    setView(optimistic);
+    setSaving(true);
+    setError(null);
+
+    try {
+      const updated = await apiFetch<Person>(
+        `/api/people/${encodeURIComponent(view.entity_uuid)}/fields`,
+        { method: 'PATCH', body: JSON.stringify({ fields: changed }) },
+      );
+      // Reconcile with the graph's authoritative truth (the response is the
+      // re-overlaid person), keeping this project's join columns.
+      setView(prev => ({
+        ...prev,
+        role: updated.role,
+        company: updated.company,
+        email: updated.email,
+        phone: updated.phone,
+        notes: updated.notes,
+        last_contact_at: updated.last_contact_at,
+        birthday: updated.birthday,
+        relationship_strength: updated.relationship_strength,
+        how_met: updated.how_met,
+      }));
+      setEditing(false);
+      // Decoupled panel has no people event stream yet — nudge it to refetch.
+      bumpPeople();
+    } catch (e) {
+      // Roll the optimistic view back and keep edit mode open with the reason.
+      setView(prior);
+      const err = e as Error & { status?: number };
+      const code = err.status ? `${err.status} ` : '';
+      setError(`Couldn't save changes: ${code}${err.message || 'request failed'}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const doDisassociate = async () => {
     setRemoving(true);
     setError(null);
     try {
       await apiFetch(
-        `/api/projects/${encodeURIComponent(projectId)}/people/${encodeURIComponent(person.entity_uuid)}`,
+        `/api/projects/${encodeURIComponent(projectId)}/people/${encodeURIComponent(view.entity_uuid)}`,
         { method: 'DELETE' },
       );
       bumpPeople();
@@ -81,14 +200,24 @@ export function PersonDetailModal({
     }
   };
 
-  const badge = person.project_role
-    ? { label: person.project_role, color: colors.cyan, bg: colors.cyanSoft }
+  const badge = view.project_role
+    ? { label: view.project_role, color: colors.cyan, bg: colors.cyanSoft }
     : null;
 
-  const footer = confirming ? (
+  const footer = editing ? (
+    <>
+      <span style={{ flex: 1 }} />
+      <button onClick={cancelEdit} disabled={saving} style={ghostBtn(colors)}>
+        Cancel
+      </button>
+      <button onClick={saveEdit} disabled={saving} style={primaryBtn(colors)}>
+        {saving ? 'Saving…' : 'Save'}
+      </button>
+    </>
+  ) : confirming ? (
     <>
       <span style={{ flex: 1, fontSize: 12, color: colors.textMuted }}>
-        Remove {person.display_name} from this project?
+        Remove {view.display_name} from this project?
       </span>
       <button onClick={() => setConfirming(false)} disabled={removing} style={ghostBtn(colors)}>
         Keep
@@ -99,6 +228,9 @@ export function PersonDetailModal({
     </>
   ) : (
     <>
+      <button onClick={startEdit} style={ghostBtn(colors)}>
+        Edit fields
+      </button>
       <button onClick={requestEnrichment} style={ghostBtn(colors)}>
         {promptCopied ? 'Prompt copied — paste it in chat' : 'Refresh enrichment'}
       </button>
@@ -110,37 +242,12 @@ export function PersonDetailModal({
   );
 
   return (
-    <DetailModal title={person.display_name} badge={badge} onClose={onClose} footer={footer}>
+    <DetailModal title={view.display_name} badge={badge} onClose={onClose} footer={footer}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <MetaGrid colors={colors} rows={[
-          ['Role', person.role || '—'],
-          ['Company', person.company || '—'],
-          ['Email', person.email
-            ? <a href={`mailto:${person.email}`} style={{ color: colors.cyan, textDecoration: 'none' }}>{person.email}</a>
-            : '—'],
-          ['Phone', person.phone
-            ? <a href={`tel:${person.phone}`} style={{ color: colors.cyan, textDecoration: 'none' }}>{person.phone}</a>
-            : '—'],
-          ['Project role', person.project_role || '—'],
-          ['Associated', fmtTime(person.associated_at)],
-          ['Last contact', fmtTime(person.last_contact_at)],
-        ]} />
-
-        {person.notes && (
-          <div>
-            <div style={{
-              fontSize: 11, color: colors.textDim, fontFamily: font.mono,
-              textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4,
-            }}>
-              Notes
-            </div>
-            <div style={{
-              fontSize: 13, color: colors.textMuted, lineHeight: 1.5,
-              whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
-            }}>
-              {person.notes}
-            </div>
-          </div>
+        {editing ? (
+          <EditForm colors={colors} draft={draft} onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))} />
+        ) : (
+          <ReadView colors={colors} person={view} />
         )}
 
         {error && (
@@ -154,6 +261,87 @@ export function PersonDetailModal({
         )}
       </div>
     </DetailModal>
+  );
+}
+
+function ReadView({ colors, person }: {
+  colors: ReturnType<typeof useTheme>['colors'];
+  person: ProjectPerson;
+}) {
+  const rows = useMemo<[string, ReactNode][]>(() => [
+    ['Role', person.role || '—'],
+    ['Company', person.company || '—'],
+    ['Email', person.email
+      ? <a href={`mailto:${person.email}`} style={{ color: colors.cyan, textDecoration: 'none' }}>{person.email}</a>
+      : '—'],
+    ['Phone', person.phone
+      ? <a href={`tel:${person.phone}`} style={{ color: colors.cyan, textDecoration: 'none' }}>{person.phone}</a>
+      : '—'],
+    ['Birthday', person.birthday || '—'],
+    ['Relationship', person.relationship_strength || '—'],
+    ['How met', person.how_met || '—'],
+    ['Project role', person.project_role || '—'],
+    ['Associated', fmtTime(person.associated_at)],
+    ['Last contact', fmtTime(person.last_contact_at)],
+  ], [colors, person]);
+
+  return (
+    <>
+      <MetaGrid colors={colors} rows={rows} />
+      {person.notes && (
+        <div>
+          <div style={{
+            fontSize: 11, color: colors.textDim, fontFamily: font.mono,
+            textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4,
+          }}>
+            Notes
+          </div>
+          <div style={{
+            fontSize: 13, color: colors.textMuted, lineHeight: 1.5,
+            whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
+          }}>
+            {person.notes}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function EditForm({ colors, draft, onChange }: {
+  colors: ReturnType<typeof useTheme>['colors'];
+  draft: Draft;
+  onChange: (key: EditableKey, value: string) => void;
+}) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {EDITABLE_FIELDS.map(({ key, label, multiline, placeholder }) => (
+        <label key={key} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <span style={{
+            fontSize: 11, color: colors.textDim, fontFamily: font.mono,
+            textTransform: 'uppercase', letterSpacing: '0.04em',
+          }}>
+            {label}
+          </span>
+          {multiline ? (
+            <textarea
+              value={draft[key]}
+              onChange={e => onChange(key, e.target.value)}
+              rows={3}
+              placeholder={placeholder}
+              style={{ ...inputStyle(colors), resize: 'vertical', lineHeight: 1.5 }}
+            />
+          ) : (
+            <input
+              value={draft[key]}
+              onChange={e => onChange(key, e.target.value)}
+              placeholder={placeholder}
+              style={inputStyle(colors)}
+            />
+          )}
+        </label>
+      ))}
+    </div>
   );
 }
 
@@ -177,11 +365,28 @@ function MetaGrid({ colors, rows }: {
   );
 }
 
+function inputStyle(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
+  return {
+    fontSize: 12, padding: '6px 9px', borderRadius: radius.md,
+    background: 'rgba(255,255,255,0.03)', border: `1px solid ${colors.border}`,
+    color: colors.text, fontFamily: font.body, outline: 'none', width: '100%',
+    boxSizing: 'border-box',
+  };
+}
+
 function ghostBtn(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
   return {
     padding: '6px 14px', borderRadius: radius.md,
     border: `1px solid ${colors.border}`, background: 'none',
     fontFamily: font.body, fontSize: 12, color: colors.textMuted, cursor: 'pointer',
+  };
+}
+
+function primaryBtn(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
+  return {
+    padding: '6px 14px', borderRadius: radius.md,
+    border: `1px solid ${colors.cyan}`, background: colors.cyanSoft,
+    fontFamily: font.body, fontSize: 12, fontWeight: 500, color: colors.cyan, cursor: 'pointer',
   };
 }
 
@@ -200,6 +405,8 @@ export function PersonDetailModalHost() {
   if (!personDetail) return null;
   return (
     <PersonDetailModal
+      // Remount on target change so local edit/view state resets cleanly.
+      key={personDetail.person.entity_uuid}
       projectId={personDetail.projectId}
       person={personDetail.person}
       onClose={closePersonDetail}

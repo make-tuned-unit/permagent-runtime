@@ -66,6 +66,13 @@ export interface ProjectPerson {
   phone: string | null;
   notes: string | null;
   last_contact_at: string | null;
+  /**
+   * #495 manual-only CRM fields (graph-`entity_fields`-only, no DB column).
+   * Populated by the graph overlay; written via `PATCH /api/people/{id}/fields`.
+   */
+  birthday: string | null;
+  relationship_strength: string | null;
+  how_met: string | null;
   created_at: string;
   updated_at: string;
   /** Role within *this* project (project_people.role), distinct from CRM role. */
