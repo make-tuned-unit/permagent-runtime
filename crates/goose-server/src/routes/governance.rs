@@ -642,8 +642,17 @@ mod tests {
         };
         assert!(apply_budget_patch(&req, &config).is_err());
 
-        assert_eq!(config.get_param::<f64>(budget::KEY_SESSION_SOFT).unwrap(), 10.0);
-        assert_eq!(config.get_param::<f64>(budget::KEY_SESSION_GATE).unwrap(), 25.0);
-        assert_eq!(config.get_param::<f64>(budget::KEY_SESSION_HARD).unwrap(), 50.0);
+        assert_eq!(
+            config.get_param::<f64>(budget::KEY_SESSION_SOFT).unwrap(),
+            10.0
+        );
+        assert_eq!(
+            config.get_param::<f64>(budget::KEY_SESSION_GATE).unwrap(),
+            25.0
+        );
+        assert_eq!(
+            config.get_param::<f64>(budget::KEY_SESSION_HARD).unwrap(),
+            50.0
+        );
     }
 }
