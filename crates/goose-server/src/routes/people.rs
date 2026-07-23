@@ -184,8 +184,8 @@ fn validate_person_field(name: &str, value: &str) -> Result<(), String> {
         if !valid {
             return Err("Invalid birthday; expected YYYY-MM-DD".to_string());
         }
-        let month: u8 = value[5..7].parse().unwrap_or(0);
-        let day: u8 = value[8..10].parse().unwrap_or(0);
+        let month: u8 = value.get(5..7).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let day: u8 = value.get(8..10).and_then(|s| s.parse().ok()).unwrap_or(0);
         if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
             return Err("Invalid birthday; expected YYYY-MM-DD".to_string());
         }
