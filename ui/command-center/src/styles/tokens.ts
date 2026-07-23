@@ -27,6 +27,8 @@ export const color = {
   textMuted: '#8A94A6',
   textDim: '#5A6478',
   danger: '#FFB4A2',
+  /** Strong red for ANSI output and high-emphasis destructive states. */
+  dangerStrong: '#EF4444',
 } as const;
 
 export const font = {
@@ -91,7 +93,7 @@ export interface ThemeColors {
   cyan: string; cyanSoft: string; cyanGlow: string;
   purple: string; purpleBright: string; purpleSoft: string; purpleGlow: string;
   text: string; textMuted: string; textDim: string;
-  danger: string;
+  danger: string; dangerStrong: string;
   /** Card elevation shadow (cool-tinted on silver) */
   cardShadow: string;
   /** Discrete elevation ladder for floating layers (theme-aware — deep on the
@@ -135,6 +137,7 @@ const DARK_COLORS: ThemeColors = {
   purple: color.purple, purpleBright: color.purpleBright, purpleSoft: color.purpleSoft, purpleGlow: color.purpleGlow,
   text: color.text, textMuted: color.textMuted, textDim: color.textDim,
   danger: color.danger,
+  dangerStrong: color.dangerStrong,
   cardShadow: '0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04)',
   elevationRaised: '0 4px 16px rgba(0,0,0,0.35)',
   elevationOverlay: '0 8px 24px rgba(0,0,0,0.42)',
@@ -178,6 +181,7 @@ const SILVER_COLORS: ThemeColors = {
   textDim: '#6B7585',        // Titanium Gray — 4.9:1 on white (AA body text)
   // Semantic
   danger: '#DC2626',
+  dangerStrong: '#DC2626',
   // Elevation — soft shadow + glass edge (cards MUST float via shadow, not color)
   cardShadow: '0 2px 12px rgba(30,37,48,0.10), 0 1px 4px rgba(30,37,48,0.06)',
   elevationRaised: '0 4px 16px rgba(30,37,48,0.10)',
