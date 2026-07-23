@@ -552,6 +552,16 @@ async fn execute_effect(
                 .map_err(|e| GuardError::Db(e.to_string()))?;
             for item in &payload.items {
                 sqlx::query(
+                    "DELETE FROM project_intel
+                     WHERE project_id = ? AND kind = ? AND name = ? COLLATE NOCASE",
+                )
+                .bind(&payload.project_id)
+                .bind(&item.kind)
+                .bind(&item.name)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| GuardError::Db(format!("deduplicate project_intel: {}", e)))?;
+                sqlx::query(
                     "INSERT INTO project_intel
                      (id, project_id, kind, name, note, source_url, created_at)
                      VALUES (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
@@ -571,7 +581,7 @@ async fn execute_effect(
                 .map_err(|e| GuardError::Db(e.to_string()))?;
             Ok((
                 Some(format!(
-                    "project intelligence applied to \"{}\": {} item(s) stored with source citations",
+                    "project intelligence applied to \"{}\": {} item(s) added/updated with source citations",
                     payload.project_name,
                     payload.items.len()
                 )),
@@ -1125,7 +1135,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn project_intel_approve_effect_inserts_items() {
+    async fn project_intel_approve_effect_deduplicates_and_updates_items() {
         let pool = memory_pool().await;
         permagent::session::spectral_schema::migrate_v34_to_v35(&pool)
             .await
@@ -1144,6 +1154,11 @@ mod tests {
                         "name": "Rival",
                         "note": "Competes on workflow",
                         "source_url": "https://rival.example"
+                    }, {
+                        "kind": "partner",
+                        "name": "Ally",
+                        "note": "Integrates with the platform",
+                        "source_url": "https://ally.example"
                     }]
                 }),
                 ..Default::default()
@@ -1164,9 +1179,51 @@ mod tests {
         .unwrap();
         let (effect, warning) = execute_effect(&pool, &answered, proof).await.unwrap();
         assert!(warning.is_none());
-        assert!(effect.unwrap().contains("1 item(s) stored"));
+        assert!(effect.unwrap().contains("2 item(s) added/updated"));
+
+        let refresh = decisions::create_decision(
+            &pool,
+            decisions::NewDecision {
+                kind: "project_intel_proposal".to_string(),
+                headline: Some("Refresh intelligence for Acme".to_string()),
+                payload: serde_json::json!({
+                    "project_id": "project-1",
+                    "project_name": "Acme",
+                    "items": [{
+                        "kind": "competitor",
+                        "name": "rIvAl",
+                        "note": "Now competes on orchestration",
+                        "source_url": "https://rival.example/updated"
+                    }]
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let (answered, proof) = decisions::answer_decision(
+            &pool,
+            &refresh.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            decisions::ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        execute_effect(&pool, &answered, proof).await.unwrap();
+
+        let count: i64 = permagent::sqlx::query_scalar(
+            "SELECT COUNT(*) FROM project_intel WHERE project_id = 'project-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 2);
         let stored: (String, String, String) = permagent::sqlx::query_as(
-            "SELECT kind, name, source_url FROM project_intel WHERE project_id='project-1'",
+            "SELECT name, note, source_url FROM project_intel
+             WHERE project_id = 'project-1' AND kind = 'competitor'",
         )
         .fetch_one(&pool)
         .await
@@ -1174,9 +1231,9 @@ mod tests {
         assert_eq!(
             stored,
             (
-                "competitor".to_string(),
-                "Rival".to_string(),
-                "https://rival.example".to_string()
+                "rIvAl".to_string(),
+                "Now competes on orchestration".to_string(),
+                "https://rival.example/updated".to_string()
             )
         );
     }

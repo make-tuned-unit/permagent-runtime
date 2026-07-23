@@ -25,6 +25,7 @@
 //!   PATCH  /api/projects/:id/stack/:entry_id     — Edit a stack entry (double-Option clears for identity/dashboardUrl)
 //!   DELETE /api/projects/:id/stack/:entry_id     — Remove a stack entry
 //!   GET    /api/projects/:id/intel               — Cited ecosystem/competitive intelligence
+//!   DELETE /api/projects/:id/intel/:item_id       — Dismiss an intelligence item
 //!
 //! The stack endpoints are REFERENCE-ONLY (#512): they carry the service +
 //! which login identity is used, never a password/secret — no such field is
@@ -200,6 +201,31 @@ async fn list_project_intel_handler(
         }
     }
     Ok(Json(response))
+}
+
+async fn delete_project_intel_handler(
+    State(state): State<Arc<AppState>>,
+    Path((id, item_id)): Path<(String, String)>,
+) -> Result<StatusCode, StatusCode> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let project = projects::get_project_by_id_or_slug(&pool, &id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let result = sqlx::query("DELETE FROM project_intel WHERE id = ? AND project_id = ?")
+        .bind(&item_id)
+        .bind(&project.id)
+        .execute(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if result.rows_affected() == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn list_projects_handler(
@@ -1463,6 +1489,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/api/projects/{id}", delete(delete_project_handler))
         .route("/api/projects/{id}/touch", post(touch_project_handler))
         .route("/api/projects/{id}/intel", get(list_project_intel_handler))
+        .route(
+            "/api/projects/{id}/intel/{item_id}",
+            delete(delete_project_intel_handler),
+        )
         .route("/api/projects/{id}/tags", get(list_tags_handler))
         .route("/api/projects/{id}/tags", post(add_tag_handler))
         .route("/api/projects/{id}/tags/{tag}", delete(remove_tag_handler))
@@ -1517,4 +1547,99 @@ pub fn routes(state: Arc<AppState>) -> Router {
             patch(update_stack_entry_handler).delete(delete_stack_entry_handler),
         )
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::Request;
+    use serial_test::serial;
+    use tower::ServiceExt;
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn delete_project_intel_is_scoped_and_returns_not_found() {
+        crate::test_support::test_root();
+        let state = AppState::new(true).await.unwrap();
+        let pool = state.session_manager().pool_clone().await.unwrap();
+        let first = projects::create_project(
+            &pool,
+            projects::CreateProject {
+                name: format!("Intel delete first {}", uuid::Uuid::new_v4()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let second = projects::create_project(
+            &pool,
+            projects::CreateProject {
+                name: format!("Intel delete second {}", uuid::Uuid::new_v4()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let item_id = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO project_intel
+             (id, project_id, kind, name, source_url, created_at)
+             VALUES (?, ?, 'competitor', 'Rival', 'https://rival.example',
+                     strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+        )
+        .bind(&item_id)
+        .bind(&first.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let app = routes(state);
+
+        let mismatched = Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/projects/{}/intel/{}", second.id, item_id))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(mismatched).await.unwrap().status(),
+            StatusCode::NOT_FOUND
+        );
+        let still_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM project_intel WHERE id = ?)")
+                .bind(&item_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(still_exists);
+
+        let unknown = Request::builder()
+            .method("DELETE")
+            .uri(format!(
+                "/api/projects/{}/intel/{}",
+                first.id,
+                uuid::Uuid::new_v4()
+            ))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(unknown).await.unwrap().status(),
+            StatusCode::NOT_FOUND
+        );
+
+        let delete_item = Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/projects/{}/intel/{}", first.id, item_id))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.oneshot(delete_item).await.unwrap().status(),
+            StatusCode::NO_CONTENT
+        );
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM project_intel WHERE id = ?)")
+                .bind(&item_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(!exists);
+    }
 }
