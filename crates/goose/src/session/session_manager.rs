@@ -972,6 +972,11 @@ impl SessionStorage {
                     if version < 34 {
                         spectral_schema::migrate_v33_to_v34(&self.pool).await?;
                     }
+                    // v35: cited project ecosystem and competitive intelligence
+                    // (#889). New table + index, additive and idempotent.
+                    if version < 35 {
+                        spectral_schema::migrate_v34_to_v35(&self.pool).await?;
+                    }
                     // Version-independent safety net for the cfg-gated v22
                     // recognition columns. The always-on v23 above can stamp
                     // schema_version past the `version < 22` gate on a feature-off

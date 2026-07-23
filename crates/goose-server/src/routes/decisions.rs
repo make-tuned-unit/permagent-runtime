@@ -536,6 +536,52 @@ async fn execute_effect(
             Some("enrichment proposal declined; nothing was written".to_string()),
             None,
         )),
+        // Approved project-intelligence proposal (#889): persist each cited
+        // finding atomically. Reject falls through without writing.
+        ("project_intel_proposal", Some("approve")) => {
+            let payload: permagent::decisions::ProjectIntelProposalPayload =
+                serde_json::from_value(decision.payload.clone()).map_err(|e| {
+                    GuardError::Invalid(format!(
+                        "stored project intelligence payload unreadable: {}",
+                        e
+                    ))
+                })?;
+            let mut tx = pool
+                .begin()
+                .await
+                .map_err(|e| GuardError::Db(e.to_string()))?;
+            for item in &payload.items {
+                sqlx::query(
+                    "INSERT INTO project_intel
+                     (id, project_id, kind, name, note, source_url, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                )
+                .bind(uuid::Uuid::new_v4().to_string())
+                .bind(&payload.project_id)
+                .bind(&item.kind)
+                .bind(&item.name)
+                .bind(&item.note)
+                .bind(&item.source_url)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| GuardError::Db(format!("insert project_intel: {}", e)))?;
+            }
+            tx.commit()
+                .await
+                .map_err(|e| GuardError::Db(e.to_string()))?;
+            Ok((
+                Some(format!(
+                    "project intelligence applied to \"{}\": {} item(s) stored with source citations",
+                    payload.project_name,
+                    payload.items.len()
+                )),
+                None,
+            ))
+        }
+        ("project_intel_proposal", Some("reject")) => Ok((
+            Some("project intelligence proposal declined; nothing was written".to_string()),
+            None,
+        )),
         // Approved file_to_project proposal (call-notes/email MVP 2A): the ONE
         // user-approved seam through which viewed content (e.g. an email in the
         // embedded browser) is ever persisted. Creates the project note through
@@ -1076,6 +1122,63 @@ mod tests {
             .unwrap();
         init_spectral_db(&pool).await.unwrap();
         pool
+    }
+
+    #[tokio::test]
+    async fn project_intel_approve_effect_inserts_items() {
+        let pool = memory_pool().await;
+        permagent::session::spectral_schema::migrate_v34_to_v35(&pool)
+            .await
+            .unwrap();
+        let decision = decisions::create_decision(
+            &pool,
+            decisions::NewDecision {
+                kind: "project_intel_proposal".to_string(),
+                headline: Some("Approve intelligence for Acme".to_string()),
+                detail: Some("competitor: Rival (source: https://rival.example)".to_string()),
+                payload: serde_json::json!({
+                    "project_id": "project-1",
+                    "project_name": "Acme",
+                    "items": [{
+                        "kind": "competitor",
+                        "name": "Rival",
+                        "note": "Competes on workflow",
+                        "source_url": "https://rival.example"
+                    }]
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let (answered, proof) = decisions::answer_decision(
+            &pool,
+            &decision.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            decisions::ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let (effect, warning) = execute_effect(&pool, &answered, proof).await.unwrap();
+        assert!(warning.is_none());
+        assert!(effect.unwrap().contains("1 item(s) stored"));
+        let stored: (String, String, String) = permagent::sqlx::query_as(
+            "SELECT kind, name, source_url FROM project_intel WHERE project_id='project-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            stored,
+            (
+                "competitor".to_string(),
+                "Rival".to_string(),
+                "https://rival.example".to_string()
+            )
+        );
     }
 
     fn tool_approval_new(
