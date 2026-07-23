@@ -730,6 +730,11 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // #66). Idempotent; shared with migrate_v32_to_v33.
     apply_notification_routing_schema(pool).await?;
 
+    // Cited project ecosystem + competitive-intelligence findings (schema v35,
+    // #889). Idempotent; shared with migrate_v34_to_v35 so fresh installs get
+    // the table on first boot, not only after a later upgrade pass.
+    apply_project_intel_schema(pool).await?;
+
     info!(
         "Spectral schema v{} initialized successfully",
         SPECTRAL_SCHEMA_VERSION
@@ -1416,10 +1421,12 @@ pub async fn migrate_v33_to_v34(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
-/// v35 (#889): cited project ecosystem and competitive-intelligence findings.
-/// New table and index only; safe to run repeatedly on every database.
-pub async fn migrate_v34_to_v35(pool: &Pool<Sqlite>) -> Result<()> {
-    info!("Migrating Spectral schema v34 -> v35 (project intelligence, #889)");
+/// Apply the project-intelligence schema (v35, #889): the `project_intel`
+/// table + its project index. Shared by `migrate_v34_to_v35` (existing DBs) and
+/// `init_spectral_db` (fresh installs) so a brand-new database gets the table on
+/// its first boot — not only after a later upgrade pass. Fully idempotent
+/// (IF NOT EXISTS), so it is safe on every boot and on fresh installs.
+pub async fn apply_project_intel_schema(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS project_intel (
             id TEXT PRIMARY KEY,
@@ -1438,6 +1445,14 @@ pub async fn migrate_v34_to_v35(pool: &Pool<Sqlite>) -> Result<()> {
     )
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+/// v35 (#889): cited project ecosystem and competitive-intelligence findings.
+/// New table and index only; safe to run repeatedly on every database.
+pub async fn migrate_v34_to_v35(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v34 -> v35 (project intelligence, #889)");
+    apply_project_intel_schema(pool).await?;
     sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (35)")
         .execute(pool)
         .await?;

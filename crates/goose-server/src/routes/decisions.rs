@@ -1126,7 +1126,13 @@ mod tests {
     use permagent::session::spectral_schema::init_spectral_db;
 
     async fn memory_pool() -> Pool<Sqlite> {
+        // max_connections(1): `sqlite::memory:` gives each pool connection its
+        // OWN separate database, so a multi-connection pool makes writes on one
+        // connection invisible to reads on another (a `pool.begin()` transaction
+        // can land on a fresh, empty DB). Pin to a single shared connection so
+        // the whole test sees one consistent in-memory database.
         let pool = permagent::sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
             .connect("sqlite::memory:")
             .await
             .unwrap();
