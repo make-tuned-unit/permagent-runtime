@@ -967,6 +967,11 @@ impl SessionStorage {
                     if version < 33 {
                         spectral_schema::migrate_v32_to_v33(&self.pool).await?;
                     }
+                    // v34: track the last committed local digest date so a
+                    // daemon restart after the configured hour catches up.
+                    if version < 34 {
+                        spectral_schema::migrate_v33_to_v34(&self.pool).await?;
+                    }
                     // Version-independent safety net for the cfg-gated v22
                     // recognition columns. The always-on v23 above can stamp
                     // schema_version past the `version < 22` gate on a feature-off
