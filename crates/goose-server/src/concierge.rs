@@ -45,7 +45,10 @@ pub enum ComposeMode {
     /// Draft on the on-device local model, falling back to the template if it is
     /// unavailable (mirrors the Reader's Ollama-then-truncate degrade).
     LocalModel,
-    /// Deterministic template only — no model call.
+    /// Deterministic template only — no model call. A test-only seam so triage
+    /// wiring can be exercised offline; production always drafts on the local
+    /// model (which itself degrades to the template internally).
+    #[allow(dead_code)]
     Template,
 }
 
