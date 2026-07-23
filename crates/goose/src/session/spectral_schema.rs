@@ -47,6 +47,9 @@ use tracing::{info, warn};
 /// and the durable daily digest queue (`notification_digest_entries`). New
 /// tables only, additive and base-independent. `migrate_v32_to_v33` applies it.
 ///
+/// v34 = local-date tracking for daily digest catch-up. Additive and
+/// base-independent. `migrate_v33_to_v34` applies it.
+///
 /// NOTE on the version drift: this constant intentionally stays at 14 even though
 /// the migration chain now runs to v19 (`migrate_v14_to_v15` … `migrate_v18_to_v19`).
 /// It is the stamp `init_spectral_db` applies to a *fresh* DB — those later steps
@@ -1335,6 +1338,7 @@ pub async fn apply_notification_routing_schema(pool: &Pool<Sqlite>) -> Result<()
             in_app_min_severity INTEGER CHECK (in_app_min_severity BETWEEN 1 AND 3),
             digest_min_severity INTEGER CHECK (digest_min_severity BETWEEN 1 AND 3),
             digest_hour_local INTEGER NOT NULL DEFAULT 8 CHECK (digest_hour_local BETWEEN 0 AND 23),
+            last_digest_delivery_date TEXT,
             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
         )",
     )
@@ -1381,6 +1385,30 @@ pub async fn migrate_v32_to_v33(pool: &Pool<Sqlite>) -> Result<()> {
         .execute(pool)
         .await?;
     info!("Spectral schema migrated to v33 (notification routing)");
+    Ok(())
+}
+
+/// v34: remember the local date of the last committed digest delivery.
+/// PRAGMA guarding makes the additive migration idempotent on every database.
+pub async fn migrate_v33_to_v34(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v33 -> v34 (digest catch-up tracking)");
+    let has_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('notification_preferences')
+         WHERE name = 'last_digest_delivery_date'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if has_column == 0 {
+        sqlx::query(
+            "ALTER TABLE notification_preferences ADD COLUMN last_digest_delivery_date TEXT",
+        )
+        .execute(pool)
+        .await?;
+    }
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (34)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v34 (digest catch-up tracking)");
     Ok(())
 }
 
@@ -3673,6 +3701,33 @@ mod inbox_schema_tests {
             queued, 1,
             "one source event is queued at most once per user"
         );
+    }
+
+    #[tokio::test]
+    async fn migrate_v33_to_v34_adds_digest_date_idempotently() {
+        let pool = mem_pool().await;
+        init_spectral_db(&pool).await.unwrap();
+        sqlx::query("ALTER TABLE notification_preferences DROP COLUMN last_digest_delivery_date")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (33)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        migrate_v33_to_v34(&pool).await.unwrap();
+        migrate_v33_to_v34(&pool).await.unwrap();
+
+        assert_eq!(current_version(&pool).await, 34);
+        let columns: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('notification_preferences')
+             WHERE name = 'last_digest_delivery_date'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(columns, 1, "re-running v34 cannot duplicate the column");
     }
 
     /// Count schema objects (table/view/trigger) by exact name.

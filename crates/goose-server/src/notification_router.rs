@@ -6,7 +6,7 @@
 //! warnings surface in-app, and informational events wait in a durable daily
 //! digest. Channel thresholds are stored per user; NULL disables a channel.
 
-use chrono::{Local, Timelike};
+use chrono::{Local, NaiveDate, Timelike};
 use permagent::events::{self, PermagentEvent, PermagentEventType};
 use sqlx::{Pool, Row, Sqlite};
 use std::sync::Arc;
@@ -71,18 +71,17 @@ impl Default for Preferences {
 impl Preferences {
     fn channels(self, severity: Severity) -> Vec<Channel> {
         let level = severity as i64;
-        // Priority routing, not fan-out: use the most immediate eligible
-        // channel. Disabling one naturally falls through to the next.
+        let mut channels = Vec::new();
         if self.push_min.is_some_and(|minimum| level >= minimum) {
-            return vec![Channel::Push];
+            channels.push(Channel::Push);
         }
         if self.in_app_min.is_some_and(|minimum| level >= minimum) {
-            return vec![Channel::InApp];
+            channels.push(Channel::InApp);
         }
         if self.digest_min.is_some_and(|minimum| level >= minimum) {
-            return vec![Channel::Digest];
+            channels.push(Channel::Digest);
         }
-        Vec::new()
+        channels
     }
 }
 
@@ -152,6 +151,14 @@ pub fn spawn(_state: Arc<AppState>) {
 }
 
 async fn preferences(pool: &Pool<Sqlite>, user_id: &str) -> anyhow::Result<Preferences> {
+    sqlx::query(
+        "INSERT OR IGNORE INTO notification_preferences
+         (user_id, push_min_severity, in_app_min_severity, digest_min_severity)
+         VALUES (?, 3, 2, 1)",
+    )
+    .bind(user_id)
+    .execute(pool)
+    .await?;
     let row = sqlx::query(
         "SELECT push_min_severity, in_app_min_severity, digest_min_severity
          FROM notification_preferences WHERE user_id = ?",
@@ -167,6 +174,14 @@ async fn preferences(pool: &Pool<Sqlite>, user_id: &str) -> anyhow::Result<Prefe
 }
 
 async fn route(pool: &Pool<Sqlite>, event: PermagentEvent) -> anyhow::Result<()> {
+    route_with_push_outcome(pool, event, None).await
+}
+
+async fn route_with_push_outcome(
+    pool: &Pool<Sqlite>,
+    event: PermagentEvent,
+    forced_push_outcome: Option<bool>,
+) -> anyhow::Result<()> {
     let Some(severity) = classify(&event) else {
         return Ok(());
     };
@@ -177,15 +192,26 @@ async fn route(pool: &Pool<Sqlite>, event: PermagentEvent) -> anyhow::Result<()>
         .to_owned();
     for channel in preferences(pool, user_id).await?.channels(severity) {
         match channel {
-            Channel::Push => push(&source_type, severity, &event.payload).await,
-            Channel::InApp => events::emit(events::notification_routed(
-                &event.id,
-                user_id,
-                severity.as_str(),
-                channel.as_str(),
-                &source_type,
-                &event.payload,
-            )),
+            Channel::Push => {
+                let delivered = match forced_push_outcome {
+                    Some(delivered) => delivered,
+                    None => push(&source_type, severity, &event.payload).await,
+                };
+                if delivered {
+                    break;
+                }
+            }
+            Channel::InApp => {
+                events::emit(events::notification_routed(
+                    &event.id,
+                    user_id,
+                    severity.as_str(),
+                    channel.as_str(),
+                    &source_type,
+                    &event.payload,
+                ));
+                break;
+            }
             Channel::Digest => {
                 sqlx::query(
                     "INSERT OR IGNORE INTO notification_digest_entries
@@ -199,6 +225,7 @@ async fn route(pool: &Pool<Sqlite>, event: PermagentEvent) -> anyhow::Result<()>
                 .bind(serde_json::to_string(&event.payload)?)
                 .execute(pool)
                 .await?;
+                break;
             }
         }
     }
@@ -206,14 +233,34 @@ async fn route(pool: &Pool<Sqlite>, event: PermagentEvent) -> anyhow::Result<()>
 }
 
 async fn deliver_due_digests(pool: &Pool<Sqlite>) -> anyhow::Result<()> {
-    let hour = Local::now().hour() as i64;
+    let now = Local::now();
+    deliver_due_digests_at(pool, now.hour() as i64, now.date_naive()).await
+}
+
+async fn deliver_due_digests_at(
+    pool: &Pool<Sqlite>,
+    hour: i64,
+    today: NaiveDate,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT OR IGNORE INTO notification_preferences
+         (user_id, push_min_severity, in_app_min_severity, digest_min_severity)
+         SELECT DISTINCT user_id, 3, 2, 1 FROM notification_digest_entries
+         WHERE delivered_at IS NULL",
+    )
+    .execute(pool)
+    .await?;
+    let today = today.format("%Y-%m-%d").to_string();
     let users = sqlx::query(
         "SELECT p.user_id FROM notification_preferences p
-         WHERE p.digest_min_severity IS NOT NULL AND p.digest_hour_local = ?
+         WHERE p.digest_min_severity IS NOT NULL AND p.digest_hour_local <= ?
+           AND (p.last_digest_delivery_date IS NULL
+                OR p.last_digest_delivery_date <> ?)
            AND EXISTS (SELECT 1 FROM notification_digest_entries d
                        WHERE d.user_id = p.user_id AND d.delivered_at IS NULL)",
     )
     .bind(hour)
+    .bind(&today)
     .fetch_all(pool)
     .await?;
     for user in users {
@@ -231,6 +278,7 @@ async fn deliver_due_digests(pool: &Pool<Sqlite>) -> anyhow::Result<()> {
             tx.rollback().await?;
             continue;
         }
+        let mut routed_events = Vec::with_capacity(rows.len());
         for row in &rows {
             let payload_json: String = row.get(4);
             let payload: serde_json::Value =
@@ -240,7 +288,7 @@ async fn deliver_due_digests(pool: &Pool<Sqlite>) -> anyhow::Result<()> {
                 2 => "warning",
                 _ => "info",
             };
-            events::emit(events::notification_routed(
+            routed_events.push(events::notification_routed(
                 &row.get::<String, _>(1),
                 &user_id,
                 severity,
@@ -257,7 +305,20 @@ async fn deliver_due_digests(pool: &Pool<Sqlite>) -> anyhow::Result<()> {
         .bind(&user_id)
         .execute(&mut *tx)
         .await?;
+        sqlx::query(
+            "UPDATE notification_preferences
+             SET last_digest_delivery_date = ?,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+             WHERE user_id = ?",
+        )
+        .bind(&today)
+        .bind(&user_id)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
+        for event in routed_events {
+            events::emit(event);
+        }
         events::emit(events::notification_digest_ready(
             &user_id,
             rows.len() as i64,
@@ -266,12 +327,12 @@ async fn deliver_due_digests(pool: &Pool<Sqlite>) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn push(source_type: &str, severity: Severity, payload: &serde_json::Value) {
+async fn push(source_type: &str, severity: Severity, payload: &serde_json::Value) -> bool {
     let Ok(topic) = std::env::var("PERMAGENT_NTFY_TOPIC") else {
-        return;
+        return false;
     };
     if topic.trim().is_empty() {
-        return;
+        return false;
     }
     let server =
         std::env::var("PERMAGENT_NTFY_SERVER").unwrap_or_else(|_| "https://ntfy.sh".to_owned());
@@ -292,9 +353,9 @@ async fn push(source_type: &str, severity: Severity, payload: &serde_json::Value
         .timeout(Duration::from_secs(10))
         .build()
     else {
-        return;
+        return false;
     };
-    if let Err(error) = client
+    match client
         .post(url)
         .header("Title", format!("Permagent {}", severity.as_str()))
         .header(
@@ -309,7 +370,15 @@ async fn push(source_type: &str, severity: Severity, payload: &serde_json::Value
         .send()
         .await
     {
-        tracing::warn!(target: "permagentd::notifications", %error, "phone push failed");
+        Ok(response) if response.status().is_success() => true,
+        Ok(response) => {
+            tracing::warn!(target: "permagentd::notifications", status = %response.status(), "phone push rejected");
+            false
+        }
+        Err(error) => {
+            tracing::warn!(target: "permagentd::notifications", %error, "phone push failed");
+            false
+        }
     }
 }
 
@@ -382,8 +451,14 @@ mod tests {
     fn default_thresholds_route_by_urgency() {
         let prefs = Preferences::default();
         assert_eq!(prefs.channels(Severity::Info), vec![Channel::Digest]);
-        assert_eq!(prefs.channels(Severity::Warning), vec![Channel::InApp]);
-        assert_eq!(prefs.channels(Severity::Critical), vec![Channel::Push]);
+        assert_eq!(
+            prefs.channels(Severity::Warning),
+            vec![Channel::InApp, Channel::Digest]
+        );
+        assert_eq!(
+            prefs.channels(Severity::Critical),
+            vec![Channel::Push, Channel::InApp, Channel::Digest]
+        );
     }
 
     async fn routing_pool() -> Pool<Sqlite> {
@@ -435,6 +510,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unavailable_or_rejected_push_falls_through_to_in_app() {
+        let pool = routing_pool().await;
+        let mut receiver = events::subscribe();
+        let source = event(
+            PermagentEventType::TaskFailed,
+            serde_json::json!({"task_id": "t-critical"}),
+        );
+        route_with_push_outcome(&pool, source.clone(), Some(false))
+            .await
+            .unwrap();
+        let routed = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let candidate = receiver.recv().await.unwrap();
+                if candidate.event_type == PermagentEventType::NotificationRouted
+                    && candidate.payload["source_event_id"] == source.id
+                {
+                    break candidate;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(routed.payload["source_event_id"], source.id);
+        assert_eq!(routed.payload["channel"], "in_app");
+        assert_eq!(routed.payload["severity"], "critical");
+    }
+
+    #[tokio::test]
     async fn replayed_info_event_queues_digest_once() {
         let pool = routing_pool().await;
         let source = event(
@@ -466,6 +569,39 @@ mod tests {
         .unwrap();
         let prefs = preferences(&pool, "default").await.unwrap();
         assert_eq!(prefs.channels(Severity::Critical), vec![Channel::Digest]);
+    }
+
+    #[tokio::test]
+    async fn user_created_after_migration_gets_defaults_and_digest_delivery() {
+        let pool = routing_pool().await;
+        sqlx::query("INSERT INTO users VALUES ('later-user')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let source = event(
+            PermagentEventType::TaskCompleted,
+            serde_json::json!({"task_id": "late", "user_id": "later-user"}),
+        );
+        route(&pool, source).await.unwrap();
+        let preference_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notification_preferences WHERE user_id = 'later-user'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(preference_count, 1);
+
+        deliver_due_digests_at(&pool, 23, NaiveDate::from_ymd_opt(2026, 7, 22).unwrap())
+            .await
+            .unwrap();
+        let pending: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notification_digest_entries
+             WHERE user_id = 'later-user' AND delivered_at IS NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(pending, 0);
     }
 
     #[tokio::test]
@@ -519,5 +655,107 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(delivered_count, 1, "a later tick cannot redeliver the row");
+    }
+
+    #[tokio::test]
+    async fn overdue_digest_delivers_once_per_local_date() {
+        let pool = routing_pool().await;
+        sqlx::query(
+            "UPDATE notification_preferences SET digest_hour_local = 8
+             WHERE user_id = 'default'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO notification_digest_entries
+             (user_id, source_event_id, severity, source_type, payload_json)
+             VALUES ('default', 'overdue', 1, 'task_completed', '{}')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let today = NaiveDate::from_ymd_opt(2026, 7, 22).unwrap();
+        deliver_due_digests_at(&pool, 10, today).await.unwrap();
+        let delivered: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notification_digest_entries
+             WHERE source_event_id = 'overdue' AND delivered_at IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let last_date: String = sqlx::query_scalar(
+            "SELECT last_digest_delivery_date FROM notification_preferences
+             WHERE user_id = 'default'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(delivered, 1);
+        assert_eq!(last_date, "2026-07-22");
+
+        sqlx::query(
+            "INSERT INTO notification_digest_entries
+             (user_id, source_event_id, severity, source_type, payload_json)
+             VALUES ('default', 'same-day', 1, 'task_completed', '{}')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        deliver_due_digests_at(&pool, 12, today).await.unwrap();
+        let still_pending: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notification_digest_entries
+             WHERE source_event_id = 'same-day' AND delivered_at IS NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            still_pending, 1,
+            "only one digest is delivered per local date"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_delivery_transaction_emits_no_digest_entry() {
+        let pool = routing_pool().await;
+        sqlx::query(
+            "UPDATE notification_preferences SET digest_hour_local = 0
+             WHERE user_id = 'default'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO notification_digest_entries
+             (user_id, source_event_id, severity, source_type, payload_json)
+             VALUES ('default', 'must-not-emit', 1, 'task_completed', '{}')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TRIGGER reject_digest_delivery BEFORE UPDATE OF delivered_at
+             ON notification_digest_entries BEGIN SELECT RAISE(ABORT, 'test failure'); END",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mut receiver = events::subscribe();
+        let result =
+            deliver_due_digests_at(&pool, 23, NaiveDate::from_ymd_opt(2026, 7, 22).unwrap()).await;
+        assert!(result.is_err());
+        let emitted = tokio::time::timeout(Duration::from_millis(50), async {
+            loop {
+                let candidate = receiver.recv().await.unwrap();
+                if candidate.event_type == PermagentEventType::NotificationRouted
+                    && candidate.payload["source_event_id"] == "must-not-emit"
+                {
+                    break;
+                }
+            }
+        })
+        .await;
+        assert!(emitted.is_err(), "rolled-back rows must not be emitted");
     }
 }
