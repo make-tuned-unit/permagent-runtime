@@ -110,4 +110,45 @@ describe('SpendPanel', () => {
     const patch = setBudgetMock.mock.calls[0][0];
     expect(patch.session?.soft).toBe(8);
   });
+
+  it('omits blank ceilings instead of submitting them as zero', async () => {
+    getSpendMock.mockResolvedValue(SNAPSHOT as never);
+    setBudgetMock.mockResolvedValue(SNAPSHOT.budget as never);
+    await act(async () => { root.render(<SpendPanel />); });
+    await flush();
+
+    const softInput = container.querySelector('input[aria-label="Session Warn (soft) ceiling in USD"]') as HTMLInputElement;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(softInput, '');
+      softInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const saveBtn = Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Save cap')!;
+    await act(async () => { saveBtn.click(); });
+    await flush();
+
+    const patch = setBudgetMock.mock.calls[0][0];
+    expect(patch.session).not.toHaveProperty('soft');
+    expect(patch.session?.gate).toBe(25);
+    expect(patch.session?.hard).toBe(50);
+  });
+
+  it('rejects negative ceilings without submitting a patch', async () => {
+    getSpendMock.mockResolvedValue(SNAPSHOT as never);
+    await act(async () => { root.render(<SpendPanel />); });
+    await flush();
+
+    const hardInput = container.querySelector('input[aria-label="Session Stop (hard) ceiling in USD"]') as HTMLInputElement;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(hardInput, '-1');
+      hardInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const saveBtn = Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Save cap')!;
+    await act(async () => { saveBtn.click(); });
+    await flush();
+
+    expect(setBudgetMock).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('Could not save the budget.');
+  });
 });

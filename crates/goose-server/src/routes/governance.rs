@@ -359,23 +359,26 @@ struct SetBudgetRequest {
 /// config, not the process-global one). Only provided keys are written, so an
 /// omitted ceiling is left untouched. Negative values are rejected up front.
 fn apply_budget_patch(req: &SetBudgetRequest, config: &Config) -> Result<(), ConfigError> {
-    let write = |key: &str, v: Option<f64>| -> Result<(), ConfigError> {
-        if let Some(val) = v {
-            config.set_param(key, val)?;
-        }
-        Ok(())
-    };
+    let mut updates = Vec::new();
     if let Some(s) = &req.session {
-        write(budget::KEY_SESSION_SOFT, s.soft)?;
-        write(budget::KEY_SESSION_GATE, s.gate)?;
-        write(budget::KEY_SESSION_HARD, s.hard)?;
+        updates.extend([
+            (budget::KEY_SESSION_SOFT, s.soft),
+            (budget::KEY_SESSION_GATE, s.gate),
+            (budget::KEY_SESSION_HARD, s.hard),
+        ]);
     }
     if let Some(t) = &req.task {
-        write(budget::KEY_TASK_SOFT, t.soft)?;
-        write(budget::KEY_TASK_GATE, t.gate)?;
-        write(budget::KEY_TASK_HARD, t.hard)?;
+        updates.extend([
+            (budget::KEY_TASK_SOFT, t.soft),
+            (budget::KEY_TASK_GATE, t.gate),
+            (budget::KEY_TASK_HARD, t.hard),
+        ]);
     }
-    Ok(())
+    config.set_params(
+        updates
+            .into_iter()
+            .filter_map(|(key, value)| value.map(|value| (key, value))),
+    )
 }
 
 /// Reject any negative ceiling before writing — a negative cap is nonsense and
@@ -606,5 +609,50 @@ mod tests {
         // Omitted keys were never written.
         assert!(config.get_param::<f64>(budget::KEY_SESSION_GATE).is_err());
         assert!(config.get_param::<f64>(budget::KEY_TASK_SOFT).is_err());
+    }
+
+    #[test]
+    fn budget_patch_failure_preserves_the_prior_triplet() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("config.yaml");
+        let config = Config::new(&config_path, "permagent-test").unwrap();
+        let _guard = env_lock::lock_env([
+            ("PERMAGENT_BUDGET_SESSION_SOFT_USD", None::<&str>),
+            ("PERMAGENT_BUDGET_SESSION_GATE_USD", None::<&str>),
+            ("PERMAGENT_BUDGET_SESSION_HARD_USD", None::<&str>),
+        ]);
+        config
+            .set_params([
+                (budget::KEY_SESSION_SOFT, 10.0),
+                (budget::KEY_SESSION_GATE, 25.0),
+                (budget::KEY_SESSION_HARD, 50.0),
+            ])
+            .unwrap();
+
+        // Blocking creation of the temporary file forces the single atomic
+        // save to fail before the original config can be replaced.
+        std::fs::create_dir(config_path.with_extension("tmp")).unwrap();
+        let req = SetBudgetRequest {
+            session: Some(CeilingsPatch {
+                soft: Some(1.0),
+                gate: Some(2.0),
+                hard: Some(3.0),
+            }),
+            task: None,
+        };
+        assert!(apply_budget_patch(&req, &config).is_err());
+
+        assert_eq!(
+            config.get_param::<f64>(budget::KEY_SESSION_SOFT).unwrap(),
+            10.0
+        );
+        assert_eq!(
+            config.get_param::<f64>(budget::KEY_SESSION_GATE).unwrap(),
+            25.0
+        );
+        assert_eq!(
+            config.get_param::<f64>(budget::KEY_SESSION_HARD).unwrap(),
+            50.0
+        );
     }
 }
