@@ -1192,6 +1192,9 @@ mod tests {
             decisions::NewDecision {
                 kind: "project_intel_proposal".to_string(),
                 headline: Some("Refresh intelligence for Acme".to_string()),
+                detail: Some(
+                    "competitor: rIvAl (source: https://rival.example/updated)".to_string(),
+                ),
                 payload: serde_json::json!({
                     "project_id": "project-1",
                     "project_name": "Acme",
@@ -1207,6 +1210,13 @@ mod tests {
         )
         .await
         .unwrap();
+        // Guard the exact trap this test previously fell into: a proposal missing
+        // a required field (e.g. `detail`) is stored as `malformed`, and approving
+        // it is a silent no-op — which would make the dedup below look broken.
+        assert_eq!(
+            refresh.kind, "project_intel_proposal",
+            "refresh proposal must be valid, not stored as malformed"
+        );
         let (answered, proof) = decisions::answer_decision(
             &pool,
             &refresh.id,
