@@ -94,3 +94,18 @@ it('dismisses an item after the DELETE succeeds', async () => {
   expect(container.textContent).not.toContain('Rival');
   expect(container.textContent).toContain('Ally');
 });
+
+it('renders an unsafe source URL as inert text', async () => {
+  apiFetch.mockResolvedValue({
+    competitors: [{
+      id: 'c1', kind: 'competitor', name: 'Unsafe Rival',
+      note: null, source_url: 'javascript:alert(1)',
+      created_at: '2026-07-22T12:00:00Z',
+    }],
+  });
+
+  await act(async () => root.render(<EcosystemPanel project={project} />));
+
+  expect(container.textContent).toContain('Source');
+  expect(container.querySelector('a')).toBeNull();
+});

@@ -202,6 +202,11 @@ pub struct ProjectIntelProposalPayload {
     pub items: Vec<ProposedIntelItem>,
 }
 
+fn is_safe_http_url(url: &str) -> bool {
+    let normalized = url.trim().to_ascii_lowercase();
+    normalized.starts_with("http://") || normalized.starts_with("https://")
+}
+
 fn validate_project_intel_payload(p: &ProjectIntelProposalPayload) -> Result<(), String> {
     if p.items.is_empty() {
         return Err("project_intel_proposal requires at least one item".to_string());
@@ -216,9 +221,9 @@ fn validate_project_intel_payload(p: &ProjectIntelProposalPayload) -> Result<(),
         if item.name.trim().is_empty() {
             return Err("intel item has an empty name".to_string());
         }
-        if item.source_url.trim().is_empty() {
+        if !is_safe_http_url(&item.source_url) {
             return Err(format!(
-                "intel item '{}' is missing its source_url",
+                "intel item '{}' has an invalid source_url (http/https required)",
                 item.name
             ));
         }
@@ -251,9 +256,9 @@ fn validate_enrichment_payload(p: &EnrichmentProposalPayload) -> Result<(), Stri
         if f.value.trim().is_empty() {
             return Err(format!("field '{}' has an empty value", f.field_name));
         }
-        if f.source_url.trim().is_empty() {
+        if !is_safe_http_url(&f.source_url) {
             return Err(format!(
-                "field '{}' is missing its source_url",
+                "field '{}' has an invalid source_url (http/https required)",
                 f.field_name
             ));
         }
@@ -2027,6 +2032,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn enrichment_proposal_rejects_non_http_source_urls() {
+        let pool = test_pool().await;
+        for source_url in [
+            "javascript:alert(1)",
+            "data:text/html,unsafe",
+            "file:///tmp/source",
+            "example.com/source",
+        ] {
+            let req = enrichment_fields(serde_json::json!([
+                { "field_name": "company", "value": "Acme", "source_url": source_url }
+            ]));
+            let d = create_decision(&pool, req).await.unwrap();
+            assert_eq!(d.kind, "malformed", "{source_url} must be rejected");
+        }
+
+        let req = enrichment_fields(serde_json::json!([
+            { "field_name": "company", "value": "Acme", "source_url": "https://acme.example" }
+        ]));
+        let d = create_decision(&pool, req).await.unwrap();
+        assert_eq!(d.kind, "enrichment_proposal");
+    }
+
+    #[tokio::test]
     async fn enrichment_proposal_rejects_bad_entity_id_and_unknown_payload_fields() {
         let pool = test_pool().await;
         let mut bad_id = enrichment_fields(serde_json::json!([
@@ -2084,6 +2112,29 @@ mod tests {
         .unwrap();
         assert_eq!(d.kind, "project_intel_proposal");
         assert_eq!(d.tier, 2);
+    }
+
+    #[tokio::test]
+    async fn project_intel_rejects_non_http_source_urls() {
+        let pool = test_pool().await;
+        for source_url in [
+            "javascript:alert(1)",
+            "data:text/html,unsafe",
+            "file:///tmp/source",
+            "example.com/source",
+        ] {
+            let items = serde_json::json!([
+                { "kind": "competitor", "name": "Rival", "source_url": source_url }
+            ]);
+            let d = create_decision(&pool, project_intel(items)).await.unwrap();
+            assert_eq!(d.kind, "malformed", "{source_url} must be rejected");
+        }
+
+        let items = serde_json::json!([
+            { "kind": "competitor", "name": "Rival", "source_url": "https://rival.example" }
+        ]);
+        let d = create_decision(&pool, project_intel(items)).await.unwrap();
+        assert_eq!(d.kind, "project_intel_proposal");
     }
 
     // ── S5: tier gates on answering ──
