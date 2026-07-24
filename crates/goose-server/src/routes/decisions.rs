@@ -550,17 +550,46 @@ async fn execute_effect(
                 .begin()
                 .await
                 .map_err(|e| GuardError::Db(e.to_string()))?;
+            let project_exists: bool =
+                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?)")
+                    .bind(&payload.project_id)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(|e| GuardError::Db(format!("check project exists: {}", e)))?;
+            if !project_exists {
+                tx.rollback()
+                    .await
+                    .map_err(|e| GuardError::Db(e.to_string()))?;
+                return Ok((
+                    Some(format!(
+                        "project \"{}\" no longer exists; nothing was written",
+                        payload.project_name
+                    )),
+                    None,
+                ));
+            }
             for item in &payload.items {
-                sqlx::query(
-                    "DELETE FROM project_intel
-                     WHERE project_id = ? AND kind = ? AND name = ? COLLATE NOCASE",
+                let normalized_name = item.name.to_lowercase();
+                let candidates: Vec<(String, String)> = sqlx::query_as(
+                    "SELECT id, name FROM project_intel
+                     WHERE project_id = ? AND kind = ?",
                 )
                 .bind(&payload.project_id)
                 .bind(&item.kind)
-                .bind(&item.name)
-                .execute(&mut *tx)
+                .fetch_all(&mut *tx)
                 .await
                 .map_err(|e| GuardError::Db(format!("deduplicate project_intel: {}", e)))?;
+                for (id, name) in candidates {
+                    if name.to_lowercase() == normalized_name {
+                        sqlx::query("DELETE FROM project_intel WHERE id = ?")
+                            .bind(id)
+                            .execute(&mut *tx)
+                            .await
+                            .map_err(|e| {
+                                GuardError::Db(format!("deduplicate project_intel: {}", e))
+                            })?;
+                    }
+                }
                 sqlx::query(
                     "INSERT INTO project_intel
                      (id, project_id, kind, name, note, source_url, created_at)
@@ -1143,9 +1172,15 @@ mod tests {
     #[tokio::test]
     async fn project_intel_approve_effect_deduplicates_and_updates_items() {
         let pool = memory_pool().await;
-        permagent::session::spectral_schema::migrate_v34_to_v35(&pool)
-            .await
-            .unwrap();
+        let project = permagent::projects::create_project(
+            &pool,
+            permagent::projects::CreateProject {
+                name: "Acme".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         let decision = decisions::create_decision(
             &pool,
             decisions::NewDecision {
@@ -1153,11 +1188,11 @@ mod tests {
                 headline: Some("Approve intelligence for Acme".to_string()),
                 detail: Some("competitor: Rival (source: https://rival.example)".to_string()),
                 payload: serde_json::json!({
-                    "project_id": "project-1",
+                    "project_id": project.id,
                     "project_name": "Acme",
                     "items": [{
                         "kind": "competitor",
-                        "name": "Rival",
+                        "name": "CAFÉ",
                         "note": "Competes on workflow",
                         "source_url": "https://rival.example"
                     }, {
@@ -1196,11 +1231,11 @@ mod tests {
                     "competitor: rIvAl (source: https://rival.example/updated)".to_string(),
                 ),
                 payload: serde_json::json!({
-                    "project_id": "project-1",
+                    "project_id": project.id,
                     "project_name": "Acme",
                     "items": [{
                         "kind": "competitor",
-                        "name": "rIvAl",
+                        "name": "café",
                         "note": "Now competes on orchestration",
                         "source_url": "https://rival.example/updated"
                     }]
@@ -1231,27 +1266,94 @@ mod tests {
         execute_effect(&pool, &answered, proof).await.unwrap();
 
         let count: i64 = permagent::sqlx::query_scalar(
-            "SELECT COUNT(*) FROM project_intel WHERE project_id = 'project-1'",
+            "SELECT COUNT(*) FROM project_intel WHERE project_id = ?",
         )
+        .bind(&project.id)
         .fetch_one(&pool)
         .await
         .unwrap();
         assert_eq!(count, 2);
         let stored: (String, String, String) = permagent::sqlx::query_as(
             "SELECT name, note, source_url FROM project_intel
-             WHERE project_id = 'project-1' AND kind = 'competitor'",
+             WHERE project_id = ? AND kind = 'competitor'",
         )
+        .bind(&project.id)
         .fetch_one(&pool)
         .await
         .unwrap();
         assert_eq!(
             stored,
             (
-                "rIvAl".to_string(),
+                "café".to_string(),
                 "Now competes on orchestration".to_string(),
                 "https://rival.example/updated".to_string()
             )
         );
+    }
+
+    #[tokio::test]
+    async fn project_intel_approve_after_project_delete_writes_nothing() {
+        let pool = memory_pool().await;
+        let project = permagent::projects::create_project(
+            &pool,
+            permagent::projects::CreateProject {
+                name: "Vanishing Project".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let decision = decisions::create_decision(
+            &pool,
+            decisions::NewDecision {
+                kind: "project_intel_proposal".to_string(),
+                headline: Some("Approve intelligence for a project".to_string()),
+                detail: Some("competitor: Rival (source: https://rival.example)".to_string()),
+                payload: serde_json::json!({
+                    "project_id": project.id,
+                    "project_name": project.name,
+                    "items": [{
+                        "kind": "competitor",
+                        "name": "Rival",
+                        "note": "Competes on workflow",
+                        "source_url": "https://rival.example"
+                    }]
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(permagent::projects::delete_project(&pool, &project.id)
+            .await
+            .unwrap());
+        let (answered, proof) = decisions::answer_decision(
+            &pool,
+            &decision.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            decisions::ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+
+        let (effect, warning) = execute_effect(&pool, &answered, proof).await.unwrap();
+
+        assert_eq!(
+            effect.as_deref(),
+            Some("project \"Vanishing Project\" no longer exists; nothing was written")
+        );
+        assert!(warning.is_none());
+        let intel_count: i64 = permagent::sqlx::query_scalar(
+            "SELECT COUNT(*) FROM project_intel WHERE project_id = ?",
+        )
+        .bind(&project.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(intel_count, 0);
     }
 
     fn tool_approval_new(
