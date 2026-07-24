@@ -173,7 +173,7 @@ function renderContent(
 
     case 'pdf':
       return objectUrl
-        ? <iframe title={doc.filename} src={objectUrl} style={{ width: '100%', height: '100%', border: 'none' }} />
+        ? <iframe title={doc.filename} src={objectUrl} sandbox="" style={{ width: '100%', height: '100%', border: 'none' }} />
         : <Loading colors={colors} />;
 
     case 'markdown':

@@ -814,7 +814,7 @@ struct UploadDocumentsResponse {
 }
 
 /// Save one file as a project document: write the bytes to disk under
-/// `~/.permagent/project-docs/<project_id>/<doc_id>/<filename>`, insert the
+/// `~/.permagent/project-docs/<project_id>/<doc_id>/<doc_id>`, insert the
 /// `project_documents` row, and best-effort index the extracted text into the
 /// Brain scoped to the project. Factored out of the multipart upload handler so
 /// the inbox routing slice (#395) shares the exact same write path — behavior
@@ -850,7 +850,29 @@ pub(crate) async fn save_project_document(
         tracing::error!(project = %project.id, %filename, error = %e, "project document dir create failed");
         (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
     })?;
-    let file_path = dir.join(filename);
+    let file_path = dir.join(&doc_id);
+    let canonical_docs_base = fs::canonicalize(&docs_base).await.map_err(|e| {
+        tracing::error!(project = %project.id, %filename, error = %e, "project document base canonicalization failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+    })?;
+    let canonical_parent = fs::canonicalize(file_path.parent().expect("document path has parent"))
+        .await
+        .map_err(|e| {
+        tracing::error!(project = %project.id, %filename, error = %e, "project document dir canonicalization failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+    })?;
+    if !canonical_parent.starts_with(&canonical_docs_base) {
+        tracing::error!(project = %project.id, %filename, "project document path escaped storage root");
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "invalid project document path".to_string(),
+        ));
+    }
+    let file_path = canonical_parent.join(
+        file_path
+            .file_name()
+            .expect("generated document path has basename"),
+    );
     fs::write(&file_path, data).await.map_err(|e| {
         tracing::error!(project = %project.id, %filename, error = %e, "project document write failed");
         (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
@@ -926,7 +948,7 @@ pub(crate) async fn save_project_document(
 /// POST /api/projects/{id}/documents — upload one or more files (multipart).
 ///
 /// Mirrors the session attachment pipeline: each file is written to disk under
-/// `~/.permagent/project-docs/<project_id>/<doc_id>/<filename>`, then a
+/// `~/.permagent/project-docs/<project_id>/<doc_id>/<doc_id>`, then a
 /// `project_documents` row records it. Outcomes are logged (per the #568
 /// empty-body lesson — a failure must be visible, not a silent catch); errors
 /// surface as a non-2xx with a message body rather than a bare status.
@@ -975,10 +997,10 @@ async fn upload_project_documents_handler(
     Ok(Json(UploadDocumentsResponse { documents: results }))
 }
 
-/// GET /api/projects/{id}/documents/{doc_id} — stream a document inline.
+/// GET /api/projects/{id}/documents/{doc_id} — stream an inline-safe document.
 ///
-/// The stored `mime_type` and `inline` disposition let the browser (and the
-/// in-app viewer's object URL) render PDFs/images natively.
+/// Only an explicit MIME allowlist is rendered inline. Everything else is
+/// forced to a generic download, and every response disables MIME sniffing.
 async fn get_project_document_handler(
     State(state): State<Arc<AppState>>,
     Path((id, doc_id)): Path<(String, String)>,
@@ -1002,15 +1024,24 @@ async fn get_project_document_handler(
         .map_err(|_| StatusCode::NOT_FOUND)?;
     let stream = ReaderStream::new(file);
     let body = Body::from_stream(stream);
-    let disposition = format!("inline; filename=\"{}\"", doc.filename);
+    let (content_type, disposition) = document_serving_headers(&doc.mime_type);
 
     Ok((
         [
-            (header::CONTENT_TYPE, doc.mime_type),
+            (header::CONTENT_TYPE, content_type),
             (header::CONTENT_DISPOSITION, disposition),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
         ],
         body,
     ))
+}
+
+fn document_serving_headers(mime_type: &str) -> (&str, &'static str) {
+    match mime_type {
+        "application/pdf" | "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+        | "text/plain" => (mime_type, "inline"),
+        _ => ("application/octet-stream", "attachment"),
+    }
 }
 
 /// DELETE /api/projects/{id}/documents/{doc_id} — remove a document + its file.
@@ -1554,7 +1585,126 @@ mod tests {
     use super::*;
     use axum::http::Request;
     use serial_test::serial;
+    use std::path::Path as StdPath;
     use tower::ServiceExt;
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn project_documents_use_generated_paths_and_safe_serving_headers() {
+        let test_root = crate::test_support::test_root();
+        let state = AppState::new(true).await.unwrap();
+        let pool = state.session_manager().pool_clone().await.unwrap();
+        let project = projects::create_project(
+            &pool,
+            projects::CreateProject {
+                name: format!("Safe documents {}", uuid::Uuid::new_v4()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let traversal_name = format!("../../evil-{}", uuid::Uuid::new_v4());
+        let traversal_target = test_root
+            .join(".permagent")
+            .join("project-docs")
+            .join(traversal_name.trim_start_matches("../../"));
+        let traversal_doc = save_project_document(
+            &state,
+            &pool,
+            &project,
+            &traversal_name,
+            "text/html",
+            b"<script>alert(1)</script>",
+        )
+        .await
+        .unwrap();
+        assert_eq!(traversal_doc.filename, traversal_name);
+        assert_eq!(
+            StdPath::new(&traversal_doc.path).file_name().unwrap(),
+            traversal_doc.id.as_str()
+        );
+        assert!(StdPath::new(&traversal_doc.path).exists());
+        assert!(!traversal_target.exists());
+
+        let absolute_target = test_root.join(format!("absolute-evil-{}", uuid::Uuid::new_v4()));
+        let absolute_name = absolute_target.to_string_lossy().to_string();
+        let pdf_doc = save_project_document(
+            &state,
+            &pool,
+            &project,
+            &absolute_name,
+            "application/pdf",
+            b"%PDF-1.7\n",
+        )
+        .await
+        .unwrap();
+        assert_eq!(pdf_doc.filename, absolute_name);
+        assert_eq!(
+            StdPath::new(&pdf_doc.path).file_name().unwrap(),
+            pdf_doc.id.as_str()
+        );
+        assert!(StdPath::new(&pdf_doc.path).exists());
+        assert!(!absolute_target.exists());
+
+        let stored = project_documents::list_documents(&pool, &project.id)
+            .await
+            .unwrap();
+        assert!(stored.iter().any(|doc| doc.filename == traversal_name));
+        assert!(stored.iter().any(|doc| doc.filename == absolute_name));
+
+        let app = routes(state);
+        let html_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/projects/{}/documents/{}",
+                        project.id, traversal_doc.id
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            html_response.headers()[header::CONTENT_TYPE],
+            "application/octet-stream"
+        );
+        assert_eq!(
+            html_response.headers()[header::CONTENT_DISPOSITION],
+            "attachment"
+        );
+        assert_eq!(
+            html_response.headers()[header::X_CONTENT_TYPE_OPTIONS],
+            "nosniff"
+        );
+
+        let pdf_response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/projects/{}/documents/{}",
+                        project.id, pdf_doc.id
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            pdf_response.headers()[header::CONTENT_TYPE],
+            "application/pdf"
+        );
+        assert_eq!(
+            pdf_response.headers()[header::CONTENT_DISPOSITION],
+            "inline"
+        );
+        assert_eq!(
+            pdf_response.headers()[header::X_CONTENT_TYPE_OPTIONS],
+            "nosniff"
+        );
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
