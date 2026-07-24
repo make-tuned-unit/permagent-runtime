@@ -405,6 +405,35 @@ fn default_status() -> String {
     "ok".to_string()
 }
 
+fn previous_char_boundary(value: &str, offset: usize) -> usize {
+    let mut offset = offset.min(value.len());
+    while !value.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
+}
+
+fn truncate_page_content(content: &mut String) -> bool {
+    if content.len() <= MAX_CONTENT_CHARS {
+        return false;
+    }
+
+    // Truncate at nearest paragraph or sentence boundary within the last 500 bytes.
+    let search_start = previous_char_boundary(content, MAX_CONTENT_CHARS.saturating_sub(500));
+    let max_end = previous_char_boundary(content, MAX_CONTENT_CHARS);
+    let search_window = content.get(search_start..max_end).unwrap_or_default();
+    let cut_at = search_window
+        .rfind("\n\n")
+        .or_else(|| search_window.rfind(". "))
+        .or_else(|| search_window.rfind('\n'))
+        .map(|pos| search_start + pos)
+        .unwrap_or(max_end);
+
+    content.truncate(cut_at);
+    content.push_str("\n\n[content truncated]");
+    true
+}
+
 #[tauri::command]
 pub async fn get_page_content(app: AppHandle, webview_id: String) -> Result<PageContent, String> {
     let webview = app
@@ -438,17 +467,7 @@ pub async fn get_page_content(app: AppHandle, webview_id: String) -> Result<Page
     let mut page: PageContent =
         serde_json::from_str(&json_str).map_err(|e| format!("Parse failed: {e}"))?;
 
-    if page.content.len() > MAX_CONTENT_CHARS {
-        // Truncate at nearest paragraph or sentence boundary within the last 500 chars
-        let search_start = MAX_CONTENT_CHARS.saturating_sub(500);
-        let cut_at = page.content[search_start..MAX_CONTENT_CHARS]
-            .rfind("\n\n")
-            .or_else(|| page.content[search_start..MAX_CONTENT_CHARS].rfind(". "))
-            .or_else(|| page.content[search_start..MAX_CONTENT_CHARS].rfind('\n'))
-            .map(|pos| search_start + pos)
-            .unwrap_or(MAX_CONTENT_CHARS);
-        page.content.truncate(cut_at);
-        page.content.push_str("\n\n[content truncated]");
+    if truncate_page_content(&mut page.content) {
         page.truncated = true;
     }
 
@@ -587,4 +606,37 @@ pub async fn act_on_ref(
         serde_json::to_string(&args).map_err(|e| format!("Serialize args failed: {e}"))?;
     let js = act_js(&args_json, MAX_SNAPSHOT_ELEMENTS);
     eval_returning_json(&webview, &js, std::time::Duration::from_secs(8))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncation_offsets_are_valid_utf8_boundaries() {
+        let mut content = "a".repeat(MAX_CONTENT_CHARS - 501);
+        content.push('€');
+        content.push_str(&"b".repeat(497));
+        content.push('€');
+        content.push('c');
+
+        assert!(truncate_page_content(&mut content));
+        assert!(content.is_char_boundary(content.len()));
+        assert_eq!(
+            content,
+            format!(
+                "{}\n\n[content truncated]",
+                "a".repeat(MAX_CONTENT_CHARS - 501) + "€" + &"b".repeat(497)
+            )
+        );
+    }
+
+    #[test]
+    fn short_content_is_unchanged() {
+        let original = "Short page with valid UTF-8: 🪿".to_string();
+        let mut content = original.clone();
+
+        assert!(!truncate_page_content(&mut content));
+        assert_eq!(content, original);
+    }
 }
