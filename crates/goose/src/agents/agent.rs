@@ -74,6 +74,41 @@ use tracing::{debug, error, info, instrument, warn};
 const DEFAULT_MAX_TURNS: u32 = 50;
 const COMPACTION_THINKING_TEXT: &str = "goose is compacting the conversation...";
 
+fn redacted_tool_input_summary(
+    tool_name: &str,
+    arguments: Option<&serde_json::Map<String, Value>>,
+) -> String {
+    crate::privacy::redact(
+        &serde_json::json!({
+            "tool": tool_name,
+            "arguments": arguments,
+        })
+        .to_string(),
+    )
+}
+
+fn tool_task_description(
+    tool_name: &str,
+    arguments: Option<&serde_json::Map<String, Value>>,
+) -> String {
+    let Some(arguments) = arguments else {
+        return tool_name.to_string();
+    };
+
+    let detail = if let Some(command) = arguments.get("command").and_then(Value::as_str) {
+        command.chars().take(80).collect::<String>()
+    } else if let Some((key, value)) = arguments
+        .iter()
+        .find_map(|(key, value)| value.as_str().map(|value| (key, value)))
+    {
+        format!("{key}={}", value.chars().take(60).collect::<String>())
+    } else {
+        return tool_name.to_string();
+    };
+
+    format!("{tool_name}: {}", crate::privacy::redact(&detail))
+}
+
 /// Context needed for the reply function
 pub struct ReplyContext {
     pub conversation: Conversation,
@@ -590,10 +625,8 @@ impl Agent {
         cancellation_token: Option<CancellationToken>,
         session: &Session,
     ) -> (String, Result<ToolCallResult, ErrorData>) {
-        let input_summary = serde_json::json!({
-            "tool": tool_call.name,
-            "arguments": tool_call.arguments,
-        });
+        let input_summary =
+            redacted_tool_input_summary(&tool_call.name, tool_call.arguments.as_ref());
         tracing::Span::current().record("input", tracing::field::display(&input_summary));
 
         self.prompt_manager
@@ -652,29 +685,7 @@ impl Agent {
 
         // Task logging: log_task_created before, log_task_completed/failed after
         let tool_name_str = tool_call.name.to_string();
-        let args_value = tool_call
-            .arguments
-            .as_ref()
-            .map(|m| Value::Object(m.clone()));
-        // Build a human-readable description from tool + key arguments
-        let task_description = {
-            let mut desc = tool_name_str.clone();
-            if let Some(ref args) = args_value {
-                if let Some(obj) = args.as_object() {
-                    // For shell, include the command; for others, include first string arg
-                    if let Some(cmd) = obj.get("command").and_then(|v| v.as_str()) {
-                        let short = cmd.get(..80).unwrap_or(cmd);
-                        desc = format!("{}: {}", tool_name_str, short);
-                    } else if let Some((key, val)) = obj.iter().find(|(_, v)| v.is_string()) {
-                        if let Some(s) = val.as_str() {
-                            let short = s.get(..60).unwrap_or(s);
-                            desc = format!("{}: {}={}", tool_name_str, key, short);
-                        }
-                    }
-                }
-            }
-            desc
-        };
+        let task_description = tool_task_description(&tool_name_str, tool_call.arguments.as_ref());
         let task_id = if let Some(logger) = crate::tasks::global() {
             let tid = logger
                 .log_task_created(&task_description, Some(&tool_name_str))
@@ -2679,7 +2690,8 @@ mod tests {
         let rx = agent
             .tool_confirmation_router
             .register("unknown".to_string())
-            .await;
+            .await
+            .unwrap();
         let delivered = agent
             .handle_confirmation(
                 "unknown".to_string(),
@@ -2704,7 +2716,8 @@ mod tests {
         let rx = agent
             .tool_confirmation_router
             .register("any".to_string())
-            .await;
+            .await
+            .unwrap();
         let delivered = agent
             .handle_confirmation(
                 "any".to_string(),
@@ -2743,7 +2756,8 @@ mod tests {
         let rx = agent
             .tool_confirmation_router
             .register("cancelled-turn".to_string())
-            .await;
+            .await
+            .unwrap();
         drop(rx);
         let delivered = agent
             .handle_confirmation(
@@ -2855,5 +2869,24 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn bearer_token_is_redacted_from_tracing_and_task_description() {
+        let secret = "trace-and-task-secret";
+        let arguments = serde_json::json!({
+            "command": format!("curl -H 'Authorization: Bearer {secret}' https://example.com")
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let tracing_input = redacted_tool_input_summary("shell", Some(&arguments));
+        let task_description = tool_task_description("shell", Some(&arguments));
+
+        for logged in [&tracing_input, &task_description] {
+            assert!(logged.contains("[REDACTED]"));
+            assert!(!logged.contains(secret), "Bearer token must not be logged");
+        }
     }
 }

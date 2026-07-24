@@ -137,7 +137,10 @@ impl Agent {
                         }
                     });
 
-                let confirmation_rx = self.tool_confirmation_router.register(request.id.clone()).await;
+                let confirmation_rx = self
+                    .tool_confirmation_router
+                    .register(request.id.clone())
+                    .await?;
 
                 let tool_name = tool_call.name.to_string();
 
