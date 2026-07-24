@@ -626,7 +626,8 @@ mod tests {
         let _rx = parked
             .tool_confirmation_router
             .register("req-parked".to_string())
-            .await;
+            .await
+            .unwrap();
 
         manager.get_or_create_agent("s2".to_string()).await.unwrap();
 
@@ -697,7 +698,8 @@ mod tests {
         let rx = agent
             .tool_confirmation_router
             .register("req-1".to_string())
-            .await;
+            .await
+            .unwrap();
         assert!(manager.session_has_pending_confirmation("s0").await);
 
         drop(rx); // turn aborted — waiter is dead, probe must not pin the session

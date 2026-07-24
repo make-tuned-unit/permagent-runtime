@@ -16,12 +16,18 @@ impl ToolConfirmationRouter {
         }
     }
 
-    pub async fn register(&self, request_id: String) -> oneshot::Receiver<PermissionConfirmation> {
+    pub async fn register(
+        &self,
+        request_id: String,
+    ) -> anyhow::Result<oneshot::Receiver<PermissionConfirmation>> {
         let (tx, rx) = oneshot::channel();
         let mut pending = self.pending.lock().await;
         pending.retain(|_, sender| !sender.is_closed());
+        if pending.contains_key(&request_id) {
+            anyhow::bail!("Confirmation waiter already registered for request {request_id}");
+        }
         pending.insert(request_id, tx);
-        rx
+        Ok(rx)
     }
 
     /// True while at least one turn is parked on a live confirmation waiter.
@@ -74,7 +80,7 @@ mod tests {
     #[tokio::test]
     async fn test_register_then_deliver() {
         let router = ToolConfirmationRouter::new();
-        let rx = router.register("req_1".to_string()).await;
+        let rx = router.register("req_1".to_string()).await.unwrap();
         assert!(
             router
                 .deliver("req_1".to_string(), test_confirmation())
@@ -97,7 +103,7 @@ mod tests {
     #[tokio::test]
     async fn test_cancelled_receiver() {
         let router = ToolConfirmationRouter::new();
-        let rx = router.register("req_1".to_string()).await;
+        let rx = router.register("req_1".to_string()).await.unwrap();
         drop(rx); // simulate task cancellation
         assert!(
             !router
@@ -109,12 +115,12 @@ mod tests {
     #[tokio::test]
     async fn test_stale_entries_pruned_on_register() {
         let router = ToolConfirmationRouter::new();
-        let rx = router.register("req_1".to_string()).await;
+        let rx = router.register("req_1".to_string()).await.unwrap();
         drop(rx); // simulate task cancellation — entry is now stale
 
         assert_eq!(router.pending.lock().await.len(), 1);
 
-        let _rx2 = router.register("req_2".to_string()).await;
+        let _rx2 = router.register("req_2".to_string()).await.unwrap();
         assert_eq!(router.pending.lock().await.len(), 1); // only req_2 remains
         assert!(router.pending.lock().await.contains_key("req_2"));
     }
@@ -124,7 +130,7 @@ mod tests {
         let router = ToolConfirmationRouter::new();
         assert!(!router.has_live_waiter().await, "empty router is not busy");
 
-        let rx = router.register("req_1".to_string()).await;
+        let rx = router.register("req_1".to_string()).await.unwrap();
         assert!(router.has_live_waiter().await, "registered waiter is live");
 
         assert!(
@@ -142,7 +148,7 @@ mod tests {
     #[tokio::test]
     async fn test_has_live_waiter_prunes_closed_senders() {
         let router = ToolConfirmationRouter::new();
-        let rx = router.register("req_1".to_string()).await;
+        let rx = router.register("req_1".to_string()).await.unwrap();
         drop(rx); // turn aborted — the waiter is dead
 
         assert!(
@@ -163,8 +169,8 @@ mod tests {
         let router = Arc::new(ToolConfirmationRouter::new());
 
         // Register two requests
-        let rx1 = router.register("req_1".to_string()).await;
-        let rx2 = router.register("req_2".to_string()).await;
+        let rx1 = router.register("req_1".to_string()).await.unwrap();
+        let rx2 = router.register("req_2".to_string()).await.unwrap();
 
         // Deliver in reverse order
         assert!(
@@ -190,5 +196,26 @@ mod tests {
         assert_eq!(c1.permission, Permission::AllowOnce);
         let c2 = rx2.await.unwrap();
         assert_eq!(c2.permission, Permission::DenyOnce);
+    }
+
+    #[tokio::test]
+    async fn test_duplicate_live_request_is_rejected_without_dropping_first() {
+        let router = ToolConfirmationRouter::new();
+        let first_rx = router.register("req_1".to_string()).await.unwrap();
+
+        let duplicate = router.register("req_1".to_string()).await;
+        assert!(duplicate.is_err(), "duplicate live waiter must be rejected");
+
+        assert!(
+            router
+                .deliver("req_1".to_string(), test_confirmation())
+                .await,
+            "the original waiter must remain deliverable"
+        );
+        assert_eq!(
+            first_rx.await.unwrap().permission,
+            Permission::AllowOnce,
+            "delivery must reach the original waiter"
+        );
     }
 }

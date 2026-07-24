@@ -30,6 +30,7 @@ static SENSITIVE_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         Regex::new(r"(?i)key[_-]?[a-zA-Z0-9]{16,}").unwrap(),
         Regex::new(r"(?i)token[_-]?[a-zA-Z0-9]{16,}").unwrap(),
         Regex::new(r"(?i)bearer\s+[a-zA-Z0-9._-]+").unwrap(),
+        Regex::new(r#"(?i)(?:api[_-]?key|token|password)\s*[:=]\s*["']?[^\s"',;}\\]+"#).unwrap(),
         // Emails.
         Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}").unwrap(),
         // Credentials embedded in a URL (`https://user:pass@host`).
