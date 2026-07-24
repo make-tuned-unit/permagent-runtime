@@ -129,7 +129,7 @@ pub async fn sync_people_from_graph(
     pool: &Pool<Sqlite>,
     brain: &crate::brain_handle::SafeBrain,
 ) -> Result<usize, String> {
-    let protected = crate::people_provenance::protected_entity_ids(pool).await;
+    let protected = crate::people_provenance::protected_entity_ids(pool).await?;
     let mut touched = 0usize;
     for id_bytes in protected {
         let id_hex = hex::encode(id_bytes);
