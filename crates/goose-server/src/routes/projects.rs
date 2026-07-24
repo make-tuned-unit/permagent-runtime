@@ -1029,18 +1029,18 @@ async fn get_project_document_handler(
     Ok((
         [
             (header::CONTENT_TYPE, content_type),
-            (header::CONTENT_DISPOSITION, disposition),
-            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::CONTENT_DISPOSITION, disposition.to_string()),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
         ],
         body,
     ))
 }
 
-fn document_serving_headers(mime_type: &str) -> (&str, &'static str) {
+fn document_serving_headers(mime_type: &str) -> (String, &'static str) {
     match mime_type {
         "application/pdf" | "image/png" | "image/jpeg" | "image/gif" | "image/webp"
-        | "text/plain" => (mime_type, "inline"),
-        _ => ("application/octet-stream", "attachment"),
+        | "text/plain" => (mime_type.to_string(), "inline"),
+        _ => ("application/octet-stream".to_string(), "attachment"),
     }
 }
 
