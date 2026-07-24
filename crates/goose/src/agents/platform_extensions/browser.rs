@@ -322,9 +322,12 @@ fn guard_webview_url(input: &str) -> Result<String, String> {
 fn reject_control_plane(url: &str) -> Result<(), String> {
     let parsed = reqwest::Url::parse(url).map_err(|e| format!("Invalid URL: {e}"))?;
     let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+    // For an IPv6 literal, `host_str()` keeps the brackets (`[::1]`), which do
+    // not parse as an `IpAddr` — strip them so `[::1]` (IPv6 loopback) is caught.
+    let ip_literal = host.trim_start_matches('[').trim_end_matches(']');
     let is_control_host = host == "localhost"
         || host.ends_with(".localhost")
-        || host
+        || ip_literal
             .parse::<IpAddr>()
             .is_ok_and(|ip| ip.is_loopback() || ip.is_unspecified());
     if is_control_host && parsed.port_or_known_default() == Some(CONTROL_PLANE_PORT) {
