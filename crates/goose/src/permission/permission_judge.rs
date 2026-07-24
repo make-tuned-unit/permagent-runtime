@@ -2,12 +2,13 @@ use crate::conversation::message::{Message, MessageContent, ToolRequest};
 use crate::conversation::Conversation;
 use crate::prompt_template::render_template;
 use crate::providers::base::Provider;
+use crate::utils::sanitize_unicode_tags;
 use chrono::Utc;
 use indoc::indoc;
 use rmcp::model::{Tool, ToolAnnotations};
 use rmcp::object;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::sync::Arc;
 
 #[derive(Serialize)]
@@ -43,9 +44,9 @@ fn create_read_only_tool() -> Tool {
             How to analyze tool requests:
             - Inspect each tool request to identify its purpose based on its name and arguments.
             - Categorize the operation as read-only if it does not involve any state or data modification.
-            - Return a list of tool names that are strictly read-only. If you cannot make the decision, then it is not read-only.
+            - Return a list of request IDs that are strictly read-only. If you cannot make the decision, then it is not read-only.
 
-            Use this analysis to generate the list of tools performing read-only operations from the provided tool requests.
+            Use this analysis to generate the list of request IDs performing read-only operations from the provided tool requests.
         "#}
         .to_string(),
         object!({
@@ -56,7 +57,7 @@ fn create_read_only_tool() -> Tool {
                     "items": {
                         "type": "string"
                     },
-                    "description": "Optional list of tool names which has read-only operations."
+                    "description": "Optional list of request IDs which have read-only operations."
                 }
             },
             "required": []
@@ -65,32 +66,59 @@ fn create_read_only_tool() -> Tool {
 }
 
 /// Builds the message to be sent to the LLM for detecting read-only operations.
-fn create_check_messages(tool_requests: Vec<&ToolRequest>) -> Conversation {
-    let tool_names: Vec<String> = tool_requests
-        .iter()
-        .filter_map(|req| {
-            if let Ok(tool_call) = &req.tool_call {
-                Some(tool_call.name.to_string().clone())
-            } else {
-                None // Skip requests with errors in tool_call
-            }
+fn create_check_messages(tool_requests: Vec<&ToolRequest>) -> Option<Conversation> {
+    let requests = tool_requests
+        .into_iter()
+        .map(|request| {
+            let tool_call = request.tool_call.as_ref().ok()?;
+            let arguments = sanitize_arguments(tool_call.arguments.as_ref()?)?;
+            Some(serde_json::json!({
+                "request_id": sanitize_unicode_tags(&request.id),
+                "tool_name": sanitize_unicode_tags(tool_call.name.as_ref()),
+                "arguments": arguments,
+            }))
         })
-        .collect();
-    let mut check_messages = vec![];
-    check_messages.push(Message::new(
+        .collect::<Option<Vec<_>>>()?;
+    let requests = serde_json::to_string_pretty(&requests).ok()?;
+    let check_messages = vec![Message::new(
         rmcp::model::Role::User,
         Utc::now().timestamp(),
         vec![MessageContent::text(format!(
-                "Here are the tool requests: {:?}\n\nAnalyze the tool requests and list the tools that perform read-only operations. \
+                "Here are the tool requests as JSON data:\n{requests}\n\nAnalyze each tool request and list the request IDs that perform read-only operations. \
                 \n\nGuidelines for Read-Only Operations: \
                 \n- Read-only operations do not modify any data or state. \
                 \n- Examples include file reading, SELECT queries in SQL, and directory listing. \
                 \n- Write operations include INSERT, UPDATE, DELETE, and file writing. \
-                \n\nPlease provide a list of tool names that qualify as read-only:",
-                tool_names.join(", "),
+                \n\nPlease provide a list of request IDs that qualify as read-only:"
             ))],
-    ));
-    Conversation::new_unvalidated(check_messages)
+    )];
+    Some(Conversation::new_unvalidated(check_messages))
+}
+
+fn sanitize_arguments(arguments: &Map<String, Value>) -> Option<Value> {
+    fn sanitize_value(value: &Value) -> Option<Value> {
+        match value {
+            Value::String(value) => Some(Value::String(sanitize_unicode_tags(value))),
+            Value::Array(values) => values
+                .iter()
+                .map(sanitize_value)
+                .collect::<Option<Vec<_>>>()
+                .map(Value::Array),
+            Value::Object(values) => {
+                let mut sanitized = Map::new();
+                for (key, value) in values {
+                    let key = sanitize_unicode_tags(key);
+                    if sanitized.insert(key, sanitize_value(value)?).is_some() {
+                        return None;
+                    }
+                }
+                Some(Value::Object(sanitized))
+            }
+            value => Some(value.clone()),
+        }
+    }
+
+    sanitize_value(&Value::Object(arguments.clone()))
 }
 
 /// Processes the response to extract the list of tools with read-only operations.
@@ -118,7 +146,7 @@ fn extract_read_only_tools(response: &Message) -> Option<Vec<String>> {
     None
 }
 
-/// Executes the read-only tools detection and returns the list of tools with read-only operations.
+/// Executes read-only detection and returns the IDs of read-only requests.
 pub async fn detect_read_only_tools(
     provider: Arc<dyn Provider>,
     session_id: &str,
@@ -128,7 +156,9 @@ pub async fn detect_read_only_tools(
         return vec![];
     }
     let tool = create_read_only_tool();
-    let check_messages = create_check_messages(tool_requests);
+    let Some(check_messages) = create_check_messages(tool_requests) else {
+        return vec![];
+    };
 
     let context = PermissionJudgeContext {};
     let system_prompt = render_template("permission_judge.md", &context)
@@ -150,6 +180,62 @@ pub async fn detect_read_only_tools(
         extract_read_only_tools(&message).unwrap_or_default()
     } else {
         vec![]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rmcp::model::CallToolRequestParams;
+
+    fn request(id: &str, query: &str) -> ToolRequest {
+        ToolRequest {
+            id: id.to_string(),
+            tool_call: Ok(
+                CallToolRequestParams::new("database.query").with_arguments(object!({
+                    "sql": query,
+                })),
+            ),
+            metadata: None,
+            tool_meta: None,
+        }
+    }
+
+    #[test]
+    fn judge_input_includes_request_ids_names_and_arguments() {
+        let select = request("select-request", "SELECT * FROM users");
+        let delete = request("delete-request", "DELETE FROM users");
+
+        let messages = create_check_messages(vec![&select, &delete]).unwrap();
+        let MessageContent::Text(input) = &messages.messages()[0].content[0] else {
+            panic!("judge input must be text");
+        };
+
+        assert!(input.text.contains("\"request_id\": \"select-request\""));
+        assert!(input.text.contains("\"request_id\": \"delete-request\""));
+        assert!(input.text.contains("\"tool_name\": \"database.query\""));
+        assert!(input.text.contains("\"sql\": \"SELECT * FROM users\""));
+        assert!(input.text.contains("\"sql\": \"DELETE FROM users\""));
+    }
+
+    #[test]
+    fn unsafe_argument_sanitization_fails_closed() {
+        let request = ToolRequest {
+            id: "request".to_string(),
+            tool_call: Ok(CallToolRequestParams::new("tool").with_arguments(object!({
+                "same": "first",
+                "\u{e0001}s\u{e007f}ame": "second",
+            }))),
+            metadata: None,
+            tool_meta: None,
+        };
+
+        assert!(create_check_messages(vec![&request]).is_none());
+    }
+
+    #[test]
+    fn uncertain_or_invalid_judge_response_returns_no_approvals() {
+        assert_eq!(extract_read_only_tools(&Message::assistant()), None);
     }
 }
 
