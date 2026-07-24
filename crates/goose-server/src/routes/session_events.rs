@@ -1008,9 +1008,14 @@ pub async fn session_cancel(
 
 // ── Route registration ──────────────────────────────────────────────────
 
-pub fn routes(state: Arc<AppState>) -> Router {
+pub fn event_routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/sessions/{id}/events", get(session_events))
+        .with_state(state)
+}
+
+pub fn control_routes(state: Arc<AppState>) -> Router {
+    Router::new()
         .route(
             "/sessions/{id}/reply",
             post(session_reply).layer(DefaultBodyLimit::max(50 * 1024 * 1024)),

@@ -101,6 +101,70 @@ mod tests {
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         }
 
+        // The per-session SSE route also admits both credential classes. The
+        // unknown session reaches the handler and returns 404 rather than auth's
+        // 401, proving the scoped credential is valid only on this GET.
+        for token in [daemon_token.as_str(), scoped] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/sessions/unknown/events?token={token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        }
+
+        // A scoped stream token cannot reach agent-invoking or cancellation
+        // handlers, whether presented in the query string or as a bearer.
+        for path in ["reply", "cancel"] {
+            for request in [
+                Request::builder()
+                    .uri(format!("/sessions/unknown/{path}?token={scoped}"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+                Request::builder()
+                    .uri(format!("/sessions/unknown/{path}"))
+                    .method("POST")
+                    .header("authorization", format!("Bearer {scoped}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            ] {
+                let response = app.clone().oneshot(request).await.unwrap();
+                assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            }
+        }
+
+        // Long-lived credentials still pass reply/cancel auth through both
+        // established transports. An empty JSON body is rejected by the
+        // handlers/extractors after auth, so any non-401 status proves access.
+        for path in ["reply", "cancel"] {
+            for request in [
+                Request::builder()
+                    .uri(format!("/sessions/unknown/{path}?token={daemon_token}"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+                Request::builder()
+                    .uri(format!("/sessions/unknown/{path}"))
+                    .method("POST")
+                    .header("authorization", format!("Bearer {daemon_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            ] {
+                let response = app.clone().oneshot(request).await.unwrap();
+                assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+            }
+        }
+
         // Scoped tokens never become bearer credentials for protected routes.
         let scoped_as_bearer = app
             .oneshot(

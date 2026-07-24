@@ -65,7 +65,9 @@ use std::sync::Arc;
 use axum::{middleware, Router};
 use tower_http::services::{ServeDir, ServeFile};
 
-use crate::middleware::auth::{require_bearer_token, require_token_header_or_query};
+use crate::middleware::auth::{
+    require_bearer_token, require_daemon_token_header_or_query, require_token_header_or_query,
+};
 
 /// Configure all routes, applying bearer token middleware to protected endpoints.
 pub fn configure(state: Arc<crate::state::AppState>) -> Router {
@@ -89,15 +91,19 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         // the origin guard below still fronts it.
         .merge(devices::public_routes(state.clone()));
 
-    // ── Session control plane (C1/C2): token-required, header OR ?token= ──
-    // `/sessions/{id}/reply|cancel` (agent invocation) and the per-session
-    // SSE stream. The SSE consumer is a browser `EventSource`, which cannot
-    // set an Authorization header, so this group accepts `?token=` as the
-    // header-equivalent — validated by the same fail-closed, constant-time
-    // core as the bearer middleware. Applied at composition (not inside
-    // session_events.rs) so the auth story lives in one place.
-    let session_control = session_events::routes(state.clone()).layer(
+    // ── Session event stream: long-lived OR scoped token ──
+    // The browser EventSource cannot set an Authorization header, so the SSE
+    // route accepts `?token=`, including short-lived stream-scoped tokens.
+    let session_event_stream = session_events::event_routes(state.clone()).layer(
         middleware::from_fn_with_state(state.clone(), require_token_header_or_query),
+    );
+
+    // ── Session control plane: long-lived token only, header OR ?token= ──
+    // Reply invokes the agent and cancel mutates a live turn. Preserve the
+    // established query-token transport for native clients, but do not admit
+    // stream-scoped credentials to either endpoint.
+    let session_control = session_events::control_routes(state.clone()).layer(
+        middleware::from_fn_with_state(state.clone(), require_daemon_token_header_or_query),
     );
 
     // ── Debug: env-gated panic-injection endpoint (durability #560 dogfood) ──
@@ -201,6 +207,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
     // by the auth and origin layers above.
     public
         .merge(protected)
+        .merge(session_event_stream)
         .merge(session_control)
         .layer(middleware::from_fn(
             crate::middleware::origin_guard::require_allowed_origin,
