@@ -100,7 +100,22 @@ async fn upload_handler(
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-        let file_path = dir.join(&filename);
+        let file_path = dir.join(&attachment_id);
+        let canonical_uploads_base = fs::canonicalize(&uploads_base)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let canonical_parent =
+            fs::canonicalize(file_path.parent().expect("attachment path has parent"))
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if !canonical_parent.starts_with(&canonical_uploads_base) {
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+        let file_path = canonical_parent.join(
+            file_path
+                .file_name()
+                .expect("generated attachment path has basename"),
+        );
         fs::write(&file_path, &data)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
