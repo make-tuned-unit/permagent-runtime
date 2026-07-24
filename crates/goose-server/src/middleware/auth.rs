@@ -17,9 +17,11 @@
 //!   does not reveal which class of token (if any) matched.
 //! - A device-token match records last-seen on the registry (in-memory always,
 //!   persisted throttled — never a write per request).
-//! - `require_token_header_or_query` additionally accepts `?token=` for the
-//!   streaming endpoints whose browser clients cannot set headers
-//!   (`EventSource` for the per-session SSE, `WebSocket` for `/events`).
+//! - `require_token_header_or_query` additionally accepts scoped `?token=`
+//!   credentials for streaming endpoints whose browser clients cannot set
+//!   headers (`EventSource` for the per-session SSE, `WebSocket` for `/events`).
+//! - `require_daemon_token_header_or_query` accepts the established daemon or
+//!   device credential via either transport, but never scoped stream tokens.
 //!   The access log never emits query strings (see `access_log.rs`), so a
 //!   query-borne token does not leak into daemon logs.
 
@@ -173,6 +175,20 @@ pub async fn require_token_header_or_query(
     let header = bearer_token(request.headers());
     let provided = header.or(query.token.as_deref());
     validate_stream_token(&state, provided, query.token.as_deref())?;
+    Ok(next.run(request).await)
+}
+
+/// Token middleware for endpoints whose native and browser clients use either
+/// the bearer header or `?token=`, but which require a long-lived daemon/device
+/// credential. Scoped stream tokens are intentionally not considered.
+pub async fn require_daemon_token_header_or_query(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<TokenQuery>,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let header = bearer_token(request.headers());
+    validate_daemon_token(&state, header.or(query.token.as_deref()))?;
     Ok(next.run(request).await)
 }
 
