@@ -341,6 +341,17 @@ mod tests {
             d.tier, 2,
             "unseeded capability class fails closed to Tier 2"
         );
+        assert_eq!(
+            d.payload
+                .get("action_class")
+                .and_then(|value| value.as_str()),
+            Some(CAPABILITY_ACTION_CLASS),
+            "the persisted action class identifies worker capability gates"
+        );
+        assert!(
+            d.payload.get("resume").is_none(),
+            "resume is not part of the typed risk_gate payload"
+        );
     }
 
     #[tokio::test]

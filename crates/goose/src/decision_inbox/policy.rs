@@ -9,11 +9,12 @@
 //!    403) and the goal does not move — tested end-to-end below.
 //!
 //! 2. [`resume_answered_decision`] — resume:auto for the answer shapes L1's
-//!    route-level `execute_effect` does NOT cover: `choice` answers and
-//!    `unblock` answered with `input` on a parked goal. The goal becomes
-//!    re-dispatch-eligible (Triage → Ready through the guard, attention flag
-//!    cleared, attempt cap extended) — dispatching remains the orchestrator's
-//!    heartbeat job, same as L1's own unblock-approve effect.
+//!    route-level `execute_effect` does NOT cover: `choice` answers,
+//!    `unblock` answered with `input`, and approved worker capability gates
+//!    on a parked goal. The goal becomes re-dispatch-eligible (Triage → Ready
+//!    through the guard, attention flag cleared, attempt cap extended) —
+//!    dispatching remains the orchestrator's heartbeat job, same as L1's own
+//!    unblock-approve effect.
 //!
 //! Everything here is deterministic Rust. Zero cloud tokens.
 
@@ -132,12 +133,16 @@ async fn henry_approve_effect(
 }
 
 /// resume:auto for answer shapes L1's `execute_effect` does not cover:
-/// `("choice", "choice")` and `("unblock", "input")` on a PARKED goal.
+/// `("choice", "choice")`, `("unblock", "input")`, and approved capability
+/// `risk_gate` decisions on a PARKED goal.
 ///
 /// Re-dispatch eligibility = (Failed | Triage) → Ready through the guard with
 /// `needs_human_attention` cleared and the attempt cap extended (same shape
 /// as L1's unblock-approve effect). Returns `Ok(None)` when the decision is
-/// not one of those shapes, has no goal, or the goal is not parked.
+/// Capability gates are identified by the `worker_capability_request` action
+/// class stored in their typed payload. Other approved risk gates are not
+/// resumable. Returns `Ok(None)` when the decision is not one of those shapes,
+/// has no goal, or the goal is not parked.
 ///
 /// Call site: the catch-all arm of L1's `execute_effect`
 /// (crates/goose-server/src/routes/decisions.rs) — coordinator inserts the
@@ -147,11 +152,18 @@ pub async fn resume_answered_decision(
     decision: &Decision,
     proof: DecisionProof,
 ) -> Result<Option<String>, GuardError> {
-    let resumable = matches!(
+    let resumable_answer = matches!(
         (decision.kind.as_str(), decision.answer.as_deref()),
         ("choice", Some("choice")) | ("unblock", Some("input"))
     );
-    if !resumable {
+    let approved_capability = decision.kind == "risk_gate"
+        && decision.answer.as_deref() == Some("approve")
+        && decision
+            .payload
+            .get("action_class")
+            .and_then(|value| value.as_str())
+            == Some(super::sink::CAPABILITY_ACTION_CLASS);
+    if !resumable_answer && !approved_capability {
         return Ok(None);
     }
     let goal_id = match decision.goal_id.as_deref() {
@@ -431,6 +443,105 @@ mod tests {
                 .and_then(|v| v.as_u64()),
             Some(3 + goal_transition::DEFAULT_ATTEMPT_CAP)
         );
+    }
+
+    #[tokio::test]
+    async fn approved_capability_risk_gate_resumes_parked_goal() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(
+            &pool,
+            "triage",
+            serde_json::json!({
+                "needs_human_attention": true,
+                "attempt_count": 2,
+            }),
+        )
+        .await;
+
+        let d = decisions::create_decision(
+            &pool,
+            decisions::NewDecision {
+                kind: "risk_gate".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Allow workers to send outbound email".to_string()),
+                detail: Some("Notification work needs the email capability".to_string()),
+                payload: serde_json::json!({
+                    "action_class": super::super::sink::CAPABILITY_ACTION_CLASS,
+                    "description": "send outbound email",
+                    "requested_by": "codex"
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let (answered, proof) = decisions::answer_decision(
+            &pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            decisions::ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+
+        let effect = resume_answered_decision(&pool, &answered, proof)
+            .await
+            .unwrap();
+        assert!(effect.is_some(), "approved capability gate must resume");
+        assert_eq!(state_of(&pool, &goal.id).await, "ready");
+    }
+
+    #[tokio::test]
+    async fn approved_non_capability_risk_gate_does_not_resume_parked_goal() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(
+            &pool,
+            "triage",
+            serde_json::json!({"needs_human_attention": true}),
+        )
+        .await;
+
+        let d = decisions::create_decision(
+            &pool,
+            decisions::NewDecision {
+                kind: "risk_gate".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Permission to delete saved work".to_string()),
+                detail: Some("Delete a goal card and its saved data".to_string()),
+                payload: serde_json::json!({
+                    "action_class": "user_data_deletion",
+                    "description": "delete goal",
+                    "requested_by": "test"
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let (answered, proof) = decisions::answer_decision(
+            &pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            decisions::ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+
+        let effect = resume_answered_decision(&pool, &answered, proof)
+            .await
+            .unwrap();
+        assert!(effect.is_none(), "non-capability gate must not resume");
+        assert_eq!(state_of(&pool, &goal.id).await, "triage");
     }
 
     #[tokio::test]
