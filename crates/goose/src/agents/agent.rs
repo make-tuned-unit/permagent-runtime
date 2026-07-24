@@ -628,6 +628,10 @@ impl Agent {
         let input_summary =
             redacted_tool_input_summary(&tool_call.name, tool_call.arguments.as_ref());
         tracing::Span::current().record("input", tracing::field::display(&input_summary));
+        // Redacted args for task-completion logging (never the raw arguments,
+        // which can carry secrets — see the redacted summary above).
+        let args_value: Option<serde_json::Value> =
+            Some(serde_json::json!({ "input": input_summary.clone() }));
 
         self.prompt_manager
             .lock()
