@@ -106,7 +106,12 @@ async fn streaming_lifecycle_truth_signals() {
     std::env::set_var("PERMAGENT_PATH_ROOT", tmp.path());
 
     let state = permagent_daemon::state::AppState::new(true).await.unwrap();
-    let app = permagent_daemon::routes::session_events::routes(state.clone());
+    // The router was split (scoped stream tokens must not reach reply/cancel):
+    // this test drives both the SSE stream and POST /cancel with no auth layer,
+    // so merge the event + control routers to mount all three handlers.
+    let app = permagent_daemon::routes::session_events::event_routes(state.clone()).merge(
+        permagent_daemon::routes::session_events::control_routes(state.clone()),
+    );
 
     // A real session — /sessions/{id}/events 404s for unknown sessions.
     let session = state
