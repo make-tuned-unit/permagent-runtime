@@ -37,6 +37,7 @@ import { formatAge } from './format';
 import { usePersona } from '../../settings/useSettings';
 import { useCommandCenter } from '../../../lib/store';
 import { toast } from '../../../lib/notifications';
+import { isSafeHttpUrl } from '../../../lib/url';
 
 interface Props {
   decision: Decision;
@@ -319,11 +320,13 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
               <div key={`${kind}-${name}-${index}`} style={{ borderLeft: `2px solid ${colors.purpleBright}`, paddingLeft: 9 }}>
                 <div style={{ color: colors.text, fontSize: 12, fontWeight: 600 }}>{kind}: {name}</div>
                 {note && <div style={{ color: colors.textMuted, fontSize: 11 }}>{note}</div>}
-                {source && (
+                {source && isSafeHttpUrl(source) ? (
                   <a href={source} target="_blank" rel="noreferrer" style={{ color: colors.cyan, fontSize: 11 }}>
                     Source
                   </a>
-                )}
+                ) : source ? (
+                  <span style={{ color: colors.textMuted, fontSize: 11 }}>Source</span>
+                ) : null}
               </div>
             );
           })}

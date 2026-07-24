@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../../lib/api';
 import { navigateToTool } from '../../lib/store';
 import { relativeTimeAgo } from '../../lib/time-decay';
+import { isSafeHttpUrl } from '../../lib/url';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Panel } from './Panel';
@@ -138,7 +139,11 @@ export function EcosystemPanel({ project }: { project: Project }) {
                 </div>
                 {item.note && <div style={{ color: colors.textMuted, fontSize: 11, marginTop: 2 }}>{item.note}</div>}
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 3, fontSize: 10 }}>
-                  <a href={item.source_url} target="_blank" rel="noreferrer" style={{ color: colors.cyan }}>Source</a>
+                  {isSafeHttpUrl(item.source_url) ? (
+                    <a href={item.source_url} target="_blank" rel="noreferrer" style={{ color: colors.cyan }}>Source</a>
+                  ) : (
+                    <span style={{ color: colors.textMuted }}>Source</span>
+                  )}
                   <span style={{ color: colors.textDim }}>{new Date(item.created_at).toLocaleDateString()}</span>
                 </div>
               </div>
