@@ -835,6 +835,38 @@ mod tests {
     }
 
     #[test]
+    fn pdf_extraction_caps_pages_and_marks_truncation() {
+        let bytes = build_test_pdf(PDF_PARAGRAPH, true);
+        let text =
+            pdf::extract_pdf_text_for_test(&bytes, 0, 256, std::time::Duration::from_secs(1));
+
+        assert!(text.contains("PDF extraction truncated"));
+        assert!(text.len() <= 256);
+        assert!(!text.contains("Wealthie"));
+    }
+
+    #[test]
+    fn pdf_extraction_caps_text_and_marks_truncation() {
+        let bytes = build_test_pdf(PDF_PARAGRAPH, true);
+        let text =
+            pdf::extract_pdf_text_for_test(&bytes, 1, 128, std::time::Duration::from_secs(1));
+
+        assert!(text.contains("PDF extraction truncated"));
+        assert!(text.len() <= 128);
+        assert!(text.starts_with("Wealthie"));
+    }
+
+    #[test]
+    fn pdf_extraction_respects_expired_deadline() {
+        let bytes = build_test_pdf(PDF_PARAGRAPH, true);
+        let text = pdf::extract_pdf_text_for_test(&bytes, 1, 256, std::time::Duration::ZERO);
+
+        assert!(text.contains("PDF extraction truncated"));
+        assert!(text.len() <= 256);
+        assert!(!text.contains("Wealthie"));
+    }
+
+    #[test]
     fn fontless_pdf_falls_back_to_raw_walk() {
         // No font resources → encoding-aware path yields nothing → the legacy
         // raw walk still recovers whatever bytes the stream shows.
