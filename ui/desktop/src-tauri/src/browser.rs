@@ -540,9 +540,9 @@ fn snapshot_js(cap: usize) -> String {
     )
 }
 
-fn act_js(args_json: &str, cap: usize) -> String {
+fn act_js(args_json: &str, expected_url_json: &str, cap: usize) -> String {
     format!(
-        "(function(){{\n{GROUNDING_JS}\nreturn JSON.stringify(__permagentAct({args_json}, {cap}));\n}})()"
+        "(function(){{\n{GROUNDING_JS}\nif (String(window.location.href) !== {expected_url_json}) return JSON.stringify({{ok:false,error:'The page changed since the snapshot. Take a fresh snapshot before acting.'}});\nreturn JSON.stringify(__permagentAct({args_json}, {cap}));\n}})()"
     )
 }
 
@@ -590,6 +590,7 @@ pub async fn act_on_ref(
     ref_id: u32,
     action: String,
     value: Option<String>,
+    expected_url: String,
 ) -> Result<ActResult, String> {
     if !matches!(action.as_str(), "click" | "type" | "select") {
         return Err(format!("Unsupported action: {action}"));
@@ -604,13 +605,28 @@ pub async fn act_on_ref(
     };
     let args_json =
         serde_json::to_string(&args).map_err(|e| format!("Serialize args failed: {e}"))?;
-    let js = act_js(&args_json, MAX_SNAPSHOT_ELEMENTS);
+    let expected_url_json = serde_json::to_string(&expected_url)
+        .map_err(|e| format!("Serialize expected URL failed: {e}"))?;
+    let js = act_js(&args_json, &expected_url_json, MAX_SNAPSHOT_ELEMENTS);
     eval_returning_json(&webview, &js, std::time::Duration::from_secs(8))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn act_script_rejects_a_changed_page_before_acting() {
+        let js = act_js(
+            r#"{"ref":1,"action":"click"}"#,
+            r#""https://example.com/form""#,
+            MAX_SNAPSHOT_ELEMENTS,
+        );
+        let guard = js.find("window.location.href").unwrap();
+        let act = js.find("__permagentAct({").unwrap();
+        assert!(guard < act);
+        assert!(js.contains("The page changed since the snapshot"));
+    }
 
     #[test]
     fn truncation_offsets_are_valid_utf8_boundaries() {
