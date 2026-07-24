@@ -355,6 +355,22 @@ pub struct ToolApprovalPayload {
     pub security_message: Option<String>,
 }
 
+/// Structural checks beyond serde for a tool approval: every routing identity
+/// must be present and non-empty. A card without any one of these values cannot
+/// reach the parked waiter when answered, so it is stored as malformed.
+fn validate_tool_approval_payload(p: &ToolApprovalPayload) -> Result<(), String> {
+    for (name, value) in [
+        ("session_id", &p.session_id),
+        ("request_id", &p.request_id),
+        ("tool_name", &p.tool_name),
+    ] {
+        if value.trim().is_empty() {
+            return Err(format!("tool_approval requires a non-empty '{name}'"));
+        }
+    }
+    Ok(())
+}
+
 /// Payload for `kind='session_gate'` (S3, #429) — a supervised terminal
 /// Claude Code session (epic #399) is BLOCKED on a `can_use_tool` permission
 /// gate. Filed by the S2 gate parser's bridge
@@ -640,9 +656,12 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
                 Err(e) => Err(e.to_string()),
             }
         }
-        "tool_approval" => serde_json::from_value::<ToolApprovalPayload>(req.payload.clone())
-            .map(|_| ())
-            .map_err(|e| e.to_string()),
+        "tool_approval" => {
+            match serde_json::from_value::<ToolApprovalPayload>(req.payload.clone()) {
+                Ok(p) => validate_tool_approval_payload(&p),
+                Err(e) => Err(e.to_string()),
+            }
+        }
         "session_gate" => match serde_json::from_value::<SessionGatePayload>(req.payload.clone()) {
             Ok(p) => validate_session_gate_payload(&p),
             Err(e) => Err(e.to_string()),
@@ -1132,6 +1151,26 @@ pub enum AnswerError {
     Db(String),
 }
 
+/// Answers that have a real consumer for each decision kind. This is checked
+/// before the open → answered transaction so an unsupported shape remains
+/// retryable instead of closing a card whose effect cannot be delivered.
+fn answer_allowed_for_kind(kind: &str, answer: &str) -> bool {
+    match kind {
+        "approve_review"
+        | "risk_gate"
+        | "enrichment_proposal"
+        | "project_intel_proposal"
+        | "file_to_project"
+        | "tool_approval"
+        | "session_gate"
+        | "malformed" => matches!(answer, "approve" | "reject"),
+        "unblock" => matches!(answer, "approve" | "reject" | "input"),
+        "choice" => matches!(answer, "choice" | "reject"),
+        "automation_proposal" => matches!(answer, "approve" | "reject" | "edit"),
+        _ => false,
+    }
+}
+
 impl std::fmt::Display for AnswerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1195,14 +1234,17 @@ pub async fn answer_decision(
         _ => {}
     }
 
-    // Kind/answer compatibility.
-    match decision.kind.as_str() {
+    // Kind/answer compatibility. Keep this before opening the write
+    // transaction: incompatible answers must leave the decision open.
+    if !answer_allowed_for_kind(&decision.kind, &answer.answer) {
+        return Err(AnswerError::Invalid(format!(
+            "answer '{}' is not supported for decision kind '{}'",
+            answer.answer, decision.kind
+        )));
+    }
+
+    match answer.answer.as_str() {
         "choice" => {
-            if answer.answer != "choice" {
-                return Err(AnswerError::Invalid(
-                    "choice decisions must be answered with answer='choice'".to_string(),
-                ));
-            }
             let choice_id = answer.choice_id.as_deref().ok_or_else(|| {
                 AnswerError::Invalid("choice answer requires choice_id".to_string())
             })?;
@@ -1215,25 +1257,22 @@ pub async fn answer_decision(
                 )));
             }
         }
-        _ => {
-            if answer.answer == "choice" {
-                return Err(AnswerError::Invalid(format!(
-                    "answer 'choice' is only valid for choice decisions (kind is '{}')",
-                    decision.kind
-                )));
-            }
-            if answer.answer == "input" && answer.input_text.as_deref().unwrap_or("").is_empty() {
+        "input" => {
+            if answer.input_text.as_deref().unwrap_or("").is_empty() {
                 return Err(AnswerError::Invalid(
                     "answer 'input' requires input_text".to_string(),
                 ));
             }
-            // approve-with-edits carries the revised draft in input_text.
-            if answer.answer == "edit" && answer.input_text.as_deref().unwrap_or("").is_empty() {
+        }
+        // approve-with-edits carries the revised draft in input_text.
+        "edit" => {
+            if answer.input_text.as_deref().unwrap_or("").is_empty() {
                 return Err(AnswerError::Invalid(
                     "answer 'edit' requires input_text (the revised draft)".to_string(),
                 ));
             }
         }
+        _ => {}
     }
 
     let resolved_at = now_timestamp();
@@ -1679,6 +1718,29 @@ mod tests {
             d.payload.get("original_kind").and_then(|v| v.as_str()),
             Some("tool_approval")
         );
+    }
+
+    #[tokio::test]
+    async fn tool_approval_empty_routing_identities_are_malformed() {
+        for field in ["session_id", "request_id", "tool_name"] {
+            let pool = test_pool().await;
+            let mut req = valid_tool_approval();
+            req.payload[field] = serde_json::json!(" \t");
+            let d = create_decision(&pool, req).await.unwrap();
+            assert_eq!(d.kind, "malformed", "{field} must be non-empty");
+            assert_eq!(
+                d.payload.get("original_kind").and_then(|v| v.as_str()),
+                Some("tool_approval")
+            );
+            assert!(
+                d.payload
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|error| error.contains(field)),
+                "malformed reason must identify {field}: {:?}",
+                d.payload.get("error")
+            );
+        }
     }
 
     // ── Supersede (single decision, legacy-prompt desync fix) ──
@@ -2258,6 +2320,117 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(answered.answer_choice_id.as_deref(), Some("blue"));
+    }
+
+    #[tokio::test]
+    async fn choice_can_still_be_rejected_without_selecting_an_option() {
+        let pool = test_pool().await;
+        let d = create_decision(
+            &pool,
+            NewDecision {
+                kind: "choice".to_string(),
+                headline: Some("Pick the colour for the new room".to_string()),
+                detail: Some("technical context".to_string()),
+                payload: serde_json::json!({
+                    "question": "Which colour?",
+                    "options": [
+                        {"id": "red", "label": "Red"},
+                        {"id": "blue", "label": "Blue"}
+                    ]
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let (answered, _) = answer_decision(
+            &pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: "reject".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        assert_eq!(answered.answer.as_deref(), Some("reject"));
+        assert_eq!(answered.answer_choice_id, None);
+    }
+
+    #[tokio::test]
+    async fn incompatible_answers_leave_binary_decisions_open() {
+        for (req, answer) in [
+            (valid_tool_approval(), "input"),
+            (valid_file_to_project(), "edit"),
+        ] {
+            let pool = test_pool().await;
+            let d = create_decision(&pool, req).await.unwrap();
+            let err = answer_decision(
+                &pool,
+                &d.id,
+                &DecisionAnswer {
+                    answer: answer.to_string(),
+                    input_text: Some("unsupported content".to_string()),
+                    ..Default::default()
+                },
+                ACTOR_JESSE,
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                matches!(err, AnswerError::Invalid(_)),
+                "{answer} must be rejected for {}: {err:?}",
+                d.kind
+            );
+
+            let unchanged = get_decision(&pool, &d.id).await.unwrap().unwrap();
+            assert_eq!(unchanged.status, "open");
+            assert_eq!(unchanged.answer, None);
+            assert_eq!(unchanged.resolved_at, None);
+            let audit_count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM decision_audit WHERE decision_id = ?")
+                    .bind(&d.id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(audit_count, 1, "only the creation audit should exist");
+        }
+    }
+
+    #[tokio::test]
+    async fn real_non_binary_answer_shapes_remain_supported() {
+        let pool = test_pool().await;
+        let unblock = create_decision(&pool, valid_unblock()).await.unwrap();
+        let (answered, _) = answer_decision(
+            &pool,
+            &unblock.id,
+            &DecisionAnswer {
+                answer: "input".to_string(),
+                input_text: Some("Try again with a smaller scope".to_string()),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        assert_eq!(answered.answer.as_deref(), Some("input"));
+
+        let proposal = create_decision(&pool, draft_proposal()).await.unwrap();
+        let (answered, _) = answer_decision(
+            &pool,
+            &proposal.id,
+            &DecisionAnswer {
+                answer: "edit".to_string(),
+                input_text: Some("git pull --rebase".to_string()),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        assert_eq!(answered.answer.as_deref(), Some("edit"));
     }
 
     // ── approve-with-edits (edit-as-training) ──
