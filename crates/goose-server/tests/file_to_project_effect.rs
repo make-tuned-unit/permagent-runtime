@@ -33,12 +33,16 @@ async fn body_json(resp: axum::response::Response) -> serde_json::Value {
 }
 
 fn post_json(uri: &str, body: serde_json::Value) -> Request<Body> {
-    Request::builder()
+    let mut request = Request::builder()
         .uri(uri)
         .method("POST")
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
-        .unwrap()
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(permagent_daemon::middleware::auth::AuthPrincipal::Master);
+    request
 }
 
 fn file_decision(project_id: &str, people: Vec<&str>) -> NewDecision {

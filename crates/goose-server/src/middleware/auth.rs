@@ -113,15 +113,26 @@ pub fn validate_with_devices(
 /// the voice WS upgrade — so per-device tokens work on all rails. A device
 /// match touches the registry's last-seen (throttled persistence).
 pub fn validate_daemon_token(state: &AppState, provided: Option<&str>) -> Result<(), StatusCode> {
-    match validate_with_devices(
+    authenticate_daemon_token(state, provided)?;
+    Ok(())
+}
+
+/// Authenticate a long-lived daemon/device credential and return the principal
+/// downstream code may use for audit attribution.
+pub fn authenticate_daemon_token(
+    state: &AppState,
+    provided: Option<&str>,
+) -> Result<AuthPrincipal, StatusCode> {
+    let principal = validate_with_devices(
         state.daemon_token.as_deref(),
         &state.device_registry,
         provided,
-    )? {
+    )?;
+    match &principal {
         AuthPrincipal::Master => {}
-        AuthPrincipal::Device(id) => state.device_registry.touch(&id),
+        AuthPrincipal::Device(id) => state.device_registry.touch(id),
     }
-    Ok(())
+    Ok(principal)
 }
 
 /// Validate a browser stream credential without changing the established
@@ -155,10 +166,11 @@ pub fn bearer_token(headers: &HeaderMap) -> Option<&str> {
 /// Standard bearer-header middleware for the protected router.
 pub async fn require_bearer_token(
     State(state): State<Arc<AppState>>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    validate_daemon_token(&state, bearer_token(request.headers()))?;
+    let principal = authenticate_daemon_token(&state, bearer_token(request.headers()))?;
+    request.extensions_mut().insert(principal);
     Ok(next.run(request).await)
 }
 

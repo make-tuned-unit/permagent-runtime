@@ -7,13 +7,15 @@
 //!   POST /api/decisions/{id}/answer   — answer a decision and execute the gated effect
 //!   GET  /api/decisions/history       — resolved decisions + audit join, cursor pagination
 //!
-//! Actor attribution (S5): HTTP answers are attributed to 'jesse' (single
-//! operator holds the bearer token today). Henry answers Tier-1 in-process as
-//! 'henry-policy'; timers use 'system'. Tier-2 with any other actor → 403.
+//! Actor attribution (S5): HTTP answers are attributed to 'jesse'. The
+//! authenticated master/device principal is recorded separately in the audit
+//! row, since paired devices act as the user. Henry answers Tier-1 in-process
+//! as 'henry-policy'; timers use 'system'. Tier-2 with any other actor → 403.
 
+use crate::middleware::auth::AuthPrincipal;
 use crate::state::AppState;
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Extension, Path, Query, State},
     http::StatusCode,
     routing::{get, post},
     Json, Router,
@@ -125,6 +127,7 @@ async fn list_decisions_handler(
 
 async fn answer_decision_handler(
     State(state): State<Arc<AppState>>,
+    Extension(principal): Extension<AuthPrincipal>,
     Path(decision_id): Path<String>,
     Json(req): Json<AnswerRequest>,
 ) -> Result<Json<AnswerResponse>, (StatusCode, String)> {
@@ -137,11 +140,22 @@ async fn answer_decision_handler(
         input_text: req.input_text,
     };
 
-    // HTTP answers are attributed to 'jesse' (S5).
-    let (decision, proof) =
-        decisions::answer_decision(&pool, &decision_id, &answer, decisions::ACTOR_JESSE)
-            .await
-            .map_err(|e| (status_for_answer_error(&e), e.to_string()))?;
+    // Paired devices act as Jesse, preserving the existing tier gate. Record
+    // the admitting credential separately so the append-only audit can name a
+    // revoked/compromised device after the fact.
+    let audit_principal = match &principal {
+        AuthPrincipal::Master => "master",
+        AuthPrincipal::Device(id) => id,
+    };
+    let (decision, proof) = decisions::answer_decision_with_principal(
+        &pool,
+        &decision_id,
+        &answer,
+        decisions::ACTOR_JESSE,
+        audit_principal,
+    )
+    .await
+    .map_err(|e| (status_for_answer_error(&e), e.to_string()))?;
 
     // Execute the gated effect. The decision is already answered and audited;
     // an effect failure — or a follow-on warning after a committed effect —

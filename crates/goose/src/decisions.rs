@@ -1195,6 +1195,30 @@ pub async fn answer_decision(
     answer: &DecisionAnswer,
     acted_by: &str,
 ) -> Result<(Decision, DecisionProof), AnswerError> {
+    answer_decision_inner(pool, decision_id, answer, acted_by, None).await
+}
+
+/// Answer a decision while durably recording the authenticated HTTP principal.
+///
+/// `acted_by` remains the policy actor used by tier gating; `principal` is the
+/// master credential label or paired-device id used only for audit attribution.
+pub async fn answer_decision_with_principal(
+    pool: &Pool<Sqlite>,
+    decision_id: &str,
+    answer: &DecisionAnswer,
+    acted_by: &str,
+    principal: &str,
+) -> Result<(Decision, DecisionProof), AnswerError> {
+    answer_decision_inner(pool, decision_id, answer, acted_by, Some(principal)).await
+}
+
+async fn answer_decision_inner(
+    pool: &Pool<Sqlite>,
+    decision_id: &str,
+    answer: &DecisionAnswer,
+    acted_by: &str,
+    principal: Option<&str>,
+) -> Result<(Decision, DecisionProof), AnswerError> {
     if !VALID_ACTORS.contains(&acted_by) {
         return Err(AnswerError::Invalid(format!(
             "unknown actor '{}'",
@@ -1302,7 +1326,7 @@ pub async fn answer_decision(
         return Err(AnswerError::AlreadyResolved("answered".to_string()));
     }
 
-    append_audit_tx(
+    append_audit_tx_with_principal(
         &mut tx,
         decision_id,
         decision.goal_id.as_deref(),
@@ -1313,6 +1337,7 @@ pub async fn answer_decision(
             .payload
             .get("evidence_digest")
             .and_then(|v| v.as_str()),
+        principal,
     )
     .await
     .map_err(AnswerError::Db)?;
@@ -1385,6 +1410,39 @@ pub fn compute_audit_row_hash(
     hex::encode(hasher.finalize())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn compute_attributed_audit_row_hash(
+    prev_hash: &str,
+    decision_id: &str,
+    goal_id: &str,
+    acted_by: &str,
+    tier: i64,
+    outcome: &str,
+    evidence_digest: &str,
+    principal: &str,
+    created_at: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(prev_hash.as_bytes());
+    hasher.update(b"|");
+    hasher.update(decision_id.as_bytes());
+    hasher.update(b"|");
+    hasher.update(goal_id.as_bytes());
+    hasher.update(b"|");
+    hasher.update(acted_by.as_bytes());
+    hasher.update(b"|");
+    hasher.update(tier.to_string().as_bytes());
+    hasher.update(b"|");
+    hasher.update(outcome.as_bytes());
+    hasher.update(b"|");
+    hasher.update(evidence_digest.as_bytes());
+    hasher.update(b"|");
+    hasher.update(principal.as_bytes());
+    hasher.update(b"|");
+    hasher.update(created_at.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
 fn now_timestamp() -> String {
     chrono::Utc::now()
         .format("%Y-%m-%dT%H:%M:%S%.3fZ")
@@ -1404,6 +1462,30 @@ pub(crate) async fn append_audit_tx(
     outcome: &str,
     evidence_digest: Option<&str>,
 ) -> Result<(), String> {
+    append_audit_tx_with_principal(
+        tx,
+        decision_id,
+        goal_id,
+        acted_by,
+        tier,
+        outcome,
+        evidence_digest,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn append_audit_tx_with_principal(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    decision_id: &str,
+    goal_id: Option<&str>,
+    acted_by: &str,
+    tier: i64,
+    outcome: &str,
+    evidence_digest: Option<&str>,
+    principal: Option<&str>,
+) -> Result<(), String> {
     let prev_hash: Option<String> =
         sqlx::query_scalar("SELECT row_hash FROM decision_audit ORDER BY seq DESC LIMIT 1")
             .fetch_optional(&mut **tx)
@@ -1411,20 +1493,34 @@ pub(crate) async fn append_audit_tx(
             .map_err(|e| e.to_string())?;
 
     let created_at = now_timestamp();
-    let row_hash = compute_audit_row_hash(
-        prev_hash.as_deref().unwrap_or(""),
-        decision_id,
-        goal_id.unwrap_or(""),
-        acted_by,
-        tier,
-        outcome,
-        evidence_digest.unwrap_or(""),
-        &created_at,
-    );
+    let row_hash = match principal {
+        Some(principal) => compute_attributed_audit_row_hash(
+            prev_hash.as_deref().unwrap_or(""),
+            decision_id,
+            goal_id.unwrap_or(""),
+            acted_by,
+            tier,
+            outcome,
+            evidence_digest.unwrap_or(""),
+            principal,
+            &created_at,
+        ),
+        None => compute_audit_row_hash(
+            prev_hash.as_deref().unwrap_or(""),
+            decision_id,
+            goal_id.unwrap_or(""),
+            acted_by,
+            tier,
+            outcome,
+            evidence_digest.unwrap_or(""),
+            &created_at,
+        ),
+    };
 
     sqlx::query(
         "INSERT INTO decision_audit (decision_id, goal_id, acted_by, tier, outcome, \
-         evidence_digest, prev_hash, row_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         evidence_digest, principal, prev_hash, row_hash, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(decision_id)
     .bind(goal_id)
@@ -1432,6 +1528,7 @@ pub(crate) async fn append_audit_tx(
     .bind(tier)
     .bind(outcome)
     .bind(evidence_digest)
+    .bind(principal)
     .bind(&prev_hash)
     .bind(&row_hash)
     .bind(&created_at)
@@ -1484,7 +1581,7 @@ pub struct AuditChainReport {
 /// recomputing each row_hash. Reports the first break point.
 pub async fn verify_audit_chain(pool: &Pool<Sqlite>) -> Result<AuditChainReport, String> {
     let rows = sqlx::query(
-        "SELECT seq, decision_id, goal_id, acted_by, tier, outcome, evidence_digest, \
+        "SELECT seq, decision_id, goal_id, acted_by, tier, outcome, evidence_digest, principal, \
          prev_hash, row_hash, created_at FROM decision_audit ORDER BY seq ASC",
     )
     .fetch_all(pool)
@@ -1498,6 +1595,7 @@ pub async fn verify_audit_chain(pool: &Pool<Sqlite>) -> Result<AuditChainReport,
         let row_hash: String = r.get("row_hash");
         let goal_id: Option<String> = r.get("goal_id");
         let evidence: Option<String> = r.get("evidence_digest");
+        let principal: Option<String> = r.get("principal");
 
         let stored_prev = prev_hash.unwrap_or_default();
         if stored_prev != expected_prev {
@@ -1512,16 +1610,29 @@ pub async fn verify_audit_chain(pool: &Pool<Sqlite>) -> Result<AuditChainReport,
             });
         }
 
-        let recomputed = compute_audit_row_hash(
-            &stored_prev,
-            r.get::<String, _>("decision_id").as_str(),
-            goal_id.as_deref().unwrap_or(""),
-            r.get::<String, _>("acted_by").as_str(),
-            r.get::<i64, _>("tier"),
-            r.get::<String, _>("outcome").as_str(),
-            evidence.as_deref().unwrap_or(""),
-            r.get::<String, _>("created_at").as_str(),
-        );
+        let recomputed = match principal {
+            Some(principal) => compute_attributed_audit_row_hash(
+                &stored_prev,
+                r.get::<String, _>("decision_id").as_str(),
+                goal_id.as_deref().unwrap_or(""),
+                r.get::<String, _>("acted_by").as_str(),
+                r.get::<i64, _>("tier"),
+                r.get::<String, _>("outcome").as_str(),
+                evidence.as_deref().unwrap_or(""),
+                &principal,
+                r.get::<String, _>("created_at").as_str(),
+            ),
+            None => compute_audit_row_hash(
+                &stored_prev,
+                r.get::<String, _>("decision_id").as_str(),
+                goal_id.as_deref().unwrap_or(""),
+                r.get::<String, _>("acted_by").as_str(),
+                r.get::<i64, _>("tier"),
+                r.get::<String, _>("outcome").as_str(),
+                evidence.as_deref().unwrap_or(""),
+                r.get::<String, _>("created_at").as_str(),
+            ),
+        };
         if recomputed != row_hash {
             return Ok(AuditChainReport {
                 total_rows: rows.len() as u64,

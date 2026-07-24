@@ -977,6 +977,11 @@ impl SessionStorage {
                     if version < 35 {
                         spectral_schema::migrate_v34_to_v35(&self.pool).await?;
                     }
+                    // v36: authenticated master/device principal attribution on
+                    // Decision-Inbox answer audit rows. Additive and idempotent.
+                    if version < 36 {
+                        spectral_schema::migrate_v35_to_v36(&self.pool).await?;
+                    }
                     // Version-independent safety net for the cfg-gated v22
                     // recognition columns. The always-on v23 above can stamp
                     // schema_version past the `version < 22` gate on a feature-off
