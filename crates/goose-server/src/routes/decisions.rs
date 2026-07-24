@@ -160,8 +160,18 @@ async fn answer_decision_handler(
     // Execute the gated effect. The decision is already answered and audited;
     // an effect failure — or a follow-on warning after a committed effect —
     // is reported (and audit-logged), not silently dropped.
+    let claim_key = decisions::effect_outbox_claim_key(&decision.id, &decision.kind);
     let (effect, effect_error) = match execute_effect(&pool, &decision, proof).await {
         Ok((effect, warning)) => {
+            if let Some(ref claim_key) = claim_key {
+                if let Err(e) = decisions::mark_effect_outbox_applied(&pool, claim_key).await {
+                    tracing::error!(
+                        "Decision {} effect outbox could not be marked applied: {}",
+                        decision.id,
+                        e
+                    );
+                }
+            }
             if let Some(ref w) = warning {
                 record_effect_failure(&pool, &decision, w).await;
             }
@@ -169,6 +179,17 @@ async fn answer_decision_handler(
         }
         Err(e) => {
             let msg = e.to_string();
+            if let Some(ref claim_key) = claim_key {
+                if let Err(mark_err) =
+                    decisions::mark_effect_outbox_failed(&pool, claim_key, &msg).await
+                {
+                    tracing::error!(
+                        "Decision {} effect outbox could not be marked failed: {}",
+                        decision.id,
+                        mark_err
+                    );
+                }
+            }
             record_effect_failure(&pool, &decision, &msg).await;
             (None, Some(msg))
         }
@@ -1131,6 +1152,10 @@ mod tests {
         .unwrap();
 
         let (effect, warning) = execute_effect(&pool, &answered, proof).await.unwrap();
+        let claim_key = decisions::effect_outbox_claim_key(&answered.id, &answered.kind).unwrap();
+        decisions::mark_effect_outbox_applied(&pool, &claim_key)
+            .await
+            .unwrap();
         assert_eq!(effect.as_deref(), Some("goal approved: Review → Complete"));
         assert!(
             warning.is_none(),
@@ -1151,6 +1176,13 @@ mod tests {
             Some("ready"),
             "the dependent goal must be promoted once its dependency completes"
         );
+        let outbox_status: String =
+            permagent::sqlx::query_scalar("SELECT status FROM effect_outbox WHERE claim_key = ?")
+                .bind(claim_key)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(outbox_status, "applied");
     }
 
     // ── Tool-confirmation bridge round-trip (the real trust-mode fix) ──
