@@ -980,11 +980,89 @@ pub(crate) async fn dispatch_goal_fn(
         }
     };
 
+    // Atomically claim this Ready goal before starting any worker. The claim
+    // token ties all post-spawn bookkeeping and cleanup to this exact attempt.
+    // Concurrent dispatchers may have selected/built an engine, but only the
+    // transaction winner below is authorized to call `spawn`.
+    let attempt_count = card
+        .metadata_json
+        .get("attempt_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let next_attempt = attempt_count.saturating_add(1);
+    let dispatched_at = chrono::Utc::now().to_rfc3339();
+    let dispatch_claim_id = uuid::Uuid::new_v4().to_string();
+    let mut claim_patch = serde_json::Map::new();
+    claim_patch.insert(
+        "dispatch_claim_id".to_string(),
+        serde_json::json!(dispatch_claim_id),
+    );
+    claim_patch.insert("worker_key".to_string(), serde_json::json!(worker_key));
+    claim_patch.insert(
+        "capability_snapshot".to_string(),
+        capability_snapshot.clone(),
+    );
+    claim_patch.insert(
+        "dispatched_at".to_string(),
+        serde_json::json!(dispatched_at),
+    );
+    if card.metadata_json.get("first_dispatched_at").is_none() {
+        claim_patch.insert(
+            "first_dispatched_at".to_string(),
+            serde_json::json!(dispatched_at),
+        );
+    }
+    claim_patch.insert("attempt_count".to_string(), serde_json::json!(next_attempt));
+    claim_patch.insert(
+        "dispatched_lifecycle".to_string(),
+        serde_json::json!(daemon_lifecycle_id()),
+    );
+    if let Some(ref baseline) = baseline_commit {
+        claim_patch.insert("baseline_commit".to_string(), serde_json::json!(baseline));
+    }
+    if let Some(checks) = seeded_checks.clone() {
+        claim_patch.insert("completion_checks".to_string(), checks);
+        claim_patch.insert(
+            "completion_checks_source".to_string(),
+            serde_json::json!(checks_source),
+        );
+    }
+    goal_transition::advance_goal_checked(
+        &pool,
+        card_id,
+        GoalAction::Dispatch,
+        decisions::ACTOR_SYSTEM,
+        None,
+        TransitionEffects {
+            metadata_patch: claim_patch,
+            assigned_to: Some(worker_key.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .map_err(String::from)?;
+
     let goal_engine::DispatchedWork {
         run_id: session_id,
         join,
         kill,
-    } = engine.spawn(task).await?;
+    } = match engine.spawn(task).await {
+        Ok(work) => work,
+        Err(error) => {
+            let release_reason = format!("Worker spawn failed: {error}");
+            goal_transition::release_dispatch_claim(
+                &pool,
+                card_id,
+                &dispatch_claim_id,
+                &release_reason,
+            )
+            .await
+            .map_err(|release_error| {
+                format!("{error}; additionally failed to release dispatch claim: {release_error}")
+            })?;
+            return Err(error);
+        }
+    };
 
     // Register the worker kill handle so the cancel path (#490) can stop it.
     register_goal_worker(card_id, kill);
@@ -992,10 +1070,17 @@ pub(crate) async fn dispatch_goal_fn(
     // Spawn completion tracker — awaits the engine's outcome and transitions
     // the card. Success / retriable failure route to handle_goal_completion;
     // a timeout parks the goal (unblock decision) via handle_goal_timeout.
+    // It is gated until post-spawn metadata is durably attached to this claim.
+    let (tracker_start_tx, tracker_start_rx) = tokio::sync::oneshot::channel();
     let tracker_card_id = card_id.to_string();
     let tracker_project_id = card.project_id.clone();
     let tracker_pool = pool.clone();
+    let tracker_context = context.clone();
+    let tracker_probe_cache = ProbeCache::new();
     tokio::spawn(async move {
+        if tracker_start_rx.await.is_err() {
+            return;
+        }
         // #210: beat the execution receipt while awaiting the worker, so a
         // dispatch owned by THIS lifecycle stays visibly live (rebind-vs-stale
         // on restart). The heartbeat proves the tracker is alive — not that the
@@ -1067,13 +1152,41 @@ pub(crate) async fn dispatch_goal_fn(
                     .await
             }
             goal_engine::GoalOutcome::Failed(error) => {
-                handle_goal_completion(
+                let completion = handle_goal_completion(
                     &tracker_pool,
                     &tracker_card_id,
                     &tracker_project_id,
                     Err(error),
                 )
-                .await
+                .await;
+                if completion.is_ok() {
+                    let is_ready = match cards::get_card(&tracker_pool, &tracker_card_id).await {
+                        Ok(Some(card)) => match cards::get_column(&tracker_pool, &card.column_id)
+                            .await
+                        {
+                            Ok(Some(column)) => column.state_binding.as_deref() == Some("ready"),
+                            _ => false,
+                        },
+                        _ => false,
+                    };
+                    if is_ready {
+                        if let Err(error) = Box::pin(dispatch_goal_fn(
+                            &tracker_context,
+                            &tracker_probe_cache,
+                            &tracker_card_id,
+                        ))
+                        .await
+                        {
+                            tracing::warn!(
+                                target: "permagentd::brain",
+                                "Failed to redispatch retriable goal {} in-process: {}",
+                                tracker_card_id,
+                                error
+                            );
+                        }
+                    }
+                }
+                completion
             }
             goal_engine::GoalOutcome::TimedOut { secs } => {
                 handle_goal_timeout(&tracker_pool, &tracker_card_id, &tracker_project_id, secs)
@@ -1102,13 +1215,6 @@ pub(crate) async fn dispatch_goal_fn(
     // Ready → InProgress through the goal-transition guard (tier-0
     // 'dispatch'): worker metadata, dispatch timestamps, attempt count,
     // baseline_commit, and the column move land in one audited transaction.
-    let attempt_count = card
-        .metadata_json
-        .get("attempt_count")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let dispatched_at = chrono::Utc::now().to_rfc3339();
-
     // Per-attempt worker session history for token accounting (S4).
     let mut worker_session_ids: Vec<String> = card
         .metadata_json
@@ -1132,7 +1238,7 @@ pub(crate) async fn dispatch_goal_fn(
         capability_snapshot.clone(),
         daemon_lifecycle_id().to_string(),
         dispatched_at.clone(),
-        attempt_count + 1,
+        next_attempt,
     );
 
     let mut patch = serde_json::Map::new();
@@ -1165,10 +1271,7 @@ pub(crate) async fn dispatch_goal_fn(
             serde_json::json!(dispatched_at),
         );
     }
-    patch.insert(
-        "attempt_count".to_string(),
-        serde_json::json!(attempt_count + 1),
-    );
+    patch.insert("attempt_count".to_string(), serde_json::json!(next_attempt));
     // Tag the dispatch with the current daemon lifecycle so restart-recovery
     // won't reclaim this goal while its in-process tracker is still alive.
     patch.insert(
@@ -1193,20 +1296,27 @@ pub(crate) async fn dispatch_goal_fn(
         );
     }
 
-    goal_transition::advance_goal_checked(
-        &pool,
-        card_id,
-        GoalAction::Dispatch,
-        decisions::ACTOR_SYSTEM,
-        None,
-        TransitionEffects {
-            metadata_patch: patch,
-            assigned_to: Some(worker_key.clone()),
-            ..Default::default()
-        },
-    )
-    .await
-    .map_err(String::from)?;
+    if let Err(error) =
+        goal_transition::finalize_dispatch_claim(&pool, card_id, &dispatch_claim_id, patch).await
+    {
+        if let Some(kill) = take_goal_worker(card_id) {
+            kill.kill();
+        }
+        let release_result = goal_transition::release_dispatch_claim(
+            &pool,
+            card_id,
+            &dispatch_claim_id,
+            &format!("Failed to finalize worker dispatch: {error}"),
+        )
+        .await;
+        return Err(match release_result {
+            Ok(()) => error.to_string(),
+            Err(release_error) => {
+                format!("{error}; additionally failed to release dispatch claim: {release_error}")
+            }
+        });
+    }
+    let _ = tracker_start_tx.send(());
 
     tracing::info!(
         target: "permagentd::brain",
@@ -3954,15 +4064,27 @@ pub async fn handle_goal_completion(
                     decision_id
                 );
             } else {
-                // Retriable failure within budget: record the error, stay in
-                // InProgress (guarded write — last_error is protected).
-                goal_transition::record_goal_failure(pool, card_id, &error)
-                    .await
-                    .map_err(String::from)?;
+                // Retriable failure within budget: the attempt was consumed at
+                // dispatch, so preserve its count and atomically return the
+                // now-ownerless goal to Ready for the in-process dispatch loop.
+                let attempt_count = card
+                    .metadata_json
+                    .get("attempt_count")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0);
+                goal_transition::requeue_goal(
+                    pool,
+                    card_id,
+                    decisions::ACTOR_SYSTEM,
+                    attempt_count,
+                    &error,
+                )
+                .await
+                .map_err(String::from)?;
 
                 tracing::warn!(
                     target: "permagentd::brain",
-                    "Goal '{}' worker failed within budget: {} — leaving in InProgress for retry",
+                    "Goal '{}' worker failed within budget: {} — requeued to Ready for retry",
                     card.title,
                     error
                 );
@@ -4734,7 +4856,7 @@ async fn resume_single_goal(
         }
 
         // Case 1: session is dead — requeue, or park on budget exhaustion.
-        let new_attempt = attempt_count + 1;
+        let new_attempt = attempt_count.saturating_add(1);
         let budget = goal_transition::goal_budget(&card.metadata_json);
         let abandon_reason = "Abandoned during daemon restart";
 
@@ -5741,10 +5863,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn completion_failure_leaves_in_progress_on_first_attempt() {
+    async fn completion_failure_requeues_ready_on_first_attempt() {
         let pool = test_pool().await;
         let card = setup_goal_in_state(&pool, "in_progress", 1).await;
 
+        handle_goal_completion(
+            &pool,
+            &card.id,
+            &card.project_id,
+            Err("Worker crashed".to_string()),
+        )
+        .await
+        .unwrap();
         handle_goal_completion(
             &pool,
             &card.id,
@@ -5761,8 +5891,16 @@ mod tests {
             .unwrap();
         assert_eq!(
             col.state_binding.as_deref(),
-            Some("in_progress"),
-            "Should stay in InProgress on retriable failure"
+            Some("ready"),
+            "A retriable failure must return to Ready for in-process redispatch"
+        );
+        assert_eq!(
+            updated
+                .metadata_json
+                .get("attempt_count")
+                .and_then(|value| value.as_u64()),
+            Some(1),
+            "Requeue must preserve the attempt consumed by dispatch"
         );
         assert_eq!(
             updated.metadata_json.get("last_error").unwrap().as_str(),
@@ -5843,8 +5981,15 @@ mod tests {
             .unwrap();
         assert_eq!(
             col.state_binding.as_deref(),
-            Some("in_progress"),
-            "within a raised attempt_cap the goal stays retriable"
+            Some("ready"),
+            "within a raised attempt_cap the goal is requeued for retry"
+        );
+        assert_eq!(
+            updated
+                .metadata_json
+                .get("attempt_count")
+                .and_then(|value| value.as_u64()),
+            Some(3)
         );
         assert!(
             decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
