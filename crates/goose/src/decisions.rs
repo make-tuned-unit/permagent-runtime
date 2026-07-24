@@ -28,6 +28,61 @@ const VALID_ACTORS: &[&str] = &[ACTOR_JESSE, ACTOR_HENRY, ACTOR_SYSTEM];
 // in `answer_input` (the original lives in `payload.draft`). The delta is
 // captured as Brain training by `decision_inbox::learn` (edit-as-training).
 const VALID_ANSWERS: &[&str] = &["approve", "reject", "choice", "input", "edit"];
+const OUTBOX_ELIGIBLE_KINDS: &[&str] = &[
+    "approve_review",
+    "unblock",
+    "choice",
+    "risk_gate",
+    "enrichment_proposal",
+    "project_intel_proposal",
+    "file_to_project",
+    "automation_proposal",
+];
+
+/// Return the stable outbox claim key for a durable decision effect.
+pub fn effect_outbox_claim_key(decision_id: &str, kind: &str) -> Option<String> {
+    OUTBOX_ELIGIBLE_KINDS
+        .contains(&kind)
+        .then(|| format!("decision:{}:{}", decision_id, kind))
+}
+
+/// Mark an inline decision effect as successfully applied.
+pub async fn mark_effect_outbox_applied(
+    pool: &Pool<Sqlite>,
+    claim_key: &str,
+) -> Result<(), String> {
+    sqlx::query(
+        "UPDATE effect_outbox
+         SET status = 'applied', last_error = NULL, attempts = attempts + 1,
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+         WHERE claim_key = ?",
+    )
+    .bind(claim_key)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Mark an inline decision effect as failed, preserving its error for retry.
+pub async fn mark_effect_outbox_failed(
+    pool: &Pool<Sqlite>,
+    claim_key: &str,
+    error: &str,
+) -> Result<(), String> {
+    sqlx::query(
+        "UPDATE effect_outbox
+         SET status = 'failed', last_error = ?, attempts = attempts + 1,
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+         WHERE claim_key = ?",
+    )
+    .bind(error)
+    .bind(claim_key)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
 
 // ── Inbox-service process flag ──────────────────────────────────────────────
 
@@ -1301,7 +1356,7 @@ async fn answer_decision_inner(
 
     let resolved_at = now_timestamp();
     let mut tx = pool
-        .begin()
+        .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|e| AnswerError::Db(e.to_string()))?;
 
@@ -1341,6 +1396,21 @@ async fn answer_decision_inner(
     )
     .await
     .map_err(AnswerError::Db)?;
+
+    if let Some(claim_key) = effect_outbox_claim_key(decision_id, &decision.kind) {
+        sqlx::query(
+            "INSERT OR IGNORE INTO effect_outbox
+             (id, claim_key, kind, decision_id, payload_json, status)
+             VALUES (?, ?, ?, ?, '{}', 'pending')",
+        )
+        .bind(Uuid::now_v7().to_string())
+        .bind(claim_key)
+        .bind(&decision.kind)
+        .bind(decision_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AnswerError::Db(e.to_string()))?;
+    }
 
     tx.commit()
         .await
@@ -2392,6 +2462,88 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, AnswerError::AlreadyResolved(_)));
+    }
+
+    #[tokio::test]
+    async fn answering_eligible_decision_enqueues_effect_once() {
+        let pool = test_pool().await;
+        let d = create_decision(&pool, valid_unblock()).await.unwrap();
+        let ans = DecisionAnswer {
+            answer: "approve".to_string(),
+            ..Default::default()
+        };
+        answer_decision(&pool, &d.id, &ans, ACTOR_JESSE)
+            .await
+            .unwrap();
+
+        let claim_key = format!("decision:{}:unblock", d.id);
+        let row: (String, String, String, String, i64) = sqlx::query_as(
+            "SELECT claim_key, kind, payload_json, status, attempts
+             FROM effect_outbox WHERE decision_id = ?",
+        )
+        .bind(&d.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            row,
+            (
+                claim_key.clone(),
+                "unblock".to_string(),
+                "{}".to_string(),
+                "pending".to_string(),
+                0,
+            )
+        );
+
+        sqlx::query(
+            "INSERT OR IGNORE INTO effect_outbox
+             (id, claim_key, kind, decision_id, payload_json, status)
+             VALUES (?, ?, 'unblock', ?, '{}', 'pending')",
+        )
+        .bind(Uuid::now_v7().to_string())
+        .bind(&claim_key)
+        .bind(&d.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM effect_outbox WHERE claim_key = ?")
+                .bind(claim_key)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 1, "claim-key replay must remain a silent no-op");
+    }
+
+    #[tokio::test]
+    async fn ephemeral_decision_kinds_do_not_enqueue_effects() {
+        for req in [
+            valid_tool_approval(),
+            valid_session_gate("supervisor-1", "request-1"),
+        ] {
+            let pool = test_pool().await;
+            let d = create_decision(&pool, req).await.unwrap();
+            answer_decision(
+                &pool,
+                &d.id,
+                &DecisionAnswer {
+                    answer: "approve".to_string(),
+                    ..Default::default()
+                },
+                ACTOR_JESSE,
+            )
+            .await
+            .unwrap();
+
+            let count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM effect_outbox WHERE decision_id = ?")
+                    .bind(&d.id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(count, 0, "{} must not enqueue an outbox row", d.kind);
+        }
     }
 
     #[tokio::test]

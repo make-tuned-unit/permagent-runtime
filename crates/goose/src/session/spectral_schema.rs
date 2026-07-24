@@ -58,6 +58,9 @@ use tracing::{info, warn};
 /// Additive, nullable for legacy/non-HTTP audit events, and idempotent.
 /// `migrate_v35_to_v36` applies it.
 ///
+/// v37 = durable effect outbox for Decision-Inbox effects. New table + index,
+/// additive and idempotent. `migrate_v36_to_v37` applies it.
+///
 /// NOTE on the version drift: this constant intentionally stays at 14 even though
 /// the migration chain now runs to v19 (`migrate_v14_to_v15` … `migrate_v18_to_v19`).
 /// It is the stamp `init_spectral_db` applies to a *fresh* DB — those later steps
@@ -739,6 +742,10 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // #889). Idempotent; shared with migrate_v34_to_v35 so fresh installs get
     // the table on first boot, not only after a later upgrade pass.
     apply_project_intel_schema(pool).await?;
+
+    // Durable Decision-Inbox effect outbox (schema v37). Idempotent; shared
+    // with migrate_v36_to_v37 so fresh installs get it on first boot.
+    apply_effect_outbox_schema(pool).await?;
 
     info!(
         "Spectral schema v{} initialized successfully",
@@ -2429,6 +2436,52 @@ pub async fn migrate_v35_to_v36(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
+/// Apply the durable-effect outbox schema (v37): the `effect_outbox` table +
+/// its drain index. Shared by `migrate_v36_to_v37` (existing DBs) and
+/// `init_spectral_db` (fresh installs) so a brand-new database gets the table
+/// on its first boot — not only after a later upgrade pass. Fully idempotent
+/// (IF NOT EXISTS), so it is safe on every boot and on fresh installs.
+pub async fn apply_effect_outbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS effect_outbox (
+            id              TEXT PRIMARY KEY,
+            claim_key       TEXT NOT NULL UNIQUE,
+            kind            TEXT NOT NULL,
+            decision_id     TEXT,
+            payload_json    TEXT NOT NULL DEFAULT '{}',
+            status          TEXT NOT NULL DEFAULT 'pending'
+                            CHECK (status IN ('pending','running','applied','failed','dead')),
+            attempts        INTEGER NOT NULL DEFAULT 0,
+            max_attempts    INTEGER NOT NULL DEFAULT 5,
+            last_error      TEXT,
+            next_attempt_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_effect_outbox_drain
+         ON effect_outbox(status, next_attempt_at)",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// v37: durable outbox for effects authorized by answered decisions.
+/// New table and index only; safe to run repeatedly on every database.
+pub async fn migrate_v36_to_v37(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v36 -> v37 (durable effect outbox)");
+    apply_effect_outbox_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (37)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v37 (durable effect outbox)");
+    Ok(())
+}
+
 /// Migrate an existing database to the decision-inbox schema (schema v10).
 ///
 /// Follows the idempotent migrate_v7_to_v8 template. The body is base-version
@@ -3838,6 +3891,21 @@ mod inbox_schema_tests {
         .execute(&pool)
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn migrate_v36_to_v37_adds_effect_outbox_idempotently() {
+        let pool = mem_pool().await;
+        init_spectral_db(&pool).await.unwrap();
+        assert!(object_exists(&pool, "effect_outbox").await);
+        assert!(object_exists(&pool, "idx_effect_outbox_drain").await);
+
+        migrate_v36_to_v37(&pool).await.unwrap();
+        migrate_v36_to_v37(&pool).await.unwrap();
+
+        assert_eq!(current_version(&pool).await, 37);
+        assert!(object_exists(&pool, "effect_outbox").await);
+        assert!(object_exists(&pool, "idx_effect_outbox_drain").await);
     }
 
     /// Count schema objects (table/view/trigger) by exact name.
