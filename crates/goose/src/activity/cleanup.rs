@@ -54,7 +54,7 @@ const NOISE_FILTER: &str = "\
 /// Returns the number of memories deleted.
 pub fn prune_noise_memories() -> Result<usize> {
     let db_path = crate::config::paths::Paths::brain_dir().join("memory.db");
-    let conn = open_cleanup_conn(&db_path)?;
+    let mut conn = open_cleanup_conn(&db_path)?;
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
 
     // First, count how many will be pruned (for logging)
@@ -75,42 +75,35 @@ pub fn prune_noise_memories() -> Result<usize> {
         "Pruning noise memories"
     );
 
-    // Delete FK children for noise memories before deleting the parents.
-    // constellation_fingerprints has NO ACTION FKs — must clean explicitly.
-    let fingerprints_deleted: usize = conn.execute(
-        &format!(
-            "DELETE FROM constellation_fingerprints \
-             WHERE anchor_memory_id IN (SELECT id FROM memories WHERE {f}) \
-                OR target_memory_id IN (SELECT id FROM memories WHERE {f})",
-            f = NOISE_FILTER
-        ),
-        [],
-    )?;
-
-    let spectrograms_deleted: usize = conn.execute(
-        &format!(
-            "DELETE FROM memory_spectrogram \
-             WHERE memory_id IN (SELECT id FROM memories WHERE {f})",
-            f = NOISE_FILTER
-        ),
-        [],
-    )?;
-
-    // Delete annotations (belt-and-suspenders with CASCADE)
-    let annotations_deleted: usize = conn.execute(
-        &format!(
-            "DELETE FROM memory_annotations WHERE memory_id IN ( \
-             SELECT id FROM memories WHERE {f})",
-            f = NOISE_FILTER
-        ),
-        [],
-    )?;
-
-    // Delete the noise memories (now safe under FK enforcement)
-    let deleted: usize = conn.execute(
-        &format!("DELETE FROM memories WHERE {f}", f = NOISE_FILTER),
-        [],
-    )?;
+    let mut deleted = 0;
+    let mut fingerprints_deleted = 0;
+    let mut spectrograms_deleted = 0;
+    let mut annotations_deleted = 0;
+    loop {
+        // Keep write transactions bounded while selecting each batch under the
+        // same lock that protects its child + parent deletes.
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let ids = {
+            let mut stmt = tx.prepare(&format!(
+                "SELECT id FROM memories WHERE {f} LIMIT 100",
+                f = NOISE_FILTER
+            ))?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        if ids.is_empty() {
+            tx.rollback()?;
+            break;
+        }
+        for id in &ids {
+            let counts = delete_memory_with_children(&tx, id)?;
+            fingerprints_deleted += counts.fingerprints;
+            spectrograms_deleted += counts.spectrograms;
+            annotations_deleted += counts.annotations;
+            deleted += counts.memories;
+        }
+        tx.commit()?;
+    }
 
     info!(
         target: "permagent::cleanup",
@@ -133,7 +126,7 @@ pub fn prune_noise_memories() -> Result<usize> {
 /// Returns the number of clusters consolidated.
 pub fn consolidate_clusters_blocking() -> Result<usize> {
     let db_path = crate::config::paths::Paths::brain_dir().join("memory.db");
-    let conn = open_cleanup_conn(&db_path)?;
+    let mut conn = open_cleanup_conn(&db_path)?;
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
 
     // Find domain clusters from browser_navigated activity events.
@@ -227,52 +220,26 @@ pub fn consolidate_clusters_blocking() -> Result<usize> {
 
         match result {
             Ok(_) => {
-                // Delete FK children for cluster members before deleting parents.
-                // constellation_fingerprints has NO ACTION FKs — must clean explicitly.
-                let _ = conn.execute(
-                    "DELETE FROM constellation_fingerprints \
-                     WHERE anchor_memory_id IN ( \
-                       SELECT id FROM memories \
-                       WHERE key LIKE 'activity:%browser_navigated%' \
-                         AND content LIKE '%' || ?1 || '%' \
-                         AND key != ?2) \
-                        OR target_memory_id IN ( \
-                       SELECT id FROM memories \
-                       WHERE key LIKE 'activity:%browser_navigated%' \
-                         AND content LIKE '%' || ?1 || '%' \
-                         AND key != ?2)",
-                    rusqlite::params![cluster.domain, summary_key],
-                );
-
-                let _ = conn.execute(
-                    "DELETE FROM memory_spectrogram \
-                     WHERE memory_id IN ( \
-                       SELECT id FROM memories \
-                       WHERE key LIKE 'activity:%browser_navigated%' \
-                         AND content LIKE '%' || ?1 || '%' \
-                         AND key != ?2)",
-                    rusqlite::params![cluster.domain, summary_key],
-                );
-
-                // Delete annotations for the originals (belt-and-suspenders with CASCADE)
-                let _ = conn.execute(
-                    "DELETE FROM memory_annotations WHERE memory_id IN ( \
-                     SELECT id FROM memories \
-                     WHERE key LIKE 'activity:%browser_navigated%' \
-                       AND content LIKE '%' || ?1 || '%' \
-                       AND key != ?2 \
-                     )",
-                    rusqlite::params![cluster.domain, summary_key],
-                );
-
-                // Delete the original cluster members (now safe under FK enforcement)
-                let originals_deleted: usize = conn.execute(
-                    "DELETE FROM memories \
-                     WHERE key LIKE 'activity:%browser_navigated%' \
-                       AND content LIKE '%' || ?1 || '%' \
-                       AND key != ?2",
-                    rusqlite::params![cluster.domain, summary_key],
-                )?;
+                let tx =
+                    conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                let ids = {
+                    let mut stmt = tx.prepare(
+                        "SELECT id FROM memories \
+                         WHERE key LIKE 'activity:%browser_navigated%' \
+                           AND content LIKE '%' || ?1 || '%' \
+                           AND key != ?2",
+                    )?;
+                    let rows = stmt
+                        .query_map(rusqlite::params![cluster.domain, summary_key], |row| {
+                            row.get::<_, String>(0)
+                        })?;
+                    rows.collect::<rusqlite::Result<Vec<_>>>()?
+                };
+                let mut originals_deleted = 0;
+                for id in &ids {
+                    originals_deleted += delete_memory_with_children(&tx, id)?.memories;
+                }
+                tx.commit()?;
 
                 debug!(
                     target: "permagent::cleanup",
@@ -300,6 +267,44 @@ pub fn consolidate_clusters_blocking() -> Result<usize> {
     );
 
     Ok(consolidated)
+}
+
+#[derive(Default)]
+struct DeleteCounts {
+    fingerprints: usize,
+    spectrograms: usize,
+    annotations: usize,
+    memories: usize,
+}
+
+/// Delete one memory and all of its explicit FK children as an atomic unit.
+///
+/// The caller owns the transaction so candidate selection can share the same
+/// write lock. Any child or parent failure aborts the caller before commit.
+fn delete_memory_with_children(
+    tx: &rusqlite::Transaction<'_>,
+    memory_id: &str,
+) -> rusqlite::Result<DeleteCounts> {
+    let fingerprints = tx.execute(
+        "DELETE FROM constellation_fingerprints \
+         WHERE anchor_memory_id = ?1 OR target_memory_id = ?1",
+        [memory_id],
+    )?;
+    let spectrograms = tx.execute(
+        "DELETE FROM memory_spectrogram WHERE memory_id = ?1",
+        [memory_id],
+    )?;
+    let annotations = tx.execute(
+        "DELETE FROM memory_annotations WHERE memory_id = ?1",
+        [memory_id],
+    )?;
+    let memories = tx.execute("DELETE FROM memories WHERE id = ?1", [memory_id])?;
+    Ok(DeleteCounts {
+        fingerprints,
+        spectrograms,
+        annotations,
+        memories,
+    })
 }
 
 // ── Part A: one-shot FK orphan cleanup ───────────────────────────
@@ -915,6 +920,88 @@ pub fn run_consolidate_into_migration_sql(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cleanup_test_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE memories (id TEXT PRIMARY KEY);
+             CREATE TABLE constellation_fingerprints (
+                 id TEXT PRIMARY KEY,
+                 anchor_memory_id TEXT NOT NULL,
+                 target_memory_id TEXT NOT NULL
+             );
+             CREATE TABLE memory_spectrogram (
+                 memory_id TEXT PRIMARY KEY
+             );
+             CREATE TABLE memory_annotations (
+                 memory_id TEXT PRIMARY KEY
+             );
+             INSERT INTO memories (id) VALUES ('m1');
+             INSERT INTO constellation_fingerprints
+                 (id, anchor_memory_id, target_memory_id)
+                 VALUES ('fp1', 'm1', 'm1');
+             INSERT INTO memory_spectrogram (memory_id) VALUES ('m1');
+             INSERT INTO memory_annotations (memory_id) VALUES ('m1');",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn cleanup_row_counts(conn: &rusqlite::Connection) -> (usize, usize, usize, usize) {
+        let count = |table: &str| {
+            conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+        };
+        (
+            count("memories"),
+            count("constellation_fingerprints"),
+            count("memory_spectrogram"),
+            count("memory_annotations"),
+        )
+    }
+
+    #[test]
+    fn parent_delete_failure_rolls_back_child_deletes() {
+        let mut conn = cleanup_test_conn();
+        conn.execute_batch(
+            "CREATE TRIGGER reject_memory_delete
+             BEFORE DELETE ON memories
+             BEGIN
+                 SELECT RAISE(ABORT, 'injected parent delete failure');
+             END;",
+        )
+        .unwrap();
+
+        let result = {
+            let tx = conn.transaction().unwrap();
+            delete_memory_with_children(&tx, "m1")
+        };
+
+        assert!(result.is_err(), "injected parent failure must propagate");
+        assert_eq!(
+            cleanup_row_counts(&conn),
+            (1, 1, 1, 1),
+            "the memory and every child must survive the rolled-back unit"
+        );
+    }
+
+    #[test]
+    fn normal_memory_cleanup_deletes_parent_and_children() {
+        let mut conn = cleanup_test_conn();
+        let tx = conn.transaction().unwrap();
+        let counts = delete_memory_with_children(&tx, "m1").unwrap();
+        tx.commit().unwrap();
+
+        assert_eq!(counts.memories, 1);
+        assert_eq!(
+            cleanup_row_counts(&conn),
+            (0, 0, 0, 0),
+            "the committed unit deletes the memory and every child"
+        );
+    }
 
     /// #122 regression: a cleanup connection must wait out the write lock held
     /// by another connection (the Brain at startup) instead of failing

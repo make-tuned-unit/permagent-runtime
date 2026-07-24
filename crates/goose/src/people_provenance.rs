@@ -76,27 +76,25 @@ pub async fn record_provenance(
 /// or `extracted` provenance — as raw 32-byte ids (the Kuzu node key), so
 /// `sync_graph_with_ontology` can compare directly against its ontology id set.
 ///
-/// Deliberately **tolerant**: returns an empty set on any error (e.g. the table
-/// not yet created on an older DB) so it can never break daemon startup. An empty
-/// protected set degrades to today's prune-all-not-in-ontology behaviour — safe,
-/// never a spurious extra prune.
-pub async fn protected_entity_ids(pool: &Pool<Sqlite>) -> HashSet<[u8; 32]> {
+/// Fails closed: callers must not prune when provenance cannot be loaded or an
+/// id is malformed. Treating either case as an empty protected set could
+/// permanently delete runtime-only entities.
+pub async fn protected_entity_ids(pool: &Pool<Sqlite>) -> Result<HashSet<[u8; 32]>, String> {
     let mut set = HashSet::new();
     let rows = sqlx::query_scalar::<_, String>(
         "SELECT entity_id_hex FROM entity_provenance WHERE source IN ('runtime','extracted')",
     )
     .fetch_all(pool)
-    .await;
-    if let Ok(hexes) = rows {
-        for h in hexes {
-            if let Ok(bytes) = hex::decode(&h) {
-                if let Ok(arr) = <[u8; 32]>::try_from(bytes.as_slice()) {
-                    set.insert(arr);
-                }
-            }
-        }
+    .await
+    .map_err(|e| format!("load protected entity provenance: {e}"))?;
+    for h in rows {
+        let bytes =
+            hex::decode(&h).map_err(|e| format!("invalid protected entity id {h:?}: {e}"))?;
+        let arr = <[u8; 32]>::try_from(bytes.as_slice())
+            .map_err(|_| format!("invalid protected entity id length for {h:?}"))?;
+        set.insert(arr);
     }
-    set
+    Ok(set)
 }
 
 #[cfg(test)]
@@ -139,12 +137,28 @@ mod tests {
             .await
             .unwrap();
 
-        let protected = protected_entity_ids(&pool).await;
+        let protected = protected_entity_ids(&pool).await.unwrap();
         assert_eq!(protected.len(), 2, "only runtime + extracted are protected");
         let run_bytes: [u8; 32] = hex::decode(&run).unwrap().try_into().unwrap();
         let ont_bytes: [u8; 32] = hex::decode(&ont).unwrap().try_into().unwrap();
         assert!(protected.contains(&run_bytes));
         assert!(!protected.contains(&ont_bytes), "ontology is NOT protected");
+    }
+
+    #[tokio::test]
+    async fn protected_set_load_failure_is_an_error_not_an_empty_set() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        let result = protected_entity_ids(&pool).await;
+
+        assert!(
+            result.is_err(),
+            "a missing provenance table must stop the caller instead of exposing an empty set"
+        );
     }
 
     #[tokio::test]
@@ -166,6 +180,6 @@ mod tests {
                 .unwrap();
         assert_eq!(src, "runtime", "first-source-wins keeps the runtime origin");
         // And it remains protected.
-        assert_eq!(protected_entity_ids(&pool).await.len(), 1);
+        assert_eq!(protected_entity_ids(&pool).await.unwrap().len(), 1);
     }
 }
