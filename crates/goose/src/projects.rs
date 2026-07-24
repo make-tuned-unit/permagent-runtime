@@ -431,11 +431,18 @@ pub async fn delete_project(pool: &Pool<Sqlite>, id: &str) -> Result<bool, Strin
         return Err("Cannot delete the Personal project".to_string());
     }
 
-    let result = sqlx::query("DELETE FROM projects WHERE id = ?")
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM project_intel WHERE project_id = ?")
         .bind(id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
+    let result = sqlx::query("DELETE FROM projects WHERE id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())?;
 
     Ok(result.rows_affected() > 0)
 }
@@ -744,6 +751,39 @@ mod tests {
 
         let tags = list_tags(&pool, &p.id).await.unwrap();
         assert!(tags.is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_cascades_project_intel() {
+        let pool = test_pool().await;
+        let p = create_project(
+            &pool,
+            CreateProject {
+                name: "Known Market".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO project_intel
+             (id, project_id, kind, name, source_url, created_at)
+             VALUES ('intel-1', ?, 'competitor', 'Rival', 'https://rival.example', 'now')",
+        )
+        .bind(&p.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert!(delete_project(&pool, &p.id).await.unwrap());
+
+        let intel_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM project_intel WHERE project_id = ?")
+                .bind(&p.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(intel_count, 0);
     }
 
     #[tokio::test]
