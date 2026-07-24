@@ -427,7 +427,11 @@ async fn voice_ws_handler(
     // Manual token validation — WebSocket upgrade can't use Bearer middleware.
     // Shared fail-closed, constant-time core (middleware::auth): a tokenless
     // daemon refuses (503) instead of serving the voice socket anonymously.
-    crate::middleware::auth::validate_daemon_token(&state, query.token.as_deref())?;
+    crate::middleware::auth::validate_stream_token(
+        &state,
+        query.token.as_deref(),
+        query.token.as_deref(),
+    )?;
     Ok(ws.on_upgrade(move |socket| handle_voice_socket(socket, state, query.session_id)))
 }
 

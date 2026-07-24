@@ -5,6 +5,7 @@
 
 import type { ProjectDocument, ProjectNote, ProjectMemory } from '../components/projects/types';
 import type { ActivityEventName } from './emitActivity';
+import { getStreamToken } from './streamToken';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 const API_BASE_URL = (
@@ -178,7 +179,7 @@ loadDaemonToken();
  *  Async: waits for the token (Tauri IPC on first call) so the first
  *  connection attempt is already authenticated. */
 export async function eventsWsUrl(): Promise<string> {
-  const token = await loadDaemonToken();
+  const token = await getStreamToken();
   const base = getApiBaseUrl().replace(/^http/, 'ws');
   return token ? `${base}/events?token=${encodeURIComponent(token)}` : `${base}/events`;
 }
@@ -931,7 +932,7 @@ export const api = {
    *  (EventSource cannot set Authorization either — C1/C2 auth); async so the
    *  first connect is already authenticated once the token loads. */
   sessionEventsUrl: async (sessionId: string, lastEventId?: string | null): Promise<string> => {
-    const token = await loadDaemonToken();
+    const token = await getStreamToken();
     const base = `${API_BASE_URL}/sessions/${encodeURIComponent(sessionId)}/events`;
     const params = new URLSearchParams();
     if (lastEventId) params.set('last_event_id', lastEventId);

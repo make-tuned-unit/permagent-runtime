@@ -122,6 +122,26 @@ pub fn validate_daemon_token(state: &AppState, provided: Option<&str>) -> Result
     Ok(())
 }
 
+/// Validate a browser stream credential without changing the established
+/// daemon/device-token path. A missing daemon token remains a hard 503. Only
+/// after the existing validator returns 401 may a query-borne scoped token
+/// admit the request.
+pub fn validate_stream_token(
+    state: &AppState,
+    existing_provided: Option<&str>,
+    query_token: Option<&str>,
+) -> Result<(), StatusCode> {
+    match validate_daemon_token(state, existing_provided) {
+        Ok(()) => Ok(()),
+        Err(StatusCode::UNAUTHORIZED)
+            if query_token.is_some_and(|token| state.stream_tokens.contains_unexpired(token)) =>
+        {
+            Ok(())
+        }
+        Err(status) => Err(status),
+    }
+}
+
 /// Extract the token from an `Authorization: Bearer <token>` header, if any.
 pub fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     headers
@@ -152,7 +172,7 @@ pub async fn require_token_header_or_query(
 ) -> Result<Response, StatusCode> {
     let header = bearer_token(request.headers());
     let provided = header.or(query.token.as_deref());
-    validate_daemon_token(&state, provided)?;
+    validate_stream_token(&state, provided, query.token.as_deref())?;
     Ok(next.run(request).await)
 }
 
@@ -311,5 +331,22 @@ mod tests {
         assert_eq!(bearer_token(&wrong_scheme), None);
 
         assert_eq!(bearer_token(&HeaderMap::new()), None);
+    }
+
+    #[test]
+    fn stream_token_store_accepts_fresh_and_rejects_expired_tokens() {
+        let store = crate::state::StreamTokenStore::default();
+        store.insert(
+            "fresh".to_string(),
+            std::time::Instant::now() + std::time::Duration::from_secs(10),
+        );
+        store.insert(
+            "expired".to_string(),
+            std::time::Instant::now() - std::time::Duration::from_secs(1),
+        );
+
+        assert!(store.contains_unexpired("fresh"));
+        assert!(!store.contains_unexpired("expired"));
+        assert!(!store.contains_unexpired("unknown"));
     }
 }
