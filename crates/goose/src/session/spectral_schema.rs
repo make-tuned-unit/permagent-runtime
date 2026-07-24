@@ -54,6 +54,10 @@ use tracing::{info, warn};
 /// (`project_intel`). New table + index, additive and idempotent.
 /// `migrate_v34_to_v35` applies it.
 ///
+/// v36 = authenticated principal attribution on Decision-Inbox audit rows.
+/// Additive, nullable for legacy/non-HTTP audit events, and idempotent.
+/// `migrate_v35_to_v36` applies it.
+///
 /// NOTE on the version drift: this constant intentionally stays at 14 even though
 /// the migration chain now runs to v19 (`migrate_v14_to_v15` … `migrate_v18_to_v19`).
 /// It is the stamp `init_spectral_db` applies to a *fresh* DB — those later steps
@@ -673,6 +677,7 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // Decision-inbox tables (decisions, decision_audit, risk_policy) + guard triggers.
     // Idempotent; shared with migrate_v9_to_v10 for existing installs.
     apply_decision_inbox_schema(pool).await?;
+    apply_decision_audit_principal_schema(pool).await?;
 
     // Recognition instrumentation tables (v11). Idempotent; shared with
     // migrate_v10_to_v11 for existing installs.
@@ -2297,6 +2302,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
             tier            INTEGER NOT NULL,
             outcome         TEXT NOT NULL,
             evidence_digest TEXT,
+            principal       TEXT,
             prev_hash       TEXT,
             row_hash        TEXT NOT NULL,
             created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
@@ -2385,6 +2391,41 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await?;
 
     tx.commit().await?;
+    Ok(())
+}
+
+/// Add queryable credential attribution to Decision-Inbox audit rows.
+///
+/// Existing rows remain NULL and retain their legacy hash format. New
+/// authenticated answer rows hash the principal into `row_hash`.
+pub async fn apply_decision_audit_principal_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    let columns: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('decision_audit')")
+            .fetch_all(pool)
+            .await?;
+    if !columns.iter().any(|column| column == "principal") {
+        sqlx::query("ALTER TABLE decision_audit ADD COLUMN principal TEXT")
+            .execute(pool)
+            .await?;
+    }
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_decision_audit_principal \
+         ON decision_audit(principal) WHERE principal IS NOT NULL",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Migrate an existing database to queryable Decision-Inbox principal
+/// attribution (schema v36).
+pub async fn migrate_v35_to_v36(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v35 -> v36 (decision audit principal)");
+    apply_decision_audit_principal_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (36)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v36 (decision audit principal)");
     Ok(())
 }
 
