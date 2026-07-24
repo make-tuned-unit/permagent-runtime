@@ -396,11 +396,11 @@ impl CodeExecutionClient {
                         schema::<ExecuteBashInput>(),
                     )
                     .annotate(ToolAnnotations::from_raw(
-                        Some("Get function details".to_string()),
-                        Some(true),
+                        Some("Execute Bash".to_string()),
                         Some(false),
                         Some(true),
                         Some(false),
+                        Some(true),
                     )),
                     McpTool::new(
                         "execute_typescript".to_string(),
@@ -579,5 +579,25 @@ impl CodeModeState {
             s.hash(&mut hasher);
         }
         hasher.finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn execute_bash_is_annotated_as_mutating() {
+        let tool = CodeExecutionClient::tools_for_disclosure(&ToolDisclosure::Filesystem)
+            .into_iter()
+            .find(|tool| tool.name == "execute_bash")
+            .expect("filesystem disclosure includes execute_bash");
+        let annotations = tool.annotations.expect("execute_bash is annotated");
+
+        assert_eq!(annotations.title.as_deref(), Some("Execute Bash"));
+        assert_eq!(annotations.read_only_hint, Some(false));
+        assert_eq!(annotations.destructive_hint, Some(true));
+        assert_eq!(annotations.idempotent_hint, Some(false));
+        assert_eq!(annotations.open_world_hint, Some(true));
     }
 }

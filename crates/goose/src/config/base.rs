@@ -1102,7 +1102,26 @@ config_value!(CODEX_SKIP_GIT_CHECK, String, "false");
 config_value!(CHATGPT_CODEX_REASONING_EFFORT, String, "medium");
 
 config_value!(GOOSE_SEARCH_PATHS, Vec<String>);
-config_value!(GOOSE_MODE, GooseMode);
+impl Config {
+    pub fn get_goose_mode(&self) -> Result<GooseMode, ConfigError> {
+        let value: Value = self.get_param("GOOSE_MODE")?;
+        match serde_json::from_value(value.clone()) {
+            Ok(mode) => Ok(mode),
+            Err(error) => {
+                tracing::warn!(
+                    value = %value,
+                    %error,
+                    "Invalid GOOSE_MODE; falling back to approve mode"
+                );
+                Ok(GooseMode::Approve)
+            }
+        }
+    }
+
+    pub fn set_goose_mode(&self, value: impl Into<GooseMode>) -> Result<(), ConfigError> {
+        self.set_param("GOOSE_MODE", value.into())
+    }
+}
 config_value!(GOOSE_PROVIDER, String);
 config_value!(GOOSE_MODEL, String);
 config_value!(GOOSE_PROMPT_EDITOR, Option<String>);
@@ -1210,6 +1229,33 @@ mod tests {
 
         let result: Result<String, ConfigError> = config.get_param("nonexistent_key");
         assert!(matches!(result, Err(ConfigError::NotFound(_))));
+    }
+
+    #[test]
+    fn test_get_goose_mode_defaults_safely() {
+        let _guard = env_lock::lock_env([("GOOSE_MODE", None::<&str>)]);
+        let config = new_test_config();
+
+        assert_eq!(config.get_goose_mode().unwrap_or_default(), GooseMode::Auto);
+
+        config.set_param("GOOSE_MODE", "approv").unwrap();
+        assert_eq!(config.get_goose_mode().unwrap(), GooseMode::Approve);
+    }
+
+    #[test]
+    fn test_get_goose_mode_parses_valid_values() {
+        let _guard = env_lock::lock_env([("GOOSE_MODE", None::<&str>)]);
+        let config = new_test_config();
+
+        for (value, expected) in [
+            ("auto", GooseMode::Auto),
+            ("approve", GooseMode::Approve),
+            ("smart_approve", GooseMode::SmartApprove),
+            ("chat", GooseMode::Chat),
+        ] {
+            config.set_param("GOOSE_MODE", value).unwrap();
+            assert_eq!(config.get_goose_mode().unwrap(), expected);
+        }
     }
 
     #[test]
