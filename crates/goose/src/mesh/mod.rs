@@ -39,6 +39,72 @@
 
 pub mod pool;
 
+/// Whether an inference endpoint is provably on this machine. Anything that
+/// cannot be parsed as HTTP(S) with a loopback host is treated as remote.
+pub(crate) fn endpoint_is_loopback(endpoint: &str) -> bool {
+    let Ok(url) = url::Url::parse(endpoint) else {
+        return false;
+    };
+    if !matches!(url.scheme(), "http" | "https") {
+        return false;
+    }
+    match url.host_str() {
+        Some(host) if host.eq_ignore_ascii_case("localhost") => true,
+        Some(host) => host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback()),
+        None => false,
+    }
+}
+
+/// Audit and authorize a mesh inference endpoint before any request bytes are
+/// sent. Unlike the configurable provider policy, mesh audit is always
+/// fail-closed: an unlogged remote mesh send is never allowed.
+pub(crate) async fn audit_and_check_mesh_egress(
+    endpoint: &str,
+    session_id: Option<&str>,
+    model: &str,
+    system: Option<&str>,
+    prompt: &str,
+) -> Result<(), String> {
+    if endpoint_is_loopback(endpoint) {
+        return Ok(());
+    }
+
+    let session_id = session_id.unwrap_or_default();
+    let blocked = if session_id.is_empty() {
+        crate::sovereignty::global_sovereign_mode()
+    } else {
+        crate::sovereignty::is_context_sovereign(session_id)
+    };
+    let rendered = format!("system:\n{}\n\nuser:\n{prompt}", system.unwrap_or_default());
+    let audit = crate::sovereignty::record_egress(crate::sovereignty::EgressRecord {
+        provider: "mesh".to_string(),
+        model: model.to_string(),
+        session_id: session_id.to_string(),
+        project_id: None,
+        kind: crate::sovereignty::EgressKind::Inference,
+        blocked,
+        content_hash: crate::sovereignty::hash_texts(std::slice::from_ref(&rendered)),
+        prompt: crate::sovereignty::capture_prompts_enabled().then_some(rendered),
+    })
+    .await;
+
+    if blocked {
+        return Err(format!(
+            "{} mesh inference to non-loopback endpoint '{endpoint}' blocked: this context is sovereign",
+            crate::sovereignty::SOVEREIGN_BLOCK_PREFIX
+        ));
+    }
+    if let Err(error) = audit {
+        return Err(format!(
+            "{} mesh inference to '{endpoint}' refused: egress audit write failed: {error:#}",
+            crate::sovereignty::SOVEREIGN_BLOCK_PREFIX
+        ));
+    }
+    Ok(())
+}
+
 /// This device's role in a compute pool. Determines what it *contributes*, not
 /// what it can *access* (the vision's core inversion). Default [`Self::Client`].
 ///
@@ -330,6 +396,27 @@ pub const MESH_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mesh_loopback_classification_is_fail_closed() {
+        for endpoint in [
+            "http://localhost:11434",
+            "http://LOCALHOST:11434",
+            "http://127.0.0.1:11434",
+            "http://127.1.2.3:11434",
+            "http://[::1]:11434",
+        ] {
+            assert!(endpoint_is_loopback(endpoint), "{endpoint}");
+        }
+        for endpoint in [
+            "http://192.168.1.50:11434",
+            "https://ollama.example.com",
+            "http://localhost.example.com",
+            "not a url",
+        ] {
+            assert!(!endpoint_is_loopback(endpoint), "{endpoint}");
+        }
+    }
 
     #[test]
     fn interactive_is_always_local_regardless_of_trust_or_pool() {

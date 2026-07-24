@@ -418,6 +418,9 @@ fn to_gate_workload(workload: Workload) -> MeshWorkload {
 /// store is unrepresentable here), mirroring [`InferencePayload`].
 #[derive(Debug, Clone)]
 pub struct GenerateRequest {
+    /// Session privacy context. `None` denotes autonomous/background work,
+    /// which still observes process-wide sovereign mode.
+    pub session_id: Option<String>,
     pub model: String,
     pub prompt: String,
     pub system: Option<String>,
@@ -624,6 +627,7 @@ impl PoolEngine {
             tuning,
             client: reqwest::Client::builder()
                 .connect_timeout(Duration::from_secs(5))
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .expect("reqwest client construction cannot fail without custom TLS"),
         })
@@ -770,7 +774,19 @@ impl PoolEngine {
             let client = self.client.clone();
             let endpoint = p.endpoint.clone();
             let timeout = self.tuning.probe_timeout;
-            async move { (i, probe_endpoint(&client, &endpoint, timeout).await) }
+            async move {
+                let outcome = if crate::sovereignty::global_sovereign_mode()
+                    && !crate::mesh::endpoint_is_loopback(&endpoint)
+                {
+                    Err(format!(
+                        "{} non-loopback mesh probe blocked by sovereign mode",
+                        crate::sovereignty::SOVEREIGN_BLOCK_PREFIX
+                    ))
+                } else {
+                    probe_endpoint(&client, &endpoint, timeout).await
+                };
+                (i, outcome)
+            }
         });
         for (i, outcome) in futures::future::join_all(probes).await {
             if let Err(e) = &outcome {
@@ -936,6 +952,14 @@ async fn attempt_generate(
     req: &GenerateRequest,
     default_budget: Duration,
 ) -> Result<String, String> {
+    crate::mesh::audit_and_check_mesh_egress(
+        endpoint,
+        req.session_id.as_deref(),
+        &req.model,
+        req.system.as_deref(),
+        &req.prompt,
+    )
+    .await?;
     let budget = req.timeout.unwrap_or(default_budget);
     let body = InferenceBody::for_generate(req);
     let attempt = async {
@@ -1141,23 +1165,10 @@ pub async fn generate(req: GenerateRequest) -> Result<GenerateResponse, PoolErro
     match engine() {
         Some(engine) => engine.generate_with(&req).await,
         None => {
-            // Sovereignty boundary: the network rung dispatches inference to
-            // another node (a LAN pool peer), which leaves this machine. Under
-            // global sovereign mode that is refused (fail-closed) — only the
-            // in-process `engine()` rung above stays local. The Provider-trait
-            // guard covers cloud APIs; this covers the mesh side-path.
-            if crate::sovereignty::global_sovereign_mode() {
-                return Err(PoolError {
-                    message: format!(
-                        "{} mesh pool inference blocked: sovereign mode keeps all inference on this machine",
-                        crate::sovereignty::SOVEREIGN_BLOCK_PREFIX
-                    ),
-                    escalate_to: None,
-                });
-            }
             let route = crate::mesh::resolve_route(req.workload);
             let client = reqwest::Client::builder()
                 .connect_timeout(Duration::from_secs(5))
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .map_err(|e| PoolError {
                     message: e.to_string(),
@@ -1489,6 +1500,7 @@ mod tests {
     #[test]
     fn wire_body_carries_exactly_inference_computation_and_nothing_else() {
         let req = GenerateRequest {
+            session_id: None,
             model: "qwen2.5:7b".into(),
             prompt: "p".into(),
             system: Some("s".into()),
@@ -1518,6 +1530,7 @@ mod tests {
 
         // Optional fields drop out rather than serializing as null.
         let bare = GenerateRequest {
+            session_id: None,
             model: "m".into(),
             prompt: "p".into(),
             system: None,

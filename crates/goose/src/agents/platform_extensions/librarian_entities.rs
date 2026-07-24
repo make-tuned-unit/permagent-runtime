@@ -895,6 +895,7 @@ pub async fn run_entity_sweep(brain: &SafeBrain, model: &str) -> Result<SweepSum
                 model,
                 false,
                 &item.snapshot.canonical,
+                None,
             )
             .await
             {

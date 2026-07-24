@@ -36,6 +36,7 @@ fn tuning(local_endpoint: String, request_timeout: Duration, trusted: bool) -> T
 
 fn batch_request(model: &str) -> GenerateRequest {
     GenerateRequest {
+        session_id: None,
         model: model.to_string(),
         prompt: "hello".to_string(),
         system: None,
