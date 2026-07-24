@@ -43,6 +43,7 @@ pub const PROTECTED_GOAL_METADATA_KEYS: &[&str] = &[
     "needs_human_attention",
     "attempt_count",
     "last_error",
+    "dispatch_claim_id",
     "budget",
     "completed_at",
     "depends_on",
@@ -530,6 +531,12 @@ pub async fn requeue_goal(
     }
 
     let binding = state_binding_of_column_tx(&mut tx, &goal.column_id).await?;
+    if binding.as_deref() == Some("ready") {
+        // Idempotent retry/completion handling: another caller already
+        // requeued this attempt. Do not rewrite metadata or append audit.
+        tx.rollback().await.map_err(db_err)?;
+        return Ok(());
+    }
     if binding.as_deref() != Some("in_progress") {
         return Err(GuardError::Invalid(format!(
             "Only in_progress goals can be requeued (card '{}' is in '{}')",
@@ -579,6 +586,108 @@ pub async fn requeue_goal(
         "ready",
     ));
 
+    Ok(())
+}
+
+/// Merge post-spawn metadata into an InProgress goal, but only while the
+/// caller's dispatch claim still owns it.
+pub async fn finalize_dispatch_claim(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    claim_id: &str,
+    metadata_patch: serde_json::Map<String, serde_json::Value>,
+) -> Result<(), GuardError> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(db_err)?;
+    let goal = read_goal_tx(&mut tx, card_id).await?;
+    let binding = state_binding_of_column_tx(&mut tx, &goal.column_id).await?;
+    let active_claim = goal
+        .metadata
+        .get("dispatch_claim_id")
+        .and_then(|value| value.as_str());
+    if binding.as_deref() != Some("in_progress") || active_claim != Some(claim_id) {
+        return Err(GuardError::Invalid(format!(
+            "Dispatch claim '{}' no longer owns card '{}'",
+            claim_id, card_id
+        )));
+    }
+
+    let mut meta = goal.metadata;
+    apply_patch(&mut meta, &metadata_patch);
+    let meta_str = serde_json::to_string(&serde_json::Value::Object(meta))
+        .map_err(|e| GuardError::Db(e.to_string()))?;
+    sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+        .bind(&meta_str)
+        .bind(card_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    tx.commit().await.map_err(db_err)?;
+    Ok(())
+}
+
+/// Release an exact dispatch claim after its worker could not be started or
+/// registered. The attempt already consumed by the claim is preserved.
+pub async fn release_dispatch_claim(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    claim_id: &str,
+    reason: &str,
+) -> Result<(), GuardError> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(db_err)?;
+    let goal = read_goal_tx(&mut tx, card_id).await?;
+    let binding = state_binding_of_column_tx(&mut tx, &goal.column_id).await?;
+    let active_claim = goal
+        .metadata
+        .get("dispatch_claim_id")
+        .and_then(|value| value.as_str());
+    if binding.as_deref() != Some("in_progress") || active_claim != Some(claim_id) {
+        return Err(GuardError::Invalid(format!(
+            "Dispatch claim '{}' no longer owns card '{}'",
+            claim_id, card_id
+        )));
+    }
+
+    let mut meta = goal.metadata;
+    meta.insert(
+        "goal_state".to_string(),
+        serde_json::Value::String("ready".to_string()),
+    );
+    meta.insert(
+        "last_error".to_string(),
+        serde_json::Value::String(reason.to_string()),
+    );
+    meta.remove("dispatch_claim_id");
+    let meta_str = serde_json::to_string(&serde_json::Value::Object(meta))
+        .map_err(|e| GuardError::Db(e.to_string()))?;
+    let ready_col = goal_column_id_tx(&mut tx, &goal.project_id, "ready").await?;
+    let position = next_position_tx(&mut tx, &ready_col).await?;
+    sqlx::query("UPDATE cards SET metadata_json = ?, column_id = ?, position = ? WHERE id = ?")
+        .bind(&meta_str)
+        .bind(&ready_col)
+        .bind(position)
+        .bind(card_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    decisions::append_audit_tx(
+        &mut tx,
+        "none",
+        Some(card_id),
+        decisions::ACTOR_SYSTEM,
+        0,
+        "release_dispatch_claim",
+        None,
+    )
+    .await
+    .map_err(GuardError::Db)?;
+    tx.commit().await.map_err(db_err)?;
+
+    crate::events::emit(crate::events::goal_state_changed(
+        card_id,
+        Some(&goal.project_id),
+        Some("in_progress"),
+        "ready",
+    ));
     Ok(())
 }
 
@@ -1757,6 +1866,50 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, GuardError::Invalid(_)));
+    }
+
+    #[tokio::test]
+    async fn concurrent_dispatch_claim_has_exactly_one_winner() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "ready", 0).await;
+        let claim = |claim_id: &'static str| {
+            let pool = pool.clone();
+            let goal_id = goal.id.clone();
+            async move {
+                let mut patch = serde_json::Map::new();
+                patch.insert("dispatch_claim_id".to_string(), serde_json::json!(claim_id));
+                advance_goal_checked(
+                    &pool,
+                    &goal_id,
+                    GoalAction::Dispatch,
+                    "system",
+                    None,
+                    TransitionEffects {
+                        metadata_patch: patch,
+                        ..Default::default()
+                    },
+                )
+                .await
+            }
+        };
+
+        let (first, second) = tokio::join!(claim("claim-a"), claim("claim-b"));
+        assert_eq!(
+            usize::from(first.is_ok()) + usize::from(second.is_ok()),
+            1,
+            "the Ready → InProgress transaction must authorize exactly one dispatcher"
+        );
+
+        let updated = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let winning_claim = updated
+            .metadata_json
+            .get("dispatch_claim_id")
+            .and_then(|value| value.as_str())
+            .unwrap();
+        assert!(winning_claim == "claim-a" || winning_claim == "claim-b");
     }
 
     // ── Defense-in-depth trigger ──
