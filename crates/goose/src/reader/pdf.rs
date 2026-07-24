@@ -110,7 +110,11 @@ fn extract_pdf_text_with_limits(bytes: &[u8], limits: ExtractionLimits) -> Strin
 fn push_bounded(output: &mut String, value: &str, max_bytes: usize) {
     let remaining = max_bytes.saturating_sub(output.len());
     let end = char_boundary_at_or_before(value, remaining.min(value.len()));
-    output.push_str(&value[..end]);
+    // `end` is a validated char boundary, so `.get(..end)` always yields Some;
+    // use it (not raw slicing) to satisfy clippy::string_slice and stay panic-free.
+    if let Some(slice) = value.get(..end) {
+        output.push_str(slice);
+    }
 }
 
 fn char_boundary_at_or_before(value: &str, mut index: usize) -> usize {
