@@ -7,7 +7,9 @@ use rmcp::model::{
     ServerCapabilities, Tool,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 pub static EXTENSION_NAME: &str = "browser";
@@ -48,6 +50,8 @@ struct SnapshotElement {
 struct PageSnapshot {
     #[serde(default)]
     url: String,
+    #[serde(default)]
+    webview_id: Option<String>,
     #[serde(default)]
     elements: Vec<SnapshotElement>,
     #[serde(default)]
@@ -132,6 +136,13 @@ fn format_snapshot(snap: &PageSnapshot) -> String {
 
 pub struct BrowserClient {
     info: InitializeResult,
+    snapshot_identities: Mutex<HashMap<String, PageIdentity>>,
+}
+
+#[derive(Clone)]
+struct PageIdentity {
+    webview_id: String,
+    page_url: String,
 }
 
 /// Accept bare domains ("bbc.com") by assuming https; refuse non-web schemes.
@@ -476,7 +487,10 @@ impl BrowserClient {
                 Implementation::new(EXTENSION_NAME.to_string(), "1.0.0".to_string())
                     .with_title("Browser"),
             );
-        Ok(Self { info })
+        Ok(Self {
+            info,
+            snapshot_identities: Mutex::new(HashMap::new()),
+        })
     }
 
     async fn handle_read_browser_content(&self) -> Result<Vec<Content>, String> {
@@ -647,7 +661,7 @@ impl BrowserClient {
 
     /// #649: snapshot the interactive elements of the open page as stable refs.
     /// Round-trips through the same loopback bridge as read_browser_content.
-    async fn handle_get_page_snapshot(&self) -> Result<Vec<Content>, String> {
+    async fn handle_get_page_snapshot(&self, session_id: &str) -> Result<Vec<Content>, String> {
         let client = reqwest::Client::new();
         let resp = client
             .post("http://127.0.0.1:3001/api/browser/snapshot/read")
@@ -669,6 +683,22 @@ impl BrowserClient {
             .json()
             .await
             .map_err(|e| format!("Failed to parse snapshot: {e}"))?;
+        let identity = snap.webview_id.as_ref().map(|webview_id| PageIdentity {
+            webview_id: webview_id.clone(),
+            page_url: snap.url.clone(),
+        });
+        let mut identities = self
+            .snapshot_identities
+            .lock()
+            .map_err(|_| "Browser snapshot identity state is unavailable.".to_string())?;
+        match identity {
+            Some(identity) if snap.status == "ok" => {
+                identities.insert(session_id.to_string(), identity);
+            }
+            _ => {
+                identities.remove(session_id);
+            }
+        }
         Ok(vec![Content::text(format_snapshot(&snap))])
     }
 
@@ -679,14 +709,32 @@ impl BrowserClient {
         ref_id: u32,
         action: &str,
         value: Option<&str>,
+        session_id: &str,
     ) -> Result<Vec<Content>, String> {
         validate_act_args(action, value)?;
+        let identity = self
+            .snapshot_identities
+            .lock()
+            .map_err(|_| "Browser snapshot identity state is unavailable.".to_string())?
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| {
+                "No bound browser snapshot is available for this session. Call \
+                 get_page_snapshot again before acting."
+                    .to_string()
+            })?;
 
         let client = reqwest::Client::new();
         let resp = client
             .post("http://127.0.0.1:3001/api/browser/act")
             .timeout(std::time::Duration::from_secs(20))
-            .json(&serde_json::json!({ "ref": ref_id, "action": action, "value": value }))
+            .json(&serde_json::json!({
+                "ref": ref_id,
+                "action": action,
+                "value": value,
+                "webview_id": identity.webview_id,
+                "page_url": identity.page_url,
+            }))
             .send()
             .await
             .map_err(|e| format!("Failed to reach the browser bridge: {e}"))?;
@@ -710,6 +758,32 @@ impl BrowserClient {
             .json()
             .await
             .map_err(|e| format!("Failed to parse act result: {e}"))?;
+
+        {
+            let mut identities = self
+                .snapshot_identities
+                .lock()
+                .map_err(|_| "Browser snapshot identity state is unavailable.".to_string())?;
+            match result.snapshot.as_ref() {
+                Some(snapshot) if result.ok => match &snapshot.webview_id {
+                    Some(webview_id) if snapshot.status == "ok" => {
+                        identities.insert(
+                            session_id.to_string(),
+                            PageIdentity {
+                                webview_id: webview_id.clone(),
+                                page_url: snapshot.url.clone(),
+                            },
+                        );
+                    }
+                    _ => {
+                        identities.remove(session_id);
+                    }
+                },
+                _ => {
+                    identities.remove(session_id);
+                }
+            }
+        }
 
         let mut out = if result.ok {
             format!("Done: {action} on ref {ref_id}.")
@@ -831,7 +905,7 @@ impl McpClientTrait for BrowserClient {
 
     async fn call_tool(
         &self,
-        _ctx: &ToolCallContext,
+        ctx: &ToolCallContext,
         name: &str,
         arguments: Option<JsonObject>,
         _cancel_token: CancellationToken,
@@ -859,7 +933,7 @@ impl McpClientTrait for BrowserClient {
                     "Error: {error}"
                 ))])),
             },
-            "get_page_snapshot" => match self.handle_get_page_snapshot().await {
+            "get_page_snapshot" => match self.handle_get_page_snapshot(&ctx.session_id).await {
                 Ok(content) => Ok(CallToolResult::success(content)),
                 Err(error) => Ok(CallToolResult::error(vec![Content::text(error)])),
             },
@@ -882,7 +956,10 @@ impl McpClientTrait for BrowserClient {
                     None => Ok(CallToolResult::error(vec![Content::text(
                         "act_on_page needs an integer `ref` from get_page_snapshot.".to_string(),
                     )])),
-                    Some(r) => match self.handle_act_on_page(r, &action, value.as_deref()).await {
+                    Some(r) => match self
+                        .handle_act_on_page(r, &action, value.as_deref(), &ctx.session_id)
+                        .await
+                    {
                         Ok(content) => Ok(CallToolResult::success(content)),
                         Err(error) => Ok(CallToolResult::error(vec![Content::text(error)])),
                     },
@@ -1073,6 +1150,7 @@ mod tests {
     fn format_snapshot_lists_refs_and_flags_status() {
         let snap = PageSnapshot {
             url: "https://example.com".into(),
+            webview_id: Some("browser-1".into()),
             elements: vec![
                 SnapshotElement {
                     ref_id: 0,
@@ -1100,6 +1178,7 @@ mod tests {
         // A non-web page is reported, not listed.
         let refused = PageSnapshot {
             url: "file:///x".into(),
+            webview_id: Some("browser-1".into()),
             elements: vec![],
             truncated: false,
             status: "refused_scheme".into(),

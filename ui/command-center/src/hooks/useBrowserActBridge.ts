@@ -71,6 +71,7 @@ export function useBrowserActBridge(activeWebviewId: string | null | undefined) 
 
 interface SnapshotResult {
   url: string;
+  webview_id?: string;
   elements: Array<{ ref: number; role: string; name: string; tag: string; value?: string }>;
   truncated: boolean;
   status: string;
@@ -98,7 +99,7 @@ async function handleSnapshot(requestId: unknown, wvId: string | null | undefine
   try {
     const core = await import('@tauri-apps/api/core');
     const result = (await core.invoke('get_page_snapshot', { webviewId: wvId })) as SnapshotResult;
-    await fulfillSnapshot(requestId, result);
+    await fulfillSnapshot(requestId, { ...result, webview_id: wvId });
   } catch (err) {
     await fulfillSnapshot(requestId, {
       url: '',
@@ -110,28 +111,56 @@ async function handleSnapshot(requestId: unknown, wvId: string | null | undefine
   }
 }
 
-async function handleAct(payload: unknown, wvId: string | null | undefined) {
-  const p = (payload ?? {}) as { request_id?: unknown; ref?: unknown; action?: unknown; value?: unknown };
+async function handleAct(payload: unknown, _activeWebviewId: string | null | undefined) {
+  const p = (payload ?? {}) as {
+    request_id?: unknown;
+    ref?: unknown;
+    action?: unknown;
+    value?: unknown;
+    webview_id?: unknown;
+    page_url?: unknown;
+  };
   const requestId = p.request_id;
   if (typeof requestId !== 'string' || !requestId) return;
 
-  if (!wvId) {
-    await fulfillAct(requestId, { ok: false, error: 'No browser tab is open in Permagent.' });
+  const binding = resolveActBinding(p, _activeWebviewId);
+  if (!binding) {
+    await fulfillAct(requestId, {
+      ok: false,
+      error: 'The browser snapshot identity is missing. Take a fresh snapshot before acting.',
+    });
     return;
   }
 
   try {
     const core = await import('@tauri-apps/api/core');
     const result = (await core.invoke('act_on_ref', {
-      webviewId: wvId,
+      webviewId: binding.webviewId,
+      expectedUrl: binding.pageUrl,
       refId: p.ref,
       action: p.action,
       value: p.value ?? null,
     })) as ActResult;
+    if (result.snapshot) result.snapshot.webview_id = binding.webviewId;
     await fulfillAct(requestId, result);
   } catch (err) {
     await fulfillAct(requestId, { ok: false, error: `Act failed: ${err}` });
   }
+}
+
+export function resolveActBinding(
+  payload: { webview_id?: unknown; page_url?: unknown },
+  _activeWebviewId: string | null | undefined,
+): { webviewId: string; pageUrl: string } | null {
+  if (
+    typeof payload.webview_id !== 'string' ||
+    !payload.webview_id ||
+    typeof payload.page_url !== 'string' ||
+    !payload.page_url
+  ) {
+    return null;
+  }
+  return { webviewId: payload.webview_id, pageUrl: payload.page_url };
 }
 
 async function fulfillSnapshot(requestId: string, snapshot: SnapshotResult) {

@@ -39,6 +39,9 @@ pub struct SnapshotElement {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PageSnapshot {
     pub url: String,
+    /// Concrete native webview that produced these refs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webview_id: Option<String>,
     pub elements: Vec<SnapshotElement>,
     #[serde(default)]
     pub truncated: bool,
@@ -75,6 +78,8 @@ pub struct ActRequest {
     pub action: String,
     #[serde(default)]
     pub value: Option<String>,
+    pub webview_id: String,
+    pub page_url: String,
 }
 
 /// Validate an act: `click` takes no value; `type` requires a value present
@@ -156,6 +161,8 @@ async fn act(
             "ref": req.ref_id,
             "action": req.action,
             "value": req.value,
+            "webview_id": req.webview_id,
+            "page_url": req.page_url,
         }),
     ));
 
@@ -251,10 +258,15 @@ mod tests {
     #[test]
     fn act_request_reads_ref_key() {
         let req: ActRequest =
-            serde_json::from_str(r#"{"ref":5,"action":"type","value":"hi"}"#).unwrap();
+            serde_json::from_str(
+                r#"{"ref":5,"action":"type","value":"hi","webview_id":"browser-1","page_url":"https://example.com/"}"#,
+            )
+            .unwrap();
         assert_eq!(req.ref_id, 5);
         assert_eq!(req.action, "type");
         assert_eq!(req.value.as_deref(), Some("hi"));
+        assert_eq!(req.webview_id, "browser-1");
+        assert_eq!(req.page_url, "https://example.com/");
     }
 
     #[test]
