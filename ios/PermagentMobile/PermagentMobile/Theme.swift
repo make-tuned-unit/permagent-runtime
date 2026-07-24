@@ -149,3 +149,21 @@ struct ThinkingDots: View {
         .accessibilityLabel("Henry is thinking")
     }
 }
+
+// ── Liquid Glass tab bar ──────────────────────────────────────────────────────
+
+extension View {
+    /// Minimize the tab bar as the user scrolls the page down — and expand it
+    /// again on scroll up — the modern Instagram / Liquid Glass behavior. Uses
+    /// the native iOS 26 `tabBarMinimizeBehavior`; no-ops gracefully on earlier
+    /// iOS so the standard tab bar is untouched. Requires the selected tab to
+    /// host scrollable content (ScrollView/List) for the scroll to drive it.
+    @ViewBuilder
+    func liquidGlassTabMinimize() -> some View {
+        if #available(iOS 26.0, *) {
+            self.tabBarMinimizeBehavior(.onScrollDown)
+        } else {
+            self
+        }
+    }
+}

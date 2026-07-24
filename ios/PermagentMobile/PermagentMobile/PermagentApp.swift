@@ -75,5 +75,6 @@ struct MainTabs: View {
             GoalsView().tabItem { Label("In Flight", systemImage: "bolt.fill") }
             ControlHubView().tabItem { Label("Control", systemImage: "slider.horizontal.3") }
         }
+        .liquidGlassTabMinimize()
     }
 }
