@@ -21,6 +21,7 @@ pub mod conversation;
 pub mod cost_router;
 pub mod decision_inbox;
 pub mod decisions;
+pub mod decisions_effects;
 pub mod dictation;
 pub mod doctor;
 pub mod download_manager;

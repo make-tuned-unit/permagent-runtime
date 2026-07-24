@@ -46,6 +46,21 @@ pub fn effect_outbox_claim_key(decision_id: &str, kind: &str) -> Option<String> 
         .then(|| format!("decision:{}:{}", decision_id, kind))
 }
 
+/// Atomically claim an inline effect. A false result means the drain worker
+/// won the race and owns application.
+pub async fn claim_effect_outbox(pool: &Pool<Sqlite>, claim_key: &str) -> Result<bool, String> {
+    let result = sqlx::query(
+        "UPDATE effect_outbox SET status = 'running',
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+         WHERE claim_key = ? AND status = 'pending'",
+    )
+    .bind(claim_key)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(result.rows_affected() == 1)
+}
+
 /// Mark an inline decision effect as successfully applied.
 pub async fn mark_effect_outbox_applied(
     pool: &Pool<Sqlite>,
@@ -72,7 +87,12 @@ pub async fn mark_effect_outbox_failed(
 ) -> Result<(), String> {
     sqlx::query(
         "UPDATE effect_outbox
-         SET status = 'failed', last_error = ?, attempts = attempts + 1,
+         SET status = CASE WHEN attempts + 1 >= max_attempts THEN 'dead' ELSE 'pending' END,
+             last_error = ?, attempts = attempts + 1,
+             next_attempt_at = strftime(
+                 '%Y-%m-%dT%H:%M:%fZ', 'now',
+                 '+' || MIN(3600, (1 << MIN(attempts, 12))) || ' seconds'
+             ),
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
          WHERE claim_key = ?",
     )
@@ -1162,6 +1182,24 @@ pub struct DecisionProof {
 }
 
 impl DecisionProof {
+    /// Reconstitute the capability for a durable effect from its answered row.
+    ///
+    /// Kept crate-private so callers outside `permagent` still cannot mint a
+    /// proof. The outbox drain is the only retry path that needs this.
+    pub(crate) fn from_answered_row(decision: &Decision) -> Option<Self> {
+        if decision.status != "answered" {
+            return None;
+        }
+        Some(Self {
+            decision_id: decision.id.clone(),
+            kind: decision.kind.clone(),
+            goal_id: decision.goal_id.clone(),
+            tier: decision.tier,
+            answer: decision.answer.clone()?,
+            acted_by: decision.acted_by.clone()?,
+        })
+    }
+
     pub fn decision_id(&self) -> &str {
         &self.decision_id
     }
@@ -2465,6 +2503,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn answered_row_is_the_only_source_of_a_retry_proof() {
+        let pool = test_pool().await;
+        let decision = create_decision(&pool, valid_unblock()).await.unwrap();
+        let (answered, _) = answer_decision(
+            &pool,
+            &decision.id,
+            &DecisionAnswer {
+                answer: "reject".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        assert!(DecisionProof::from_answered_row(&answered).is_some());
+
+        for status in ["open", "superseded", "expired", "malformed"] {
+            let mut row = answered.clone();
+            row.status = status.to_string();
+            assert!(
+                DecisionProof::from_answered_row(&row).is_none(),
+                "{status} must not mint a proof"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn answering_eligible_decision_enqueues_effect_once() {
         let pool = test_pool().await;
         let d = create_decision(&pool, valid_unblock()).await.unwrap();
@@ -2514,6 +2579,74 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(count, 1, "claim-key replay must remain a silent no-op");
+    }
+
+    #[tokio::test]
+    async fn effect_outbox_claim_has_exactly_one_winner() {
+        let pool = test_pool().await;
+        let decision = create_decision(&pool, valid_unblock()).await.unwrap();
+        answer_decision(
+            &pool,
+            &decision.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let key = effect_outbox_claim_key(&decision.id, &decision.kind).unwrap();
+        assert!(claim_effect_outbox(&pool, &key).await.unwrap());
+        assert!(
+            !claim_effect_outbox(&pool, &key).await.unwrap(),
+            "inline and worker claims cannot both win"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_inline_effect_is_rescheduled_then_dead_lettered() {
+        let pool = test_pool().await;
+        let decision = create_decision(&pool, valid_unblock()).await.unwrap();
+        answer_decision(
+            &pool,
+            &decision.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let key = effect_outbox_claim_key(&decision.id, &decision.kind).unwrap();
+        mark_effect_outbox_failed(&pool, &key, "transient")
+            .await
+            .unwrap();
+        let row: (String, i64, String) = sqlx::query_as(
+            "SELECT status, attempts, last_error FROM effect_outbox WHERE claim_key = ?",
+        )
+        .bind(&key)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row, ("pending".to_string(), 1, "transient".to_string()));
+
+        sqlx::query("UPDATE effect_outbox SET attempts = max_attempts - 1 WHERE claim_key = ?")
+            .bind(&key)
+            .execute(&pool)
+            .await
+            .unwrap();
+        mark_effect_outbox_failed(&pool, &key, "terminal")
+            .await
+            .unwrap();
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM effect_outbox WHERE claim_key = ?")
+                .bind(&key)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "dead");
     }
 
     #[tokio::test]
