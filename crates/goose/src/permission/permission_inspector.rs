@@ -11,6 +11,10 @@ use rmcp::model::Tool;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
+fn is_request_read_only(detected_request_ids: &HashSet<String>, request: &ToolRequest) -> bool {
+    detected_request_ids.contains(&request.id)
+}
+
 /// Permission Inspector that handles tool permission checking
 pub struct PermissionInspector {
     pub permission_manager: Arc<PermissionManager>,
@@ -149,23 +153,19 @@ impl ToolInspector for PermissionInspector {
                                     InspectionAction::RequireApproval(None)
                                 }
                             }
-                        // 2. Check if it's a smart-approved tool (annotation or cached LLM decision)
-                        } else if self.is_readonly_annotated_tool(tool_name)
-                            || (goose_mode == GooseMode::SmartApprove
-                                && permission_manager.get_smart_approve_permission(tool_name)
-                                    == Some(PermissionLevel::AlwaysAllow))
-                        {
+                        // 2. Trust read-only tool annotations, which are tool-wide declarations
+                        } else if self.is_readonly_annotated_tool(tool_name) {
                             InspectionAction::Allow
                         // 3. Special case for extension management
                         } else if tool_name == MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE {
                             InspectionAction::RequireApproval(Some(
                                 "Extension management requires approval for security".to_string(),
                             ))
-                        // 4. Defer to LLM detection (SmartApprove, not yet cached)
+                        // 4. Defer to per-invocation LLM detection in SmartApprove.
+                        // Legacy cached AlwaysAllow entries are deliberately ignored.
                         } else if goose_mode == GooseMode::SmartApprove
-                            && permission_manager
-                                .get_smart_approve_permission(tool_name)
-                                .is_none()
+                            && permission_manager.get_smart_approve_permission(tool_name)
+                                != Some(PermissionLevel::AskBefore)
                         {
                             llm_detect_candidates.push(request);
                             continue;
@@ -182,8 +182,6 @@ impl ToolInspector for PermissionInspector {
                             "Auto mode - all tools approved".to_string()
                         } else if self.is_readonly_annotated_tool(tool_name) {
                             "Tool annotated as read-only".to_string()
-                        } else if goose_mode == GooseMode::SmartApprove {
-                            "SmartApprove cached as read-only".to_string()
                         } else {
                             "User permission allows this tool".to_string()
                         }
@@ -211,7 +209,7 @@ impl ToolInspector for PermissionInspector {
 
         // LLM-based read-only detection for deferred SmartApprove candidates
         if !llm_detect_candidates.is_empty() {
-            let detected: HashSet<String> = match self.provider.lock().await.clone() {
+            let detected_request_ids: HashSet<String> = match self.provider.lock().await.clone() {
                 Some(provider) => {
                     detect_read_only_tools(provider, session_id, llm_detect_candidates.to_vec())
                         .await
@@ -222,21 +220,7 @@ impl ToolInspector for PermissionInspector {
             };
 
             for candidate in &llm_detect_candidates {
-                let is_readonly = candidate
-                    .tool_call
-                    .as_ref()
-                    .map(|tc| detected.contains(&tc.name.to_string()))
-                    .unwrap_or(false);
-
-                // Cache the LLM decision for future calls
-                if let Ok(tc) = &candidate.tool_call {
-                    let level = if is_readonly {
-                        PermissionLevel::AlwaysAllow
-                    } else {
-                        PermissionLevel::AskBefore
-                    };
-                    permission_manager.update_smart_approve_permission(&tc.name, level);
-                }
+                let is_readonly = is_request_read_only(&detected_request_ids, candidate);
 
                 results.push(InspectionResult {
                     tool_request_id: candidate.id.clone(),
@@ -272,7 +256,7 @@ mod tests {
 
     #[test_case(GooseMode::Auto, false, None, InspectionAction::Allow; "auto_allows")]
     #[test_case(GooseMode::SmartApprove, true, None, InspectionAction::Allow; "smart_approve_annotation_allows")]
-    #[test_case(GooseMode::SmartApprove, false, Some(PermissionLevel::AlwaysAllow), InspectionAction::Allow; "smart_approve_cached_allow")]
+    #[test_case(GooseMode::SmartApprove, false, Some(PermissionLevel::AlwaysAllow), InspectionAction::RequireApproval(None); "smart_approve_ignores_legacy_cached_allow")]
     #[test_case(GooseMode::SmartApprove, false, Some(PermissionLevel::AskBefore), InspectionAction::RequireApproval(None); "smart_approve_cached_ask")]
     #[test_case(GooseMode::SmartApprove, false, None, InspectionAction::RequireApproval(None); "smart_approve_unknown_defers")]
     #[test_case(GooseMode::Approve, false, None, InspectionAction::RequireApproval(None); "approve_requires_approval")]
@@ -303,5 +287,33 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(results[0].action, expected);
+    }
+
+    #[test]
+    fn judge_verdict_is_scoped_to_request_id_not_shared_tool_name() {
+        let select = ToolRequest {
+            id: "select-request".into(),
+            tool_call: Ok(
+                CallToolRequestParams::new("database.query").with_arguments(object!({
+                    "sql": "SELECT * FROM users",
+                })),
+            ),
+            metadata: None,
+            tool_meta: None,
+        };
+        let delete = ToolRequest {
+            id: "delete-request".into(),
+            tool_call: Ok(
+                CallToolRequestParams::new("database.query").with_arguments(object!({
+                    "sql": "DELETE FROM users",
+                })),
+            ),
+            metadata: None,
+            tool_meta: None,
+        };
+        let detected_request_ids = HashSet::from(["select-request".to_string()]);
+
+        assert!(is_request_read_only(&detected_request_ids, &select));
+        assert!(!is_request_read_only(&detected_request_ids, &delete));
     }
 }
