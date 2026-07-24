@@ -18,9 +18,8 @@
 //! in a sovereign context, the call is refused before any bytes leave, and the
 //! attempt is recorded in the egress audit log. A cloud call in a non-sovereign
 //! context is allowed but still recorded — the audit is complete. If the audit
-//! row itself cannot be written, the failure is logged loudly; with strict
-//! audit mode on (`sovereign_strict_audit`), an allowed cloud call is then
-//! refused too — no unlogged egress.
+//! row itself cannot be written, an allowed cloud call is refused too — no
+//! unlogged egress.
 
 use std::sync::Arc;
 
@@ -41,6 +40,8 @@ pub struct SovereignGuardProvider {
     inner: Arc<dyn Provider>,
     /// The inner provider's data locality, resolved once at wrap time.
     locality: DataLocality,
+    #[cfg(test)]
+    audit_result: Option<Result<(), String>>,
 }
 
 impl SovereignGuardProvider {
@@ -48,7 +49,33 @@ impl SovereignGuardProvider {
     /// Called at the single factory choke point.
     pub fn wrap(inner: Arc<dyn Provider>) -> Arc<dyn Provider> {
         let locality = inner.data_locality();
-        Arc::new(Self { inner, locality })
+        Arc::new(Self {
+            inner,
+            locality,
+            #[cfg(test)]
+            audit_result: None,
+        })
+    }
+
+    #[cfg(test)]
+    fn wrap_with_audit_result(
+        inner: Arc<dyn Provider>,
+        audit_result: Result<(), String>,
+    ) -> Arc<dyn Provider> {
+        let locality = inner.data_locality();
+        Arc::new(Self {
+            inner,
+            locality,
+            audit_result: Some(audit_result),
+        })
+    }
+
+    async fn record_egress(&self, record: EgressRecord) -> anyhow::Result<()> {
+        #[cfg(test)]
+        if let Some(result) = &self.audit_result {
+            return result.clone().map_err(anyhow::Error::msg);
+        }
+        sovereignty::record_egress(record).await
     }
 
     /// The shared cloud-egress gate. For a **cloud** provider it records the
@@ -70,17 +97,18 @@ impl SovereignGuardProvider {
         let blocked = sovereignty::is_context_sovereign(session_id);
         // Always-on audit: record every cloud call (blocked or allowed) before
         // it is allowed to proceed. An unlogged cloud call is a lying audit.
-        let audit = sovereignty::record_egress(EgressRecord {
-            provider: self.inner.get_name().to_string(),
-            model: model.to_string(),
-            session_id: session_id.to_string(),
-            project_id: None,
-            kind,
-            blocked,
-            content_hash,
-            prompt,
-        })
-        .await;
+        let audit = self
+            .record_egress(EgressRecord {
+                provider: self.inner.get_name().to_string(),
+                model: model.to_string(),
+                session_id: session_id.to_string(),
+                project_id: None,
+                kind,
+                blocked,
+                content_hash,
+                prompt,
+            })
+            .await;
         if blocked {
             // Unchanged fail-closed refusal — an audit failure cannot make a
             // sovereign context leak, and `record_egress` has already logged
@@ -89,15 +117,11 @@ impl SovereignGuardProvider {
                 sovereignty::sovereign_block_message(self.inner.get_name(), model),
             ));
         }
-        // Strict (fail-closed) audit: an ALLOWED cloud call whose audit row
-        // could not be written is refused before any bytes leave — for users
-        // whose compliance posture requires no-unlogged-egress. Default off:
-        // the loud error log is the remedy and the call proceeds.
-        if audit.is_err()
-            && sovereignty::audit_failure_fails_call(sovereignty::strict_audit_enabled(), blocked)
-        {
+        // Audit persistence is a non-disableable precondition for ALLOWED cloud
+        // egress. Refuse before delegating rather than permit an unlogged send.
+        if audit.is_err() {
             return Err(ProviderError::ExecutionError(
-                sovereignty::strict_audit_block_message(self.inner.get_name(), model),
+                sovereignty::audit_block_message(self.inner.get_name(), model),
             ));
         }
         Ok(())
@@ -277,13 +301,23 @@ mod tests {
         }
     }
 
-    fn mock(locality: DataLocality) -> (Arc<dyn Provider>, Arc<AtomicBool>) {
+    fn mock_with_audit_result(
+        locality: DataLocality,
+        audit_result: Result<(), String>,
+    ) -> (Arc<dyn Provider>, Arc<AtomicBool>) {
         let streamed = Arc::new(AtomicBool::new(false));
         let inner = Arc::new(MockProvider {
             locality,
             streamed: streamed.clone(),
         });
-        (SovereignGuardProvider::wrap(inner), streamed)
+        (
+            SovereignGuardProvider::wrap_with_audit_result(inner, audit_result),
+            streamed,
+        )
+    }
+
+    fn mock(locality: DataLocality) -> (Arc<dyn Provider>, Arc<AtomicBool>) {
+        mock_with_audit_result(locality, Ok(()))
     }
 
     async fn call(provider: &Arc<dyn Provider>, session_id: &str) -> Result<(), ProviderError> {
@@ -338,6 +372,27 @@ mod tests {
         assert!(
             streamed.load(Ordering::SeqCst),
             "the inner provider's stream must be reached"
+        );
+    }
+
+    #[tokio::test]
+    async fn allowed_cloud_provider_refused_when_audit_write_fails() {
+        let (guarded, streamed) =
+            mock_with_audit_result(DataLocality::Cloud, Err("audit unavailable".to_string()));
+        let sid = "guard-test-cloud-audit-failure";
+
+        let result = call(&guarded, sid).await;
+
+        let msg = result
+            .expect_err("an unaudited cloud call must be refused")
+            .to_string();
+        assert!(
+            msg.contains("cloud call refused: could not write the required egress audit record"),
+            "error must explain the fail-closed audit requirement, got: {msg}"
+        );
+        assert!(
+            !streamed.load(Ordering::SeqCst),
+            "the inner provider must not be reached after an audit failure"
         );
     }
 

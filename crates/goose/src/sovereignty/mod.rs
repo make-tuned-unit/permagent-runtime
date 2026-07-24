@@ -6,8 +6,8 @@
 //! data provably never leaves this machine for cloud inference. Every cloud
 //! inference call (blocked or allowed) is recorded in an append-only local
 //! egress audit log. An audit-write failure is logged loudly with full
-//! context; with [`SOVEREIGN_STRICT_AUDIT_KEY`] enabled it additionally fails
-//! the allowed cloud call itself (fail-closed audit: no unlogged egress).
+//! context and fails the allowed cloud call itself (fail-closed audit: no
+//! unlogged egress).
 //!
 //! Enforcement is centralized in [`crate::providers::sovereign_guard`], the
 //! decorator that wraps *every* provider minted by the factory
@@ -41,12 +41,9 @@ pub const SOVEREIGN_MODE_KEY: &str = "sovereign_mode";
 /// alongside the hash. Default false — only a SHA-256 content hash is stored.
 pub const SOVEREIGN_CAPTURE_PROMPTS_KEY: &str = "sovereign_capture_prompts";
 
-/// Config key: when true, an egress-audit **write failure** for an *allowed*
-/// cloud call fails the call itself (fail-closed audit — for compliance
-/// postures that require no-unlogged-egress). Default false: the failure is
-/// logged loudly and the call proceeds. Blocked calls are unaffected either
-/// way — they already fail closed with their own refusal. As with the other
-/// sovereignty keys, `SOVEREIGN_STRICT_AUDIT=true` also works via env.
+/// Legacy config key retained for compatibility. Audit persistence is now a
+/// non-disableable precondition for allowed cloud inference, regardless of
+/// this setting.
 pub const SOVEREIGN_STRICT_AUDIT_KEY: &str = "sovereign_strict_audit";
 
 /// Prefix on the block error message so callers, the UI, and tests can
@@ -240,37 +237,27 @@ pub fn sovereign_block_message(provider: &str, model: &str) -> String {
     )
 }
 
-// ── Strict (fail-closed) audit mode ─────────────────────────────────────────
+// ── Fail-closed audit errors ────────────────────────────────────────────────
 
-/// Is strict audit mode on? Read only on the audit-write *failure* path (cold
-/// — failures are exceptional), so an uncached `get_param` is fine here,
-/// unlike the per-call `global_sovereign_mode` cache above.
+/// Return the legacy strict-audit setting for compatibility with existing
+/// configuration/status surfaces. Allowed cloud inference now fails closed on
+/// audit errors regardless of this value.
 pub fn strict_audit_enabled() -> bool {
     Config::global()
         .get_param::<bool>(SOVEREIGN_STRICT_AUDIT_KEY)
         .unwrap_or(false)
 }
 
-/// Pure strict-audit policy: must a failed audit write fail the cloud call
-/// itself? Only when strict mode is on AND the call was *allowed* — an
-/// unlogged allowed egress is exactly what strict mode exists to prevent,
-/// while a blocked call is already fail-closed (no data left the machine)
-/// and carries its own, more informative refusal.
-pub fn audit_failure_fails_call(strict_audit: bool, blocked: bool) -> bool {
-    strict_audit && !blocked
-}
-
-/// The error message when strict audit mode refuses an unlogged cloud call.
+/// The error message when a failed audit write refuses an unlogged cloud call.
 /// Carries [`SOVEREIGN_BLOCK_PREFIX`] so the UI and callers recognize it as a
 /// sovereignty refusal. Honest by construction: the guard writes the audit row
 /// *before* delegating to the inner provider, so when this fires no bytes have
 /// left the machine.
-pub fn strict_audit_block_message(provider: &str, model: &str) -> String {
+pub fn audit_block_message(provider: &str, model: &str) -> String {
     format!(
-        "{SOVEREIGN_BLOCK_PREFIX} cloud call to provider '{provider}' (model '{model}') refused: \
-         the egress audit write failed and `{SOVEREIGN_STRICT_AUDIT_KEY}` is enabled \
-         (no-unlogged-egress). The request was not sent. Restore the audit store \
-         (spectral db) or disable strict audit to proceed."
+        "{SOVEREIGN_BLOCK_PREFIX} cloud call refused: could not write the required egress audit \
+         record for provider '{provider}' (model '{model}'). The request was not sent. Restore \
+         the audit store (spectral db) to proceed."
     )
 }
 
@@ -433,11 +420,11 @@ pub async fn recent_egress_rows(
 /// Record a cloud-egress event to the always-on audit log. On write failure
 /// (row insert failed, or no db pool at all) the full egress context is logged
 /// at `error` under target "sovereignty" — an unlogged cloud call is a lying
-/// audit, and it must be loud in the daemon log — and the error is returned so
-/// the caller can decide whether it fails the call (the guard consults
-/// [`audit_failure_fails_call`] with [`strict_audit_enabled`]; default mode
-/// proceeds). Obtains the shared spectral pool via the global session manager,
-/// so it is callable from anywhere (including the provider layer).
+/// audit, and it must be loud in the daemon log — and the error is returned.
+/// The inference guard treats success as a non-disableable precondition for
+/// allowed cloud egress. Obtains the shared spectral pool via the global
+/// session manager, so it is callable from anywhere (including the provider
+/// layer).
 pub async fn record_egress(rec: EgressRecord) -> anyhow::Result<()> {
     let result = match crate::session::SessionManager::instance()
         .pool_clone()
@@ -508,20 +495,15 @@ pub fn plan_telemetry_egress(
 /// boundary and record it to the append-only egress audit log (#327).
 ///
 /// Returns `true` if the caller may send (not sovereign), `false` if it must
-/// **hard-suppress** the POST (sovereign mode on). Either way an audit row is
-/// written (`blocked = sovereign`), bringing telemetry egress under the same
-/// no-unlogged-egress boundary as inference. The suppression decision is
-/// independent of whether the audit write succeeds — a failed audit write is
-/// logged loudly by [`record_egress`] but never causes a suppressed POST to be
-/// sent, and never fails an allowed telemetry POST (unlike strict-audit for
-/// inference, telemetry is best-effort and must not break the app).
+/// **hard-suppress** the POST (sovereign mode on or audit write failure).
+/// Either way an audit row is attempted (`blocked = sovereign`), bringing
+/// telemetry egress under the same no-unlogged-egress boundary as inference.
 pub async fn guard_outbound_telemetry(kind: EgressKind, destination: &str, event: &str) -> bool {
     let sovereign = global_sovereign_mode();
     let (allowed, rec) = plan_telemetry_egress(kind, destination, event, sovereign);
-    // Best-effort audit: `record_egress` already logs failures loudly. We do not
-    // propagate the error — telemetry/crash egress must never crash the caller.
-    let _ = record_egress(rec).await;
-    allowed
+    // `record_egress` logs failures loudly. Suppress rather than crash the
+    // caller, but never permit an unaudited outbound POST.
+    allowed && record_egress(rec).await.is_ok()
 }
 
 #[cfg(test)]
@@ -615,36 +597,18 @@ mod tests {
     }
 
     #[test]
-    fn strict_audit_message_carries_prefix_names_and_knob() {
-        let msg = strict_audit_block_message("openai", "gpt-x");
+    fn audit_failure_message_carries_prefix_and_names() {
+        let msg = audit_block_message("openai", "gpt-x");
         assert!(
             msg.starts_with(SOVEREIGN_BLOCK_PREFIX),
-            "strict-audit refusal must be recognizable as a sovereignty refusal"
+            "audit refusal must be recognizable as a sovereignty refusal"
         );
         assert!(msg.contains("openai"));
         assert!(msg.contains("gpt-x"));
         assert!(
-            msg.contains(SOVEREIGN_STRICT_AUDIT_KEY),
-            "message must name the knob so the user can find/disable it"
+            msg.contains("could not write the required egress audit record"),
+            "message must explain the non-disableable audit requirement"
         );
-    }
-
-    /// The strict-audit policy as pure logic (the guard consults exactly this
-    /// with `strict_audit_enabled()` when `record_egress` returns Err). The
-    /// end-to-end failure can't be simulated through the guard here because
-    /// `record_egress` rides the process-global SessionManager pool, which a
-    /// unit test cannot break without racing every other test on it — the
-    /// closed-pool test below proves the write-failure path itself errors.
-    #[test]
-    fn audit_failure_policy_fails_only_strict_allowed_calls() {
-        // Strict ON + allowed call: the one case that must fail the call.
-        assert!(audit_failure_fails_call(true, false));
-        // Strict ON + blocked call: blocked behavior is unchanged (already
-        // fail-closed with its own refusal).
-        assert!(!audit_failure_fails_call(true, true));
-        // Strict OFF: never fails the call, allowed or blocked.
-        assert!(!audit_failure_fails_call(false, false));
-        assert!(!audit_failure_fails_call(false, true));
     }
 
     /// A closed pool is the cleanest simulation of "the audit store is gone"
