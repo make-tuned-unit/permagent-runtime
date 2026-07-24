@@ -6,7 +6,7 @@
 //! warnings surface in-app, and informational events wait in a durable daily
 //! digest. Channel thresholds are stored per user; NULL disables a channel.
 
-use chrono::{Local, NaiveDate, Timelike};
+use chrono::{Local, NaiveDate, SecondsFormat, Timelike, Utc};
 use permagent::events::{self, PermagentEvent, PermagentEventType};
 use sqlx::{Pool, Row, Sqlite};
 use std::sync::Arc;
@@ -16,6 +16,7 @@ use crate::state::AppState;
 
 const DEFAULT_USER: &str = "default";
 const DIGEST_TICK: Duration = Duration::from_secs(60);
+const DIGEST_RETENTION_DAYS: i64 = 90;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
@@ -242,6 +243,16 @@ async fn deliver_due_digests_at(
     hour: i64,
     today: NaiveDate,
 ) -> anyhow::Result<()> {
+    let retention_cutoff = (Utc::now() - chrono::Duration::days(DIGEST_RETENTION_DAYS))
+        .to_rfc3339_opts(SecondsFormat::Millis, true);
+    sqlx::query(
+        "DELETE FROM notification_digest_entries
+         WHERE delivered_at IS NOT NULL AND delivered_at < ?",
+    )
+    .bind(retention_cutoff)
+    .execute(pool)
+    .await?;
+
     sqlx::query(
         "INSERT OR IGNORE INTO notification_preferences
          (user_id, push_min_severity, in_app_min_severity, digest_min_severity)
@@ -655,6 +666,44 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(delivered_count, 1, "a later tick cannot redeliver the row");
+    }
+
+    #[tokio::test]
+    async fn digest_tick_prunes_only_delivered_rows_older_than_retention_window() {
+        let pool = routing_pool().await;
+        sqlx::query(
+            "INSERT INTO notification_digest_entries
+             (user_id, source_event_id, severity, source_type, payload_json, created_at,
+              delivered_at)
+             VALUES
+               ('default', 'old-delivered', 1, 'task_completed', '{}',
+                strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-91 days'),
+                strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-91 days')),
+               ('default', 'recent-delivered', 1, 'task_completed', '{}',
+                strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-89 days'),
+                strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-89 days')),
+               ('default', 'old-pending', 1, 'task_completed', '{}',
+                strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-91 days'), NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        deliver_due_digests_at(&pool, 0, Local::now().date_naive())
+            .await
+            .unwrap();
+
+        let remaining: Vec<String> = sqlx::query_scalar(
+            "SELECT source_event_id FROM notification_digest_entries
+             ORDER BY source_event_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            remaining,
+            vec!["old-pending".to_owned(), "recent-delivered".to_owned()]
+        );
     }
 
     #[tokio::test]
