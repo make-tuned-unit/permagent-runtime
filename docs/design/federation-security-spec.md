@@ -13,6 +13,17 @@
 > eventual-consistency caveat (RT-2/RT-4); **§3.3** requires a *verified* wrap-target
 > (RT-5). New open decisions **OD-6** (identity recovery) and **OD-7** (admin threshold).
 >
+> **Rev 3 (2026-07-24) — second-pass review (RT-12…RT-16, §11).** A protocol-level review
+> pass (NOT a substitute for the external primitive review the crypto is still gated on)
+> surfaced five issues the Rev-2 red-team did not: **RT-12** no domain separation across the
+> seven+ Ed25519-signed object types (cross-protocol signature confusion — the strongest
+> finding); **RT-13** §4's "pack epoch ≥ member's current epoch" check contradicts decrypting
+> history (wrap-all-live-epochs); **RT-14** admin-chain concurrent-append fork is unresolved
+> (RT-2's tiebreak class, applied to admin-set derivation); **RT-15** canonical-encoding rule
+> for `||` preimages is unstated; **RT-16** the sealed_pack sig should explicitly cover
+> `sender` + `pack_version`. See §11. These MUST be resolved before / alongside the external
+> crypto review, not after.
+>
 > **Scope split (the boundary is crypto-agnostic):**
 > - **Spectral owns** the *plaintext* memory-object layer: the `realm` axis
 >   (`Local` never exports vs `Shared(id)` replicates), content-addressed
@@ -436,6 +447,29 @@ The **sovereignty-router's Phase-0 is landing separately** and will decide **whe
 ### OD-7. Admin authority — single-admin vs. M-of-N (RT-3)
 - **Tradeoff:** Any single admin key is a realm-takeover single point of failure (rotate everyone out, re-wrap to attacker, malicious quarantine). M-of-N threshold on admin-set changes removes the single point but adds coordination cost and machinery for tiny teams.
 - **Recommendation:** **v1 = single-admin actions made transparent + disputable via the admin-chain (§3.5); ≥2 admins for availability (§5.6).** Offer **M-of-N on admin-set changes** as an enterprise-tier hardening — do not block v1 on it. The chain ensures no takeover is *silent*; the threshold (later) ensures none is *unilateral*. (§2.2, §5.6)
+
+---
+
+## 11. Rev-3 review addendum — RT-12 … RT-16 (2026-07-24)
+
+Second-pass protocol review. **Scope honesty:** these are *design/protocol* findings; they do **not** replace the external cryptographer's primitive/proof review (§10 gate). They are the class of issue that review will raise, surfaced early to make it cheaper. Each MUST be closed before or during the external review.
+
+### RT-12 — Mandate domain separation across every signed object type (load-bearing)
+The identity Ed25519 key signs **at least seven** distinct message types: the **pack manifest** (§4), the **enc-key-cert** (§3.1), the **genesis** object (§3.5), each **admin-chain link** (§3.5), the **realm-keyring** (§5.2), the **invite** (§3.3), and **tombstones** (§7). Rev 2 specifies each signature preimage independently but never mandates a *per-type context tag*. Without domain separation, a signature legitimately produced in one context is a candidate for replay in another wherever preimages can be made to collide — the classic cross-protocol signature-confusion class (e.g. an `enc-key-cert` preimage `x25519_pub || not_before || not_after` colliding with the front of some other type's preimage). **Fix (mandatory):** every signature and every content-hash preimage MUST begin with a unique, versioned ASCII context constant, e.g. `"permagent-fed-v1/pack"`, `"permagent-fed-v1/enc-cert"`, `"permagent-fed-v1/genesis"`, `"permagent-fed-v1/admin-link"`, `"permagent-fed-v1/keyring"`, `"permagent-fed-v1/invite"`, `"permagent-fed-v1/tombstone"`. Bump the version string on any preimage-format change. This is cheap, standard (Signal/Noise/HPKE all do it), and eliminates the entire confusion class.
+
+### RT-13 — Disambiguate the epoch check: downgrade defense (keyring) vs. history decryption (pack)
+§4's recipient flow says "check `epoch` ≥ the member's current epoch" for a received **pack**, but §5.3 (`wrap-all-live-epochs on add`) exists precisely so a member can **decrypt older-epoch packs** — the relay stores packs sealed at the epoch they were authored, and history sync serves them. As written, the epoch-≥-current rule would make a late joiner **reject the very history it was wrapped to read**. **Fix:** split the rule explicitly — (a) the **monotonic downgrade defense** applies to the **keyring / membership epoch**: never accept an *admin-signed keyring* whose epoch is below the newest one seen (§6.5 already says this for keyrings); (b) an **individual pack** is acceptable at **any epoch for which the member holds a realm_key**, and is rejected only if the member lacks that epoch's key or the epoch post-dates the newest keyring. Restate §4 step "check epoch" accordingly so history sync and downgrade defense don't collide.
+
+### RT-14 — Resolve admin-chain concurrency (the fork RT-2 didn't cover)
+RT-2 made *rotation* forks converge via the `(counter, keyring_content_hash)` tiebreak. The **admin-chain** (§3.5) has the same hazard and no stated resolution: two admins concurrently append links with the same `prev` produce a **DAG, not a chain**, so "replay from genesis to derive the current admin set" is under-defined across branches (member P sees Add-X first, member Q sees Remove-Y first → divergent admin sets → divergent keyring-acceptance → split realm). **Fix:** specify a deterministic total order over concurrent links of equal depth (same class as RT-2 — e.g. order siblings by link-content-hash, or make the chain an explicit hash-DAG with a canonical linearization), and derive `admins` from that canonical order. State the merge rule with the same rigor §5.4 gives rotation. (Membership adds/removes are commutative in the OR-Set only if the *derived admin authority* to make them is itself convergent — that is what this fixes.)
+
+### RT-15 — State the canonical-encoding rule for concatenated preimages
+Hashes/signatures use raw `||` concatenation (`realm_id || epoch || nonce || ct`; `founding_admin.ed25519_pub || realm_nonce`; the enc-cert; the link). This is unambiguous only because each variable-length field currently sits **last**. That is a fragile invariant. **Fix:** mandate a canonicalization rule — every field either fixed-width or length-prefixed (`len‖bytes`), applied uniformly — so future field reordering or an added variable-length field cannot open a parsing/collision ambiguity. Pairs with RT-12 (context tag is the first length-prefixed field).
+
+### RT-16 — Bind `sender` + `pack_version` into the sealed_pack signature
+Today `sealed_pack.sig = Ed25519_sign(sender_id_sk, SHA-256(realm_id || epoch || nonce || ct))`. `sender` and `pack_version` are bound only indirectly (verify-key **selection**, and the AEAD **aad**). That is *probably* sufficient, but it relies on the verifier choosing the right key and on aad integrity to prevent field-swap confusion. **Fix (cheap defense-in-depth):** include `sender` and `pack_version` **in the signed preimage** (after the RT-12 context tag), so authorship and version are bound by the signature directly, not merely by out-of-band selection.
+
+**None of these change the OD rulings or the topology;** they harden the signature/epoch/concurrency substrate the rulings sit on. RT-12 and RT-14 are the two a rigorous external reviewer is most likely to hard-block on — closing them in the spec first is the cheapest place to do it.
 
 ---
 
