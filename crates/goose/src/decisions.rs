@@ -1475,6 +1475,7 @@ pub(crate) async fn append_audit_tx(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn append_audit_tx_with_principal(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     decision_id: &str,
