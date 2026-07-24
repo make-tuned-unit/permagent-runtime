@@ -1439,7 +1439,8 @@ mod tests {
             let rx = agent
                 .tool_confirmation_router
                 .register("req-approve".to_string())
-                .await;
+                .await
+                .expect("register confirmation waiter");
             let answered = create_and_answer(&pool, "s-a", "req-approve", "ls", "approve").await;
             let (_sid, request_id, confirmation, _msg) =
                 tool_confirmation_from_decision(&answered).unwrap();
@@ -1460,7 +1461,8 @@ mod tests {
             let rx = agent
                 .tool_confirmation_router
                 .register("req-deny".to_string())
-                .await;
+                .await
+                .expect("register confirmation waiter");
             let answered = create_and_answer(&pool, "s-d", "req-deny", "rm", "reject").await;
             let (_sid, request_id, confirmation, _msg) =
                 tool_confirmation_from_decision(&answered).unwrap();
