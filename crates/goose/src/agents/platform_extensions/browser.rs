@@ -7,10 +7,15 @@ use rmcp::model::{
     ServerCapabilities, Tool,
 };
 use serde::{Deserialize, Serialize};
-use std::net::{IpAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use tokio_util::sync::CancellationToken;
 
 pub static EXTENSION_NAME: &str = "browser";
+
+// The browser bridge/control plane is not configurable at this layer.
+const CONTROL_PLANE_PORT: u16 = 3001;
+const READ_BYTE_CAP: usize = 2 * 1024 * 1024;
+const MAX_REDIRECTS: usize = 5;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PageContent {
@@ -203,12 +208,14 @@ fn is_private_ip(ip: IpAddr) -> bool {
 /// loopback/private hosts but still blocks non-http(s) schemes. Keeping the two
 /// apart is deliberate: loosening this one would re-open the SSRF hole.
 ///
-/// NOTE: a residual TOCTOU window remains — reqwest re-resolves at connect, so a
-/// rebinding attacker could flip the record between check and connect. Pinning
-/// the verified addresses into the client (`resolve_to_addrs`) is the hardening
-/// follow-on; this already closes the string-only bypass, which is the class the
-/// audit flagged.
 pub(crate) fn guard_fetch_host(url: &str) -> Result<(), String> {
+    resolve_fetch_host(url).map(|_| ())
+}
+
+/// Resolve and validate a fetch target, returning the exact addresses reqwest
+/// must use. Callers pin these into their client to close DNS-rebinding TOCTOU.
+fn resolve_fetch_host(url: &str) -> Result<(String, Vec<SocketAddr>), String> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| format!("Invalid URL: {e}"))?;
     let host = host_of(url);
     if host.is_empty() {
         return Err("URL has no host".to_string());
@@ -220,32 +227,35 @@ pub(crate) fn guard_fetch_host(url: &str) -> Result<(), String> {
         ));
     }
     // An IP literal is checked directly — no DNS.
+    let port = parsed
+        .port_or_known_default()
+        .ok_or_else(|| "URL has no usable port".to_string())?;
     if let Ok(ip) = host.parse::<IpAddr>() {
         return if is_private_ip(ip) {
             Err(format!(
                 "Refusing to fetch a private/loopback address ({host})"
             ))
         } else {
-            Ok(())
+            Ok((host, vec![SocketAddr::new(ip, port)]))
         };
     }
     // A DNS name: resolve and check EVERY address it points at.
-    let addrs = (host.as_str(), 443u16)
+    let addrs = (host.as_str(), port)
         .to_socket_addrs()
         .map_err(|e| format!("Could not resolve host {host}: {e}"))?;
-    let mut resolved = false;
+    let mut validated = Vec::new();
     for sa in addrs {
-        resolved = true;
         if is_private_ip(sa.ip()) {
             return Err(format!(
                 "Refusing to fetch {host} — it resolves to a private/loopback address"
             ));
         }
+        validated.push(sa);
     }
-    if !resolved {
+    if validated.is_empty() {
         return Err(format!("Host {host} did not resolve to any address"));
     }
-    Ok(())
+    Ok((host, validated))
 }
 
 /// Hosts that are the user's *own* machine: `localhost`, `*.localhost`, and any
@@ -272,9 +282,9 @@ fn guard_webview_url(input: &str) -> Result<String, String> {
     if url.is_empty() {
         return Err("No URL given".to_string());
     }
-    // An explicit http(s) URL opens as-is — preserving `http` so a dev server
-    // isn't forced onto https it won't answer.
+    // An explicit http(s) URL preserves `http` for local dev servers.
     if url.starts_with("http://") || url.starts_with("https://") {
+        reject_control_plane(url)?;
         return Ok(url.to_string());
     }
     // Any other explicit scheme carrying `//` (file://, ftp://, custom://) is refused.
@@ -300,11 +310,27 @@ fn guard_webview_url(input: &str) -> Result<String, String> {
     // A bare host ("bbc.com", "localhost:5173", "[::1]:8080"): default the scheme
     // by locality — local dev servers speak http, public sites https.
     let host = host_of(&format!("http://{url}"));
-    if is_local_host(&host) {
-        Ok(format!("http://{url}"))
+    let normalized = if is_local_host(&host) {
+        format!("http://{url}")
     } else {
-        Ok(format!("https://{url}"))
+        format!("https://{url}")
+    };
+    reject_control_plane(&normalized)?;
+    Ok(normalized)
+}
+
+fn reject_control_plane(url: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| format!("Invalid URL: {e}"))?;
+    let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+    let is_control_host = host == "localhost"
+        || host.ends_with(".localhost")
+        || host
+            .parse::<IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback() || ip.is_unspecified());
+    if is_control_host && parsed.port_or_known_default() == Some(CONTROL_PLANE_PORT) {
+        return Err("cannot navigate to the Permagent control plane".to_string());
     }
+    Ok(())
 }
 
 /// `<title>` of an HTML document, entity-light.
@@ -428,6 +454,18 @@ fn decode_entities(s: &str) -> String {
         .replace("&ndash;", "\u{2013}")
 }
 
+fn append_capped(body: &mut Vec<u8>, chunk: &[u8], cap: usize) {
+    let remaining = cap.saturating_sub(body.len());
+    body.extend_from_slice(chunk.get(..remaining).unwrap_or(chunk));
+}
+
+fn validate_content_length(content_length: Option<u64>, cap: usize) -> Result<(), String> {
+    if content_length.is_some_and(|length| length > cap as u64) {
+        return Err(format!("Response body exceeds the {cap}-byte limit"));
+    }
+    Ok(())
+}
+
 impl BrowserClient {
     pub fn new(_context: PlatformExtensionContext) -> Result<Self, anyhow::Error> {
         let info = InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
@@ -524,50 +562,65 @@ impl BrowserClient {
     /// works even when no browser tab is open, and is the reliable path for
     /// "read me the BBC homepage". SSRF-guarded: https/http only, private and
     /// loopback hosts refused, redirects re-checked per hop.
-    // string_slice: the truncation walks back to `is_char_boundary` before
-    // slicing; the byte-cap slice is length-clamped on raw bytes pre-UTF-8.
+    // string_slice: the truncation walks back to `is_char_boundary` first.
     #[allow(clippy::string_slice)]
     async fn handle_read_webpage(&self, url: &str) -> Result<Vec<Content>, String> {
-        let url = normalize_web_url(url)?;
-        // The guard resolves DNS (blocking) — run the initial check off the
-        // async worker. (The redirect hook below runs it on reqwest's thread.)
-        {
+        let mut url = normalize_web_url(url)?;
+        let mut redirects = 0;
+        let mut resp = loop {
             let guard_url = url.clone();
-            tokio::task::spawn_blocking(move || guard_fetch_host(&guard_url))
+            let (host, addrs) = tokio::task::spawn_blocking(move || resolve_fetch_host(&guard_url))
                 .await
                 .map_err(|e| format!("SSRF guard task panicked: {e}"))??;
-        }
-
-        let client = reqwest::Client::builder()
-            .user_agent("Permagent/1.0 (in-app reader)")
-            .redirect(reqwest::redirect::Policy::custom(|attempt| {
-                if attempt.previous().len() > 4 {
-                    return attempt.error("too many redirects");
-                }
-                match guard_fetch_host(attempt.url().as_str()) {
-                    Ok(()) => attempt.follow(),
-                    Err(_) => attempt.error("redirect to a non-public host refused"),
-                }
-            }))
-            .timeout(std::time::Duration::from_secs(20))
-            .build()
-            .map_err(|e| format!("HTTP client error: {e}"))?;
-
-        let resp = client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| format!("Could not fetch {url}: {e}"))?;
+            let client = reqwest::Client::builder()
+                .user_agent("Permagent/1.0 (in-app reader)")
+                .redirect(reqwest::redirect::Policy::none())
+                .resolve_to_addrs(&host, &addrs)
+                .timeout(std::time::Duration::from_secs(20))
+                .build()
+                .map_err(|e| format!("HTTP client error: {e}"))?;
+            let response = client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| format!("Could not fetch {url}: {e}"))?;
+            if !response.status().is_redirection() {
+                break response;
+            }
+            if redirects >= MAX_REDIRECTS {
+                return Err("Too many redirects".to_string());
+            }
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .ok_or_else(|| format!("{url} redirected without a Location header"))?
+                .to_str()
+                .map_err(|e| format!("{url} returned an invalid redirect Location: {e}"))?;
+            url = reqwest::Url::parse(&url)
+                .and_then(|base| base.join(location))
+                .map_err(|e| format!("{url} returned an invalid redirect Location: {e}"))?
+                .to_string();
+            redirects += 1;
+        };
         if !resp.status().is_success() {
             return Err(format!("{url} answered {}", resp.status()));
         }
 
-        const BYTE_CAP: usize = 2 * 1024 * 1024;
-        let body = resp
-            .bytes()
-            .await
-            .map_err(|e| format!("Failed reading the response body: {e}"))?;
-        let html = String::from_utf8_lossy(&body[..body.len().min(BYTE_CAP)]);
+        validate_content_length(resp.content_length(), READ_BYTE_CAP)?;
+        let mut body = Vec::with_capacity(
+            resp.content_length().unwrap_or(0).min(READ_BYTE_CAP as u64) as usize,
+        );
+        while body.len() < READ_BYTE_CAP {
+            let Some(chunk) = resp
+                .chunk()
+                .await
+                .map_err(|e| format!("Failed reading the response body: {e}"))?
+            else {
+                break;
+            };
+            append_capped(&mut body, &chunk, READ_BYTE_CAP);
+        }
+        let html = String::from_utf8_lossy(&body);
 
         let title = extract_title(&html).unwrap_or_else(|| url.clone());
         let text = html_to_text(&html);
@@ -846,8 +899,9 @@ impl McpClientTrait for BrowserClient {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_snapshot, guard_fetch_host, guard_webview_url, host_of, is_private_ip,
-        validate_act_args, PageSnapshot, SnapshotElement,
+        append_capped, format_snapshot, guard_fetch_host, guard_webview_url, host_of,
+        is_private_ip, validate_act_args, validate_content_length, PageSnapshot, SnapshotElement,
+        READ_BYTE_CAP,
     };
     use std::net::IpAddr;
 
@@ -930,6 +984,25 @@ mod tests {
     }
 
     #[test]
+    fn guard_webview_url_blocks_the_control_plane() {
+        for url in [
+            "http://127.0.0.1:3001/ui",
+            "http://localhost:3001",
+            "http://[::1]:3001",
+            "http://0.0.0.0:3001",
+            "http://app.localhost:3001",
+        ] {
+            let error = guard_webview_url(url).unwrap_err();
+            assert!(
+                error.contains("cannot navigate to the Permagent control plane"),
+                "{url}: {error}"
+            );
+        }
+        assert!(guard_webview_url("http://localhost:5173").is_ok());
+        assert!(guard_webview_url("https://example.com").is_ok());
+    }
+
+    #[test]
     fn guard_webview_url_blocks_file_and_non_http_schemes() {
         // file://, custom schemes, and bare javascript:/data: URIs can never be
         // driven into the webview — the one rail on the open path.
@@ -963,6 +1036,22 @@ mod tests {
             "example.com"
         );
         assert_eq!(host_of("http://[2606:4700::1111]:80/x"), "2606:4700::1111");
+    }
+
+    #[test]
+    fn append_capped_never_collects_more_than_the_byte_cap() {
+        let mut body = vec![b'a'; READ_BYTE_CAP - 2];
+        append_capped(&mut body, b"oversized chunk", READ_BYTE_CAP);
+        assert_eq!(body.len(), READ_BYTE_CAP);
+        append_capped(&mut body, b"ignored", READ_BYTE_CAP);
+        assert_eq!(body.len(), READ_BYTE_CAP);
+    }
+
+    #[test]
+    fn oversized_content_length_is_rejected_up_front() {
+        assert!(validate_content_length(Some(READ_BYTE_CAP as u64), READ_BYTE_CAP).is_ok());
+        assert!(validate_content_length(Some(READ_BYTE_CAP as u64 + 1), READ_BYTE_CAP).is_err());
+        assert!(validate_content_length(None, READ_BYTE_CAP).is_ok());
     }
 
     #[test]
