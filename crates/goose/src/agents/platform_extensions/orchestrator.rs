@@ -1075,8 +1075,6 @@ pub(crate) async fn dispatch_goal_fn(
     let tracker_card_id = card_id.to_string();
     let tracker_project_id = card.project_id.clone();
     let tracker_pool = pool.clone();
-    let tracker_context = context.clone();
-    let tracker_probe_cache = ProbeCache::new();
     tokio::spawn(async move {
         if tracker_start_rx.await.is_err() {
             return;
@@ -1152,41 +1150,13 @@ pub(crate) async fn dispatch_goal_fn(
                     .await
             }
             goal_engine::GoalOutcome::Failed(error) => {
-                let completion = handle_goal_completion(
+                handle_goal_completion(
                     &tracker_pool,
                     &tracker_card_id,
                     &tracker_project_id,
                     Err(error),
                 )
-                .await;
-                if completion.is_ok() {
-                    let is_ready = match cards::get_card(&tracker_pool, &tracker_card_id).await {
-                        Ok(Some(card)) => match cards::get_column(&tracker_pool, &card.column_id)
-                            .await
-                        {
-                            Ok(Some(column)) => column.state_binding.as_deref() == Some("ready"),
-                            _ => false,
-                        },
-                        _ => false,
-                    };
-                    if is_ready {
-                        if let Err(error) = Box::pin(dispatch_goal_fn(
-                            &tracker_context,
-                            &tracker_probe_cache,
-                            &tracker_card_id,
-                        ))
-                        .await
-                        {
-                            tracing::warn!(
-                                target: "permagentd::brain",
-                                "Failed to redispatch retriable goal {} in-process: {}",
-                                tracker_card_id,
-                                error
-                            );
-                        }
-                    }
-                }
-                completion
+                .await
             }
             goal_engine::GoalOutcome::TimedOut { secs } => {
                 handle_goal_timeout(&tracker_pool, &tracker_card_id, &tracker_project_id, secs)
@@ -4066,7 +4036,9 @@ pub async fn handle_goal_completion(
             } else {
                 // Retriable failure within budget: the attempt was consumed at
                 // dispatch, so preserve its count and atomically return the
-                // now-ownerless goal to Ready for the in-process dispatch loop.
+                // now-ownerless goal to Ready. The orchestrator's next dispatch
+                // pass will pick it up; dispatch_goal_fn is intentionally not
+                // awaited by the Send completion-tracker task.
                 let attempt_count = card
                     .metadata_json
                     .get("attempt_count")
@@ -5892,7 +5864,7 @@ mod tests {
         assert_eq!(
             col.state_binding.as_deref(),
             Some("ready"),
-            "A retriable failure must return to Ready for in-process redispatch"
+            "A retriable failure must return to Ready for the next dispatch pass"
         );
         assert_eq!(
             updated
