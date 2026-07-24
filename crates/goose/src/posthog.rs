@@ -79,8 +79,8 @@ async fn posthog_capture(
     // single outbound choke point for all PostHog POSTs; under sovereign mode the
     // POST is HARD-SUPPRESSED (fail-closed) and, either way, the attempt is
     // recorded in the append-only egress audit log — so telemetry is no longer an
-    // egress the sovereignty story can't see. Suppression does not depend on the
-    // audit write succeeding.
+    // egress the sovereignty story can't see. An audit-write failure also
+    // suppresses the POST, so no unaudited telemetry leaves the machine.
     let allowed = crate::sovereignty::guard_outbound_telemetry(
         crate::sovereignty::EgressKind::Telemetry,
         POSTHOG_CAPTURE_URL,
