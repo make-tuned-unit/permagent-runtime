@@ -123,7 +123,7 @@ async fn upload_handler(
         let size_bytes = data.len() as i64;
         let path_str = file_path.to_string_lossy().to_string();
 
-        let created_at = attachments::insert_attachment(
+        let created_at = match attachments::insert_attachment(
             &pool,
             &attachment_id,
             &session_id,
@@ -133,7 +133,15 @@ async fn upload_handler(
             &path_str,
         )
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        {
+            Ok(ts) => ts,
+            Err(_) => {
+                // The bytes are already on disk; if the DB row fails, remove the
+                // file so it isn't orphaned with no record pointing at it.
+                let _ = fs::remove_file(&file_path).await;
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        };
 
         results.push(AttachmentInfo {
             id: attachment_id,
@@ -171,7 +179,27 @@ async fn get_handler(
     let stream = ReaderStream::new(file);
     let body = Body::from_stream(stream);
 
-    let disposition = format!("inline; filename=\"{}\"", record.filename);
+    // Sanitize the upload-supplied filename before putting it in the header:
+    // strip quotes, backslashes, and control chars so it can't break the quoted
+    // string (download-name spoofing) or inject header bytes / trigger a 500 on
+    // an invalid header value (RFC 6266). Falls back to a generic name if empty.
+    let safe_name: String = record
+        .filename
+        .chars()
+        .map(|c| {
+            if c == '"' || c == '\\' || c.is_control() {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let safe_name = if safe_name.trim().is_empty() {
+        "download".to_string()
+    } else {
+        safe_name
+    };
+    let disposition = format!("inline; filename=\"{safe_name}\"");
 
     Ok((
         [
