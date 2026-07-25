@@ -142,12 +142,20 @@ fn domain_seen_recently(domain: &str) -> bool {
         Err(_) => return false,
     };
 
-    let pattern = format!("%{}%", domain);
+    // Escape LIKE metacharacters in the domain so one containing `%` or `_`
+    // (e.g. a malformed host) can't act as a wildcard and over-match unrelated
+    // memories — which would wrongly treat the domain as "seen" and drop the
+    // event. `\` is declared as the escape char below.
+    let escaped = domain
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    let pattern = format!("%{escaped}%");
     let count: usize = conn
         .query_row(
             "SELECT COUNT(*) FROM memories \
              WHERE key LIKE 'activity:%browser_navigated%' \
-               AND content LIKE ?1 \
+               AND content LIKE ?1 ESCAPE '\\' \
                AND created_at > datetime('now', '-24 hours')",
             rusqlite::params![pattern],
             |r| r.get(0),
