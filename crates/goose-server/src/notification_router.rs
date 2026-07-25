@@ -142,6 +142,9 @@ pub fn spawn(_state: Arc<AppState>) {
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 },
                 _ = digest_tick.tick() => {
+                    if let Err(error) = permagent::decisions_effects::drain_effect_outbox(&pool).await {
+                        tracing::warn!(target: "permagentd::notifications", %error, "decision effect outbox drain failed");
+                    }
                     if let Err(error) = deliver_due_digests(&pool).await {
                         tracing::warn!(target: "permagentd::notifications", %error, "daily digest delivery failed");
                     }

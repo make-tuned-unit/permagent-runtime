@@ -161,15 +161,28 @@ async fn answer_decision_handler(
     // an effect failure — or a follow-on warning after a committed effect —
     // is reported (and audit-logged), not silently dropped.
     let claim_key = decisions::effect_outbox_claim_key(&decision.id, &decision.kind);
-    let (effect, effect_error) = match execute_effect(&pool, &decision, proof).await {
+    let inline_owns_effect = match claim_key.as_deref() {
+        Some(key) => decisions::claim_effect_outbox(&pool, key)
+            .await
+            .map_err(internal)?,
+        None => true,
+    };
+    let effect_result = if inline_owns_effect {
+        execute_effect(&pool, &decision, proof).await
+    } else {
+        Ok((None, None))
+    };
+    let (effect, effect_error) = match effect_result {
         Ok((effect, warning)) => {
-            if let Some(ref claim_key) = claim_key {
-                if let Err(e) = decisions::mark_effect_outbox_applied(&pool, claim_key).await {
-                    tracing::error!(
-                        "Decision {} effect outbox could not be marked applied: {}",
-                        decision.id,
-                        e
-                    );
+            if inline_owns_effect {
+                if let Some(ref claim_key) = claim_key {
+                    if let Err(e) = decisions::mark_effect_outbox_applied(&pool, claim_key).await {
+                        tracing::error!(
+                            "Decision {} effect outbox could not be marked applied: {}",
+                            decision.id,
+                            e
+                        );
+                    }
                 }
             }
             if let Some(ref w) = warning {
@@ -179,15 +192,17 @@ async fn answer_decision_handler(
         }
         Err(e) => {
             let msg = e.to_string();
-            if let Some(ref claim_key) = claim_key {
-                if let Err(mark_err) =
-                    decisions::mark_effect_outbox_failed(&pool, claim_key, &msg).await
-                {
-                    tracing::error!(
-                        "Decision {} effect outbox could not be marked failed: {}",
-                        decision.id,
-                        mark_err
-                    );
+            if inline_owns_effect {
+                if let Some(ref claim_key) = claim_key {
+                    if let Err(mark_err) =
+                        decisions::mark_effect_outbox_failed(&pool, claim_key, &msg).await
+                    {
+                        tracing::error!(
+                            "Decision {} effect outbox could not be marked failed: {}",
+                            decision.id,
+                            mark_err
+                        );
+                    }
                 }
             }
             record_effect_failure(&pool, &decision, &msg).await;
@@ -283,6 +298,11 @@ async fn execute_effect(
     decision: &decisions::Decision,
     proof: decisions::DecisionProof,
 ) -> Result<(Option<String>, Option<String>), GuardError> {
+    if decisions::effect_outbox_claim_key(&decision.id, &decision.kind).is_some() {
+        let kind = decision.kind.clone();
+        return permagent::decisions_effects::apply_decision_effect(pool, decision, proof, &kind)
+            .await;
+    }
     let acted_by = proof.acted_by().to_string();
     match (decision.kind.as_str(), decision.answer.as_deref()) {
         // Review approved → goal completes; dependents become eligible.

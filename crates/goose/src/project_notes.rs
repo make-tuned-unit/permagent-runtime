@@ -54,6 +54,27 @@ pub async fn create_note_indexed(
     let title = title.map(str::trim).filter(|t| !t.is_empty());
 
     let note_id = uuid::Uuid::now_v7().to_string();
+    create_note_indexed_with_id(pool, brain, &note_id, project_id, title, body).await
+}
+
+/// Create a note with a caller-supplied stable id.
+///
+/// Durable decision effects use a decision-derived id so replay cannot create
+/// a duplicate note.
+pub async fn create_note_indexed_with_id(
+    pool: &Pool<Sqlite>,
+    brain: Option<&crate::brain_handle::SafeBrain>,
+    note_id: &str,
+    project_id: &str,
+    title: Option<&str>,
+    body: &str,
+) -> Result<ProjectNote, String> {
+    let body = body.trim();
+    if body.is_empty() {
+        return Err("note body is empty".to_string());
+    }
+    let title = title.map(str::trim).filter(|t| !t.is_empty());
+
     let memory_key = format!("note:{}:{}", project_id, note_id);
 
     // Best-effort Brain index. On success we resolve the memory id and associate
@@ -95,7 +116,7 @@ pub async fn create_note_indexed(
         }
     }
 
-    insert_note(pool, &note_id, project_id, title, body, stored_memory_key).await
+    insert_note(pool, note_id, project_id, title, body, stored_memory_key).await
 }
 
 /// One project note: the DB row. `memory_key` is the Brain key the note's text
