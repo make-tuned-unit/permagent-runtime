@@ -141,6 +141,9 @@ pub fn spawn_persist_chat_turn(
                     device_id: Some(device_id),
                     confidence: Some(1.0),
                     visibility: spectral::Visibility::Private,
+                    // Associate this memory with its originating session so
+                    // same-session memories co-rank on recall (#131).
+                    session_id: Some(session_id.clone()),
                     wing: None,
                     ..Default::default()
                 },
@@ -155,9 +158,12 @@ pub fn spawn_persist_chat_turn(
                 );
             }
             Err(e) => {
+                // remember_with returns Err if the session association fails even
+                // when the memory itself was committed, so don't claim it was
+                // lost. Fire-and-forget: logged, never blocks the reply path.
                 tracing::warn!(
                     target: "permagentd::brain",
-                    "Failed to remember chat turn {}: {}",
+                    "remember_with returned an error for chat turn {} (the memory may still be persisted; session association or a later step failed): {}",
                     key_for_log,
                     e
                 );

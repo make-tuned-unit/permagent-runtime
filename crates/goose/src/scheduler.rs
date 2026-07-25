@@ -1834,6 +1834,7 @@ async fn execute_job(
         if !user_text.is_empty() && !assistant_text.is_empty() {
             let brain_clone = brain_handle.clone();
             let remember_job_id = job_id.clone();
+            let remember_session_id = session.id.clone();
 
             tokio::spawn(async move {
                 let key = format!("scheduled-{}-{}", remember_job_id, turn_idx);
@@ -1850,6 +1851,9 @@ async fn execute_job(
                             device_id: Some(device_id),
                             confidence: Some(1.0),
                             visibility: spectral::Visibility::Private,
+                            // Associate with the scheduled run's session so
+                            // same-session memories co-rank on recall (#131).
+                            session_id: Some(remember_session_id),
                             wing: None,
                             ..Default::default()
                         },
@@ -1864,9 +1868,12 @@ async fn execute_job(
                         );
                     }
                     Err(e) => {
+                        // remember_with returns Err if the session association
+                        // fails even when the memory itself was committed, so
+                        // don't claim it was lost. Fire-and-forget: logged only.
                         tracing::warn!(
                             target: "permagentd::brain",
-                            "Failed to remember scheduled turn {}: {}",
+                            "remember_with returned an error for scheduled turn {} (the memory may still be persisted; session association or a later step failed): {}",
                             key_for_log,
                             e
                         );
