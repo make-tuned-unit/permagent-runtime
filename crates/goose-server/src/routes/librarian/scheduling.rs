@@ -2,7 +2,7 @@
 //! status endpoint, and the "run now" manual trigger.
 
 use crate::routes::errors::ErrorResponse;
-use axum::Json;
+use axum::{http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
 
 use super::consolidation::run_consolidation_scan_blocking;
@@ -119,6 +119,18 @@ pub(super) async fn set_librarian_schedule(
 /// acquire this before calling run_batch. Second caller awaits the first.
 static BATCH_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+#[derive(Clone, Default, serde::Serialize)]
+pub(super) struct LibrarianRunStatus {
+    pub running: bool,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub described: Option<usize>,
+    pub last_error: Option<String>,
+}
+
+static RUN_STATUS: std::sync::LazyLock<std::sync::Mutex<LibrarianRunStatus>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(LibrarianRunStatus::default()));
 
 fn parse_schedule_time(schedule: &LibrarianSchedule) -> Option<(u32, u32, u32)> {
     let parts: Vec<&str> = schedule.start_time.split(':').collect();
@@ -270,11 +282,9 @@ fn query_memory_counts() -> Result<(usize, usize), String> {
     Ok((total, described))
 }
 
-/// Warm-load a model then run the batch, holding the BATCH_MUTEX.
+/// Warm-load a model then run the batch. Callers hold BATCH_MUTEX.
 async fn warm_and_run(schedule: &LibrarianSchedule, keep_alive_secs: u64) -> Result<usize, String> {
     use permagent::agents::platform_extensions::librarian_state;
-
-    let _guard = BATCH_MUTEX.lock().await;
 
     let brain =
         permagent::agents::platform_extensions::get_global_brain().ok_or("Brain not available")?;
@@ -480,6 +490,7 @@ pub async fn librarian_scheduler_loop() {
             );
 
             let keep_alive_secs = schedule.duration_minutes as u64 * 60;
+            let _guard = BATCH_MUTEX.lock().await;
             match warm_and_run(&schedule, keep_alive_secs).await {
                 Ok(n) => {
                     mark_warmed_today();
@@ -620,6 +631,15 @@ pub(super) async fn get_librarian_status() -> Json<LibrarianStatusResponse> {
     })
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/librarian/run-status",
+    responses((status = 200, description = "Current manual Librarian run status"))
+)]
+pub(super) async fn librarian_run_status() -> Json<LibrarianRunStatus> {
+    Json(RUN_STATUS.lock().unwrap_or_else(|e| e.into_inner()).clone())
+}
+
 /// Compute the next window start time as ISO 8601 string.
 fn compute_next_window_start(schedule: &LibrarianSchedule) -> Option<String> {
     let (sh, sm, dur) = parse_schedule_time(schedule)?;
@@ -642,37 +662,94 @@ fn compute_next_window_start(schedule: &LibrarianSchedule) -> Option<String> {
 
 /// POST /api/librarian/run-now — manual trigger for warm-load + run.
 /// Returns immediately with 409 if a batch is already running.
+#[derive(Debug, Serialize)]
+pub(super) struct LibrarianRunStarted {
+    status: &'static str,
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/librarian/run-now",
+    responses(
+        (status = 202, description = "Librarian batch started"),
+        (status = 409, description = "A Librarian batch is already running")
+    )
+)]
 pub(super) async fn run_librarian_now(
-) -> Result<Json<super::ollama_types::WarmLoadResponse>, ErrorResponse> {
-    let guard = BATCH_MUTEX.try_lock();
-    if guard.is_err() {
-        return Err(ErrorResponse::conflict(
-            "A Librarian batch is already running. Try again later.".to_string(),
-        ));
-    }
-    // Drop the guard — warm_and_run will re-acquire. We only used try_lock
-    // to check availability. This creates a tiny race window but is fine:
-    // worst case, the scheduled batch finishes between our check and the
-    // re-acquire, and we run a second batch (idempotent via describe_one).
-    drop(guard);
+) -> Result<(StatusCode, Json<LibrarianRunStarted>), ErrorResponse> {
+    let guard = match BATCH_MUTEX.try_lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return Err(ErrorResponse::conflict(
+                "A Librarian batch is already running. Try again later.".to_string(),
+            ));
+        }
+    };
 
     let schedule = load_schedule();
     let keep_alive_secs: u64 = 1800;
 
+    {
+        let mut status = RUN_STATUS.lock().unwrap_or_else(|e| e.into_inner());
+        status.running = true;
+        status.started_at = Some(chrono::Local::now().to_rfc3339());
+        status.finished_at = None;
+        status.described = None;
+        status.last_error = None;
+    }
+
     tracing::info!(model = %schedule.model, "Librarian manual run triggered");
 
-    match warm_and_run(&schedule, keep_alive_secs).await {
-        Ok(n) => {
-            tracing::info!(described = n, "Librarian manual batch complete");
-            Ok(Json(super::ollama_types::WarmLoadResponse {
-                success: true,
-                model: schedule.model,
-                keep_alive_secs,
-            }))
+    tokio::spawn(async move {
+        let _guard = guard;
+        let result = warm_and_run(&schedule, keep_alive_secs).await;
+        let mut status = RUN_STATUS.lock().unwrap_or_else(|e| e.into_inner());
+        match result {
+            Ok(described) => {
+                tracing::info!(described, "Librarian manual batch complete");
+                status.described = Some(described);
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "Librarian manual batch failed");
+                status.last_error = Some(error);
+            }
         }
-        Err(e) => Err(ErrorResponse::internal(format!(
-            "Librarian run failed: {}",
-            e
-        ))),
+        status.running = false;
+        status.finished_at = Some(chrono::Local::now().to_rfc3339());
+    });
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(LibrarianRunStarted { status: "started" }),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Both tests touch the shared `BATCH_MUTEX` / `RUN_STATUS` statics, so they
+    // must not run concurrently with each other (default `cargo test` parallelism
+    // would otherwise let the held-lock test hand the idle test a spurious 409).
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn run_now_returns_conflict_when_batch_already_running() {
+        let _held = BATCH_MUTEX.lock().await;
+        let error = run_librarian_now().await.unwrap_err();
+        assert_eq!(error.status, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn run_now_returns_immediately_when_idle() {
+        // PR #35 review feedback: only verify dispatch here; the background
+        // batch deliberately has no Brain/Ollama dependency in this test.
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), run_librarian_now())
+            .await
+            .expect("run-now handler should return promptly")
+            .expect("idle run should start");
+
+        assert_eq!(result.0, StatusCode::ACCEPTED);
+        assert_eq!(result.1.status, "started");
     }
 }

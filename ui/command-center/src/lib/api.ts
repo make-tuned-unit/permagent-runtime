@@ -1545,6 +1545,15 @@ export const api = {
       error_message: string | null;
     }>('/api/librarian/status'),
 
+  getLibrarianRunStatus: () =>
+    apiFetch<{
+      running: boolean;
+      started_at: string | null;
+      finished_at: string | null;
+      described: number | null;
+      last_error: string | null;
+    }>('/api/librarian/run-status'),
+
   getHenryStatus: () =>
     apiFetch<{
       identity: { name: string; traits: string[]; tone: string };
@@ -1595,10 +1604,13 @@ export const api = {
       method: 'POST',
       headers: authHeaders(),
     });
+    if (resp.status === 409) {
+      return { status: 'already_running' as const };
+    }
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({ message: 'Unknown error' }));
       throw new Error(err.message || `HTTP ${resp.status}`);
     }
-    return resp.json();
+    return resp.json() as Promise<{ status: 'started' }>;
   },
 };

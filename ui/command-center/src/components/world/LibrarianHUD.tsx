@@ -24,6 +24,14 @@ interface LibrarianStatus {
   error_message: string | null;
 }
 
+interface LibrarianRunStatus {
+  running: boolean;
+  started_at: string | null;
+  finished_at: string | null;
+  described: number | null;
+  last_error: string | null;
+}
+
 // ── Phase badge colors ───────────────────────────────────────────────
 
 const PHASE_COLORS: Record<LibrarianPhase, { bg: string; text: string; border: string }> = {
@@ -135,12 +143,14 @@ interface LibrarianHUDProps {
 
 export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
   const [status, setStatus] = useState<LibrarianStatus | null>(null);
-  const [runningNow, setRunningNow] = useState(false);
+  const [startingNow, setStartingNow] = useState(false);
+  const [runStatus, setRunStatus] = useState<LibrarianRunStatus | null>(null);
+  const [runMessage, setRunMessage] = useState<string | null>(null);
 
   const isDescribing = status?.state === 'describing' || status?.state === 'warming';
   const stream = useLibrarianTokenStream(visible && isDescribing);
 
-  // Poll /api/librarian/status at 1s
+  // Poll the detailed operational status at 1s.
   useEffect(() => {
     if (!visible) return;
 
@@ -158,17 +168,57 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
     return () => { cancelled = true; clearInterval(id); };
   }, [visible]);
 
+  useEffect(() => {
+    if (!visible) return;
+    let cancelled = false;
+    void api.getLibrarianRunStatus().then((next) => {
+      if (!cancelled) setRunStatus(next);
+    }).catch(() => {
+      // The detailed HUD remains usable if run status is temporarily unavailable.
+    });
+    return () => { cancelled = true; };
+  }, [visible]);
+
+  // The manual-run endpoint only dispatches work. Poll its dedicated status
+  // while the background batch is active, then surface its terminal result.
+  useEffect(() => {
+    if (!visible || !runStatus?.running) return;
+
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const next = await api.getLibrarianRunStatus();
+        if (cancelled) return;
+        setRunStatus(next);
+        if (!next.running) {
+          setRunMessage(next.last_error
+            ? `Librarian run failed: ${next.last_error}`
+            : `Librarian run complete — ${next.described ?? 0} described`);
+        }
+      } catch {
+        // Keep the current state and retry on the next interval.
+      }
+    };
+    const id = setInterval(poll, 3000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [visible, runStatus?.running]);
+
   const handleRunNow = useCallback(async () => {
-    if (runningNow) return;
-    setRunningNow(true);
+    if (startingNow || runStatus?.running) return;
+    setStartingNow(true);
     try {
-      await api.runLibrarianNow();
-    } catch {
-      // status will show the error
+      const result = await api.runLibrarianNow();
+      const next = await api.getLibrarianRunStatus();
+      setRunStatus(next);
+      setRunMessage(result.status === 'already_running'
+        ? 'Librarian is already running'
+        : 'Librarian run started');
+    } catch (error) {
+      setRunMessage(error instanceof Error ? error.message : 'Unable to start Librarian run');
     } finally {
-      setRunningNow(false);
+      setStartingNow(false);
     }
-  }, [runningNow]);
+  }, [startingNow, runStatus?.running]);
 
   if (!visible || !status) return null;
 
@@ -295,16 +345,21 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
 
       {/* Actions */}
       <div style={{ padding: '8px 14px 12px' }}>
+        {runMessage && (
+          <div style={{ fontSize: 10, color: runStatus?.last_error ? '#EF4444' : COLORS.neonCyan, marginBottom: 6 }}>
+            {runMessage}
+          </div>
+        )}
         <button
           onClick={handleRunNow}
-          disabled={runningNow || phase === 'describing' || phase === 'warming'}
+          disabled={startingNow || runStatus?.running || phase === 'describing' || phase === 'warming'}
           style={{
             ...actionBtnStyle,
-            opacity: (runningNow || phase === 'describing' || phase === 'warming') ? 0.4 : 1,
-            cursor: (runningNow || phase === 'describing' || phase === 'warming') ? 'default' : 'pointer',
+            opacity: (startingNow || runStatus?.running || phase === 'describing' || phase === 'warming') ? 0.4 : 1,
+            cursor: (startingNow || runStatus?.running || phase === 'describing' || phase === 'warming') ? 'default' : 'pointer',
           }}
         >
-          {runningNow ? 'Starting…' : 'Run Now'}
+          {startingNow ? 'Starting…' : runStatus?.running ? 'Running…' : 'Run Now'}
         </button>
       </div>
     </HudShell>
