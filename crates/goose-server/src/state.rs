@@ -744,6 +744,21 @@ impl AppState {
             ),
         }
 
+        // Recognition-instrumentation pruner: recognition_events /
+        // recognition_tool_events are append-only and otherwise never deleted,
+        // so prune rows past the retention window daily to bound growth (#925).
+        match agent_manager.session_manager().pool_clone().await {
+            Ok(pool) => {
+                tokio::spawn(async move {
+                    permagent::recognition::recognition_prune_loop(pool).await;
+                });
+            }
+            Err(e) => tracing::warn!(
+                target: "recognition",
+                "could not clone Spectral pool; recognition pruner not started: {e}"
+            ),
+        }
+
         // Load app catalog (static tab/view descriptions for agent navigation).
         let app_catalog = crate::app_catalog::init();
 
