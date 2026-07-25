@@ -405,18 +405,33 @@ fn parse_cron_schedule(cron: &str) -> Option<croner::Cron> {
         .ok()
 }
 
+/// Write a jobs snapshot to `storage_path` atomically (temp file + rename), so a
+/// concurrent reader (`sync_from_storage`, another instance) never observes a
+/// half-written file. Takes no lock — callers pass an already-snapshotted list.
+fn write_jobs_to_disk(storage_path: &Path, list: &[ScheduledJob]) -> Result<(), SchedulerError> {
+    if let Some(parent) = storage_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let data = serde_json::to_string_pretty(list)?;
+    let mut tmp = storage_path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    fs::write(&tmp, data)?;
+    fs::rename(&tmp, storage_path)?;
+    Ok(())
+}
+
 async fn persist_jobs(
     storage_path: &Path,
     jobs: &Arc<Mutex<JobsMap>>,
 ) -> Result<(), SchedulerError> {
+    // The lock is intentionally held across the write: it serializes every disk
+    // write with the in-memory map so `sync_from_storage` (which reads disk under
+    // the same lock) never sees a stale snapshot and removes a live job. Writing
+    // unlocked would let a fire's stale snapshot clobber a concurrent add.
     let jobs_guard = jobs.lock().await;
     let list: Vec<ScheduledJob> = jobs_guard.values().map(|(_, j)| j.clone()).collect();
-    if let Some(parent) = storage_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let data = serde_json::to_string_pretty(&list)?;
-    fs::write(storage_path, data)?;
-    Ok(())
+    write_jobs_to_disk(storage_path, &list)
 }
 
 /// Normalize a cron expression to 6-field (seconds-prefixed) form.
@@ -831,11 +846,16 @@ impl Scheduler {
             .map_err(|e| SchedulerError::SchedulerInternalError(e.to_string()))?;
 
         {
+            // Insert AND persist under a single lock hold so the new job reaches
+            // disk before the lock is released. Otherwise sync_from_storage could
+            // acquire the lock in the gap, see the job in memory but not on disk,
+            // and delete it (issue #924).
             let mut jobs_guard = self.jobs.lock().await;
             jobs_guard.insert(stored_job.id.clone(), (job_uuid, stored_job));
+            let list: Vec<ScheduledJob> = jobs_guard.values().map(|(_, j)| j.clone()).collect();
+            write_jobs_to_disk(&self.storage_path, &list)?;
         }
 
-        persist_jobs(&self.storage_path, &self.jobs).await?;
         Ok(())
     }
 
@@ -1061,23 +1081,26 @@ impl Scheduler {
         if !self.storage_path.exists() {
             return;
         }
-        let data = match fs::read_to_string(&self.storage_path) {
-            Ok(d) => d,
-            Err(_) => return,
-        };
-        if data.trim().is_empty() {
-            return;
-        }
-        let disk_jobs: Vec<ScheduledJob> = match serde_json::from_str(&data) {
-            Ok(jobs) => jobs,
-            Err(_) => return,
-        };
-
-        let disk_ids: std::collections::HashSet<String> =
-            disk_jobs.iter().map(|j| j.id.clone()).collect();
-
+        // Read + parse + diff the disk file UNDER the jobs lock so a concurrent
+        // add_scheduled_job (which inserts + persists under the same lock) is
+        // never observed half-done — otherwise a just-added job (in memory, not
+        // yet flushed to disk) would be diffed as "removed on disk" and deleted
+        // (issue #924). No await runs inside the locked block.
         let (jobs_to_add, jobs_to_remove): (Vec<ScheduledJob>, Vec<(String, JobId)>) = {
             let jobs_guard = self.jobs.lock().await;
+            let data = match fs::read_to_string(&self.storage_path) {
+                Ok(d) => d,
+                Err(_) => return,
+            };
+            if data.trim().is_empty() {
+                return;
+            }
+            let disk_jobs: Vec<ScheduledJob> = match serde_json::from_str(&data) {
+                Ok(jobs) => jobs,
+                Err(_) => return,
+            };
+            let disk_ids: std::collections::HashSet<String> =
+                disk_jobs.iter().map(|j| j.id.clone()).collect();
             let to_add = disk_jobs
                 .into_iter()
                 .filter(|j| !jobs_guard.contains_key(&j.id))
