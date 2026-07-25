@@ -1066,8 +1066,8 @@ mod tests {
     fn extension_tool_inventories() -> Vec<(&'static str, Vec<String>)> {
         use crate::agents::platform_extensions::{
             analyze, app_conductor, apps, browser, chatrecall, desktop, developer, ext_manager,
-            file_to_project, listen, orchestrator, people, project_manager, pronunciation,
-            recipe_author, skills, storage_health, summarize, summon, todo,
+            file_to_project, listen, model_manager, orchestrator, people, project_manager,
+            pronunciation, recipe_author, skills, storage_health, summarize, summon, todo,
         };
 
         fn names(tools: Vec<rmcp::model::Tool>) -> Vec<String> {
@@ -1131,6 +1131,10 @@ mod tests {
             (
                 listen::EXTENSION_NAME,
                 names(listen::ListenClient::get_tools()),
+            ),
+            (
+                model_manager::EXTENSION_NAME,
+                names(model_manager::ModelManagerClient::get_tools()),
             ),
             (
                 orchestrator::EXTENSION_NAME,
