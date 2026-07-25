@@ -411,6 +411,57 @@ pub async fn seen_observation(pool: &Pool<Sqlite>, query: &str) -> Option<Recogn
     })
 }
 
+/// How long recognition instrumentation is retained before pruning.
+pub const RECOGNITION_RETENTION_DAYS: i64 = 90;
+
+/// Delete recognition instrumentation older than `retention_days`.
+///
+/// `recognition_events` and `recognition_tool_events` are append-only
+/// instrumentation written on every recall / tool call, and nothing else ever
+/// deletes from them — so without a pruner they grow unbounded on a busy hub.
+/// `recognition_set_members` is removed automatically via its
+/// `ON DELETE CASCADE` FK on `recognition_events`. Returns the number of parent
+/// rows deleted. Best-effort maintenance.
+pub async fn prune_recognition_instrumentation(
+    pool: &Pool<Sqlite>,
+    retention_days: i64,
+) -> Result<u64, sqlx::Error> {
+    // Cutoff formatted in Rust in the SAME fixed-width UTC ISO-8601 shape the
+    // rows are written with (see `now_iso`), so the lexical `<` compare is a
+    // chronological compare — matching the existing `retrieved_at` queries.
+    let cutoff = (Utc::now() - chrono::Duration::days(retention_days.max(0)))
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string();
+    let events = sqlx::query("DELETE FROM recognition_events WHERE retrieved_at < ?")
+        .bind(&cutoff)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    let tool_events = sqlx::query("DELETE FROM recognition_tool_events WHERE occurred_at < ?")
+        .bind(&cutoff)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    Ok(events + tool_events)
+}
+
+/// Periodic pruner: prunes once shortly after boot (the first `interval` tick
+/// fires immediately) and then daily, keeping [`RECOGNITION_RETENTION_DAYS`].
+pub async fn recognition_prune_loop(pool: Pool<Sqlite>) {
+    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(24 * 60 * 60));
+    loop {
+        ticker.tick().await;
+        match prune_recognition_instrumentation(&pool, RECOGNITION_RETENTION_DAYS).await {
+            Ok(n) if n > 0 => tracing::info!(
+                target: "recognition",
+                "pruned {n} recognition instrumentation rows older than {RECOGNITION_RETENTION_DAYS}d"
+            ),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(target: "recognition", "recognition prune failed: {e}"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,6 +499,72 @@ mod tests {
         assert!(seen.was_bounced(), "declined observation reads as bounced");
         // Empty command is a no-op (defensive).
         mark_observation_bounced(&pool, "").await;
+    }
+
+    #[tokio::test]
+    async fn prune_removes_old_instrumentation_and_cascades() {
+        let pool = test_pool().await;
+        let old = "2000-01-01T00:00:00.000Z";
+
+        // An old event, an old set member (should cascade), an old tool event.
+        sqlx::query(
+            "INSERT INTO recognition_events
+                (retrieval_id, session_id, query, retrieved_at, rc_persona, strategy)
+             VALUES ('old-1', 'sess', 'q', ?, 'henry', 'cascade')",
+        )
+        .bind(old)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO recognition_set_members (retrieval_id, memory_id, signal_score, rank)
+             VALUES ('old-1', 'mem-a', 0.9, 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO recognition_tool_events (occurred_at, tool_name, session_id)
+             VALUES (?, 'do_thing', 'sess')",
+        )
+        .bind(old)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // A fresh event via the normal path (retrieved_at = now).
+        persist_recognition(
+            &pool,
+            &ctx("sess"),
+            "recent",
+            "cascade",
+            &[("mem-b".into(), 0.8, 0)],
+        )
+        .await
+        .unwrap();
+
+        let deleted = prune_recognition_instrumentation(&pool, RECOGNITION_RETENTION_DAYS)
+            .await
+            .unwrap();
+        assert_eq!(deleted, 2, "one old event + one old tool event pruned");
+
+        let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM recognition_events")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(events, 1, "only the fresh event remains");
+        let members: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM recognition_set_members WHERE retrieval_id = 'old-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(members, 0, "old set members cascaded away");
+        let tool: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM recognition_tool_events")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(tool, 0, "old tool event pruned");
     }
 
     #[tokio::test]
