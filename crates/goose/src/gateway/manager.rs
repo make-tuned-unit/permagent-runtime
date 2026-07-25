@@ -214,7 +214,20 @@ impl GatewayManager {
             handle,
         };
 
-        self.gateways.write().await.insert(gw_type, instance);
+        // Atomically re-check under a single write lock before inserting. The
+        // early read-lock `contains_key` above is only a fast path, so two
+        // concurrent starts for the same type can both pass it, both spawn a
+        // task, and the second insert would clobber — and leak — the first's
+        // JoinHandle + CancellationToken (an unkillable gateway, double port
+        // bind). If we lost that race, cancel/abort the task we just spawned and
+        // bail instead of overwriting the winner.
+        let mut gateways = self.gateways.write().await;
+        if gateways.contains_key(&gw_type) {
+            instance.cancel.cancel();
+            instance.handle.abort();
+            anyhow::bail!("Gateway '{}' is already running", gw_type);
+        }
+        gateways.insert(gw_type, instance);
         Ok(())
     }
 

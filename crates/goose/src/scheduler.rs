@@ -527,19 +527,39 @@ impl Scheduler {
                 }
 
                 let current_time = Utc::now();
-                // Snapshot the status the PREVIOUS fire left, before we overwrite
-                // it — used to dedup failure escalations to one per failure streak.
+                // Atomically CLAIM this fire under the jobs lock — mirroring the
+                // guard `run_now` already uses. If the job is still marked
+                // `currently_running` (a prior scheduled fire, or a manual
+                // `run_now`, is still in flight — e.g. an interval job whose run
+                // outlasts its period, or a job whose inline retry loop is
+                // backing off), skip this tick. Without this, two runs of the
+                // same job race: the second clobbers the first's cancel token in
+                // `running_tasks` (making the first unkillable) and the first to
+                // finish clears `currently_running` while the second still runs.
+                // Also snapshot the status the PREVIOUS fire left (to dedup
+                // failure escalations to one per streak) at the moment we claim.
                 let prior_status = {
                     let mut jobs_guard = current_jobs_arc.lock().await;
-                    jobs_guard.get_mut(&task_job_id).map(|(_, job)| {
-                        let prior = job.last_status;
-                        job.last_run = Some(current_time);
-                        job.currently_running = true;
-                        job.process_start_time = Some(current_time);
-                        prior
-                    })
-                }
-                .flatten();
+                    match jobs_guard.get_mut(&task_job_id) {
+                        Some((_, job)) if !job.currently_running => {
+                            let prior = job.last_status;
+                            job.last_run = Some(current_time);
+                            job.currently_running = true;
+                            job.process_start_time = Some(current_time);
+                            Some(prior)
+                        }
+                        // already running, or removed between the checks → don't claim
+                        _ => None,
+                    }
+                };
+                let Some(prior_status) = prior_status else {
+                    tracing::info!(
+                        "Scheduled job '{}' skipped this tick: a prior run is still in flight \
+                         (or the job was unscheduled)",
+                        task_job_id
+                    );
+                    return;
+                };
 
                 if let Err(e) = persist_jobs(&local_storage_path, &current_jobs_arc).await {
                     tracing::error!("Failed to persist job status: {}", e);
@@ -933,6 +953,24 @@ impl Scheduler {
                     job_to_load.source,
                     job_to_load.id
                 );
+                continue;
+            }
+
+            // A one-shot `at` job that already fired (last_run set) but is still
+            // in storage was interrupted after firing but before its self-delete
+            // (which only runs on a clean completion). Re-arming it would fire the
+            // recipe a SECOND time — is_run_missed() is false for an already-fired
+            // `at`, and the re-arm below clamps a past `at` to a zero delay. Drop
+            // it: it already ran exactly once. `reconciled` persists the cleaned
+            // list below so it does not resurface on the next boot.
+            if job_to_load.at.is_some() && job_to_load.last_run.is_some() {
+                tracing::warn!(
+                    target: "durability",
+                    "One-shot job '{}' already fired before a prior process exited; \
+                     dropping it instead of re-firing",
+                    job_to_load.id
+                );
+                reconciled = true;
                 continue;
             }
 
