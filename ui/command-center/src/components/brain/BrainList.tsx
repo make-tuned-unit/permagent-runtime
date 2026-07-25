@@ -67,6 +67,7 @@ export function BrainList({ onSelect, selectedId, timeValue, searchQuery, entiti
   });
   const scrollRef = useRef<HTMLDivElement>(null);
   const loadingMore = useRef(false);
+  const requestGeneration = useRef(0);
   const isSearch = !!(searchQuery && searchQuery.trim());
 
   // Reset and load first page when query or time changes
@@ -79,6 +80,7 @@ export function BrainList({ onSelect, selectedId, timeValue, searchQuery, entiti
   const loadPage = useCallback(async (reset = false) => {
     if (loadingMore.current && !reset) return;
     loadingMore.current = true;
+    const generation = reset ? ++requestGeneration.current : requestGeneration.current;
 
     try {
       const currentState = reset ? {
@@ -105,6 +107,8 @@ export function BrainList({ onSelect, selectedId, timeValue, searchQuery, entiti
       }
 
       const res = await api.getBrainMemories(params);
+      if (generation !== requestGeneration.current) return;
+      if (!res || !Array.isArray(res.memories)) throw new Error('Invalid memories response');
 
       setState(prev => {
         const combined = reset ? res.memories : [...prev.memories, ...res.memories];
@@ -121,9 +125,10 @@ export function BrainList({ onSelect, selectedId, timeValue, searchQuery, entiti
         };
       });
     } catch {
+      if (generation !== requestGeneration.current) return;
       setState(prev => ({ ...prev, loading: false, error: true }));
     } finally {
-      loadingMore.current = false;
+      if (generation === requestGeneration.current) loadingMore.current = false;
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, searchQuery, isSearch, timeValue]);

@@ -75,6 +75,12 @@ async function bump(field: 'projectsRev' | 'peopleRev') {
   });
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
+}
+
 describe('project panels refetch on projectsRev (driven by project_changed)', () => {
   it('DocumentsPanel re-reads the documents list', async () => {
     await render(<DocumentsPanel project={project} />);
@@ -106,5 +112,28 @@ describe('PeoplePanel refetches on peopleRev (driven by person_changed)', () => 
     await bump('peopleRev');
     const after = apiFetch.mock.calls.filter(c => String(c[0]).includes('/people')).length;
     expect(after).toBe(before + 1);
+  });
+
+  it('keeps the newest people response when an older request finishes last', async () => {
+    const oldRequest = deferred<Array<{ entity_uuid: string; display_name: string }>>();
+    const newRequest = deferred<Array<{ entity_uuid: string; display_name: string }>>();
+    apiFetch
+      .mockImplementationOnce(() => oldRequest.promise)
+      .mockImplementationOnce(() => newRequest.promise);
+
+    await act(async () => root.render(<PeoplePanel project={project} />));
+    await bump('peopleRev');
+    await act(async () => newRequest.resolve([{ entity_uuid: 'new', display_name: 'Current person' }]));
+    expect(container.textContent).toContain('Current person');
+
+    await act(async () => oldRequest.resolve([{ entity_uuid: 'old', display_name: 'Stale person' }]));
+    expect(container.textContent).toContain('Current person');
+    expect(container.textContent).not.toContain('Stale person');
+  });
+
+  it('routes a malformed people list into the load error state', async () => {
+    apiFetch.mockResolvedValueOnce({ items: [] });
+    await render(<PeoplePanel project={project} />);
+    expect(container.textContent).toContain("Couldn't load people.");
   });
 });

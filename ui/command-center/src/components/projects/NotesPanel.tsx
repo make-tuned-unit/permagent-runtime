@@ -20,7 +20,7 @@
  * install the endpoint answers 503 and the panel shows a gentle setup hint.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { FiTrash2, FiMic, FiSquare, FiLoader, FiExternalLink } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
@@ -41,6 +41,7 @@ export function NotesPanel({ project }: { project: Project }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<'loading' | 'error' | 'ready'>('loading');
+  const loadGeneration = useRef(0);
 
   // Dictation: append transcribed speech to the composer body.
   const appendDictation = useCallback((text: string) => {
@@ -53,10 +54,15 @@ export function NotesPanel({ project }: { project: Project }) {
   const projectsRev = useCommandCenter(s => s.projectsRev);
 
   const load = useCallback(async () => {
+    const generation = ++loadGeneration.current;
     try {
-      setNotes(await api.listProjectNotes(project.id));
+      const nextNotes = await api.listProjectNotes(project.id);
+      if (generation !== loadGeneration.current) return;
+      if (!Array.isArray(nextNotes)) throw new Error('Invalid notes response');
+      setNotes(nextNotes);
       setStatus('ready');
     } catch {
+      if (generation !== loadGeneration.current) return;
       setStatus('error');
     }
   }, [project.id]);

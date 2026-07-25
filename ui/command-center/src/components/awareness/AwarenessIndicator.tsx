@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { api } from '../../lib/api';
 import { relativeTimeAgo } from '../../lib/time-decay';
 import { font } from '../../styles/tokens';
@@ -18,29 +18,35 @@ interface Props {
 export function AwarenessIndicator({ onOpenInspection }: Props) {
   const { colors } = useTheme();
   const [summary, setSummary] = useState<DigestSummary | null>(null);
+  const requestGeneration = useRef(0);
 
   const fetchDigest = useCallback(async () => {
+    const generation = ++requestGeneration.current;
     try {
       const [digestRes, statusRes] = await Promise.all([
         api.fetchAuthed('/activity/current-digest'),
         api.fetchAuthed('/activity/ingest-status'),
       ]);
-      if (!digestRes.ok || !statusRes.ok) return;
+      if (!digestRes.ok || !statusRes.ok || generation !== requestGeneration.current) return;
 
       const digest = await digestRes.json();
       const status = await statusRes.json();
+      if (generation !== requestGeneration.current) return;
 
-      const events = digest.recent_events ?? [];
+      if (!digest || typeof digest !== 'object' || !status || typeof status !== 'object') {
+        throw new Error('Invalid awareness response');
+      }
+      const events = Array.isArray(digest.recent_events) ? digest.recent_events : [];
       const lastTs = events.length > 0 ? events[events.length - 1]?.timestamp : null;
 
       setSummary({
         project_name: status.active_project?.project_name ?? null,
         event_count: events.length,
-        memory_count: (digest.probed_memories?.length ?? 0),
+        memory_count: Array.isArray(digest.probed_memories) ? digest.probed_memories.length : 0,
         last_event_time: lastTs,
       });
     } catch {
-      setSummary(null);
+      if (generation === requestGeneration.current) setSummary(null);
     }
   }, []);
 

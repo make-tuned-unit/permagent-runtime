@@ -35,6 +35,9 @@ export function useBrainData(searchQuery = '') {
         : '/api/brain/graph';
       const result = await apiFetch<BrainGraph>(endpoint);
       if (seq !== seqRef.current) return;
+      if (!result || !Array.isArray(result.entities) || !Array.isArray(result.memories)) {
+        throw new Error('Invalid Brain graph response');
+      }
       setData(result);
       setError(null);
     } catch (e) {

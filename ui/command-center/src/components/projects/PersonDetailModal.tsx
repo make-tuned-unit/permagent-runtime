@@ -25,7 +25,7 @@
  * store's `personDetail` target is set.
  */
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { FiBookOpen, FiCheckSquare, FiFileText, FiPlus, FiTrash2 } from 'react-icons/fi';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
@@ -109,26 +109,39 @@ export function PersonDetailModal({
   const [addingRelationship, setAddingRelationship] = useState(false);
   const [targetId, setTargetId] = useState('');
   const [predicate, setPredicate] = useState('related_to');
+  const relationshipsGeneration = useRef(0);
+  const activityGeneration = useRef(0);
 
   const loadRelationships = useCallback(async () => {
+    const generation = ++relationshipsGeneration.current;
     setRelatedStatus('loading');
     try {
       const [edges, people] = await Promise.all([
         apiFetch<PersonRelationship[]>(`/api/people/${encodeURIComponent(view.entity_uuid)}/relationships`),
         apiFetch<Person[]>('/api/people'),
       ]);
+      if (generation !== relationshipsGeneration.current) return;
+      if (!Array.isArray(edges) || !Array.isArray(people)) throw new Error('Invalid relationships response');
       setRelationships(edges);
       setAllPeople(people.filter(p => p.entity_uuid !== view.entity_uuid));
       setRelatedStatus('ready');
-    } catch { setRelatedStatus('error'); }
+    } catch {
+      if (generation === relationshipsGeneration.current) setRelatedStatus('error');
+    }
   }, [view.entity_uuid]);
 
   const loadActivity = useCallback(async () => {
+    const generation = ++activityGeneration.current;
     setActivityStatus('loading');
     try {
-      setActivity(await apiFetch<PersonActivity[]>(`/api/people/${encodeURIComponent(view.entity_uuid)}/activity`));
+      const nextActivity = await apiFetch<PersonActivity[]>(`/api/people/${encodeURIComponent(view.entity_uuid)}/activity`);
+      if (generation !== activityGeneration.current) return;
+      if (!Array.isArray(nextActivity)) throw new Error('Invalid activity response');
+      setActivity(nextActivity);
       setActivityStatus('ready');
-    } catch { setActivityStatus('error'); }
+    } catch {
+      if (generation === activityGeneration.current) setActivityStatus('error');
+    }
   }, [view.entity_uuid]);
 
   useEffect(() => { loadRelationships(); loadActivity(); }, [loadRelationships, loadActivity]);
