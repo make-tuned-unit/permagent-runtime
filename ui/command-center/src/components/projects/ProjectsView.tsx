@@ -11,6 +11,15 @@ import { PERSONAL_ID, CANCELLABLE_STATES, type Project, type BoardColumn, type C
 
 const LS_KEY = 'permagent-projects-last-opened';
 
+function isProject(value: unknown): value is Project {
+  if (!value || typeof value !== 'object') return false;
+  const project = value as Record<string, unknown>;
+  return typeof project.id === 'string'
+    && typeof project.slug === 'string'
+    && typeof project.name === 'string'
+    && typeof project.status === 'string';
+}
+
 // ── Main component ─────────────────────────────────────────────────────────
 
 /** Emit a ProjectSelected activity event via Tauri IPC (fire-and-forget). */
@@ -39,18 +48,26 @@ export function ProjectsView() {
   // status drag / create / delete from another device pushes instantly instead
   // of waiting for the 5s poll (which stays as the backstop).
   const projectsRev = useCommandCenter(s => s.projectsRev);
+  const requestGeneration = useRef(0);
 
   const loadProjects = useCallback(async () => {
+    const generation = ++requestGeneration.current;
     try {
-      const data = await apiFetch<Project[]>('/api/projects');
+      const data = await apiFetch<unknown>('/api/projects');
+      if (generation !== requestGeneration.current) return;
+      if (!Array.isArray(data) || !data.every(isProject)) {
+        throw new Error('Malformed projects response');
+      }
       setProjects(data);
       setError(false);
     } catch {
+      if (generation !== requestGeneration.current) return;
       // Surface the failure instead of leaving a blank surface. Transient poll
       // failures are ignored while we already have projects on screen; only a
       // genuine load-with-nothing-to-show promotes to the error state below.
       setError(true);
     } finally {
+      if (generation !== requestGeneration.current) return;
       setLoading(false);
     }
   }, []);
@@ -63,7 +80,11 @@ export function ProjectsView() {
     const interval = setInterval(loadProjects, 5000);
     const onFocus = () => loadProjects();
     window.addEventListener('focus', onFocus);
-    return () => { clearInterval(interval); window.removeEventListener('focus', onFocus); };
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+      ++requestGeneration.current;
+    };
   }, [loadProjects]);
 
   // Event-driven refetch (#629): fires only on a real remote mutation.

@@ -58,6 +58,12 @@ const project = (id: string, name: string) => ({
 /** URLs apiFetch was called with since the last mockClear. */
 const calledUrls = () => apiFetchMock.mock.calls.map((c) => String(c[0]));
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 let container: HTMLDivElement;
 let root: Root;
 
@@ -125,5 +131,34 @@ describe('Grow deep-link is consumed exactly once', () => {
     expect(useCommandCenter.getState().openGrowForProject).toBe('p9');
     useCommandCenter.getState().setOpenGrowForProject(null);
     expect(useCommandCenter.getState().openGrowForProject).toBeNull();
+  });
+});
+
+describe('Grow project request ordering', () => {
+  it('does not replace the selected project posts with a stale response', async () => {
+    const firstPosts = deferred<Array<{ id: string; title: string; description: string }>>();
+    const secondPosts = deferred<Array<{ id: string; title: string; description: string }>>();
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === '/api/projects') return Promise.resolve([project('p1', 'First'), project('p42', 'Target')]);
+      if (url.includes('/p1/cards?card_type=social_post')) return firstPosts.promise;
+      if (url.includes('/p42/cards?card_type=social_post')) return secondPosts.promise;
+      return Promise.resolve([]);
+    }) as typeof apiFetch);
+
+    await renderGrow();
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="Select project"]')!;
+    await act(async () => {
+      select.value = 'p42';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await act(async () => { secondPosts.resolve([{ id: 'b', title: 'Target post', description: '' }]); });
+
+    const calendar = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'calendar')!;
+    await act(async () => { calendar.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    expect(container.textContent).toContain('Target post');
+
+    await act(async () => { firstPosts.resolve([{ id: 'a', title: 'Stale first post', description: '' }]); });
+    expect(container.textContent).toContain('Target post');
+    expect(container.textContent).not.toContain('Stale first post');
   });
 });
