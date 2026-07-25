@@ -425,9 +425,13 @@ async fn file_person_addressless(
         },
     )
     .await?;
+    // Full Unicode case-fold, not eq_ignore_ascii_case: the latter only folds
+    // ASCII A-Z, so an accented name ("José" vs "JOSÉ") would fail to match an
+    // existing person and create a duplicate instead of associating.
+    let name_folded = name.to_lowercase();
     let exact: Vec<_> = candidates
         .iter()
-        .filter(|person| person.display_name.eq_ignore_ascii_case(name))
+        .filter(|person| person.display_name.to_lowercase() == name_folded)
         .collect();
     match exact.as_slice() {
         [person] => {
