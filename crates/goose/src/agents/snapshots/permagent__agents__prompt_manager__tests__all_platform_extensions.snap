@@ -210,7 +210,6 @@ The Librarian generates prose descriptions for memories stored in the Brain. Use
 
 ### Instructions
 Inspect the local inference models your sub-agents run. Use list_models when the user asks what models are installed, how much disk they use, or whether a model is available. This is the ONLY mechanism for listing installed models — do not shell out to `ls`, `du`, or the Ollama CLI. It is read-only; it never downloads or changes anything.
-
 ## orchestrator
 
 ### Instructions
