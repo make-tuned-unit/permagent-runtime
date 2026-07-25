@@ -410,6 +410,13 @@ pub async fn ingest_document(bytes: &[u8], filename: &str, mime: &str) -> anyhow
     Ok(finalize_text_ingest(key, full_text, filename).await)
 }
 
+/// Cap on plain-text/code ingestion, mirroring the PDF text cap
+/// ([`pdf::MAX_PDF_TEXT_BYTES`]): a dropped multi-MB `.log`/`.csv`/`.txt`
+/// (the upload route allows up to 50 MB) must not become one enormous Brain
+/// memory. Kept equal to the PDF cap so both document paths bound output alike.
+const MAX_TEXT_INGEST_BYTES: usize = 8 * 1024 * 1024;
+const TEXT_TRUNCATION_MARKER: &str = "\n[text truncated: document too large to fully ingest]";
+
 /// Extract plain text from a document's bytes by type.
 async fn extract_document_text(bytes: &[u8], filename: &str, mime: &str) -> anyhow::Result<String> {
     let ext = std::path::Path::new(filename)
@@ -448,7 +455,21 @@ async fn extract_document_text(bytes: &[u8], filename: &str, mime: &str) -> anyh
         }
         Ok(text)
     } else if is_texty(mime, &ext) {
-        Ok(String::from_utf8_lossy(bytes).to_string())
+        let text = String::from_utf8_lossy(bytes);
+        if text.len() > MAX_TEXT_INGEST_BYTES {
+            // Truncate at a char boundary at or below the cap (from_utf8_lossy
+            // already yields valid UTF-8, so boundaries are well-defined).
+            let mut end = MAX_TEXT_INGEST_BYTES;
+            while end > 0 && !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            // `.get(..end)` rather than `&text[..end]` (clippy::string_slice);
+            // `end` is a validated char boundary so the fallback never triggers.
+            let head = text.get(..end).unwrap_or_else(|| text.as_ref());
+            Ok(format!("{head}{TEXT_TRUNCATION_MARKER}"))
+        } else {
+            Ok(text.into_owned())
+        }
     } else {
         anyhow::bail!("unsupported document type: mime={mime} ext={ext}")
     }
@@ -727,6 +748,22 @@ mod tests {
             .await
             .expect("text passthrough");
         assert_eq!(text, "hello reader\nsecond line");
+    }
+
+    #[tokio::test]
+    async fn texty_ingest_is_capped_at_boundary() {
+        // Over-cap input is truncated (at a char boundary) with a marker...
+        let big = vec![b'a'; MAX_TEXT_INGEST_BYTES + 4096];
+        let out = extract_document_text(&big, "huge.log", "text/plain")
+            .await
+            .expect("texty ingest");
+        assert!(out.ends_with(TEXT_TRUNCATION_MARKER));
+        assert!(out.len() <= MAX_TEXT_INGEST_BYTES + TEXT_TRUNCATION_MARKER.len());
+        // ...while under-cap input passes through unchanged.
+        let small = extract_document_text(b"small file", "s.txt", "text/plain")
+            .await
+            .expect("texty ingest");
+        assert_eq!(small, "small file");
     }
 
     #[tokio::test]
