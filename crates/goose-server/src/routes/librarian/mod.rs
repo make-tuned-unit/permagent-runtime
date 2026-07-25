@@ -10,13 +10,6 @@ mod scheduling;
 // Re-export types used by external callers (state.rs, tests).
 pub use scheduling::librarian_scheduler_loop;
 
-// Re-export Ollama response types used by scheduling's run-now endpoint.
-// These live in the sibling ollama module; we alias them here so scheduling.rs
-// can reference them as `super::ollama_types::*`.
-pub(crate) mod ollama_types {
-    pub use crate::routes::ollama::WarmLoadResponse;
-}
-
 use std::sync::Arc;
 
 use axum::{
@@ -44,6 +37,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route(
             "/api/librarian/status",
             get(scheduling::get_librarian_status),
+        )
+        .route(
+            "/api/librarian/run-status",
+            get(scheduling::librarian_run_status),
         )
         .with_state(state)
 }
