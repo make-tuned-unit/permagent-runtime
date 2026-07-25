@@ -302,6 +302,9 @@ async fn warm_and_run(schedule: &LibrarianSchedule, keep_alive_secs: u64) -> Res
         // rung budget — keep the 120s this warm has always had.
         timeout: Some(std::time::Duration::from_secs(120)),
         workload: permagent::mesh::Workload::Batch,
+        // Scheduler warm-up (no user session) — background requests observe
+        // process-wide sovereign mode, so no per-session context to thread.
+        session_id: None,
     })
     .await
     .map_err(|e| {

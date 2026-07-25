@@ -62,19 +62,7 @@ pub struct OllamaProvider {
 /// Whether an Ollama base URL points at this machine (loopback). Fail-closed:
 /// anything that is not clearly loopback is treated as remote (cloud).
 fn is_loopback_ollama(base_url: &Url) -> bool {
-    match base_url.host_str() {
-        Some(h) => {
-            let h = h.trim_start_matches('[').trim_end_matches(']');
-            h.eq_ignore_ascii_case("localhost")
-                || h == "::1"
-                || h.strip_prefix("127.")
-                    .map(|rest| {
-                        !rest.is_empty() && rest.bytes().all(|b| b == b'.' || b.is_ascii_digit())
-                    })
-                    .unwrap_or(false)
-        }
-        None => false,
-    }
+    crate::mesh::endpoint_is_loopback(base_url.as_str())
 }
 fn resolve_ollama_num_ctx(model_config: &ModelConfig) -> Option<usize> {
     let config = crate::config::Config::global();

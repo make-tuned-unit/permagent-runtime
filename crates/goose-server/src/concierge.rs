@@ -223,6 +223,9 @@ async fn local_draft(msg: &InboxMessage) -> Option<String> {
         keep_alive: None,
         timeout: None,
         workload: concierge::REASONING_WORKLOAD,
+        // Concierge is a background agent (no live user session) — observes
+        // process-wide sovereign mode.
+        session_id: None,
     })
     .await
     .ok()?;

@@ -537,6 +537,7 @@ async fn ollama_summary(text: &str) -> Result<String, String> {
     // with the same 60s budget this function always used. The wire body is
     // built by the engine's inference-only choke-point.
     crate::mesh::pool::generate(crate::mesh::pool::GenerateRequest {
+        session_id: None,
         model: SUMMARY_MODEL.to_string(),
         prompt,
         system: Some(SUMMARY_SYSTEM.to_string()),

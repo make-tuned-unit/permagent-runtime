@@ -193,6 +193,7 @@ impl LibrarianClient {
 
     async fn handle_describe_memory(
         &self,
+        session_id: &str,
         arguments: Option<JsonObject>,
     ) -> Result<CallToolResult, String> {
         let args = arguments.ok_or("Missing arguments")?;
@@ -201,7 +202,15 @@ impl LibrarianClient {
 
         let brain = self.get_brain()?;
         let model = resolve_model();
-        let result = describe_one(&brain, &params.memory_id, params.force, &model, false).await?;
+        let result = describe_one_with_context(
+            &brain,
+            &params.memory_id,
+            params.force,
+            &model,
+            false,
+            Some(session_id),
+        )
+        .await?;
 
         let response = serde_json::json!({
             "description": result.description,
@@ -303,13 +312,16 @@ impl McpClientTrait for LibrarianClient {
 
     async fn call_tool(
         &self,
-        _ctx: &ToolCallContext,
+        ctx: &ToolCallContext,
         name: &str,
         arguments: Option<JsonObject>,
         _cancel_token: CancellationToken,
     ) -> Result<CallToolResult, Error> {
         let result = match name {
-            "describe_memory" => self.handle_describe_memory(arguments).await,
+            "describe_memory" => {
+                self.handle_describe_memory(&ctx.session_id, arguments)
+                    .await
+            }
             "list_undescribed" => self.handle_list_undescribed(arguments).await,
             _ => Err(format!("Unknown tool: {}", name)),
         };
@@ -362,6 +374,17 @@ pub async fn describe_one(
     force: bool,
     model: &str,
     emit_events: bool,
+) -> Result<DescribeResult, String> {
+    describe_one_with_context(brain, memory_id, force, model, emit_events, None).await
+}
+
+async fn describe_one_with_context(
+    brain: &crate::brain_handle::SafeBrain,
+    memory_id: &str,
+    force: bool,
+    model: &str,
+    emit_events: bool,
+    session_id: Option<&str>,
 ) -> Result<DescribeResult, String> {
     use super::librarian_state;
     let track_state = emit_events;
@@ -437,6 +460,7 @@ pub async fn describe_one(
             model,
             emit_events,
             &memory_key,
+            session_id,
         )
         .await?;
         let raw = raw.trim().to_string();
@@ -1092,10 +1116,21 @@ pub(crate) async fn call_ollama_streaming_pooled(
     model: &str,
     emit_events: bool,
     memory_key: &str,
+    session_id: Option<&str>,
 ) -> Result<String, String> {
     let lease = crate::mesh::pool::lease_batch(Some(model));
     let endpoint = lease.endpoint().to_string();
-    match call_ollama_streaming(&endpoint, system, prompt, model, emit_events, memory_key).await {
+    match call_ollama_streaming(
+        &endpoint,
+        system,
+        prompt,
+        model,
+        emit_events,
+        memory_key,
+        session_id,
+    )
+    .await
+    {
         Ok(text) => {
             lease.succeed();
             Ok(text)
@@ -1107,7 +1142,16 @@ pub(crate) async fn call_ollama_streaming_pooled(
                     error = %err,
                     "pool peer failed during a streaming pass; retrying on the local endpoint"
                 );
-                call_ollama_streaming(&local, system, prompt, model, emit_events, memory_key).await
+                call_ollama_streaming(
+                    &local,
+                    system,
+                    prompt,
+                    model,
+                    emit_events,
+                    memory_key,
+                    session_id,
+                )
+                .await
             }
             None => Err(err),
         },
@@ -1129,11 +1173,13 @@ pub(crate) async fn call_ollama_streaming(
     model: &str,
     emit_events: bool,
     memory_key: &str,
+    session_id: Option<&str>,
 ) -> Result<String, String> {
     use futures::StreamExt;
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| format!("HTTP client error: {}", e))?;
 
@@ -1150,6 +1196,9 @@ pub(crate) async fn call_ollama_streaming(
             "num_predict": 150,
         }),
     );
+
+    crate::mesh::audit_and_check_mesh_egress(base_url, session_id, model, Some(system), prompt)
+        .await?;
 
     let resp = client
         .post(format!("{}/api/generate", base_url))
