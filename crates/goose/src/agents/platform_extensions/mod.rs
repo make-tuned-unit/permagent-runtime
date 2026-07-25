@@ -19,6 +19,7 @@ pub mod librarian_context;
 pub mod librarian_entities;
 pub mod librarian_state;
 pub mod listen;
+pub mod model_manager;
 pub mod orchestrator;
 pub mod people;
 pub mod project_manager;
@@ -534,6 +535,25 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 teaching: &[],
                 client_factory: |ctx| {
                     Box::new(recipe_author::RecipeAuthorClient::new(ctx).unwrap())
+                },
+            },
+        );
+
+        map.insert(
+            model_manager::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: model_manager::EXTENSION_NAME,
+                display_name: "Model Manager",
+                description:
+                    "List the local inference models your sub-agents run (list_models) — id, quantization, size on disk, source, and whether each has a vision encoder",
+                default_enabled: true,
+                unprefixed_tools: true,
+                hidden: false,
+                why_it_matters:
+                    "So you can see and reason about which models your sub-agents run — the first step toward keeping them current as better, more compact models ship.",
+                teaching: &[],
+                client_factory: |ctx| {
+                    Box::new(model_manager::ModelManagerClient::new(ctx).unwrap())
                 },
             },
         );
