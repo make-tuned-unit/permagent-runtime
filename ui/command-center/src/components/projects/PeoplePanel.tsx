@@ -13,7 +13,7 @@
  * after a disassociate (there is no people event stream yet).
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { font } from '../../styles/tokens';
@@ -38,13 +38,18 @@ export function PeoplePanel({ project }: { project: Project }) {
   // by an empty catch, so a fast 400 was indistinguishable from "the click did
   // nothing" (#561) — the wire is correct, but the failure was invisible.
   const [associateError, setAssociateError] = useState<string | null>(null);
+  const loadGeneration = useRef(0);
 
   const load = useCallback(async () => {
+    const generation = ++loadGeneration.current;
     try {
       const rows = await apiFetch<ProjectPerson[]>(`/api/projects/${encodeURIComponent(project.id)}/people`);
+      if (generation !== loadGeneration.current) return;
+      if (!Array.isArray(rows)) throw new Error('Invalid people response');
       setPeople(rows);
       setStatus('ready');
     } catch {
+      if (generation !== loadGeneration.current) return;
       // Routes are first-dogfooded here (#530 had no route-level tests); surface
       // the failure as a recoverable error rather than a blank/empty panel.
       setStatus('error');
@@ -166,7 +171,10 @@ function AssociatePicker({ colors, excludeIds, onPick }: {
     setStatus('loading');
     const q = query.trim();
     apiFetch<Person[]>(`/api/people${q ? `?q=${encodeURIComponent(q)}` : ''}`)
-      .then(rows => { if (live) { setResults(rows); setStatus('ready'); } })
+      .then(rows => {
+        if (!Array.isArray(rows)) throw new Error('Invalid people response');
+        if (live) { setResults(rows); setStatus('ready'); }
+      })
       .catch(() => { if (live) { setResults([]); setStatus('error'); } });
     return () => { live = false; };
   }, [query]);

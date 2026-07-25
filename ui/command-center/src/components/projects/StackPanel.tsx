@@ -17,7 +17,7 @@
  * stackEntries.ts. Failures surface inline (#568 no-silent-catch rule).
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { FiEdit2, FiExternalLink, FiPlus, FiTrash2, FiX } from 'react-icons/fi';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
 import { font } from '../../styles/tokens';
@@ -68,12 +68,18 @@ export function StackPanel({ project }: { project: Project }) {
   const [form, setForm] = useState<EntryForm | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const loadGeneration = useRef(0);
 
   const load = useCallback(async () => {
+    const generation = ++loadGeneration.current;
     try {
-      setEntries(await listStackEntries(project.id));
+      const nextEntries = await listStackEntries(project.id);
+      if (generation !== loadGeneration.current) return;
+      if (!Array.isArray(nextEntries)) throw new Error('Invalid stack response');
+      setEntries(nextEntries);
       setStatus('ready');
     } catch {
+      if (generation !== loadGeneration.current) return;
       setStatus('error');
     }
   }, [project.id]);

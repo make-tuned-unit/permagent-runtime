@@ -17,7 +17,7 @@
  * silent catch. Styled strictly with the shared Panel shell + theme tokens.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { FiExternalLink, FiRefreshCw } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
@@ -33,17 +33,23 @@ export function MemoriesPanel({ project }: { project: Project }) {
   const rowVeil = theme === 'silver' ? 'rgba(30,37,48,0.03)' : 'rgba(255,255,255,0.02)';
   const [memories, setMemories] = useState<ProjectMemory[]>([]);
   const [status, setStatus] = useState<'loading' | 'error' | 'ready'>('loading');
+  const loadGeneration = useRef(0);
   const focusBrainMemory = useCommandCenter(s => s.focusBrainMemory);
   // #629 multi-client liveness: `project_changed` (change=memories) from
   // another device refetches this association list.
   const projectsRev = useCommandCenter(s => s.projectsRev);
 
   const load = useCallback(async () => {
+    const generation = ++loadGeneration.current;
     setStatus('loading');
     try {
-      setMemories(await api.listProjectMemories(project.id));
+      const nextMemories = await api.listProjectMemories(project.id);
+      if (generation !== loadGeneration.current) return;
+      if (!Array.isArray(nextMemories)) throw new Error('Invalid memories response');
+      setMemories(nextMemories);
       setStatus('ready');
     } catch {
+      if (generation !== loadGeneration.current) return;
       setStatus('error');
     }
   }, [project.id]);

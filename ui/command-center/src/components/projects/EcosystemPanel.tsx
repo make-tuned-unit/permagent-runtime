@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../../lib/api';
 import { navigateToTool } from '../../lib/store';
 import { relativeTimeAgo } from '../../lib/time-decay';
@@ -30,13 +30,17 @@ export function EcosystemPanel({ project }: { project: Project }) {
   const [intel, setIntel] = useState<ProjectIntelResponse>(emptyIntel);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [promptCopied, setPromptCopied] = useState(false);
+  const loadGeneration = useRef(0);
 
   const load = useCallback(async () => {
+    const generation = ++loadGeneration.current;
     setStatus('loading');
     try {
       const response = await apiFetch<Partial<ProjectIntelResponse>>(
         `/api/projects/${encodeURIComponent(project.id)}/intel`,
       );
+      if (generation !== loadGeneration.current) return;
+      if (!response || typeof response !== 'object') throw new Error('Invalid intelligence response');
       setIntel({
         competitors: Array.isArray(response?.competitors) ? response.competitors : [],
         partners: Array.isArray(response?.partners) ? response.partners : [],
@@ -44,6 +48,7 @@ export function EcosystemPanel({ project }: { project: Project }) {
       });
       setStatus('ready');
     } catch {
+      if (generation !== loadGeneration.current) return;
       setStatus('error');
     }
   }, [project.id]);

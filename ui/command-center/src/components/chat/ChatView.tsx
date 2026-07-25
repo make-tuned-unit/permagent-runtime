@@ -25,15 +25,17 @@ export function ChatView() {
   }, [identityRev]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
+    let disposed = false;
     (async () => {
       const sessionId = await ensureSession();
-      if (sessionId) {
+      if (sessionId && !disposed) {
         await loadSessionMessages(sessionId);
-        connectSession(sessionId);
+        if (!disposed) void connectSession(sessionId);
       }
     })();
 
     return () => {
+      disposed = true;
       useCommandCenter.getState().disconnectSession();
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps

@@ -36,6 +36,17 @@ function getTauriApi(): Promise<TauriApi | null> {
   return apiPromise;
 }
 
+export function scheduleInitialCommand(
+  invoke: TauriApi['invoke'],
+  sessionId: string,
+  command: string,
+): () => void {
+  const timer = setTimeout(() => {
+    invoke('write_to_pty', { sessionId, data: `${command}\n` }).catch(() => {});
+  }, 300);
+  return () => clearTimeout(timer);
+}
+
 interface TerminalProps {
   sessionId: string | null;
   onSessionSpawned?: (sessionId: string) => void;
@@ -75,6 +86,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
   // ── Single setup effect — runs once on mount, cleans up on unmount ──
   useEffect(() => {
     let cancelled = false;
+    let cancelInitialCommand: (() => void) | null = null;
 
     (async () => {
       if (!containerRef.current) return;
@@ -145,12 +157,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
           if (initialCommandRef.current) {
             const cmd = initialCommandRef.current;
             initialCommandRef.current = undefined; // fire once
-            setTimeout(() => {
-              api.invoke('write_to_pty', {
-                sessionId: result.session_id,
-                data: cmd + '\n',
-              }).catch(() => {});
-            }, 300);
+            cancelInitialCommand = scheduleInitialCommand(api.invoke, result.session_id, cmd);
           }
         } catch (err) {
           term.writeln('\r\n\x1b[31mFailed to spawn terminal: ' + err + '\x1b[0m\r\n');
@@ -219,14 +226,26 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
               }
             }
           })) ?? null;
+        if (cancelled) {
+          unlistenData?.();
+          unlistenExit?.();
+          term.dispose();
+          return;
+        }
 
         // A detached window owns a fresh xterm renderer but reconnects to the
         // same live PTY. Rehydrate its scrollback from the bounded Rust buffer.
         if (sessionIdRef.current) {
           try {
             const replay = await api.invoke('get_pty_output', { sessionId: sessionIdRef.current }) as string;
-            if (replay) term.write(replay);
+            if (!cancelled && replay) term.write(replay);
           } catch { /* session may have exited during the handoff */ }
+        }
+        if (cancelled) {
+          unlistenData?.();
+          unlistenExit?.();
+          term.dispose();
+          return;
         }
       }
 
@@ -371,6 +390,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         unlistenExit?.();
         if (resizeTimer) clearTimeout(resizeTimer);
         if (flushTimer) clearTimeout(flushTimer);
+        cancelInitialCommand?.();
         resizeObserver.disconnect();
         term.dispose();
         xtermRef.current = null;
@@ -380,6 +400,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
 
     return () => {
       cancelled = true;
+      cancelInitialCommand?.();
       cleanupRef.current?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

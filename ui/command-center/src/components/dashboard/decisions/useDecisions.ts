@@ -29,22 +29,27 @@ export function useDecisions() {
   const [error, setError] = useState(false);
   const showAllRef = useRef(false);
   const intervalRef = useRef<ReturnType<typeof setInterval>>();
+  const requestGeneration = useRef(0);
 
   const fetchDecisions = useCallback(async () => {
+    const generation = ++requestGeneration.current;
     try {
       const result = await decisionsClient.list(
         showAllRef.current ? { all: true } : undefined,
       );
+      if (generation !== requestGeneration.current) return;
+      if (!result || !Array.isArray(result.decisions)) throw new Error('Invalid decisions response');
       setData(result);
       setError(false);
     } catch {
+      if (generation !== requestGeneration.current) return;
       // Stale data stays (matching useDashboard); flag only the cold failure.
       setData(prev => {
         if (prev === null) setError(true);
         return prev;
       });
     }
-    setLoading(false);
+    if (generation === requestGeneration.current) setLoading(false);
   }, []);
 
   useEffect(() => {

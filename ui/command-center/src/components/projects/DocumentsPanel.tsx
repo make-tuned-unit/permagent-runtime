@@ -35,15 +35,21 @@ export function DocumentsPanel({ project }: { project: Project }) {
   // instead of the empty drop-zone, and never a perpetual spinner.
   const [status, setStatus] = useState<'loading' | 'error' | 'ready'>('loading');
   const fileInput = useRef<HTMLInputElement>(null);
+  const loadGeneration = useRef(0);
   // #629 multi-client liveness: bumped by `project_changed` on /events, so an
   // upload/delete from another device refetches this list.
   const projectsRev = useCommandCenter(s => s.projectsRev);
 
   const load = useCallback(async () => {
+    const generation = ++loadGeneration.current;
     try {
-      setDocs(await api.listProjectDocuments(project.id));
+      const nextDocs = await api.listProjectDocuments(project.id);
+      if (generation !== loadGeneration.current) return;
+      if (!Array.isArray(nextDocs)) throw new Error('Invalid documents response');
+      setDocs(nextDocs);
       setStatus('ready');
     } catch {
+      if (generation !== loadGeneration.current) return;
       // Surface as a recoverable error rather than masquerading as empty.
       setStatus('error');
     }
