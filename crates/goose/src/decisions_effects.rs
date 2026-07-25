@@ -367,8 +367,12 @@ async fn apply_project_intel(
                 .fetch_all(&mut *tx)
                 .await
                 .map_err(|e| GuardError::Db(format!("deduplicate project_intel: {e}")))?;
+        let item_name_folded = item.name.to_lowercase();
         for (id, name) in candidates {
-            if name.eq_ignore_ascii_case(&item.name) {
+            // Full Unicode case-fold, not eq_ignore_ascii_case: the latter only
+            // folds ASCII A-Z, so accented names ("CAFÉ" vs "café") would slip
+            // past and duplicate instead of updating in place.
+            if name.to_lowercase() == item_name_folded {
                 sqlx::query("DELETE FROM project_intel WHERE id = ?")
                     .bind(id)
                     .execute(&mut *tx)
