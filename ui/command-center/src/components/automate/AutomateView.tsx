@@ -187,6 +187,7 @@ export function AutomateView() {
     try { return localStorage.getItem('automate:installed-expanded') === 'true'; } catch { return false; }
   });
   const prevRunningRef = useRef<Set<string>>(new Set());
+  const jobsRequestGeneration = useRef(0);
   const { gradient, colors } = useTheme();
 
   const skills = useCommandCenter(s => s.skills);
@@ -216,8 +217,10 @@ export function AutomateView() {
   // ── Data fetching ──
 
   const fetchJobs = useCallback(async () => {
+    const generation = ++jobsRequestGeneration.current;
     try {
       const data = await apiFetch<{ jobs: ScheduledJob[] }>('/schedule/list');
+      if (generation !== jobsRequestGeneration.current) return;
       const newJobs: ScheduledJob[] = data.jobs || [];
       setJobs(newJobs);
       const nowRunning = new Set(newJobs.filter(j => j.currently_running).map(j => j.id));
@@ -232,11 +235,13 @@ export function AutomateView() {
       prevRunningRef.current = nowRunning;
       setJobsError(null);
     } catch (err) {
+      if (generation !== jobsRequestGeneration.current) return;
       // Keep any jobs already loaded (a transient poll failure shouldn't blank
       // the list); surface the error so an empty area isn't mistaken for "no
       // automations yet".
       setJobsError(err instanceof Error ? err.message : "Couldn't load automations.");
     } finally {
+      if (generation !== jobsRequestGeneration.current) return;
       setJobsLoading(false);
     }
   }, []);
@@ -267,7 +272,10 @@ export function AutomateView() {
   useEffect(() => { fetchJobs(); fetchExtensions(); loadSkills(); loadProposals(); }, [fetchJobs, fetchExtensions, loadSkills, loadProposals]);
   useEffect(() => {
     const interval = setInterval(fetchJobs, 5000);
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      ++jobsRequestGeneration.current;
+    };
   }, [fetchJobs]);
   useEffect(() => {
     if (jobs.length > 0) fetchAllSessions(jobs.map(j => j.id));

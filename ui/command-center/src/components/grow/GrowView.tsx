@@ -10,7 +10,7 @@
 // (see the Grow epic); the GTM canvas persists per project via project tags/
 // metadata as those land.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
@@ -143,6 +143,7 @@ export function GrowView() {
   const [lens, setLens] = useState<GrowLens>('strategy');
   const [ctx, setCtx] = useState<{ people: number; goals: number } | null>(null);
   const [focusLens, setFocusLens] = useState<GrowLens | null>(null);
+  const postsRequestGeneration = useRef(0);
   const setActivePanel = useCommandCenter((st) => st.setActivePanel);
   const sendMessage = useCommandCenter((st) => st.sendMessage);
   const openGrowForProject = useCommandCenter((st) => st.openGrowForProject);
@@ -166,12 +167,18 @@ export function GrowView() {
   // Content calendar = social_post cards on this project (reserved card type
   // already exists; empty until Henry/the user create them).
   const loadPosts = useCallback((id: string, opts?: { silent?: boolean }) => {
+    const generation = ++postsRequestGeneration.current;
     // Background refreshes keep the current list on screen (no loading flash);
     // only user-visible (re)loads show the loading state.
     if (!opts?.silent) setPostsState('loading');
     apiFetch<SocialCard[]>(`/api/projects/${encodeURIComponent(id)}/cards?card_type=social_post`)
-      .then((p) => { setPosts(p); setPostsState('ready'); })
+      .then((p) => {
+        if (generation !== postsRequestGeneration.current) return;
+        setPosts(p);
+        setPostsState('ready');
+      })
       .catch(() => {
+        if (generation !== postsRequestGeneration.current) return;
         if (!opts?.silent) { setPosts([]); setPostsState('error'); }
       });
   }, []);
@@ -179,6 +186,7 @@ export function GrowView() {
   useEffect(() => {
     if (!activeId) return;
     loadPosts(activeId);
+    return () => { ++postsRequestGeneration.current; };
   }, [activeId, loadPosts]);
 
   // Keep the Content calendar live while it's on screen: "+ Draft a post with
@@ -522,15 +530,30 @@ function GrowAnalytics({
   // it's always fresh; its own load lifecycle keeps a fetch failure honest.
   const [inbox, setInbox] = useState<GrowthInboxData | null>(null);
   const [inboxState, setInboxState] = useState<LoadState>('loading');
+  const inboxRequestGeneration = useRef(0);
+  const connectionRequestGeneration = useRef(0);
+  const statsRequestGeneration = useRef(0);
 
   const loadInbox = useCallback((id: string) => {
+    const generation = ++inboxRequestGeneration.current;
     setInboxState('loading');
     apiFetch<GrowthInboxData>(`/api/projects/${encodeURIComponent(id)}/growth-inbox`)
-      .then((d) => { setInbox(d); setInboxState('ready'); })
-      .catch(() => { setInbox(null); setInboxState('error'); });
+      .then((d) => {
+        if (generation !== inboxRequestGeneration.current) return;
+        setInbox(d);
+        setInboxState('ready');
+      })
+      .catch(() => {
+        if (generation !== inboxRequestGeneration.current) return;
+        setInbox(null);
+        setInboxState('error');
+      });
   }, []);
 
-  useEffect(() => { loadInbox(project.id); }, [project.id, loadInbox]);
+  useEffect(() => {
+    loadInbox(project.id);
+    return () => { ++inboxRequestGeneration.current; };
+  }, [project.id, loadInbox]);
 
   // Analytics connection + live stats. The connection status loads first;
   // stats only fetch once a provider is connected (no pointless round-trip on
@@ -541,25 +564,47 @@ function GrowAnalytics({
   const [statsState, setStatsState] = useState<LoadState>('ready');
 
   const loadStats = useCallback((id: string) => {
+    const generation = ++statsRequestGeneration.current;
     setStatsState('loading');
     apiFetch<AnalyticsStatsData>(`/api/projects/${encodeURIComponent(id)}/analytics/stats?period=30d`)
-      .then((s) => { setStats(s); setStatsState('ready'); })
-      .catch(() => { setStats(null); setStatsState('error'); });
+      .then((s) => {
+        if (generation !== statsRequestGeneration.current) return;
+        setStats(s);
+        setStatsState('ready');
+      })
+      .catch(() => {
+        if (generation !== statsRequestGeneration.current) return;
+        setStats(null);
+        setStatsState('error');
+      });
   }, []);
 
   const loadConnection = useCallback((id: string) => {
+    const generation = ++connectionRequestGeneration.current;
+    ++statsRequestGeneration.current;
     setConnState('loading');
     setStats(null);
     apiFetch<AnalyticsConnectionStatus>(`/api/projects/${encodeURIComponent(id)}/analytics/connection`)
       .then((c) => {
+        if (generation !== connectionRequestGeneration.current) return;
         setConn(c);
         setConnState('ready');
         if (c.connected) loadStats(id);
       })
-      .catch(() => { setConn(null); setConnState('error'); });
+      .catch(() => {
+        if (generation !== connectionRequestGeneration.current) return;
+        setConn(null);
+        setConnState('error');
+      });
   }, [loadStats]);
 
-  useEffect(() => { loadConnection(project.id); }, [project.id, loadConnection]);
+  useEffect(() => {
+    loadConnection(project.id);
+    return () => {
+      ++connectionRequestGeneration.current;
+      ++statsRequestGeneration.current;
+    };
+  }, [project.id, loadConnection]);
 
   const connected = conn?.connected ?? false;
   const providerLabel = conn?.provider ? PROVIDER_LABELS[conn.provider] : null;

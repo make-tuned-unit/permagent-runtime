@@ -72,6 +72,12 @@ const project = (id: string, name: string) => ({
 const calledUrls = () => apiFetchMock.mock.calls.map((c) => String(c[0]));
 const openedProject = (id: string) => calledUrls().some((u) => u.startsWith(`/api/projects/${id}/`));
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 /** Serve `/api/projects` from a mutable list; sub-resources return []. */
 function serveProjects(getList: () => ReturnType<typeof project>[]) {
   apiFetchMock.mockImplementation(((url: string) => {
@@ -171,5 +177,31 @@ describe('#266 voice drill-into-specific-project', () => {
     // (initial load + the single forced re-check), never in a runaway loop.
     const projectsListFetches = calledUrls().filter((u) => u === '/api/projects').length;
     expect(projectsListFetches).toBeLessThanOrEqual(3);
+  });
+});
+
+describe('Projects request validation and ordering', () => {
+  it('discards an older project list that resolves after a newer refresh', async () => {
+    const oldRequest = deferred<ReturnType<typeof project>[]>();
+    const newRequest = deferred<ReturnType<typeof project>[]>();
+    apiFetchMock
+      .mockImplementationOnce(() => oldRequest.promise)
+      .mockImplementationOnce(() => newRequest.promise);
+
+    await act(async () => { root.render(<ProjectsView />); });
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    await act(async () => { newRequest.resolve([project('new', 'Current project')]); });
+    expect(container.textContent).toContain('Current project');
+
+    await act(async () => { oldRequest.resolve([project('old', 'Deleted project')]); });
+    expect(container.textContent).toContain('Current project');
+    expect(container.textContent).not.toContain('Deleted project');
+  });
+
+  it('routes a non-array project response to the existing error state', async () => {
+    apiFetchMock.mockResolvedValueOnce({ projects: [] } as never);
+    await renderView();
+
+    expect(container.textContent).toContain("Couldn't load projects");
   });
 });
