@@ -35,14 +35,14 @@ export function Row({ label, hint, children }: { label: string; hint?: string; c
   );
 }
 
-export function TextInput({ value, onChange, placeholder, mono, multi }: {
-  value: string; onChange?: (v: string) => void; placeholder?: string; mono?: boolean; multi?: boolean;
+export function TextInput({ value, onChange, placeholder, mono, multi, disabled = false }: {
+  value: string; onChange?: (v: string) => void; placeholder?: string; mono?: boolean; multi?: boolean; disabled?: boolean;
 }) {
   const { colors } = useTheme();
   const Tag = multi ? 'textarea' : 'input';
   return (
     <Tag
-      value={value} placeholder={placeholder}
+      value={value} placeholder={placeholder} disabled={disabled}
       onChange={e => onChange?.(e.target.value)}
       style={{
         width: '100%', padding: multi ? 12 : '8px 12px',
@@ -51,6 +51,7 @@ export function TextInput({ value, onChange, placeholder, mono, multi }: {
         fontFamily: mono ? font.mono : font.body,
         fontSize: mono ? 12 : 13, outline: 'none',
         minHeight: multi ? 80 : 'auto', resize: multi ? 'vertical' : 'none',
+        cursor: disabled ? 'not-allowed' : 'text', opacity: disabled ? 0.55 : 1,
       } as React.CSSProperties}
     />
   );
@@ -89,15 +90,15 @@ export function Toggle({ on, onChange, disabled = false }: { on: boolean; onChan
   );
 }
 
-export function Slider({ value, onChange, min = 0, max = 100, suffix }: {
-  value: number; onChange?: (v: number) => void; min?: number; max?: number; suffix?: string;
+export function Slider({ value, onChange, min = 0, max = 100, suffix, disabled = false }: {
+  value: number; onChange?: (v: number) => void; min?: number; max?: number; suffix?: string; disabled?: boolean;
 }) {
   const { colors } = useTheme();
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-      <input type="range" min={min} max={max} value={value}
+      <input type="range" min={min} max={max} value={value} disabled={disabled}
         onChange={e => onChange?.(Number(e.target.value))}
-        style={{ flex: 1, accentColor: colors.cyan }} />
+        style={{ flex: 1, accentColor: colors.cyan, cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.55 : 1 }} />
       <span style={{ fontFamily: font.mono, fontSize: 12, color: colors.textMuted, minWidth: 50, textAlign: 'right' }}>{value}{suffix}</span>
     </div>
   );

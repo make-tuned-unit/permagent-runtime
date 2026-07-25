@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { emitActivity } from '../../lib/emitActivity';
 import { api, apiFetch, type SovereigntyStatus, type EgressLogEntry, type DeviceInfo, type CrashExportResponse } from '../../lib/api';
@@ -195,19 +195,19 @@ function PersonaPanel() {
   );
 }
 
-function ProfilePanel() {
+export function ProfilePanel() {
   const { colors } = useThemeHook();
   return (
     <div>
       <H1 sub="Your account — visible to your agent and to anyone you share a workspace with."><>Profile<PreviewBadge /></></H1>
       <PreviewNotice />
       <Section title="Account">
-        <Row label="Display name"><TextInput value="Jesse Sharratt" /></Row>
-        <Row label="Email" hint="Used for sign-in and notifications."><TextInput value="" placeholder="email@example.com" /></Row>
+        <Row label="Display name"><TextInput value="Jesse Sharratt" disabled /></Row>
+        <Row label="Email" hint="Used for sign-in and notifications."><TextInput value="" placeholder="email@example.com" disabled /></Row>
         <Row label="Workspace">
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div style={{ width: 28, height: 28, borderRadius: 6, background: `linear-gradient(135deg, ${colors.purple}, ${colors.cyan})` }} />
-            <TextInput value="Personal" />
+            <TextInput value="Personal" disabled />
           </div>
         </Row>
       </Section>
@@ -215,22 +215,22 @@ function ProfilePanel() {
   );
 }
 
-function PreferencesPanel() {
+export function PreferencesPanel() {
   const { colors } = useThemeHook();
-  const [prefs, setPrefs] = useState([false, true, true, true]);
+  const prefs = [false, true, true, true];
   return (
     <div>
       <H1 sub="Defaults that follow you across sessions. Changes saved locally."><>Preferences<PreviewBadge /></></H1>
       <PreviewNotice />
       <Section title="Defaults">
         <Row label="Open on launch" hint="Where Permagent lands when you open the app.">
-          <select style={selectStyle(colors)}><option>Mission control</option><option>Last open task</option><option>Build</option><option>Brain</option></select>
+          <select style={selectStyle(colors)} disabled><option>Mission control</option><option>Last open task</option><option>Build</option><option>Brain</option></select>
         </Row>
         <Row label="When you ask, agent should…">
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {['Always confirm before running tools that change state', 'Show me the plan before starting', "Stream replies as they're generated", 'Read recent memory at start of every session'].map((l, i) => (
               <div key={l} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <Toggle on={prefs[i]} onChange={v => setPrefs(p => { const n = [...p]; n[i] = v; return n; })} />
+                <Toggle on={prefs[i]} disabled />
                 <span style={{ fontSize: 13 }}>{l}</span>
               </div>
             ))}
@@ -267,24 +267,24 @@ function NotificationSettings() {
   );
 }
 
-function MemoryPanel() {
+export function MemoryPanel() {
   const { colors } = useThemeHook();
-  const [maxMem, setMaxMem] = useState(1200);
-  const [forget, setForget] = useState(45);
-  const [rememberFlags, setRememberFlags] = useState([true, true, true, true, false]);
+  const maxMem = 1200;
+  const forget = 45;
+  const rememberFlags = [true, true, true, true, false];
   const rememberItems = ['Names of people I\'ve introduced', 'Project goals and deadlines', 'Code style preferences from feedback', 'Things I dismissed or pushed back on', 'Sensitive context (medical, financial)'];
   return (
     <div>
       <H1 sub="What your agent remembers about you, your projects, and the people in your world."><>Memory<PreviewBadge /></></H1>
       <PreviewNotice />
       <Section title="Memory budget" sub="When the brain gets too full, the agent will compress or forget the lowest-signal items first.">
-        <Row label="Max memory" hint="Soft cap. The agent prefers to keep things small."><Slider value={maxMem} onChange={setMaxMem} min={200} max={5000} suffix=" nodes" /></Row>
-        <Row label="Forget threshold" hint="Items not touched in this many days become candidates for compression."><Slider value={forget} onChange={setForget} min={7} max={365} suffix="d" /></Row>
+        <Row label="Max memory" hint="Soft cap. The agent prefers to keep things small."><Slider value={maxMem} min={200} max={5000} suffix=" nodes" disabled /></Row>
+        <Row label="Forget threshold" hint="Items not touched in this many days become candidates for compression."><Slider value={forget} min={7} max={365} suffix="d" disabled /></Row>
       </Section>
       <Section title="What to remember">
         {rememberItems.map((l, i) => (
           <div key={l} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '10px 0', borderTop: `1px solid ${colors.border}` }}>
-            <Toggle on={rememberFlags[i]} onChange={v => setRememberFlags(p => { const n = [...p]; n[i] = v; return n; })} />
+            <Toggle on={rememberFlags[i]} disabled />
             <span style={{ fontSize: 13, flex: 1 }}>{l}</span>
           </div>
         ))}
@@ -864,9 +864,8 @@ function ShortcutsPanel() {
 
 export function DataPanel() {
   const { colors } = useThemeHook();
-  const [localFirst, setLocalFirst] = useState(true);
-  const [e2e, setE2e] = useState(true);
-  const [sharePrompts, setSharePrompts] = useState(false);
+  const localFirst = true;
+  const e2e = true;
 
   // Crash-report + product-analytics consent are TWO independent, REAL backend
   // gates (#327 split; #845 fix). Each must render from the backend (off by
@@ -876,32 +875,51 @@ export function DataPanel() {
   const [diagnostics, setDiagnostics] = useState<boolean | null>(null);
   const [analytics, setAnalytics] = useState<boolean | null>(null);
   const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
+  const diagnosticsGeneration = useRef(0);
+  const analyticsGeneration = useRef(0);
 
   useEffect(() => {
+    const diagnosticsRequest = ++diagnosticsGeneration.current;
+    const analyticsRequest = ++analyticsGeneration.current;
     api.getCrashConsent()
-      .then(s => { setDiagnostics(s.crashReportsConsented); setAnalytics(s.analyticsConsented); })
-      .catch(() => setDiagnosticsError('Could not load diagnostics consent.'));
+      .then(s => {
+        if (diagnosticsRequest === diagnosticsGeneration.current) setDiagnostics(s.crashReportsConsented);
+        if (analyticsRequest === analyticsGeneration.current) setAnalytics(s.analyticsConsented);
+      })
+      .catch(() => {
+        if (diagnosticsRequest === diagnosticsGeneration.current || analyticsRequest === analyticsGeneration.current) {
+          setDiagnosticsError('Could not load diagnostics consent.');
+        }
+      });
+    return () => {
+      ++diagnosticsGeneration.current;
+      ++analyticsGeneration.current;
+    };
   }, []);
 
   const saveDiagnostics = useCallback((v: boolean) => {
+    const generation = ++diagnosticsGeneration.current;
     setDiagnosticsError(null);
     const prev = diagnostics;
     setDiagnostics(v); // optimistic; the daemon echoes the authoritative value back
     api.setCrashConsent(v)
-      .then(s => setDiagnostics(s.crashReportsConsented))
+      .then(s => { if (generation === diagnosticsGeneration.current) setDiagnostics(s.crashReportsConsented); })
       .catch(err => {
+        if (generation !== diagnosticsGeneration.current) return;
         setDiagnostics(prev); // roll back on failure — never claim consent we didn't persist
         setDiagnosticsError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
       });
   }, [diagnostics]);
 
   const saveAnalytics = useCallback((v: boolean) => {
+    const generation = ++analyticsGeneration.current;
     setDiagnosticsError(null);
     const prev = analytics;
     setAnalytics(v); // optimistic
     api.setAnalyticsConsent(v)
-      .then(s => setAnalytics(s.analyticsConsented))
+      .then(s => { if (generation === analyticsGeneration.current) setAnalytics(s.analyticsConsented); })
       .catch(err => {
+        if (generation !== analyticsGeneration.current) return;
         setAnalytics(prev);
         setDiagnosticsError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
       });
@@ -929,8 +947,8 @@ export function DataPanel() {
       <H1 sub="Your data is yours. Everything is local-first today; these controls activate as remote features land."><>Data &amp; privacy<PreviewBadge /></></H1>
       <PreviewNotice />
       <Section title="Local-first">
-        <Row label="Keep everything on this device" hint="Memory and traces never leave your machine. Cloud sync turns off."><Toggle on={localFirst} onChange={setLocalFirst} /></Row>
-        <Row label="End-to-end encryption" hint="Required when you have external collaborators."><Toggle on={e2e} onChange={setE2e} /></Row>
+        <Row label="Keep everything on this device" hint="Memory and traces never leave your machine. Cloud sync turns off."><Toggle on={localFirst} disabled /></Row>
+        <Row label="End-to-end encryption" hint="Required when you have external collaborators."><Toggle on={e2e} disabled /></Row>
       </Section>
       <Section title="Diagnostics" sub="Live — two separate, off-by-default opt-ins written to the daemon's consent gates.">
         <Row label="Share anonymous diagnostics" hint="Crash reports. Never your prompts."><Toggle on={!!diagnostics} onChange={saveDiagnostics} /></Row>
@@ -938,7 +956,7 @@ export function DataPanel() {
         {diagnosticsError && (
           <div style={{ fontSize: 12, color: colors.danger, padding: '2px 0 8px' }}>{diagnosticsError}</div>
         )}
-        <Row label="Share prompts to improve models" hint="Off by default. Opt in at your own risk."><Toggle on={sharePrompts} onChange={setSharePrompts} /></Row>
+        <Row label="Share prompts to improve models" hint="Off by default. Opt in at your own risk."><Toggle on={!!analytics} onChange={saveAnalytics} /></Row>
       </Section>
       <Section title="Crash report" sub="Export a redacted crash report to attach to a support message. Written locally — home paths, keys, tokens, emails, and UUIDs are redacted first. Nothing is uploaded.">
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
