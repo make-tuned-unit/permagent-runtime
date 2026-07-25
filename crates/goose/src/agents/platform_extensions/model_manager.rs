@@ -58,6 +58,7 @@ impl ModelManagerClient {
         })
     }
 
+    #[cfg(feature = "local-inference")]
     async fn handle_list_models(
         &self,
         _arguments: Option<JsonObject>,
@@ -67,7 +68,7 @@ impl ModelManagerClient {
         let (models, total_bytes): (Vec<serde_json::Value>, u64) = {
             let reg = get_registry().lock().unwrap_or_else(|e| e.into_inner());
             let entries = reg.list_models();
-            let total = entries.iter().map(|m| m.size_bytes).sum();
+            let total: u64 = entries.iter().map(|m| m.size_bytes).sum();
             let models = entries
                 .iter()
                 .map(|m| {
@@ -116,8 +117,23 @@ impl ModelManagerClient {
             summary.join("\n"),
         )]))
     }
+
+    /// When the `local-inference` feature is not compiled in, there is no local
+    /// model registry to read — report that plainly rather than failing.
+    #[cfg(not(feature = "local-inference"))]
+    async fn handle_list_models(
+        &self,
+        _arguments: Option<JsonObject>,
+    ) -> std::result::Result<CallToolResult, String> {
+        Ok(CallToolResult::success(vec![Content::text(
+            "Local inference is not compiled into this build, so there are no locally-run \
+             inference models to list. Cloud provider models are configured in Settings."
+                .to_string(),
+        )]))
+    }
 }
 
+#[cfg(feature = "local-inference")]
 fn format_bytes(bytes: u64) -> String {
     if bytes < 1024 {
         format!("{bytes} B")
