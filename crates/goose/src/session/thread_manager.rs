@@ -229,7 +229,9 @@ impl ThreadManager {
 
     pub async fn delete_thread(&self, id: &str) -> Result<()> {
         let pool = self.storage.pool().await?;
-        let mut tx = pool.begin().await?;
+        // BEGIN IMMEDIATE for consistency with every other write path (the
+        // codebase's deadlock-avoidance discipline; see session_manager).
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
 
         sqlx::query("DELETE FROM thread_messages WHERE thread_id = ?")
             .bind(id)
