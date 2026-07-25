@@ -73,6 +73,10 @@ function analyticsToggle(): HTMLButtonElement {
   return toggleByLabel('Share product analytics');
 }
 
+function sharePromptsToggle(): HTMLButtonElement {
+  return toggleByLabel('Share prompts to improve models');
+}
+
 /** The "Export redacted crash report" button (found by its label text). */
 function exportButton(): HTMLButtonElement {
   const btn = Array.from(container.querySelectorAll('button')).find(
@@ -178,6 +182,17 @@ describe('DataPanel split analytics consent (#327)', () => {
     await act(async () => { await Promise.resolve(); });
     expect(isOn(analyticsToggle())).toBe(true);
     expect(isOn(diagnosticsToggle())).toBe(false);
+  });
+
+  it('wires Share prompts to analytics consent and rolls back on failure', async () => {
+    getConsentMock.mockResolvedValue({ crashReportsConsented: false, analyticsConsented: false });
+    setAnalyticsMock.mockRejectedValue(new Error('boom'));
+    await mount();
+
+    await act(async () => { sharePromptsToggle().click(); });
+    expect(setAnalyticsMock).toHaveBeenCalledWith(true);
+    await act(async () => { await Promise.resolve(); });
+    expect(isOn(sharePromptsToggle())).toBe(false);
   });
 });
 
