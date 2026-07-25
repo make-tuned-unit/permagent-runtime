@@ -50,9 +50,17 @@ pub(crate) fn endpoint_is_loopback(endpoint: &str) -> bool {
     }
     match url.host_str() {
         Some(host) if host.eq_ignore_ascii_case("localhost") => true,
-        Some(host) => host
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback()),
+        Some(host) => {
+            // `Url::host_str` keeps the brackets on an IPv6 literal (e.g.
+            // "[::1]"), which `IpAddr::parse` rejects. Strip a single matched
+            // pair before parsing so loopback IPv6 hosts classify correctly.
+            let host = host
+                .strip_prefix('[')
+                .and_then(|h| h.strip_suffix(']'))
+                .unwrap_or(host);
+            host.parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+        }
         None => false,
     }
 }
