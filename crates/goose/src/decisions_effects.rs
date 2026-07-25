@@ -728,11 +728,17 @@ mod tests {
     async fn transient_failure_is_retried_and_effect_applies() {
         let pool = test_pool().await;
         let missing_project = "retry-project";
+        // The `project_id` *column* FK-references projects(id) ON DELETE CASCADE,
+        // so it must stay NULL here: the target project does not exist yet. The
+        // effect's target lives in the payload, which is exactly what
+        // apply_file_to_project reads — so the first drain fails NotFound
+        // (retriable → pending) and a later drain applies it once the project
+        // appears. This exercises the retry-then-apply loop without the column FK
+        // rejecting a decision that references a not-yet-created project.
         let decision = decisions::create_decision(
             &pool,
             NewDecision {
                 kind: "file_to_project".to_string(),
-                project_id: Some(missing_project.to_string()),
                 headline: Some("File a retryable note".to_string()),
                 detail: Some("The project will appear before retry".to_string()),
                 payload: serde_json::json!({
