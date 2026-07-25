@@ -463,7 +463,10 @@ async fn extract_document_text(bytes: &[u8], filename: &str, mime: &str) -> anyh
             while end > 0 && !text.is_char_boundary(end) {
                 end -= 1;
             }
-            Ok(format!("{}{}", &text[..end], TEXT_TRUNCATION_MARKER))
+            // `.get(..end)` rather than `&text[..end]` (clippy::string_slice);
+            // `end` is a validated char boundary so the fallback never triggers.
+            let head = text.get(..end).unwrap_or_else(|| text.as_ref());
+            Ok(format!("{head}{TEXT_TRUNCATION_MARKER}"))
         } else {
             Ok(text.into_owned())
         }
