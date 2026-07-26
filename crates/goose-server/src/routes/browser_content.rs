@@ -161,6 +161,12 @@ async fn navigate(Json(req): Json<NavigateRequest>) -> StatusCode {
     if !is_allowed_web_url(url) {
         return StatusCode::UNPROCESSABLE_ENTITY;
     }
+    // Enforce the control-plane guard at the trust boundary (the route), not only
+    // in the MCP-tool caller — a direct POST must not be able to open the
+    // Permagent control-plane origin in the in-app webview.
+    if permagent::agents::platform_extensions::browser::reject_control_plane(url).is_err() {
+        return StatusCode::UNPROCESSABLE_ENTITY;
+    }
     tracing::info!(target: "permagentd::browser", %url, "agent navigate request");
     permagent::events::emit(permagent::events::PermagentEvent::new(
         permagent::events::PermagentEventType::BrowserNavigateRequested,
