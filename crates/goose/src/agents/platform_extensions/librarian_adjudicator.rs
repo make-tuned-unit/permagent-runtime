@@ -2,30 +2,39 @@
 //! supersession seam.
 //!
 //! Spectral structurally detects `(subject, predicate)` slots holding several
-//! LIVE objects and asks a pluggable Adjudicator a closed question: did the
+//! LIVE objects and asks a pluggable [`Adjudicator`] a closed question: did the
 //! newer value replace the older, or do both hold? This module is the
 //! Librarian's adjudicator, backed by the local 7B — **shadow-mode first** and
 //! **predicate-gated**.
 //!
-//! WIRING NOTE: Spectral's `Adjudicator` trait / `SupersessionCandidate` /
-//! `apply_adjudications` are NOT yet in our pinned Spectral (`362eadb`). This
-//! module is the **pin-independent core** — predicate cardinality + the
-//! closed-question 7B prompt + a validating verdict parser + the shadow flag —
-//! so that once we bump to the Spectral SHA that has the seam, wiring
-//! `impl Adjudicator for LibrarianAdjudicator` is a thin adapter
-//! (`SupersessionCandidate` → [`adjudicate_candidate`] → `Adjudication`).
-//!
 //! SAFETY (mirrors Spectral's tested properties): the model never touches the
-//! read path; a verdict naming a value NOT among the candidate objects is
-//! rejected as [`AdjudicationVerdict::Invalid`] (the model may CHOOSE among
-//! asserted facts, never introduce one or empty a slot); below-threshold
-//! verdicts are counted, not applied. We deliberately DO NOT ask the 7B to
-//! extract triples from prose — adjudication only (per the published accuracy
-//! warning: extraction, not supersession, is where 7B accuracy collapses).
+//! read path (recall stays deterministic); nothing is deleted — retirement
+//! closes a validity interval and `find_triples_as_of` still answers
+//! historically; a verdict naming a value NOT among the candidate objects never
+//! becomes a `Supersedes` here (we map the reply to a real candidate object or
+//! return `Unknown`), so the model can only CHOOSE among asserted facts, never
+//! introduce one or empty a slot; below-threshold verdicts are gated by
+//! `apply_adjudications`. We bind to Spectral's shipped [`ADJUDICATION_PROMPT`]
+//! so both sides use ONE contract, and we deliberately never ask the 7B to
+//! extract triples from prose — adjudication only (the published accuracy
+//! bottleneck is extraction, not supersession).
+//!
+//! ENABLEMENT: OFF by default (`PERMAGENT_LIBRARIAN_ADJUDICATOR` unset). Set it
+//! to `shadow` to log detected candidates + verdicts while retiring NOTHING, and
+//! only to `apply` after the shadow numbers hold on the mini — per Spectral's
+//! confirm-then-enable order. The 7B path only ever runs on **undeclared**
+//! predicates; genuinely functional predicates are handled deterministically by
+//! Spectral via the ontology's `single_valued_for` (no model involved).
+
+use spectral::graph::supersession::{
+    Adjudication, Adjudicator, CandidateObject, SupersessionCandidate, ADJUDICATION_PROMPT,
+};
 
 /// Cardinality of a predicate — whether a `(subject, predicate)` slot holds at
-/// most one live object (functional → supersession applies) or many
-/// (accumulating → never retire).
+/// most one live object (functional) or many (accumulating). This is a
+/// belt-and-suspenders guard on top of Spectral's ontology-declared cardinality:
+/// the 7B is never asked to retire an accumulating predicate even if detection
+/// hands us one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cardinality {
     /// At most one live object per subject; a newer value supersedes the older.
@@ -34,8 +43,9 @@ pub enum Cardinality {
     Accumulating,
 }
 
-/// Predicates we are CONFIDENT are single-valued — safe to auto-supersede.
-/// "primary/secondary/favourite" and config-like slots are inherently one.
+/// Predicates we are CONFIDENT are single-valued — declared `single_valued_for`
+/// in the ontology (deterministic supersession, no model). "primary/secondary/
+/// favourite" and config-like slots are inherently one.
 pub const FUNCTIONAL_PREDICATES: &[&str] = &[
     "status",
     "primary_browser",
@@ -48,11 +58,10 @@ pub const FUNCTIONAL_PREDICATES: &[&str] = &[
     "favourite_restaurant",
 ];
 
-/// Predicates that are USUALLY single-valued but have real concurrent cases,
-/// and whose broad all-type domain makes org-scoped uses multi-valued
-/// (`location` for an org with several offices, etc.). Left DISABLED until Jesse
-/// confirms — enabling one wrongly would silently retire true facts (the one
-/// footgun Spectral cannot infer).
+/// Predicates that are USUALLY single-valued but have real concurrent cases
+/// (and whose broad all-type domain makes org-scoped uses multi-valued). Left
+/// DISABLED until confirmed — enabling one wrongly would silently retire true
+/// facts (the one footgun the library cannot infer).
 pub const FUNCTIONAL_NEEDS_CONFIRM: &[&str] = &[
     "employer",
     "manager",
@@ -63,8 +72,8 @@ pub const FUNCTIONAL_NEEDS_CONFIRM: &[&str] = &[
 ];
 
 /// Cardinality for a predicate. Only the CONFIRMED-functional set returns
-/// `Functional`; everything else — including the needs-confirm set and our core
-/// edges like `works_on` — is `Accumulating`, so nothing is retired by default.
+/// `Functional`; everything else — including the needs-confirm set and core
+/// edges like `works_on` — is `Accumulating`, so the 7B never retires them.
 pub fn predicate_cardinality(predicate: &str) -> Cardinality {
     if FUNCTIONAL_PREDICATES.contains(&predicate) {
         Cardinality::Functional
@@ -73,82 +82,86 @@ pub fn predicate_cardinality(predicate: &str) -> Cardinality {
     }
 }
 
-/// A closed adjudication question for the 7B. The objects are already-asserted
-/// facts sharing one `(subject, predicate)` slot; the model chooses AMONG them
-/// and must never invent one.
-pub fn build_adjudication_prompt(
-    subject: &str,
-    predicate: &str,
-    objects: &[(String, String)],
-) -> String {
-    let mut list = String::new();
-    for (i, (_id, label)) in objects.iter().enumerate() {
-        list.push_str(&format!("{}. {}\n", i + 1, label));
-    }
-    format!(
-        "A knowledge base records that \"{subject}\" has the relationship \"{predicate}\" to \
-         MULTIPLE values at once:\n{list}\nThese are all currently marked true. Decide ONE:\n\
-         - SUPERSEDES: they describe the SAME slot over time and the most recent has REPLACED the \
-         others (a changed job, a moved home). Give the number of the value CURRENTLY true.\n\
-         - ALL_HOLD: the values can ALL be true simultaneously (e.g. several colleagues).\n\
-         - UNKNOWN: you cannot tell.\n\n\
-         Choose ONLY from the numbered values above; never name a value not listed. Reply on ONE \
-         line, exactly one of:\nSUPERSEDES <number> <confidence 0-1>\nALL_HOLD\nUNKNOWN"
-    )
+/// Render Spectral's shared [`ADJUDICATION_PROMPT`] for one candidate.
+/// `{objects}` is rendered one per line as `- <canonical> (asserted <rfc3339>)`,
+/// exactly as the constant documents.
+fn render_prompt(candidate: &SupersessionCandidate) -> String {
+    let objects = candidate
+        .objects
+        .iter()
+        .map(|o| {
+            format!(
+                "- {} (asserted {})",
+                o.object_canonical,
+                o.asserted_at.to_rfc3339()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    ADJUDICATION_PROMPT
+        .replace("{subject}", &candidate.subject_canonical)
+        .replace("{subject_type}", &candidate.subject_type)
+        .replace("{predicate}", &candidate.predicate)
+        .replace("{objects}", &objects)
 }
 
-/// The parsed verdict — our local mirror of Spectral's `Adjudication` until the
-/// seam is in our pin.
+/// The parsed shape of the 7B's one-line reply, resolved against the candidate.
 #[derive(Debug, Clone, PartialEq)]
-pub enum AdjudicationVerdict {
-    /// The object with this id supersedes the others.
-    Supersedes { keep: String, confidence: f64 },
-    /// All objects legitimately hold — do not retire.
+enum ParsedReply {
+    /// `REPLACED <value>` matched candidate object at this index.
+    Replaced {
+        index: usize,
+        confidence: f64,
+    },
     AllHold,
-    /// Cannot determine.
+    /// `UNKNOWN`, a malformed reply, or a `REPLACED <value>` naming a value not
+    /// in the candidate list — all safe (nothing retired).
     Unknown,
-    /// Malformed, or named a value not among the candidates — rejected, never
-    /// applied. Mirrors Spectral's `invalid_verdicts` counter.
-    Invalid,
 }
 
-/// Parse the 7B reply against the candidate objects. A `SUPERSEDES n` whose `n`
-/// is out of range → `Invalid` (the model may only choose among asserted facts).
-pub fn parse_adjudication(response: &str, objects: &[(String, String)]) -> AdjudicationVerdict {
-    let line = response
+/// Parse the 7B reply against the candidate objects. A `REPLACED <value>` whose
+/// value is not among the candidates resolves to `Unknown` (never a retirement)
+/// — the model may only choose among asserted facts.
+fn parse_reply(reply: &str, objects: &[CandidateObject]) -> ParsedReply {
+    let line = reply
         .lines()
         .map(str::trim)
         .find(|l| !l.is_empty())
         .unwrap_or("");
     let upper = line.to_ascii_uppercase();
     if upper.starts_with("ALL_HOLD") {
-        AdjudicationVerdict::AllHold
-    } else if upper.starts_with("SUPERSEDES") {
-        let mut parts = line.split_whitespace();
-        let _ = parts.next(); // "SUPERSEDES"
-        let idx = parts.next().and_then(|s| s.parse::<usize>().ok());
-        let conf = parts
-            .next()
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
-        match idx {
-            Some(n) if n >= 1 && n <= objects.len() => AdjudicationVerdict::Supersedes {
-                keep: objects[n - 1].0.clone(),
-                confidence: conf.clamp(0.0, 1.0),
+        ParsedReply::AllHold
+    } else if upper.starts_with("REPLACED") {
+        let rest = line["REPLACED".len()..].trim();
+        // The value may contain spaces (a canonical name); the LAST token is the
+        // confidence when it parses as a float, otherwise the whole rest is the
+        // value and confidence defaults to 0.
+        let (value, confidence) = match rest.rsplit_once(char::is_whitespace) {
+            Some((v, c)) => match c.trim().parse::<f64>() {
+                Ok(f) => (v.trim(), f),
+                Err(_) => (rest, 0.0),
             },
-            // Out of range → named a value not in the candidate set.
-            _ => AdjudicationVerdict::Invalid,
+            None => (rest, 0.0),
+        };
+        match objects
+            .iter()
+            .position(|o| o.object_canonical.eq_ignore_ascii_case(value))
+        {
+            Some(index) => ParsedReply::Replaced {
+                index,
+                confidence: confidence.clamp(0.0, 1.0),
+            },
+            // Hallucinated a value not in the list → safe no-op.
+            None => ParsedReply::Unknown,
         }
-    } else if upper.starts_with("UNKNOWN") {
-        AdjudicationVerdict::Unknown
     } else {
-        AdjudicationVerdict::Invalid
+        // UNKNOWN or anything malformed.
+        ParsedReply::Unknown
     }
 }
 
-/// The adjudicator's run mode. Default OFF. `PERMAGENT_LIBRARIAN_ADJUDICATOR` =
-/// `shadow` (log detected candidates + verdicts, apply NOTHING) | `apply` (apply
-/// above-threshold retirements). Shadow is the required first step per Spectral.
+/// The run mode. Default `Off`. `PERMAGENT_LIBRARIAN_ADJUDICATOR` = `shadow`
+/// (log candidates + verdicts, apply NOTHING) | `apply` (retire above-threshold).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdjudicatorMode {
     Off,
@@ -156,7 +169,7 @@ pub enum AdjudicatorMode {
     Apply,
 }
 
-/// Read the adjudicator mode from config/env. Default `Off`.
+/// Read the adjudicator mode from env. Default `Off`.
 pub fn adjudicator_mode() -> AdjudicatorMode {
     match std::env::var("PERMAGENT_LIBRARIAN_ADJUDICATOR")
         .ok()
@@ -168,48 +181,169 @@ pub fn adjudicator_mode() -> AdjudicatorMode {
     }
 }
 
-/// Run the local 7B on one detected supersession candidate and return the
-/// parsed verdict. This is the reusable core the future `impl Adjudicator`
-/// wraps. Accumulating predicates and single-object slots short-circuit to
-/// `AllHold` (belt-and-suspenders — Spectral won't hand us these once we declare
-/// cardinality, but never retire them regardless).
-pub async fn adjudicate_candidate(
-    subject: &str,
-    predicate: &str,
-    objects: &[(String, String)],
-) -> AdjudicationVerdict {
-    if predicate_cardinality(predicate) == Cardinality::Accumulating || objects.len() < 2 {
-        return AdjudicationVerdict::AllHold;
+/// The Librarian's 7B-backed [`Adjudicator`]. Spectral's `adjudicate` is
+/// SYNCHRONOUS, so this bridges to the async Ollama call via a captured runtime
+/// [`Handle`](tokio::runtime::Handle) — it MUST therefore be driven from a
+/// `spawn_blocking` thread (never a runtime worker), which
+/// [`run_adjudication_pass`] guarantees.
+pub struct LibrarianAdjudicator {
+    handle: tokio::runtime::Handle,
+    model: String,
+}
+
+impl LibrarianAdjudicator {
+    /// Capture the current runtime handle + the Librarian's model. Call from an
+    /// async context (before `spawn_blocking`).
+    pub fn new() -> Self {
+        Self {
+            handle: tokio::runtime::Handle::current(),
+            model: super::librarian::resolve_model(),
+        }
     }
-    let model = super::librarian::resolve_model();
-    let prompt = build_adjudication_prompt(subject, predicate, objects);
-    let system = "You adjudicate whether a newer knowledge-base fact has replaced an older one. \
-                  Answer ONLY in the required one-line format. Never invent a value.";
-    match super::librarian::call_ollama_streaming_pooled(
-        system,
-        &prompt,
-        &model,
-        false,
-        "librarian-adjudicator",
-        None,
-    )
+}
+
+impl Adjudicator for LibrarianAdjudicator {
+    fn adjudicate(&self, candidate: &SupersessionCandidate) -> anyhow::Result<Adjudication> {
+        // Never retire an accumulating predicate, even if detection hands us one.
+        if predicate_cardinality(&candidate.predicate) == Cardinality::Accumulating
+            || candidate.objects.len() < 2
+        {
+            return Ok(Adjudication::AllHold);
+        }
+        let prompt = render_prompt(candidate);
+        let system = "You adjudicate whether a newer knowledge-base fact has replaced an older \
+                      one. Answer ONLY in the required one-line format. Never invent a value; \
+                      prefer UNKNOWN over a guess.";
+        // Bridge the sync trait to the async Ollama call — safe from the
+        // spawn_blocking thread run_adjudication_pass uses.
+        let reply = self
+            .handle
+            .block_on(super::librarian::call_ollama_streaming_pooled(
+                system,
+                &prompt,
+                &self.model,
+                false,
+                "librarian-adjudicator",
+                None,
+            ));
+        let reply = match reply {
+            Ok(r) => r,
+            // A model/transport error is never a retirement.
+            Err(_) => return Ok(Adjudication::Unknown),
+        };
+        Ok(match parse_reply(&reply, &candidate.objects) {
+            ParsedReply::Replaced { index, confidence } => Adjudication::Supersedes {
+                keep: candidate.objects[index].object,
+                confidence,
+            },
+            ParsedReply::AllHold => Adjudication::AllHold,
+            ParsedReply::Unknown => Adjudication::Unknown,
+        })
+    }
+}
+
+/// One-line summary of a pass, for logging.
+#[derive(Debug, Default, Clone)]
+pub struct AdjudicationPassSummary {
+    pub considered: usize,
+    pub applied: usize,
+    pub retired: usize,
+    pub shadow_only: bool,
+}
+
+/// Run one adjudication pass over the Brain, gated by [`adjudicator_mode`].
+/// `Off` ⇒ no-op. `Shadow` ⇒ detect candidates + adjudicate + LOG, retire
+/// nothing. `Apply` ⇒ `apply_adjudications` (per-predicate cardinality still
+/// gated by the ontology + the accumulating guard). Runs the (blocking) Spectral
+/// calls on a blocking thread; the sync adjudicator bridges back to the async
+/// 7B via the captured handle. Best-effort — returns `None` on any error.
+pub async fn run_adjudication_pass(
+    brain: std::sync::Arc<crate::brain_handle::SafeBrain>,
+) -> Option<AdjudicationPassSummary> {
+    use spectral::graph::supersession::{apply_adjudications, detect_candidates};
+    let mode = adjudicator_mode();
+    if mode == AdjudicatorMode::Off {
+        return None;
+    }
+    let adjudicator = LibrarianAdjudicator::new();
+    tokio::task::spawn_blocking(move || {
+        let raw = brain.raw_blocking_handle();
+        match mode {
+            AdjudicatorMode::Off => None,
+            AdjudicatorMode::Apply => match apply_adjudications(raw, &adjudicator, 200, 0.8, "librarian-7b") {
+                Ok(report) => {
+                    tracing::info!(
+                        target: "librarian_adjudicator",
+                        considered = report.considered,
+                        applied = report.applied,
+                        retired = report.retired,
+                        invalid = report.invalid_verdicts,
+                        "adjudication pass applied"
+                    );
+                    Some(AdjudicationPassSummary {
+                        considered: report.considered,
+                        applied: report.applied,
+                        retired: report.retired,
+                        shadow_only: false,
+                    })
+                }
+                Err(e) => {
+                    tracing::warn!(target: "librarian_adjudicator", error = %e, "adjudication apply failed");
+                    None
+                }
+            },
+            AdjudicatorMode::Shadow => match detect_candidates(raw, 200) {
+                Ok(candidates) => {
+                    let considered = candidates.len();
+                    for c in &candidates {
+                        let verdict = adjudicator.adjudicate(c);
+                        tracing::info!(
+                            target: "librarian_adjudicator",
+                            subject = %c.subject_canonical,
+                            subject_type = %c.subject_type,
+                            predicate = %c.predicate,
+                            objects = c.objects.len(),
+                            verdict = ?verdict,
+                            "SHADOW adjudication (nothing retired)"
+                        );
+                    }
+                    Some(AdjudicationPassSummary {
+                        considered,
+                        applied: 0,
+                        retired: 0,
+                        shadow_only: true,
+                    })
+                }
+                Err(e) => {
+                    tracing::warn!(target: "librarian_adjudicator", error = %e, "shadow detect_candidates failed");
+                    None
+                }
+            },
+        }
+    })
     .await
-    {
-        Ok(reply) => parse_adjudication(&reply, objects),
-        // A model/transport error is never a retirement — fail to Unknown.
-        Err(_) => AdjudicationVerdict::Unknown,
+    .ok()
+    .flatten()
+}
+
+impl Default for LibrarianAdjudicator {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use spectral::core::entity_id::{entity_id, EntityId};
 
-    fn objs() -> Vec<(String, String)> {
-        vec![
-            ("id-a".into(), "Acme Corp".into()),
-            ("id-b".into(), "Globex".into()),
-        ]
+    fn obj(canonical: &str) -> CandidateObject {
+        CandidateObject {
+            rowid: 1,
+            object: entity_id("organization", canonical),
+            object_canonical: canonical.to_string(),
+            asserted_at: chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap(),
+        }
     }
 
     #[test]
@@ -219,64 +353,59 @@ mod tests {
             predicate_cardinality("tier1_model"),
             Cardinality::Functional
         );
-        // core edges + needs-confirm default to accumulating (never retired)
         assert_eq!(predicate_cardinality("works_on"), Cardinality::Accumulating);
         assert_eq!(predicate_cardinality("employer"), Cardinality::Accumulating);
+    }
+
+    #[test]
+    fn parses_replaced_by_value_case_insensitive() {
+        let objs = [obj("Acme Corp"), obj("Globex")];
         assert_eq!(
-            predicate_cardinality("colleague"),
-            Cardinality::Accumulating
+            parse_reply("REPLACED globex 0.9", &objs),
+            ParsedReply::Replaced {
+                index: 1,
+                confidence: 0.9
+            }
+        );
+        // multi-word value
+        assert_eq!(
+            parse_reply("REPLACED Acme Corp 0.8", &objs),
+            ParsedReply::Replaced {
+                index: 0,
+                confidence: 0.8
+            }
         );
     }
 
     #[test]
-    fn parses_supersedes_and_maps_to_object_id() {
-        match parse_adjudication("SUPERSEDES 2 0.9", &objs()) {
-            AdjudicationVerdict::Supersedes { keep, confidence } => {
-                assert_eq!(keep, "id-b");
-                assert!((confidence - 0.9).abs() < 1e-9);
-            }
-            other => panic!("expected Supersedes, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn out_of_range_supersedes_is_invalid_not_applied() {
-        // The model must only choose among the candidates; index 5 of 2 is
-        // rejected rather than silently retiring or inventing.
+    fn value_not_in_list_is_unknown_never_retires() {
+        let objs = [obj("Acme Corp"), obj("Globex")];
         assert_eq!(
-            parse_adjudication("SUPERSEDES 5 0.9", &objs()),
-            AdjudicationVerdict::Invalid
+            parse_reply("REPLACED Initech 0.9", &objs),
+            ParsedReply::Unknown
         );
     }
 
     #[test]
     fn parses_all_hold_unknown_and_garbage() {
-        assert_eq!(
-            parse_adjudication("ALL_HOLD", &objs()),
-            AdjudicationVerdict::AllHold
-        );
-        assert_eq!(
-            parse_adjudication("UNKNOWN", &objs()),
-            AdjudicationVerdict::Unknown
-        );
-        assert_eq!(
-            parse_adjudication("the answer is definitely acme", &objs()),
-            AdjudicationVerdict::Invalid
-        );
+        let objs = [obj("Acme Corp"), obj("Globex")];
+        assert_eq!(parse_reply("ALL_HOLD", &objs), ParsedReply::AllHold);
+        assert_eq!(parse_reply("UNKNOWN", &objs), ParsedReply::Unknown);
+        assert_eq!(parse_reply("i think acme", &objs), ParsedReply::Unknown);
     }
 
     #[test]
-    fn mode_defaults_off() {
-        // Note: reads process env; default when unset is Off.
-        if std::env::var("PERMAGENT_LIBRARIAN_ADJUDICATOR").is_err() {
-            assert_eq!(adjudicator_mode(), AdjudicatorMode::Off);
-        }
-    }
-
-    #[test]
-    fn prompt_lists_candidates_and_forbids_invention() {
-        let p = build_adjudication_prompt("Mel", "employer", &objs());
-        assert!(p.contains("Acme Corp") && p.contains("Globex"));
-        assert!(p.contains("never name a value not listed"));
+    fn prompt_binds_the_shared_contract_and_lists_objects() {
+        let candidate = SupersessionCandidate {
+            subject: entity_id("person", "Mel"),
+            subject_canonical: "Mel".to_string(),
+            subject_type: "person".to_string(),
+            predicate: "employer".to_string(),
+            objects: vec![obj("Acme Corp"), obj("Globex")],
+        };
+        let p = render_prompt(&candidate);
+        assert!(p.contains("Mel") && p.contains("employer"));
+        assert!(p.contains("- Acme Corp (asserted") && p.contains("- Globex (asserted"));
+        assert!(!p.contains("{objects}"));
     }
 }
