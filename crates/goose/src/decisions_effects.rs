@@ -325,10 +325,58 @@ pub async fn apply_decision_effect(
         ("file_to_project", Some("reject")) => {
             already_applied("file-to-project proposal declined; nothing was persisted")
         }
+        ("model_upgrade", Some("approve")) => apply_model_upgrade(decision).await,
+        ("model_upgrade", Some("reject")) => {
+            already_applied("model upgrade declined; the active model is unchanged")
+        }
         _ => crate::decision_inbox::policy::resume_answered_decision(pool, decision, proof)
             .await
             .map(|effect| (effect, None)),
     }
+}
+
+/// Apply an approved `model_upgrade`: switch the active inference model
+/// (`GOOSE_MODEL`) to the proposed one. The target must already be installed
+/// (download stays in Settings → Models). Idempotent: if the active model is
+/// already the target, it reads as applied.
+async fn apply_model_upgrade(decision: &Decision) -> Result<EffectResult, GuardError> {
+    let payload: decisions::ModelUpgradePayload = serde_json::from_value(decision.payload.clone())
+        .map_err(|e| {
+            GuardError::Invalid(format!("stored model_upgrade payload unreadable: {e}"))
+        })?;
+
+    // Only switch to a model that is actually installed — otherwise inference
+    // would fail. Download is handled by the existing Settings → Models flow.
+    #[cfg(feature = "local-inference")]
+    {
+        let installed = crate::providers::local_inference::local_model_registry::get_registry()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_model(&payload.model_id)
+            .is_some();
+        if !installed {
+            return already_applied(format!(
+                "model \"{}\" is not installed — install it from Settings → Models, then propose \
+                 the switch again",
+                payload.model_id
+            ));
+        }
+    }
+
+    let config = crate::config::Config::global();
+    if let Ok(current) = config.get_param::<String>("GOOSE_MODEL") {
+        if current == payload.model_id {
+            return already_applied(format!("active model is already \"{}\"", payload.model_id));
+        }
+    }
+    config
+        .set_param("GOOSE_MODEL", &payload.model_id)
+        .map_err(|e| GuardError::Db(format!("failed to set active model: {e}")))?;
+
+    Ok((
+        Some(format!("active model switched to \"{}\"", payload.model_id)),
+        None,
+    ))
 }
 
 async fn apply_project_intel(

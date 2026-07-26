@@ -545,12 +545,12 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: model_manager::EXTENSION_NAME,
                 display_name: "Model Manager",
                 description:
-                    "List the local inference models your sub-agents run (list_models) — id, quantization, size on disk, source, and whether each has a vision encoder",
+                    "See and steward the local inference models your sub-agents run: list what is installed — id, quantization, size on disk, source, vision support (list_models); and propose switching the active model to a better installed one, review-gated through the Decision Inbox (propose_model_upgrade)",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
                 why_it_matters:
-                    "So you can see and reason about which models your sub-agents run — the first step toward keeping them current as better, more compact models ship.",
+                    "So you can see which models your sub-agents run AND keep them current — proposing a switch to a better, more compact model as the market improves, always with the user's approval.",
                 teaching: &[],
                 client_factory: |ctx| {
                     Box::new(model_manager::ModelManagerClient::new(ctx).unwrap())
