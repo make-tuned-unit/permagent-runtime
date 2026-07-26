@@ -132,7 +132,7 @@ fn parse_reply(reply: &str, objects: &[CandidateObject]) -> ParsedReply {
     if upper.starts_with("ALL_HOLD") {
         ParsedReply::AllHold
     } else if upper.starts_with("REPLACED") {
-        let rest = line["REPLACED".len()..].trim();
+        let rest = line.get("REPLACED".len()..).unwrap_or("").trim();
         // The value may contain spaces (a canonical name); the LAST token is the
         // confidence when it parses as a float, otherwise the whole rest is the
         // value and confidence defaults to 0.
@@ -267,7 +267,7 @@ impl Default for LibrarianAdjudicator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use spectral::core::entity_id::{entity_id, EntityId};
+    use spectral::core::entity_id::entity_id;
 
     fn obj(canonical: &str) -> CandidateObject {
         CandidateObject {
