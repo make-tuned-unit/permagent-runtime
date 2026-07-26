@@ -82,7 +82,7 @@ const DEFAULT_MODEL: &str = "qwen2.5:7b";
 
 /// Resolve the Librarian model: read from the schedule config file,
 /// fall back to DEFAULT_MODEL if empty or unreadable.
-fn resolve_model() -> String {
+pub(crate) fn resolve_model() -> String {
     let path = crate::config::paths::Paths::in_data_dir("librarian_schedule.json");
     if let Ok(contents) = std::fs::read_to_string(&path) {
         if let Ok(schedule) = serde_json::from_str::<serde_json::Value>(&contents) {
