@@ -258,7 +258,7 @@ pub struct AdjudicationPassSummary {
 /// calls on a blocking thread; the sync adjudicator bridges back to the async
 /// 7B via the captured handle. Best-effort — returns `None` on any error.
 pub async fn run_adjudication_pass(
-    brain: std::sync::Arc<crate::brain_handle::SafeBrain>,
+    brain: crate::brain_handle::SafeBrain,
 ) -> Option<AdjudicationPassSummary> {
     use spectral::graph::supersession::{apply_adjudications, detect_candidates};
     let mode = adjudicator_mode();
