@@ -85,7 +85,7 @@ opentelemetry-stdout = { version = "0.31", features = ["trace", "metrics", "logs
 tracing-futures = { version = "0.2", features = ["futures-03"] }
 tracing-opentelemetry = "0.32"
 
-spectral = { git = "https://github.com/make-tuned-unit/spectral", rev = "362eadb" }
+spectral = { git = "https://github.com/make-tuned-unit/spectral", rev = "486459c" }
 rayon = "1.12"
 petgraph = "0.6"
 tree-sitter = "0.26"
