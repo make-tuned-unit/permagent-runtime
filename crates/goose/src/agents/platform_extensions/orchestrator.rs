@@ -4361,12 +4361,77 @@ pub async fn escalate_session_loop(
     Ok(Some(decision_id))
 }
 
+/// Enforce a spend gate on a goal worker's session (#938): raise the
+/// Decision-Inbox spend gate for the goal, then PARK the goal (work-preserving)
+/// and stop the worker — mirroring [`escalate_session_loop`]'s park+kill so no
+/// further spend accrues past the ceiling. Deduplication (once per run) is the
+/// caller's reservation set plus the durable open decision. Returns the decision
+/// id, or `None` if the session has no goal worker (e.g. the interactive main
+/// session — enforcing that path is a follow-up).
+pub async fn escalate_session_budget(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    session_id: &str,
+    verdict: crate::cost_router::budget::BudgetVerdict,
+    increment: f64,
+) -> Result<Option<String>, String> {
+    let Some((card_id, project_id, title)) = goal_for_worker_session(pool, session_id).await?
+    else {
+        return Ok(None);
+    };
+
+    // Dedup: one open spend gate per goal (durable half; the ProgressMonitor's
+    // in-memory reservation is the per-run half).
+    let decision_id = if let Some(existing) =
+        decisions::find_open_decision_for_goal(pool, &card_id, "choice")
+            .await?
+            .filter(|d| d.headline.contains("Spent $"))
+    {
+        existing.id
+    } else {
+        let req = crate::cost_router::budget::gate_decision_request(
+            verdict,
+            increment,
+            Some(card_id.clone()),
+            Some(project_id.clone()),
+        );
+        decisions::create_decision(pool, req).await?.id
+    };
+
+    // Park FIRST (work-preserving), then stop the worker — identical to the
+    // runaway-loop guard, so the preserved worktree is never reaped.
+    goal_transition::park_goal(
+        pool,
+        &card_id,
+        decisions::ACTOR_SYSTEM,
+        &format!(
+            "spend gate: ${:.2} on this {}",
+            verdict.spent,
+            verdict.scope.word()
+        ),
+    )
+    .await
+    .map_err(String::from)?;
+    if let Some(kill) = take_goal_worker(&card_id) {
+        kill.kill();
+    }
+
+    tracing::warn!(
+        target: "permagentd::brain",
+        "Goal '{}' parked at spend gate (${:.2} {}), decision {}",
+        title,
+        verdict.spent,
+        verdict.scope.word(),
+        decision_id
+    );
+    Ok(Some(decision_id))
+}
+
 // ── Live verifier-driven escalation (the #739 ACTION) ────────────────────────
 
 /// The running session spend (USD) for the goal worker's session — the spend-cap
 /// input (guardrail 3). Unknown/unpriced ⇒ `0.0` (never fabricate a stop, per the
 /// budget ledger contract).
-async fn session_spent_usd(pool: &sqlx::Pool<sqlx::Sqlite>, session_id: &str) -> f64 {
+pub async fn session_spent_usd(pool: &sqlx::Pool<sqlx::Sqlite>, session_id: &str) -> f64 {
     sqlx::query_scalar::<_, Option<f64>>("SELECT accumulated_cost_usd FROM sessions WHERE id = ?")
         .bind(session_id)
         .fetch_optional(pool)

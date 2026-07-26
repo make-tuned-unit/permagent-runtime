@@ -711,6 +711,9 @@ pub struct ProgressMonitor {
     /// every turn (the durable dedup is the open decision itself). `Arc` so the
     /// detached escalation task can release the reservation if the attempt fails.
     escalated: Arc<Mutex<HashSet<String>>>,
+    /// Sessions already spend-gated this run (#938) — once the budget gate is
+    /// raised + the goal parked, don't re-raise it every turn.
+    budget_gated: Arc<Mutex<HashSet<String>>>,
 }
 
 impl std::fmt::Debug for ProgressMonitor {
@@ -728,6 +731,7 @@ impl ProgressMonitor {
         Self {
             session_manager,
             escalated: Arc::new(Mutex::new(HashSet::new())),
+            budget_gated: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -736,6 +740,95 @@ impl ProgressMonitor {
         if let Ok(mut set) = self.escalated.lock() {
             set.clear();
         }
+        if let Ok(mut set) = self.budget_gated.lock() {
+            set.clear();
+        }
+    }
+
+    /// The current budget verdict for this session's spend (#938). Reads the
+    /// session's `accumulated_cost_usd` and evaluates it against the configured
+    /// ceilings. FAIL-OPEN: any error (no session manager, no pool, DB error)
+    /// yields `None` (no gate), so a transient fault never spuriously stops a
+    /// run — matching the ledger's "unknown cost never fabricates a stop"
+    /// contract. Task spend is `0.0` for now (session ceilings only; a per-task
+    /// accumulator is a follow-up, #938 MED).
+    async fn budget_verdict_for(
+        &self,
+        session_id: &str,
+    ) -> Option<crate::cost_router::budget::BudgetVerdict> {
+        let session_manager = self.session_manager.as_ref()?;
+        let pool = session_manager.pool_clone().await.ok()?;
+        let session_spent =
+            crate::agents::platform_extensions::orchestrator::session_spent_usd(&pool, session_id)
+                .await;
+        let cfg = crate::cost_router::budget::load_budget_config();
+        Some(crate::cost_router::budget::budget_verdict(
+            0.0,
+            session_spent,
+            &cfg,
+        ))
+    }
+
+    /// Fire the #938 spend gate for a session, once per run. Best-effort and
+    /// detached (mirrors [`Self::escalate`]'s reservation discipline): reserves
+    /// the session, then raises the Decision-Inbox spend gate + parks the goal
+    /// (work-preserving) + stops the worker via `escalate_session_budget`,
+    /// releasing the reservation on failure so a later turn retries. The park is
+    /// the enforcement — killing the worker stops further spend; no tool is
+    /// denied, so an interactive (non-worker) session is never frozen (it simply
+    /// has no goal to park — enforcing it is a follow-up).
+    fn budget_escalate(
+        &self,
+        session_id: &str,
+        verdict: crate::cost_router::budget::BudgetVerdict,
+    ) {
+        let Some(session_manager) = self.session_manager.clone() else {
+            return;
+        };
+        {
+            let mut set = match self.budget_gated.lock() {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            if !set.insert(session_id.to_string()) {
+                return; // already gated this run
+            }
+        }
+        let reservation = Arc::clone(&self.budget_gated);
+        let session_id = session_id.to_string();
+        tokio::spawn(async move {
+            let pool = match session_manager.pool_clone().await {
+                Ok(p) => p,
+                Err(_) => {
+                    if let Ok(mut s) = reservation.lock() {
+                        s.remove(&session_id);
+                    }
+                    return;
+                }
+            };
+            // The increment offered at the gate ("add $X and continue") = the
+            // task gate ceiling, a sensible step regardless of which scope fired.
+            let increment = crate::cost_router::budget::load_budget_config().task.gate;
+            if let Err(e) =
+                crate::agents::platform_extensions::orchestrator::escalate_session_budget(
+                    &pool,
+                    &session_id,
+                    verdict,
+                    increment,
+                )
+                .await
+            {
+                if let Ok(mut s) = reservation.lock() {
+                    s.remove(&session_id);
+                }
+                tracing::warn!(
+                    target: "permagent::progress_monitor",
+                    session_id = %session_id,
+                    error = %e,
+                    "spend-gate escalation failed; released the reservation so a later turn retries",
+                );
+            }
+        });
     }
 
     /// Fire the L3 escalation for a session, once. Best-effort and detached: it
@@ -894,6 +987,18 @@ impl ToolInspector for ProgressMonitor {
         messages: &[Message],
         _goose_mode: GooseMode,
     ) -> Result<Vec<InspectionResult>> {
+        // Budget enforcement (#938): if this worker session's spend has crossed
+        // the gate/hard ceiling, raise the Decision-Inbox spend gate + park the
+        // goal + stop the worker (detached, once per run) so spend cannot run on
+        // past the ceiling. Fail-open: a check error is a no-op. This is the
+        // enforcement half of the budget policy — the pure `budget_verdict` core
+        // was already built and tested; nothing was calling it (#938).
+        if let Some(verdict) = self.budget_verdict_for(session_id).await {
+            if verdict.needs_gate() || verdict.must_stop() {
+                self.budget_escalate(session_id, verdict);
+            }
+        }
+
         let window = reconstruct_window(messages);
         let mut results = Vec::new();
 
@@ -1639,5 +1744,13 @@ mod tests {
                 "no deny text may claim the Inbox, got: {msg}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn budget_verdict_fails_open_without_session_manager() {
+        // No session manager (tests / non-daemon) ⇒ no spend read ⇒ no verdict,
+        // so the budget check is a no-op and never spuriously gates a run.
+        let monitor = ProgressMonitor::new(None);
+        assert!(monitor.budget_verdict_for("sess-1").await.is_none());
     }
 }
