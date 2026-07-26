@@ -242,89 +242,21 @@ impl Adjudicator for LibrarianAdjudicator {
     }
 }
 
-/// One-line summary of a pass, for logging.
-#[derive(Debug, Default, Clone)]
-pub struct AdjudicationPassSummary {
-    pub considered: usize,
-    pub applied: usize,
-    pub retired: usize,
-    pub shadow_only: bool,
-}
-
-/// Run one adjudication pass over the Brain, gated by [`adjudicator_mode`].
-/// `Off` ⇒ no-op. `Shadow` ⇒ detect candidates + adjudicate + LOG, retire
-/// nothing. `Apply` ⇒ `apply_adjudications` (per-predicate cardinality still
-/// gated by the ontology + the accumulating guard). Runs the (blocking) Spectral
-/// calls on a blocking thread; the sync adjudicator bridges back to the async
-/// 7B via the captured handle. Best-effort — returns `None` on any error.
-pub async fn run_adjudication_pass(
-    brain: crate::brain_handle::SafeBrain,
-) -> Option<AdjudicationPassSummary> {
-    use spectral::graph::supersession::{apply_adjudications, detect_candidates};
-    let mode = adjudicator_mode();
-    if mode == AdjudicatorMode::Off {
-        return None;
-    }
-    let adjudicator = LibrarianAdjudicator::new();
-    tokio::task::spawn_blocking(move || {
-        let raw = brain.raw_blocking_handle();
-        match mode {
-            AdjudicatorMode::Off => None,
-            AdjudicatorMode::Apply => match apply_adjudications(raw, &adjudicator, 200, 0.8, "librarian-7b") {
-                Ok(report) => {
-                    tracing::info!(
-                        target: "librarian_adjudicator",
-                        considered = report.considered,
-                        applied = report.applied,
-                        retired = report.retired,
-                        invalid = report.invalid_verdicts,
-                        "adjudication pass applied"
-                    );
-                    Some(AdjudicationPassSummary {
-                        considered: report.considered,
-                        applied: report.applied,
-                        retired: report.retired,
-                        shadow_only: false,
-                    })
-                }
-                Err(e) => {
-                    tracing::warn!(target: "librarian_adjudicator", error = %e, "adjudication apply failed");
-                    None
-                }
-            },
-            AdjudicatorMode::Shadow => match detect_candidates(raw, 200) {
-                Ok(candidates) => {
-                    let considered = candidates.len();
-                    for c in &candidates {
-                        let verdict = adjudicator.adjudicate(c);
-                        tracing::info!(
-                            target: "librarian_adjudicator",
-                            subject = %c.subject_canonical,
-                            subject_type = %c.subject_type,
-                            predicate = %c.predicate,
-                            objects = c.objects.len(),
-                            verdict = ?verdict,
-                            "SHADOW adjudication (nothing retired)"
-                        );
-                    }
-                    Some(AdjudicationPassSummary {
-                        considered,
-                        applied: 0,
-                        retired: 0,
-                        shadow_only: true,
-                    })
-                }
-                Err(e) => {
-                    tracing::warn!(target: "librarian_adjudicator", error = %e, "shadow detect_candidates failed");
-                    None
-                }
-            },
-        }
-    })
-    .await
-    .ok()
-    .flatten()
-}
+// ── The pass runner is intentionally NOT here yet ────────────────────────────
+//
+// `detect_candidates` / `apply_adjudications` (spectral-graph/src/supersession.rs)
+// take `&spectral_graph::brain::Brain` — the GRAPH brain. Our `SafeBrain` holds
+// the FACADE `spectral::Brain`, whose inner graph brain is private and which, at
+// pin 486459c, does NOT expose the supersession seam (unlike the consolidation
+// seam, which the facade delegates via `consolidation_candidates` /
+// `consolidate_with`). So the runner cannot be written against the facade.
+//
+// The adapter ABOVE is complete and fully testable — it only touches the seam's
+// value types (`Adjudicator`, `SupersessionCandidate`, `CandidateObject`,
+// `ADJUDICATION_PROMPT`), not the graph brain. The runner
+// (`run_adjudication_pass`: Off | Shadow=detect+log | Apply=apply_adjudications)
+// lands as a follow-up once Spectral exposes the seam on the facade — either
+// delegating methods (mirroring consolidation) or a `graph()` accessor. Ask sent.
 
 impl Default for LibrarianAdjudicator {
     fn default() -> Self {
