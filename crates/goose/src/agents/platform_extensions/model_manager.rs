@@ -18,12 +18,23 @@ use rmcp::model::{
 };
 use schemars::{schema_for, JsonSchema};
 use serde::{Deserialize, Serialize};
+use sqlx::{Pool, Sqlite};
 use tokio_util::sync::CancellationToken;
 
 pub static EXTENSION_NAME: &str = "model_manager";
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ListModelsParams {}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct ProposeModelUpgradeParams {
+    /// The model id to switch the active inference model to. It must already be
+    /// installed (see list_models) — download stays in Settings → Models.
+    model_id: String,
+    /// Why the target is better than the current model (more compact, faster,
+    /// more accurate…). Shown on the Decision Inbox card.
+    why_better: String,
+}
 
 fn schema<T: JsonSchema>() -> JsonObject {
     let mut obj = serde_json::to_value(schema_for!(T))
@@ -36,7 +47,7 @@ fn schema<T: JsonSchema>() -> JsonObject {
 
 pub struct ModelManagerClient {
     info: InitializeResult,
-    _context: PlatformExtensionContext,
+    context: PlatformExtensionContext,
 }
 
 impl ModelManagerClient {
@@ -46,16 +57,90 @@ impl ModelManagerClient {
                 Implementation::new(EXTENSION_NAME, "1.0.0").with_title("Model Manager"),
             )
             .with_instructions(
-                "Inspect the local inference models your sub-agents run. Use list_models when \
-                 the user asks what models are installed, how much disk they use, or whether a \
-                 model is available. This is the ONLY mechanism for listing installed models — \
-                 do not shell out to `ls`, `du`, or the Ollama CLI. It is read-only; it never \
-                 downloads or changes anything.",
+                "Inspect and steward the local inference models your sub-agents run. Use \
+                 list_models to see what is installed (the ONLY mechanism — do not shell out to \
+                 `ls`, `du`, or the Ollama CLI). When you find a better installed model, use \
+                 propose_model_upgrade to propose switching the active model — it is review-gated \
+                 through the Decision Inbox and NOTHING changes until the user approves.",
             );
-        Ok(Self {
-            info,
-            _context: context,
-        })
+        Ok(Self { info, context })
+    }
+
+    async fn pool(&self) -> std::result::Result<Pool<Sqlite>, String> {
+        self.context
+            .session_manager
+            .pool_clone()
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    async fn handle_propose_model_upgrade(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> std::result::Result<CallToolResult, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let model_id = args
+            .get("model_id")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing required parameter: model_id")?
+            .trim()
+            .to_string();
+        let why_better = args
+            .get("why_better")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing required parameter: why_better")?
+            .trim()
+            .to_string();
+        if model_id.is_empty() {
+            return Err("model_id must not be empty".to_string());
+        }
+        if why_better.is_empty() {
+            return Err("why_better must not be empty".to_string());
+        }
+
+        let current_model = crate::config::Config::global()
+            .get_param::<String>("GOOSE_MODEL")
+            .ok();
+        let detail = match &current_model {
+            Some(c) => format!(
+                "Proposed switching the active inference model from \"{c}\" to \"{model_id}\".\n\nWhy: {why_better}"
+            ),
+            None => format!(
+                "Proposed switching the active inference model to \"{model_id}\".\n\nWhy: {why_better}"
+            ),
+        };
+        let payload = crate::decisions::ModelUpgradePayload {
+            model_id: model_id.clone(),
+            why_better,
+            current_model,
+        };
+
+        let pool = self.pool().await?;
+        let decision = crate::decisions::create_decision(
+            &pool,
+            crate::decisions::NewDecision {
+                kind: "model_upgrade".to_string(),
+                headline: Some("Switch active inference model".to_string()),
+                detail: Some(detail),
+                payload: serde_json::to_value(&payload).map_err(|e| e.to_string())?,
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+        if decision.kind == "malformed" {
+            return Err(format!(
+                "The proposal was rejected as malformed: {}",
+                decision.detail
+            ));
+        }
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Proposed switching the active model to \"{model_id}\" — decision {} is waiting in the \
+             Decision Inbox. NOTHING changes until the user approves it there; on approval the \
+             active model switches (the model must already be installed).",
+            decision.id
+        ))]))
     }
 
     #[cfg(feature = "local-inference")]
@@ -152,17 +237,30 @@ impl ModelManagerClient {
     /// list — add a tool here and CI fails until the registry `description`
     /// names it AND `self_knowledge` includes this extension's inventory.
     pub(crate) fn get_tools() -> Vec<Tool> {
-        vec![Tool::new(
-            "list_models".to_string(),
-            "Lists the local inference models installed on this machine that your sub-agents \
+        vec![
+            Tool::new(
+                "list_models".to_string(),
+                "Lists the local inference models installed on this machine that your sub-agents \
              can run — id, repo, quantization, size on disk, source, and whether it has a \
              vision encoder. This is the ONLY mechanism for listing installed models; do NOT \
              shell out to `ls`, `du`, or the Ollama CLI. Use it when the user asks what models \
              are installed, how much disk they use, or whether a specific model is available. \
              Read-only — it never downloads or changes anything."
-                .to_string(),
-            schema::<ListModelsParams>(),
-        )]
+                    .to_string(),
+                schema::<ListModelsParams>(),
+            ),
+            Tool::new(
+                "propose_model_upgrade".to_string(),
+                "Propose switching the active inference model to a different, already-installed \
+             model (see list_models). The proposal lands in the Decision Inbox for the user to \
+             approve — NOTHING changes until they approve; you never switch models yourself. Use \
+             it when you identify a better (more compact, faster, more accurate) installed model. \
+             Provide model_id (the target, must already be installed) and why_better (the \
+             rationale shown on the card). Download of new models stays in Settings → Models."
+                    .to_string(),
+                schema::<ProposeModelUpgradeParams>(),
+            ),
+        ]
     }
 }
 
@@ -190,6 +288,7 @@ impl McpClientTrait for ModelManagerClient {
     ) -> std::result::Result<CallToolResult, Error> {
         let result = match name {
             "list_models" => self.handle_list_models(arguments).await,
+            "propose_model_upgrade" => self.handle_propose_model_upgrade(arguments).await,
             _ => Err(format!("Unknown tool: {}", name)),
         };
 
@@ -212,9 +311,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exposes_list_models_tool() {
-        let tools = ModelManagerClient::get_tools();
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].name, "list_models");
+    fn exposes_expected_tools() {
+        let names: Vec<_> = ModelManagerClient::get_tools()
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert_eq!(names, vec!["list_models", "propose_model_upgrade"]);
     }
 }

@@ -37,6 +37,7 @@ const OUTBOX_ELIGIBLE_KINDS: &[&str] = &[
     "project_intel_proposal",
     "file_to_project",
     "automation_proposal",
+    "model_upgrade",
 ];
 
 /// Return the stable outbox claim key for a durable decision effect.
@@ -275,6 +276,32 @@ pub struct ProjectIntelProposalPayload {
     pub project_id: String,
     pub project_name: String,
     pub items: Vec<ProposedIntelItem>,
+}
+
+/// A review-gated proposal to switch the active inference model (#934). The
+/// agent proposes; nothing changes until the user approves, then the effect
+/// sets the model config to `model_id`. The target must already be installed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelUpgradePayload {
+    /// The model id to switch the active inference model to.
+    pub model_id: String,
+    /// Why it is better than the current choice (more compact, faster, more
+    /// accurate…) — shown on the Decision Inbox card.
+    pub why_better: String,
+    /// The model that was active when the proposal was made (for the card).
+    #[serde(default)]
+    pub current_model: Option<String>,
+}
+
+fn validate_model_upgrade_payload(p: &ModelUpgradePayload) -> Result<(), String> {
+    if p.model_id.trim().is_empty() {
+        return Err("model_upgrade requires a non-empty model_id".to_string());
+    }
+    if p.why_better.trim().is_empty() {
+        return Err("model_upgrade requires a non-empty why_better".to_string());
+    }
+    Ok(())
 }
 
 fn is_safe_http_url(url: &str) -> bool {
@@ -668,6 +695,7 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
         "enrichment_proposal",
         "project_intel_proposal",
         "file_to_project",
+        "model_upgrade",
         "tool_approval",
         "session_gate",
     ]
@@ -728,6 +756,12 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
         "file_to_project" => {
             match serde_json::from_value::<FileToProjectPayload>(req.payload.clone()) {
                 Ok(p) => validate_file_to_project_payload(&p),
+                Err(e) => Err(e.to_string()),
+            }
+        }
+        "model_upgrade" => {
+            match serde_json::from_value::<ModelUpgradePayload>(req.payload.clone()) {
+                Ok(p) => validate_model_upgrade_payload(&p),
                 Err(e) => Err(e.to_string()),
             }
         }
@@ -1254,6 +1288,7 @@ fn answer_allowed_for_kind(kind: &str, answer: &str) -> bool {
         | "enrichment_proposal"
         | "project_intel_proposal"
         | "file_to_project"
+        | "model_upgrade"
         | "tool_approval"
         | "session_gate"
         | "malformed" => matches!(answer, "approve" | "reject"),
