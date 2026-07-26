@@ -4384,7 +4384,7 @@ pub async fn escalate_session_budget(
     let decision_id = if let Some(existing) =
         decisions::find_open_decision_for_goal(pool, &card_id, "choice")
             .await?
-            .filter(|d| d.headline.as_deref().is_some_and(|h| h.contains("Spent $")))
+            .filter(|d| d.headline.contains("Spent $"))
     {
         existing.id
     } else {
