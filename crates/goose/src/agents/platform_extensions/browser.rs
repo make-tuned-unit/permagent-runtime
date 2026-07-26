@@ -330,7 +330,7 @@ fn guard_webview_url(input: &str) -> Result<String, String> {
     Ok(normalized)
 }
 
-fn reject_control_plane(url: &str) -> Result<(), String> {
+pub fn reject_control_plane(url: &str) -> Result<(), String> {
     let parsed = reqwest::Url::parse(url).map_err(|e| format!("Invalid URL: {e}"))?;
     let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
     // For an IPv6 literal, `host_str()` keeps the brackets (`[::1]`), which do
