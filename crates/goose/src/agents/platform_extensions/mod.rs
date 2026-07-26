@@ -14,6 +14,7 @@ pub mod file_to_project;
 pub mod gate_classifier;
 pub mod goal_engine;
 pub mod librarian;
+pub mod librarian_adjudicator;
 pub mod librarian_atoms;
 pub mod librarian_context;
 pub mod librarian_entities;
