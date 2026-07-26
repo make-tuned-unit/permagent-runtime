@@ -273,6 +273,10 @@ impl ThreadManager {
         if message.has_only_text_content() && !message.content.is_empty() {
             let new_text = message.as_concat_text();
 
+            // BEGIN IMMEDIATE so the read-then-update is atomic: two concurrent
+            // streaming appends to the same thread cannot both read the same last
+            // row and interleave their updates (which would lose a chunk).
+            let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
             let maybe_last = sqlx::query_as::<_, (i64, String, String, String, String)>(
                 "SELECT id, message_id, role, content_json, metadata_json \
                  FROM thread_messages \
@@ -280,7 +284,7 @@ impl ThreadManager {
                  ORDER BY id DESC LIMIT 1",
             )
             .bind(thread_id)
-            .fetch_optional(pool)
+            .fetch_optional(&mut *tx)
             .await?;
 
             if let Some((
@@ -300,19 +304,23 @@ impl ThreadManager {
                     sqlx::query("UPDATE thread_messages SET content_json = ? WHERE id = ?")
                         .bind(&updated_json)
                         .bind(row_id)
-                        .execute(pool)
+                        .execute(&mut *tx)
                         .await?;
 
                     sqlx::query("UPDATE threads SET updated_at = CURRENT_TIMESTAMP WHERE id = ?")
                         .bind(thread_id)
-                        .execute(pool)
+                        .execute(&mut *tx)
                         .await?;
 
+                    tx.commit().await?;
                     let mut stored = message.clone();
                     stored.id = Some(existing_msg_id);
                     return Ok(stored);
                 }
             }
+            // Not coalesced — release the transaction (nothing written) and fall
+            // through to the insert path below.
+            drop(tx);
         }
 
         // Default path: insert a new row.
