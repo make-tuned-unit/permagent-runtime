@@ -134,6 +134,18 @@ struct ResearchProjectIntelParams {
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct DismissProjectIntelParams {
+    /// Project ID, slug, or exact name.
+    project: String,
+    /// The name of the intelligence item to remove (case-insensitive), as shown
+    /// by research_project_intel.
+    name: String,
+    /// Optionally restrict removal to one kind: competitor, partner, or adjacent.
+    #[serde(default)]
+    kind: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ProposedIntelItemParams {
     /// One of: competitor, partner, adjacent.
     kind: String,
@@ -787,6 +799,66 @@ impl ProjectManagerClient {
             project.name,
             decision.id
         ))])
+    }
+
+    /// Remove stored project-intelligence items by name (the inverse of
+    /// propose_project_intel). Direct delete — removal is user-directed and
+    /// reversible by re-researching, so it is not review-gated. Matches the name
+    /// case-insensitively; an optional `kind` narrows the match.
+    async fn handle_dismiss_project_intel(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let params: DismissProjectIntelParams =
+            serde_json::from_value(serde_json::Value::Object(args))
+                .map_err(|e| format!("Invalid arguments: {e}"))?;
+        let name = params.name.trim();
+        if name.is_empty() {
+            return Err("name must not be empty".to_string());
+        }
+        let (project, pool) = self.resolve_intel_project(&params.project).await?;
+
+        let name_folded = name.to_lowercase();
+        let rows = sqlx::query_as::<_, (String, String, String)>(
+            "SELECT id, kind, name FROM project_intel WHERE project_id = ?",
+        )
+        .bind(&project.id)
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        let mut removed = Vec::new();
+        for (id, k, n) in rows {
+            let kind_ok = params
+                .kind
+                .as_deref()
+                .map(|kf| kf.trim().eq_ignore_ascii_case(&k))
+                .unwrap_or(true);
+            // Full Unicode case-fold on the name (mirrors the intel dedup).
+            if kind_ok && n.to_lowercase() == name_folded {
+                sqlx::query("DELETE FROM project_intel WHERE id = ?")
+                    .bind(&id)
+                    .execute(&pool)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                removed.push(format!("{k}: {n}"));
+            }
+        }
+
+        if removed.is_empty() {
+            Ok(vec![Content::text(format!(
+                "No project intelligence matching \"{name}\" found for \"{}\" — nothing removed.",
+                project.name
+            ))])
+        } else {
+            Ok(vec![Content::text(format!(
+                "Removed {} intelligence item(s) from \"{}\": {}.",
+                removed.len(),
+                project.name,
+                removed.join(", ")
+            ))])
+        }
     }
 
     async fn handle_launch(&self, arguments: Option<JsonObject>) -> Result<Vec<Content>, String> {
@@ -1686,6 +1758,30 @@ impl ProjectManagerClient {
                 Some(false),
             )),
             Tool::new(
+                "dismiss_project_intel".to_string(),
+                indoc! {r#"
+                Remove a stored project-intelligence item (a competitor, partner,
+                or adjacent player) that is stale or wrong, by name — the inverse
+                of propose_project_intel. Use it when the user says an item no
+                longer belongs. The name is matched case-insensitively (as shown
+                by research_project_intel); pass kind to disambiguate. Applied
+                directly — removal is user-directed and reversible by re-researching.
+            "#}
+                .to_string(),
+                serde_json::to_value(schema_for!(DismissProjectIntelParams))
+                    .unwrap()
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Dismiss Project Intelligence".to_string()),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+            )),
+            Tool::new(
                 "project_launch".to_string(),
                 indoc! {r#"
                 Open a project-aware terminal in the Build tab, rooted at the project's
@@ -1756,6 +1852,7 @@ impl McpClientTrait for ProjectManagerClient {
             "board_summary" => self.handle_board_summary(arguments).await,
             "research_project_intel" => self.handle_research_project_intel(arguments).await,
             "propose_project_intel" => self.handle_propose_project_intel(arguments).await,
+            "dismiss_project_intel" => self.handle_dismiss_project_intel(arguments).await,
             "project_launch" => self.handle_launch(arguments).await,
             _ => Err(format!("Unknown tool: {}", name)),
         };
