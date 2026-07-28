@@ -2,6 +2,7 @@
 // Moved verbatim from WorldFurniture.tsx in the bible §5 skeleton split (W1).
 // Raised ring walkway high on the columns with built-in bookshelf walls.
 
+import { useMemo } from 'react';
 import * as THREE from 'three';
 import { COLORS } from '../../constants';
 import {
@@ -105,6 +106,29 @@ function Staircase() {
   const stairR = STAIR.radius;
   const stepWidth = MEZZ_OUTER_R - MEZZ_INNER_R - 0.4;
 
+  // Under-stair stringers (#16 detail pass): two helical tubes hugging the
+  // step undersides at the inner and outer edges, plus a center spine — the
+  // steps read as a built staircase instead of floating slabs. One TubeGeometry
+  // each (3 draw calls total), computed once.
+  const stringers = useMemo(() => {
+    const mk = (radius: number, tube: number) => {
+      const pts: THREE.Vector3[] = [];
+      const N = 40;
+      for (let i = 0; i <= N; i++) {
+        const t = i / N;
+        const a = startAngle + t * arcSpan;
+        pts.push(new THREE.Vector3(Math.cos(a) * radius, t * MEZZ_HEIGHT - 0.12, Math.sin(a) * radius));
+      }
+      return new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 60, tube, 6, false);
+    };
+    return [
+      mk(MEZZ_INNER_R + 0.35, 0.09),
+      mk(MEZZ_OUTER_R - 0.55, 0.09),
+      mk(stairR, 0.13),
+    ];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
     <group>
       {Array.from({ length: stepCount }, (_, i) => {
@@ -115,11 +139,31 @@ function Staircase() {
         const x = Math.cos(angle) * stairR;
         const z = Math.sin(angle) * stairR;
         return (
-          <mesh key={i} position={[x, y + 0.05, z]} rotation-y={-angle + Math.PI / 2} material={marble}>
-            <boxGeometry args={[stepWidth, 0.15, 0.6]} />
-          </mesh>
+          <group key={i} position={[x, y + 0.05, z]} rotation-y={-angle + Math.PI / 2}>
+            <mesh material={marble} castShadow receiveShadow>
+              <boxGeometry args={[stepWidth, 0.15, 0.6]} />
+            </mesh>
+            {/* Nosing strip on the leading edge — carved-step read. */}
+            <mesh position={[0, 0.055, 0.31]}>
+              <boxGeometry args={[stepWidth, 0.05, 0.05]} />
+              <meshStandardMaterial color="#6d7482" roughness={0.5} metalness={0.1} />
+            </mesh>
+          </group>
         );
       })}
+      {/* Helical stringers under the steps. */}
+      {stringers.map((geo, i) => (
+        <mesh key={`s-${i}`} geometry={geo} material={marble} castShadow />
+      ))}
+      {/* Ground landing slab at the stair foot. */}
+      <mesh
+        position={[Math.cos(startAngle) * stairR, 0.06, Math.sin(startAngle) * stairR]}
+        rotation-y={-startAngle + Math.PI / 2}
+        material={marble}
+        receiveShadow
+      >
+        <boxGeometry args={[stepWidth + 0.8, 0.12, 1.6]} />
+      </mesh>
       {/* Railings on both sides */}
       {Array.from({ length: stepCount }, (_, i) => {
         if (i % 3 !== 0) return null;

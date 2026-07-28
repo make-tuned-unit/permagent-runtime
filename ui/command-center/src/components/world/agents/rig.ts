@@ -545,6 +545,10 @@ export interface AgentRig {
   tablet: TabletMesh | null;
   /** Henry-only: the soft pool of light that gathers at his feet (null otherwise). */
   presenceLight: THREE.Mesh | null;
+  /** The work halo — orbiting data ring + glyph helix shown while the agent
+   *  processes a task standing (agents have no desks; the work happens AROUND
+   *  them). AgentCharacterV2 drives visibility/rotation/color per frame. */
+  workHalo: { group: THREE.Group; mat: THREE.MeshBasicMaterial } | null;
   /** Draw calls this rig contributes. */
   drawCalls: number;
   dispose(): void;
@@ -654,6 +658,48 @@ export function createAgentRig(opts: {
     drawCalls += 1;
   }
 
+  // ── Work halo (2026-07-28: agents have no desks) ──────────────────
+  // An AI agent doesn't sit at a workstation — while it processes, the work
+  // orbits IT: a slow data ring + a helix of glyph quads, tinted live from
+  // the state channel (amber while working, per the HUD color law). Two
+  // merged meshes (+2 draw calls, visible only while processing).
+  const haloMat = new THREE.MeshBasicMaterial({
+    color: '#FFFFFF',
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+    toneMapped: false,
+  });
+  const haloGroup = new THREE.Group();
+  haloGroup.visible = false;
+  {
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.62, 0.014, 6, 40), haloMat);
+    ring.rotation.x = Math.PI / 2;
+    ring.position.y = 1.25;
+    ring.frustumCulled = false;
+    haloGroup.add(ring);
+    // Glyph helix: 10 small quads spiralling 0.6 → 1.9 around the body.
+    const glyphGeos: THREE.BufferGeometry[] = [];
+    for (let i = 0; i < 10; i++) {
+      const t = i / 10;
+      const a = t * Math.PI * 4;
+      const quad = new THREE.PlaneGeometry(0.07, 0.1);
+      const m4 = new THREE.Matrix4()
+        .makeRotationY(-a)
+        .setPosition(Math.cos(a) * 0.58, 0.6 + t * 1.3, Math.sin(a) * 0.58);
+      quad.applyMatrix4(m4);
+      glyphGeos.push(quad);
+    }
+    const glyphs = new THREE.Mesh(mergeGeometries(glyphGeos, false)!, haloMat);
+    glyphGeos.forEach((g) => g.dispose());
+    glyphs.frustumCulled = false;
+    haloGroup.add(glyphs);
+    bones.byName.root.add(haloGroup);
+  }
+  const workHalo = { group: haloGroup, mat: haloMat };
+
   return {
     root,
     bones: bones.byName,
@@ -662,6 +708,7 @@ export function createAgentRig(opts: {
     visorMat,
     tablet,
     presenceLight,
+    workHalo,
     drawCalls,
     dispose() {
       // Geometries + shared materials are cached app-lifetime; only per-agent
@@ -673,6 +720,10 @@ export function createAgentRig(opts: {
       tablet?.geometry.dispose();
       presenceMat?.dispose();
       presenceGeo?.dispose();
+      haloMat.dispose();
+      haloGroup.children.forEach((c) => {
+        if (c instanceof THREE.Mesh) c.geometry.dispose();
+      });
     },
   };
 }

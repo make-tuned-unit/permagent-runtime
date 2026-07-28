@@ -5,12 +5,7 @@
 
 import { useEffect, useRef } from 'react';
 import type { AgentRuntimeState } from '../shared/agentStatus';
-import {
-  claimAnchor,
-  getAnchors,
-  releaseAgentAnchors,
-  type AgentAnchor,
-} from '../shared/anchors';
+import { releaseAgentAnchors } from '../shared/anchors';
 import { STATIONS } from '../constants';
 import { ROSTER, MEZZ_RADIUS, MEZZ_Y, getIdentity, type AgentIdentity } from './roster';
 import { ensureMotion, getAgentPosition, getMotion, setEngaged, setPath, stopAgent, type Waypoint } from './motion';
@@ -77,40 +72,15 @@ function pickWanderTarget(agent: AgentIdentity): { x: number; y: number; z: numb
   return { x: base.x + rand(-1.5, 1.5), y: 0, z: base.z + rand(-1.5, 1.5) };
 }
 
-function pickSeatAnchor(agentId: string, from: { x: number; z: number }): AgentAnchor | null {
-  const seats = getAnchors()
-    .filter((a) => a.kind === 'seat')
-    .sort((a, b) => {
-      const da = (a.position[0] - from.x) ** 2 + (a.position[2] - from.z) ** 2;
-      const db = (b.position[0] - from.x) ** 2 + (b.position[2] - from.z) ** 2;
-      return da - db;
-    });
-  for (const seat of seats) {
-    if (claimAnchor(seat.id, agentId)) return seat;
-  }
-  return null;
-}
-
 function engageForWork(agent: AgentIdentity): void {
   const m = getMotion(agent.id);
   if (!m || m.engaged !== 'none') return;
-  if (agent.mezzanineLocked) {
-    // No seat anchors on the mezzanine — engage standing in place.
-    stopAgent(agent.id);
-    setEngaged(agent.id, 'standing');
-    return;
-  }
-  const seat = pickSeatAnchor(agent.id, m);
-  if (!seat) {
-    stopAgent(agent.id);
-    setEngaged(agent.id, 'standing');
-    return;
-  }
-  setPath(
-    agent.id,
-    [{ x: seat.position[0], y: seat.position[1], z: seat.position[2], facing: seat.facing }],
-    () => setEngaged(agent.id, 'seated'),
-  );
+  // Agents don't sit at desks (2026-07-28 ruling): a workstation is a human
+  // metaphor. After the dais transmits the task, the agent processes standing
+  // wherever it is — the work halo (rig.workHalo) orbits it while it thinks.
+  // Desks and seats remain scenery; the seat-claiming path was removed.
+  stopAgent(agent.id);
+  setEngaged(agent.id, 'standing');
 }
 
 function disengage(agent: AgentIdentity): void {
