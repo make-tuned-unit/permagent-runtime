@@ -12,7 +12,6 @@ export function MessageList() {
   const { colors } = useTheme();
   const chatMessages = useCommandCenter(s => s.chatMessages);
   const isStreaming = useCommandCenter(s => s.isStreaming);
-  const streamingMessageId = useCommandCenter(s => s._streamingMessageId);
   const agentName = useCommandCenter(s => s.agentName);
   // C8 / #568 lesson: a transient history-load failure surfaces inline with a
   // retry — never a silent catch that leaves an inexplicably empty chat.
@@ -70,7 +69,10 @@ export function MessageList() {
     }
   }, [timeline.length, isStreaming, greeting, persona?.voice_id, speak]);
 
-  const showStreamingIndicator = isStreaming && !streamingMessageId;
+  // Visible for the WHOLE in-flight turn — not just before the first token —
+  // so mid-turn tool-use silences still read as alive ("Thinking…" escalates
+  // with elapsed time; see StreamingIndicator.stageLabel).
+  const showStreamingIndicator = isStreaming;
 
   return (
     <div className="relative flex-1 overflow-hidden">

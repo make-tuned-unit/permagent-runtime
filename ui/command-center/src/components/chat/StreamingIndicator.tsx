@@ -1,10 +1,28 @@
+import { useEffect, useState } from 'react';
 import { useCommandCenter } from '../../lib/store';
 import { font, ease } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
+// Staged status copy so a long wait never reads as a crash (Jesse,
+// 2026-07-28): the label escalates with elapsed time instead of sitting on
+// three silent dots forever.
+function stageLabel(elapsed: number): string {
+  if (elapsed < 6) return 'Thinking';
+  if (elapsed < 18) return 'Still thinking — working through it';
+  if (elapsed < 45) return 'Working on it — this can involve tools';
+  return 'Still working — a longer task, not stuck';
+}
+
 export function StreamingIndicator() {
   const { colors, reduceMotion } = useTheme();
   const agentName = useCommandCenter(s => s.agentName);
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const started = Date.now();
+    const t = setInterval(() => setElapsed((Date.now() - started) / 1000), 1000);
+    return () => clearInterval(t);
+  }, []);
 
   return (
     <div className="flex justify-start">
@@ -28,6 +46,9 @@ export function StreamingIndicator() {
             style={{ fontFamily: font.display, fontWeight: 600, color: colors.textMuted }}
           >
             {agentName}
+          </span>
+          <span className="text-[11px]" style={{ fontFamily: font.body, color: colors.textDim }}>
+            {stageLabel(elapsed)}
           </span>
           <div className="flex gap-1 ml-1">
             {reduceMotion ? (

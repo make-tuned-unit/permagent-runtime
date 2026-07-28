@@ -10,7 +10,7 @@ import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { ENV } from '../../shared/palette';
 import { makeStoneTexture } from '../../shared/stoneTexture';
-import { DAIS, BEAM_MS, getDaisBeam, triggerDaisBeam } from '../../agents/daisBus';
+import { DAIS, BEAM_MS, getDaisBeam, getDaisPresence, triggerDaisBeam } from '../../agents/daisBus';
 import { DOME_HEIGHT } from '../../constants';
 
 const BEAM_TOP = DOME_HEIGHT + 4; // reads as descending from the oculus
@@ -46,20 +46,26 @@ export function TaskDais() {
     if (beam.seq !== seenSeq.current) seenSeq.current = beam.seq;
 
     const elapsed = beam.seq > 0 ? performance.now() - beam.startedAt : Infinity;
-    const active = elapsed < BEAM_MS;
+    const taskActive = elapsed < BEAM_MS;
+    // Sustained presence: Henry stands here for the whole open conversation —
+    // a continuous soft column, gentler than the task pulse.
+    const presence = getDaisPresence();
+    const active = taskActive || presence;
     g.visible = active;
 
     // Edge ring: quiet breathing normally, surges while the beam plays.
     if (edgeRef.current) {
       const mat = edgeRef.current.material as THREE.MeshBasicMaterial;
       const breathe = 0.22 + 0.08 * Math.sin(performance.now() * 0.0012);
-      mat.opacity = active ? 0.75 : breathe;
+      mat.opacity = active ? (taskActive ? 0.75 : 0.5) : breathe;
     }
     if (!active) return;
 
-    const t = elapsed / BEAM_MS; // 0..1
-    // Envelope: fast fade-in, hold, fade-out.
-    const env = t < 0.12 ? t / 0.12 : t > 0.82 ? (1 - t) / 0.18 : 1;
+    // Task pulse: 0..1 envelope. Presence: steady loop at reduced strength.
+    const t = taskActive ? elapsed / BEAM_MS : (performance.now() / 4000) % 1;
+    const env = taskActive
+      ? t < 0.12 ? t / 0.12 : t > 0.82 ? (1 - t) / 0.18 : 1
+      : 0.55;
 
     if (coreRef.current) {
       const mat = coreRef.current.material as THREE.MeshBasicMaterial;

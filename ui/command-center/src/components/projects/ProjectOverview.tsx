@@ -66,6 +66,7 @@ export function ProjectOverview({ project, onProjectUpdated }: {
             ProjectDetails header for the ruled division. */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
           <SummaryPanel project={project} onProjectUpdated={onProjectUpdated} />
+          <WatcherInsightsPanel project={project} />
           <KeyFactsPanel project={project} />
           <ActivityPanel project={project} />
         </div>
@@ -203,6 +204,46 @@ function SummaryPanel({ project, onProjectUpdated }: {
           )}
         </>
       )}
+    </Panel>
+  );
+}
+
+// ── Watcher insights ────────────────────────────────────────────────────────
+// 1-2 grounded daily observations the Watcher silently places on the project
+// (daemon watcher_insights loop → metadata_json.watcher_insights). Quiet by
+// design: no badge, no notification — read them as you browse. Renders
+// nothing until the first insight exists.
+
+interface WatcherInsight { text: string; created_at: string }
+
+function readWatcherInsights(metadata: Record<string, unknown>): WatcherInsight[] {
+  const raw = metadata?.watcher_insights;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((i): i is WatcherInsight =>
+      typeof i === 'object' && i !== null &&
+      typeof (i as WatcherInsight).text === 'string' &&
+      typeof (i as WatcherInsight).created_at === 'string')
+    .slice(0, 3);
+}
+
+function WatcherInsightsPanel({ project }: { project: Project }) {
+  const { colors } = useTheme();
+  const insights = readWatcherInsights(project.metadataJson);
+  if (insights.length === 0) return null;
+  return (
+    <Panel title="From the Watcher">
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {insights.map(i => (
+          <div key={i.created_at} style={{ display: 'flex', gap: 10, alignItems: 'baseline' }}>
+            <span style={{ color: colors.purpleBright, fontSize: 11, flexShrink: 0, lineHeight: '18px' }}>◆</span>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.55 }}>{i.text}</div>
+              <div style={{ fontSize: 10, color: colors.textDim, marginTop: 2 }}>{formatDate(i.created_at)}</div>
+            </div>
+          </div>
+        ))}
+      </div>
     </Panel>
   );
 }

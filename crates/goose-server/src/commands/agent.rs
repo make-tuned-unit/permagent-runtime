@@ -168,6 +168,10 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
     // Echo / the Watcher (#672): gentle, rare proactive nudges from the hub.
     crate::proactive::spawn(app_state.clone());
 
+    // Watcher project insights (2026-07-28): 1-2 grounded observations a day
+    // per project, silently placed on the project Overview card.
+    crate::watcher_insights::spawn(app_state.clone());
+
     // The Concierge (#640): flag-gated (default OFF), draft-only, local-tier
     // inbox triage. Spawns a loop only when PERMAGENT_CONCIERGE_ENABLED is on.
     crate::concierge::spawn(app_state.clone());
