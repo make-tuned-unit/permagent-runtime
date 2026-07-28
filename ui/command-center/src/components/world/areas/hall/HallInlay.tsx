@@ -96,7 +96,9 @@ function Omphalos({ reduceMotion }: { reduceMotion: boolean }) {
   });
 
   return (
-    <group position-y={0.15}>
+    // Raised onto the task dais surface (TaskDais platform top ≈ 0.34) — the
+    // seal is the dais's engraving now, not a floor inlay under it.
+    <group position-y={0.37}>
       {/* The seal ring. */}
       <mesh ref={ringRef} rotation-x={-Math.PI / 2} material={omphalosMat}>
         <ringGeometry args={[1.1, 1.5, 48]} />

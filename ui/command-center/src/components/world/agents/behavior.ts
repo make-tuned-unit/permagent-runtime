@@ -17,6 +17,7 @@ import { ensureMotion, getAgentPosition, getMotion, setEngaged, setPath, stopAge
 import { ensurePlaceholderAnchors } from './placeholderAnchors';
 import { getNudge } from './watcherNudge';
 import { STAIR, stairPointAt } from '../areas/hall/MezzanineLibrary';
+import { DAIS, BEAM_MS, triggerDaisBeam } from './daisBus';
 
 const WANDER_MIN_MS = 15000;
 const WANDER_MAX_MS = 30000;
@@ -149,6 +150,34 @@ export function useAgentBehavior(states: AgentRuntimeState[]): void {
     hud.clear();
     for (const s of states) hud.set(s.id, s.hudState);
 
+    // Task pickup choreography: a ground agent whose state flips to `working`
+    // first steps ONTO the central dais; on arrival the beam fires and the
+    // work transmits down into it (TaskDais); after the beam it steps off and
+    // engages at its seat. Guarded at every async step against the state
+    // having moved on (work finished / errored mid-walk).
+    const summonToDais = (agent: AgentIdentity) => {
+      const a = Math.random() * Math.PI * 2;
+      const sx = DAIS.x + Math.cos(a) * 0.7;
+      const sz = DAIS.z + Math.sin(a) * 0.7;
+      setPath(
+        agent.id,
+        [{ x: sx, y: DAIS.topY, z: sz, facing: Math.atan2(DAIS.x - sx, DAIS.z - sz) }],
+        () => {
+          if (hudRef.current.get(agent.id) !== 'working') return;
+          triggerDaisBeam(agent.id);
+          window.setTimeout(() => {
+            if (hudRef.current.get(agent.id) !== 'working') return;
+            // Step off radially, past the step ring.
+            const offX = DAIS.x + ((sx - DAIS.x) / 0.7) * (DAIS.radius + 1.6);
+            const offZ = DAIS.z + ((sz - DAIS.z) / 0.7) * (DAIS.radius + 1.6);
+            setPath(agent.id, [{ x: offX, y: 0, z: offZ }], () => {
+              if (hudRef.current.get(agent.id) === 'working') engageForWork(agent);
+            });
+          }, BEAM_MS);
+        },
+      );
+    };
+
     for (const s of states) {
       const before = prev.get(s.id);
       if (before === s.hudState) continue;
@@ -157,7 +186,9 @@ export function useAgentBehavior(states: AgentRuntimeState[]): void {
       if (!agent) continue;
 
       if (s.hudState === 'working') {
-        engageForWork(agent);
+        // The Librarian is ring-locked on the mezzanine — no ground dais trip.
+        if (agent.mezzanineLocked) engageForWork(agent);
+        else summonToDais(agent);
       } else if (before === 'working') {
         disengage(agent);
       }

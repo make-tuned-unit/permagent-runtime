@@ -10,6 +10,7 @@ import { COLORS, STATIONS, COLUMN_COUNT, ROTUNDA_RADIUS, DOME_HEIGHT, PLATFORM_R
 import { isPunchedAngle } from '../zones';
 import { HallDetail } from './HallDetail';
 import { HallInlay } from './HallInlay';
+import { TaskDais } from './TaskDais';
 // W4 reactivity seam (bible §7): the colonnade veins brighten with the live
 // working-agent count. The driving signal stays in the atmosphere lane; this is
 // the one cross-lane read W4 flagged in its PR for W1 awareness.
@@ -442,6 +443,9 @@ export function HallStructure({
       {/* Engraved circuit-node inlay (instanced) + the omphalos: the rotunda's
           reactive heart, breathing with REAL Brain events (HallInlay.tsx). */}
       <HallInlay />
+      {/* The task dais — agents step onto it when they pick up work and the
+          beam transmits the task down into them (areas/hall/TaskDais.tsx). */}
+      <TaskDais />
       <StationPedestals onHoverStation={onHoverStation} onClickStation={onClickStation} />
 
       {/* Orbital arcs — signature dynamic visual */}
