@@ -26,7 +26,7 @@ export function ForumPlaque() {
           boxShadow: online ? `0 0 14px ${accent}44` : 'none',
           color: '#E8E4DD',
           fontFamily: 'JetBrains Mono, monospace',
-          fontSize: 9,
+          fontSize: 10,
           letterSpacing: '0.14em',
           textAlign: 'center',
           whiteSpace: 'nowrap',

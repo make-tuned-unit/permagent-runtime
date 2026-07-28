@@ -501,6 +501,110 @@ pub async fn list_tags(pool: &Pool<Sqlite>, project_id: &str) -> Result<Vec<Stri
     load_tags(pool, project_id).await
 }
 
+/// The GTM strategy pillars the Grow tab's Strategy lens renders. Kept in
+/// lockstep with `ui/command-center` GrowView `PILLARS` — a saved value for a
+/// key not in this list would never be shown, so writes are whitelisted.
+pub const STRATEGY_PILLARS: &[&str] = &[
+    "audience",
+    "value",
+    "positioning",
+    "channels",
+    "content",
+    "workback",
+];
+
+/// Persist one GTM strategy pillar into the project's metadata bag
+/// (`metadata_json.strategy.<pillar> = { content, updated_at }`).
+///
+/// MERGES into the existing bag (the metadata bag is shared — `brief`,
+/// `links`, `build_command` all live there; a blind replace would eat them,
+/// see the frontend workspaceMeta warning). Returns the updated project, or
+/// `Ok(None)` when the project doesn't exist.
+/// Structured extras for a strategy pillar (#22 rich cards). Both optional —
+/// a plain-text save stays valid; the Grow cards render whatever is present.
+#[derive(Debug, Default, Clone)]
+pub struct StrategyExtras {
+    /// Labeled bullet points, each `{label, detail}` — e.g. a channel with its
+    /// fit reason, a persona with its watering holes.
+    pub points: Option<serde_json::Value>,
+    /// Small stat chips, each `{label, value}` — e.g. "Alternatives · 3",
+    /// "Price hypothesis · $9/mo".
+    pub metrics: Option<serde_json::Value>,
+}
+
+fn valid_pairs(v: &serde_json::Value, first: &str, second: &str) -> bool {
+    v.as_array().is_some_and(|items| {
+        items.iter().all(|item| {
+            item.get(first).and_then(|x| x.as_str()).is_some()
+                && item.get(second).and_then(|x| x.as_str()).is_some()
+        })
+    })
+}
+
+pub async fn set_project_strategy(
+    pool: &Pool<Sqlite>,
+    project_id: &str,
+    pillar: &str,
+    content: &str,
+    extras: StrategyExtras,
+) -> Result<Option<Project>, String> {
+    if !STRATEGY_PILLARS.contains(&pillar) {
+        return Err(format!(
+            "Unknown strategy pillar '{pillar}'. Valid pillars: {}",
+            STRATEGY_PILLARS.join(", ")
+        ));
+    }
+    let existing = match get_project(pool, project_id).await? {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+
+    let mut metadata = existing.metadata_json.clone();
+    if !metadata.is_object() {
+        metadata = serde_json::json!({});
+    }
+    let strategy = metadata
+        .as_object_mut()
+        .expect("just normalized to an object")
+        .entry("strategy")
+        .or_insert_with(|| serde_json::json!({}));
+    if !strategy.is_object() {
+        *strategy = serde_json::json!({});
+    }
+    let mut entry = serde_json::json!({
+        "content": content,
+        "updated_at": chrono::Utc::now().to_rfc3339(),
+    });
+    let entry_map = entry.as_object_mut().expect("literal object");
+    if let Some(points) = extras.points {
+        if !valid_pairs(&points, "label", "detail") {
+            return Err("points must be an array of {label, detail} strings".to_string());
+        }
+        entry_map.insert("points".to_string(), points);
+    }
+    if let Some(metrics) = extras.metrics {
+        if !valid_pairs(&metrics, "label", "value") {
+            return Err("metrics must be an array of {label, value} strings".to_string());
+        }
+        entry_map.insert("metrics".to_string(), metrics);
+    }
+    // NB: Map's Index panics on an absent key — insert(), never `map[key] =`.
+    strategy
+        .as_object_mut()
+        .expect("just normalized")
+        .insert(pillar.to_string(), entry);
+
+    update_project(
+        pool,
+        project_id,
+        UpdateProject {
+            metadata_json: Some(metadata),
+            ..Default::default()
+        },
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -9,6 +9,21 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 const { apiFetch } = vi.hoisted(() => ({ apiFetch: vi.fn() }));
 vi.mock('../../lib/api', () => ({ apiFetch }));
 
+// Minimal store double: the refresh button drives the real dock-open + send
+// seam, so the mock mirrors the zustand getState() surface the panel uses.
+const storeState = vi.hoisted(() => ({
+  state: {
+    chatDockOpen: false,
+    setActivePanel: vi.fn(),
+    openChatDock: vi.fn(() => { storeState.state.chatDockOpen = true; }),
+    sendMessage: vi.fn().mockResolvedValue(undefined),
+  },
+}));
+vi.mock('../../lib/store', () => ({
+  useCommandCenter: { getState: () => storeState.state },
+}));
+const useCommandCenter = { getState: () => storeState.state };
+
 import { EcosystemPanel } from './EcosystemPanel';
 import type { Project } from './types';
 
@@ -55,7 +70,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-it('renders grouped cited items and prepares the refresh prompt', async () => {
+it('renders grouped cited items and sends the refresh research to Henry', async () => {
   await act(async () => root.render(<EcosystemPanel project={project} />));
 
   expect(apiFetch).toHaveBeenCalledWith('/api/projects/project%2F1/intel');
@@ -70,15 +85,16 @@ it('renders grouped cited items and prepares the refresh prompt', async () => {
     'https://neighbor.example/',
   ]);
 
+  // Refresh RUNS the research (2026-07-27): the ask goes straight to Henry in
+  // the chat dock — no copy-a-prompt detour.
   const refresh = Array.from(container.querySelectorAll('button'))
     .find(button => button.textContent === 'Refresh intelligence');
   await act(async () => refresh?.click());
-  expect(writeText).toHaveBeenCalledWith(
-    'Refresh project intelligence for Acme: call research_project_intel with ' +
-    'project "Acme", research its competitors, partners, and adjacent ecosystem ' +
-    'with your web tools, then call propose_project_intel so I can review the findings in ' +
-    'the Decision Inbox.',
-  );
+  const store = useCommandCenter.getState();
+  expect(store.sendMessage).toHaveBeenCalledWith(expect.stringContaining('research_project_intel'));
+  expect(store.chatDockOpen).toBe(true);
+  expect(writeText).not.toHaveBeenCalled();
+  expect(container.textContent).toContain('Henry is researching…');
 });
 
 it('dismisses an item after the DELETE succeeds', async () => {

@@ -209,7 +209,7 @@ export function PublishSequencePanel({ project, onProjectUpdated }: {
               </span>
               {s.timeoutSecs !== undefined && (
                 <span style={{
-                  fontSize: 9, color: colors.textDim, flexShrink: 0,
+                  fontSize: 10, color: colors.textDim, flexShrink: 0,
                   padding: '1px 6px', borderRadius: 4, background: 'rgba(255,255,255,0.06)',
                 }}>
                   {s.timeoutSecs}s

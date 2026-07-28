@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../../lib/api';
-import { navigateToTool } from '../../lib/store';
+import { useCommandCenter } from '../../lib/store';
 import { relativeTimeAgo } from '../../lib/time-decay';
 import { isSafeHttpUrl } from '../../lib/url';
 import { font } from '../../styles/tokens';
@@ -29,7 +29,7 @@ export function EcosystemPanel({ project }: { project: Project }) {
   const { colors } = useTheme();
   const [intel, setIntel] = useState<ProjectIntelResponse>(emptyIntel);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
-  const [promptCopied, setPromptCopied] = useState(false);
+  const [requested, setRequested] = useState(false);
   const loadGeneration = useRef(0);
 
   const load = useCallback(async () => {
@@ -47,6 +47,7 @@ export function EcosystemPanel({ project }: { project: Project }) {
         ecosystem: Array.isArray(response?.ecosystem) ? response.ecosystem : [],
       });
       setStatus('ready');
+      setRequested(false); // fresh rows landed — the button is usable again
     } catch {
       if (generation !== loadGeneration.current) return;
       setStatus('error');
@@ -71,16 +72,21 @@ export function EcosystemPanel({ project }: { project: Project }) {
     }
   };
 
-  // Prepared-prompt pattern mirrored from PersonDetailModal's Enricher flow.
+  // Run it, don't hand the user a prompt (2026-07-27 ruling): the button sends
+  // the research ask straight to Henry in the chat dock. Findings land through
+  // propose_project_intel -> Decision Inbox approval -> intel rows, and this
+  // panel refreshes via projectsRev when they do.
   const requestIntelligence = () => {
-    const prompt =
-      `Refresh project intelligence for ${project.name}: call research_project_intel with ` +
-      `project "${project.name}", research its competitors, partners, and adjacent ecosystem ` +
-      `with your web tools, then call propose_project_intel so I can review the findings in ` +
-      `the Decision Inbox.`;
-    navigator.clipboard?.writeText(prompt).catch(() => {});
-    setPromptCopied(true);
-    navigateToTool('chat');
+    const { setActivePanel, openChatDock, sendMessage } = useCommandCenter.getState();
+    setActivePanel('chat');
+    openChatDock();
+    void sendMessage(
+      `Refresh project intelligence for "${project.name}": call research_project_intel for ` +
+      `this project, research its competitors, partners, and adjacent ecosystem with your ` +
+      `web tools, then call propose_project_intel so I can review the findings in the ` +
+      `Decision Inbox.`,
+    );
+    setRequested(true);
   };
 
   const groups: Array<[string, ProjectIntelItem[]]> = [
@@ -106,7 +112,7 @@ export function EcosystemPanel({ project }: { project: Project }) {
           onClick={requestIntelligence}
           style={{ border: 'none', background: 'none', color: colors.cyan, cursor: 'pointer', fontFamily: font.body, fontSize: 11, padding: 0 }}
         >
-          {promptCopied ? 'Prompt copied — paste it in chat' : 'Refresh intelligence'}
+          {requested ? 'Henry is researching…' : 'Refresh intelligence'}
         </button>
       )}
     >

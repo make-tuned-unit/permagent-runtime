@@ -15,7 +15,7 @@ export function Section({ title, sub, children }: { title: string; sub?: string;
   const { colors } = useTheme();
   return (
     <div style={{ marginBottom: 28, padding: 24, borderRadius: radius.md, background: colors.bgDeeper, border: `1px solid ${colors.border}` }}>
-      <div style={{ fontFamily: font.display, fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em', marginBottom: sub ? 4 : 16 }}>{title}</div>
+      <div style={{ fontFamily: font.display, fontSize: 14, fontWeight: 600, letterSpacing: '-0.01em', marginBottom: sub ? 4 : 16 }}>{title}</div>
       {sub && <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 18, lineHeight: 1.5 }}>{sub}</div>}
       {children}
     </div>

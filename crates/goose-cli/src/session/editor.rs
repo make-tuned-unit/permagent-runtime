@@ -39,7 +39,7 @@ fn resolve_editor_from_sources(
 
 /// Build the markdown template content for the editor prompt.
 fn build_template(messages: &[&str], prefill: Option<&str>) -> String {
-    let mut content = String::from("# Goose Prompt Editor\n\n");
+    let mut content = String::from("# Permagent Prompt Editor\n\n");
 
     content.push_str("# Your prompt:\n\n");
     if let Some(text) = prefill {

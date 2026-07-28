@@ -271,13 +271,13 @@ pub async fn update(canary: bool, reconfigure: bool) -> Result<()> {
 
         // --- Reconfigure if requested -------------------------------------------
         if reconfigure {
-            println!("Running goose configure...");
+            println!("Running permagent configure...");
             let status = Command::new(current_exe)
                 .arg("configure")
                 .status()
-                .context("Failed to run goose configure")?;
+                .context("Failed to run permagent configure")?;
             if !status.success() {
-                eprintln!("Warning: goose configure exited with {status}");
+                eprintln!("Warning: permagent configure exited with {status}");
             }
         }
 

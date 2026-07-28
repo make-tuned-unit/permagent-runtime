@@ -14,7 +14,6 @@ import {
 import { BrowserTabs, type BrowserTab } from './BrowserTabs';
 import { BookmarksBar } from './BookmarksBar';
 import { CHAT_LAUNCHER_MARGIN } from '../chat/ChatLauncher';
-import { CHAT_DOCK_WIDTH } from '../chat/ChatDock';
 import { nextPaneTabId, usePaneTabCycling } from '../build/paneTabCycling';
 
 // ── Tauri API loader (cached, no module-level mutation) ──
@@ -125,6 +124,9 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
   chatLauncherSizeRef.current = chatLauncherSize;
   const chatDockOpenRef = useRef(chatDockOpen);
   chatDockOpenRef.current = chatDockOpen;
+  // Stable handle to syncBounds for effects registered before its definition
+  // (the pane_redock listener needs to snap bounds on arrival).
+  const syncBoundsRef = useRef<(() => void) | null>(null);
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
 
@@ -159,6 +161,9 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
 
   useImperativeHandle(ref, () => ({
     getActiveTab: () => tabsRef.current.find(t => t.id === activeTabIdRef.current) || tabsRef.current[0],
+    // Every tab this browser owns — a detached pane window needs all of them
+    // to destroy their child webviews when the window is genuinely closed.
+    getAllTabs: () => tabsRef.current,
   }), []);
 
   useEffect(() => {
@@ -169,6 +174,10 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
       setTabs(prev => [...prev.filter(t => t.id !== e.payload.tab.id), e.payload.tab]);
       setActiveTabId(e.payload.tab.id);
       setUrlInput(e.payload.tab.url);
+      // Place the incoming webview NOW — it arrives parked offscreen (the pane
+      // hid it before reparenting) and waiting up to 500ms for the pump left a
+      // visible gap (or, before the hide, a flash over the terminal panel).
+      requestAnimationFrame(() => syncBoundsRef.current?.());
     })).then(fn => { unlisten = fn; });
     return () => unlisten?.();
   }, [detached]);
@@ -201,14 +210,10 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
     // that window is a separate native surface ordered above main already.
     let height = rect.height;
     let width = rect.width;
-    // Chat dock (2026-07-11): when the sidebar is open, the native webview must
-    // not paint under it — reserve its right strip (matches the DOM overlay).
-    if (chatDockOpenRef.current && window.innerWidth >= 640) {
-      const dockLeft = window.innerWidth - CHAT_DOCK_WIDTH;
-      if (rect.x + width > dockLeft) {
-        width = Math.max(0, dockLeft - rect.x);
-      }
-    }
+    // Chat dock: on wide screens the dock is a flex sibling of <main>, so the
+    // container rect ALREADY excludes it — subtracting again would shrink the
+    // webview by a second dock width. Only the narrow (<640) full-width sheet
+    // still overlays, and it covers the pane entirely, so reserve nothing here.
     const launcher = chatLauncherSizeRef.current;
     if (launcher) {
       const reservedTop = window.innerHeight - launcher.height - 2 * CHAT_LAUNCHER_MARGIN;
@@ -235,6 +240,7 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
       }
     });
   }, []);
+  syncBoundsRef.current = syncBounds;
 
   // ── ResizeObserver + visibility polling keeps webview in sync ──
   //

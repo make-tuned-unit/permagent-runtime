@@ -413,7 +413,7 @@ export function AutonomyPanel() {
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, marginBottom: 4 }}>
                     <span style={{ fontSize: 13, fontWeight: 600, color: current ? colors.cyan : colors.text }}>{opt.l}</span>
                     {locked && (
-                      <span style={{ fontSize: 9, fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', color: colors.textMuted, border: `1px solid ${colors.border}`, borderRadius: 999, padding: '1px 6px' }}>Soon</span>
+                      <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', color: colors.textMuted, border: `1px solid ${colors.border}`, borderRadius: 999, padding: '1px 6px' }}>Soon</span>
                     )}
                   </div>
                   <div style={{ fontSize: 11, color: colors.textMuted }}>{opt.d}</div>

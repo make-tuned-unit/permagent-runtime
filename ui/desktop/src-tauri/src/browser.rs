@@ -374,6 +374,51 @@ pub async fn close_browser(app: AppHandle, webview_id: String) -> Result<(), Str
     Ok(())
 }
 
+/// Tear down a detached pane window and its child browser webviews in ONE
+/// native operation.
+///
+/// Why this exists: the pane window's JS close handler used to await a
+/// `close_browser` invoke per tab and only then destroy the window. Closing a
+/// native child webview while the window is servicing its own close-requested
+/// event can stall that IPC round-trip, and a stalled await meant `destroy()`
+/// was never reached — the window simply refused to close (the chat and
+/// terminal panes, which don't close child webviews, were unaffected). Doing
+/// the whole teardown Rust-side makes it atomic: once this command is
+/// dispatched, the window dies even if the calling JS context never hears the
+/// reply.
+///
+/// Order matters: child webviews are closed first (releases their
+/// BrowserSessions entries), then the window. Every step is best-effort — a
+/// missing webview or an already-closing window must never keep the window on
+/// screen.
+#[tauri::command]
+pub async fn destroy_pane_window(
+    app: AppHandle,
+    window_label: String,
+    webview_ids: Vec<String>,
+) -> Result<(), String> {
+    {
+        let state = app.state::<BrowserSessions>();
+        let mut sessions = state.0.lock().unwrap();
+        for id in &webview_ids {
+            sessions.remove(id);
+        }
+    }
+    for id in &webview_ids {
+        if let Some(webview) = app.get_webview(id) {
+            if let Err(e) = webview.close() {
+                eprintln!("[permagent-app] destroy_pane_window: close webview {id} failed: {e}");
+            }
+        }
+    }
+    if let Some(window) = app.get_window(&window_label) {
+        window
+            .destroy()
+            .map_err(|e| format!("Destroy window failed: {e}"))?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn zoom_browser(
     app: AppHandle,

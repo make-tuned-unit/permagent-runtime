@@ -249,7 +249,7 @@ export function InspectionPanel({ onClose }: Props) {
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span style={{ color: colors.textDim, fontFamily: font.mono, fontSize: 10, width: 56, flexShrink: 0 }}>{ts}</span>
                 <span style={{
-                  padding: '0 4px', borderRadius: 2, fontSize: 9, fontWeight: 600,
+                  padding: '0 4px', borderRadius: 2, fontSize: 10, fontWeight: 600,
                   background: surfaceColor(surface, colors), color: colors.textOnAccent,
                 }}>
                   {surface.replace(/Picker$/, '')}
@@ -288,7 +288,7 @@ export function InspectionPanel({ onClose }: Props) {
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   {m.wing && (
-                    <span style={{ padding: '0 4px', borderRadius: 2, fontSize: 9, background: colors.cyanSoft, color: colors.cyan }}>
+                    <span style={{ padding: '0 4px', borderRadius: 2, fontSize: 10, background: colors.cyanSoft, color: colors.cyan }}>
                       {m.wing}
                     </span>
                   )}
@@ -335,7 +335,7 @@ export function InspectionPanel({ onClose }: Props) {
                 <strong style={{ color: colors.textMuted }}>Probed Memories ({digest.probed_memories.length}):</strong>
                 {digest.probed_memories.map((m, i) => (
                   <div key={i} style={{ padding: '2px 0', borderBottom: `1px solid ${colors.border}` }}>
-                    <span style={{ color: colors.cyan, fontSize: 9 }}>relevance: {m.relevance?.toFixed(2)}</span>{' '}
+                    <span style={{ color: colors.cyan, fontSize: 10 }}>relevance: {m.relevance?.toFixed(2)}</span>{' '}
                     {m.content?.slice(0, 120)}
                   </div>
                 ))}

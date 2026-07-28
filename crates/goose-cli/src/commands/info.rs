@@ -74,7 +74,7 @@ pub fn handle_info(verbose: bool) -> Result<()> {
             println!("  No configuration values set");
             println!(
                 "  Run '{}' to configure goose",
-                style("goose configure").cyan()
+                style("permagent configure").cyan()
             );
         } else {
             let sorted_values: std::collections::BTreeMap<_, _> =

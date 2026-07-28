@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: () => ({
+    label: 'pane-window-test',
     destroy: mocks.destroy,
     isMinimized: vi.fn().mockResolvedValue(false),
     onCloseRequested: vi.fn(async (handler) => {
@@ -31,7 +32,10 @@ vi.mock('./components/browser', async () => {
   return {
     Browser: forwardRef(function MockBrowser(props: { initialTab: unknown }, ref) {
       mocks.browserTabs.push(props.initialTab);
-      useImperativeHandle(ref, () => ({ getActiveTab: () => props.initialTab }));
+      useImperativeHandle(ref, () => ({
+        getActiveTab: () => props.initialTab,
+        getAllTabs: () => [props.initialTab],
+      }));
       return <div data-testid="browser" />;
     }),
   };
@@ -94,10 +98,36 @@ describe('PaneWindowApp', () => {
     expect(container.querySelector('[data-testid="browser"]')).not.toBeNull();
   });
 
-  it('allows a later redock attempt after reparenting fails', async () => {
+  it('redocks the open site into the app and destroys the window on close', async () => {
     const tab = { id: 'b1', label: 'Docs', webviewId: 'browser-4', url: 'https://example.com', loading: false };
     paneWindows.stashPaneTab('browser-test', tab);
-    mocks.invoke.mockRejectedValueOnce(new Error('transient reparent failure')).mockResolvedValueOnce(undefined);
+    await renderBrowser();
+
+    await act(async () => {
+      mocks.closeHandler?.({ preventDefault: vi.fn() });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Close = hand the content back: the loaded tab reparents into main (its
+    // page survives as an in-app tab) and the pane window always dies.
+    expect(mocks.invoke).toHaveBeenCalledWith('reparent_browser', {
+      webviewId: 'browser-4',
+      windowLabel: 'main',
+    });
+    expect(paneWindows.emitRedock).toHaveBeenCalledWith('browser', tab);
+    expect(mocks.invoke).not.toHaveBeenCalledWith('destroy_pane_window', expect.anything());
+    expect(mocks.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('still destroys the window when the redock fails', async () => {
+    // Regression: the close handler used to throw before destroy(), stranding
+    // a window the user had asked to dismiss. A failed handoff now falls back
+    // to the native teardown and the window dies regardless.
+    const tab = { id: 'b1', label: 'Docs', webviewId: 'browser-4', url: 'https://example.com', loading: false };
+    paneWindows.stashPaneTab('browser-test', tab);
+    mocks.invoke.mockRejectedValue(new Error('transient reparent failure'));
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     await renderBrowser();
 
@@ -105,15 +135,14 @@ describe('PaneWindowApp', () => {
       mocks.closeHandler?.({ preventDefault: vi.fn() });
       await Promise.resolve();
       await Promise.resolve();
+      await Promise.resolve();
     });
-    expect(mocks.destroy).not.toHaveBeenCalled();
 
-    await act(async () => {
-      mocks.closeHandler?.({ preventDefault: vi.fn() });
-      await Promise.resolve();
-      await Promise.resolve();
+    // The stranded webview goes to the atomic native teardown instead.
+    expect(mocks.invoke).toHaveBeenCalledWith('destroy_pane_window', {
+      windowLabel: 'pane-window-test',
+      webviewIds: ['browser-4'],
     });
-    expect(mocks.invoke).toHaveBeenCalledTimes(2);
     expect(mocks.destroy).toHaveBeenCalledTimes(1);
   });
 });

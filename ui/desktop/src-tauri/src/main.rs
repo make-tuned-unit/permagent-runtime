@@ -253,6 +253,7 @@ fn main() {
             browser::update_browser_bounds,
             browser::hide_browser,
             browser::close_browser,
+            browser::destroy_pane_window,
             browser::zoom_browser,
             browser::get_page_content,
             browser::get_page_snapshot,

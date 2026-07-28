@@ -326,6 +326,26 @@ impl AppState {
             agent_manager.scheduler(),
         );
 
+        // Ontology→graph backfill: materialize every curated ontology entity as
+        // a graph node. Must run BEFORE the people bridges below, which resolve
+        // canonicals against the graph. Idempotent + additive, so a steady state
+        // mints nothing; it exists because the Kuzu→SQLite store move left the
+        // new graph empty with no backfill path. Non-fatal.
+        if let Some(ref b) = brain {
+            match b.materialize_ontology_entities().await {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(
+                    target: "permagentd::brain",
+                    "Ontology→graph backfill materialized {n} entity nodes"
+                ),
+                Err(e) => tracing::warn!(
+                    target: "permagentd::brain",
+                    error = %e,
+                    "Ontology→graph backfill failed (non-fatal)"
+                ),
+            }
+        }
+
         // People↔graph bridge (#255/B): mint identity-only `people` rows for graph
         // person entities (e.g. "mel schembri") and backfill graph_entity_id on
         // pre-bridge rows, so the CRM directory shows everyone the Brain knows.
@@ -359,6 +379,87 @@ impl AppState {
                         "People↔graph bridge (graph side) sync failed (non-fatal)"
                     ),
                 }
+            }
+
+            // Association→edge reconcile (2026-07-27): re-assert works_on
+            // triples from the surviving project_people rows. The edges were
+            // asserted at association time into the OLD Kuzu store; the
+            // SQLite store started empty and re-association never fires for
+            // rows that already exist — so associated people showed 0
+            // connections in the Brain view. Idempotent (assert short-circuits
+            // on an existing triple), best-effort per row, non-fatal.
+            if let Some(ref b) = brain {
+                match sqlx::query_as::<_, (String, String)>(
+                    "SELECT pp.project_id, pe.graph_entity_id
+                     FROM project_people pp
+                     JOIN people pe ON pe.entity_uuid = pp.entity_uuid
+                     WHERE pe.graph_entity_id IS NOT NULL",
+                )
+                .fetch_all(&pool)
+                .await
+                {
+                    Ok(rows) => {
+                        let mut asserted = 0usize;
+                        for (project_id, person_gid) in rows {
+                            let project =
+                                match permagent::projects::get_project(&pool, &project_id).await {
+                                    Ok(Some(p)) => p,
+                                    _ => continue,
+                                };
+                            if let Ok(Some(project_gid)) =
+                                permagent::project_graph::ensure_project_graph_identity(
+                                    &pool, b, &project,
+                                )
+                                .await
+                            {
+                                if let Ok(true) =
+                                    b.assert_works_on_edge(&person_gid, &project_gid).await
+                                {
+                                    asserted += 1;
+                                }
+                            }
+                        }
+                        if asserted > 0 {
+                            tracing::info!(
+                                target: "permagentd::brain",
+                                "Association→edge reconcile asserted {asserted} works_on edges"
+                            );
+                        }
+                    }
+                    Err(e) => tracing::warn!(
+                        target: "permagentd::brain",
+                        error = %e,
+                        "Association→edge reconcile query failed (non-fatal)"
+                    ),
+                }
+            }
+
+            // Memory→entity mention backfill (#24): link every stored memory
+            // to the graph entities its text mentions, and write provenance
+            // descriptions for entities that have none ("Location the brain
+            // tracks — mentioned in N memories since …"). Idempotent, so it
+            // runs every boot and self-heals; background task, non-blocking.
+            if brain.is_some() {
+                tokio::task::spawn_blocking(move || {
+                    let brain_dir = permagent::config::paths::Paths::brain_dir();
+                    match permagent::brain_enrichment::backfill_memory_mentions(
+                        &brain_dir.join("graph.sqlite"),
+                        &brain_dir.join("memory.db"),
+                    ) {
+                        Ok(report) => tracing::info!(
+                            target: "permagentd::brain",
+                            "Mention backfill: {}/{} memories linked, {} mentions, {} entity descriptions written",
+                            report.memories_linked,
+                            report.memories_scanned,
+                            report.mentions_inserted,
+                            report.descriptions_written,
+                        ),
+                        Err(e) => tracing::warn!(
+                            target: "permagentd::brain",
+                            "Mention backfill failed (non-fatal): {e}"
+                        ),
+                    }
+                });
             }
 
             // Skills source-of-truth migration: export any indexed skill that

@@ -61,6 +61,10 @@ use tracing::{info, warn};
 /// v37 = durable effect outbox for Decision-Inbox effects. New table + index,
 /// additive and idempotent. `migrate_v36_to_v37` applies it.
 ///
+/// v38 = first-party analytics events (#23 — daemon as collector, no
+/// third-party dependency). New table + index, additive and idempotent.
+/// `migrate_v37_to_v38` applies it.
+///
 /// NOTE on the version drift: this constant intentionally stays at 14 even though
 /// the migration chain now runs to v19 (`migrate_v14_to_v15` … `migrate_v18_to_v19`).
 /// It is the stamp `init_spectral_db` applies to a *fresh* DB — those later steps
@@ -746,6 +750,10 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // Durable Decision-Inbox effect outbox (schema v37). Idempotent; shared
     // with migrate_v36_to_v37 so fresh installs get it on first boot.
     apply_effect_outbox_schema(pool).await?;
+
+    // First-party analytics events (schema v38). Idempotent; shared with
+    // migrate_v37_to_v38 so fresh installs get it on first boot.
+    apply_analytics_events_schema(pool).await?;
 
     info!(
         "Spectral schema v{} initialized successfully",
@@ -2483,6 +2491,47 @@ pub async fn migrate_v36_to_v37(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
+/// Apply the first-party analytics schema (v38): raw web-analytics events
+/// ingested by the daemon's own collector endpoint (#23 — no third-party
+/// analytics dependency). Shared by `migrate_v37_to_v38` (existing DBs) and
+/// `init_spectral_db` (fresh installs). Fully idempotent (IF NOT EXISTS).
+pub async fn apply_analytics_events_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS analytics_events (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id   TEXT NOT NULL,
+            kind         TEXT NOT NULL DEFAULT 'pageview'
+                         CHECK (kind IN ('pageview','event')),
+            path         TEXT NOT NULL DEFAULT '/',
+            referrer     TEXT,
+            name         TEXT,
+            visitor_hash TEXT,
+            created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_analytics_events_project_time
+         ON analytics_events(project_id, created_at)",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// v38: first-party analytics events. New table and index only; safe to run
+/// repeatedly on every database.
+pub async fn migrate_v37_to_v38(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v37 -> v38 (first-party analytics events)");
+    apply_analytics_events_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (38)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v38 (first-party analytics events)");
+    Ok(())
+}
+
 /// Migrate an existing database to the decision-inbox schema (schema v10).
 ///
 /// Follows the idempotent migrate_v7_to_v8 template. The body is base-version
@@ -3907,6 +3956,21 @@ mod inbox_schema_tests {
         assert_eq!(current_version(&pool).await, 37);
         assert!(object_exists(&pool, "effect_outbox").await);
         assert!(object_exists(&pool, "idx_effect_outbox_drain").await);
+    }
+
+    #[tokio::test]
+    async fn migrate_v37_to_v38_adds_analytics_events_idempotently() {
+        let pool = mem_pool().await;
+        init_spectral_db(&pool).await.unwrap();
+        assert!(object_exists(&pool, "analytics_events").await);
+        assert!(object_exists(&pool, "idx_analytics_events_project_time").await);
+
+        migrate_v37_to_v38(&pool).await.unwrap();
+        migrate_v37_to_v38(&pool).await.unwrap();
+
+        assert_eq!(current_version(&pool).await, 38);
+        assert!(object_exists(&pool, "analytics_events").await);
+        assert!(object_exists(&pool, "idx_analytics_events_project_time").await);
     }
 
     /// Count schema objects (table/view/trigger) by exact name.

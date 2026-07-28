@@ -15,6 +15,7 @@ import { apiFetch } from '../../lib/api';
 import { useTheme } from '../../styles/useTheme';
 import { font } from '../../styles/tokens';
 import { useCommandCenter } from '../../lib/store';
+import { setSpeakReplies } from '../../lib/speakReplies';
 
 const LS_KEY = 'permagent-learn-next-state';
 const DAY = 86_400_000;
@@ -66,6 +67,7 @@ export function LearnNext() {
   const { colors } = useTheme();
   const sendMessage = useCommandCenter(s => s.sendMessage);
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
+  const openChatDock = useCommandCenter(s => s.openChatDock);
 
   const [item, setItem] = useState<LearnNextItem | null>(null);
   const [totals, setTotals] = useState<{ used: number; teachable: number } | null>(null);
@@ -105,7 +107,15 @@ export function LearnNext() {
   // The real teaching loop: hand the agent an explicit ask; it responds by
   // calling load_feature_lesson for this capability and navigating to its tab.
   const showMe = () => {
+    // Open the dock explicitly — setActivePanel('chat') only dismisses
+    // overlays, so before this the walkthrough was sent to a chat nobody
+    // could see (the button looked dead) and the agent's streaming reply —
+    // the immediate feedback that makes the tour feel alive — was invisible.
     setActivePanel('chat');
+    openChatDock();
+    // Voice-first onboarding (#18): the agent TALKS through the walkthrough;
+    // the chat header's mute drops it back to text (and persists).
+    setSpeakReplies(true);
     void sendMessage(
       `I haven't used ${item.display_name} yet — walk me through it and show me how it works.`,
     );

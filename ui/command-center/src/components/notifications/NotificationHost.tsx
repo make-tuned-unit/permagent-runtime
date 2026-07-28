@@ -6,9 +6,11 @@ import { useEffect, useState } from 'react';
 import {
   useNotifications,
   markAllRead,
+  setTrayOpen,
+  useTrayOpen,
   type AppNotification,
 } from '../../lib/notifications';
-import { navigateToTool } from '../../lib/store';
+import { navigateToTool, useCommandCenter } from '../../lib/store';
 import { font, radius, ease } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
@@ -16,8 +18,8 @@ const TOAST_MS = 6000;
 
 export function NotificationHost() {
   const { colors } = useTheme();
-  const { items, unread } = useNotifications();
-  const [open, setOpen] = useState(false);
+  const { items } = useNotifications();
+  const open = useTrayOpen();
   const [toastIds, setToastIds] = useState<string[]>([]);
 
   // Newest item becomes a transient toast (skip when the tray is open).
@@ -33,49 +35,43 @@ export function NotificationHost() {
   }, [newestId, open]);
 
   const activate = (n: AppNotification) => {
-    if (n.target) navigateToTool(n.target);
-    setOpen(false);
+    // A notification carrying a link (e.g. a Watcher nudge's source article)
+    // opens it in the in-app browser on the Build tab; otherwise fall back to
+    // the target tab.
+    if (n.url) {
+      useCommandCenter.getState().openInBrowser(n.url);
+    } else if (n.target) {
+      navigateToTool(n.target);
+    }
+    setTrayOpen(false);
     markAllRead();
   };
+
+  // Click-away dismissal: any press outside the tray (and outside the bell
+  // row, whose own toggle handles those clicks) closes the tray and marks
+  // read — same as closing via the bell. Capture phase so it wins even when
+  // the clicked surface stops propagation.
+  useEffect(() => {
+    if (!open) return;
+    const onPress = (e: MouseEvent) => {
+      const el = e.target as Element | null;
+      if (el?.closest('[data-notifications-ui]')) return;
+      markAllRead();
+      setTrayOpen(false);
+    };
+    document.addEventListener('mousedown', onPress, true);
+    return () => document.removeEventListener('mousedown', onPress, true);
+  }, [open]);
 
   const toasts = items.filter((i) => toastIds.includes(i.id));
 
   return (
     <>
-      {/* Bell */}
-      <button
-        onClick={() => {
-          // Mark read on CLOSE so the unread highlight is visible while open.
-          if (open) markAllRead();
-          setOpen((o) => !o);
-        }}
-        title="Notifications"
-        style={{
-          position: 'fixed', top: 34, right: 14, zIndex: 90,
-          width: 30, height: 30, borderRadius: radius.pill,
-          background: unread > 0 ? colors.cyanSoft : 'transparent',
-          border: `1px solid ${unread > 0 ? colors.borderHi : colors.border}`,
-          color: unread > 0 ? colors.cyan : colors.textMuted,
-          cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-        }}
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
-          <path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 01-3.4 0" />
-        </svg>
-        {unread > 0 && (
-          <span style={{
-            position: 'absolute', top: -4, right: -4, minWidth: 15, height: 15,
-            borderRadius: radius.pill, background: colors.cyan, color: colors.textOnCyan,
-            fontFamily: font.mono, fontSize: 9, fontWeight: 700,
-            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px',
-          }}>{unread > 9 ? '9+' : unread}</span>
-        )}
-      </button>
-
-      {/* Tray */}
+      {/* Tray — anchored bottom-left, beside the sidebar's Notifications row
+          (which sits just above Settings). */}
       {open && (
-        <div style={{
-          position: 'fixed', top: 70, right: 14, zIndex: 90, width: 320,
+        <div data-notifications-ui style={{
+          position: 'fixed', bottom: 96, left: 60, zIndex: 90, width: 320,
           maxHeight: '60vh', overflowY: 'auto',
           background: colors.surface, backdropFilter: 'blur(24px) saturate(140%)',
           border: `1px solid ${colors.borderHi}`, borderRadius: radius.lg,
@@ -96,7 +92,7 @@ export function NotificationHost() {
               {n.body && (
                 <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2, lineHeight: 1.4 }}>{n.body}</div>
               )}
-              <div style={{ fontFamily: font.mono, fontSize: 9, color: colors.textDim, marginTop: 3 }}>
+              <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, marginTop: 3 }}>
                 {new Date(n.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
               </div>
             </button>
@@ -106,7 +102,9 @@ export function NotificationHost() {
 
       {/* Toasts */}
       <div style={{
-        position: 'fixed', bottom: 18, right: 18, zIndex: 95,
+        // Top-right (2026-07-27): the bottom-right corner belongs to the
+        // Chat-with-Henry pill, which was overlapping toasts.
+        position: 'fixed', top: 40, right: 14, zIndex: 95,
         display: 'flex', flexDirection: 'column', gap: 8, pointerEvents: 'none',
       }}>
         {toasts.map((n) => (

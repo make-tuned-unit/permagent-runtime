@@ -463,7 +463,7 @@ project, onOpen, onDragStart }: {
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         {isPersonal && (
-          <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 4, background: colors.cyanSoft, color: colors.cyan, fontWeight: 600 }}>
+          <span style={{ fontSize: 10, padding: '1px 5px', borderRadius: 4, background: colors.cyanSoft, color: colors.cyan, fontWeight: 600 }}>
             DEFAULT
           </span>
         )}
@@ -479,7 +479,7 @@ project, onOpen, onDragStart }: {
       {project.tags.length > 0 && (
         <div style={{ display: 'flex', gap: 4, marginTop: 6, flexWrap: 'wrap' }}>
           {project.tags.slice(0, 3).map((tag, ti) => (
-            <span key={`${tag}-${ti}`} style={{ fontSize: 9, padding: '1px 5px', borderRadius: 4, background: tagVeil, color: colors.textDim }}>
+            <span key={`${tag}-${ti}`} style={{ fontSize: 10, padding: '1px 5px', borderRadius: 4, background: tagVeil, color: colors.textDim }}>
               {tag}
             </span>
           ))}
@@ -894,7 +894,7 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel }: {
       )}
       {card.cardType !== 'standard' && (
         <span style={{
-          fontSize: 9, padding: '1px 5px', borderRadius: 4, marginTop: 4, display: 'inline-block',
+          fontSize: 10, padding: '1px 5px', borderRadius: 4, marginTop: 4, display: 'inline-block',
           background: isGoal ? colors.purpleSoft : colors.cyanSoft,
           color: isGoal ? colors.purpleBright : colors.cyan,
         }}>

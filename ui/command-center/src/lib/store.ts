@@ -3,6 +3,7 @@ import { api, apiFetch, extractText, extractThinking, fileToBase64, readerIngest
 import { emitActivity, type ActivityEventName, type ActivitySourceSurface } from './emitActivity';
 import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload, TokenState } from './api';
 import { costFromFrame } from './costMeter';
+import { maybeSpeakReply } from './speakReplies';
 import { appendTraceRecord, sessionFrameToRecord } from './traceEvents';
 import { startEventPruning } from './eventBus';
 import type { ProjectPerson } from '../components/projects/types';
@@ -1046,6 +1047,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     try { localStorage.setItem('permagent-chat-session-id', sessionId); } catch { /* */ }
     get().connectSession(sessionId);
     get().setActivePanel('chat');
+    get().openChatDock(); // dock-first: the discussion must be visible immediately
     // Seed turn carries the decision id; clear it after so later turns don't re-send
     // (the daemon's injected context persists for the session after the first turn).
     set({ discussSeedDecisionId: decisionId });
@@ -1388,6 +1390,12 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         break;
       }
       case 'Finish': {
+        // Speak-replies (#18): voice the completed reply when enabled — after
+        // the state settles, never blocking the text path.
+        {
+          const lastAssistant = [...get().chatMessages].reverse().find(m => m.role === 'assistant');
+          if (lastAssistant?.content) void maybeSpeakReply(lastAssistant.content);
+        }
         set({ isStreaming: false, _streamingMessageId: null, _activeRequestId: null });
         // Reload proposals + skills after each reply completes — the agent may
         // have created a skill (save_skill) or a new proposal may have fired.

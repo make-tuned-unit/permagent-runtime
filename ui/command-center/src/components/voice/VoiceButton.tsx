@@ -57,6 +57,8 @@ export function VoiceButton() {
     stopRecording,
     interrupt,
     getAnalyser,
+    handsFree,
+    setHandsFree,
   } = useVoice({ sessionId: chatSessionId ?? undefined });
 
   const isRecordingRef = useRef(false);
@@ -183,9 +185,36 @@ export function VoiceButton() {
       </button>
 
       {/* While the agent speaks, the waveform IS the label — a live frequency
-          visualization instead of static "Speaking..." text. */}
-      {state === 'playing' && !error ? (
-        <VoiceVisualizer getAnalyser={getAnalyser} active />
+          visualization instead of static "Speaking..." text. Clicking it
+          enters HANDS-FREE (#19): the mic stays open, turns are taken by
+          voice-activity detection (silence ends your turn, loud speech barges
+          in), no spacebar needed. Click again to leave. */}
+      {handsFree ? (
+        <button
+          onClick={() => void setHandsFree(false)}
+          title="Hands-free conversation is ON — click to exit"
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer',
+            border: `1px solid ${colors.cyan}80`, backgroundColor: colors.cyanSoft,
+            borderRadius: 6, padding: '3px 8px',
+          }}
+        >
+          {state === 'playing' ? (
+            <VoiceVisualizer getAnalyser={getAnalyser} active />
+          ) : (
+            <span style={{ fontSize: 10, color: colors.cyan, whiteSpace: 'nowrap' }}>
+              {state === 'recording' ? '● listening' : state === 'processing' ? 'thinking…' : '◉ hands-free'}
+            </span>
+          )}
+        </button>
+      ) : state === 'playing' && !error ? (
+        <button
+          onClick={() => void setHandsFree(true)}
+          title="Click to go hands-free — always listening, talk naturally"
+          style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}
+        >
+          <VoiceVisualizer getAnalyser={getAnalyser} active />
+        </button>
       ) : showLabel ? (
         <span style={{
           fontSize: 10,

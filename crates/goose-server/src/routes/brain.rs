@@ -387,6 +387,30 @@ async fn brain_graph(
                 }
             }
 
+            // Union in the curated ontology set (2026-07-27): the recall
+            // neighborhood traverses TRIPLES only, and the Kuzu→SQLite store
+            // move lost the extraction-era triples — leaving the view nearly
+            // empty despite 126 restored entity nodes. The curated entities
+            // are real knowledge; show them. Triple-reachable entities keep
+            // priority (they come first and the cap applies to the fill).
+            if picked.len() < 80 {
+                if let Ok(curated) = brain.list_ontology_graph_entities().await {
+                    for (id_hex_bare, entity_type, canonical, description) in curated {
+                        if picked.len() >= 80 {
+                            break;
+                        }
+                        let id_hex = format!("e:{id_hex_bare}");
+                        if seen.insert(id_hex.clone()) {
+                            // Re-derive the EntityId (deterministic blake3 of
+                            // type+canonical — same derivation that minted it).
+                            let eid =
+                                spectral::core::entity_id::entity_id(&entity_type, &canonical);
+                            picked.push((id_hex, entity_type, canonical, description, eid));
+                        }
+                    }
+                }
+            }
+
             // Entity→entity edges (#495 slice 3): the neighborhood's triples
             // were previously dropped here; keep the ones connecting two
             // displayed entities.
@@ -629,6 +653,30 @@ async fn brain_graph(
                         .unwrap_or_else(|| term_id.clone())
                 })
                 .collect();
+        }
+    }
+
+    // ── Mention-derived links (#24): the graph store's mention table is the
+    // authoritative memory↔entity record (written at ingest + boot backfill).
+    // Union those links into `ent` so entity nodes show their memories even
+    // when no annotation names them.
+    if !memories.is_empty() {
+        let ids: Vec<String> = memories.iter().map(|m| m.id.clone()).collect();
+        let mention_map = tokio::task::spawn_blocking(move || {
+            let graph_db = permagent::config::paths::Paths::brain_dir().join("graph.sqlite");
+            permagent::brain_enrichment::mention_links_for_memories(&graph_db, &ids)
+        })
+        .await
+        .unwrap_or_default();
+        for mem in &mut memories {
+            if let Some(hexes) = mention_map.get(&mem.id) {
+                for h in hexes {
+                    let id = format!("e:{h}");
+                    if !mem.ent.contains(&id) {
+                        mem.ent.push(id);
+                    }
+                }
+            }
         }
     }
 

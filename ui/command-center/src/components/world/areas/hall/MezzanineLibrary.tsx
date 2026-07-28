@@ -51,6 +51,7 @@ function ringAngle(worldA: number): number {
 
 function MezzanineRing() {
   const darkStone = useDarkStoneMat();
+  const marble = useMarbleMat();
   const rGapCenter = ringAngle(STAIR_GAP_CENTER);
   const rStart = rGapCenter + STAIR_GAP_HALF;
   const rLength = Math.PI * 2 - STAIR_GAP_HALF * 2;
@@ -58,14 +59,12 @@ function MezzanineRing() {
   return (
     <group position-y={MEZZ_HEIGHT}>
       {/* Inner half of ring floor — CONTINUOUS, no gap (bookshelf wall sits on this) */}
-      <mesh rotation-x={-Math.PI / 2} receiveShadow>
+      <mesh rotation-x={-Math.PI / 2} receiveShadow material={marble}>
         <ringGeometry args={[MEZZ_INNER_R, MEZZ_MID_R, 64, 1, 0, Math.PI * 2]} />
-        <meshStandardMaterial color={COLORS.primaryMarble} roughness={0.3} metalness={0.1} />
       </mesh>
       {/* Outer half of ring floor — has small stair gap */}
-      <mesh rotation-x={-Math.PI / 2} receiveShadow>
+      <mesh rotation-x={-Math.PI / 2} receiveShadow material={marble}>
         <ringGeometry args={[MEZZ_MID_R, MEZZ_OUTER_R, 64, 1, rStart, rLength]} />
-        <meshStandardMaterial color={COLORS.primaryMarble} roughness={0.3} metalness={0.1} />
       </mesh>
 
       {/* Outer railing — skip stair gap */}

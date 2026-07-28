@@ -176,7 +176,7 @@ export function BrainList({ onSelect, selectedId, timeValue, searchQuery, entiti
         {showEntities && filteredEntities.length > 0 && (
           <>
             <div style={{
-              padding: '6px 14px 4px', fontFamily: font.mono, fontSize: 9,
+              padding: '6px 14px 4px', fontFamily: font.mono, fontSize: 10,
               color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em',
             }}>
               Entities ({filteredEntities.length})
@@ -197,7 +197,7 @@ export function BrainList({ onSelect, selectedId, timeValue, searchQuery, entiti
             ))}
             {showMemories && (
               <div style={{
-                padding: '10px 14px 4px', fontFamily: font.mono, fontSize: 9,
+                padding: '10px 14px 4px', fontFamily: font.mono, fontSize: 10,
                 color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em',
               }}>
                 Memories
@@ -349,7 +349,7 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
       {/* Metadata footer */}
       <div style={{
         display: 'flex', gap: 16, marginTop: 6,
-        fontFamily: font.mono, fontSize: 9, color: colors.textDim,
+        fontFamily: font.mono, fontSize: 10, color: colors.textDim,
       }}>
         <span>signal {Math.round(memory.weight * 100)}%</span>
         <span>{memory.age < 0.02 ? 'today' : memory.age < 0.11 ? 'this week' : memory.age < 0.33 ? 'this month' : memory.age < 0.67 ? '~3 months' : 'older'}</span>
@@ -419,7 +419,7 @@ function EntityRow({ entity, selected, onClick }: {
           width: 6, height: 6, borderRadius: 999, background: typeColor, flexShrink: 0,
         }} />
         <span style={{
-          fontFamily: font.mono, fontSize: 9, fontWeight: 600,
+          fontFamily: font.mono, fontSize: 10, fontWeight: 600,
           color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em',
         }}>
           {entity.type}

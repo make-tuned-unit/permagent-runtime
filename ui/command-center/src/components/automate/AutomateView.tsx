@@ -473,7 +473,7 @@ export function AutomateView() {
             padding: '32px 28px', borderRadius: radius.lg, marginBottom: 24,
             background: colors.surface, border: `1px solid ${colors.border}`, textAlign: 'center',
           }}>
-            <div style={{ fontSize: 15, fontWeight: 600, fontFamily: font.display, marginBottom: 8 }}>
+            <div style={{ fontSize: 14, fontWeight: 600, fontFamily: font.display, marginBottom: 8 }}>
               Your agent can do a lot already
             </div>
             <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.6, maxWidth: 420, margin: '0 auto' }}>
@@ -563,7 +563,7 @@ export function AutomateView() {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
                     <div style={{ width: 8, height: 8, borderRadius: '50%', background: colors.warning }} />
                     <div style={{ fontSize: 14, fontWeight: 600, fontFamily: font.display, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{proposal.description}</div>
-                    <span style={{ fontSize: 9, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: withAlpha(colors.warning, 0.15), color: colors.warning }}>PROPOSED</span>
+                    <span style={{ fontSize: 10, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: withAlpha(colors.warning, 0.15), color: colors.warning }}>PROPOSED</span>
                   </div>
                   <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5, marginBottom: 8 }}>
                     Seen {proposal.occurrence_count} time{proposal.occurrence_count !== 1 ? 's' : ''} using {proposal.tool_used}
@@ -611,7 +611,7 @@ export function AutomateView() {
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
                         <div style={{ width: 8, height: 8, borderRadius: '50%', background: dotColor }} />
                         <div style={{ fontSize: 14, fontWeight: 600, fontFamily: font.display, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{skill.name}</div>
-                        <span style={{ fontSize: 9, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: tierBg, color: tierFg }}>{tier}</span>
+                        <span style={{ fontSize: 10, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: tierBg, color: tierFg }}>{tier}</span>
                       </div>
                       {skill.description && <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5, marginBottom: 8 }}>{skill.description}</div>}
                       <div style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono }}>
@@ -818,19 +818,19 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
         }} />
         <div style={{ fontSize: 14, fontWeight: 600, fontFamily: font.display, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</div>
         {job.version && (
-          <span style={{ fontSize: 9, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: colors.border, color: colors.textDim }}>
+          <span style={{ fontSize: 10, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: colors.border, color: colors.textDim }}>
             v{job.version}
           </span>
         )}
         {!job.currently_running && runStatus && (
           <span
             title={job.last_error || undefined}
-            style={{ fontSize: 9, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: withAlpha(colors[runStatus.token], 0.15), color: colors[runStatus.token] }}
+            style={{ fontSize: 10, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: withAlpha(colors[runStatus.token], 0.15), color: colors[runStatus.token] }}
           >
             {runStatus.label}
           </span>
         )}
-        <span style={{ fontSize: 9, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: colors.cyanSoft, color: colors.cyan }}>
+        <span style={{ fontSize: 10, fontFamily: font.mono, padding: '2px 6px', borderRadius: radius.sm, background: colors.cyanSoft, color: colors.cyan }}>
           {job.currently_running ? 'RUNNING' : job.paused ? 'PAUSED' : 'SCHEDULED'}
         </span>
       </div>
@@ -1360,7 +1360,7 @@ findings, actionInFlight, onAction, totalRecovered, allActioned, lifetime }: {
                   </div>
                 </button>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 15, fontWeight: 600, fontFamily: font.display, color: allDone ? colors.success : colors.text }}>{groupName}</div>
+                  <div style={{ fontSize: 14, fontWeight: 600, fontFamily: font.display, color: allDone ? colors.success : colors.text }}>{groupName}</div>
                   <div style={{ fontSize: 12, color: colors.textDim, marginTop: 2 }}>{allDone ? `Cleaned — ${formatBytes(groupRecovered)}` : `${pending.length} items · ${formatBytes(pendingBytes)}`}</div>
                 </div>
                 {allDone ? <div style={{ padding: '8px 16px', borderRadius: radius.md, background: withAlpha(colors.success, 0.1), color: colors.success, fontSize: 12, fontWeight: 600 }}>Done</div> : (
@@ -1385,7 +1385,7 @@ finding, loading, onAction }: { finding: Finding; loading: boolean; onAction: (a
   const { colors } = useTheme();
   const fileName = finding.path.split('/').pop() || finding.path;
   if (finding.action_taken === 'trashed') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: withAlpha(colors.success, 0.05), border: `1px solid ${withAlpha(colors.success, 0.12)}` }}><span style={{ fontSize: 12, color: colors.success }}>Trashed</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</span>{finding.size_recovered_bytes != null && <span style={{ fontSize: 11, color: colors.success, fontFamily: font.mono, fontVariantNumeric: 'tabular-nums' }}>+{formatBytes(finding.size_recovered_bytes)}</span>}</div>;
-  if (finding.action_taken === 'error') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.06), border: `1px solid ${withAlpha(colors.danger, 0.15)}` }}><span style={{ fontSize: 12, color: colors.danger, fontWeight: 600, flexShrink: 0 }}>Failed</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={finding.error_message || undefined}>{finding.error_message || fileName}</span><button onClick={() => onAction('trash')} style={{ padding: '2px 6px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.1), border: `1px solid ${withAlpha(colors.danger, 0.2)}`, color: colors.danger, fontSize: 9, cursor: 'pointer', fontFamily: font.body, flexShrink: 0 }}>Retry</button></div>;
+  if (finding.action_taken === 'error') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.06), border: `1px solid ${withAlpha(colors.danger, 0.15)}` }}><span style={{ fontSize: 12, color: colors.danger, fontWeight: 600, flexShrink: 0 }}>Failed</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={finding.error_message || undefined}>{finding.error_message || fileName}</span><button onClick={() => onAction('trash')} style={{ padding: '2px 6px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.1), border: `1px solid ${withAlpha(colors.danger, 0.2)}`, color: colors.danger, fontSize: 10, cursor: 'pointer', fontFamily: font.body, flexShrink: 0 }}>Retry</button></div>;
   if (finding.action_taken) return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, opacity: 0.6 }}><span style={{ fontSize: 12, color: colors.textMuted }}>Kept</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1 }}>{fileName}</span></div>;
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: radius.sm, background: colors.surface, border: `1px solid ${colors.border}`, marginTop: 4 }}>

@@ -95,7 +95,7 @@ export function HudShell({
                 {tab.label}
                 {isDisabled && tab.disabledLabel && (
                   <span style={{
-                    fontSize: 8,
+                    fontSize: 10,
                     marginLeft: 4,
                     color: '#4B5563',
                     fontWeight: 400,
