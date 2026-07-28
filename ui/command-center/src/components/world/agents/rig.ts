@@ -281,8 +281,24 @@ function metalChunks(weathering: number): ChunkSpec[] {
     { geo: sphere(0.28, 16, 12), p: [0, 1.88, 0], s: [0.85, 1.1, 0.95], bone: 'head', color: GUN },
     { geo: box(0.16, 0.06, 0.12), p: [0, 1.74, 0.18], bone: 'head', color: DARK },
     { geo: cyl(0.07, 0.09, 0.14, 12), p: [0, 1.72, 0], bone: 'head', color: DARK },
+    // Brow ridge over the visor + jaw guard (detail pass 2026-07-28)
+    { geo: box(0.26, 0.03, 0.06), p: [0, 1.95, 0.2], bone: 'head', color: DARK },
+    { geo: box(0.14, 0.05, 0.08), p: [0, 1.68, 0.16], bone: 'head', color: DARK },
     // Torso
     { geo: torsoLathe(), p: [0, 0.68, 0], bone: 'spine', color: GUN },
+    // Neck collar guard
+    { geo: cyl(0.12, 0.15, 0.09, 12), p: [0, 1.64, 0], bone: 'spine', color: DARK },
+    // Chest plate + sternum spine
+    { geo: box(0.3, 0.24, 0.05), p: [0, 1.34, 0.2], bone: 'spine', color: GUN },
+    { geo: box(0.07, 0.34, 0.04), p: [0, 1.18, 0.23], bone: 'spine', color: DARK },
+    // Segmented abdominal plates
+    { geo: box(0.22, 0.05, 0.05), p: [0, 0.98, 0.19], bone: 'spine', color: DARK },
+    { geo: box(0.2, 0.05, 0.05), p: [0, 0.9, 0.18], bone: 'spine', color: DARK },
+    // Utility belt + buckle
+    { geo: torus(0.19, 0.032, 6, 20), p: [0, 0.76, 0], r: [Math.PI / 2, 0, 0], bone: 'spine', color: DARK },
+    { geo: box(0.08, 0.07, 0.04), p: [0, 0.76, 0.2], bone: 'spine', color: BRONZE },
+    // Dorsal spine ridge
+    { geo: box(0.05, 0.55, 0.04), p: [0, 1.18, -0.23], bone: 'spine', color: DARK },
   ];
 
   for (const side of [1, -1] as const) {
@@ -291,6 +307,12 @@ function metalChunks(weathering: number): ChunkSpec[] {
     const thigh: BoneName = side === 1 ? 'thighL' : 'thighR';
     const calf: BoneName = side === 1 ? 'calfL' : 'calfR';
     chunks.push(
+      // Pauldron shell over the shoulder (detail pass 2026-07-28)
+      { geo: sphere(0.115, 12, 8), p: [side * 0.33, 1.55, 0], s: [1, 0.75, 1], bone: arm, color: GUN },
+      // Thigh armor plate, hand knuckle cap, shin guard
+      { geo: box(0.09, 0.22, 0.04), p: [side * 0.13, 0.46, 0.075], bone: thigh, color: GUN },
+      { geo: box(0.055, 0.055, 0.06), p: [side * 0.45, 0.5, 0.05], bone: fore, color: DARK },
+      { geo: box(0.075, 0.2, 0.03), p: [side * 0.12, 0.12, 0.075], bone: calf, color: DARK },
       // Shoulder + arm
       { geo: new THREE.CapsuleGeometry(0.07, 0.08, 4, 8), p: [side * 0.3, 1.5, 0], r: [0, 0, side * 0.3], bone: arm, color: BRONZE },
       { geo: cyl(0.055, 0.042, 0.42, 10), p: [side * 0.38, 1.28, 0], r: [0, 0, side * 0.12], bone: arm, color: GUN },
@@ -322,6 +344,8 @@ function trimChunks(): ChunkSpec[] {
     { geo: cyl(0.015, 0.015, 0.6, 4), p: [-0.12, 1.2, 0.18], bone: 'spine' },
     { geo: cyl(0.012, 0.012, 0.7, 4), p: [0, 1.15, 0.2], bone: 'spine' },
     { geo: cyl(0.015, 0.015, 0.65, 4), p: [0, 1.15, -0.16], bone: 'spine' },
+    // Belt-line identity channel (detail pass 2026-07-28)
+    { geo: torus(0.2, 0.01, 4, 20), p: [0, 0.8, 0], r: [Math.PI / 2, 0, 0], bone: 'spine' },
     // Torso panel seam rings + inner under-glow (identity warm glow through gaps)
     { geo: torus(0.15, 0.012, 4, 20), p: [0, 0.88, 0], r: [Math.PI / 2, 0, 0], bone: 'spine' },
     { geo: torus(0.19, 0.012, 4, 20), p: [0, 1.08, 0], r: [Math.PI / 2, 0, 0], bone: 'spine' },
@@ -346,6 +370,10 @@ function trimChunks(): ChunkSpec[] {
       // Side + rear-diagonal torso channels
       { geo: cyl(0.012, 0.012, 0.55, 4), p: [side * 0.2, 1.15, 0.08], bone: 'spine' },
       { geo: cyl(0.01, 0.01, 0.5, 4), p: [side * 0.1, 1.2, -0.14], r: [0, 0, side * 0.15], bone: 'spine' },
+      // Pauldron edge channel (detail pass 2026-07-28)
+      { geo: torus(0.1, 0.008, 4, 14), p: [side * 0.33, 1.5, 0], r: [Math.PI / 2, 0, 0], bone: arm },
+      // Shin channel
+      { geo: cyl(0.008, 0.008, 0.16, 4), p: [side * 0.12, 0.12, 0.092], bone: calf },
       // Shoulder ring + arm channels
       { geo: torus(0.06, 0.012, 4, 8), p: [side * 0.3, 1.44, 0], bone: arm },
       { geo: cyl(0.01, 0.01, 0.34, 4), p: [side * 0.38, 1.28, 0.055], r: [0, 0, side * 0.12], bone: arm },

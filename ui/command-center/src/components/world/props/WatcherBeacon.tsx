@@ -25,7 +25,11 @@ import {
   useNudge,
 } from '../agents/watcherNudge';
 
-export const BEACON_POS: [number, number, number] = [8.6, 0, -8.0];
+// Moved off the spiral-stair ground entry (2026-07-28): the old [8.6, -8.0]
+// sat ~2u from stairPointAt(0) ≈ (10.6, -9.1) and physically blocked the
+// climb. Now on the SW floor between the workbench station and the
+// antechamber approach, clear of all walk targets.
+export const BEACON_POS: [number, number, number] = [-5.5, 0, -10.5];
 const TOWER_H = 4.6;
 
 // Materials owned here (one-off prop; the beacon core is animated).
