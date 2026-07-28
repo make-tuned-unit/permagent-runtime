@@ -269,6 +269,23 @@ export function AgentCharacterV2({
       }
     }
 
+    // ── Work halo (agents have no desks — the work orbits them) ──
+    // Fades in while processing standing, follows the live state color
+    // (amber working / red error via stateMat), orbits slowly. Hidden the
+    // moment the agent walks or the state moves on.
+    const halo = rig.workHalo;
+    if (halo) {
+      const want = hud === 'working' && !m.walking ? 0.55 : 0;
+      const next = halo.mat.opacity + (want - halo.mat.opacity) * Math.min(1, dt * 5);
+      halo.mat.opacity = next;
+      halo.group.visible = next > 0.02;
+      if (halo.group.visible) {
+        halo.mat.color.copy(rig.stateMat.emissive);
+        halo.group.rotation.y += dt * 0.9;
+        halo.group.position.y = 0.04 * Math.sin(t * 1.6);
+      }
+    }
+
     // Feet aura: breathing when available; steady otherwise; slight lift on hover.
     const breathe = hud === 'available' ? 1 + 0.18 * Math.sin(t * 1.8) : 1;
     bones.aura.scale.setScalar(hoveredRef.current ? breathe * 1.15 : breathe);

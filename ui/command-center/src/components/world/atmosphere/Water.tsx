@@ -163,7 +163,9 @@ function River({ reduceMotion }: { reduceMotion: boolean }) {
  * slow graph poll, so no per-frame work and no reduceMotion branch needed.
  */
 export const GROVE_SLOTS: { x: number; z: number }[] = [
-  { x: ROTUNDA_RADIUS - 4, z: -ROTUNDA_RADIUS + 6 },
+  // Slot 0 moved off the spiral-stair ground entry (2026-07-28): it sat at
+  // (11, -9), right on stairPointAt(0) — the "cone blocking the stairs".
+  { x: 5.5, z: 8 },
   { x: -ROTUNDA_RADIUS + 6, z: -ROTUNDA_RADIUS + 5 },
   { x: -ROTUNDA_RADIUS + 5, z: ROTUNDA_RADIUS - 6 },
   { x: ROTUNDA_RADIUS - 6, z: ROTUNDA_RADIUS - 7 },
